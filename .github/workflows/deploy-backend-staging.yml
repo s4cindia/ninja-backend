@@ -8,7 +8,7 @@ env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: ninja-backend
   ECS_CLUSTER: ninja-cluster
-  ECS_SERVICE: ninja-backend-service
+  ECS_SERVICE: ninja-backend-task-service
   TASK_DEFINITION_FAMILY: ninja-backend-task
 
 jobs:
