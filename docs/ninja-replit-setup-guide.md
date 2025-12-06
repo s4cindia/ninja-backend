@@ -1,603 +1,512 @@
 # Ninja Platform Replit Setup Guide
 
-**Version:** 2.1  
+## Quick Start for New Developers
+
+**Version:** 2.3  
 **Last Updated:** December 2025  
-**Classification:** Internal Use Only
+**Audience:** New developers joining the Ninja Platform team
 
 ---
 
-## 1. Introduction
+## Overview
 
-This guide provides step-by-step instructions for setting up the Replit development environment for the Ninja Platform. It covers both backend and frontend project configuration.
+This guide walks you through setting up your Replit development environment for the Ninja Platform. 
 
-### Prerequisites
+**Two Scenarios:**
 
-- Replit Teams account (request access from team lead)
-- GitHub account added to the s4cindia organization
-- Completed the Git and GitHub Training Course
+| Scenario | Who | Time Required |
+|----------|-----|---------------|
+| **First-Time Setup** | New developers joining the team | 30-45 minutes |
+| **New Fork Setup** | Existing developers creating a new fork | 10-15 minutes |
+
+Use the appropriate section based on your situation.
 
 ---
 
-## 2. Initial Replit Account Setup
+## Quick Reference: What's Inherited vs. What Needs Configuration
 
-### Step 2.1: Accept Team Invitation
+When you create a fork, some items are inherited from the main Repl and some need fresh configuration:
 
-1. Check your email for Replit Teams invitation
+| Item | Inherited? | Action for New Fork? |
+|------|------------|---------------------|
+| Nix Packages (replit.nix) | ✅ Yes | None needed |
+| AI Context (replit.md) | ✅ Yes | None needed |
+| Code and Files | ✅ Yes | None needed |
+| Git Remote Connection | ✅ Yes | None needed |
+| PostgreSQL Database | ❌ No | Provision new database |
+| Redis/Key-Value Store | ❌ No | Provision new store |
+| Secrets (JWT, API keys) | ❌ No | Add from Bitwarden |
+
+---
+
+# PART A: First-Time Setup
+
+**For new developers joining the team. Complete all steps below.**
+
+---
+
+## Step 1: Prerequisites
+
+Before starting, ensure you have:
+
+- [ ] Replit account (sign up at https://replit.com)
+- [ ] Invitation to the S4Carlisle Replit Team (request from team lead)
+- [ ] GitHub account with access to s4cindia organization
+- [ ] Bitwarden account for secrets access
+
+---
+
+## Step 2: Accept Team Invitation
+
+1. Check your email for the Replit Teams invitation
 2. Click the invitation link
-3. Create account or sign in with existing Replit account
-4. Verify you can see the S4Carlisle team workspace
-
-### Step 2.2: Connect GitHub Account
-
-1. Go to **Account Settings** → **Connected Services**
-2. Click **Connect** next to GitHub
-3. Authorize Replit to access your repositories
-4. Verify connection shows as "Connected"
+3. Sign in to Replit (or create an account)
+4. Accept the team invitation
+5. You should now see **s4carlisle-publishing-servic** in your team list
 
 ---
 
-## 3. Backend Project Setup
+## Step 3: Understand the Project Structure
 
-### Step 3.1: Import Backend Repository
+The Ninja Platform uses Replit Projects to organize development:
 
-1. Click **+ Create Repl**
-2. Select **Import from GitHub**
-3. Enter repository URL: `https://github.com/s4cindia/ninja-backend`
-4. Click **Import from GitHub**
-5. Wait for the import to complete
+```mermaid
+flowchart TB
+    subgraph Team["🏢 s4carlisle-publishing-servic (Team)"]
+        subgraph Backend["📁 ninja-backend (Project)"]
+            MainBackend["🔒 ninja-backend<br/>(Main Repl)<br/><i>Protected, production code</i>"]
+            Fork1["👤 developer-name-date<br/>(Fork)"]
+            Fork2["👤 another-dev-date<br/>(Fork)"]
+            MainBackend -.->|"+ New fork"| Fork1
+            MainBackend -.->|"+ New fork"| Fork2
+        end
 
-### Step 3.2: Configure Environment Variables
+        subgraph Frontend["📁 ninja-frontend (Project)"]
+            MainFrontend["🔒 ninja-frontend<br/>(Main Repl)<br/><i>Protected, production code</i>"]
+            Fork3["👤 developer-name-date<br/>(Fork)"]
+            Fork4["👤 another-dev-date<br/>(Fork)"]
+            MainFrontend -.->|"+ New fork"| Fork3
+            MainFrontend -.->|"+ New fork"| Fork4
+        end
+    end
 
-Navigate to **Tools** → **Secrets** and add the following:
+    style MainBackend fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+    style MainFrontend fill:#fee2e2,stroke:#dc2626,stroke-width:2px
+    style Fork1 fill:#dcfce7,stroke:#16a34a
+    style Fork2 fill:#dcfce7,stroke:#16a34a
+    style Fork3 fill:#dcfce7,stroke:#16a34a
+    style Fork4 fill:#dcfce7,stroke:#16a34a
+```
 
-| Key | Description | Example Value |
-|-----|-------------|---------------|
-| `DATABASE_URL` | Neon PostgreSQL connection string | `postgresql://user:pass@host/db?sslmode=require` |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
-| `GEMINI_API_KEY` | Google Gemini API key | `AIza...` |
-| `JWT_SECRET` | JWT signing secret | `your-secure-secret-here` |
-| `NODE_ENV` | Environment mode | `development` |
+**Key Concepts:**
 
-### Step 3.3: Create Backend replit.md
+| Term | Description |
+|------|-------------|
+| **Team** | The S4Carlisle organization workspace |
+| **Project** | Container for a main Repl and its forks |
+| **Main Repl** | The protected production codebase |
+| **Fork** | Your personal working copy linked to the main Repl |
 
-Create a file named `replit.md` in the project root with the following content:
+---
+
+## Step 4: Create Your First Fork
+
+**IMPORTANT:** You will work in a **fork** of the main Repl, not the main Repl directly.
+
+### Step 4.1: Navigate to the Project
+
+1. Go to the Replit Teams page
+2. Click on **Projects** in the left sidebar
+3. Click on **ninja-backend** project
+
+### Step 4.2: Create a Fork
+
+1. Click the **+ New fork** button (top right corner)
+2. Name your fork using the convention: `[your-name]-[date]` (e.g., `avrvenkatesa2-12-03`)
+3. Click **Create Fork**
+
+> ⚠️ **CRITICAL:** Do NOT use "Remix" - this creates an independent clone without a link back to the main Repl. Always use **+ New fork** from within the Project view.
+
+| Method | Result | Use For |
+|--------|--------|---------|
+| **+ New fork** (in Project) | Fork linked to main Repl | ✅ Developer work |
+| **Remix** | Independent clone (no link) | ❌ Don't use |
+
+### Step 4.3: Open Your Fork
+
+1. Your new fork appears in the "All Forks" section
+2. Click on your fork name to open it
+3. You now have your own workspace linked to the main Repl
+
+---
+
+## Step 5: Configure Your Environment
+
+### Step 5.1: Provision PostgreSQL Database
+
+1. Click the **PostgreSQL** tool in the left sidebar (or Tools → PostgreSQL)
+2. Click **Create a database**
+3. Replit will provision a Neon PostgreSQL database
+4. The `DATABASE_URL` secret is automatically added
+5. Set **History Retention** to **6 hours** (sufficient for development, minimizes Neon billing)
+
+### Step 5.2: Provision Redis/Key-Value Storage
+
+1. Click the **Key-Value Storage** tool in the left sidebar
+2. Click **Create a database**
+3. Replit will provision a Redis-compatible store
+4. The connection details are automatically added to secrets
+
+### Step 5.3: Add Required Secrets
+
+1. Click the **Secrets** tool (lock icon) in the left sidebar
+2. Add the following secrets from Bitwarden:
+
+| Secret Key | Source (Bitwarden) | Description |
+|------------|-------------------|-------------|
+| `JWT_SECRET` | Ninja-Development collection | JWT signing key |
+| `GEMINI_API_KEY` | Third-Party-Services collection | Google Gemini API key |
+
+**To get secrets from Bitwarden:**
+1. Log in to Bitwarden vault
+2. Navigate to the appropriate collection
+3. Copy the secret value
+4. Paste into Replit Secrets
+
+### Step 5.4: Verify Inherited Configuration (No Action Needed)
+
+The following are automatically inherited from the main Repl - just verify they exist:
+
+- **replit.nix** - Contains all required Nix packages
+- **replit.md** - Contains AI Agent context for the project
+- **.replit** - Contains run configuration
+
+---
+
+## Step 6: Install Dependencies and Run
+
+### Step 6.1: Install Dependencies
+
+1. Open the **Shell** tab at the bottom of Replit
+2. Run:
+
+```bash
+npm install
+```
+
+3. Wait for installation to complete
+
+### Step 6.2: Generate Prisma Client (Backend Only)
+
+For the backend Repl:
+
+```bash
+npx prisma generate
+```
+
+### Step 6.3: Run the Application
+
+1. Click the **Run** button (green play button at top)
+2. The application should start
+3. Check the console for any errors
+
+**Expected Output (Backend):**
+```
+Server running on port 3000
+Database connected
+Redis connected
+```
+
+**Expected Output (Frontend):**
+```
+VITE ready in XXX ms
+Local: http://localhost:5173
+```
+
+---
+
+## Step 7: Verify Git Connection
+
+Git is already configured and connected to GitHub through the main Repl.
+
+### Step 7.1: Verify Remote
+
+1. Open the **Shell** tab
+2. Run:
+
+```bash
+git remote -v
+```
+
+3. You should see the GitHub repository URL
+
+### Step 7.2: Sync with Main Branch
+
+```bash
+git fetch origin
+git checkout main
+git pull origin main
+```
+
+### Step 7.3: Create a Feature Branch
+
+```bash
+git checkout -b feat/NINJA-XXX-description
+```
+
+Replace `NINJA-XXX` with your ticket number and add a brief description.
+
+---
+
+## Step 8: Final Verification Checklist
+
+Run through this checklist to confirm everything is working:
+
+- [ ] Fork created and accessible
+- [ ] PostgreSQL database provisioned
+- [ ] Redis/Key-Value storage provisioned
+- [ ] All secrets configured (JWT_SECRET, GEMINI_API_KEY)
+- [ ] Dependencies installed (`npm install` completed)
+- [ ] Prisma client generated (backend only)
+- [ ] Application runs without errors
+- [ ] Git connected to GitHub (`git remote -v` shows origin)
+- [ ] Can create feature branches
+
+**Congratulations!** Your first-time setup is complete. Skip to the **Daily Workflow** section.
+
+---
+
+# PART B: New Fork Setup
+
+**For existing developers creating a new fork. Only complete the steps below.**
+
+---
+
+## Quick Steps for New Fork
+
+If you're already on the team and need to create a new fork, follow these condensed steps:
+
+### B.1: Create the Fork
+
+1. Go to **Projects** → **ninja-backend** (or ninja-frontend)
+2. Click **+ New fork** (top right)
+3. Name: `[your-name]-[date]` (e.g., `avrvenkatesa2-12-04`)
+4. Click **Create Fork**
+5. Open your new fork
+
+### B.2: Provision Databases
+
+**PostgreSQL:**
+1. Tools → PostgreSQL → Create a database
+2. Set History Retention to 6 hours
+
+**Redis:**
+1. Tools → Key-Value Storage → Create a database
+
+### B.3: Add Secrets
+
+1. Click Secrets (lock icon)
+2. Add from Bitwarden:
+   - `JWT_SECRET` (Ninja-Development collection)
+   - `GEMINI_API_KEY` (Third-Party-Services collection)
+
+### B.4: Install and Run
+
+```bash
+# Install dependencies
+npm install
+
+# Generate Prisma client (backend only)
+npx prisma generate
+
+# Sync with main
+git fetch origin
+git checkout main
+git pull origin main
+```
+
+Click **Run** to start the application.
+
+### B.5: Create Feature Branch
+
+```bash
+git checkout -b feat/NINJA-XXX-description
+```
+
+**Done!** Your new fork is ready for development.
+
+---
+
+## New Fork Checklist
+
+- [ ] Fork created via **+ New fork** (not Remix)
+- [ ] PostgreSQL provisioned
+- [ ] Redis provisioned
+- [ ] Secrets added (JWT_SECRET, GEMINI_API_KEY)
+- [ ] `npm install` completed
+- [ ] `npx prisma generate` completed (backend)
+- [ ] Application runs
+- [ ] Feature branch created
+
+---
+
+# Daily Workflow
+
+Once setup is complete, your daily workflow will be:
+
+1. **Start of day:** Pull latest changes
+   ```bash
+   git checkout main
+   git pull origin main
+   ```
+
+2. **Create feature branch:**
+   ```bash
+   git checkout -b feat/NINJA-XXX-description
+   ```
+
+3. **Use approved sprint prompts** for development (see `docs/sprint-prompts/`)
+
+4. **Commit and push:**
+   ```bash
+   git add .
+   git commit -m "feat(scope): description"
+   git push -u origin feat/NINJA-XXX-description
+   ```
+
+5. **Create PR on GitHub**
+
+6. **After PR merged:** Request merge to main Repl from your fork
+
+---
+
+# Reference: replit.md Templates
+
+The `replit.md` file provides context to the AI Agent. These are inherited from the main Repl.
+
+**Backend (ninja-backend/replit.md):**
 
 ```markdown
 # Ninja Platform Backend
 
 ## Project Overview
-This is the Ninja Platform backend API - an accessibility and compliance validation service for educational publishers.
+Ninja is an accessibility and compliance validation SaaS platform for educational publishers.
 
 ## Tech Stack
-- **Runtime:** Node.js 20
-- **Framework:** Express.js with TypeScript
-- **Database:** PostgreSQL (Neon in dev, RDS in production)
-- **Queue:** Redis (BullMQ)
-- **ORM:** Prisma
-- **AI Integration:** Google Gemini API
+- Runtime: Node.js 20+
+- Language: TypeScript 5.x (strict mode)
+- Framework: Express 4.x
+- Database: PostgreSQL (Prisma ORM)
+- Queue: BullMQ with Redis
+- Validation: Zod schemas
 
-## Architecture
-```
-src/
-├── modules/           # Feature modules
-│   ├── auth/         # Authentication
-│   ├── jobs/         # Job queue management
-│   ├── files/        # File upload/processing
-│   ├── accessibility/ # PDF/EPUB validation
-│   └── compliance/   # Content compliance checking
-├── shared/           # Shared utilities
-│   ├── middleware/   # Express middleware
-│   ├── utils/        # Helper functions
-│   └── types/        # TypeScript types
-└── index.ts          # Application entry point
-```
-
-## CRITICAL RULES - DO NOT VIOLATE
-
-### Database Safety
-- ❌ NEVER run DROP TABLE or DROP DATABASE
-- ❌ NEVER modify Prisma schema without explicit approval
-- ❌ NEVER run destructive migrations automatically
-- ✅ Use Prisma migrations for all schema changes
-- ✅ Test migrations in isolated environment first
-
-### Code Patterns
-- ✅ Use async/await for all asynchronous operations
-- ✅ Use Zod for input validation
-- ✅ Follow existing module structure
-- ✅ Add error handling to all API endpoints
-- ❌ NEVER expose API keys in frontend code
-- ❌ NEVER commit secrets to Git
-
-### Testing
-- ✅ Write tests for new functionality
-- ✅ Run `npm test` before committing
-- ✅ Ensure all tests pass before pushing
+## Critical Rules
+1. NEVER commit secrets to Git
+2. NEVER run DROP TABLE or DROP DATABASE
+3. NEVER modify schema without approval
+4. Use ES Modules (import/export)
+5. Use async/await for all async operations
+6. Validate all inputs with Zod schemas
 
 ## Recovery Commands
-
-If something breaks:
-
-```bash
-# Reset node_modules
-rm -rf node_modules package-lock.json
-npm install
-
-# Reset Prisma client
-npx prisma generate
-
-# Check database connection
-npx prisma db pull
-
-# View logs
-npm run dev 2>&1 | tail -100
+If the Repl gets stuck:
+- Restart: kill 1
+- Clear cache: rm -rf node_modules/.cache
+- Reinstall: rm -rf node_modules && npm install
 ```
 
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /api/v1/auth/login | User authentication |
-| POST | /api/v1/jobs | Create validation job |
-| GET | /api/v1/jobs/:id | Get job status |
-| POST | /api/v1/files/upload | Upload document |
-
-## Environment Variables Required
-
-- DATABASE_URL
-- REDIS_URL
-- GEMINI_API_KEY
-- JWT_SECRET
-- NODE_ENV
-```
-
-### Step 3.4: Create Backend replit.nix
-
-Ensure `replit.nix` contains:
-
-```nix
-{ pkgs }: {
-  deps = [
-    pkgs.nodejs_20
-    pkgs.nodePackages.npm
-    pkgs.nodePackages.typescript
-    pkgs.postgresql_15
-    pkgs.poppler_utils
-    pkgs.ghostscript
-    pkgs.imagemagick
-    pkgs.openjdk17
-    pkgs.pandoc
-    pkgs.git
-    pkgs.curl
-    pkgs.jq
-  ];
-
-  env = {
-    JAVA_HOME = "${pkgs.openjdk17}";
-    NODE_OPTIONS = "--max-old-space-size=4096";
-  };
-}
-```
-
-### Step 3.5: Create Backend .replit
-
-Ensure `.replit` contains:
-
-```toml
-run = "npm run dev"
-entrypoint = "src/index.ts"
-modules = ["nodejs-20:v8-20230920-bd784b9"]
-hidden = [".config", "package-lock.json", ".git"]
-
-[nix]
-channel = "stable-23_11"
-
-[[ports]]
-localPort = 3000
-externalPort = 80
-
-[env]
-NODE_OPTIONS = "--max-old-space-size=4096"
-```
-
----
-
-## 4. Frontend Project Setup
-
-### Step 4.1: Import Frontend Repository
-
-1. Click **+ Create Repl**
-2. Select **Import from GitHub**
-3. Enter repository URL: `https://github.com/s4cindia/ninja-frontend`
-4. Click **Import from GitHub**
-5. Wait for the import to complete
-
-### Step 4.2: Configure Neon Database History Retention
-
-**Important:** Set history retention to minimize storage costs.
-
-1. Go to the Neon Console (https://console.neon.tech)
-2. Select your project
-3. Navigate to **Settings** → **Storage**
-4. Set **History retention** to **6 hours**
-5. Click **Save**
-
-**Why 6 hours?** This provides sufficient recovery window during active development while minimizing the Neon billing risk from AI Agent operations that create excessive write operations. Since AWS RDS is your production database, 6 hours is pragmatic for development.
-
-### Step 4.3: Configure Environment Variables
-
-Navigate to **Tools** → **Secrets** and add the following:
-
-| Key | Description | Example Value |
-|-----|-------------|---------------|
-| `VITE_API_URL` | Backend API URL | `https://ninja-backend.replit.app` |
-| `VITE_APP_NAME` | Application name | `Ninja Platform` |
-
-### Step 4.4: Create Frontend replit.md
-
-Create a file named `replit.md` in the project root with the following content:
+**Frontend (ninja-frontend/replit.md):**
 
 ```markdown
 # Ninja Platform Frontend
 
 ## Project Overview
-This is the Ninja Platform frontend - a React-based SaaS application for accessibility and compliance validation of educational publishing content.
+React-based frontend for the Ninja accessibility and compliance platform.
 
 ## Tech Stack
-- **Framework:** React 18 with TypeScript
-- **Build Tool:** Vite
-- **Styling:** Tailwind CSS
-- **UI Components:** Radix UI
-- **State Management:** Zustand
-- **Data Fetching:** TanStack Query (React Query)
-- **Routing:** React Router v6
-- **Forms:** React Hook Form + Zod
+- Framework: React 18+
+- Build Tool: Vite 5.x
+- Language: TypeScript 5.x (strict mode)
+- Styling: Tailwind CSS
+- Components: Radix UI primitives
+- State: Zustand
+- Data Fetching: TanStack Query
 
-## Project Structure
-```
-src/
-├── components/        # Reusable UI components
-│   ├── ui/           # Base UI components (Button, Input, etc.)
-│   ├── forms/        # Form components
-│   ├── layout/       # Layout components (Header, Sidebar)
-│   └── features/     # Feature-specific components
-├── pages/            # Page components (routes)
-│   ├── Dashboard/
-│   ├── Jobs/
-│   ├── Reports/
-│   └── Settings/
-├── hooks/            # Custom React hooks
-├── stores/           # Zustand state stores
-├── services/         # API service functions
-├── utils/            # Utility functions
-├── types/            # TypeScript type definitions
-└── App.tsx           # Root application component
-```
-
-## CRITICAL RULES - DO NOT VIOLATE
-
-### Security
-- ❌ NEVER store API keys in frontend code
-- ❌ NEVER expose sensitive data in console.log
-- ❌ NEVER commit .env files to Git
-- ✅ Use environment variables (VITE_*) for configuration
-- ✅ All API calls go through backend proxy
-
-### Code Patterns
-- ✅ Use functional components with hooks
-- ✅ Use TypeScript strict mode
-- ✅ Follow existing component structure
-- ✅ Use Tailwind CSS for styling (no inline styles)
-- ✅ Use Radix UI for accessible components
-- ❌ NEVER use `any` type
-- ❌ NEVER disable ESLint rules without approval
-
-### State Management
-- ✅ Use TanStack Query for server state
-- ✅ Use Zustand for client state
-- ❌ NEVER store server data in Zustand
-- ❌ NEVER mutate state directly
-
-### Accessibility
-- ✅ All interactive elements must be keyboard accessible
-- ✅ Use semantic HTML elements
-- ✅ Provide alt text for images
-- ✅ Use ARIA labels where needed
-- ✅ Test with screen reader
-
-## Component Guidelines
-
-### Creating New Components
-```tsx
-// src/components/ui/Button.tsx
-import { forwardRef } from 'react';
-import { cn } from '@/utils/cn';
-
-interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'ghost';
-  size?: 'sm' | 'md' | 'lg';
-}
-
-export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant = 'primary', size = 'md', ...props }, ref) => {
-    return (
-      <button
-        ref={ref}
-        className={cn(
-          'rounded-md font-medium transition-colors',
-          // variant styles
-          // size styles
-          className
-        )}
-        {...props}
-      />
-    );
-  }
-);
-```
-
-### API Integration Pattern
-```tsx
-// src/services/jobs.ts
-import { api } from './api';
-import type { Job, CreateJobRequest } from '@/types';
-
-export const jobsService = {
-  create: (data: CreateJobRequest) => 
-    api.post<Job>('/api/v1/jobs', data),
-
-  getById: (id: string) => 
-    api.get<Job>(`/api/v1/jobs/${id}`),
-
-  list: (params?: { status?: string }) => 
-    api.get<Job[]>('/api/v1/jobs', { params }),
-};
-```
-
-### Using TanStack Query
-```tsx
-// src/hooks/useJobs.ts
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { jobsService } from '@/services/jobs';
-
-export function useJobs() {
-  return useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => jobsService.list(),
-  });
-}
-
-export function useCreateJob() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: jobsService.create,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['jobs'] });
-    },
-  });
-}
-```
+## Critical Rules
+1. NEVER commit secrets to Git
+2. All components must be accessible (WCAG 2.1 AA)
+3. Use TypeScript strict mode
+4. No inline styles - use Tailwind classes
+5. Keep components small and focused
 
 ## Recovery Commands
-
-If something breaks:
-
-```bash
-# Reset node_modules
-rm -rf node_modules package-lock.json
-npm install
-
-# Clear Vite cache
-rm -rf node_modules/.vite
-
-# Rebuild
-npm run build
-
-# Check for TypeScript errors
-npx tsc --noEmit
-
-# Check for ESLint errors
-npm run lint
-```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| VITE_API_URL | Backend API base URL |
-| VITE_APP_NAME | Application display name |
-
-## Design System
-
-### Colors (Tailwind)
-- Primary: `blue-600` / `blue-700`
-- Success: `green-600`
-- Warning: `amber-500`
-- Error: `red-600`
-- Background: `gray-50` / `white`
-- Text: `gray-900` / `gray-600`
-
-### Spacing
-- Use Tailwind spacing scale (4, 8, 16, 24, 32, 48)
-- Consistent padding: `p-4` for cards, `p-6` for sections
-
-### Typography
-- Headings: `font-semibold`
-- Body: `font-normal`
-- Small: `text-sm text-gray-600`
-```
-
-### Step 4.5: Create Frontend replit.nix
-
-Ensure `replit.nix` contains:
-
-```nix
-{ pkgs }: {
-  deps = [
-    pkgs.nodejs_20
-    pkgs.nodePackages.npm
-    pkgs.nodePackages.typescript
-    pkgs.git
-  ];
-}
-```
-
-### Step 4.6: Create Frontend .replit
-
-Ensure `.replit` contains:
-
-```toml
-run = "npm run dev"
-entrypoint = "src/App.tsx"
-modules = ["nodejs-20:v8-20230920-bd784b9"]
-hidden = [".config", "package-lock.json", ".git"]
-
-[nix]
-channel = "stable-23_11"
-
-[[ports]]
-localPort = 5173
-externalPort = 80
-
-[env]
-NODE_OPTIONS = "--max-old-space-size=4096"
+If the Repl gets stuck:
+- Restart: kill 1
+- Clear cache: rm -rf node_modules/.cache
+- Reinstall: rm -rf node_modules && npm install
 ```
 
 ---
 
-## 5. Claude Code Setup (Optional - For Debugging)
+# Troubleshooting
 
-Claude Code is Anthropic's command-line tool for agentic coding. It's recommended for complex debugging sessions.
-
-### Step 5.1: Install Claude Code
-
-```bash
-# Install globally
-npm install -g @anthropic-ai/claude-code
-
-# Verify installation
-claude --version
-```
-
-### Step 5.2: Configure API Key
-
-```bash
-# Set API key (one-time setup)
-export ANTHROPIC_API_KEY="your-api-key-here"
-
-# Or add to your shell profile (~/.bashrc or ~/.zshrc)
-echo 'export ANTHROPIC_API_KEY="your-api-key-here"' >> ~/.bashrc
-```
-
-### Step 5.3: Initialize in Project
-
-```bash
-# Navigate to project directory
-cd ninja-backend  # or ninja-frontend
-
-# Initialize Claude Code
-claude init
-
-# This creates a CLAUDE.md file for project context
-```
-
-### Step 5.4: Basic Usage
-
-```bash
-# Start Claude Code in interactive mode
-claude
-
-# Ask a question
-> Why is the authentication failing?
-
-# Claude will read your codebase and provide analysis
-```
-
-For detailed Claude Code debugging workflows, see the **Ninja Platform Developer Training Guide**.
-
----
-
-## 6. Verification Steps
-
-### Step 6.1: Verify Backend Setup
-
-1. Click **Run** button in Replit
-2. Wait for npm install to complete
-3. Verify server starts without errors
-4. Check console for: "Server running on port 3000"
-5. Open the Webview tab to verify API responds
-
-### Step 6.2: Verify Frontend Setup
-
-1. Click **Run** button in Replit
-2. Wait for npm install to complete
-3. Verify Vite dev server starts
-4. Check console for: "Local: http://localhost:5173"
-5. Open the Webview tab to see the application
-
-### Step 6.3: Verify Git Integration
-
-```bash
-# Check Git status
-git status
-
-# Verify remote
-git remote -v
-# Should show: origin https://github.com/s4cindia/ninja-backend.git (or frontend)
-
-# Pull latest changes
-git pull origin main
-```
-
----
-
-## 7. Troubleshooting
-
-### Problem: npm install fails
+### Problem: Repl won't start
 
 **Solution:**
 ```bash
-rm -rf node_modules package-lock.json
-npm cache clean --force
+kill 1
+rm -rf node_modules/.cache
 npm install
 ```
 
-### Problem: Database connection fails
+### Problem: Database connection failed
 
 **Solution:**
-1. Verify DATABASE_URL in Secrets
-2. Check Neon dashboard for connection status
-3. Ensure `?sslmode=require` is in connection string
-4. Wait 5 seconds for cold start
+1. Check that PostgreSQL is provisioned (Tools → PostgreSQL)
+2. Verify `DATABASE_URL` secret exists
+3. Run `npx prisma generate`
 
-### Problem: Secrets not loading
-
-**Solution:**
-1. Stop the Repl
-2. Verify secret names are exact (case-sensitive)
-3. Restart the Repl
-4. Check with: `console.log(process.env.YOUR_SECRET_NAME)`
-
-### Problem: Port already in use
+### Problem: "Permission denied" on git push
 
 **Solution:**
-1. Click **Stop** button
-2. Wait 5 seconds
-3. Click **Run** again
-4. If persists, refresh the browser tab
+1. Verify GitHub is connected (Account Settings → Connected Services)
+2. Reconnect GitHub if needed
+
+### Problem: Packages not installing
+
+**Solution:**
+1. Check `replit.nix` has all required packages
+2. Refresh the Repl (browser refresh)
+3. Run `npm install` again
+
+### Problem: Redis connection failed
+
+**Solution:**
+1. Check that Key-Value Storage is provisioned
+2. Verify Redis-related secrets are set
 
 ---
 
-## 8. Next Steps
+# Getting Help
 
-After completing setup:
-
-1. Read the **Replit Teams Guide v2** for collaboration workflows
-2. Complete the **Ninja Platform Developer Training Guide**
-3. Review the **Sprint Replit Prompts** for your assigned sprint
-4. Join the #ninja-development Teams channel
+| Issue | Contact |
+|-------|---------|
+| Access problems | Team Lead |
+| Technical blockers | `#ninja-development` Teams channel |
+| Bitwarden access | Request via Team Lead |
+| Stuck > 30 minutes | Tag team lead in Teams |
 
 ---
 
-*Version: 2.1 | Last Updated: December 2025*
+# Next Steps
+
+After completing this setup:
+
+1. Read the **Replit Teams Guide v2** for collaboration best practices
+2. Complete the **Ninja Developer Training Guide**
+3. Review your assigned sprint's Replit Prompts in `docs/sprint-prompts/`
+4. Join the `#ninja-development` Teams channel
+
+---
+
+*Document maintained by S4Carlisle India Development Team*

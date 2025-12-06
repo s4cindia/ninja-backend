@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { version } = require('../package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,7 +15,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    version: '1.0.0'
+    version
   });
 });
 
@@ -22,7 +23,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'Welcome to Ninja Platform API',
-    version: '1.0.0',
+    version,
     endpoints: {
       health: '/health',
       api: '/api'
@@ -34,7 +35,7 @@ app.get('/', (req, res) => {
 app.get('/api', (req, res) => {
   res.json({
     name: 'Ninja Platform API',
-    version: '1.0.0',
+    version,
     description: 'AI-powered accessibility and compliance checking tool',
     status: 'operational'
   });
@@ -45,6 +46,15 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Not Found',
     message: `Route ${req.method} ${req.path} not found`
+  });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(err.status || 500).json({
+    error: 'Internal Server Error',
+    message: process.env.NODE_ENV === 'production' ? 'An error occurred' : err.message
   });
 });
 

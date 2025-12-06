@@ -1,0 +1,386 @@
+# =============================================================================
+# CodeRabbit Configuration for Ninja Platform
+# =============================================================================
+# File: .coderabbit.yaml
+# Location: Root of ninja-backend and ninja-frontend repositories
+# Purpose: Implement automated PR Review Checklist (Section 5 of AI Dev Guide)
+# =============================================================================
+
+# Language for reviews
+language: "en-US"
+
+# Tone instructions for consistent feedback style
+tone_instructions: |
+  Be constructive and specific. Focus on actionable feedback.
+  Reference the Ninja Platform coding standards when applicable.
+  Prioritize security and accessibility concerns.
+
+# Knowledge base configuration
+knowledge_base:
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+
+# Chat settings
+chat:
+  auto_reply: true
+
+# =============================================================================
+# REVIEWS CONFIGURATION
+# =============================================================================
+reviews:
+  # Review profile: "chill" for regular PRs, "assertive" for stricter reviews
+  profile: assertive
+  
+  # Request changes workflow - require fixes before merge
+  request_changes_workflow: true
+  
+  # Generate high-level summary
+  high_level_summary: true
+  high_level_summary_placeholder: '@coderabbitai summary'
+  
+  # Disable decorative poem
+  poem: false
+  
+  # Show review status
+  review_status: true
+  
+  # Collapse detailed walkthrough by default
+  collapse_walkthrough: false
+  
+  # Auto-review settings
+  auto_review:
+    enabled: true
+    # Review on every push
+    drafts: false
+    # Ignore title patterns (WIP PRs)
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+      - "DRAFT"
+  
+  # =============================================================================
+  # PATH FILTERS - Exclude non-code files from review
+  # =============================================================================
+  path_filters:
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+    - "!**/yarn.lock"
+    - "!**/*.min.js"
+    - "!**/*.min.css"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/node_modules/**"
+    - "!**/*.md"
+    - "!**/*.svg"
+    - "!**/*.png"
+    - "!**/*.jpg"
+  
+  # =============================================================================
+  # PATH INSTRUCTIONS - Custom review rules per file type
+  # Implements Section 5 checklist items
+  # =============================================================================
+  path_instructions:
+    
+    # -------------------------------------------------------------------------
+    # BACKEND: API Routes & Controllers
+    # Checklist: 5.2 (Behavior), 5.5 (Security), 5.6 (Performance)
+    # -------------------------------------------------------------------------
+    - path: "src/modules/**/**.controller.ts"
+      instructions: |
+        ## Controller Review Checklist
+        
+        ### 5.2 Behavior & Edge Cases
+        - Verify input validation is present for all request parameters
+        - Check error paths return correct HTTP status codes (400, 401, 403, 404, 500)
+        - Ensure edge cases handled: empty inputs, null values, oversized payloads
+        
+        ### 5.5 Security Audit (CRITICAL)
+        - AuthN/AuthZ: Verify authentication middleware is applied
+        - Verify authorization checks for role-based access
+        - Check for injection vulnerabilities in query parameters
+        - Ensure user input is sanitized before processing
+        - Verify rate limiting is applied to public endpoints
+        - Check that sensitive data is not logged
+        
+        ### 5.6 Performance
+        - Flag any synchronous blocking operations
+        - Check for missing async/await patterns
+        - Verify request timeouts are configured
+    
+    # -------------------------------------------------------------------------
+    # BACKEND: Services (Business Logic)
+    # Checklist: 5.3 (Code Quality), 5.4 (Architecture)
+    # -------------------------------------------------------------------------
+    - path: "src/modules/**/**.service.ts"
+      instructions: |
+        ## Service Layer Review Checklist
+        
+        ### 5.3 Code Quality
+        - Verify function names are descriptive and self-documenting
+        - Check for code duplication - suggest extracting to shared utilities
+        - Ensure side effects are clearly documented
+        - Verify error messages are user-friendly (no technical jargon)
+        
+        ### 5.4 Architecture Fit
+        - Confirm service uses existing utilities from src/shared/utils
+        - Verify proper separation from controller logic
+        - Check that database operations use Prisma transactions where needed
+        - Ensure business logic doesn't leak into controllers
+        
+        ### 5.6 Performance
+        - Flag N+1 query patterns - suggest using Prisma includes
+        - Check for unbounded loops or recursive calls
+        - Verify database queries are optimized (indexes, select fields)
+    
+    # -------------------------------------------------------------------------
+    # BACKEND: Prisma Schema & Database
+    # Checklist: 5.2 (Behavior), 5.5 (Security)
+    # -------------------------------------------------------------------------
+    - path: "prisma/**.prisma"
+      instructions: |
+        ## Database Schema Review Checklist
+        
+        ### 5.2 Behavior & Edge Cases
+        - Verify all required fields have appropriate defaults or are marked required
+        - Check that relationships are properly defined with cascading deletes
+        - Ensure indexes are defined for frequently queried fields
+        
+        ### 5.5 Security
+        - Verify sensitive fields (passwords, tokens) are properly typed
+        - Check that PII fields are identified for data protection compliance
+        - Ensure audit fields (createdAt, updatedAt) are present on all models
+    
+    # -------------------------------------------------------------------------
+    # BACKEND: Middleware
+    # Checklist: 5.5 (Security), 5.7 (Observability)
+    # -------------------------------------------------------------------------
+    - path: "src/middleware/**.ts"
+      instructions: |
+        ## Middleware Review Checklist
+        
+        ### 5.5 Security Audit
+        - Verify authentication middleware validates JWT tokens properly
+        - Check for proper error handling that doesn't leak internal details
+        - Ensure CORS configuration is restrictive (not wildcard *)
+        - Verify request size limits are enforced
+        
+        ### 5.7 Observability
+        - Check that request IDs are generated/propagated
+        - Verify structured logging with appropriate log levels
+        - Ensure timing metrics are captured for performance monitoring
+    
+    # -------------------------------------------------------------------------
+    # BACKEND: API Contracts & Types
+    # Checklist: 5.1 (Scope), 5.3 (Code Quality)
+    # -------------------------------------------------------------------------
+    - path: "src/**/**.dto.ts"
+      instructions: |
+        ## DTO/Type Review Checklist
+        
+        ### 5.1 Scope & Purpose
+        - Verify DTO matches the API contract specification
+        - Check that optional vs required fields are correct
+        
+        ### 5.3 Code Quality
+        - Ensure class-validator decorators are applied for validation
+        - Verify field types are precise (not 'any' or overly broad)
+        - Check that validation error messages are user-friendly
+    
+    - path: "src/shared/types/**.ts"
+      instructions: |
+        ## Shared Types Review Checklist
+        
+        ### 5.4 Architecture Fit
+        - Verify types are properly exported for reuse
+        - Check for duplication with existing types
+        - Ensure naming is consistent with project conventions
+    
+    # -------------------------------------------------------------------------
+    # FRONTEND: React Components
+    # Checklist: 5.2 (Behavior), 5.3 (Code Quality)
+    # -------------------------------------------------------------------------
+    - path: "src/components/**/**.tsx"
+      instructions: |
+        ## React Component Review Checklist
+        
+        ### 5.2 Behavior & Edge Cases
+        - Verify loading states are handled for async operations
+        - Check error boundaries or error states are implemented
+        - Ensure empty/null data states have appropriate UI
+        
+        ### 5.3 Code Quality
+        - Components should be functional components with TypeScript
+        - Verify proper use of React hooks (dependencies arrays)
+        - Check for unnecessary re-renders (memoization where needed)
+        - Ensure props are properly typed (no 'any')
+        
+        ### Accessibility (Ninja Platform Specific)
+        - Verify ARIA labels are present on interactive elements
+        - Check color contrast meets WCAG 2.1 AA standards
+        - Ensure keyboard navigation is supported
+        - Verify screen reader compatibility
+    
+    # -------------------------------------------------------------------------
+    # FRONTEND: Pages
+    # Checklist: 5.4 (Architecture), 5.7 (Observability)
+    # -------------------------------------------------------------------------
+    - path: "src/pages/**/**.tsx"
+      instructions: |
+        ## Page Component Review Checklist
+        
+        ### 5.4 Architecture Fit
+        - Verify page follows container/presentation pattern
+        - Check that data fetching uses appropriate hooks/services
+        - Ensure routing is properly configured
+        
+        ### 5.7 Observability
+        - Verify error tracking is integrated (user-facing errors)
+        - Check that analytics events are tracked where appropriate
+    
+    # -------------------------------------------------------------------------
+    # FRONTEND: API Services
+    # Checklist: 5.5 (Security), 5.6 (Performance)
+    # -------------------------------------------------------------------------
+    - path: "src/services/**/**.ts"
+      instructions: |
+        ## API Service Review Checklist
+        
+        ### 5.5 Security
+        - Verify API keys/tokens are not hardcoded
+        - Check that authentication headers are properly attached
+        - Ensure sensitive data is not logged in console
+        
+        ### 5.6 Performance
+        - Verify appropriate caching strategies are used
+        - Check for request deduplication where applicable
+        - Ensure error retry logic has exponential backoff
+    
+    # -------------------------------------------------------------------------
+    # TESTS: Unit & Integration Tests
+    # Checklist: 5.2 (Behavior)
+    # -------------------------------------------------------------------------
+    - path: "tests/**/**.test.ts"
+      instructions: |
+        ## Test Review Checklist
+        
+        ### 5.2 Behavior & Edge Cases
+        - Verify tests cover happy path AND error scenarios
+        - Check edge cases are tested: empty, null, huge, unicode inputs
+        - Ensure async operations are properly awaited
+        - Verify mocks are realistic and not overly permissive
+        
+        ### Test Quality
+        - Test names should describe the behavior being tested
+        - Each test should test one thing (single assertion focus)
+        - Verify test data doesn't leak between tests (proper setup/teardown)
+    
+    - path: "tests/**/**.spec.ts"
+      instructions: |
+        ## Test Review Checklist
+        
+        ### 5.2 Behavior & Edge Cases
+        - Verify tests cover happy path AND error scenarios
+        - Check edge cases are tested: empty, null, huge, unicode inputs
+        - Ensure async operations are properly awaited
+        - Verify mocks are realistic and not overly permissive
+    
+    # -------------------------------------------------------------------------
+    # CONFIGURATION FILES
+    # Checklist: 5.8 (Dependencies)
+    # -------------------------------------------------------------------------
+    - path: "package.json"
+      instructions: |
+        ## Dependencies Review Checklist
+        
+        ### 5.8 Dependencies
+        - Flag any new dependencies - are they necessary?
+        - Check if dependencies are actively maintained
+        - Verify license compatibility (MIT, Apache 2.0 preferred)
+        - Check for known vulnerabilities in new packages
+    
+    # -------------------------------------------------------------------------
+    # INFRASTRUCTURE & DEVOPS
+    # Checklist: 5.5 (Security), 5.7 (Observability)
+    # -------------------------------------------------------------------------
+    - path: "**/*.dockerfile"
+      instructions: |
+        ## Dockerfile Review Checklist
+        
+        ### 5.5 Security
+        - Verify base image is from trusted source
+        - Check that secrets are not baked into image
+        - Ensure non-root user is used for runtime
+        - Verify unnecessary packages are not installed
+    
+    - path: ".github/workflows/**.yml"
+      instructions: |
+        ## GitHub Actions Review Checklist
+        
+        ### 5.5 Security
+        - Verify secrets are accessed via GitHub Secrets, not hardcoded
+        - Check that actions use pinned versions (not @latest)
+        - Ensure sensitive outputs are masked
+        
+        ### 5.7 Observability
+        - Verify workflow has appropriate status checks
+        - Check that failures are reported appropriately
+
+# =============================================================================
+# TOOLS CONFIGURATION
+# =============================================================================
+tools:
+  # Secret scanning (Security Audit - 5.5)
+  gitleaks:
+    enabled: true
+  
+  # ESLint for JavaScript/TypeScript
+  eslint:
+    enabled: true
+  
+  # Biome for additional linting
+  biome:
+    enabled: true
+  
+  # Shell script checking
+  shellcheck:
+    enabled: true
+  
+  # YAML linting
+  yamllint:
+    enabled: true
+  
+  # Markdown linting (for docs)
+  markdownlint:
+    enabled: true
+  
+  # GitHub checks integration
+  github-checks:
+    enabled: true
+    timeout_ms: 90000
+  
+  # AST-grep for advanced pattern matching
+  ast-grep:
+    # Enable essential security rules
+    essential_rules: true
+    
+    # Custom rule directories (create these for Ninja-specific patterns)
+    rule_dirs:
+      - ".coderabbit/rules"
+
+# =============================================================================
+# CODE GENERATION (Optional)
+# =============================================================================
+code_generation:
+  docstrings:
+    enabled: true
+    path_instructions:
+      - path: "src/**/*.ts"
+        instructions: |
+          Generate JSDoc comments with:
+          - @description for function purpose
+          - @param for each parameter with type
+          - @returns for return value
+          - @throws for potential errors
+          - @example for complex functions

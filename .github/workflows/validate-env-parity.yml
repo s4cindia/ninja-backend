@@ -1,0 +1,29 @@
+name: Validate Environment Parity
+
+on:
+  push:
+    paths:
+      - 'replit.nix'
+      - 'Dockerfile'
+      - '.github/workflows/validate-env-parity.yml'
+      - 'scripts/validate-env-parity.sh'
+  pull_request:
+    paths:
+      - 'replit.nix'
+      - 'Dockerfile'
+      - '.github/workflows/validate-env-parity.yml'
+      - 'scripts/validate-env-parity.sh'
+
+jobs:
+  validate-parity:
+    runs-on: ubuntu-latest
+    name: Check Replit/Docker Environment Parity
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate Environment Parity
+        run: |
+          chmod +x ./scripts/validate-env-parity.sh
+          ./scripts/validate-env-parity.sh

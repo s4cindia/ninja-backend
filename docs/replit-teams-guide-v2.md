@@ -1,11 +1,5 @@
 # Replit Teams: Comprehensive Guide for Ninja Platform Development
 
-**Version:** 2.1  
-**Last Updated:** December 2025  
-**Classification:** Internal Use Only
-
----
-
 ## Executive Summary
 
 This guide provides a complete reference for the S4Carlisle India Development Team using Replit Teams for the Ninja Platform rebuild. It synthesizes best practices from multiple sources, addresses critical gotchas, and provides specific guidance for the Ninja project architecture.
@@ -39,7 +33,7 @@ Replit Teams is an enterprise-grade collaborative development platform enabling 
 |---------|---------------------|------------|
 | Pooled Credits | ✓ | ✓ |
 | Private Deployments | ✓ | ✓ |
-| Replit Projects | ✓ | ✓ |
+| **Replit Projects** | ✓ | ✓ |
 | Viewer Seats | Up to 50 | Unlimited |
 | Role-Based Access Control | ✓ | ✓ |
 | SOC-2 Compliance | - | ✓ |
@@ -80,7 +74,7 @@ In Replit, the "Working Directory" is live. There is no local "staging" area pri
 | When to Use | Quick fixes, config changes | Features, experiments, risky changes |
 
 **Core Principle:**
-> A Branch isolates your Code. A Fork isolates your Computer.
+> A Branch isolates your CODE. A Fork isolates your COMPUTER.
 
 ---
 
@@ -95,6 +89,16 @@ For Teams subscribers, Replit Projects provides automated forking with managed m
 1. **Master Repl** = The `main` branch equivalent (integration environment)
 2. **Development Forks** = Auto-created when developer clicks "Start Working"
 3. **Managed Merging** = Visual diff tool for code integration
+
+### Creating a Project
+
+**Important:** There is no "Convert to Project" menu option. Projects are created by forking:
+
+1. Open any Repl in your Team
+2. Click **Fork** or **Remix**
+3. When prompted, select **"Fork & start a Project"**
+4. The original Repl becomes the Main Repl
+5. You're moved to a new fork
 
 ### Projects Feature Comparison
 
@@ -154,7 +158,7 @@ Three files control Replit environment behavior:
 
 **Recommendation:** Use the validation script in Appendix A to verify environment parity in CI.
 
-### replit.md: The AI Agent Context File
+### replit.md: The AI Context File
 
 The `replit.md` file serves as a "system prompt" for the Replit AI Agent. It stabilizes context and prevents the Agent from:
 - Forgetting the tech stack
@@ -241,7 +245,7 @@ Replit's integrated database uses Neon's serverless PostgreSQL.
 Neon charges not just for active data, but for **retained history**:
 - Every INSERT, UPDATE, DELETE creates WAL entries
 - Snapshots are retained based on your retention policy
-- Default retention may be 7 days or more
+- Default retention may be 7 days or longer
 
 **The Trap:**
 ```
@@ -257,7 +261,7 @@ Result:
 ```
 
 **Mitigation:**
-- Set history_retention_period to 6 hours for dev environments
+- Set history_retention_period to 6 hours or less for dev environments
 - Monitor storage in Neon console weekly
 - Use transactions to batch operations
 
@@ -356,6 +360,22 @@ When forking, secrets are **intentionally NOT copied**. This is a security featu
 
 **Implication:** Each developer fork requires manual secret configuration.
 
+### Bitwarden for Team Secret Sharing
+
+Use Bitwarden Organizations to securely share secrets across the team:
+
+**Setup:**
+1. Create Bitwarden Organization (Teams plan: $4/user/month)
+2. Create Collections: "Ninja-Backend", "Ninja-Frontend", "AWS-Credentials"
+3. Add team members to appropriate collections
+4. Store secrets with descriptive names
+
+**Transferring Personal Secrets to Organization:**
+1. Open item in your personal vault
+2. Click three-dot menu → "Assign to collections"
+3. Select organization and collection
+4. Click "Assign"
+
 ---
 
 ## Part 9: Team Collaboration Workflows
@@ -369,14 +389,37 @@ When forking, secrets are **intentionally NOT copied**. This is a security featu
 | 4+ | Teams | **Replit Projects** |
 | Enterprise | Teams | Projects + RBAC + Audit |
 
+### Fork Naming Convention
+
+When Replit creates a fork, it auto-generates a name (e.g., `username-12-03`). **Immediately rename your fork** to follow the team standard:
+
+| Component | Pattern | Example |
+|-----------|---------|---------|
+| Backend Fork | `ninja-backend-{firstname}` | `ninja-backend-aravind` |
+| Frontend Fork | `ninja-frontend-{firstname}` | `ninja-frontend-priya` |
+
+**How to Rename Your Fork:**
+1. Click on the Repl name in the header bar (shows current name like `avrvenkatesa2-12-03`)
+2. A settings panel opens with a **Name** field
+3. Enter the new name following the convention (e.g., `ninja-backend-avr`)
+4. Optionally add a Description: "Ninja Platform API Server - Node.js + Express + TypeScript"
+5. Close the panel - changes save automatically
+
+**Why Standardize:**
+- Easy identification of who owns which fork
+- Predictable URLs: `ninja-backend-aravind.replit.app`
+- Cleaner Project dashboard view
+- Simplified team coordination
+
 ### Workflow for Ninja (Recommended)
 
 **Using Replit Projects:**
 1. Project Owner Creates Project linking to GitHub repo
 2. Developer Clicks "Start Working" → automatic fork created
-3. Developer Works in Isolated Fork → full runtime isolation
-4. Developer Clicks "Request Review" → visual merge UI
-5. Reviewer Approves → changes merge to Master Repl
+3. **Developer Renames Fork** → follows `ninja-backend-{firstname}` convention
+4. Developer Works in Isolated Fork → full runtime isolation
+5. Developer Clicks "Request Review" → visual merge UI
+6. Reviewer Approves → changes merge to Master Repl
 
 ### Multiplayer Protocol (When to Use)
 
@@ -461,28 +504,19 @@ def get_claude_response(prompt):
     return message.content[0].text
 ```
 
-### Claude Code Integration Workflows
+### Claude Code for Debugging
 
-**Code Review:**
-```python
-def review_code(code_snippet):
-    prompt = f"""Review this code for:
-    - Security vulnerabilities
-    - Performance issues
-    - Best practice violations
-    Code: {code_snippet}"""
-    return get_claude_response(prompt)
-```
+For complex debugging tasks, use Claude Code (terminal-based AI assistant):
 
-**Test Generation:**
-```python
-def generate_tests(function_code):
-    prompt = f"""Generate pytest test cases for this function:
-    - Happy path scenarios
-    - Edge cases
-    - Error handling
-    {function_code}"""
-    return get_claude_response(prompt)
+```bash
+# Install Claude Code
+npm install -g @anthropic-ai/claude-code
+
+# Set API key
+export ANTHROPIC_API_KEY=your-key-here
+
+# Start debugging session
+claude-code debug src/services/validation.ts
 ```
 
 ---
@@ -504,7 +538,7 @@ def generate_tests(function_code):
 |----------|-------------|
 | Use Secrets Tool | Never hardcode credentials |
 | Fork for Agent Work | Isolate AI experiments |
-| Rotate API Keys | Update credentials regularly |
+| Use Bitwarden | Share secrets via organization collections |
 | Monitor Neon Costs | Check snapshot storage weekly |
 
 ### Development Workflow
@@ -522,7 +556,7 @@ def generate_tests(function_code):
 
 ### GitHub Integration Issues
 
-**Problem:** Cannot push to GitHub  
+**Problem:** Cannot push to GitHub
 **Solution:**
 1. Verify GitHub connection in Account Settings
 2. Check repository permissions
@@ -531,7 +565,7 @@ def generate_tests(function_code):
 
 ### Deployment Failures
 
-**Problem:** Deployment errors  
+**Problem:** Deployment errors
 **Solution:**
 1. Check deployment logs for error messages
 2. Verify all environment variables are set
@@ -540,7 +574,7 @@ def generate_tests(function_code):
 
 ### Secret Access Issues
 
-**Problem:** Environment variable returns undefined  
+**Problem:** Environment variable returns undefined
 **Solution:**
 1. Verify secret key name matches exactly (case-sensitive)
 2. For account-level secrets, ensure they're linked to the app
@@ -549,7 +583,7 @@ def generate_tests(function_code):
 
 ### Database Connection Issues
 
-**Problem:** Cannot connect to Neon PostgreSQL  
+**Problem:** Cannot connect to Neon PostgreSQL
 **Solution:**
 1. Verify DATABASE_URL is set in Secrets
 2. Check Neon dashboard for connection limits
@@ -558,207 +592,7 @@ def generate_tests(function_code):
 
 ---
 
-## Appendix A: Environment Parity Validation
-
-### CI Validation Script
-
-This script verifies that Replit development environment and Docker production environment have matching package versions. Add this to your GitHub Actions workflow.
-
-**File: `.github/workflows/validate-env-parity.yml`**
-
-```yaml
-name: Validate Environment Parity
-
-on:
-  push:
-    paths:
-      - 'replit.nix'
-      - 'Dockerfile'
-      - '.github/workflows/validate-env-parity.yml'
-  pull_request:
-    paths:
-      - 'replit.nix'
-      - 'Dockerfile'
-
-jobs:
-  validate-parity:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Validate Environment Parity
-        run: |
-          chmod +x ./scripts/validate-env-parity.sh
-          ./scripts/validate-env-parity.sh
-```
-
-**File: `scripts/validate-env-parity.sh`**
-
-```bash
-#!/bin/bash
-# Environment Parity Validation Script
-# Ensures Replit (replit.nix) and Docker (Dockerfile) environments match
-
-set -e
-
-echo "=========================================="
-echo "Environment Parity Validation"
-echo "=========================================="
-
-# Define expected package mappings
-declare -A PARITY_MAP=(
-    ["nodejs_20"]="node:20"
-    ["postgresql_15"]="postgresql-client"
-    ["poppler_utils"]="poppler-utils"
-    ["ghostscript"]="ghostscript"
-    ["imagemagick"]="imagemagick"
-    ["openjdk17"]="openjdk-17"
-    ["pandoc"]="pandoc"
-)
-
-ERRORS=0
-WARNINGS=0
-
-# Check if required files exist
-if [ ! -f "replit.nix" ]; then
-    echo "❌ ERROR: replit.nix not found"
-    exit 1
-fi
-
-if [ ! -f "Dockerfile" ]; then
-    echo "❌ ERROR: Dockerfile not found"
-    exit 1
-fi
-
-echo ""
-echo "Checking package parity..."
-echo "------------------------------------------"
-
-for nix_pkg in "${!PARITY_MAP[@]}"; do
-    docker_pkg="${PARITY_MAP[$nix_pkg]}"
-
-    # Check if package exists in replit.nix
-    if grep -q "$nix_pkg" replit.nix; then
-        NIX_FOUND="✓"
-    else
-        NIX_FOUND="✗"
-    fi
-
-    # Check if package exists in Dockerfile
-    if grep -q "$docker_pkg" Dockerfile; then
-        DOCKER_FOUND="✓"
-    else
-        DOCKER_FOUND="✗"
-    fi
-
-    # Report status
-    if [ "$NIX_FOUND" = "✓" ] && [ "$DOCKER_FOUND" = "✓" ]; then
-        echo "✅ $nix_pkg ↔ $docker_pkg: MATCHED"
-    elif [ "$NIX_FOUND" = "✓" ] && [ "$DOCKER_FOUND" = "✗" ]; then
-        echo "❌ $nix_pkg found in replit.nix but $docker_pkg MISSING in Dockerfile"
-        ((ERRORS++))
-    elif [ "$NIX_FOUND" = "✗" ] && [ "$DOCKER_FOUND" = "✓" ]; then
-        echo "⚠️  $docker_pkg found in Dockerfile but $nix_pkg missing in replit.nix"
-        ((WARNINGS++))
-    else
-        echo "⚪ $nix_pkg / $docker_pkg: Not used in either environment"
-    fi
-done
-
-echo ""
-echo "------------------------------------------"
-
-# Check Node.js version consistency
-echo ""
-echo "Checking Node.js version consistency..."
-
-NIX_NODE_VERSION=$(grep -oP 'nodejs_\K[0-9]+' replit.nix 2>/dev/null | head -1 || echo "")
-DOCKER_NODE_VERSION=$(grep -oP 'node:\K[0-9]+' Dockerfile 2>/dev/null | head -1 || echo "")
-
-if [ -n "$NIX_NODE_VERSION" ] && [ -n "$DOCKER_NODE_VERSION" ]; then
-    if [ "$NIX_NODE_VERSION" = "$DOCKER_NODE_VERSION" ]; then
-        echo "✅ Node.js version: v$NIX_NODE_VERSION (matched)"
-    else
-        echo "❌ Node.js version mismatch: replit.nix=v$NIX_NODE_VERSION, Dockerfile=v$DOCKER_NODE_VERSION"
-        ((ERRORS++))
-    fi
-else
-    echo "⚠️  Could not determine Node.js versions"
-    ((WARNINGS++))
-fi
-
-# Check Java version consistency
-echo ""
-echo "Checking Java version consistency..."
-
-NIX_JAVA_VERSION=$(grep -oP 'openjdk\K[0-9]+' replit.nix 2>/dev/null | head -1 || echo "")
-DOCKER_JAVA_VERSION=$(grep -oP 'openjdk-\K[0-9]+' Dockerfile 2>/dev/null | head -1 || echo "")
-
-if [ -n "$NIX_JAVA_VERSION" ] && [ -n "$DOCKER_JAVA_VERSION" ]; then
-    if [ "$NIX_JAVA_VERSION" = "$DOCKER_JAVA_VERSION" ]; then
-        echo "✅ Java version: v$NIX_JAVA_VERSION (matched)"
-    else
-        echo "❌ Java version mismatch: replit.nix=v$NIX_JAVA_VERSION, Dockerfile=v$DOCKER_JAVA_VERSION"
-        ((ERRORS++))
-    fi
-else
-    echo "⚪ Java not configured in both environments"
-fi
-
-# Summary
-echo ""
-echo "=========================================="
-echo "SUMMARY"
-echo "=========================================="
-echo "Errors:   $ERRORS"
-echo "Warnings: $WARNINGS"
-echo ""
-
-if [ $ERRORS -gt 0 ]; then
-    echo "❌ VALIDATION FAILED"
-    echo "Please fix the environment parity issues above."
-    echo ""
-    echo "How to fix:"
-    echo "1. Add missing packages to the appropriate file"
-    echo "2. Ensure version numbers match between replit.nix and Dockerfile"
-    echo "3. Re-run this validation"
-    exit 1
-else
-    if [ $WARNINGS -gt 0 ]; then
-        echo "⚠️  VALIDATION PASSED WITH WARNINGS"
-        echo "Review warnings above to ensure they are intentional."
-    else
-        echo "✅ VALIDATION PASSED"
-        echo "Replit and Docker environments are in sync."
-    fi
-    exit 0
-fi
-```
-
-### Usage Instructions
-
-1. **Add the workflow file** to `.github/workflows/validate-env-parity.yml`
-2. **Add the script** to `scripts/validate-env-parity.sh`
-3. **Make script executable**: `chmod +x scripts/validate-env-parity.sh`
-4. **Commit both files** to your repository
-
-The validation will run automatically on any PR that modifies `replit.nix` or `Dockerfile`.
-
-### Extending the Parity Map
-
-To add new packages to the validation, update the `PARITY_MAP` in the script:
-
-```bash
-declare -A PARITY_MAP=(
-    # ... existing entries ...
-    ["your_nix_package"]="your-docker-package"
-)
-```
-
----
-
-## Appendix B: Ninja-Specific Configuration Files
+## Appendix A: Ninja-Specific Configuration Files
 
 ### replit.nix for Ninja Backend
 
@@ -786,39 +620,189 @@ declare -A PARITY_MAP=(
 }
 ```
 
-### .replit for Ninja Backend
+### replit.nix for Ninja Frontend
 
-```toml
-run = "npm run dev"
-entrypoint = "src/index.ts"
-modules = ["nodejs-20:v8-20230920-bd784b9"]
-hidden = [".config", "package-lock.json", ".git"]
+```nix
+{ pkgs }: {
+  deps = [
+    pkgs.nodejs_20
+    pkgs.nodePackages.npm
+    pkgs.nodePackages.typescript
+    pkgs.git
+  ];
+}
+```
 
-[nix]
-channel = "stable-23_11"
+### Environment Parity Validation Script
 
-[[ports]]
-localPort = 3000
-externalPort = 80
+Create `scripts/validate-env-parity.sh` to run in CI:
 
-[env]
-NODE_OPTIONS = "--max-old-space-size=4096"
+```bash
+#!/bin/bash
+# =============================================================================
+# Environment Parity Validation Script
+# Verifies replit.nix and Dockerfile specify matching tool versions
+# Run in CI: ./scripts/validate-env-parity.sh
+# =============================================================================
+
+set -e
+
+echo "🔍 Validating environment parity between Replit and Docker..."
+echo ""
+
+# Define expected versions
+declare -A EXPECTED_VERSIONS=(
+    ["node"]="20"
+    ["postgresql"]="15"
+    ["java"]="17"
+)
+
+# Track errors
+ERRORS=0
+
+# =============================================================================
+# Check replit.nix
+# =============================================================================
+echo "📦 Checking replit.nix..."
+
+if [ ! -f "replit.nix" ]; then
+    echo "❌ ERROR: replit.nix not found!"
+    ERRORS=$((ERRORS + 1))
+else
+    # Check Node.js version
+    if grep -q "nodejs_20" replit.nix; then
+        echo "  ✅ Node.js 20 specified in replit.nix"
+    else
+        echo "  ❌ ERROR: Node.js 20 not found in replit.nix"
+        ERRORS=$((ERRORS + 1))
+    fi
+
+    # Check PostgreSQL version
+    if grep -q "postgresql_15" replit.nix; then
+        echo "  ✅ PostgreSQL 15 client specified in replit.nix"
+    else
+        echo "  ⚠️  WARNING: PostgreSQL 15 not found in replit.nix (may not be needed)"
+    fi
+
+    # Check Java version (for EPUBCheck)
+    if grep -q "openjdk17" replit.nix; then
+        echo "  ✅ OpenJDK 17 specified in replit.nix"
+    else
+        echo "  ⚠️  WARNING: OpenJDK 17 not found in replit.nix (needed for EPUBCheck)"
+    fi
+
+    # Check poppler (for PDF processing)
+    if grep -q "poppler_utils" replit.nix; then
+        echo "  ✅ poppler-utils specified in replit.nix"
+    else
+        echo "  ❌ ERROR: poppler-utils not found in replit.nix (required for PDF)"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
+
+echo ""
+
+# =============================================================================
+# Check Dockerfile
+# =============================================================================
+echo "🐳 Checking Dockerfile..."
+
+if [ ! -f "Dockerfile" ]; then
+    echo "❌ ERROR: Dockerfile not found!"
+    ERRORS=$((ERRORS + 1))
+else
+    # Check Node.js base image
+    if grep -q "node:20" Dockerfile; then
+        echo "  ✅ Node.js 20 base image in Dockerfile"
+    else
+        echo "  ❌ ERROR: Node.js 20 base image not found in Dockerfile"
+        ERRORS=$((ERRORS + 1))
+    fi
+
+    # Check poppler installation
+    if grep -q "poppler-utils" Dockerfile; then
+        echo "  ✅ poppler-utils installed in Dockerfile"
+    else
+        echo "  ❌ ERROR: poppler-utils not installed in Dockerfile"
+        ERRORS=$((ERRORS + 1))
+    fi
+
+    # Check Java installation (for EPUBCheck)
+    if grep -q "openjdk-17" Dockerfile || grep -q "java.*17" Dockerfile; then
+        echo "  ✅ OpenJDK 17 installed in Dockerfile"
+    else
+        echo "  ⚠️  WARNING: OpenJDK 17 not found in Dockerfile (needed for EPUBCheck)"
+    fi
+fi
+
+echo ""
+
+# =============================================================================
+# Summary
+# =============================================================================
+echo "=============================================="
+if [ $ERRORS -eq 0 ]; then
+    echo "✅ Environment parity validation PASSED"
+    echo "   Replit and Docker environments are in sync."
+    exit 0
+else
+    echo "❌ Environment parity validation FAILED"
+    echo "   Found $ERRORS error(s). Please fix before merging."
+    exit 1
+fi
+```
+
+### GitHub Actions CI Integration
+
+Add to `.github/workflows/ci.yml`:
+
+```yaml
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-environment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Environment Parity
+        run: |
+          chmod +x scripts/validate-env-parity.sh
+          ./scripts/validate-env-parity.sh
+
+  test:
+    needs: validate-environment
+    runs-on: ubuntu-latest
+    # ... rest of test job
 ```
 
 ---
 
-## Appendix C: Resources
+## Appendix B: Resources
 
 ### Official Documentation
 - [Replit Docs](https://docs.replit.com)
 - [Replit Teams Guide](https://docs.replit.com/category/teams)
+- [Replit Projects](https://docs.replit.com/teams/projects/overview)
 - [Secrets Documentation](https://docs.replit.com/replit-workspace/workspace-features/secrets)
 
 ### AI Integration
 - [Anthropic API Documentation](https://docs.anthropic.com)
+- [Claude Code Documentation](https://docs.anthropic.com/claude-code)
 - [Replit Agent Guide](https://docs.replit.com/replitai/agents-and-automations)
+
+### Secrets Management
+- [Bitwarden Organizations](https://bitwarden.com/help/about-organizations/)
+- [Bitwarden Teams Guide](https://bitwarden.com/help/teams-enterprise-migration-guide/)
 
 ---
 
-*Version: 2.1 | Last Updated: December 2025*  
+*Version: 2.0 | Last Updated: December 2025*
 *Document synthesized from: Replit Teams Guide, Ninja Replit Development Guide, Cloud-Native Software Delivery patterns*
+
