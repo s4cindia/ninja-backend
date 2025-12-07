@@ -1,0 +1,259 @@
+## Context
+We have basic error handling, but need a more robust system with custom error classes, proper HTTP status codes, and consistent error response formatting.
+
+## Current State
+- Basic error handler middleware exists
+- AppError utility created
+- Need comprehensive error handling for all scenarios
+
+## Objective
+Implement comprehensive error handling with custom error classes, Prisma error handling, and consistent API error responses.
+
+## Technical Requirements
+
+**Update `src/utils/app-error.ts`:**
+```typescript
+export class AppError extends Error {
+  public statusCode: number;
+  public isOperational: boolean;
+  public code?: string;
+
+  constructor(message: string, statusCode: number, code?: string) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = true;
+    this.code = code;
+
+    Error.captureStackTrace(this, this.constructor);
+  }
+
+  static badRequest(message: string, code?: string): AppError {
+    return new AppError(message, 400, code || 'BAD_REQUEST');
+  }
+
+  static unauthorized(message: string = 'Unauthorized', code?: string): AppError {
+    return new AppError(message, 401, code || 'UNAUTHORIZED');
+  }
+
+  static forbidden(message: string = 'Forbidden', code?: string): AppError {
+    return new AppError(message, 403, code || 'FORBIDDEN');
+  }
+
+  static notFound(message: string = 'Resource not found', code?: string): AppError {
+    return new AppError(message, 404, code || 'NOT_FOUND');
+  }
+
+  static conflict(message: string, code?: string): AppError {
+    return new AppError(message, 409, code || 'CONFLICT');
+  }
+
+  static unprocessable(message: string, code?: string): AppError {
+    return new AppError(message, 422, code || 'UNPROCESSABLE_ENTITY');
+  }
+
+  static internal(message: string = 'Internal server error', code?: string): AppError {
+    return new AppError(message, 500, code || 'INTERNAL_ERROR');
+  }
+
+  static serviceUnavailable(message: string = 'Service unavailable', code?: string): AppError {
+    return new AppError(message, 503, code || 'SERVICE_UNAVAILABLE');
+  }
+}
+```
+
+**Create `src/utils/error-codes.ts`:**
+```typescript
+export const ErrorCodes = {
+  // Authentication errors
+  AUTH_INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
+  AUTH_TOKEN_EXPIRED: 'AUTH_TOKEN_EXPIRED',
+  AUTH_TOKEN_INVALID: 'AUTH_TOKEN_INVALID',
+  AUTH_NO_TOKEN: 'AUTH_NO_TOKEN',
+  AUTH_USER_DEACTIVATED: 'AUTH_USER_DEACTIVATED',
+  
+  // Authorization errors
+  AUTH_INSUFFICIENT_PERMISSIONS: 'AUTH_INSUFFICIENT_PERMISSIONS',
+  
+  // User errors
+  USER_NOT_FOUND: 'USER_NOT_FOUND',
+  USER_EMAIL_EXISTS: 'USER_EMAIL_EXISTS',
+  
+  // Tenant errors
+  TENANT_NOT_FOUND: 'TENANT_NOT_FOUND',
+  TENANT_SLUG_EXISTS: 'TENANT_SLUG_EXISTS',
+  
+  // Product errors
+  PRODUCT_NOT_FOUND: 'PRODUCT_NOT_FOUND',
+  
+  // Job errors
+  JOB_NOT_FOUND: 'JOB_NOT_FOUND',
+  JOB_ALREADY_COMPLETED: 'JOB_ALREADY_COMPLETED',
+  JOB_CANNOT_CANCEL: 'JOB_CANNOT_CANCEL',
+  
+  // File errors
+  FILE_NOT_FOUND: 'FILE_NOT_FOUND',
+  FILE_TOO_LARGE: 'FILE_TOO_LARGE',
+  FILE_INVALID_TYPE: 'FILE_INVALID_TYPE',
+  FILE_UPLOAD_FAILED: 'FILE_UPLOAD_FAILED',
+  
+  // Validation errors
+  VALIDATION_ERROR: 'VALIDATION_ERROR',
+  
+  // Database errors
+  DB_CONNECTION_ERROR: 'DB_CONNECTION_ERROR',
+  DB_QUERY_ERROR: 'DB_QUERY_ERROR',
+  DB_UNIQUE_CONSTRAINT: 'DB_UNIQUE_CONSTRAINT',
+  DB_FOREIGN_KEY_CONSTRAINT: 'DB_FOREIGN_KEY_CONSTRAINT',
+  
+  // General errors
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
+  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
+} as const;
+
+export type ErrorCode = typeof ErrorCodes[keyof typeof ErrorCodes];
+```
+
+**Update `src/middleware/error-handler.middleware.ts`:**
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { Prisma } from '@prisma/client';
+import { ZodError } from 'zod';
+import { AppError } from '../utils/app-error.js';
+import { ErrorCodes } from '../utils/error-codes.js';
+import { config } from '../config/index.js';
+
+interface ErrorResponse {
+  success: false;
+  error: {
+    message: string;
+    code?: string;
+    details?: unknown;
+    stack?: string;
+  };
+}
+
+const handlePrismaError = (error: Prisma.PrismaClientKnownRequestError): AppError => {
+  switch (error.code) {
+    case 'P2002': {
+      const target = (error.meta?.target as string[])?.join(', ') || 'field';
+      return AppError.conflict(
+        `A record with this ${target} already exists`,
+        ErrorCodes.DB_UNIQUE_CONSTRAINT
+      );
+    }
+    case 'P2003':
+      return AppError.badRequest(
+        'Referenced record not found',
+        ErrorCodes.DB_FOREIGN_KEY_CONSTRAINT
+      );
+    case 'P2025':
+      return AppError.notFound(
+        'Record not found',
+        ErrorCodes.DB_QUERY_ERROR
+      );
+    default:
+      return AppError.internal(
+        'Database error occurred',
+        ErrorCodes.DB_QUERY_ERROR
+      );
+  }
+};
+
+const handleZodError = (error: ZodError): AppError => {
+  const details = error.errors.map((err) => ({
+    field: err.path.join('.'),
+    message: err.message,
+  }));
+  
+  const appError = AppError.badRequest(
+    'Validation failed',
+    ErrorCodes.VALIDATION_ERROR
+  );
+  (appError as any).details = details;
+  return appError;
+};
+
+export const errorHandler = (
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err);
+
+  let error: AppError;
+
+  if (err instanceof AppError) {
+    error = err;
+  } else if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    error = handlePrismaError(err);
+  } else if (err instanceof Prisma.PrismaClientValidationError) {
+    error = AppError.badRequest('Invalid data provided', ErrorCodes.VALIDATION_ERROR);
+  } else if (err instanceof ZodError) {
+    error = handleZodError(err);
+  } else if (err.name === 'JsonWebTokenError') {
+    error = AppError.unauthorized('Invalid token', ErrorCodes.AUTH_TOKEN_INVALID);
+  } else if (err.name === 'TokenExpiredError') {
+    error = AppError.unauthorized('Token expired', ErrorCodes.AUTH_TOKEN_EXPIRED);
+  } else {
+    error = AppError.internal(
+      config.nodeEnv === 'production' ? 'An unexpected error occurred' : err.message,
+      ErrorCodes.INTERNAL_ERROR
+    );
+  }
+
+  const response: ErrorResponse = {
+    success: false,
+    error: {
+      message: error.message,
+      code: error.code,
+      ...((error as any).details && { details: (error as any).details }),
+      ...(config.nodeEnv === 'development' && { stack: err.stack }),
+    },
+  };
+
+  res.status(error.statusCode).json(response);
+};
+```
+
+**Create `src/middleware/async-handler.middleware.ts`:**
+```typescript
+import { Request, Response, NextFunction, RequestHandler } from 'express';
+
+type AsyncRequestHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => Promise<any>;
+
+export const asyncHandler = (fn: AsyncRequestHandler): RequestHandler => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+};
+```
+
+**Update auth service to use AppError (update `src/services/auth.service.ts`):**
+
+Update the error throws to use AppError:
+- Replace `throw new Error('Email already registered')` with `throw AppError.conflict('Email already registered', ErrorCodes.USER_EMAIL_EXISTS)`
+- Replace `throw new Error('Invalid credentials')` with `throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS)`
+- Replace `throw new Error('User not found')` with `throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND)`
+- Replace `throw new Error('Invalid refresh token')` with `throw AppError.unauthorized('Invalid refresh token', ErrorCodes.AUTH_TOKEN_INVALID)`
+
+## Tasks
+1. Update src/utils/app-error.ts with static factory methods
+2. Create src/utils/error-codes.ts with all error codes
+3. Update src/middleware/error-handler.middleware.ts with Prisma and Zod error handling
+4. Create src/middleware/async-handler.middleware.ts
+5. Update auth.service.ts to use AppError with error codes
+6. Test error responses are consistent
+
+## Acceptance Criteria
+- [ ] AppError has static factory methods for common errors
+- [ ] Error codes are centralized and documented
+- [ ] Prisma errors are converted to proper HTTP responses
+- [ ] Zod validation errors include field details
+- [ ] All error responses follow same format: { success: false, error: { message, code, details? } }
+- [ ] Stack traces only shown in development

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
 import { config } from '../config';
 import { AppError } from '../utils/app-error';
+import { ErrorCodes } from '../utils/error-codes';
 
 interface RegisterInput {
   email: string;
@@ -43,7 +44,7 @@ export class AuthService {
     });
 
     if (existingUser) {
-      throw new AppError('Email already registered', 400);
+      throw AppError.conflict('Email already registered', ErrorCodes.USER_EMAIL_EXISTS);
     }
 
     const hashedPassword = await bcrypt.hash(input.password, 12);
@@ -84,13 +85,13 @@ export class AuthService {
     });
 
     if (!user || user.deletedAt) {
-      throw new AppError('Invalid credentials', 401);
+      throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS);
     }
 
     const isValidPassword = await bcrypt.compare(input.password, user.password);
 
     if (!isValidPassword) {
-      throw new AppError('Invalid credentials', 401);
+      throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS);
     }
 
     const tokens = this.generateTokens({
@@ -122,7 +123,7 @@ export class AuthService {
       });
 
       if (!user || user.deletedAt) {
-        throw new AppError('User not found', 401);
+        throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
       }
 
       return this.generateTokens({
@@ -135,7 +136,7 @@ export class AuthService {
       if (error instanceof AppError) {
         throw error;
       }
-      throw new AppError('Invalid refresh token', 401);
+      throw AppError.unauthorized('Invalid refresh token', ErrorCodes.AUTH_TOKEN_INVALID);
     }
   }
 
@@ -162,7 +163,7 @@ export class AuthService {
     });
 
     if (!user) {
-      throw new AppError('User not found', 404);
+      throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
     }
 
     return user;
