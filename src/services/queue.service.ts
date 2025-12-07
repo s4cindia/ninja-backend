@@ -32,12 +32,17 @@ export class QueueService {
       throw AppError.serviceUnavailable('Queue service not available - Redis not configured');
     }
 
+    const inputData: Record<string, unknown> = { ...(options ?? {}) };
+    if (fileId) {
+      inputData.fileId = fileId;
+    }
+
     const dbJob = await prisma.job.create({
       data: {
         type,
         status: 'QUEUED',
         priority,
-        input: (options || {}) as Prisma.InputJsonValue,
+        input: inputData as Prisma.InputJsonValue,
         tenantId,
         userId,
         productId,
@@ -131,7 +136,23 @@ export class QueueService {
 
     if (areQueuesAvailable()) {
       try {
-        const queueJob = await getAccessibilityQueue().getJob(jobId);
+        let queueJob = null;
+        
+        switch (job.type) {
+          case JOB_TYPES.PDF_ACCESSIBILITY:
+          case JOB_TYPES.EPUB_ACCESSIBILITY:
+          case JOB_TYPES.BATCH_VALIDATION:
+            queueJob = await getAccessibilityQueue().getJob(jobId);
+            break;
+          case JOB_TYPES.VPAT_GENERATION:
+            queueJob = await getVpatQueue().getJob(jobId);
+            break;
+          case JOB_TYPES.ALT_TEXT_GENERATION:
+          case JOB_TYPES.METADATA_EXTRACTION:
+            queueJob = await getFileProcessingQueue().getJob(jobId);
+            break;
+        }
+        
         if (queueJob) {
           await queueJob.remove();
         }

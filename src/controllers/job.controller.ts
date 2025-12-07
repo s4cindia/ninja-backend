@@ -48,8 +48,13 @@ export class JobController {
         type 
       } = req.query;
 
-      const pageNum = parseInt(page as string, 10);
-      const limitNum = parseInt(limit as string, 10);
+      let pageNum = parseInt(page as string, 10);
+      let limitNum = parseInt(limit as string, 10);
+      
+      if (isNaN(pageNum) || pageNum < 1) pageNum = 1;
+      if (isNaN(limitNum) || limitNum < 1) limitNum = 20;
+      if (limitNum > 100) limitNum = 100;
+      
       const skip = (pageNum - 1) * limitNum;
 
       const where: Record<string, unknown> = {
@@ -76,9 +81,12 @@ export class JobController {
             status: true,
             progress: true,
             priority: true,
+            input: true,
             createdAt: true,
             startedAt: true,
             completedAt: true,
+            productId: true,
+            userId: true,
             product: {
               select: {
                 id: true,
