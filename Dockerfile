@@ -5,8 +5,18 @@ RUN npm ci --only=production
 
 FROM node:20-alpine
 WORKDIR /app
-RUN apk add --no-cache curl && \
-    addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+
+# Install system dependencies (must match replit.nix)
+RUN apk add --no-cache \
+    curl \
+    pandoc \
+    poppler-utils \
+    ghostscript \
+    imagemagick \
+    openjdk17-jre-headless \
+    git \
+    jq \
+    && addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 COPY --from=builder /app/node_modules ./node_modules
 COPY --chown=nodejs:nodejs . .
 USER nodejs
