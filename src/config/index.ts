@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import packageJson from '../../package.json';
 
 interface Config {
