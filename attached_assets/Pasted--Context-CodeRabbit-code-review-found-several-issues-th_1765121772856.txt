@@ -1,0 +1,297 @@
+## Context
+CodeRabbit code review found several issues that need to be fixed. Address all of them in this update.
+
+## Issues to Fix
+
+### 1. Update `.env.example` with all required variables:
+```env
+# Server Configuration
+NODE_ENV=development
+PORT=5000
+
+# Database Configuration
+DATABASE_URL=postgresql://user:password@localhost:5432/ninja
+
+# JWT Configuration
+JWT_SECRET=your-jwt-secret-here-min-32-chars
+JWT_REFRESH_SECRET=your-refresh-secret-here-min-32-chars
+JWT_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=7d
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379
+# Or use individual settings:
+# REDIS_HOST=localhost
+# REDIS_PORT=6379
+
+# File Upload Configuration
+UPLOAD_DIR=./data/uploads
+MAX_FILE_SIZE=104857600
+
+# CORS Configuration
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# API Keys (when needed)
+# GEMINI_API_KEY=your-gemini-api-key
+```
+
+### 2. Fix `src/queues/index.ts` - Add missing fileProcessingQueueEvents:
+
+Add this after vpatQueueEvents definition:
+```typescript
+export const fileProcessingQueueEvents = new QueueEvents(QUEUE_NAMES.FILE_PROCESSING, {
+  connection,
+});
+```
+
+Update closeQueues() to include it:
+```typescript
+export async function closeQueues(): Promise<void> {
+  await Promise.all([
+    accessibilityQueue.close(),
+    vpatQueue.close(),
+    fileProcessingQueue.close(),
+    accessibilityQueueEvents.close(),
+    vpatQueueEvents.close(),
+    fileProcessingQueueEvents.close(),
+  ]);
+}
+```
+
+### 3. Fix `src/services/queue.service.ts` - Route cancelJob by job type:
+
+Add a helper function and update cancelJob:
+```typescript
+import { 
+  accessibilityQueue, 
+  vpatQueue, 
+  fileProcessingQueue,
+  JobData, 
+  JobResult,
+  JOB_TYPES,
+  JobType,
+  Queue,
+} from '../queues/index.js';
+
+// Add this helper function
+function getQueueForJobType(type: string): Queue<JobData, JobResult> {
+  switch (type) {
+    case JOB_TYPES.PDF_ACCESSIBILITY:
+    case JOB_TYPES.EPUB_ACCESSIBILITY:
+    case JOB_TYPES.BATCH_VALIDATION:
+      return accessibilityQueue;
+    case JOB_TYPES.VPAT_GENERATION:
+      return vpatQueue;
+    case JOB_TYPES.ALT_TEXT_GENERATION:
+    case JOB_TYPES.METADATA_EXTRACTION:
+      return fileProcessingQueue;
+    default:
+      return accessibilityQueue; // fallback
+  }
+}
+
+// Update cancelJob method to use the helper:
+async cancelJob(jobId: string, tenantId: string): Promise<void> {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, tenantId },
+  });
+
+  if (!job) {
+    throw AppError.notFound('Job not found', ErrorCodes.JOB_NOT_FOUND);
+  }
+
+  if (job.status === 'COMPLETED' || job.status === 'FAILED') {
+    throw AppError.badRequest('Cannot cancel completed or failed job', ErrorCodes.JOB_CANNOT_CANCEL);
+  }
+
+  // Update database
+  await prisma.job.update({
+    where: { id: jobId },
+    data: { status: 'CANCELLED' },
+  });
+
+  // Try to remove from appropriate queue based on job type
+  try {
+    const queue = getQueueForJobType(job.type);
+    const queueJob = await queue.getJob(jobId);
+    if (queueJob) {
+      await queueJob.remove();
+    }
+  } catch (err) {
+    console.error('Failed to remove job from queue:', err);
+  }
+}
+```
+
+### 4. Fix `src/services/queue.service.ts` - Handle race condition and fix typing:
+
+Update createJob to handle queue failures:
+```typescript
+async createJob(input: CreateJobInput): Promise<string> {
+  const { type, tenantId, userId, fileId, productId, priority = 0, options } = input;
+
+  // Create job record in database
+  const dbJob = await prisma.job.create({
+    data: {
+      type,
+      status: 'QUEUED',
+      priority,
+      input: { ...options, fileId } as Prisma.InputJsonValue,
+      tenantId,
+      userId,
+      productId,
+    },
+  });
+
+  // Prepare job data
+  const jobData: JobData = {
+    type,
+    tenantId,
+    userId,
+    fileId,
+    productId,
+    options,
+  };
+
+  try {
+    // Add to appropriate queue
+    const queue = getQueueForJobType(type);
+    await queue.add(type, jobData, {
+      jobId: dbJob.id,
+      priority,
+    });
+
+    console.log(`📋 Job ${dbJob.id} added to queue: ${type}`);
+    return dbJob.id;
+  } catch (queueError) {
+    // Clean up orphaned DB record if queue add fails
+    await prisma.job.update({
+      where: { id: dbJob.id },
+      data: { status: 'FAILED', error: 'Failed to enqueue job' },
+    });
+    throw queueError;
+  }
+}
+```
+
+Update updateJobStatus with proper typing (remove `any`):
+```typescript
+interface JobUpdateData {
+  status: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  output?: Record<string, unknown>;
+  error?: string;
+}
+
+async updateJobStatus(
+  jobId: string, 
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED',
+  data?: { output?: Record<string, unknown>; error?: string }
+): Promise<void> {
+  const updateData: JobUpdateData = { status };
+
+  if (status === 'PROCESSING') {
+    updateData.startedAt = new Date();
+  } else if (status === 'COMPLETED' || status === 'FAILED') {
+    updateData.completedAt = new Date();
+  }
+
+  if (data?.output) {
+    updateData.output = data.output;
+  }
+
+  if (data?.error) {
+    updateData.error = data.error;
+  }
+
+  await prisma.job.update({
+    where: { id: jobId },
+    data: updateData,
+  });
+}
+```
+
+### 5. Fix `src/services/file.service.ts` - Use async fs operations:
+
+Update the import and deleteFile method:
+```typescript
+import fs from 'fs/promises';
+
+async deleteFile(id: string, tenantId: string) {
+  const file = await this.getFile(id, tenantId);
+
+  // Delete physical file asynchronously
+  try {
+    await fs.unlink(file.path);
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') {
+      console.error(`Failed to delete physical file: ${file.path}`, err);
+    }
+  }
+
+  // Soft delete in database
+  await prisma.file.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+  });
+
+  return { message: 'File deleted successfully' };
+}
+```
+
+### 6. Fix `src/schemas/file.schemas.ts` - Use z.coerce pattern:
+```typescript
+import { z } from 'zod';
+
+export const listFilesSchema = z.object({
+  query: z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    status: z.enum(['UPLOADED', 'PROCESSING', 'PROCESSED', 'ERROR']).optional(),
+    mimeType: z.string().optional(),
+    sortBy: z.enum(['createdAt', 'size', 'originalName']).default('createdAt'),
+    sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  }),
+});
+
+export const fileIdParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid file ID'),
+  }),
+});
+
+export type ListFilesQuery = z.infer<typeof listFilesSchema>['query'];
+```
+
+### 7. Fix `package.json` - Move @types/* to devDependencies:
+
+Move these from dependencies to devDependencies:
+- @types/bcryptjs
+- @types/compression
+- @types/ioredis
+- @types/jsonwebtoken
+- @types/multer
+- @types/uuid
+
+### 8. Fix `src/services/index.ts` - Add proper exports:
+```typescript
+export { authService } from './auth.service.js';
+export { fileService } from './file.service.js';
+export { queueService } from './queue.service.js';
+```
+
+## Tasks
+1. Update .env.example with all required variables
+2. Fix src/queues/index.ts - add fileProcessingQueueEvents and update closeQueues
+3. Fix src/services/queue.service.ts - add getQueueForJobType helper, fix cancelJob, fix createJob race condition, fix updateJobStatus typing
+4. Fix src/services/file.service.ts - use async fs/promises
+5. Fix src/schemas/file.schemas.ts - use z.coerce pattern
+6. Fix package.json - move @types/* to devDependencies
+7. Fix src/services/index.ts - add service exports
+8. Verify server starts without errors
+
+## Acceptance Criteria
+- [ ] All CodeRabbit issues addressed
+- [ ] Server starts without errors
+- [ ] No TypeScript compilation errors

@@ -1,4 +1,4 @@
-import fs from 'fs';
+import fs from 'fs/promises';
 import path from 'path';
 import prisma from '../lib/prisma';
 import { FileStatus } from '@prisma/client';
@@ -66,8 +66,13 @@ class FileService {
   async deleteFile(id: string, tenantId: string) {
     const file = await this.getFileById(id, tenantId);
 
-    if (fs.existsSync(file.path)) {
-      fs.unlinkSync(file.path);
+    try {
+      await fs.unlink(file.path);
+    } catch (err: unknown) {
+      const fsError = err as NodeJS.ErrnoException;
+      if (fsError.code !== 'ENOENT') {
+        console.error(`Failed to delete physical file: ${file.path}`, err);
+      }
     }
 
     await prisma.file.update({
@@ -90,7 +95,7 @@ class FileService {
       where: { id, tenantId },
       data: {
         status,
-        ...(metadata && { metadata: metadata as any }),
+        ...(metadata && { metadata: metadata as object }),
       },
     });
 
@@ -112,7 +117,7 @@ class FileService {
     await prisma.file.updateMany({
       where: { id, tenantId },
       data: {
-        metadata: { ...existingMetadata, ...metadata } as any,
+        metadata: { ...existingMetadata, ...metadata } as object,
       },
     });
 

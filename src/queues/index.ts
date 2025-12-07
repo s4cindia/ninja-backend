@@ -56,6 +56,7 @@ let _vpatQueue: Queue<JobData, JobResult> | null = null;
 let _fileProcessingQueue: Queue<JobData, JobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
+let _fileProcessingQueueEvents: QueueEvents | null = null;
 let _initialized = false;
 
 function ensureQueuesInitialized(): void {
@@ -88,6 +89,10 @@ function ensureQueuesInitialized(): void {
   });
 
   _vpatQueueEvents = new QueueEvents(QUEUE_NAMES.VPAT, {
+    connection,
+  });
+
+  _fileProcessingQueueEvents = new QueueEvents(QUEUE_NAMES.FILE_PROCESSING, {
     connection,
   });
 
@@ -146,6 +151,7 @@ export async function closeQueues(): Promise<void> {
   if (_fileProcessingQueue) closePromises.push(_fileProcessingQueue.close());
   if (_accessibilityQueueEvents) closePromises.push(_accessibilityQueueEvents.close());
   if (_vpatQueueEvents) closePromises.push(_vpatQueueEvents.close());
+  if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
 
   await Promise.all(closePromises);
   
@@ -154,5 +160,6 @@ export async function closeQueues(): Promise<void> {
   _fileProcessingQueue = null;
   _accessibilityQueueEvents = null;
   _vpatQueueEvents = null;
+  _fileProcessingQueueEvents = null;
   _initialized = false;
 }
