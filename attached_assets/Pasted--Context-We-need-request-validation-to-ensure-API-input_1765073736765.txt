@@ -1,0 +1,304 @@
+## Context
+We need request validation to ensure API inputs are properly validated before processing. Zod provides type-safe schema validation.
+
+## Current State
+- Zod is already installed
+- Error handler already processes ZodError
+- Auth endpoints need validation
+
+## Objective
+Create Zod schemas for request validation and a validation middleware.
+
+## Technical Requirements
+
+**Create `src/middleware/validate.middleware.ts`:**
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { AnyZodObject, ZodError } from 'zod';
+
+export const validate = (schema: AnyZodObject) => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await schema.parseAsync({
+        body: req.body,
+        query: req.query,
+        params: req.params,
+      });
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'Validation failed',
+            code: 'VALIDATION_ERROR',
+            details: error.errors.map((err) => ({
+              field: err.path.join('.'),
+              message: err.message,
+            })),
+          },
+        });
+        return;
+      }
+      next(error);
+    }
+  };
+};
+```
+
+**Create `src/schemas/auth.schemas.ts`:**
+```typescript
+import { z } from 'zod';
+
+export const registerSchema = z.object({
+  body: z.object({
+    email: z
+      .string({ required_error: 'Email is required' })
+      .email('Invalid email format')
+      .toLowerCase()
+      .trim(),
+    password: z
+      .string({ required_error: 'Password is required' })
+      .min(8, 'Password must be at least 8 characters')
+      .regex(
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/,
+        'Password must contain at least one uppercase letter, one lowercase letter, and one number'
+      ),
+    firstName: z
+      .string({ required_error: 'First name is required' })
+      .min(1, 'First name is required')
+      .max(50, 'First name must be less than 50 characters')
+      .trim(),
+    lastName: z
+      .string({ required_error: 'Last name is required' })
+      .min(1, 'Last name is required')
+      .max(50, 'Last name must be less than 50 characters')
+      .trim(),
+    tenantId: z
+      .string({ required_error: 'Tenant ID is required' })
+      .uuid('Invalid tenant ID format'),
+  }),
+});
+
+export const loginSchema = z.object({
+  body: z.object({
+    email: z
+      .string({ required_error: 'Email is required' })
+      .email('Invalid email format')
+      .toLowerCase()
+      .trim(),
+    password: z
+      .string({ required_error: 'Password is required' })
+      .min(1, 'Password is required'),
+  }),
+});
+
+export const refreshTokenSchema = z.object({
+  body: z.object({
+    refreshToken: z
+      .string({ required_error: 'Refresh token is required' })
+      .min(1, 'Refresh token is required'),
+  }),
+});
+
+export type RegisterInput = z.infer<typeof registerSchema>['body'];
+export type LoginInput = z.infer<typeof loginSchema>['body'];
+export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>['body'];
+```
+
+**Create `src/schemas/common.schemas.ts`:**
+```typescript
+import { z } from 'zod';
+
+export const uuidParamSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid ID format'),
+  }),
+});
+
+export const paginationSchema = z.object({
+  query: z.object({
+    page: z
+      .string()
+      .optional()
+      .transform((val) => (val ? parseInt(val, 10) : 1))
+      .pipe(z.number().min(1, 'Page must be at least 1')),
+    limit: z
+      .string()
+      .optional()
+      .transform((val) => (val ? parseInt(val, 10) : 20))
+      .pipe(z.number().min(1).max(100, 'Limit must be between 1 and 100')),
+    sortBy: z.string().optional(),
+    sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
+  }),
+});
+
+export type UuidParam = z.infer<typeof uuidParamSchema>['params'];
+export type PaginationQuery = z.infer<typeof paginationSchema>['query'];
+```
+
+**Create `src/schemas/product.schemas.ts`:**
+```typescript
+import { z } from 'zod';
+
+export const createProductSchema = z.object({
+  body: z.object({
+    title: z
+      .string({ required_error: 'Title is required' })
+      .min(1, 'Title is required')
+      .max(255, 'Title must be less than 255 characters')
+      .trim(),
+    isbn: z
+      .string()
+      .regex(/^(?:\d{10}|\d{13})$/, 'ISBN must be 10 or 13 digits')
+      .optional()
+      .nullable(),
+    format: z.enum(['PDF', 'EPUB'], {
+      required_error: 'Format is required',
+      invalid_type_error: 'Format must be PDF or EPUB',
+    }),
+  }),
+});
+
+export const updateProductSchema = z.object({
+  params: z.object({
+    id: z.string().uuid('Invalid product ID'),
+  }),
+  body: z.object({
+    title: z
+      .string()
+      .min(1, 'Title cannot be empty')
+      .max(255, 'Title must be less than 255 characters')
+      .trim()
+      .optional(),
+    isbn: z
+      .string()
+      .regex(/^(?:\d{10}|\d{13})$/, 'ISBN must be 10 or 13 digits')
+      .optional()
+      .nullable(),
+    status: z.enum(['COMPLIANT', 'NEEDS_ATTENTION', 'NON_COMPLIANT', 'NOT_ASSESSED']).optional(),
+  }),
+});
+
+export type CreateProductInput = z.infer<typeof createProductSchema>['body'];
+export type UpdateProductInput = z.infer<typeof updateProductSchema>['body'];
+```
+
+**Create `src/schemas/job.schemas.ts`:**
+```typescript
+import { z } from 'zod';
+
+export const createJobSchema = z.object({
+  body: z.object({
+    type: z.enum([
+      'PDF_ACCESSIBILITY',
+      'EPUB_ACCESSIBILITY',
+      'VPAT_GENERATION',
+      'ALT_TEXT_GENERATION',
+      'METADATA_EXTRACTION',
+      'BATCH_VALIDATION',
+    ], {
+      required_error: 'Job type is required',
+      invalid_type_error: 'Invalid job type',
+    }),
+    productId: z
+      .string()
+      .uuid('Invalid product ID')
+      .optional(),
+    fileId: z
+      .string()
+      .uuid('Invalid file ID')
+      .optional(),
+    priority: z
+      .number()
+      .int()
+      .min(0)
+      .max(10)
+      .optional()
+      .default(0),
+    options: z
+      .record(z.unknown())
+      .optional()
+      .default({}),
+  }),
+});
+
+export const listJobsSchema = z.object({
+  query: z.object({
+    page: z.string().optional().transform((val) => val ? parseInt(val, 10) : 1),
+    limit: z.string().optional().transform((val) => val ? parseInt(val, 10) : 20),
+    status: z.enum(['QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED']).optional(),
+    type: z.enum([
+      'PDF_ACCESSIBILITY',
+      'EPUB_ACCESSIBILITY',
+      'VPAT_GENERATION',
+      'ALT_TEXT_GENERATION',
+      'METADATA_EXTRACTION',
+      'BATCH_VALIDATION',
+    ]).optional(),
+  }),
+});
+
+export type CreateJobInput = z.infer<typeof createJobSchema>['body'];
+export type ListJobsQuery = z.infer<typeof listJobsSchema>['query'];
+```
+
+**Create `src/schemas/index.ts`:**
+```typescript
+export * from './auth.schemas.js';
+export * from './common.schemas.js';
+export * from './product.schemas.js';
+export * from './job.schemas.js';
+```
+
+**Update `src/routes/auth.routes.ts` to use validation:**
+```typescript
+import { Router } from 'express';
+import { authController } from '../controllers/auth.controller.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { validate } from '../middleware/validate.middleware.js';
+import { registerSchema, loginSchema, refreshTokenSchema } from '../schemas/auth.schemas.js';
+
+const router = Router();
+
+// POST /api/v1/auth/register - Register new user
+router.post('/register', validate(registerSchema), (req, res, next) => 
+  authController.register(req, res, next)
+);
+
+// POST /api/v1/auth/login - Login user
+router.post('/login', validate(loginSchema), (req, res, next) => 
+  authController.login(req, res, next)
+);
+
+// POST /api/v1/auth/logout - Logout user
+router.post('/logout', (req, res) => authController.logout(req, res));
+
+// POST /api/v1/auth/refresh - Refresh token
+router.post('/refresh', validate(refreshTokenSchema), (req, res, next) => 
+  authController.refresh(req, res, next)
+);
+
+// GET /api/v1/auth/me - Get current user (protected)
+router.get('/me', authenticate, (req, res, next) => authController.me(req, res, next));
+
+export default router;
+```
+
+## Tasks
+1. Create src/middleware/validate.middleware.ts
+2. Create src/schemas/auth.schemas.ts with register, login, refresh schemas
+3. Create src/schemas/common.schemas.ts with UUID and pagination schemas
+4. Create src/schemas/product.schemas.ts
+5. Create src/schemas/job.schemas.ts
+6. Create src/schemas/index.ts to export all schemas
+7. Update auth.routes.ts to use validation middleware
+8. Test validation errors return proper format
+
+## Acceptance Criteria
+- [ ] Validation middleware created and working
+- [ ] Auth schemas validate email, password requirements
+- [ ] Invalid requests return 400 with field-specific errors
+- [ ] Validation errors include field path and message
+- [ ] Common schemas available for reuse (UUID, pagination)
+- [ ] Product and Job schemas ready for implementation

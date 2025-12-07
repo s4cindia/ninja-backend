@@ -1,6 +1,6 @@
 run = "npm run dev"
 entrypoint = "src/index.ts"
-modules = ["nodejs-20", "postgresql-16"]
+modules = ["nodejs-20:v8-20230920-bd784b9"]
 hidden = [".config", "package-lock.json", ".git"]
 
 [nix]
@@ -17,6 +17,10 @@ externalPort = 80
 [[ports]]
 localPort = 5555
 externalPort = 3000
+
+[[ports]]
+localPort = 34425
+externalPort = 3001
 
 [env]
 NODE_OPTIONS = "--max-old-space-size=4096"
