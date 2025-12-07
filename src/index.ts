@@ -9,6 +9,7 @@ import { notFoundHandler } from './middleware/not-found.middleware';
 import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
+import { startWorkers, stopWorkers } from './workers';
 
 const app: Express = express();
 
@@ -44,6 +45,8 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`📍 Environment: ${config.nodeEnv}`);
   console.log(`❤️  Health check: http://localhost:${config.port}/health`);
   console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
+  
+  startWorkers();
 });
 
 const gracefulShutdown = async () => {
@@ -51,6 +54,8 @@ const gracefulShutdown = async () => {
   
   server.close(async () => {
     console.log('HTTP server closed');
+    
+    await stopWorkers();
     
     await closeQueues();
     console.log('Queues closed');
