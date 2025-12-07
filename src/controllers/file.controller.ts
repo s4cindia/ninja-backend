@@ -1,8 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
+import { FileStatus } from '@prisma/client';
 import { fileService } from '../services/file.service';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
+import { ListFilesQuery } from '../schemas/file.schemas';
 
 class FileController {
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -100,6 +102,74 @@ class FileController {
       res.status(200).json({
         success: true,
         data: files,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listAdvanced(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const query = req.query as unknown as ListFilesQuery;
+      
+      const result = await fileService.listFilesAdvanced(req.user.tenantId, {
+        page: query.page,
+        limit: query.limit,
+        status: query.status as FileStatus | undefined,
+        mimeType: query.mimeType,
+        sortBy: query.sortBy,
+        sortOrder: query.sortOrder,
+      });
+
+      res.status(200).json({
+        success: true,
+        data: result.files,
+        pagination: result.pagination,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getStats(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const stats = await fileService.getFileStats(req.user.tenantId);
+
+      res.status(200).json({
+        success: true,
+        data: stats,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const { status, metadata } = req.body;
+      
+      const file = await fileService.updateFileStatus(
+        req.params.id,
+        req.user.tenantId,
+        status as FileStatus,
+        metadata
+      );
+
+      res.status(200).json({
+        success: true,
+        data: file,
       });
     } catch (error) {
       next(error);
