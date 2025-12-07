@@ -1,5 +1,6 @@
 import { Job } from 'bullmq';
-import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
+import prisma from '../lib/prisma';
 import { 
   getAccessibilityQueue, 
   getVpatQueue, 
@@ -36,7 +37,7 @@ export class QueueService {
         type,
         status: 'QUEUED',
         priority,
-        input: options || {},
+        input: (options || {}) as Prisma.InputJsonValue,
         tenantId,
         userId,
         productId,
