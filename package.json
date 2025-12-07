@@ -2,19 +2,49 @@
   "name": "ninja-backend",
   "version": "1.0.0",
   "description": "Ninja Platform API Server",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
     "test": "echo \"Tests passed\" && exit 0",
     "lint": "echo \"Linting passed\" && exit 0"
   },
-  "keywords": ["ninja", "api", "accessibility"],
+  "keywords": [
+    "ninja",
+    "api",
+    "accessibility"
+  ],
   "author": "S4Carlisle",
   "license": "MIT",
   "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/compression": "^1.8.1",
+    "@types/ioredis": "^4.28.10",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.0.0",
+    "@types/uuid": "^10.0.0",
+    "bcryptjs": "^3.0.3",
+    "bullmq": "^5.65.1",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "helmet": "^8.1.0",
+    "ioredis": "^5.8.2",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.0.2",
+    "prisma": "^5.22.0",
+    "uuid": "^13.0.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.2"
   },
   "engines": {
     "node": ">=18.0.0"

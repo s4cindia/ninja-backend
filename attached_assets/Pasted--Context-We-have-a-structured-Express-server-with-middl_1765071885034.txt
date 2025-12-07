@@ -1,0 +1,271 @@
+## Context
+We have a structured Express server with middleware. Now we need to define the route structure for all API modules.
+
+## Current State
+- Express server with middleware stack
+- Routes mounted at /api/v1
+- Placeholder route index
+
+## Objective
+Create route modules for auth, users, products, jobs, and files with proper TypeScript typing.
+
+## Technical Requirements
+
+**Create `src/routes/auth.routes.ts`:**
+```typescript
+import { Router } from 'express';
+
+const router = Router();
+
+// POST /api/v1/auth/register - Register new user
+router.post('/register', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// POST /api/v1/auth/login - Login user
+router.post('/login', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// POST /api/v1/auth/logout - Logout user
+router.post('/logout', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// POST /api/v1/auth/refresh - Refresh token
+router.post('/refresh', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/auth/me - Get current user
+router.get('/me', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+export default router;
+```
+
+**Create `src/routes/users.routes.ts`:**
+```typescript
+import { Router } from 'express';
+
+const router = Router();
+
+// GET /api/v1/users - List users (admin only)
+router.get('/', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/users/:id - Get user by ID
+router.get('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// PATCH /api/v1/users/:id - Update user
+router.patch('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// DELETE /api/v1/users/:id - Delete user
+router.delete('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+export default router;
+```
+
+**Create `src/routes/products.routes.ts`:**
+```typescript
+import { Router } from 'express';
+
+const router = Router();
+
+// GET /api/v1/products - List products
+router.get('/', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// POST /api/v1/products - Create product
+router.post('/', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/products/:id - Get product by ID
+router.get('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// PATCH /api/v1/products/:id - Update product
+router.patch('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// DELETE /api/v1/products/:id - Delete product
+router.delete('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/products/:id/jobs - Get jobs for product
+router.get('/:id/jobs', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/products/:id/vpats - Get VPATs for product
+router.get('/:id/vpats', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+export default router;
+```
+
+**Create `src/routes/jobs.routes.ts`:**
+```typescript
+import { Router } from 'express';
+
+const router = Router();
+
+// GET /api/v1/jobs - List jobs
+router.get('/', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// POST /api/v1/jobs - Create job
+router.post('/', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/jobs/:id - Get job by ID
+router.get('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/jobs/:id/status - Get job status (polling endpoint)
+router.get('/:id/status', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// DELETE /api/v1/jobs/:id - Cancel job
+router.delete('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/jobs/:id/results - Get job results
+router.get('/:id/results', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+export default router;
+```
+
+**Create `src/routes/files.routes.ts`:**
+```typescript
+import { Router } from 'express';
+
+const router = Router();
+
+// POST /api/v1/files/upload - Upload file
+router.post('/upload', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/files/:id - Get file metadata
+router.get('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// GET /api/v1/files/:id/download - Download file
+router.get('/:id/download', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+// DELETE /api/v1/files/:id - Delete file
+router.delete('/:id', (req, res) => {
+  res.status(501).json({ message: 'Not implemented yet' });
+});
+
+export default router;
+```
+
+**Update `src/routes/index.ts` to mount all routes:**
+```typescript
+import { Router } from 'express';
+import authRoutes from './auth.routes.js';
+import usersRoutes from './users.routes.js';
+import productsRoutes from './products.routes.js';
+import jobsRoutes from './jobs.routes.js';
+import filesRoutes from './files.routes.js';
+
+const router = Router();
+
+// API info endpoint
+router.get('/', (req, res) => {
+  res.json({
+    name: 'Ninja Platform API',
+    version: '1.0.0',
+    endpoints: {
+      health: 'GET /health',
+      auth: {
+        register: 'POST /api/v1/auth/register',
+        login: 'POST /api/v1/auth/login',
+        logout: 'POST /api/v1/auth/logout',
+        refresh: 'POST /api/v1/auth/refresh',
+        me: 'GET /api/v1/auth/me',
+      },
+      users: {
+        list: 'GET /api/v1/users',
+        get: 'GET /api/v1/users/:id',
+        update: 'PATCH /api/v1/users/:id',
+        delete: 'DELETE /api/v1/users/:id',
+      },
+      products: {
+        list: 'GET /api/v1/products',
+        create: 'POST /api/v1/products',
+        get: 'GET /api/v1/products/:id',
+        update: 'PATCH /api/v1/products/:id',
+        delete: 'DELETE /api/v1/products/:id',
+        jobs: 'GET /api/v1/products/:id/jobs',
+        vpats: 'GET /api/v1/products/:id/vpats',
+      },
+      jobs: {
+        list: 'GET /api/v1/jobs',
+        create: 'POST /api/v1/jobs',
+        get: 'GET /api/v1/jobs/:id',
+        status: 'GET /api/v1/jobs/:id/status',
+        cancel: 'DELETE /api/v1/jobs/:id',
+        results: 'GET /api/v1/jobs/:id/results',
+      },
+      files: {
+        upload: 'POST /api/v1/files/upload',
+        get: 'GET /api/v1/files/:id',
+        download: 'GET /api/v1/files/:id/download',
+        delete: 'DELETE /api/v1/files/:id',
+      },
+    },
+  });
+});
+
+// Mount route modules
+router.use('/auth', authRoutes);
+router.use('/users', usersRoutes);
+router.use('/products', productsRoutes);
+router.use('/jobs', jobsRoutes);
+router.use('/files', filesRoutes);
+
+export default router;
+```
+
+## Tasks
+1. Create auth.routes.ts with authentication endpoints
+2. Create users.routes.ts with user management endpoints
+3. Create products.routes.ts with product CRUD endpoints
+4. Create jobs.routes.ts with job management endpoints
+5. Create files.routes.ts with file upload endpoints
+6. Update routes/index.ts to mount all route modules
+7. Verify all routes are accessible
+
+## Acceptance Criteria
+- [ ] All route files created in src/routes/
+- [ ] Routes mounted at /api/v1/{module}
+- [ ] GET /api/v1 shows complete endpoint documentation
+- [ ] All stub endpoints return 501 Not Implemented
+- [ ] Server starts without errors

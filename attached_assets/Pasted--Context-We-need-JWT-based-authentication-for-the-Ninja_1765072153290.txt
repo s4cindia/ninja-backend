@@ -1,0 +1,430 @@
+## Context
+We need JWT-based authentication for the Ninja Platform. This includes user registration, login, token generation, and middleware to protect routes.
+
+## Current State
+- Route structure defined with auth endpoints (returning 501)
+- Prisma schema has User model with password field
+- JWT_SECRET in environment variables
+
+## Objective
+Implement JWT authentication with register, login, token refresh, and route protection middleware.
+
+## Technical Requirements
+
+**Create `src/types/express.d.ts` for extending Express Request:**
+```typescript
+import { User } from '@prisma/client';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: string;
+        email: string;
+        tenantId: string;
+        role: string;
+      };
+    }
+  }
+}
+
+export {};
+```
+
+**Create `src/middleware/auth.middleware.ts`:**
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { config } from '../config/index.js';
+import { prisma } from '../lib/prisma.js';
+
+interface JwtPayload {
+  userId: string;
+  email: string;
+  tenantId: string;
+  role: string;
+}
+
+export const authenticate = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'No token provided' },
+      });
+      return;
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload;
+    
+    // Verify user still exists
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: { id: true, email: true, tenantId: true, role: true, deletedAt: true },
+    });
+
+    if (!user || user.deletedAt) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'User not found or deactivated' },
+      });
+      return;
+    }
+
+    req.user = {
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+      role: user.role,
+    };
+
+    next();
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Token expired' },
+      });
+      return;
+    }
+    
+    res.status(401).json({
+      success: false,
+      error: { message: 'Invalid token' },
+    });
+  }
+};
+
+export const authorize = (...roles: string[]) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Not authenticated' },
+      });
+      return;
+    }
+
+    if (!roles.includes(req.user.role)) {
+      res.status(403).json({
+        success: false,
+        error: { message: 'Insufficient permissions' },
+      });
+      return;
+    }
+
+    next();
+  };
+};
+```
+
+**Create `src/services/auth.service.ts`:**
+```typescript
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { prisma } from '../lib/prisma.js';
+import { config } from '../config/index.js';
+
+interface RegisterInput {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  tenantId: string;
+}
+
+interface LoginInput {
+  email: string;
+  password: string;
+}
+
+interface TokenPayload {
+  userId: string;
+  email: string;
+  tenantId: string;
+  role: string;
+}
+
+export class AuthService {
+  private generateTokens(payload: TokenPayload) {
+    const accessToken = jwt.sign(payload, config.jwtSecret, {
+      expiresIn: '15m',
+    });
+    
+    const refreshToken = jwt.sign(payload, config.jwtSecret, {
+      expiresIn: '7d',
+    });
+
+    return { accessToken, refreshToken };
+  }
+
+  async register(input: RegisterInput) {
+    // Check if user exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email: input.email },
+    });
+
+    if (existingUser) {
+      throw new Error('Email already registered');
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(input.password, 12);
+
+    // Create user
+    const user = await prisma.user.create({
+      data: {
+        email: input.email,
+        password: hashedPassword,
+        firstName: input.firstName,
+        lastName: input.lastName,
+        tenantId: input.tenantId,
+        role: 'USER',
+      },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        tenantId: true,
+        createdAt: true,
+      },
+    });
+
+    const tokens = this.generateTokens({
+      userId: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+      role: user.role,
+    });
+
+    return { user, ...tokens };
+  }
+
+  async login(input: LoginInput) {
+    const user = await prisma.user.findUnique({
+      where: { email: input.email },
+    });
+
+    if (!user || user.deletedAt) {
+      throw new Error('Invalid credentials');
+    }
+
+    const isValidPassword = await bcrypt.compare(input.password, user.password);
+
+    if (!isValidPassword) {
+      throw new Error('Invalid credentials');
+    }
+
+    const tokens = this.generateTokens({
+      userId: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+      role: user.role,
+    });
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        tenantId: user.tenantId,
+      },
+      ...tokens,
+    };
+  }
+
+  async refreshToken(token: string) {
+    try {
+      const decoded = jwt.verify(token, config.jwtSecret) as TokenPayload;
+      
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+      });
+
+      if (!user || user.deletedAt) {
+        throw new Error('User not found');
+      }
+
+      return this.generateTokens({
+        userId: user.id,
+        email: user.email,
+        tenantId: user.tenantId,
+        role: user.role,
+      });
+    } catch {
+      throw new Error('Invalid refresh token');
+    }
+  }
+
+  async getCurrentUser(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        tenantId: true,
+        tenant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    return user;
+  }
+}
+
+export const authService = new AuthService();
+```
+
+**Create `src/controllers/auth.controller.ts`:**
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { authService } from '../services/auth.service.js';
+
+export class AuthController {
+  async register(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.register(req.body);
+      res.status(201).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async login(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await authService.login(req.body);
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async logout(req: Request, res: Response) {
+    // For JWT, logout is handled client-side by removing the token
+    // Optionally implement token blacklisting here
+    res.json({
+      success: true,
+      message: 'Logged out successfully',
+    });
+  }
+
+  async refresh(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { refreshToken } = req.body;
+      
+      if (!refreshToken) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Refresh token required' },
+        });
+        return;
+      }
+
+      const tokens = await authService.refreshToken(refreshToken);
+      res.json({
+        success: true,
+        data: tokens,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async me(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Not authenticated' },
+        });
+        return;
+      }
+
+      const user = await authService.getCurrentUser(req.user.id);
+      res.json({
+        success: true,
+        data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const authController = new AuthController();
+```
+
+**Update `src/routes/auth.routes.ts`:**
+```typescript
+import { Router } from 'express';
+import { authController } from '../controllers/auth.controller.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+
+const router = Router();
+
+// POST /api/v1/auth/register - Register new user
+router.post('/register', (req, res, next) => authController.register(req, res, next));
+
+// POST /api/v1/auth/login - Login user
+router.post('/login', (req, res, next) => authController.login(req, res, next));
+
+// POST /api/v1/auth/logout - Logout user
+router.post('/logout', (req, res) => authController.logout(req, res));
+
+// POST /api/v1/auth/refresh - Refresh token
+router.post('/refresh', (req, res, next) => authController.refresh(req, res, next));
+
+// GET /api/v1/auth/me - Get current user (protected)
+router.get('/me', authenticate, (req, res, next) => authController.me(req, res, next));
+
+export default router;
+```
+
+## Tasks
+1. Create src/types/express.d.ts for Request type extension
+2. Create src/middleware/auth.middleware.ts with authenticate and authorize
+3. Create src/services/auth.service.ts with register, login, refresh, getCurrentUser
+4. Create src/controllers/auth.controller.ts
+5. Update src/routes/auth.routes.ts to use the controller
+6. Update tsconfig.json to include the types directory
+7. Verify authentication flow works end-to-end
+
+## Acceptance Criteria
+- [ ] POST /api/v1/auth/register creates user and returns tokens
+- [ ] POST /api/v1/auth/login returns tokens for valid credentials
+- [ ] POST /api/v1/auth/refresh returns new tokens
+- [ ] GET /api/v1/auth/me returns user when authenticated
+- [ ] Protected routes return 401 without token
+- [ ] Protected routes return 401 with invalid/expired token

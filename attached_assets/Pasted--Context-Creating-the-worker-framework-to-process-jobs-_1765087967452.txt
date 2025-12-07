@@ -1,0 +1,455 @@
+## Context
+Creating the worker framework to process jobs from the BullMQ queues. Workers will handle accessibility validation, VPAT generation, and file processing.
+
+## Current State
+- BullMQ queues configured
+- Queue service created
+- Need workers to process jobs
+
+## Objective
+Create a worker framework with job processors that handle different job types.
+
+## Technical Requirements
+
+**Create `src/workers/base.worker.ts`:**
+```typescript
+import { Job, Worker } from 'bullmq';
+import { getRedisClient } from '../lib/redis.js';
+import { queueService } from '../services/queue.service.js';
+import { JobData, JobResult } from '../queues/index.js';
+
+export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
+
+export interface WorkerOptions {
+  queueName: string;
+  processor: JobProcessor;
+  concurrency?: number;
+}
+
+export function createWorker(options: WorkerOptions): Worker<JobData, JobResult> | null {
+  const { queueName, processor, concurrency = 1 } = options;
+
+  try {
+    const connection = getRedisClient();
+
+    const worker = new Worker<JobData, JobResult>(
+      queueName,
+      async (job: Job<JobData, JobResult>) => {
+        const jobId = job.id || job.name;
+        console.log(`🔧 Processing job ${jobId}: ${job.data.type}`);
+
+        try {
+          // Update job status to PROCESSING
+          await queueService.updateJobStatus(jobId, 'PROCESSING');
+
+          // Process the job
+          const result = await processor(job);
+
+          // Update job status to COMPLETED
+          await queueService.updateJobStatus(jobId, 'COMPLETED', {
+            output: result.data,
+          });
+
+          console.log(`✅ Job ${jobId} completed successfully`);
+          return result;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          console.error(`❌ Job ${jobId} failed:`, errorMessage);
+
+          // Update job status to FAILED
+          await queueService.updateJobStatus(jobId, 'FAILED', {
+            error: errorMessage,
+          });
+
+          throw error;
+        }
+      },
+      {
+        connection,
+        concurrency,
+        autorun: true,
+      }
+    );
+
+    // Event handlers
+    worker.on('completed', (job) => {
+      console.log(`📗 Job ${job.id} completed`);
+    });
+
+    worker.on('failed', (job, err) => {
+      console.error(`📕 Job ${job?.id} failed:`, err.message);
+    });
+
+    worker.on('progress', (job, progress) => {
+      console.log(`📊 Job ${job.id} progress: ${progress}%`);
+    });
+
+    worker.on('error', (err) => {
+      console.error('Worker error:', err);
+    });
+
+    return worker;
+  } catch (error) {
+    console.warn(`⚠️ Could not create worker for ${queueName}:`, error);
+    return null;
+  }
+}
+```
+
+**Create `src/workers/processors/accessibility.processor.ts`:**
+```typescript
+import { Job } from 'bullmq';
+import { JobData, JobResult, JOB_TYPES } from '../../queues/index.js';
+import { queueService } from '../../services/queue.service.js';
+
+export async function processAccessibilityJob(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const { type, fileId, productId, options } = job.data;
+  const jobId = job.id || job.name;
+
+  console.log(`🔍 Starting ${type} validation for file: ${fileId}`);
+
+  // Simulate progress updates
+  await job.updateProgress(10);
+  await queueService.updateJobProgress(jobId, 10);
+
+  // TODO: Implement actual accessibility validation
+  // This is a placeholder that simulates processing
+  switch (type) {
+    case JOB_TYPES.PDF_ACCESSIBILITY:
+      return await processPdfAccessibility(job);
+
+    case JOB_TYPES.EPUB_ACCESSIBILITY:
+      return await processEpubAccessibility(job);
+
+    case JOB_TYPES.BATCH_VALIDATION:
+      return await processBatchValidation(job);
+
+    default:
+      throw new Error(`Unknown job type: ${type}`);
+  }
+}
+
+async function processPdfAccessibility(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const jobId = job.id || job.name;
+
+  // Simulate PDF processing stages
+  await simulateProcessing(job, jobId, [
+    { progress: 20, message: 'Extracting PDF structure' },
+    { progress: 40, message: 'Analyzing document tags' },
+    { progress: 60, message: 'Checking alt text for images' },
+    { progress: 80, message: 'Validating reading order' },
+    { progress: 100, message: 'Generating report' },
+  ]);
+
+  return {
+    success: true,
+    data: {
+      type: 'PDF_ACCESSIBILITY',
+      validationComplete: true,
+      issuesFound: 0,
+      passedChecks: 15,
+      totalChecks: 15,
+      score: 100,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function processEpubAccessibility(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const jobId = job.id || job.name;
+
+  await simulateProcessing(job, jobId, [
+    { progress: 20, message: 'Parsing EPUB structure' },
+    { progress: 40, message: 'Validating EPUB 3 accessibility' },
+    { progress: 60, message: 'Checking navigation elements' },
+    { progress: 80, message: 'Analyzing media overlays' },
+    { progress: 100, message: 'Generating report' },
+  ]);
+
+  return {
+    success: true,
+    data: {
+      type: 'EPUB_ACCESSIBILITY',
+      validationComplete: true,
+      issuesFound: 0,
+      passedChecks: 12,
+      totalChecks: 12,
+      score: 100,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function processBatchValidation(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const jobId = job.id || job.name;
+
+  await simulateProcessing(job, jobId, [
+    { progress: 25, message: 'Processing batch items' },
+    { progress: 50, message: 'Running validations' },
+    { progress: 75, message: 'Aggregating results' },
+    { progress: 100, message: 'Complete' },
+  ]);
+
+  return {
+    success: true,
+    data: {
+      type: 'BATCH_VALIDATION',
+      totalProcessed: 1,
+      successful: 1,
+      failed: 0,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function simulateProcessing(
+  job: Job<JobData, JobResult>,
+  jobId: string,
+  stages: Array<{ progress: number; message: string }>
+): Promise<void> {
+  for (const stage of stages) {
+    await new Promise((resolve) => setTimeout(resolve, 500)); // Simulate work
+    await job.updateProgress(stage.progress);
+    await queueService.updateJobProgress(jobId, stage.progress);
+    console.log(`  📍 ${stage.message}`);
+  }
+}
+```
+
+**Create `src/workers/processors/vpat.processor.ts`:**
+```typescript
+import { Job } from 'bullmq';
+import { JobData, JobResult, JOB_TYPES } from '../../queues/index.js';
+import { queueService } from '../../services/queue.service.js';
+
+export async function processVpatJob(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const { type, productId, options } = job.data;
+  const jobId = job.id || job.name;
+
+  console.log(`📄 Starting VPAT generation for product: ${productId}`);
+
+  // Simulate VPAT generation stages
+  const stages = [
+    { progress: 10, message: 'Loading product data' },
+    { progress: 25, message: 'Gathering validation results' },
+    { progress: 40, message: 'Mapping to WCAG criteria' },
+    { progress: 60, message: 'Generating conformance levels' },
+    { progress: 80, message: 'Creating VPAT document' },
+    { progress: 100, message: 'VPAT generation complete' },
+  ];
+
+  for (const stage of stages) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await job.updateProgress(stage.progress);
+    await queueService.updateJobProgress(jobId, stage.progress);
+    console.log(`  📍 ${stage.message}`);
+  }
+
+  return {
+    success: true,
+    data: {
+      type: 'VPAT_GENERATION',
+      vpatId: `vpat-${Date.now()}`,
+      productId,
+      standard: 'WCAG 2.2',
+      conformanceLevel: 'AA',
+      generatedAt: new Date().toISOString(),
+    },
+  };
+}
+```
+
+**Create `src/workers/processors/file.processor.ts`:**
+```typescript
+import { Job } from 'bullmq';
+import { JobData, JobResult, JOB_TYPES } from '../../queues/index.js';
+import { queueService } from '../../services/queue.service.js';
+
+export async function processFileJob(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const { type, fileId, options } = job.data;
+  const jobId = job.id || job.name;
+
+  console.log(`📁 Starting file processing: ${type} for file: ${fileId}`);
+
+  switch (type) {
+    case JOB_TYPES.ALT_TEXT_GENERATION:
+      return await processAltTextGeneration(job);
+
+    case JOB_TYPES.METADATA_EXTRACTION:
+      return await processMetadataExtraction(job);
+
+    default:
+      throw new Error(`Unknown file job type: ${type}`);
+  }
+}
+
+async function processAltTextGeneration(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const jobId = job.id || job.name;
+
+  const stages = [
+    { progress: 20, message: 'Extracting images from document' },
+    { progress: 50, message: 'Generating alt text with AI' },
+    { progress: 80, message: 'Validating generated text' },
+    { progress: 100, message: 'Alt text generation complete' },
+  ];
+
+  for (const stage of stages) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await job.updateProgress(stage.progress);
+    await queueService.updateJobProgress(jobId, stage.progress);
+    console.log(`  📍 ${stage.message}`);
+  }
+
+  return {
+    success: true,
+    data: {
+      type: 'ALT_TEXT_GENERATION',
+      imagesProcessed: 5,
+      altTextsGenerated: 5,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function processMetadataExtraction(
+  job: Job<JobData, JobResult>
+): Promise<JobResult> {
+  const jobId = job.id || job.name;
+
+  const stages = [
+    { progress: 25, message: 'Reading document structure' },
+    { progress: 50, message: 'Extracting metadata fields' },
+    { progress: 75, message: 'Validating metadata' },
+    { progress: 100, message: 'Metadata extraction complete' },
+  ];
+
+  for (const stage of stages) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await job.updateProgress(stage.progress);
+    await queueService.updateJobProgress(jobId, stage.progress);
+    console.log(`  📍 ${stage.message}`);
+  }
+
+  return {
+    success: true,
+    data: {
+      type: 'METADATA_EXTRACTION',
+      metadata: {
+        title: 'Sample Document',
+        author: 'Unknown',
+        language: 'en',
+        pageCount: 10,
+      },
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+```
+
+**Create `src/workers/index.ts`:**
+```typescript
+import { Worker } from 'bullmq';
+import { createWorker } from './base.worker.js';
+import { QUEUE_NAMES, JobData, JobResult } from '../queues/index.js';
+import { processAccessibilityJob } from './processors/accessibility.processor.js';
+import { processVpatJob } from './processors/vpat.processor.js';
+import { processFileJob } from './processors/file.processor.js';
+
+let workers: Worker<JobData, JobResult>[] = [];
+
+export function startWorkers(): void {
+  console.log('🚀 Starting job workers...');
+
+  // Accessibility validation worker
+  const accessibilityWorker = createWorker({
+    queueName: QUEUE_NAMES.ACCESSIBILITY,
+    processor: processAccessibilityJob,
+    concurrency: 2,
+  });
+  if (accessibilityWorker) workers.push(accessibilityWorker);
+
+  // VPAT generation worker
+  const vpatWorker = createWorker({
+    queueName: QUEUE_NAMES.VPAT,
+    processor: processVpatJob,
+    concurrency: 1,
+  });
+  if (vpatWorker) workers.push(vpatWorker);
+
+  // File processing worker
+  const fileWorker = createWorker({
+    queueName: QUEUE_NAMES.FILE_PROCESSING,
+    processor: processFileJob,
+    concurrency: 2,
+  });
+  if (fileWorker) workers.push(fileWorker);
+
+  if (workers.length > 0) {
+    console.log(`✅ ${workers.length} workers started`);
+  } else {
+    console.log('⚠️ No workers started (Redis may not be configured)');
+  }
+}
+
+export async function stopWorkers(): Promise<void> {
+  console.log('🛑 Stopping workers...');
+  await Promise.all(workers.map((worker) => worker.close()));
+  workers = [];
+  console.log('✅ All workers stopped');
+}
+
+export function getActiveWorkers(): number {
+  return workers.length;
+}
+```
+
+**Update `src/index.ts` to start workers:**
+
+Add near the top with other imports:
+```typescript
+import { startWorkers, stopWorkers } from './workers/index.js';
+```
+
+Add after the server starts (after the `app.listen` block):
+```typescript
+// Start background job workers
+startWorkers();
+```
+
+Update the gracefulShutdown function to include:
+```typescript
+await stopWorkers();
+console.log('Workers stopped');
+```
+
+## Tasks
+1. Create src/workers/base.worker.ts with worker factory
+2. Create src/workers/processors/accessibility.processor.ts
+3. Create src/workers/processors/vpat.processor.ts
+4. Create src/workers/processors/file.processor.ts
+5. Create src/workers/index.ts to manage all workers
+6. Update src/index.ts to start/stop workers
+7. Verify server starts and workers initialize
+
+## Acceptance Criteria
+- [ ] Base worker factory created with error handling
+- [ ] Accessibility processor handles PDF, EPUB, and batch validation
+- [ ] VPAT processor handles VPAT generation
+- [ ] File processor handles alt text and metadata extraction
+- [ ] Workers start when server starts
+- [ ] Workers stop gracefully on shutdown
+- [ ] Job progress updates work correctly
