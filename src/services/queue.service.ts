@@ -1,16 +1,17 @@
 import { Job } from 'bullmq';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../lib/prisma';
 import { 
-  accessibilityQueue, 
-  vpatQueue, 
-  fileProcessingQueue,
+  getAccessibilityQueue, 
+  getVpatQueue, 
+  getFileProcessingQueue,
+  areQueuesAvailable,
   JobData, 
   JobResult,
   JOB_TYPES,
   JobType,
-} from '../queues/index.js';
-import { AppError } from '../utils/app-error.js';
-import { ErrorCodes } from '../utils/error-codes.js';
+} from '../queues';
+import { AppError } from '../utils/app-error';
+import { ErrorCodes } from '../utils/error-codes';
 
 export interface CreateJobInput {
   type: JobType;
@@ -25,6 +26,10 @@ export interface CreateJobInput {
 export class QueueService {
   async createJob(input: CreateJobInput): Promise<string> {
     const { type, tenantId, userId, fileId, productId, priority = 0, options } = input;
+
+    if (!areQueuesAvailable()) {
+      throw AppError.serviceUnavailable('Queue service not available - Redis not configured');
+    }
 
     const dbJob = await prisma.job.create({
       data: {
@@ -53,14 +58,14 @@ export class QueueService {
       case JOB_TYPES.PDF_ACCESSIBILITY:
       case JOB_TYPES.EPUB_ACCESSIBILITY:
       case JOB_TYPES.BATCH_VALIDATION:
-        queueJob = await accessibilityQueue.add(type, jobData, {
+        queueJob = await getAccessibilityQueue().add(type, jobData, {
           jobId: dbJob.id,
           priority,
         });
         break;
 
       case JOB_TYPES.VPAT_GENERATION:
-        queueJob = await vpatQueue.add(type, jobData, {
+        queueJob = await getVpatQueue().add(type, jobData, {
           jobId: dbJob.id,
           priority,
         });
@@ -68,7 +73,7 @@ export class QueueService {
 
       case JOB_TYPES.ALT_TEXT_GENERATION:
       case JOB_TYPES.METADATA_EXTRACTION:
-        queueJob = await fileProcessingQueue.add(type, jobData, {
+        queueJob = await getFileProcessingQueue().add(type, jobData, {
           jobId: dbJob.id,
           priority,
         });
@@ -123,13 +128,15 @@ export class QueueService {
       data: { status: 'CANCELLED' },
     });
 
-    try {
-      const queueJob = await accessibilityQueue.getJob(jobId);
-      if (queueJob) {
-        await queueJob.remove();
+    if (areQueuesAvailable()) {
+      try {
+        const queueJob = await getAccessibilityQueue().getJob(jobId);
+        if (queueJob) {
+          await queueJob.remove();
+        }
+      } catch (err) {
+        console.error('Failed to remove job from queue:', err);
       }
-    } catch (err) {
-      console.error('Failed to remove job from queue:', err);
     }
   }
 

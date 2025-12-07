@@ -7,6 +7,8 @@ import { requestLogger } from './middleware/request-logger.middleware';
 import { errorHandler } from './middleware/error-handler.middleware';
 import { notFoundHandler } from './middleware/not-found.middleware';
 import routes from './routes';
+import { closeQueues } from './queues';
+import { closeRedisConnection } from './lib/redis';
 
 const app: Express = express();
 
@@ -44,12 +46,23 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
 });
 
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('Server closed');
+const gracefulShutdown = async () => {
+  console.log('Shutting down gracefully...');
+  
+  server.close(async () => {
+    console.log('HTTP server closed');
+    
+    await closeQueues();
+    console.log('Queues closed');
+    
+    await closeRedisConnection();
+    console.log('Redis connection closed');
+    
     process.exit(0);
   });
-});
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 export default app;

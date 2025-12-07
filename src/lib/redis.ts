@@ -1,7 +1,9 @@
 import Redis from 'ioredis';
-import { getRedisUrl } from '../config/redis.config.js';
+import { getRedisUrl, isRedisConfigured as checkRedisConfigured } from '../config/redis.config';
 
 let redisClient: Redis | null = null;
+
+export { checkRedisConfigured as isRedisConfigured };
 
 export function getRedisClient(): Redis {
   if (!redisClient) {

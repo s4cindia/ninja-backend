@@ -8,6 +8,14 @@ export const redisConfig: RedisOptions = {
   enableReadyCheck: false,
 };
 
+export function isRedisConfigured(): boolean {
+  return !!(
+    process.env.KV_URL || 
+    process.env.REDIS_URL || 
+    process.env.REDIS_HOST
+  );
+}
+
 export const getRedisUrl = (): string => {
   if (process.env.KV_URL) {
     return process.env.KV_URL;
