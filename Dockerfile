@@ -16,6 +16,7 @@ RUN apk add --no-cache \
     openjdk17-jre-headless \
     git \
     jq \
+    postgresql-client \
     && addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 COPY --from=builder /app/node_modules ./node_modules
 COPY --chown=nodejs:nodejs . .
