@@ -1,0 +1,465 @@
+## Context
+Implementing file upload functionality for PDF and EPUB documents. Files will be stored in Replit's persistent storage and tracked in the database.
+
+## Current State
+- Authentication and validation middleware working
+- Prisma schema needs File model added
+
+## Objective
+Create file upload endpoint that accepts PDF/EPUB files, stores them in persistent storage, and tracks metadata in the database.
+
+## Technical Requirements
+
+**First, add File model to `prisma/schema.prisma`:**
+```prisma
+model File {
+  id           String     @id @default(uuid())
+  tenantId     String
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+  status       FileStatus @default(UPLOADED)
+  metadata     Json?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum FileStatus {
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  ERROR
+}
+```
+
+**Run migration after adding the model:**
+```bash
+npx prisma db push
+npx prisma generate
+```
+
+**Install multer:**
+```bash
+npm install multer
+npm install -D @types/multer
+```
+
+**Create `src/config/upload.config.ts`:**
+```typescript
+import path from 'path';
+
+export const uploadConfig = {
+  // Use Replit persistent storage or local data folder
+  uploadDir: process.env.REPLIT_DB_DIR 
+    ? path.join(process.env.REPLIT_DB_DIR, 'uploads')
+    : path.join(process.cwd(), 'data', 'uploads'),
+  maxFileSize: 100 * 1024 * 1024, // 100MB
+  allowedMimeTypes: [
+    'application/pdf',
+    'application/epub+zip',
+  ],
+};
+```
+
+**Create `src/middleware/upload.middleware.ts`:**
+```typescript
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import { Request } from 'express';
+import { uploadConfig } from '../config/upload.config.js';
+import { AppError } from '../utils/app-error.js';
+import { ErrorCodes } from '../utils/error-codes.js';
+
+// Extend Request to include user
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    tenantId: string;
+    email: string;
+    role: string;
+  };
+}
+
+const storage = multer.diskStorage({
+  destination: (req: AuthenticatedRequest, file, cb) => {
+    const tenantId = req.user?.tenantId || 'default';
+    const tenantDir = path.join(uploadConfig.uploadDir, tenantId);
+    
+    // Create directory if it doesn't exist
+    fs.mkdirSync(tenantDir, { recursive: true });
+    cb(null, tenantDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const filename = `${uuidv4()}${ext}`;
+    cb(null, filename);
+  },
+});
+
+const fileFilter = (
+  req: Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback
+) => {
+  if (uploadConfig.allowedMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError(
+      `Invalid file type. Allowed: ${uploadConfig.allowedMimeTypes.join(', ')}`,
+      400,
+      ErrorCodes.FILE_INVALID_TYPE
+    ));
+  }
+};
+
+export const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: uploadConfig.maxFileSize,
+  },
+});
+
+// Error handler for multer errors
+export const handleMulterError = (err: any, req: Request, res: any, next: any) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: `File too large. Maximum size: ${uploadConfig.maxFileSize / (1024 * 1024)}MB`,
+          code: ErrorCodes.FILE_TOO_LARGE,
+        },
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      error: {
+        message: err.message,
+        code: 'UPLOAD_ERROR',
+      },
+    });
+  }
+  next(err);
+};
+```
+
+**Create `src/services/file.service.ts`:**
+```typescript
+import { prisma } from '../lib/prisma.js';
+import { FileStatus } from '@prisma/client';
+import fs from 'fs/promises';
+import path from 'path';
+import { AppError } from '../utils/app-error.js';
+import { ErrorCodes } from '../utils/error-codes.js';
+
+interface CreateFileInput {
+  tenantId: string;
+  filename: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  path: string;
+}
+
+export class FileService {
+  async createFile(data: CreateFileInput) {
+    return prisma.file.create({
+      data: {
+        tenantId: data.tenantId,
+        filename: data.filename,
+        originalName: data.originalName,
+        mimeType: data.mimeType,
+        size: data.size,
+        path: data.path,
+        status: 'UPLOADED',
+      },
+    });
+  }
+
+  async getFile(id: string, tenantId: string) {
+    const file = await prisma.file.findFirst({
+      where: {
+        id,
+        tenantId,
+        deletedAt: null,
+      },
+    });
+
+    if (!file) {
+      throw AppError.notFound('File not found', ErrorCodes.FILE_NOT_FOUND);
+    }
+
+    return file;
+  }
+
+  async listFiles(tenantId: string, options: { page?: number; limit?: number } = {}) {
+    const { page = 1, limit = 20 } = options;
+    const skip = (page - 1) * limit;
+
+    const [files, total] = await Promise.all([
+      prisma.file.findMany({
+        where: { tenantId, deletedAt: null },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          filename: true,
+          originalName: true,
+          mimeType: true,
+          size: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.file.count({ where: { tenantId, deletedAt: null } }),
+    ]);
+
+    return {
+      files,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async deleteFile(id: string, tenantId: string) {
+    const file = await this.getFile(id, tenantId);
+
+    // Delete physical file
+    try {
+      await fs.unlink(file.path);
+    } catch (err) {
+      console.error(`Failed to delete physical file: ${file.path}`, err);
+    }
+
+    // Soft delete in database
+    return prisma.file.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+  }
+
+  async getFilePath(id: string, tenantId: string): Promise<string> {
+    const file = await this.getFile(id, tenantId);
+    
+    // Verify file exists on disk
+    try {
+      await fs.access(file.path);
+    } catch {
+      throw AppError.notFound('File not found on disk', ErrorCodes.FILE_NOT_FOUND);
+    }
+
+    return file.path;
+  }
+
+  async updateFileStatus(id: string, status: FileStatus, metadata?: Record<string, unknown>) {
+    return prisma.file.update({
+      where: { id },
+      data: {
+        status,
+        ...(metadata && { metadata }),
+      },
+    });
+  }
+}
+
+export const fileService = new FileService();
+```
+
+**Create `src/controllers/file.controller.ts`:**
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { fileService } from '../services/file.service.js';
+import { AppError } from '../utils/app-error.js';
+import { ErrorCodes } from '../utils/error-codes.js';
+import path from 'path';
+
+export class FileController {
+  async upload(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.file) {
+        throw AppError.badRequest('No file uploaded', ErrorCodes.FILE_UPLOAD_FAILED);
+      }
+
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const file = await fileService.createFile({
+        tenantId: req.user.tenantId,
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        path: req.file.path,
+      });
+
+      res.status(201).json({
+        success: true,
+        data: {
+          id: file.id,
+          filename: file.originalName,
+          size: file.size,
+          mimeType: file.mimeType,
+          status: file.status,
+          uploadedAt: file.createdAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async list(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      const result = await fileService.listFiles(req.user.tenantId, { page, limit });
+      
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async get(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const file = await fileService.getFile(req.params.id, req.user.tenantId);
+      
+      res.json({
+        success: true,
+        data: file,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async download(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const file = await fileService.getFile(req.params.id, req.user.tenantId);
+      const filePath = await fileService.getFilePath(req.params.id, req.user.tenantId);
+
+      res.download(filePath, file.originalName);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async delete(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      await fileService.deleteFile(req.params.id, req.user.tenantId);
+      
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const fileController = new FileController();
+```
+
+**Update `src/routes/files.routes.ts`:**
+```typescript
+import { Router } from 'express';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { upload, handleMulterError } from '../middleware/upload.middleware.js';
+import { fileController } from '../controllers/file.controller.js';
+
+const router = Router();
+
+// All file routes require authentication
+router.use(authenticate);
+
+// POST /api/v1/files/upload - Upload file
+router.post('/upload', upload.single('file'), handleMulterError, (req, res, next) => 
+  fileController.upload(req, res, next)
+);
+
+// GET /api/v1/files - List files
+router.get('/', (req, res, next) => fileController.list(req, res, next));
+
+// GET /api/v1/files/:id - Get file metadata
+router.get('/:id', (req, res, next) => fileController.get(req, res, next));
+
+// GET /api/v1/files/:id/download - Download file
+router.get('/:id/download', (req, res, next) => fileController.download(req, res, next));
+
+// DELETE /api/v1/files/:id - Delete file
+router.delete('/:id', (req, res, next) => fileController.delete(req, res, next));
+
+export default router;
+```
+
+**Create data/uploads directory:**
+```bash
+mkdir -p data/uploads
+```
+
+**Add to .gitignore:**
+data/uploads/*
+!data/uploads/.gitkeep
+
+**Create placeholder:**
+```bash
+touch data/uploads/.gitkeep
+```
+
+## Tasks
+1. Add File model and FileStatus enum to prisma/schema.prisma
+2. Run npx prisma db push && npx prisma generate
+3. Install multer and @types/multer
+4. Create src/config/upload.config.ts
+5. Create src/middleware/upload.middleware.ts
+6. Create src/services/file.service.ts
+7. Create src/controllers/file.controller.ts
+8. Update src/routes/files.routes.ts
+9. Create data/uploads directory with .gitkeep
+10. Update .gitignore for uploads
+11. Verify file upload works end-to-end
+
+## Acceptance Criteria
+- [ ] POST /api/v1/files/upload accepts PDF and EPUB files
+- [ ] Files are stored in data/uploads/{tenantId}/
+- [ ] File metadata saved to database
+- [ ] GET /api/v1/files lists uploaded files
+- [ ] GET /api/v1/files/:id returns file metadata
+- [ ] GET /api/v1/files/:id/download serves the file
+- [ ] DELETE /api/v1/files/:id removes file
+- [ ] Invalid file types return 400 error
+- [ ] Files over 100MB return 400 error

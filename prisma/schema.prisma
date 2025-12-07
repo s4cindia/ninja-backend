@@ -187,3 +187,28 @@ enum VpatStatus {
   PUBLISHED
   ARCHIVED
 }
+
+model File {
+  id           String     @id @default(uuid())
+  tenantId     String
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  path         String
+  status       FileStatus @default(UPLOADED)
+  metadata     Json?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum FileStatus {
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  ERROR
+}
