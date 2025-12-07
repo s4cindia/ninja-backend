@@ -32,7 +32,7 @@ interface JobUpdateData {
   error?: string;
 }
 
-function getQueueForJobType(type: string): Queue<JobData, JobResult> {
+function getQueueForJobType(type: JobType): Queue<JobData, JobResult> {
   switch (type) {
     case JOB_TYPES.PDF_ACCESSIBILITY:
     case JOB_TYPES.EPUB_ACCESSIBILITY:
@@ -43,8 +43,10 @@ function getQueueForJobType(type: string): Queue<JobData, JobResult> {
     case JOB_TYPES.ALT_TEXT_GENERATION:
     case JOB_TYPES.METADATA_EXTRACTION:
       return getFileProcessingQueue();
-    default:
-      return getAccessibilityQueue();
+    default: {
+      const exhaustiveCheck: never = type;
+      throw new Error(`Unknown job type: ${exhaustiveCheck}`);
+    }
   }
 }
 
