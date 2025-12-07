@@ -1,5 +1,5 @@
-import { Job } from 'bullmq';
-import { Prisma } from '@prisma/client';
+import { Queue } from 'bullmq';
+import { Prisma, JobStatus } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { 
   getAccessibilityQueue, 
@@ -22,6 +22,32 @@ export interface CreateJobInput {
   productId?: string;
   priority?: number;
   options?: Record<string, unknown>;
+}
+
+interface JobUpdateData {
+  status: JobStatus;
+  startedAt?: Date;
+  completedAt?: Date;
+  output?: Prisma.InputJsonValue;
+  error?: string;
+}
+
+function getQueueForJobType(type: JobType): Queue<JobData, JobResult> {
+  switch (type) {
+    case JOB_TYPES.PDF_ACCESSIBILITY:
+    case JOB_TYPES.EPUB_ACCESSIBILITY:
+    case JOB_TYPES.BATCH_VALIDATION:
+      return getAccessibilityQueue();
+    case JOB_TYPES.VPAT_GENERATION:
+      return getVpatQueue();
+    case JOB_TYPES.ALT_TEXT_GENERATION:
+    case JOB_TYPES.METADATA_EXTRACTION:
+      return getFileProcessingQueue();
+    default: {
+      const exhaustiveCheck: never = type;
+      throw new Error(`Unknown job type: ${exhaustiveCheck}`);
+    }
+  }
 }
 
 export class QueueService {
@@ -58,39 +84,22 @@ export class QueueService {
       options,
     };
 
-    let queueJob: Job<JobData, JobResult>;
+    try {
+      const queue = getQueueForJobType(type);
+      await queue.add(type, jobData, {
+        jobId: dbJob.id,
+        priority,
+      });
 
-    switch (type) {
-      case JOB_TYPES.PDF_ACCESSIBILITY:
-      case JOB_TYPES.EPUB_ACCESSIBILITY:
-      case JOB_TYPES.BATCH_VALIDATION:
-        queueJob = await getAccessibilityQueue().add(type, jobData, {
-          jobId: dbJob.id,
-          priority,
-        });
-        break;
-
-      case JOB_TYPES.VPAT_GENERATION:
-        queueJob = await getVpatQueue().add(type, jobData, {
-          jobId: dbJob.id,
-          priority,
-        });
-        break;
-
-      case JOB_TYPES.ALT_TEXT_GENERATION:
-      case JOB_TYPES.METADATA_EXTRACTION:
-        queueJob = await getFileProcessingQueue().add(type, jobData, {
-          jobId: dbJob.id,
-          priority,
-        });
-        break;
-
-      default:
-        throw AppError.badRequest(`Unknown job type: ${type}`);
+      console.log(`📋 Job ${dbJob.id} added to queue: ${type}`);
+      return dbJob.id;
+    } catch (queueError) {
+      await prisma.job.update({
+        where: { id: dbJob.id },
+        data: { status: 'FAILED', error: 'Failed to enqueue job' },
+      });
+      throw queueError;
     }
-
-    console.log(`📋 Job ${dbJob.id} added to queue: ${type}`);
-    return dbJob.id;
   }
 
   async getJobStatus(jobId: string, tenantId: string) {
@@ -136,23 +145,8 @@ export class QueueService {
 
     if (areQueuesAvailable()) {
       try {
-        let queueJob = null;
-        
-        switch (job.type) {
-          case JOB_TYPES.PDF_ACCESSIBILITY:
-          case JOB_TYPES.EPUB_ACCESSIBILITY:
-          case JOB_TYPES.BATCH_VALIDATION:
-            queueJob = await getAccessibilityQueue().getJob(jobId);
-            break;
-          case JOB_TYPES.VPAT_GENERATION:
-            queueJob = await getVpatQueue().getJob(jobId);
-            break;
-          case JOB_TYPES.ALT_TEXT_GENERATION:
-          case JOB_TYPES.METADATA_EXTRACTION:
-            queueJob = await getFileProcessingQueue().getJob(jobId);
-            break;
-        }
-        
+        const queue = getQueueForJobType(job.type);
+        const queueJob = await queue.getJob(jobId);
         if (queueJob) {
           await queueJob.remove();
         }
@@ -174,7 +168,7 @@ export class QueueService {
     status: 'PROCESSING' | 'COMPLETED' | 'FAILED',
     data?: { output?: Record<string, unknown>; error?: string }
   ): Promise<void> {
-    const updateData: Record<string, unknown> = { status };
+    const updateData: JobUpdateData = { status: status as JobStatus };
 
     if (status === 'PROCESSING') {
       updateData.startedAt = new Date();
@@ -183,7 +177,7 @@ export class QueueService {
     }
 
     if (data?.output) {
-      updateData.output = data.output;
+      updateData.output = data.output as Prisma.InputJsonValue;
     }
 
     if (data?.error) {

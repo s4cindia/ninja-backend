@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 export const listFilesSchema = {
   query: z.object({
-    page: z.string().optional().transform((val) => val ? parseInt(val, 10) : 1),
-    limit: z.string().optional().transform((val) => val ? parseInt(val, 10) : 20),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
     status: z.enum(['UPLOADED', 'PROCESSING', 'PROCESSED', 'ERROR']).optional(),
     mimeType: z.string().optional(),
-    sortBy: z.enum(['createdAt', 'size', 'originalName']).optional().default('createdAt'),
-    sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
+    sortBy: z.enum(['createdAt', 'size', 'originalName']).default('createdAt'),
+    sortOrder: z.enum(['asc', 'desc']).default('desc'),
   }),
 };
 
@@ -23,7 +23,7 @@ export const updateFileStatusSchema = {
   }),
   body: z.object({
     status: z.enum(['UPLOADED', 'PROCESSING', 'PROCESSED', 'ERROR']),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
   }),
 };
 
