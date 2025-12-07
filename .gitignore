@@ -109,5 +109,9 @@ bower_components
 web_modules/
 .lock-wscript
 
+# Uploads (keep .gitkeep)
+data/uploads/*
+!data/uploads/.gitkeep
+
 # Local state (Replit Agent)
 .local/
