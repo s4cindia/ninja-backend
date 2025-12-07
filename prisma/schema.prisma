@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  users       User[]
+  jobs        Job[]
+  products    Product[]
+}
+
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  password    String
+  firstName   String
+  lastName    String
+  role        UserRole @default(USER)
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  jobs        Job[]
+
+  @@index([tenantId])
+  @@index([email])
+}
+
+enum UserRole {
+  ADMIN
+  USER
+  VIEWER
+}
+
+model Product {
+  id             String           @id @default(uuid())
+  tenantId       String
+  tenant         Tenant           @relation(fields: [tenantId], references: [id])
+  title          String
+  isbn           String?
+  format         DocumentFormat
+  status         ComplianceStatus @default(NOT_ASSESSED)
+  lastAssessedAt DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  deletedAt      DateTime?
+
+  jobs           Job[]
+  vpats          Vpat[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum DocumentFormat {
+  PDF
+  EPUB
+}
+
+enum ComplianceStatus {
+  COMPLIANT
+  NEEDS_ATTENTION
+  NON_COMPLIANT
+  NOT_ASSESSED
+}
+
+model Job {
+  id          String    @id @default(uuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  productId   String?
+  product     Product?  @relation(fields: [productId], references: [id])
+  type        JobType
+  status      JobStatus @default(QUEUED)
+  priority    Int       @default(0)
+  input       Json
+  output      Json?
+  error       String?
+  progress    Int       @default(0)
+  tokensUsed  Int       @default(0)
+  costInr     Float     @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  validationResults ValidationResult[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+enum JobType {
+  PDF_ACCESSIBILITY
+  EPUB_ACCESSIBILITY
+  VPAT_GENERATION
+  ALT_TEXT_GENERATION
+  METADATA_EXTRACTION
+  BATCH_VALIDATION
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ValidationResult {
+  id          String   @id @default(uuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id])
+  category    String
+  checkType   String
+  passed      Boolean
+  score       Float?
+  details     Json
+  createdAt   DateTime @default(now())
+
+  issues      Issue[]
+
+  @@index([jobId])
+  @@index([category])
+}
+
+model Issue {
+  id                  String           @id @default(uuid())
+  validationResultId  String
+  validationResult    ValidationResult @relation(fields: [validationResultId], references: [id])
+  severity            IssueSeverity
+  wcagCriteria        String?
+  description         String
+  location            String?
+  suggestion          String?
+  autoFixable         Boolean          @default(false)
+  createdAt           DateTime         @default(now())
+
+  @@index([validationResultId])
+  @@index([severity])
+}
+
+enum IssueSeverity {
+  CRITICAL
+  MAJOR
+  MINOR
+  INFO
+}
+
+model Vpat {
+  id          String     @id @default(uuid())
+  productId   String
+  product     Product    @relation(fields: [productId], references: [id])
+  version     String
+  standard    String     @default("WCAG 2.1 AA")
+  status      VpatStatus @default(DRAFT)
+  content     Json
+  generatedAt DateTime   @default(now())
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([productId])
+}
+
+enum VpatStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+  ARCHIVED
+}

@@ -10,13 +10,19 @@
     "test": "echo \"Tests passed\" && exit 0",
     "lint": "echo \"Linting passed\" && exit 0"
   },
-  "keywords": ["ninja", "api", "accessibility"],
+  "keywords": [
+    "ninja",
+    "api",
+    "accessibility"
+  ],
   "author": "S4Carlisle",
   "license": "MIT",
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "prisma": "^5.22.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
