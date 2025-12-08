@@ -1,0 +1,327 @@
+## Context
+Upstash Redis requires TLS/SSL connections. The current Redis configuration doesn't handle TLS properly, causing ECONNRESET errors.
+
+## Objective
+Update the Redis configuration to support TLS connections for Upstash.
+
+## Technical Requirements
+
+**Update `src/lib/redis.ts`:**
+```typescript
+import Redis from 'ioredis';
+import { getRedisUrl } from '../config/redis.config.js';
+
+let redisClient: Redis | null = null;
+
+export function getRedisClient(): Redis {
+  if (!redisClient) {
+    const redisUrl = getRedisUrl();
+    
+    if (!redisUrl) {
+      throw new Error('Redis URL not configured');
+    }
+
+    // Check if URL uses rediss:// (TLS) or contains upstash
+    const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
+    
+    // Parse the URL and create connection options
+    const options: any = {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+      retryStrategy: (times: number) => {
+        if (times > 3) {
+          console.error('Redis connection failed after 3 retries');
+          return null;
+        }
+        return Math.min(times * 200, 1000);
+      },
+    };
+
+    // Add TLS configuration for Upstash or rediss:// URLs
+    if (useTls) {
+      options.tls = {
+        rejectUnauthorized: false,
+      };
+    }
+
+    // If URL starts with rediss://, convert to redis:// and use tls option
+    let connectionUrl = redisUrl;
+    if (redisUrl.startsWith('rediss://')) {
+      connectionUrl = redisUrl.replace('rediss://', 'redis://');
+      options.tls = {
+        rejectUnauthorized: false,
+      };
+    }
+
+    redisClient = new Redis(connectionUrl, options);
+
+    redisClient.on('connect', () => {
+      console.log('📦 Redis connected');
+    });
+
+    redisClient.on('error', (err) => {
+      console.error('Redis error:', err.message);
+    });
+
+    redisClient.on('close', () => {
+      console.log('Redis connection closed');
+    });
+  }
+
+  return redisClient;
+}
+
+export async function closeRedisConnection(): Promise<void> {
+  if (redisClient) {
+    await redisClient.quit();
+    redisClient = null;
+  }
+}
+```
+
+**Update `src/config/redis.config.ts`:**
+```typescript
+import { RedisOptions } from 'ioredis';
+
+export const redisConfig: RedisOptions = {
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  password: process.env.REDIS_PASSWORD || undefined,
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+};
+
+export const getRedisUrl = (): string | null => {
+  // Check for various Redis URL environment variables
+  if (process.env.REDIS_URL) {
+    return process.env.REDIS_URL;
+  }
+  if (process.env.KV_URL) {
+    return process.env.KV_URL;
+  }
+  // Return null if no Redis URL is configured
+  return null;
+};
+```
+
+**Update `src/queues/index.ts` to handle TLS:**
+
+Find where queues are created and ensure they use the same TLS-aware connection. Update the connection creation to be lazy and TLS-aware:
+```typescript
+import { Queue, QueueEvents } from 'bullmq';
+import { getRedisClient } from '../lib/redis.js';
+import { getRedisUrl } from '../config/redis.config.js';
+
+// Queue names
+export const QUEUE_NAMES = {
+  ACCESSIBILITY: 'accessibility-validation',
+  VPAT: 'vpat-generation',
+  FILE_PROCESSING: 'file-processing',
+} as const;
+
+export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
+
+// Job types
+export const JOB_TYPES = {
+  PDF_ACCESSIBILITY: 'PDF_ACCESSIBILITY',
+  EPUB_ACCESSIBILITY: 'EPUB_ACCESSIBILITY',
+  VPAT_GENERATION: 'VPAT_GENERATION',
+  ALT_TEXT_GENERATION: 'ALT_TEXT_GENERATION',
+  METADATA_EXTRACTION: 'METADATA_EXTRACTION',
+  BATCH_VALIDATION: 'BATCH_VALIDATION',
+} as const;
+
+export type JobType = typeof JOB_TYPES[keyof typeof JOB_TYPES];
+
+// Job data interface
+export interface JobData {
+  type: JobType;
+  tenantId: string;
+  userId: string;
+  fileId?: string;
+  productId?: string;
+  options?: Record<string, unknown>;
+}
+
+// Job result interface
+export interface JobResult {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: string;
+}
+
+// Get BullMQ-compatible connection options
+function getBullMQConnection() {
+  const redisUrl = getRedisUrl();
+  
+  if (!redisUrl) {
+    return null;
+  }
+
+  const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
+  let connectionUrl = redisUrl;
+  
+  if (redisUrl.startsWith('rediss://')) {
+    connectionUrl = redisUrl.replace('rediss://', 'redis://');
+  }
+
+  const options: any = {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+
+  if (useTls) {
+    options.tls = {
+      rejectUnauthorized: false,
+    };
+  }
+
+  // Parse URL for BullMQ connection
+  const url = new URL(connectionUrl);
+  return {
+    host: url.hostname,
+    port: parseInt(url.port || '6379', 10),
+    password: url.password || undefined,
+    username: url.username || undefined,
+    ...options,
+  };
+}
+
+// Lazy queue initialization
+let _accessibilityQueue: Queue<JobData, JobResult> | null = null;
+let _vpatQueue: Queue<JobData, JobResult> | null = null;
+let _fileProcessingQueue: Queue<JobData, JobResult> | null = null;
+let _accessibilityQueueEvents: QueueEvents | null = null;
+let _vpatQueueEvents: QueueEvents | null = null;
+let _fileProcessingQueueEvents: QueueEvents | null = null;
+
+const defaultJobOptions = {
+  attempts: 3,
+  backoff: {
+    type: 'exponential' as const,
+    delay: 1000,
+  },
+  removeOnComplete: {
+    count: 100,
+    age: 24 * 60 * 60,
+  },
+  removeOnFail: {
+    count: 500,
+    age: 7 * 24 * 60 * 60,
+  },
+};
+
+export function getAccessibilityQueue(): Queue<JobData, JobResult> | null {
+  if (!_accessibilityQueue) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _accessibilityQueue = new Queue(QUEUE_NAMES.ACCESSIBILITY, {
+      connection,
+      defaultJobOptions,
+    });
+  }
+  return _accessibilityQueue;
+}
+
+export function getVpatQueue(): Queue<JobData, JobResult> | null {
+  if (!_vpatQueue) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _vpatQueue = new Queue(QUEUE_NAMES.VPAT, {
+      connection,
+      defaultJobOptions,
+    });
+  }
+  return _vpatQueue;
+}
+
+export function getFileProcessingQueue(): Queue<JobData, JobResult> | null {
+  if (!_fileProcessingQueue) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _fileProcessingQueue = new Queue(QUEUE_NAMES.FILE_PROCESSING, {
+      connection,
+      defaultJobOptions,
+    });
+  }
+  return _fileProcessingQueue;
+}
+
+// Export getters for backward compatibility
+export const accessibilityQueue = { get: getAccessibilityQueue };
+export const vpatQueue = { get: getVpatQueue };
+export const fileProcessingQueue = { get: getFileProcessingQueue };
+
+// Queue events
+export function getAccessibilityQueueEvents(): QueueEvents | null {
+  if (!_accessibilityQueueEvents) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _accessibilityQueueEvents = new QueueEvents(QUEUE_NAMES.ACCESSIBILITY, { connection });
+  }
+  return _accessibilityQueueEvents;
+}
+
+export function getVpatQueueEvents(): QueueEvents | null {
+  if (!_vpatQueueEvents) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _vpatQueueEvents = new QueueEvents(QUEUE_NAMES.VPAT, { connection });
+  }
+  return _vpatQueueEvents;
+}
+
+export function getFileProcessingQueueEvents(): QueueEvents | null {
+  if (!_fileProcessingQueueEvents) {
+    const connection = getBullMQConnection();
+    if (!connection) return null;
+    
+    _fileProcessingQueueEvents = new QueueEvents(QUEUE_NAMES.FILE_PROCESSING, { connection });
+  }
+  return _fileProcessingQueueEvents;
+}
+
+// Export all queues map
+export const queues = {
+  [QUEUE_NAMES.ACCESSIBILITY]: getAccessibilityQueue,
+  [QUEUE_NAMES.VPAT]: getVpatQueue,
+  [QUEUE_NAMES.FILE_PROCESSING]: getFileProcessingQueue,
+};
+
+// Get queue by name
+export function getQueue(name: QueueName): Queue<JobData, JobResult> | null {
+  return queues[name]?.() || null;
+}
+
+// Graceful shutdown
+export async function closeQueues(): Promise<void> {
+  const closePromises: Promise<void>[] = [];
+  
+  if (_accessibilityQueue) closePromises.push(_accessibilityQueue.close());
+  if (_vpatQueue) closePromises.push(_vpatQueue.close());
+  if (_fileProcessingQueue) closePromises.push(_fileProcessingQueue.close());
+  if (_accessibilityQueueEvents) closePromises.push(_accessibilityQueueEvents.close());
+  if (_vpatQueueEvents) closePromises.push(_vpatQueueEvents.close());
+  if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
+  
+  await Promise.all(closePromises);
+}
+```
+
+## Tasks
+1. Update src/lib/redis.ts with TLS support
+2. Update src/config/redis.config.ts 
+3. Update src/queues/index.ts with TLS-aware connection
+4. Update any files that import from queues/index.ts to use the new getter functions
+5. Restart server and verify Redis connects without errors
+
+## Acceptance Criteria
+- [ ] Redis connects to Upstash without ECONNRESET errors
+- [ ] Workers start successfully
+- [ ] No TLS/SSL errors in console
+- [ ] Server runs stably

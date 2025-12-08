@@ -1,5 +1,6 @@
 import { Queue, QueueEvents } from 'bullmq';
-import { getRedisClient, isRedisConfigured } from '../lib/redis';
+import { isRedisConfigured } from '../lib/redis';
+import { getRedisUrl } from '../config/redis.config';
 
 export const QUEUE_NAMES = {
   ACCESSIBILITY: 'accessibility-validation',
@@ -35,6 +36,52 @@ export interface JobResult {
   error?: string;
 }
 
+interface BullMQConnectionOptions {
+  host: string;
+  port: number;
+  password?: string;
+  username?: string;
+  maxRetriesPerRequest: null;
+  enableReadyCheck: boolean;
+  tls?: {
+    rejectUnauthorized: boolean;
+  };
+}
+
+function getBullMQConnection(): BullMQConnectionOptions | null {
+  const redisUrl = getRedisUrl();
+  
+  if (!redisUrl) {
+    return null;
+  }
+
+  const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
+  let connectionUrl = redisUrl;
+  
+  if (redisUrl.startsWith('rediss://')) {
+    connectionUrl = redisUrl.replace('rediss://', 'redis://');
+  }
+
+  const url = new URL(connectionUrl);
+  
+  const options: BullMQConnectionOptions = {
+    host: url.hostname,
+    port: parseInt(url.port || '6379', 10),
+    password: url.password || undefined,
+    username: url.username || undefined,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+
+  if (useTls) {
+    options.tls = {
+      rejectUnauthorized: false,
+    };
+  }
+
+  return options;
+}
+
 const defaultJobOptions = {
   attempts: 3,
   backoff: {
@@ -67,7 +114,11 @@ function ensureQueuesInitialized(): void {
     return;
   }
 
-  const connection = getRedisClient();
+  const connection = getBullMQConnection();
+  if (!connection) {
+    console.warn('⚠️  Could not create Redis connection - queues will not be available');
+    return;
+  }
 
   _accessibilityQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.ACCESSIBILITY,
@@ -97,7 +148,7 @@ function ensureQueuesInitialized(): void {
   });
 
   _initialized = true;
-  console.log('📦 BullMQ queues initialized');
+  console.log('📦 BullMQ queues initialized with TLS support');
 }
 
 export function getAccessibilityQueue(): Queue<JobData, JobResult> {
@@ -140,6 +191,8 @@ export function getQueue(name: QueueName): Queue<JobData, JobResult> {
 export function areQueuesAvailable(): boolean {
   return isRedisConfigured();
 }
+
+export { getBullMQConnection };
 
 export async function closeQueues(): Promise<void> {
   if (!_initialized) return;

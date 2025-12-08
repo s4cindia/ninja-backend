@@ -1,7 +1,7 @@
 import { Job, Worker } from 'bullmq';
-import { getRedisClient, isRedisConfigured } from '../lib/redis';
+import { isRedisConfigured } from '../lib/redis';
+import { getBullMQConnection, JobData, JobResult } from '../queues';
 import { queueService } from '../services/queue.service';
-import { JobData, JobResult } from '../queues';
 
 export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
 
@@ -20,7 +20,12 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
   }
 
   try {
-    const connection = getRedisClient();
+    const connection = getBullMQConnection();
+    
+    if (!connection) {
+      console.warn(`⚠️  Cannot create worker for ${queueName} - Redis connection not available`);
+      return null;
+    }
 
     const worker = new Worker<JobData, JobResult>(
       queueName,

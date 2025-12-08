@@ -9,17 +9,39 @@ export function getRedisClient(): Redis {
   if (!redisClient) {
     const redisUrl = getRedisUrl();
     
-    redisClient = new Redis(redisUrl, {
+    if (!redisUrl) {
+      throw new Error('Redis URL not configured');
+    }
+
+    const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
+    
+    const options: Record<string, unknown> = {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
-      retryStrategy: (times) => {
+      retryStrategy: (times: number) => {
         if (times > 3) {
           console.error('Redis connection failed after 3 retries');
           return null;
         }
         return Math.min(times * 200, 1000);
       },
-    });
+    };
+
+    if (useTls) {
+      options.tls = {
+        rejectUnauthorized: false,
+      };
+    }
+
+    let connectionUrl = redisUrl;
+    if (redisUrl.startsWith('rediss://')) {
+      connectionUrl = redisUrl.replace('rediss://', 'redis://');
+      options.tls = {
+        rejectUnauthorized: false,
+      };
+    }
+
+    redisClient = new Redis(connectionUrl, options);
 
     redisClient.on('connect', () => {
       console.log('📦 Redis connected');
@@ -27,6 +49,10 @@ export function getRedisClient(): Redis {
 
     redisClient.on('error', (err) => {
       console.error('Redis error:', err.message);
+    });
+
+    redisClient.on('close', () => {
+      console.log('Redis connection closed');
     });
   }
 

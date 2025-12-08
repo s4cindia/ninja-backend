@@ -16,12 +16,12 @@ export function isRedisConfigured(): boolean {
   );
 }
 
-export const getRedisUrl = (): string => {
-  if (process.env.KV_URL) {
-    return process.env.KV_URL;
-  }
+export const getRedisUrl = (): string | null => {
   if (process.env.REDIS_URL) {
     return process.env.REDIS_URL;
   }
-  return `redis://${redisConfig.host}:${redisConfig.port}`;
+  if (process.env.KV_URL) {
+    return process.env.KV_URL;
+  }
+  return null;
 };

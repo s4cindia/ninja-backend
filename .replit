@@ -26,6 +26,10 @@ externalPort = 3002
 localPort = 39229
 externalPort = 3001
 
+[[ports]]
+localPort = 46563
+externalPort = 3003
+
 [env]
 NODE_OPTIONS = "--max-old-space-size=4096"
 
