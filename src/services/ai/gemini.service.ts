@@ -92,7 +92,9 @@ class GeminiService {
               msg.includes('api_key') ||
               msg.includes('not configured') ||
               msg.includes('invalid') ||
-              msg.includes('not found')) {
+              msg.includes('not found') ||
+              msg.includes('quota') ||
+              msg.includes('exceeded')) {
             throw error;
           }
         }

@@ -42,6 +42,13 @@ src/
 - Return standardized error responses
 - Include request ID in all responses
 
+## AI Integration (Gemini)
+- Config: src/config/ai.config.ts
+- Service: src/services/ai/gemini.service.ts
+- Routes: /api/v1/ai/health (public), /api/v1/ai/test (authenticated)
+- Models: gemini-2.0-flash (default), gemini-1.5-pro (complex tasks)
+- Features: Rate limiting, exponential backoff retry, text/image/chat generation
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev
