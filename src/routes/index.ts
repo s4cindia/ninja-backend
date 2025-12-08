@@ -5,6 +5,7 @@ import usersRoutes from './users.routes';
 import productsRoutes from './products.routes';
 import jobsRoutes from './jobs.routes';
 import filesRoutes from './files.routes';
+import aiRoutes from './ai.routes';
 
 const router = Router();
 
@@ -50,6 +51,10 @@ router.get('/', (req, res) => {
         download: 'GET /api/v1/files/:id/download',
         delete: 'DELETE /api/v1/files/:id',
       },
+      ai: {
+        health: 'GET /api/v1/ai/health',
+        test: 'POST /api/v1/ai/test',
+      },
     },
   });
 });
@@ -59,5 +64,6 @@ router.use('/users', usersRoutes);
 router.use('/products', productsRoutes);
 router.use('/jobs', jobsRoutes);
 router.use('/files', filesRoutes);
+router.use('/ai', aiRoutes);
 
 export default router;
