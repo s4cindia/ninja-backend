@@ -1,0 +1,354 @@
+## Context
+Setting up Google Gemini AI integration for the Ninja Platform. Gemini will power accessibility analysis, alt text generation, and compliance checking.
+
+## Current State
+- Sprint 1 complete with Express API, Prisma, JWT auth
+- BullMQ job queues working with Upstash Redis
+- GEMINI_API_KEY stored in environment secrets
+
+## Objective
+Create a Gemini API client service with proper error handling, retry logic, and rate limiting.
+
+## Technical Requirements
+
+**Install the Gemini SDK:**
+
+```bash
+npm install @google/generative-ai
+Create src/config/ai.config.ts:
+export const aiConfig = {
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+    model: 'gemini-1.5-flash', // Fast and cost-effective for most tasks
+    modelPro: 'gemini-1.5-pro', // For complex analysis
+    maxRetries: 3,
+    retryDelay: 1000, // ms
+    timeout: 60000, // 60 seconds
+    rateLimit: {
+      requestsPerMinute: 60,
+      tokensPerMinute: 1000000,
+    },
+  },
+  defaults: {
+    temperature: 0.2, // Low for consistent, factual responses
+    topP: 0.8,
+    topK: 40,
+    maxOutputTokens: 8192,
+  },
+};
+Create src/services/ai/gemini.service.ts:
+import { GoogleGenerativeAI, GenerativeModel, GenerationConfig, Content } from '@google/generative-ai';
+import { aiConfig } from '../../config/ai.config.js';
+import { AppError } from '../../utils/app-error.js';
+
+export interface GeminiResponse {
+  text: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  finishReason?: string;
+}
+
+export interface GeminiOptions {
+  model?: 'flash' | 'pro';
+  temperature?: number;
+  maxOutputTokens?: number;
+  systemInstruction?: string;
+}
+
+class GeminiService {
+  private client: GoogleGenerativeAI | null = null;
+  private requestCount = 0;
+  private lastResetTime = Date.now();
+
+  private getClient(): GoogleGenerativeAI {
+    if (!this.client) {
+      if (!aiConfig.gemini.apiKey) {
+        throw AppError.internal('GEMINI_API_KEY is not configured');
+      }
+      this.client = new GoogleGenerativeAI(aiConfig.gemini.apiKey);
+    }
+    return this.client;
+  }
+
+  private getModel(options: GeminiOptions = {}): GenerativeModel {
+    const client = this.getClient();
+    const modelName = options.model === 'pro' 
+      ? aiConfig.gemini.modelPro 
+      : aiConfig.gemini.model;
+    
+    const generationConfig: GenerationConfig = {
+      temperature: options.temperature ?? aiConfig.defaults.temperature,
+      topP: aiConfig.defaults.topP,
+      topK: aiConfig.defaults.topK,
+      maxOutputTokens: options.maxOutputTokens ?? aiConfig.defaults.maxOutputTokens,
+    };
+
+    return client.getGenerativeModel({
+      model: modelName,
+      generationConfig,
+      systemInstruction: options.systemInstruction,
+    });
+  }
+
+  private async checkRateLimit(): Promise<void> {
+    const now = Date.now();
+    const timeSinceReset = now - this.lastResetTime;
+    
+    // Reset counter every minute
+    if (timeSinceReset >= 60000) {
+      this.requestCount = 0;
+      this.lastResetTime = now;
+    }
+    
+    // Check if we've hit the rate limit
+    if (this.requestCount >= aiConfig.gemini.rateLimit.requestsPerMinute) {
+      const waitTime = 60000 - timeSinceReset;
+      console.log(`Rate limit reached. Waiting ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      this.requestCount = 0;
+      this.lastResetTime = Date.now();
+    }
+    
+    this.requestCount++;
+  }
+
+  private async retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    retries = aiConfig.gemini.maxRetries
+  ): Promise<T> {
+    let lastError: Error | undefined;
+    
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error as Error;
+        
+        // Don't retry on certain errors
+        if (error instanceof Error) {
+          if (error.message.includes('API key') || 
+              error.message.includes('invalid') ||
+              error.message.includes('not found')) {
+            throw error;
+          }
+        }
+        
+        if (attempt < retries) {
+          const delay = aiConfig.gemini.retryDelay * Math.pow(2, attempt);
+          console.log(`Gemini API error, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    throw lastError || new Error('Unknown error in Gemini API call');
+  }
+
+  async generateText(prompt: string, options: GeminiOptions = {}): Promise<GeminiResponse> {
+    await this.checkRateLimit();
+    
+    return this.retryWithBackoff(async () => {
+      const model = this.getModel(options);
+      const result = await model.generateContent(prompt);
+      const response = result.response;
+      
+      const text = response.text();
+      const usageMetadata = response.usageMetadata;
+      
+      return {
+        text,
+        usage: usageMetadata ? {
+          promptTokens: usageMetadata.promptTokenCount || 0,
+          completionTokens: usageMetadata.candidatesTokenCount || 0,
+          totalTokens: usageMetadata.totalTokenCount || 0,
+        } : undefined,
+        finishReason: response.candidates?.[0]?.finishReason,
+      };
+    });
+  }
+
+  async generateStructuredOutput<T>(
+    prompt: string,
+    options: GeminiOptions = {}
+  ): Promise<{ data: T; usage?: GeminiResponse['usage'] }> {
+    const jsonPrompt = `${prompt}
+
+IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the JSON object.`;
+
+    const response = await this.generateText(jsonPrompt, options);
+    
+    try {
+      // Clean the response - remove markdown code blocks if present
+      let jsonText = response.text.trim();
+      if (jsonText.startsWith('```json')) {
+        jsonText = jsonText.slice(7);
+      } else if (jsonText.startsWith('```')) {
+        jsonText = jsonText.slice(3);
+      }
+      if (jsonText.endsWith('```')) {
+        jsonText = jsonText.slice(0, -3);
+      }
+      jsonText = jsonText.trim();
+      
+      const data = JSON.parse(jsonText) as T;
+      return { data, usage: response.usage };
+    } catch (parseError) {
+      console.error('Failed to parse Gemini response as JSON:', response.text);
+      throw AppError.internal('Failed to parse AI response as JSON');
+    }
+  }
+
+  async analyzeImage(
+    imageBase64: string,
+    mimeType: string,
+    prompt: string,
+    options: GeminiOptions = {}
+  ): Promise<GeminiResponse> {
+    await this.checkRateLimit();
+    
+    return this.retryWithBackoff(async () => {
+      const model = this.getModel(options);
+      
+      const imagePart = {
+        inlineData: {
+          data: imageBase64,
+          mimeType,
+        },
+      };
+      
+      const result = await model.generateContent([prompt, imagePart]);
+      const response = result.response;
+      
+      return {
+        text: response.text(),
+        usage: response.usageMetadata ? {
+          promptTokens: response.usageMetadata.promptTokenCount || 0,
+          completionTokens: response.usageMetadata.candidatesTokenCount || 0,
+          totalTokens: response.usageMetadata.totalTokenCount || 0,
+        } : undefined,
+        finishReason: response.candidates?.[0]?.finishReason,
+      };
+    });
+  }
+
+  async chat(
+    messages: Array<{ role: 'user' | 'model'; content: string }>,
+    options: GeminiOptions = {}
+  ): Promise<GeminiResponse> {
+    await this.checkRateLimit();
+    
+    return this.retryWithBackoff(async () => {
+      const model = this.getModel(options);
+      
+      const history: Content[] = messages.slice(0, -1).map(msg => ({
+        role: msg.role,
+        parts: [{ text: msg.content }],
+      }));
+      
+      const chat = model.startChat({ history });
+      const lastMessage = messages[messages.length - 1];
+      
+      const result = await chat.sendMessage(lastMessage.content);
+      const response = result.response;
+      
+      return {
+        text: response.text(),
+        usage: response.usageMetadata ? {
+          promptTokens: response.usageMetadata.promptTokenCount || 0,
+          completionTokens: response.usageMetadata.candidatesTokenCount || 0,
+          totalTokens: response.usageMetadata.totalTokenCount || 0,
+        } : undefined,
+        finishReason: response.candidates?.[0]?.finishReason,
+      };
+    });
+  }
+
+  // Health check method
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await this.generateText('Say "OK" if you can read this.', {
+        maxOutputTokens: 10,
+      });
+      return response.text.toLowerCase().includes('ok');
+    } catch (error) {
+      console.error('Gemini health check failed:', error);
+      return false;
+    }
+  }
+}
+
+export const geminiService = new GeminiService();
+Create src/routes/ai.routes.ts:
+import { Router, Request, Response, NextFunction } from 'express';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { geminiService } from '../services/ai/gemini.service.js';
+
+const router = Router();
+
+// Health check endpoint (public)
+router.get('/health', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isHealthy = await geminiService.healthCheck();
+    res.json({
+      success: true,
+      data: {
+        service: 'gemini',
+        status: isHealthy ? 'healthy' : 'unhealthy',
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Test endpoint (authenticated)
+router.post('/test', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { prompt, model } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Prompt is required' },
+      });
+    }
+    
+    const response = await geminiService.generateText(prompt, {
+      model: model === 'pro' ? 'pro' : 'flash',
+    });
+    
+    res.json({
+      success: true,
+      data: response,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;
+Update src/routes/index.ts to include AI routes:
+Add the import:
+import aiRoutes from './ai.routes.js';
+Add the route (after other routes):
+router.use('/ai', aiRoutes);
+Tasks
+Install @google/generative-ai package
+Create src/config/ai.config.ts
+Create src/services/ai/gemini.service.ts with the GeminiService class
+Create src/routes/ai.routes.ts with health check and test endpoints
+Update src/routes/index.ts to include AI routes
+Verify server starts without errors
+Test AI health check endpoint: GET /api/v1/ai/health
+Acceptance Criteria
+[ ] Gemini SDK installed
+[ ] AI config with model settings created
+[ ] GeminiService with generateText, generateStructuredOutput, analyzeImage, chat methods
+[ ] Rate limiting implemented
+[ ] Retry logic with exponential backoff
+[ ] Health check endpoint returns healthy status
+[ ] Server starts without errors
