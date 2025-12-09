@@ -1,0 +1,778 @@
+## Context
+Building a text extraction service that extracts text content from PDFs with position information, formatting details, and reading order. This is essential for accessibility validation and content analysis.
+
+## Current State
+- US-2.4.1 complete with PDFParserService
+- Can parse PDFs with pdf-lib and pdfjs-dist
+- Need to extract actual text content for analysis
+
+## Objective
+Create a text extraction service that extracts text with positioning, font information, and maintains reading order for accessibility checks.
+
+## Technical Requirements
+
+**Create `src/services/pdf/text-extractor.service.ts`:**
+```typescript
+import * as pdfjsLib from 'pdfjs-dist';
+import { pdfParserService, ParsedPDF } from './pdf-parser.service.js';
+
+export interface TextItem {
+  text: string;
+  pageNumber: number;
+  position: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  font: {
+    name: string;
+    size: number;
+    isBold: boolean;
+    isItalic: boolean;
+  };
+  transform: number[];
+}
+
+export interface TextLine {
+  text: string;
+  pageNumber: number;
+  items: TextItem[];
+  boundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  isHeading: boolean;
+  headingLevel?: number;
+}
+
+export interface TextBlock {
+  text: string;
+  pageNumber: number;
+  lines: TextLine[];
+  boundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  type: 'paragraph' | 'heading' | 'list' | 'caption' | 'footer' | 'header' | 'unknown';
+}
+
+export interface PageText {
+  pageNumber: number;
+  width: number;
+  height: number;
+  text: string;
+  items: TextItem[];
+  lines: TextLine[];
+  blocks: TextBlock[];
+  wordCount: number;
+  characterCount: number;
+}
+
+export interface DocumentText {
+  pages: PageText[];
+  fullText: string;
+  totalWords: number;
+  totalCharacters: number;
+  totalPages: number;
+  languages: string[];
+  readingOrder: 'left-to-right' | 'right-to-left' | 'mixed';
+}
+
+export interface ExtractionOptions {
+  includePositions?: boolean;
+  includeFontInfo?: boolean;
+  groupIntoLines?: boolean;
+  groupIntoBlocks?: boolean;
+  pageRange?: { start: number; end: number };
+  normalizeWhitespace?: boolean;
+}
+
+class TextExtractorService {
+  private readonly LINE_THRESHOLD = 5; // pixels - items within this Y distance are same line
+  private readonly BLOCK_THRESHOLD = 20; // pixels - lines within this Y distance are same block
+  private readonly HEADING_SIZE_MULTIPLIER = 1.2; // font size multiplier to detect headings
+
+  /**
+   * Extract all text from a parsed PDF
+   */
+  async extractText(
+    parsedPdf: ParsedPDF,
+    options: ExtractionOptions = {}
+  ): Promise<DocumentText> {
+    const {
+      includePositions = true,
+      includeFontInfo = true,
+      groupIntoLines = true,
+      groupIntoBlocks = true,
+      pageRange,
+      normalizeWhitespace = true,
+    } = options;
+
+    const pages: PageText[] = [];
+    let fullText = '';
+    let totalWords = 0;
+    let totalCharacters = 0;
+
+    const startPage = pageRange?.start || 1;
+    const endPage = pageRange?.end || parsedPdf.structure.pageCount;
+
+    // Collect font sizes to determine average (for heading detection)
+    const allFontSizes: number[] = [];
+
+    // First pass: collect font sizes
+    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+      const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      for (const item of textContent.items) {
+        if ('transform' in item && item.transform) {
+          const fontSize = Math.abs(item.transform[0]);
+          if (fontSize > 0) allFontSizes.push(fontSize);
+        }
+      }
+    }
+
+    // Calculate average and threshold for headings
+    const avgFontSize = allFontSizes.length > 0
+      ? allFontSizes.reduce((a, b) => a + b, 0) / allFontSizes.length
+      : 12;
+    const headingThreshold = avgFontSize * this.HEADING_SIZE_MULTIPLIER;
+
+    // Second pass: extract text
+    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+      const pageText = await this.extractPageText(
+        parsedPdf.pdfjsDoc,
+        pageNum,
+        {
+          includePositions,
+          includeFontInfo,
+          groupIntoLines,
+          groupIntoBlocks,
+          normalizeWhitespace,
+          headingThreshold,
+          avgFontSize,
+        }
+      );
+
+      pages.push(pageText);
+      fullText += pageText.text + '\n\n';
+      totalWords += pageText.wordCount;
+      totalCharacters += pageText.characterCount;
+    }
+
+    // Detect reading order from first few pages
+    const readingOrder = this.detectReadingOrder(pages.slice(0, 3));
+
+    // Detect languages (simplified)
+    const languages = this.detectLanguages(fullText);
+
+    return {
+      pages,
+      fullText: normalizeWhitespace ? this.normalizeText(fullText) : fullText,
+      totalWords,
+      totalCharacters,
+      totalPages: pages.length,
+      languages,
+      readingOrder,
+    };
+  }
+
+  /**
+   * Extract text from a single page
+   */
+  private async extractPageText(
+    pdfjsDoc: pdfjsLib.PDFDocumentProxy,
+    pageNumber: number,
+    options: {
+      includePositions: boolean;
+      includeFontInfo: boolean;
+      groupIntoLines: boolean;
+      groupIntoBlocks: boolean;
+      normalizeWhitespace: boolean;
+      headingThreshold: number;
+      avgFontSize: number;
+    }
+  ): Promise<PageText> {
+    const page = await pdfjsDoc.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const textContent = await page.getTextContent();
+
+    const items: TextItem[] = [];
+    const commonFonts = await this.getCommonFonts(page);
+
+    // Extract text items
+    for (const item of textContent.items) {
+      if (!('str' in item) || !item.str) continue;
+
+      const textItem = this.processTextItem(item, pageNumber, viewport, commonFonts, options);
+      if (textItem) {
+        items.push(textItem);
+      }
+    }
+
+    // Sort items by reading order (top to bottom, left to right)
+    items.sort((a, b) => {
+      const yDiff = a.position.y - b.position.y;
+      if (Math.abs(yDiff) > this.LINE_THRESHOLD) return yDiff;
+      return a.position.x - b.position.x;
+    });
+
+    // Group into lines
+    const lines = options.groupIntoLines
+      ? this.groupIntoLines(items, options.headingThreshold, options.avgFontSize)
+      : [];
+
+    // Group into blocks
+    const blocks = options.groupIntoBlocks && lines.length > 0
+      ? this.groupIntoBlocks(lines)
+      : [];
+
+    // Build page text
+    const pageText = lines.length > 0
+      ? lines.map(l => l.text).join('\n')
+      : items.map(i => i.text).join(' ');
+
+    const normalizedText = options.normalizeWhitespace
+      ? this.normalizeText(pageText)
+      : pageText;
+
+    return {
+      pageNumber,
+      width: viewport.width,
+      height: viewport.height,
+      text: normalizedText,
+      items: options.includePositions ? items : [],
+      lines,
+      blocks,
+      wordCount: this.countWords(normalizedText),
+      characterCount: normalizedText.length,
+    };
+  }
+
+  /**
+   * Process a single text item
+   */
+  private processTextItem(
+    item: any,
+    pageNumber: number,
+    viewport: pdfjsLib.PageViewport,
+    commonFonts: Map<string, any>,
+    options: { includePositions: boolean; includeFontInfo: boolean }
+  ): TextItem | null {
+    const text = item.str;
+    if (!text.trim()) return null;
+
+    const transform = item.transform || [1, 0, 0, 1, 0, 0];
+    const fontSize = Math.abs(transform[0]) || 12;
+    const x = transform[4];
+    const y = viewport.height - transform[5]; // Flip Y coordinate
+    const width = item.width || text.length * fontSize * 0.6;
+    const height = fontSize;
+
+    // Get font info
+    const fontName = item.fontName || 'unknown';
+    const fontInfo = commonFonts.get(fontName) || {};
+    const isBold = fontInfo.bold || /bold/i.test(fontName);
+    const isItalic = fontInfo.italic || /italic|oblique/i.test(fontName);
+
+    return {
+      text,
+      pageNumber,
+      position: options.includePositions ? { x, y, width, height } : { x: 0, y: 0, width: 0, height: 0 },
+      font: options.includeFontInfo
+        ? { name: fontName, size: fontSize, isBold, isItalic }
+        : { name: '', size: 0, isBold: false, isItalic: false },
+      transform,
+    };
+  }
+
+  /**
+   * Get common fonts from page
+   */
+  private async getCommonFonts(page: pdfjsLib.PDFPageProxy): Promise<Map<string, any>> {
+    const fonts = new Map<string, any>();
+    try {
+      const opList = await page.getOperatorList();
+      // Font info would be extracted here in a full implementation
+    } catch {
+      // Ignore font extraction errors
+    }
+    return fonts;
+  }
+
+  /**
+   * Group text items into lines
+   */
+  private groupIntoLines(
+    items: TextItem[],
+    headingThreshold: number,
+    avgFontSize: number
+  ): TextLine[] {
+    if (items.length === 0) return [];
+
+    const lines: TextLine[] = [];
+    let currentLine: TextItem[] = [items[0]];
+    let currentY = items[0].position.y;
+
+    for (let i = 1; i < items.length; i++) {
+      const item = items[i];
+      const yDiff = Math.abs(item.position.y - currentY);
+
+      if (yDiff <= this.LINE_THRESHOLD) {
+        // Same line
+        currentLine.push(item);
+      } else {
+        // New line
+        lines.push(this.createLine(currentLine, headingThreshold, avgFontSize));
+        currentLine = [item];
+        currentY = item.position.y;
+      }
+    }
+
+    // Don't forget the last line
+    if (currentLine.length > 0) {
+      lines.push(this.createLine(currentLine, headingThreshold, avgFontSize));
+    }
+
+    return lines;
+  }
+
+  /**
+   * Create a line from items
+   */
+  private createLine(
+    items: TextItem[],
+    headingThreshold: number,
+    avgFontSize: number
+  ): TextLine {
+    // Sort items by X position
+    items.sort((a, b) => a.position.x - b.position.x);
+
+    const text = items.map(i => i.text).join(' ');
+    const pageNumber = items[0].pageNumber;
+
+    // Calculate bounding box
+    const minX = Math.min(...items.map(i => i.position.x));
+    const minY = Math.min(...items.map(i => i.position.y));
+    const maxX = Math.max(...items.map(i => i.position.x + i.position.width));
+    const maxY = Math.max(...items.map(i => i.position.y + i.position.height));
+
+    // Detect if this is a heading
+    const avgLineFontSize = items.reduce((sum, i) => sum + i.font.size, 0) / items.length;
+    const isHeading = avgLineFontSize >= headingThreshold || items.some(i => i.font.isBold);
+    const headingLevel = isHeading ? this.detectHeadingLevel(avgLineFontSize, avgFontSize) : undefined;
+
+    return {
+      text,
+      pageNumber,
+      items,
+      boundingBox: {
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY,
+      },
+      isHeading,
+      headingLevel,
+    };
+  }
+
+  /**
+   * Detect heading level based on font size
+   */
+  private detectHeadingLevel(fontSize: number, avgFontSize: number): number {
+    const ratio = fontSize / avgFontSize;
+    if (ratio >= 2.0) return 1;
+    if (ratio >= 1.7) return 2;
+    if (ratio >= 1.4) return 3;
+    if (ratio >= 1.2) return 4;
+    return 5;
+  }
+
+  /**
+   * Group lines into blocks
+   */
+  private groupIntoBlocks(lines: TextLine[]): TextBlock[] {
+    if (lines.length === 0) return [];
+
+    const blocks: TextBlock[] = [];
+    let currentBlock: TextLine[] = [lines[0]];
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      const prevLine = currentBlock[currentBlock.length - 1];
+      const yGap = line.boundingBox.y - (prevLine.boundingBox.y + prevLine.boundingBox.height);
+
+      if (yGap <= this.BLOCK_THRESHOLD && !prevLine.isHeading) {
+        // Same block
+        currentBlock.push(line);
+      } else {
+        // New block
+        blocks.push(this.createBlock(currentBlock));
+        currentBlock = [line];
+      }
+    }
+
+    // Don't forget the last block
+    if (currentBlock.length > 0) {
+      blocks.push(this.createBlock(currentBlock));
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Create a block from lines
+   */
+  private createBlock(lines: TextLine[]): TextBlock {
+    const text = lines.map(l => l.text).join('\n');
+    const pageNumber = lines[0].pageNumber;
+
+    // Calculate bounding box
+    const minX = Math.min(...lines.map(l => l.boundingBox.x));
+    const minY = Math.min(...lines.map(l => l.boundingBox.y));
+    const maxX = Math.max(...lines.map(l => l.boundingBox.x + l.boundingBox.width));
+    const maxY = Math.max(...lines.map(l => l.boundingBox.y + l.boundingBox.height));
+
+    // Detect block type
+    const type = this.detectBlockType(lines, text);
+
+    return {
+      text,
+      pageNumber,
+      lines,
+      boundingBox: {
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY,
+      },
+      type,
+    };
+  }
+
+  /**
+   * Detect block type
+   */
+  private detectBlockType(
+    lines: TextLine[],
+    text: string
+  ): TextBlock['type'] {
+    // Check for heading
+    if (lines.length === 1 && lines[0].isHeading) {
+      return 'heading';
+    }
+
+    // Check for list
+    const listPattern = /^[\u2022\u2023\u25E6\u2043\u2219•◦‣⁃○●\-\*]\s|^\d+[\.\)]\s|^[a-z][\.\)]\s/im;
+    if (listPattern.test(text)) {
+      return 'list';
+    }
+
+    // Check for footer (small text at bottom)
+    const avgFontSize = lines.reduce((sum, l) =>
+      sum + l.items.reduce((s, i) => s + i.font.size, 0) / l.items.length, 0
+    ) / lines.length;
+    if (avgFontSize < 10 && lines[0].boundingBox.y > 700) {
+      return 'footer';
+    }
+
+    // Check for header (small text at top)
+    if (avgFontSize < 10 && lines[0].boundingBox.y < 50) {
+      return 'header';
+    }
+
+    // Check for caption (short, near images)
+    if (text.length < 200 && /^(figure|fig\.|table|image|photo)/i.test(text)) {
+      return 'caption';
+    }
+
+    // Default to paragraph
+    return lines.length > 0 ? 'paragraph' : 'unknown';
+  }
+
+  /**
+   * Detect reading order from pages
+   */
+  private detectReadingOrder(pages: PageText[]): 'left-to-right' | 'right-to-left' | 'mixed' {
+    // Simplified detection based on text positions
+    let ltrCount = 0;
+    let rtlCount = 0;
+
+    for (const page of pages) {
+      for (const line of page.lines) {
+        if (line.items.length > 1) {
+          const firstX = line.items[0].position.x;
+          const lastX = line.items[line.items.length - 1].position.x;
+          if (firstX < lastX) ltrCount++;
+          else rtlCount++;
+        }
+      }
+    }
+
+    if (ltrCount > rtlCount * 2) return 'left-to-right';
+    if (rtlCount > ltrCount * 2) return 'right-to-left';
+    return 'mixed';
+  }
+
+  /**
+   * Detect languages in text
+   */
+  private detectLanguages(text: string): string[] {
+    const languages: string[] = [];
+
+    // Simple detection based on character sets
+    if (/[\u0000-\u007F]/.test(text)) languages.push('en'); // ASCII/Latin
+    if (/[\u0400-\u04FF]/.test(text)) languages.push('ru'); // Cyrillic
+    if (/[\u4E00-\u9FFF]/.test(text)) languages.push('zh'); // Chinese
+    if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) languages.push('ja'); // Japanese
+    if (/[\uAC00-\uD7AF]/.test(text)) languages.push('ko'); // Korean
+    if (/[\u0600-\u06FF]/.test(text)) languages.push('ar'); // Arabic
+    if (/[\u0900-\u097F]/.test(text)) languages.push('hi'); // Hindi
+
+    return languages.length > 0 ? languages : ['unknown'];
+  }
+
+  /**
+   * Normalize text whitespace
+   */
+  private normalizeText(text: string): string {
+    return text
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  /**
+   * Count words in text
+   */
+  private countWords(text: string): number {
+    return text.split(/\s+/).filter(w => w.length > 0).length;
+  }
+
+  /**
+   * Extract text from a file path (convenience method)
+   */
+  async extractFromFile(
+    filePath: string,
+    options: ExtractionOptions = {}
+  ): Promise<DocumentText> {
+    const parsedPdf = await pdfParserService.parse(filePath);
+    try {
+      return await this.extractText(parsedPdf, options);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  }
+
+  /**
+   * Extract text from specific pages
+   */
+  async extractPages(
+    parsedPdf: ParsedPDF,
+    pageNumbers: number[],
+    options: ExtractionOptions = {}
+  ): Promise<PageText[]> {
+    const pages: PageText[] = [];
+    const allFontSizes: number[] = [];
+
+    // First pass: collect font sizes
+    for (const pageNum of pageNumbers) {
+      const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      for (const item of textContent.items) {
+        if ('transform' in item && item.transform) {
+          const fontSize = Math.abs(item.transform[0]);
+          if (fontSize > 0) allFontSizes.push(fontSize);
+        }
+      }
+    }
+
+    const avgFontSize = allFontSizes.length > 0
+      ? allFontSizes.reduce((a, b) => a + b, 0) / allFontSizes.length
+      : 12;
+    const headingThreshold = avgFontSize * this.HEADING_SIZE_MULTIPLIER;
+
+    // Second pass: extract text
+    for (const pageNum of pageNumbers) {
+      const pageText = await this.extractPageText(
+        parsedPdf.pdfjsDoc,
+        pageNum,
+        {
+          includePositions: options.includePositions ?? true,
+          includeFontInfo: options.includeFontInfo ?? true,
+          groupIntoLines: options.groupIntoLines ?? true,
+          groupIntoBlocks: options.groupIntoBlocks ?? true,
+          normalizeWhitespace: options.normalizeWhitespace ?? true,
+          headingThreshold,
+          avgFontSize,
+        }
+      );
+      pages.push(pageText);
+    }
+
+    return pages;
+  }
+}
+
+export const textExtractorService = new TextExtractorService();
+```
+
+**Update `src/routes/pdf.routes.ts` to add text extraction endpoints:**
+
+Add import at top:
+```typescript
+import { textExtractorService } from '../services/pdf/text-extractor.service.js';
+```
+
+Add new endpoints:
+```typescript
+// Extract all text from PDF
+router.post('/extract-text', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath, options = {} } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const documentText = await textExtractorService.extractFromFile(filePath, options);
+
+    res.json({
+      success: true,
+      data: {
+        totalPages: documentText.totalPages,
+        totalWords: documentText.totalWords,
+        totalCharacters: documentText.totalCharacters,
+        languages: documentText.languages,
+        readingOrder: documentText.readingOrder,
+        fullText: documentText.fullText,
+        pages: documentText.pages.map(p => ({
+          pageNumber: p.pageNumber,
+          wordCount: p.wordCount,
+          characterCount: p.characterCount,
+          text: p.text,
+          lineCount: p.lines.length,
+          blockCount: p.blocks.length,
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Extract text from specific page
+router.post('/extract-page/:pageNumber', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath, options = {} } = req.body;
+    const pageNumber = parseInt(req.params.pageNumber, 10);
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    if (isNaN(pageNumber) || pageNumber < 1) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Invalid page number' },
+      });
+    }
+
+    const parsedPdf = await pdfParserService.parse(filePath);
+    
+    try {
+      const [pageText] = await textExtractorService.extractPages(parsedPdf, [pageNumber], options);
+      
+      res.json({
+        success: true,
+        data: pageText,
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Get text statistics
+router.post('/text-stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const documentText = await textExtractorService.extractFromFile(filePath, {
+      includePositions: false,
+      includeFontInfo: false,
+      groupIntoLines: true,
+      groupIntoBlocks: true,
+    });
+
+    // Calculate statistics
+    const headingCount = documentText.pages.reduce(
+      (sum, p) => sum + p.lines.filter(l => l.isHeading).length, 0
+    );
+    
+    const blockTypes = documentText.pages.flatMap(p => p.blocks.map(b => b.type));
+    const blockTypeCounts = blockTypes.reduce((acc, type) => {
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    res.json({
+      success: true,
+      data: {
+        totalPages: documentText.totalPages,
+        totalWords: documentText.totalWords,
+        totalCharacters: documentText.totalCharacters,
+        averageWordsPerPage: Math.round(documentText.totalWords / documentText.totalPages),
+        languages: documentText.languages,
+        readingOrder: documentText.readingOrder,
+        headingCount,
+        blockTypeCounts,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+```
+
+## Tasks
+1. Create src/services/pdf/text-extractor.service.ts
+2. Update src/routes/pdf.routes.ts with text extraction endpoints
+3. Verify server starts without errors
+4. Test text extraction with a sample PDF if available
+
+## Acceptance Criteria
+- [ ] TextExtractorService extracts text with positions
+- [ ] Font information extracted (name, size, bold, italic)
+- [ ] Text grouped into lines based on Y position
+- [ ] Text grouped into blocks (paragraphs, headings, lists)
+- [ ] Heading detection based on font size
+- [ ] Reading order detection
+- [ ] Language detection
+- [ ] /api/v1/pdf/extract-text endpoint working
+- [ ] /api/v1/pdf/extract-page/:pageNumber endpoint working
+- [ ] /api/v1/pdf/text-stats endpoint working
+- [ ] Server starts without errors

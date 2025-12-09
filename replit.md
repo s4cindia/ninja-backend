@@ -71,6 +71,23 @@ src/
 - Features: Metadata extraction, page info, outline/bookmarks, tagged PDF detection
 - Security: Path validation with realpath to prevent traversal and symlink attacks
 
+## PDF Text Extraction Service
+- Service: src/services/pdf/text-extractor.service.ts
+- Endpoints:
+  - POST /api/v1/pdf/extract-text - Extract all text with positioning and structure
+  - POST /api/v1/pdf/extract-page/:pageNumber - Extract text from specific page
+  - POST /api/v1/pdf/text-stats - Get text statistics and structure analysis
+- Features:
+  - Text extraction with position information (x, y, width, height)
+  - Font info extraction (name, size, bold, italic)
+  - Line grouping with reading order detection
+  - Block grouping (paragraph, heading, list, caption, footer, header)
+  - Heading detection based on font size analysis
+  - Language detection (en, ru, zh, ja, ko, ar, hi)
+  - Reading order detection (left-to-right, right-to-left, mixed)
+  - Word and character counting
+- Options: includePositions, includeFontInfo, groupIntoLines, groupIntoBlocks, pageRange, normalizeWhitespace
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev
