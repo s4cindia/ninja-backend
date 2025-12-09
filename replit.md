@@ -59,6 +59,18 @@ src/
   - GET /api/v1/ai/usage/recent - Get recent usage records
 - Features: Token estimation, cost calculation, per-tenant usage tracking
 
+## PDF Parsing Service
+- Config: src/config/pdf.config.ts (size limits, page limits, timeout)
+- Service: src/services/pdf/pdf-parser.service.ts
+- Libraries: pdf-lib + pdfjs-dist (legacy build for Node.js)
+- Canvas: @napi-rs/canvas for Node.js DOM polyfills
+- Endpoints:
+  - POST /api/v1/pdf/parse - Parse PDF and return structure
+  - POST /api/v1/pdf/metadata - Get metadata only
+  - POST /api/v1/pdf/validate-basics - Basic accessibility checks
+- Features: Metadata extraction, page info, outline/bookmarks, tagged PDF detection
+- Security: Path validation with realpath to prevent traversal and symlink attacks
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev
