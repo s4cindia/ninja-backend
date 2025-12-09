@@ -1,0 +1,200 @@
+## Context
+CodeRabbit identified three improvements needed in the structure analyzer service before PR merge.
+
+## Fixes Required
+
+### 1. Improve Link Text Heuristic (WCAG 2.4.4)
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+Find the link text validation logic in the `analyzeLinks` method and replace it:
+```typescript
+// Find this pattern (checking if link text is descriptive):
+if (link.text && link.text.length > 3 && !/^(click|here|link|more)$/i.test(link.text)) {
+  link.hasDescriptiveText = true;
+} else {
+  link.issues.push('Link text is not descriptive (WCAG 2.4.4)');
+}
+
+// Replace with improved heuristic:
+const text = (link.text || '').trim();
+const nonDescriptivePattern = /^(click|here|link|more|read|download|learn|info)$/i;
+const nonDescriptivePhrases = /^(click here|read more|learn more|more info|download here)$/i;
+const shortAcronymPattern = /^[A-Z0-9]{2,5}$/;
+const whitelist = ['FAQ', 'PDF', 'API', 'URL', 'RSS', 'XML', 'CSV', 'HOME', 'HELP'];
+
+const isNonDescriptive = nonDescriptivePattern.test(text) || nonDescriptivePhrases.test(text);
+const isWhitelisted = whitelist.includes(text.toUpperCase());
+const isValidAcronym = shortAcronymPattern.test(text) && text === text.toUpperCase();
+
+if (text && !isNonDescriptive && (text.length > 3 || isWhitelisted || isValidAcronym)) {
+  link.hasDescriptiveText = true;
+} else {
+  link.issues.push('Link text is not descriptive (WCAG 2.4.4)');
+}
+```
+
+### 2. Fix Reading Order Scoring When Disabled
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+First, update the default value when reading order analysis is skipped:
+```typescript
+// Find this:
+const readingOrder = analyzeReadingOrder
+  ? await this.analyzeReadingOrder(parsedPdf, documentText, isTaggedPDF)
+  : { isLogical: false, hasStructureTree: false, issues: [], confidence: 0 };
+
+// Replace with:
+const readingOrder = analyzeReadingOrder
+  ? await this.analyzeReadingOrder(parsedPdf, documentText, isTaggedPDF)
+  : { isLogical: true, hasStructureTree: isTaggedPDF, issues: [], confidence: isTaggedPDF ? 0.9 : 0.5, skipped: true };
+```
+
+Then update the `calculateAccessibilityScore` method signature to accept the flag:
+```typescript
+// Find the method signature:
+private calculateAccessibilityScore(
+  isTaggedPDF: boolean,
+  headings: HeadingHierarchy,
+  tables: TableInfo[],
+  lists: ListInfo[],
+  links: LinkInfo[],
+  readingOrder: ReadingOrderInfo,
+  language: LanguageInfo,
+  summary: DocumentStructure['summary']
+): number {
+
+// Change to:
+private calculateAccessibilityScore(
+  isTaggedPDF: boolean,
+  headings: HeadingHierarchy,
+  tables: TableInfo[],
+  lists: ListInfo[],
+  links: LinkInfo[],
+  readingOrder: ReadingOrderInfo,
+  language: LanguageInfo,
+  summary: DocumentStructure['summary'],
+  includeReadingOrder: boolean = true
+): number {
+```
+
+Inside `calculateAccessibilityScore`, wrap the reading order penalties:
+```typescript
+// Find:
+// Reading order
+if (!readingOrder.isLogical) score -= 10;
+
+// Replace with:
+// Reading order (only penalize if analysis was performed)
+if (includeReadingOrder && !readingOrder.isLogical) {
+  score -= 10;
+}
+```
+
+Update the call to `calculateAccessibilityScore` in `analyzeStructure`:
+```typescript
+// Find:
+const accessibilityScore = this.calculateAccessibilityScore(
+  isTaggedPDF,
+  headings,
+  tables,
+  lists,
+  links,
+  readingOrder,
+  language,
+  summary
+);
+
+// Replace with:
+const accessibilityScore = this.calculateAccessibilityScore(
+  isTaggedPDF,
+  headings,
+  tables,
+  lists,
+  links,
+  readingOrder,
+  language,
+  summary,
+  analyzeReadingOrder
+);
+```
+
+### 3. Fix hasHeaderColumn Detection
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+In the table analysis section where tagged PDF tables are processed, add column header detection:
+```typescript
+// Find the table header detection logic. If there's a section checking for /TH tags:
+if (type === '/TH') {
+  table.hasHeaderRow = true;
+}
+
+// Replace with:
+if (type === '/TH') {
+  // For now, presence of TH indicates headers exist
+  // TODO: Distinguish row vs column headers based on position
+  table.hasHeaderRow = true;
+  // If TH is in first column of each row, it's a column header
+  // This is a simplified detection - full implementation would check cell positions
+}
+```
+
+Also update `detectTabularContent` method to attempt column header detection:
+```typescript
+// Find where hasHeaderRow is set based on bold text:
+if (block.lines[0]?.items.some(i => i.font.isBold)) {
+  table.hasHeaderRow = true;
+}
+
+// Add after it:
+// Check if first item of each line is bold (potential column headers)
+const firstItemsBold = block.lines.every(line => 
+  line.items[0]?.font.isBold === true
+);
+if (firstItemsBold && block.lines.length > 1) {
+  table.hasHeaderColumn = true;
+}
+```
+
+### 4. Add TODO Comment for languageChanges
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+In the `analyzeLanguage` method, add a clarifying comment:
+```typescript
+// Find:
+return {
+  documentLanguage,
+  hasDocumentLanguage: !!documentLanguage,
+  languageChanges: [], // Would require more sophisticated analysis
+  issues,
+};
+
+// Replace with:
+return {
+  documentLanguage,
+  hasDocumentLanguage: !!documentLanguage,
+  // TODO: Populate languageChanges when per-page/per-region language detection is implemented
+  // This would require analyzing text patterns or relying on tagged PDF Lang attributes
+  languageChanges: [],
+  issues,
+};
+```
+
+## Tasks
+1. Update link text heuristic with improved detection logic
+2. Fix reading order scoring to not penalize when analysis is disabled
+3. Add column header detection for tables
+4. Add clarifying TODO comment for languageChanges
+5. Verify TypeScript compiles without errors
+6. Verify server starts successfully
+
+## Acceptance Criteria
+- [ ] Link text validation allows valid acronyms (FAQ, PDF, API)
+- [ ] Link text validation catches more generic phrases (read more, click here)
+- [ ] Accessibility score not penalized when analyzeReadingOrder=false
+- [ ] Tables can be marked accessible with column headers only
+- [ ] TypeScript compiles without errors
+- [ ] Server starts successfully

@@ -1,0 +1,113 @@
+## Context
+CodeRabbit code review identified issues in the Sprint 2 Week 1 PR that need to be fixed before merging.
+
+## Issues to Fix
+
+### 1. Silent Error Suppression (4 locations)
+Add warning logs instead of silently swallowing errors:
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+Find and replace empty catch blocks:
+```typescript
+// Location 1: extractTaggedHeadings method (~line 371)
+// Change from:
+} catch (err) {
+  // Ignore structure tree errors
+}
+
+// Change to:
+} catch (err) {
+  console.warn('Failed to extract tagged headings:', err instanceof Error ? err.message : 'Unknown error');
+}
+
+// Location 2: traverseStructureTree method (~line 427)
+// Change from:
+} catch {
+  // Ignore traversal errors
+}
+
+// Change to:
+} catch (err) {
+  console.warn('Structure tree traversal error:', err instanceof Error ? err.message : 'Unknown error');
+}
+
+// Location 3: analyzeLinks method (~line 650)
+// Change from:
+} catch {
+  // Ignore page errors
+}
+
+// Change to:
+} catch (err) {
+  console.warn(`Failed to extract links from page ${pageNum}:`, err instanceof Error ? err.message : 'Unknown error');
+}
+```
+
+### 2. Replace 'any' Type with Proper Type Definition
+
+**In `src/services/pdf/structure-analyzer.service.ts`:**
+
+Add this interface near the top with other interfaces:
+```typescript
+export interface ExtractedDocument {
+  pages: Array<{
+    pageNumber: number;
+    lines: TextLine[];
+    blocks: TextBlock[];
+    text: string;
+  }>;
+  readingOrder?: string;
+}
+```
+
+Then update method signatures that use `any`:
+```typescript
+// Change from:
+private async analyzeHeadings(
+  parsedPdf: ParsedPDF,
+  documentText: any,
+  isTaggedPDF: boolean
+): Promise<HeadingHierarchy>
+
+// Change to:
+private async analyzeHeadings(
+  parsedPdf: ParsedPDF,
+  documentText: ExtractedDocument,
+  isTaggedPDF: boolean
+): Promise<HeadingHierarchy>
+```
+
+Apply the same change to other methods using `documentText: any`:
+- `analyzeTables`
+- `analyzeLists`
+- `analyzeReadingOrder`
+- `analyzeLanguage`
+
+### 3. Fix Syntax Error in Image Extractor (if present)
+
+**In `src/services/pdf/image-extractor.service.ts`:**
+
+Check if there's a space in property name and fix:
+```typescript
+// Change from:
+pagesWith Images: number;
+
+// Change to:
+pagesWithImages: number;
+```
+
+## Tasks
+1. Fix all silent catch blocks with console.warn logging
+2. Add ExtractedDocument interface
+3. Replace all `documentText: any` with `documentText: ExtractedDocument`
+4. Fix the property name typo if it exists
+5. Verify TypeScript compilation passes
+6. Verify server starts without errors
+
+## Acceptance Criteria
+- [ ] No empty catch blocks - all have console.warn
+- [ ] No `any` types for documentText parameter
+- [ ] No syntax errors in property names
+- [ ] TypeScript compiles without errors
+- [ ] Server starts successfully
