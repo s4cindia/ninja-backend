@@ -1,8 +1,35 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import path from 'path';
+import fs from 'fs/promises';
 import { authenticate } from '../middleware/auth.middleware';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
+import { uploadConfig } from '../config/upload.config';
+import { AppError } from '../utils/app-error';
 
 const router = Router();
+
+async function validateFilePath(filePath: string): Promise<string> {
+  const resolvedPath = path.resolve(filePath);
+  const uploadsDir = path.resolve(uploadConfig.uploadDir);
+  
+  let canonicalPath: string;
+  let canonicalUploadsDir: string;
+  
+  try {
+    canonicalPath = await fs.realpath(resolvedPath);
+    canonicalUploadsDir = await fs.realpath(uploadsDir);
+  } catch {
+    throw AppError.notFound('File not found');
+  }
+  
+  const relativePath = path.relative(canonicalUploadsDir, canonicalPath);
+  
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw AppError.forbidden('Access denied: file path is outside allowed directory');
+  }
+  
+  return canonicalPath;
+}
 
 router.post('/parse', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -15,7 +42,8 @@ router.post('/parse', authenticate, async (req: Request, res: Response, next: Ne
       });
     }
 
-    const parsedPdf = await pdfParserService.parse(filePath);
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
 
     await pdfParserService.close(parsedPdf);
 
@@ -43,7 +71,8 @@ router.post('/metadata', authenticate, async (req: Request, res: Response, next:
       });
     }
 
-    const parsedPdf = await pdfParserService.parse(filePath);
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
     const metadata = parsedPdf.structure.metadata;
     await pdfParserService.close(parsedPdf);
 
@@ -67,7 +96,8 @@ router.post('/validate-basics', authenticate, async (req: Request, res: Response
       });
     }
 
-    const parsedPdf = await pdfParserService.parse(filePath);
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
     const { metadata } = parsedPdf.structure;
 
     const issues: Array<{ type: string; severity: string; message: string }> = [];

@@ -1,5 +1,5 @@
 import { PDFDocument, PDFName, PDFDict, PDFString } from 'pdf-lib';
-import * as pdfjsLib from 'pdfjs-dist';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import fs from 'fs/promises';
 import path from 'path';
 import { pdfConfig } from '../../config/pdf.config';
@@ -9,6 +9,7 @@ const pdfjsWorkerPath = path.join(
   process.cwd(),
   'node_modules',
   'pdfjs-dist',
+  'legacy',
   'build',
   'pdf.worker.mjs'
 );
@@ -209,7 +210,7 @@ class PDFParserService {
       modificationDate: this.parseDate((info.ModDate as string) || pdfLibDoc.getModificationDate()),
       language,
       pdfVersion: `${(info.PDFFormatVersion as string) || '1.4'}`,
-      isEncrypted: !!(info.IsAcroFormPresent as boolean),
+      isEncrypted: pdfLibDoc.isEncrypted,
       isLinearized: !!(info.IsLinearized as boolean),
       isTagged,
       hasOutline,

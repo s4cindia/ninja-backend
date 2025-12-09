@@ -19,6 +19,7 @@
   "license": "MIT",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@napi-rs/canvas": "^0.1.84",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.65.1",
