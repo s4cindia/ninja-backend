@@ -6,6 +6,7 @@ import productsRoutes from './products.routes';
 import jobsRoutes from './jobs.routes';
 import filesRoutes from './files.routes';
 import aiRoutes from './ai.routes';
+import pdfRoutes from './pdf.routes';
 
 const router = Router();
 
@@ -65,5 +66,6 @@ router.use('/products', productsRoutes);
 router.use('/jobs', jobsRoutes);
 router.use('/files', filesRoutes);
 router.use('/ai', aiRoutes);
+router.use('/pdf', pdfRoutes);
 
 export default router;
