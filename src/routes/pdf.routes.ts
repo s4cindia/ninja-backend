@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import { authenticate } from '../middleware/auth.middleware';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
+import { imageExtractorService } from '../services/pdf/image-extractor.service';
 import { uploadConfig } from '../config/upload.config';
 import { AppError } from '../utils/app-error';
 
@@ -273,6 +274,126 @@ router.post('/text-stats', authenticate, async (req: Request, res: Response, nex
         averageCharactersPerPage: Math.round(documentText.totalCharacters / documentText.totalPages),
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/extract-images', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath, options = {} } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+
+    const extractionOptions = {
+      includeBase64: options.includeBase64 ?? false,
+      maxImageSize: options.maxImageSize ?? 512,
+      pageRange: options.pageRange,
+      minWidth: options.minWidth ?? 20,
+      minHeight: options.minHeight ?? 20,
+    };
+
+    const documentImages = await imageExtractorService.extractFromFile(safePath, extractionOptions);
+
+    res.json({
+      success: true,
+      data: {
+        totalImages: documentImages.totalImages,
+        imageFormats: documentImages.imageFormats,
+        imagesWithAltText: documentImages.imagesWithAltText,
+        imagesWithoutAltText: documentImages.imagesWithoutAltText,
+        decorativeImages: documentImages.decorativeImages,
+        pages: documentImages.pages.map(p => ({
+          pageNumber: p.pageNumber,
+          totalImages: p.totalImages,
+          images: p.images.map(img => ({
+            id: img.id,
+            position: img.position,
+            dimensions: img.dimensions,
+            format: img.format,
+            colorSpace: img.colorSpace,
+            fileSizeBytes: img.fileSizeBytes,
+            hasAlpha: img.hasAlpha,
+            altText: img.altText,
+            isDecorative: img.isDecorative,
+            ...(extractionOptions.includeBase64 && img.base64 ? { base64: img.base64, mimeType: img.mimeType } : {}),
+          })),
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/image/:imageId', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+    const { imageId } = req.params;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
+    
+    try {
+      const image = await imageExtractorService.getImageById(parsedPdf, imageId, true);
+      
+      if (!image) {
+        return res.status(404).json({
+          success: false,
+          error: { message: 'Image not found' },
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: image,
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/image-stats', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
+    
+    try {
+      const stats = await imageExtractorService.getImageStats(parsedPdf);
+      
+      res.json({
+        success: true,
+        data: stats,
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
   } catch (error) {
     next(error);
   }
