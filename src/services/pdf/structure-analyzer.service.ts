@@ -330,7 +330,7 @@ class StructureAnalyzerService {
         }
       }
     } catch (err) {
-      // Ignore structure tree errors
+      console.warn('Failed to extract tagged headings:', err instanceof Error ? err.message : 'Unknown error');
     }
 
     return headings;
@@ -346,8 +346,8 @@ class StructureAnalyzerService {
           pageMap.set(pageRef.toString(), i + 1);
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to build page reference map:', err instanceof Error ? err.message : 'Unknown error');
     }
     return pageMap;
   }
@@ -373,8 +373,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to resolve page number:', err instanceof Error ? err.message : 'Unknown error');
     }
     return currentPage;
   }
@@ -425,8 +425,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore traversal errors
+    } catch (err) {
+      console.warn('Structure tree traversal error:', err instanceof Error ? err.message : 'Unknown error');
     }
   }
 
@@ -537,8 +537,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to enhance tables from tags:', err instanceof Error ? err.message : 'Unknown error');
     }
   }
 
@@ -588,8 +588,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to find tagged tables:', err instanceof Error ? err.message : 'Unknown error');
     }
   }
 
@@ -648,8 +648,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to check table headers:', err instanceof Error ? err.message : 'Unknown error');
     }
   }
 
@@ -674,8 +674,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to check row for headers:', err instanceof Error ? err.message : 'Unknown error');
     }
   }
 
@@ -779,8 +779,8 @@ class StructureAnalyzerService {
             links.push(link);
           }
         }
-      } catch {
-        // Ignore page errors
+      } catch (err) {
+        console.warn(`Failed to extract links from page ${pageNum}:`, err instanceof Error ? err.message : 'Unknown error');
       }
     }
 
@@ -945,8 +945,8 @@ class StructureAnalyzerService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (err) {
+      console.warn('Failed to extract form fields:', err instanceof Error ? err.message : 'Unknown error');
     }
 
     return formFields;
