@@ -88,6 +88,23 @@ src/
   - Word and character counting
 - Options: includePositions, includeFontInfo, groupIntoLines, groupIntoBlocks, pageRange, normalizeWhitespace
 
+## PDF Image Extraction Service
+- Service: src/services/pdf/image-extractor.service.ts
+- Libraries: sharp for image processing
+- Endpoints:
+  - POST /api/v1/pdf/extract-images - Extract all images from PDF
+  - POST /api/v1/pdf/image/:imageId - Get single image by ID
+  - POST /api/v1/pdf/image-stats - Get image statistics
+- Features:
+  - Image extraction with position and dimension information
+  - Format detection (JPEG, PNG, JBIG2, JPX)
+  - Alt text extraction from tagged PDF structure tree
+  - Decorative/artifact image detection
+  - Base64 encoding with optional resizing
+  - Graphics state tracking for accurate image placement
+  - OBJR reference resolution for structure tree mapping
+- Options: includeBase64, maxImageSize, pageRange, formats, minWidth, minHeight
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev
