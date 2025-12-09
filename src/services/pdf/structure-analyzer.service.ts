@@ -175,7 +175,7 @@ class StructureAnalyzerService {
 
     const readingOrder = analyzeReadingOrder
       ? await this.analyzeReadingOrder(parsedPdf, documentText, isTaggedPDF)
-      : { isLogical: false, hasStructureTree: false, issues: [], confidence: 0 };
+      : { isLogical: true, hasStructureTree: isTaggedPDF, issues: [], confidence: isTaggedPDF ? 0.9 : 0.5 };
 
     const language = analyzeLanguage
       ? this.analyzeLanguage(parsedPdf, documentText)
@@ -192,7 +192,8 @@ class StructureAnalyzerService {
       links,
       readingOrder,
       language,
-      summary
+      summary,
+      analyzeReadingOrder
     );
 
     return {
@@ -477,6 +478,13 @@ class StructureAnalyzerService {
 
           if (block.lines[0]?.items.some(i => i.font.isBold)) {
             table.hasHeaderRow = true;
+          }
+
+          const firstItemsBold = block.lines.every(line => 
+            line.items[0]?.font.isBold === true
+          );
+          if (firstItemsBold && block.lines.length > 1) {
+            table.hasHeaderColumn = true;
           }
 
           tables.push(table);
@@ -770,7 +778,17 @@ class StructureAnalyzerService {
               issues: [],
             };
 
-            if (link.text && link.text.length > 3 && !/^(click|here|link|more)$/i.test(link.text)) {
+            const text = (link.text || '').trim();
+            const nonDescriptivePattern = /^(click|here|link|more|read|download|learn|info)$/i;
+            const nonDescriptivePhrases = /^(click here|read more|learn more|more info|download here)$/i;
+            const shortAcronymPattern = /^[A-Z0-9]{2,5}$/;
+            const whitelist = ['FAQ', 'PDF', 'API', 'URL', 'RSS', 'XML', 'CSV', 'HOME', 'HELP'];
+
+            const isNonDescriptive = nonDescriptivePattern.test(text) || nonDescriptivePhrases.test(text);
+            const isWhitelisted = whitelist.includes(text.toUpperCase());
+            const isValidAcronym = shortAcronymPattern.test(text) && text === text.toUpperCase();
+
+            if (text && !isNonDescriptive && (text.length > 3 || isWhitelisted || isValidAcronym)) {
               link.hasDescriptiveText = true;
             } else {
               link.issues.push('Link text is not descriptive (WCAG 2.4.4)');
@@ -871,6 +889,8 @@ class StructureAnalyzerService {
     return {
       documentLanguage,
       hasDocumentLanguage,
+      // TODO: Populate languageChanges when per-page/per-region language detection is implemented
+      // This would require analyzing text patterns or relying on tagged PDF Lang attributes
       languageChanges,
       issues,
     };
@@ -998,7 +1018,8 @@ class StructureAnalyzerService {
     links: LinkInfo[],
     readingOrder: ReadingOrderInfo,
     language: LanguageInfo,
-    summary: DocumentStructure['summary']
+    summary: DocumentStructure['summary'],
+    includeReadingOrder: boolean = true
   ): number {
     let score = 100;
 
@@ -1021,10 +1042,12 @@ class StructureAnalyzerService {
     const inaccessibleTables = tables.filter(t => !t.isAccessible).length;
     score -= inaccessibleTables * 5;
 
-    score -= readingOrder.issues.length * 5;
+    if (includeReadingOrder) {
+      score -= readingOrder.issues.length * 5;
 
-    if (!readingOrder.isLogical) {
-      score -= 10;
+      if (!readingOrder.isLogical) {
+        score -= 10;
+      }
     }
 
     const linksWithoutDescriptive = links.filter(l => !l.hasDescriptiveText).length;
