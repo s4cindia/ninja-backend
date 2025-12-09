@@ -50,6 +50,15 @@ src/
 - Features: Rate limiting, exponential backoff retry, text/image/chat generation
 - Note: Free tier has strict limits (5-15 RPM). Enable billing for production use.
 
+## Token Counting & Cost Tracking
+- Pricing: src/config/pricing.config.ts (current Gemini rates)
+- Service: src/services/ai/token-counter.service.ts
+- Endpoints:
+  - POST /api/v1/ai/estimate - Estimate cost before API call
+  - GET /api/v1/ai/usage - Get usage summary for tenant
+  - GET /api/v1/ai/usage/recent - Get recent usage records
+- Features: Token estimation, cost calculation, per-tenant usage tracking
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev
