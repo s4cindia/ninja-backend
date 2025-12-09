@@ -105,6 +105,27 @@ src/
   - OBJR reference resolution for structure tree mapping
 - Options: includeBase64, maxImageSize, pageRange, formats, minWidth, minHeight
 
+## PDF Structure Analysis Service
+- Service: src/services/pdf/structure-analyzer.service.ts
+- Endpoints:
+  - POST /api/v1/pdf/analyze-structure - Full accessibility structure analysis
+  - POST /api/v1/pdf/analyze-headings - Heading hierarchy analysis only
+  - POST /api/v1/pdf/analyze-tables - Table structure analysis only
+  - POST /api/v1/pdf/analyze-links - Link accessibility analysis only
+- Features:
+  - Heading hierarchy validation (H1 presence, proper nesting, skipped levels)
+  - Table accessibility checks (header rows/columns, summaries)
+  - List detection (ordered, unordered, definition lists)
+  - Link analysis (descriptive text, URL extraction)
+  - Reading order analysis (column detection, structure tree presence)
+  - Language detection and validation (document language, language changes)
+  - Form field analysis (labels, field types)
+  - Bookmark/outline extraction
+  - Accessibility score calculation (0-100 scale)
+  - WCAG criterion mapping for issues
+- Analysis Options: analyzeHeadings, analyzeTables, analyzeLists, analyzeLinks, analyzeReadingOrder, analyzeLanguage, pageRange
+- Issue Severity Levels: critical, major, minor
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev

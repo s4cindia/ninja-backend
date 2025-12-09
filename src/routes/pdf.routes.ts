@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
 import { imageExtractorService } from '../services/pdf/image-extractor.service';
+import { structureAnalyzerService } from '../services/pdf/structure-analyzer.service';
 import { uploadConfig } from '../config/upload.config';
 import { AppError } from '../utils/app-error';
 
@@ -390,6 +391,124 @@ router.post('/image-stats', authenticate, async (req: Request, res: Response, ne
       res.json({
         success: true,
         data: stats,
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/analyze-structure', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath, options = {} } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const structure = await structureAnalyzerService.analyzeFromFile(safePath, options);
+
+    res.json({
+      success: true,
+      data: structure,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/analyze-headings', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
+
+    try {
+      const headings = await structureAnalyzerService.getHeadingsOnly(parsedPdf);
+
+      res.json({
+        success: true,
+        data: headings,
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/analyze-tables', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
+
+    try {
+      const tables = await structureAnalyzerService.getTablesOnly(parsedPdf);
+
+      res.json({
+        success: true,
+        data: {
+          totalTables: tables.length,
+          tables,
+        },
+      });
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/analyze-links', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { filePath } = req.body;
+
+    if (!filePath) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'filePath is required' },
+      });
+    }
+
+    const safePath = await validateFilePath(filePath);
+    const parsedPdf = await pdfParserService.parse(safePath);
+
+    try {
+      const links = await structureAnalyzerService.getLinksOnly(parsedPdf);
+
+      res.json({
+        success: true,
+        data: {
+          totalLinks: links.length,
+          linksWithDescriptiveText: links.filter(l => l.hasDescriptiveText).length,
+          linksWithIssues: links.filter(l => l.issues.length > 0).length,
+          links,
+        },
       });
     } finally {
       await pdfParserService.close(parsedPdf);
