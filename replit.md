@@ -46,8 +46,9 @@ src/
 - Config: src/config/ai.config.ts
 - Service: src/services/ai/gemini.service.ts
 - Routes: /api/v1/ai/health (public), /api/v1/ai/test (authenticated)
-- Models: gemini-2.0-flash (default), gemini-1.5-pro (complex tasks)
+- Models: gemini-2.0-flash-lite (default), gemini-2.5-pro (complex tasks)
 - Features: Rate limiting, exponential backoff retry, text/image/chat generation
+- Note: Free tier has strict limits (5-15 RPM). Enable billing for production use.
 
 ## Database Commands
 - Generate client: npx prisma generate
