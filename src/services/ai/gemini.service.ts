@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, GenerativeModel, GenerationConfig, Content } from '@google/generative-ai';
 import { aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
+import { tokenCounterService, UsageRecord } from './token-counter.service';
 
 export interface GeminiResponse {
   text: string;
@@ -238,6 +239,30 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
       console.error('Gemini health check failed:', error);
       return false;
     }
+  }
+
+  async generateTextWithTracking(
+    prompt: string,
+    tenantId: string,
+    userId: string,
+    operation: string,
+    options: GeminiOptions = {}
+  ): Promise<GeminiResponse & { usageRecord?: UsageRecord }> {
+    const response = await this.generateText(prompt, options);
+    
+    let usageRecord;
+    if (response.usage) {
+      const model = options.model === 'pro' ? aiConfig.gemini.modelPro : aiConfig.gemini.model;
+      usageRecord = tokenCounterService.recordUsage(
+        tenantId,
+        userId,
+        model,
+        operation,
+        response.usage
+      );
+    }
+    
+    return { ...response, usageRecord };
   }
 }
 
