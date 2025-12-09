@@ -10,8 +10,8 @@ export const altTextResponseSchema = z.object({
   altText: z.string().min(1).max(500),
   isDecorative: z.boolean(),
   confidence: z.number().min(0).max(1),
-  context: z.string().optional(),
-  reasoning: z.string().optional(),
+  context: z.string().nullable().optional(),
+  reasoning: z.string().nullable().optional(),
 });
 export type AltTextResponse = z.infer<typeof altTextResponseSchema>;
 
@@ -105,14 +105,14 @@ export const colorContrastSchema = z.object({
   passesAA: z.boolean(),
   passesAAA: z.boolean(),
   largeText: z.boolean(),
-  recommendation: z.string().optional(),
+  recommendation: z.string().nullable().optional(),
 });
 export type ColorContrast = z.infer<typeof colorContrastSchema>;
 
 export const imageAnalysisSchema = z.object({
   description: z.string(),
   containsText: z.boolean(),
-  extractedText: z.string().optional(),
+  extractedText: z.string().nullable().optional(),
   isDecorative: z.boolean(),
   suggestedAltText: z.string(),
   contentType: z.enum(['photo', 'chart', 'diagram', 'icon', 'logo', 'decorative', 'complex', 'unknown']),
@@ -122,10 +122,10 @@ export type ImageAnalysis = z.infer<typeof imageAnalysisSchema>;
 
 export const linkAnalysisSchema = z.object({
   text: z.string(),
-  href: z.string().optional(),
+  href: z.string().nullable().optional(),
   isDescriptive: z.boolean(),
-  issue: z.string().optional(),
-  suggestedText: z.string().optional(),
+  issue: z.string().nullable().optional(),
+  suggestedText: z.string().nullable().optional(),
   opensNewWindow: z.boolean(),
   hasWarning: z.boolean(),
 });
