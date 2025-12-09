@@ -1,0 +1,587 @@
+## Context
+Building structured output parsing with Zod validation to ensure AI responses conform to expected schemas. This is critical for reliability when using AI for accessibility analysis.
+
+## Current State
+- US-2.3.1 complete with GeminiService
+- US-2.3.2 complete with token counting
+- generateStructuredOutput method exists but needs schema validation
+
+## Objective
+Create a robust response parsing system with Zod schemas for all AI operations, handling malformed responses gracefully.
+
+## Technical Requirements
+
+**Create `src/services/ai/schemas/index.ts`:**
+```typescript
+import { z } from 'zod';
+
+// Base response schema for all AI operations
+export const aiResponseBaseSchema = z.object({
+  confidence: z.number().min(0).max(1).optional(),
+  processingNotes: z.string().optional(),
+});
+
+// Alt text generation schema
+export const altTextResponseSchema = z.object({
+  altText: z.string().min(1).max(500),
+  longDescription: z.string().optional(),
+  imageType: z.enum(['photo', 'illustration', 'chart', 'diagram', 'icon', 'decorative', 'complex', 'unknown']),
+  isDecorative: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  context: z.string().optional(),
+});
+
+export type AltTextResponse = z.infer<typeof altTextResponseSchema>;
+
+// Accessibility issue schema
+export const accessibilityIssueSchema = z.object({
+  id: z.string(),
+  type: z.enum([
+    'missing-alt-text',
+    'empty-alt-text',
+    'decorative-not-marked',
+    'complex-image-no-description',
+    'heading-hierarchy',
+    'heading-skip',
+    'missing-language',
+    'low-contrast',
+    'missing-table-headers',
+    'missing-table-summary',
+    'empty-link',
+    'unclear-link-text',
+    'missing-form-label',
+    'reading-order',
+    'missing-bookmark',
+    'other',
+  ]),
+  severity: z.enum(['critical', 'major', 'minor', 'info']),
+  wcagCriterion: z.string().regex(/^\d+\.\d+\.\d+$/), // e.g., "1.1.1"
+  wcagLevel: z.enum(['A', 'AA', 'AAA']),
+  title: z.string(),
+  description: z.string(),
+  location: z.object({
+    page: z.number().optional(),
+    element: z.string().optional(),
+    xpath: z.string().optional(),
+    coordinates: z.object({
+      x: z.number(),
+      y: z.number(),
+      width: z.number().optional(),
+      height: z.number().optional(),
+    }).optional(),
+  }),
+  recommendation: z.string(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
+});
+
+export type AccessibilityIssue = z.infer<typeof accessibilityIssueSchema>;
+
+// Document analysis schema
+export const documentAnalysisSchema = z.object({
+  title: z.string().optional(),
+  language: z.string().optional(),
+  pageCount: z.number().optional(),
+  hasTableOfContents: z.boolean(),
+  hasTags: z.boolean(),
+  isAccessible: z.boolean(),
+  accessibilityScore: z.number().min(0).max(100),
+  issues: z.array(accessibilityIssueSchema),
+  summary: z.string(),
+  recommendations: z.array(z.string()),
+});
+
+export type DocumentAnalysis = z.infer<typeof documentAnalysisSchema>;
+
+// WCAG conformance schema
+export const wcagConformanceSchema = z.object({
+  criterion: z.string(),
+  level: z.enum(['A', 'AA', 'AAA']),
+  title: z.string(),
+  status: z.enum(['supports', 'partially-supports', 'does-not-support', 'not-applicable']),
+  remarks: z.string(),
+  evidence: z.array(z.string()).optional(),
+});
+
+export type WcagConformance = z.infer<typeof wcagConformanceSchema>;
+
+// VPAT section schema
+export const vpatSectionSchema = z.object({
+  sectionName: z.string(),
+  criteria: z.array(wcagConformanceSchema),
+  overallStatus: z.enum(['supports', 'partially-supports', 'does-not-support', 'not-applicable']),
+  notes: z.string().optional(),
+});
+
+export type VpatSection = z.infer<typeof vpatSectionSchema>;
+
+// Heading structure schema
+export const headingStructureSchema = z.object({
+  headings: z.array(z.object({
+    level: z.number().min(1).max(6),
+    text: z.string(),
+    page: z.number(),
+    isProperlyNested: z.boolean(),
+  })),
+  hasProperHierarchy: z.boolean(),
+  issues: z.array(z.object({
+    type: z.enum(['skip', 'improper-nesting', 'missing-h1', 'multiple-h1']),
+    description: z.string(),
+    location: z.string(),
+  })),
+});
+
+export type HeadingStructure = z.infer<typeof headingStructureSchema>;
+
+// Table analysis schema
+export const tableAnalysisSchema = z.object({
+  tables: z.array(z.object({
+    id: z.string(),
+    page: z.number(),
+    rowCount: z.number(),
+    columnCount: z.number(),
+    hasHeaders: z.boolean(),
+    headerType: z.enum(['row', 'column', 'both', 'none']),
+    hasSummary: z.boolean(),
+    summary: z.string().optional(),
+    issues: z.array(z.string()),
+  })),
+  totalTables: z.number(),
+  accessibleTables: z.number(),
+});
+
+export type TableAnalysis = z.infer<typeof tableAnalysisSchema>;
+
+// Color contrast schema
+export const colorContrastSchema = z.object({
+  issues: z.array(z.object({
+    page: z.number(),
+    foreground: z.string(), // hex color
+    background: z.string(), // hex color
+    contrastRatio: z.number(),
+    requiredRatio: z.number(),
+    wcagLevel: z.enum(['A', 'AA', 'AAA']),
+    textSize: z.enum(['normal', 'large']),
+    passes: z.boolean(),
+    location: z.string().optional(),
+  })),
+  overallPass: z.boolean(),
+  averageContrastRatio: z.number(),
+});
+
+export type ColorContrast = z.infer<typeof colorContrastSchema>;
+```
+
+**Create `src/services/ai/response-parser.service.ts`:**
+```typescript
+import { z, ZodSchema, ZodError } from 'zod';
+import { AppError } from '../../utils/app-error.js';
+
+export interface ParseResult<T> {
+  success: boolean;
+  data?: T;
+  errors?: Array<{
+    path: string;
+    message: string;
+  }>;
+  rawResponse?: string;
+}
+
+class ResponseParserService {
+  /**
+   * Parse and validate AI response against a Zod schema
+   */
+  parse<T>(response: string, schema: ZodSchema<T>): ParseResult<T> {
+    try {
+      // Clean the response
+      const cleanedResponse = this.cleanJsonResponse(response);
+      
+      // Parse JSON
+      const parsed = JSON.parse(cleanedResponse);
+      
+      // Validate against schema
+      const validated = schema.parse(parsed);
+      
+      return {
+        success: true,
+        data: validated,
+      };
+    } catch (error) {
+      if (error instanceof ZodError) {
+        return {
+          success: false,
+          errors: error.errors.map(e => ({
+            path: e.path.join('.'),
+            message: e.message,
+          })),
+          rawResponse: response,
+        };
+      }
+      
+      if (error instanceof SyntaxError) {
+        return {
+          success: false,
+          errors: [{ path: 'root', message: `Invalid JSON: ${error.message}` }],
+          rawResponse: response,
+        };
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Parse with automatic retry using a correction prompt
+   */
+  async parseWithRetry<T>(
+    response: string,
+    schema: ZodSchema<T>,
+    retryFn: (correctionPrompt: string) => Promise<string>,
+    maxRetries = 2
+  ): Promise<ParseResult<T>> {
+    let result = this.parse(response, schema);
+    let attempts = 0;
+    
+    while (!result.success && attempts < maxRetries) {
+      attempts++;
+      
+      const correctionPrompt = this.buildCorrectionPrompt(
+        response,
+        result.errors || [],
+        schema
+      );
+      
+      try {
+        const correctedResponse = await retryFn(correctionPrompt);
+        result = this.parse(correctedResponse, schema);
+      } catch (error) {
+        console.error(`Retry ${attempts} failed:`, error);
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Safe parse that returns null instead of throwing
+   */
+  safeParse<T>(response: string, schema: ZodSchema<T>): T | null {
+    const result = this.parse(response, schema);
+    return result.success ? result.data! : null;
+  }
+
+  /**
+   * Parse with default fallback
+   */
+  parseWithDefault<T>(response: string, schema: ZodSchema<T>, defaultValue: T): T {
+    const result = this.parse(response, schema);
+    return result.success ? result.data! : defaultValue;
+  }
+
+  /**
+   * Extract JSON from a mixed response (text + JSON)
+   */
+  extractJson(response: string): string | null {
+    // Try to find JSON object
+    const objectMatch = response.match(/\{[\s\S]*\}/);
+    if (objectMatch) {
+      return objectMatch[0];
+    }
+    
+    // Try to find JSON array
+    const arrayMatch = response.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      return arrayMatch[0];
+    }
+    
+    return null;
+  }
+
+  /**
+   * Clean AI response to extract valid JSON
+   */
+  private cleanJsonResponse(response: string): string {
+    let cleaned = response.trim();
+    
+    // Remove markdown code blocks
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.slice(7);
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.slice(3);
+    }
+    
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.slice(0, -3);
+    }
+    
+    cleaned = cleaned.trim();
+    
+    // If still not valid JSON, try to extract it
+    if (!cleaned.startsWith('{') && !cleaned.startsWith('[')) {
+      const extracted = this.extractJson(cleaned);
+      if (extracted) {
+        cleaned = extracted;
+      }
+    }
+    
+    // Fix common JSON issues from AI
+    cleaned = this.fixCommonJsonIssues(cleaned);
+    
+    return cleaned;
+  }
+
+  /**
+   * Fix common JSON formatting issues from AI responses
+   */
+  private fixCommonJsonIssues(json: string): string {
+    // Remove trailing commas before } or ]
+    json = json.replace(/,\s*([}\]])/g, '$1');
+    
+    // Fix unescaped newlines in strings
+    json = json.replace(/(?<!\\)\n(?=[^"]*"[^"]*$)/gm, '\\n');
+    
+    // Remove comments (not valid JSON)
+    json = json.replace(/\/\/.*$/gm, '');
+    json = json.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    return json;
+  }
+
+  /**
+   * Build a correction prompt for retry
+   */
+  private buildCorrectionPrompt(
+    originalResponse: string,
+    errors: Array<{ path: string; message: string }>,
+    schema: ZodSchema
+  ): string {
+    const errorList = errors
+      .map(e => `- ${e.path}: ${e.message}`)
+      .join('\n');
+    
+    return `Your previous response had validation errors. Please fix these issues and respond with ONLY valid JSON:
+
+Errors found:
+${errorList}
+
+Original response:
+${originalResponse.slice(0, 500)}${originalResponse.length > 500 ? '...' : ''}
+
+Please provide a corrected JSON response that fixes all the above errors.`;
+  }
+
+  /**
+   * Validate partial data (for streaming responses)
+   */
+  validatePartial<T>(data: Partial<T>, schema: ZodSchema<T>): {
+    valid: boolean;
+    missingFields: string[];
+  } {
+    try {
+      schema.parse(data);
+      return { valid: true, missingFields: [] };
+    } catch (error) {
+      if (error instanceof ZodError) {
+        const missingFields = error.errors
+          .filter(e => e.code === 'invalid_type' && e.received === 'undefined')
+          .map(e => e.path.join('.'));
+        
+        return { valid: false, missingFields };
+      }
+      throw error;
+    }
+  }
+}
+
+export const responseParserService = new ResponseParserService();
+```
+
+**Create `src/services/ai/prompts/accessibility.prompts.ts`:**
+```typescript
+export const accessibilityPrompts = {
+  analyzeDocument: (context: { pageCount: number; hasImages: boolean; hasTables: boolean }) => `
+Analyze this document for accessibility issues. The document has ${context.pageCount} pages${context.hasImages ? ', contains images' : ''}${context.hasTables ? ', and contains tables' : ''}.
+
+Check for:
+1. Missing or inadequate alt text on images
+2. Heading hierarchy issues (skipped levels, improper nesting)
+3. Missing document language declaration
+4. Table accessibility (headers, summaries)
+5. Color contrast issues (if detectable)
+6. Reading order problems
+7. Missing bookmarks/navigation
+
+Respond with JSON in this exact format:
+{
+  "title": "Document title if found",
+  "language": "ISO language code if found",
+  "pageCount": ${context.pageCount},
+  "hasTableOfContents": true/false,
+  "hasTags": true/false,
+  "isAccessible": true/false,
+  "accessibilityScore": 0-100,
+  "issues": [
+    {
+      "id": "unique-id",
+      "type": "issue-type",
+      "severity": "critical|major|minor|info",
+      "wcagCriterion": "1.1.1",
+      "wcagLevel": "A|AA|AAA",
+      "title": "Short title",
+      "description": "Detailed description",
+      "location": { "page": 1, "element": "description" },
+      "recommendation": "How to fix",
+      "effort": "low|medium|high"
+    }
+  ],
+  "summary": "Overall accessibility summary",
+  "recommendations": ["List of top recommendations"]
+}
+`,
+
+  generateAltText: (imageContext?: string) => `
+Generate appropriate alt text for this image${imageContext ? ` in the context of: ${imageContext}` : ''}.
+
+Consider:
+1. What is the main subject/content of the image?
+2. Is it informative or decorative?
+3. What information would a screen reader user need?
+4. Is a longer description needed for complex images?
+
+Respond with JSON in this exact format:
+{
+  "altText": "Concise alt text (max 150 chars for simple images)",
+  "longDescription": "Detailed description for complex images (optional)",
+  "imageType": "photo|illustration|chart|diagram|icon|decorative|complex|unknown",
+  "isDecorative": false,
+  "confidence": 0.0-1.0,
+  "context": "Why this alt text is appropriate"
+}
+`,
+
+  analyzeHeadings: () => `
+Analyze the heading structure of this document for accessibility compliance.
+
+Check for:
+1. Proper heading hierarchy (H1 -> H2 -> H3, no skips)
+2. Single H1 at the document start
+3. Logical content organization
+4. Heading text clarity
+
+Respond with JSON in this exact format:
+{
+  "headings": [
+    { "level": 1, "text": "Heading text", "page": 1, "isProperlyNested": true }
+  ],
+  "hasProperHierarchy": true/false,
+  "issues": [
+    { "type": "skip|improper-nesting|missing-h1|multiple-h1", "description": "...", "location": "Page X" }
+  ]
+}
+`,
+
+  analyzeTables: () => `
+Analyze the tables in this document for accessibility compliance.
+
+Check for:
+1. Proper header cells (TH elements)
+2. Row and/or column headers as appropriate
+3. Table summaries for complex tables
+4. Proper table structure
+
+Respond with JSON in this exact format:
+{
+  "tables": [
+    {
+      "id": "table-1",
+      "page": 1,
+      "rowCount": 5,
+      "columnCount": 3,
+      "hasHeaders": true,
+      "headerType": "row|column|both|none",
+      "hasSummary": false,
+      "summary": "Table summary if present",
+      "issues": ["List of issues"]
+    }
+  ],
+  "totalTables": 1,
+  "accessibleTables": 1
+}
+`,
+
+  generateVpatRemarks: (criterion: string, findings: string) => `
+Generate professional VPAT remarks for WCAG criterion ${criterion} based on these findings:
+
+${findings}
+
+The remarks should:
+1. Be clear and specific
+2. Use appropriate conformance language
+3. Include evidence where applicable
+4. Suggest remediation if not fully conformant
+
+Respond with JSON in this exact format:
+{
+  "criterion": "${criterion}",
+  "level": "A|AA|AAA",
+  "title": "Criterion title",
+  "status": "supports|partially-supports|does-not-support|not-applicable",
+  "remarks": "Professional VPAT-style remarks",
+  "evidence": ["Specific evidence points"]
+}
+`,
+};
+```
+
+**Update `src/services/ai/gemini.service.ts` to use the parser:**
+
+Add import:
+```typescript
+import { responseParserService, ParseResult } from './response-parser.service.js';
+import { ZodSchema } from 'zod';
+```
+
+Add new method:
+```typescript
+async generateValidatedOutput<T>(
+  prompt: string,
+  schema: ZodSchema<T>,
+  options: GeminiOptions = {}
+): Promise<{ data: T; usage?: GeminiResponse['usage'] }> {
+  const response = await this.generateText(prompt, {
+    ...options,
+    temperature: options.temperature ?? 0.1, // Lower temperature for structured output
+  });
+  
+  const parseResult = await responseParserService.parseWithRetry(
+    response.text,
+    schema,
+    async (correctionPrompt) => {
+      const corrected = await this.generateText(correctionPrompt, options);
+      return corrected.text;
+    }
+  );
+  
+  if (!parseResult.success) {
+    console.error('Failed to parse AI response:', parseResult.errors);
+    throw AppError.internal('Failed to parse AI response into expected format');
+  }
+  
+  return { data: parseResult.data!, usage: response.usage };
+}
+```
+
+## Tasks
+1. Create src/services/ai/schemas/index.ts with all Zod schemas
+2. Create src/services/ai/response-parser.service.ts
+3. Create src/services/ai/prompts/accessibility.prompts.ts
+4. Update src/services/ai/gemini.service.ts with generateValidatedOutput method
+5. Verify server starts without errors
+6. Verify schemas are properly exported
+
+## Acceptance Criteria
+- [ ] Zod schemas for all AI response types
+- [ ] Response parser with JSON cleaning and validation
+- [ ] Retry logic for malformed responses
+- [ ] Accessibility prompts for document analysis
+- [ ] generateValidatedOutput method using schema validation
+- [ ] Server starts without errors

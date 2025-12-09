@@ -1,7 +1,9 @@
 import { GoogleGenerativeAI, GenerativeModel, GenerationConfig, Content } from '@google/generative-ai';
+import { ZodSchema } from 'zod';
 import { aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
 import { tokenCounterService, UsageRecord } from './token-counter.service';
+import { responseParserService } from './response-parser.service';
 
 export interface GeminiResponse {
   text: string;
@@ -145,23 +147,47 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
     const response = await this.generateText(jsonPrompt, options);
     
     try {
-      let jsonText = response.text.trim();
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.slice(7);
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.slice(3);
-      }
-      if (jsonText.endsWith('```')) {
-        jsonText = jsonText.slice(0, -3);
-      }
-      jsonText = jsonText.trim();
-      
-      const data = JSON.parse(jsonText) as T;
+      const jsonText = responseParserService.extractJson(response.text);
+      const cleanedJson = responseParserService.cleanJsonResponse(jsonText);
+      const data = JSON.parse(cleanedJson) as T;
       return { data, usage: response.usage };
     } catch (parseError) {
       console.error('Failed to parse Gemini response as JSON:', response.text);
       throw AppError.internal('Failed to parse AI response as JSON');
     }
+  }
+
+  async generateWithSchema<T>(
+    prompt: string,
+    schema: ZodSchema<T>,
+    options: GeminiOptions = {}
+  ): Promise<{ data: T; usage?: GeminiResponse['usage']; attempts: number }> {
+    return responseParserService.parseWithRetry(prompt, schema, options, { maxRetries: 2 });
+  }
+
+  async generateWithSchemaAndTracking<T>(
+    prompt: string,
+    schema: ZodSchema<T>,
+    tenantId: string,
+    userId: string,
+    operation: string,
+    options: GeminiOptions = {}
+  ): Promise<{ data: T; usage?: GeminiResponse['usage']; usageRecord?: UsageRecord; attempts: number }> {
+    const result = await this.generateWithSchema(prompt, schema, options);
+    
+    let usageRecord;
+    if (result.usage) {
+      const model = options.model === 'pro' ? aiConfig.gemini.modelPro : aiConfig.gemini.model;
+      usageRecord = tokenCounterService.recordUsage(
+        tenantId,
+        userId,
+        model,
+        operation,
+        result.usage
+      );
+    }
+    
+    return { ...result, usageRecord };
   }
 
   async analyzeImage(
