@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import path from 'path';
 import { pdfParserService, ParsedPDF } from '../pdf/pdf-parser.service';
 import { structureAnalyzerService } from '../pdf/structure-analyzer.service';
 import {
@@ -48,7 +49,7 @@ class PdfStructureValidatorService {
 
       const context: ValidatorContext = {
         documentId,
-        fileName: parsedPdf.structure.metadata.title || undefined,
+        fileName: path.basename(filePath),
         isTaggedPdf,
         pageCount,
       };
@@ -190,7 +191,7 @@ class PdfStructureValidatorService {
         },
         metadata: {
           documentId,
-          fileName: parsedPdf.structure.metadata.title || undefined,
+          fileName: path.basename(filePath),
           validatedAt: new Date(),
           duration,
         },
@@ -201,10 +202,10 @@ class PdfStructureValidatorService {
 
       allIssues.push({
         id: randomUUID(),
-        wcagCriterion: '4.1.1',
+        wcagCriterion: 'N/A',
         wcagLevel: 'A',
         severity: 'critical',
-        title: 'Validation Error',
+        title: 'PDF Validation Error',
         description: `An error occurred during validation: ${errorMessage}`,
         location: { page: 1 },
         remediation: 'Ensure the PDF file is valid and not corrupted. Try re-saving the document.',
