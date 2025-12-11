@@ -1,0 +1,107 @@
+🎯 US-3.1.1: PDF Structure Validation
+Context
+We're building the Ninja Platform, an accessibility validation SaaS for educational publishers. This prompt implements the core PDF structure validation service that checks documents against WCAG 2.2 criteria.
+Prerequisites
+
+US-2.4.1 (PDF Parsing Service) is complete
+US-2.4.2 (Text Extraction Service) is complete
+US-2.4.4 (PDF Structure Analysis) is complete
+PDF structure tree parsing is working
+
+Current State
+You should have:
+
+src/services/pdf/pdf-parser.service.ts - Basic PDF parsing
+src/services/pdf/structure-analyzer.service.ts - Structure tree extraction
+PDF files being stored in S3 and metadata in PostgreSQL
+
+Objective
+Create a PDF structure validation service that checks WCAG 2.2 compliance for heading hierarchy, reading order, and language declaration.
+Technical Requirements
+Create file: src/services/accessibility/pdf-structure-validator.service.ts
+typescript// Service should implement these interfaces
+interface StructureValidationResult {
+  isValid: boolean;
+  score: number; // 0-100
+  issues: AccessibilityIssue[];
+  summary: {
+    totalChecks: number;
+    passed: number;
+    failed: number;
+    warnings: number;
+  };
+}
+
+interface AccessibilityIssue {
+  id: string;
+  wcagCriterion: string; // e.g., "1.3.1", "1.3.2", "3.1.1"
+  wcagLevel: 'A' | 'AA' | 'AAA';
+  severity: 'critical' | 'serious' | 'moderate' | 'minor';
+  title: string;
+  description: string;
+  location: {
+    page?: number;
+    element?: string;
+    xpath?: string;
+  };
+  remediation: string;
+}
+```
+
+**Implement these validation checks:**
+
+1. **Heading Hierarchy (WCAG 1.3.1 - Level A)**
+   - Verify document has H1 as top-level heading
+   - Verify headings don't skip levels (H1→H2→H3, never H1→H3)
+   - Flag empty headings
+   - Report heading structure as outline
+
+2. **Reading Order (WCAG 1.3.2 - Level A)**
+   - Compare visual layout order with tag structure order
+   - Flag content that appears out of logical sequence
+   - Identify multi-column layouts and verify reading order
+
+3. **Language Declaration (WCAG 3.1.1 - Level A)**
+   - Check document-level language attribute in PDF metadata
+   - Flag missing language declaration
+   - Validate language code is valid ISO 639-1
+
+**Create file: `src/services/accessibility/validators/heading-validator.ts`**
+
+Implement heading-specific validation logic with these rules:
+- Maximum 1 H1 per document (or section for multi-section docs)
+- Heading levels must be sequential (no skipping)
+- Headings must contain text content
+- Return remediation suggestions for each issue
+
+**Create file: `src/services/accessibility/validators/reading-order-validator.ts`**
+
+Implement reading order validation:
+- Extract tag order from PDF structure tree
+- Compare with visual rendering order
+- Flag discrepancies with page location
+
+**Create file: `src/controllers/accessibility.controller.ts`**
+
+Add endpoint:
+```
+POST /api/v1/accessibility/validate/structure
+Body: { jobId: string } or { fileId: string }
+Response: StructureValidationResult
+Update file: src/routes/accessibility.routes.ts
+Register the new endpoint with authentication middleware.
+Acceptance Criteria
+
+ Given a PDF is submitted for validation
+ When accessibility check runs
+ Then verify document has proper heading hierarchy (H1→H2→H3, no skips)
+ And verify reading order is logical and sequential (Criterion 1.3.2)
+ And verify language is declared in document metadata (Criterion 3.1.1)
+ And each issue includes WCAG criterion number, severity, location, and remediation suggestion
+
+Implementation Notes
+
+Use the existing PDF structure analyzer from Sprint 2
+Store validation results in the ValidationResult table with jobId reference
+Log validation duration for performance monitoring
+Handle edge cases: untagged PDFs should return a critical error, not crash

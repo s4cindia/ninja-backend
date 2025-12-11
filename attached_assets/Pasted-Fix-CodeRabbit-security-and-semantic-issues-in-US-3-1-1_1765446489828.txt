@@ -1,0 +1,84 @@
+Fix CodeRabbit security and semantic issues in US-3.1.1 PDF Structure Validation
+
+CONTEXT:
+CodeRabbit identified 3 critical issues in the accessibility validation code that need immediate fixes for security and WCAG compliance accuracy.
+
+ISSUES TO FIX:
+
+1. SECURITY ISSUE (Major): File validation inconsistency in accessibility controller
+2. SEMANTIC ISSUE (Minor): Using metadata.title as fileName instead of actual filename  
+3. WCAG ISSUE (Major): Using deprecated WCAG 4.1.1 criterion for validation errors
+
+REQUIRED CHANGES:
+
+## Fix 1: Add shared PDF validation helper (src/controllers/accessibility.controller.ts)
+
+Add this helper function at the top of the file after imports:
+```typescript
+async function validatePdfPath(filePath: string): Promise<{ isValid: boolean; resolvedPath?: string; error?: string }> {
+  const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads');
+  
+  try {
+    const resolvedPath = await fs.realpath(filePath);
+    
+    if (!resolvedPath.startsWith(uploadDir + path.sep)) {
+      return { isValid: false, error: 'Access denied: file must be in uploads directory' };
+    }
+    
+    if (!resolvedPath.toLowerCase().endsWith('.pdf')) {
+      return { isValid: false, error: 'Only PDF files are allowed' };
+    }
+    
+    return { isValid: true, resolvedPath };
+  } catch {
+    return { isValid: false, error: 'File not found or inaccessible' };
+  }
+}
+```
+
+Replace the existing validateStructure function's file validation logic to use this helper for BOTH filePath and jobId flows. Apply the same validation checks to job.input.filePath that are currently only applied to direct filePath.
+
+## Fix 2: Correct fileName usage (src/services/accessibility/pdf-structure-validator.service.ts)
+
+Replace the context creation section:
+
+Change from:
+```typescript
+fileName: parsedPdf.structure.metadata.title || undefined,
+```
+
+To:
+```typescript
+fileName: path.basename(filePath),
+```
+
+Add the path import at the top:
+```typescript
+import path from 'path';
+```
+
+## Fix 3: Replace deprecated WCAG 4.1.1 (src/services/accessibility/pdf-structure-validator.service.ts)
+
+In the error handling section around line 202-211, change:
+
+From:
+```typescript
+wcagCriterion: '4.1.1',
+title: 'Validation Error',
+```
+
+To:
+```typescript
+wcagCriterion: 'N/A',
+title: 'PDF Validation Error',
+```
+
+VALIDATION:
+After making changes, ensure:
+- Both filePath and jobId flows use identical security validation
+- fileName shows actual file name, not PDF metadata title
+- Error issues use 'N/A' instead of deprecated WCAG 4.1.1
+- All existing functionality still works
+- TypeScript compiles without errors
+
+Apply all three fixes and test that the accessibility validation endpoint still works correctly.
