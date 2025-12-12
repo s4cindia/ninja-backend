@@ -1,0 +1,380 @@
+Resolve all merge conflicts by keeping the feature branch code and applying CodeRabbit's fix.
+
+---
+
+**File 1: src/controllers/accessibility.controller.ts**
+
+Replace the ENTIRE file content with this resolved version:
+```typescript
+import { Request, Response, NextFunction } from 'express';
+import { pdfStructureValidatorService } from '../services/accessibility/pdf-structure-validator.service';
+import path from 'path';
+import fs from 'fs/promises';
+
+async function validatePdfPath(filePath: string): Promise<{
+  isValid: boolean;
+  resolvedPath?: string;
+  error?: string;
+  statusCode?: number;
+}> {
+  const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads');
+
+  try {
+    const resolvedPath = await fs.realpath(filePath);
+
+    if (!resolvedPath.startsWith(uploadDir + path.sep)) {
+      return { isValid: false, error: 'Access denied: file must be in uploads directory', statusCode: 403 };
+    }
+
+    if (!resolvedPath.toLowerCase().endsWith('.pdf')) {
+      return { isValid: false, error: 'Only PDF files are allowed', statusCode: 400 };
+    }
+
+    return { isValid: true, resolvedPath };
+  } catch {
+    return { isValid: false, error: 'File not found or inaccessible', statusCode: 400 };
+  }
+}
+
+function recalculateResultForFilteredIssues(
+  originalResult: {
+    isValid: boolean;
+    score: number;
+    issues: Array<{ severity: string }>;
+    summary: { totalChecks: number; passed: number; failed: number; warnings: number };
+    metadata: unknown;
+  },
+  filteredIssues: Array<{ severity: string }>
+) {
+  const criticalCount = filteredIssues.filter(i => i.severity === 'critical').length;
+  const seriousCount = filteredIssues.filter(i => i.severity === 'serious').length;
+  const moderateCount = filteredIssues.filter(i => i.severity === 'moderate').length;
+  const minorCount = filteredIssues.filter(i => i.severity === 'minor').length;
+
+  const totalPenalty = (criticalCount * 25) + (seriousCount * 15) + (moderateCount * 5) + (minorCount * 2);
+  const score = Math.max(0, Math.min(100, 100 - totalPenalty));
+
+  const failed = criticalCount + seriousCount;
+  const warnings = moderateCount + minorCount;
+  const totalChecks = filteredIssues.length;
+
+  return {
+    isValid: failed === 0,
+    score,
+    issues: filteredIssues,
+    summary: {
+      totalChecks,
+      passed: totalChecks === 0 ? 0 : Math.max(0, totalChecks - failed - warnings),
+      failed,
+      warnings,
+    },
+    metadata: originalResult.metadata,
+  };
+}
+
+export class AccessibilityController {
+  async validateStructure(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId, fileId, filePath } = req.body;
+
+      let targetPath: string | null = null;
+
+      if (filePath) {
+        const validation = await validatePdfPath(filePath);
+        if (!validation.isValid) {
+          return res.status(validation.statusCode || 400).json({
+            success: false,
+            error: { message: validation.error },
+          });
+        }
+        targetPath = validation.resolvedPath!;
+      } else if (jobId) {
+        return res.status(501).json({
+          success: false,
+          error: { message: 'jobId lookup requires pipeline integration - use filePath instead' },
+        });
+      } else if (fileId) {
+        return res.status(501).json({
+          success: false,
+          error: { message: 'fileId lookup requires database integration - use filePath instead' },
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'filePath is required' },
+        });
+      }
+
+      const options = {
+        validateHeadings: req.body.validateHeadings !== false,
+        validateReadingOrder: req.body.validateReadingOrder !== false,
+        validateLanguage: req.body.validateLanguage !== false,
+      };
+
+      const result = await pdfStructureValidatorService.validateStructure(targetPath, options);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async validateHeadings(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { filePath } = req.body;
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'filePath is required' },
+        });
+      }
+
+      const validation = await validatePdfPath(filePath);
+      if (!validation.isValid) {
+        return res.status(validation.statusCode || 400).json({
+          success: false,
+          error: { message: validation.error },
+        });
+      }
+
+      const result = await pdfStructureValidatorService.validateStructure(validation.resolvedPath!, {
+        validateHeadings: true,
+        validateReadingOrder: false,
+        validateLanguage: false,
+      });
+
+      const headingIssues = result.issues.filter(i => i.wcagCriterion === '1.3.1');
+
+      res.json({
+        success: true,
+        data: recalculateResultForFilteredIssues(result, headingIssues),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async validateReadingOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { filePath } = req.body;
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'filePath is required' },
+        });
+      }
+
+      const validation = await validatePdfPath(filePath);
+      if (!validation.isValid) {
+        return res.status(validation.statusCode || 400).json({
+          success: false,
+          error: { message: validation.error },
+        });
+      }
+
+      const result = await pdfStructureValidatorService.validateStructure(validation.resolvedPath!, {
+        validateHeadings: false,
+        validateReadingOrder: true,
+        validateLanguage: false,
+      });
+
+      const readingOrderIssues = result.issues.filter(i => i.wcagCriterion === '1.3.2');
+
+      res.json({
+        success: true,
+        data: recalculateResultForFilteredIssues(result, readingOrderIssues),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async validateLanguage(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { filePath } = req.body;
+
+      if (!filePath) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'filePath is required' },
+        });
+      }
+
+      const validation = await validatePdfPath(filePath);
+      if (!validation.isValid) {
+        return res.status(validation.statusCode || 400).json({
+          success: false,
+          error: { message: validation.error },
+        });
+      }
+
+      const result = await pdfStructureValidatorService.validateStructure(validation.resolvedPath!, {
+        validateHeadings: false,
+        validateReadingOrder: false,
+        validateLanguage: true,
+      });
+
+      const languageIssues = result.issues.filter(i => i.wcagCriterion === '3.1.1');
+
+      res.json({
+        success: true,
+        data: recalculateResultForFilteredIssues(result, languageIssues),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const accessibilityController = new AccessibilityController();
+```
+
+---
+
+**File 2: src/services/accessibility/pdf-structure-validator.service.ts**
+
+Find the conflict section around line 226 in the metadata block and resolve it by keeping fileName:
+
+Replace the conflicted metadata block:
+```typescript
+        metadata: {
+          documentId,
+<<<<<<< feature/us-3-1-1-pdf-structure-validation
+          fileName: path.basename(filePath),
+=======
+>>>>>>> main
+          validatedAt: new Date(),
+          duration,
+        },
+```
+
+With:
+```typescript
+        metadata: {
+          documentId,
+          fileName: path.basename(filePath),
+          validatedAt: new Date(),
+          duration,
+        },
+```
+
+---
+
+**File 3: src/services/accessibility/validators/reading-order-validator.ts**
+
+Replace the ENTIRE file content with this resolved version:
+```typescript
+import { randomUUID } from 'crypto';
+import {
+  AccessibilityIssue,
+  ReadingOrderValidationResult,
+  ValidatorContext,
+} from '../types';
+import type { ReadingOrderInfo } from '../../pdf/structure-analyzer.service';
+
+export function validateReadingOrder(
+  readingOrderInfo: ReadingOrderInfo,
+  context: ValidatorContext
+): ReadingOrderValidationResult {
+  const issues: AccessibilityIssue[] = [];
+  const orderDiscrepancies: ReadingOrderValidationResult['orderDiscrepancies'] = [];
+
+  if (!context.isTaggedPdf) {
+    issues.push({
+      id: randomUUID(),
+      wcagCriterion: '1.3.2',
+      wcagLevel: 'A',
+      severity: 'critical',
+      title: 'Untagged PDF - Reading order cannot be verified',
+      description: 'This PDF does not have a tag structure. Without tags, assistive technologies cannot determine the correct reading order of content.',
+      location: { page: 1 },
+      remediation: 'Add proper PDF tags to the document. Use a PDF editor or accessibility tool to tag the document structure.',
+    });
+    return { issues, hasProperOrder: false, orderDiscrepancies };
+  }
+
+  if (!readingOrderInfo.hasStructureTree) {
+    issues.push({
+      id: randomUUID(),
+      wcagCriterion: '1.3.2',
+      wcagLevel: 'A',
+      severity: 'serious',
+      title: 'Missing structure tree',
+      description: 'The PDF is tagged but does not have a proper structure tree. Reading order may not be correctly defined.',
+      location: { page: 1 },
+      remediation: 'Ensure the PDF has a complete structure tree that defines the reading order of all content.',
+    });
+  }
+
+  for (const orderIssue of readingOrderInfo.issues) {
+    let severity: 'critical' | 'serious' | 'moderate' | 'minor' = 'serious';
+    
+    if (orderIssue.type === 'column-confusion') {
+      severity = 'serious';
+      issues.push({
+        id: randomUUID(),
+        wcagCriterion: '1.3.2',
+        wcagLevel: 'A',
+        severity,
+        title: 'Multi-column reading order issue',
+        description: orderIssue.description,
+        location: { page: orderIssue.pageNumber || 1 },
+        remediation: 'Ensure the PDF tag structure correctly defines the reading order for multi-column layouts. Content should be tagged to read each column in sequence.',
+      });
+
+      if (orderIssue.pageNumber) {
+        orderDiscrepancies.push({
+          page: orderIssue.pageNumber,
+          expected: 'Left-to-right, top-to-bottom within columns',
+          actual: 'Columns may be read in incorrect order',
+          description: orderIssue.description,
+        });
+      }
+    } else if (orderIssue.type === 'visual-order') {
+      issues.push({
+        id: randomUUID(),
+        wcagCriterion: '1.3.2',
+        wcagLevel: 'A',
+        severity: 'serious',
+        title: 'Reading order discrepancy',
+        description: orderIssue.description,
+        location: { page: orderIssue.pageNumber || 1 },
+        remediation: 'Reorder the PDF tags to match the intended reading sequence.',
+      });
+    } else if (orderIssue.type === 'float-interruption' || orderIssue.type === 'table-reading') {
+      issues.push({
+        id: randomUUID(),
+        wcagCriterion: '1.3.2',
+        wcagLevel: 'A',
+        severity: 'moderate',
+        title: 'Reading order concern',
+        description: orderIssue.description,
+        location: { page: orderIssue.pageNumber || 1 },
+        remediation: 'Review and verify the reading order matches the intended content sequence.',
+      });
+    }
+  }
+
+  if (readingOrderInfo.confidence < 0.5) {
+    issues.push({
+      id: randomUUID(),
+      wcagCriterion: '1.3.2',
+      wcagLevel: 'A',
+      severity: 'moderate',
+      title: 'Low confidence in reading order',
+      description: `The reading order analysis has low confidence (${Math.round(readingOrderInfo.confidence * 100)}%). Manual review is recommended.`,
+      location: { page: 1 },
+      remediation: 'Manually verify the reading order by testing with a screen reader or PDF accessibility checker.',
+    });
+  }
+
+  const hasProperOrder = readingOrderInfo.isLogical && 
+    issues.filter(i => i.severity === 'critical' || i.severity === 'serious').length === 0;
+
+  return { issues, hasProperOrder, orderDiscrepancies };
+}
