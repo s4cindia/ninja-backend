@@ -1,0 +1,139 @@
+Fix the two remaining CodeRabbit issues that were not completed.
+
+---
+
+**Fix 1: Update tsconfig.json for ESM compatibility (Critical)**
+
+Open `tsconfig.json` and change the module setting from "commonjs" to "ES2022":
+
+Find this line:
+```json
+"module": "commonjs",
+```
+
+Change it to:
+```json
+"module": "ES2022",
+```
+
+This fixes the ESM/CommonJS mismatch since package.json has "type": "module".
+
+---
+
+**Fix 2: Add recalculateResultForFilteredIssues helper function**
+
+In `src/controllers/accessibility.controller.ts`, add this helper function right after the `validatePdfPath` function (around line 30):
+```typescript
+function recalculateResultForFilteredIssues(
+  originalResult: {
+    isValid: boolean;
+    score: number;
+    issues: Array<{ severity: string }>;
+    summary: { totalChecks: number; passed: number; failed: number; warnings: number };
+    metadata: unknown;
+  },
+  filteredIssues: Array<{ severity: string }>
+) {
+  const criticalCount = filteredIssues.filter(i => i.severity === 'critical').length;
+  const seriousCount = filteredIssues.filter(i => i.severity === 'serious').length;
+  const moderateCount = filteredIssues.filter(i => i.severity === 'moderate').length;
+  const minorCount = filteredIssues.filter(i => i.severity === 'minor').length;
+
+  const totalPenalty = (criticalCount * 25) + (seriousCount * 15) + (moderateCount * 5) + (minorCount * 2);
+  const score = Math.max(0, Math.min(100, 100 - totalPenalty));
+
+  const failed = criticalCount + seriousCount;
+  const warnings = moderateCount + minorCount;
+  const totalChecks = filteredIssues.length || 1;
+
+  return {
+    isValid: filteredIssues.length === 0,
+    score,
+    issues: filteredIssues,
+    summary: {
+      totalChecks,
+      passed: Math.max(0, totalChecks - failed - warnings),
+      failed,
+      warnings,
+    },
+    metadata: originalResult.metadata,
+  };
+}
+```
+
+---
+
+**Fix 3: Update validateHeadings to use the helper**
+
+Find the validateHeadings method and update the response part. Replace:
+```typescript
+res.json({
+  success: true,
+  data: {
+    ...result,
+    issues: headingIssues,
+  },
+});
+```
+
+With:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, headingIssues),
+});
+```
+
+---
+
+**Fix 4: Update validateReadingOrder to use the helper**
+
+Find the validateReadingOrder method and update similarly. Replace:
+```typescript
+res.json({
+  success: true,
+  data: {
+    ...result,
+    issues: readingOrderIssues,
+  },
+});
+```
+
+With:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, readingOrderIssues),
+});
+```
+
+---
+
+**Fix 5: Update validateLanguage to use the helper**
+
+Find the validateLanguage method and update similarly. Replace:
+```typescript
+res.json({
+  success: true,
+  data: {
+    ...result,
+    issues: languageIssues,
+  },
+});
+```
+
+With:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, languageIssues),
+});
+```
+
+---
+
+**After making changes, verify:**
+```bash
+npm run build
+npm run test:unit
+npm run lint

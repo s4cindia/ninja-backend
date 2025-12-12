@@ -28,6 +28,42 @@ async function validatePdfPath(filePath: string): Promise<{
   }
 }
 
+function recalculateResultForFilteredIssues(
+  originalResult: {
+    isValid: boolean;
+    score: number;
+    issues: Array<{ severity: string }>;
+    summary: { totalChecks: number; passed: number; failed: number; warnings: number };
+    metadata: unknown;
+  },
+  filteredIssues: Array<{ severity: string }>
+) {
+  const criticalCount = filteredIssues.filter(i => i.severity === 'critical').length;
+  const seriousCount = filteredIssues.filter(i => i.severity === 'serious').length;
+  const moderateCount = filteredIssues.filter(i => i.severity === 'moderate').length;
+  const minorCount = filteredIssues.filter(i => i.severity === 'minor').length;
+
+  const totalPenalty = (criticalCount * 25) + (seriousCount * 15) + (moderateCount * 5) + (minorCount * 2);
+  const score = Math.max(0, Math.min(100, 100 - totalPenalty));
+
+  const failed = criticalCount + seriousCount;
+  const warnings = moderateCount + minorCount;
+  const totalChecks = filteredIssues.length || 1;
+
+  return {
+    isValid: filteredIssues.length === 0,
+    score,
+    issues: filteredIssues,
+    summary: {
+      totalChecks,
+      passed: Math.max(0, totalChecks - failed - warnings),
+      failed,
+      warnings,
+    },
+    metadata: originalResult.metadata,
+  };
+}
+
 export class AccessibilityController {
   async validateStructure(req: Request, res: Response, next: NextFunction) {
     try {
@@ -107,10 +143,7 @@ export class AccessibilityController {
 
       res.json({
         success: true,
-        data: {
-          ...result,
-          issues: headingIssues,
-        },
+        data: recalculateResultForFilteredIssues(result, headingIssues),
       });
     } catch (error) {
       next(error);
@@ -146,10 +179,7 @@ export class AccessibilityController {
 
       res.json({
         success: true,
-        data: {
-          ...result,
-          issues: readingOrderIssues,
-        },
+        data: recalculateResultForFilteredIssues(result, readingOrderIssues),
       });
     } catch (error) {
       next(error);
@@ -185,10 +215,7 @@ export class AccessibilityController {
 
       res.json({
         success: true,
-        data: {
-          ...result,
-          issues: languageIssues,
-        },
+        data: recalculateResultForFilteredIssues(result, languageIssues),
       });
     } catch (error) {
       next(error);
