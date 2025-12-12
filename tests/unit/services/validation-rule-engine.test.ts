@@ -32,12 +32,12 @@ describe('ValidationRuleEngine', () => {
     it('should return validation result object', async () => {
       const mockContent = { type: 'text', content: 'Sample text' };
       const rules = engine.getActiveRules();
+
+      expect(rules.length).toBeGreaterThan(0);
       
-      if (rules.length > 0) {
-        const result = await engine.validateRule(rules[0], mockContent);
-        expect(result).toHaveProperty('passed');
-        expect(result).toHaveProperty('ruleId');
-      }
+      const result = await engine.validateRule(rules[0], mockContent);
+      expect(result).toHaveProperty('passed');
+      expect(result).toHaveProperty('ruleId');
     });
   });
 });

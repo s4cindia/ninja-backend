@@ -223,6 +223,7 @@ class PdfStructureValidatorService {
         },
         metadata: {
           documentId,
+          fileName: path.basename(filePath),
           validatedAt: new Date(),
           duration,
         },
