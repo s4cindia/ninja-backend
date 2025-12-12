@@ -1,0 +1,113 @@
+Resolve all merge conflicts and fix remaining CodeRabbit issues.
+
+---
+
+**Task 1: Resolve conflicts in src/controllers/accessibility.controller.ts**
+
+The conflicts are formatting differences. Keep the HEAD version (your changes) which has the cleaner formatting. For each conflict section:
+
+1. Lines 6-41: Keep the HEAD version of validatePdfPath function
+2. Lines 109-140: Keep the HEAD version of validateHeadings method  
+3. Lines 171-202: Keep the HEAD version of validateReadingOrder method
+4. Lines 233-264: Keep the HEAD version of validateLanguage method
+
+Remove all conflict markers (<<<<<<< HEAD, =======, >>>>>>> origin/main) and keep only the HEAD version code.
+
+---
+
+**Task 2: Resolve conflicts in src/services/accessibility/pdf-structure-validator.service.ts**
+
+Lines 226-229: This appears to be a minor difference. Keep the HEAD version and remove conflict markers.
+
+---
+
+**Task 3: Resolve conflicts in src/services/accessibility/validators/reading-order-validator.ts**
+
+1. Lines 7-21: Keep the HEAD version (uses imported ReadingOrderInfo type)
+2. Lines 81-85: Keep the HEAD version
+3. Lines 96-100: Keep the HEAD version
+
+Remove all conflict markers.
+
+---
+
+**Task 4: Fix ESM/CommonJS mismatch (Critical CodeRabbit issue)**
+
+Update `tsconfig.json` to use ESM-compatible output since package.json has "type": "module":
+
+Change these compiler options:
+```json
+{
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "node",
+    ...rest stays the same
+  }
+}
+```
+
+---
+
+**Task 5: Fix stale score/summary after filtering (CodeRabbit issue)**
+
+In `src/controllers/accessibility.controller.ts`, add a helper function to recalculate score and summary after filtering issues:
+
+Add this helper function after the validatePdfPath function:
+```typescript
+function recalculateResultForFilteredIssues(
+  originalResult: any,
+  filteredIssues: any[]
+): any {
+  const passed = originalResult.summary.totalChecks - filteredIssues.length;
+  const failed = filteredIssues.filter((i: any) => i.severity === 'critical' || i.severity === 'serious').length;
+  const warnings = filteredIssues.filter((i: any) => i.severity === 'moderate' || i.severity === 'minor').length;
+  
+  // Recalculate score based on filtered issues
+  const criticalCount = filteredIssues.filter((i: any) => i.severity === 'critical').length;
+  const seriousCount = filteredIssues.filter((i: any) => i.severity === 'serious').length;
+  const moderateCount = filteredIssues.filter((i: any) => i.severity === 'moderate').length;
+  const minorCount = filteredIssues.filter((i: any) => i.severity === 'minor').length;
+  
+  const totalPenalty = (criticalCount * 25) + (seriousCount * 15) + (moderateCount * 5) + (minorCount * 2);
+  const relevantChecks = filteredIssues.length > 0 ? filteredIssues.length : 1;
+  const score = Math.max(0, Math.min(100, 100 - totalPenalty));
+
+  return {
+    ...originalResult,
+    score,
+    issues: filteredIssues,
+    summary: {
+      totalChecks: relevantChecks,
+      passed: relevantChecks - filteredIssues.length,
+      failed,
+      warnings,
+    },
+  };
+}
+```
+
+Then update the three filter methods to use this helper:
+
+In validateHeadings, change:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, headingIssues),
+});
+```
+
+In validateReadingOrder, change:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, readingOrderIssues),
+});
+```
+
+In validateLanguage, change:
+```typescript
+res.json({
+  success: true,
+  data: recalculateResultForFilteredIssues(result, languageIssues),
+});
+```
