@@ -1,6 +1,15 @@
+Fix CI/CD pipeline failure - integration tests should not run during PR checks.
+
+---
+
+**Fix 1: Update integration tests to skip gracefully when API is not available**
+
+Replace the contents of `tests/integration/health.api.test.ts` with:
+```typescript
 import { describe, it, expect } from 'vitest';
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:5000';
+// Only fail hard if API_BASE_URL was explicitly provided (meaning API should be available)
 const REQUIRE_API = !!process.env.API_BASE_URL;
 
 describe('Health API', () => {
@@ -18,6 +27,7 @@ describe('Health API', () => {
         if (REQUIRE_API) {
           throw new Error(`API unavailable at ${API_BASE_URL}: ${(error as Error).message}`);
         }
+        // Skip gracefully when API is not required to be running
         console.warn('API not running - skipping integration test');
       }
     });
@@ -43,3 +53,35 @@ describe('Health API', () => {
     });
   });
 });
+```
+
+---
+
+**Fix 2: Update PR checks workflow to run only unit tests**
+
+In `.github/workflows/pr-checks.yml`, change the test step from:
+```yaml
+      - name: Run unit tests with coverage
+        run: npm run test:coverage
+```
+
+To:
+```yaml
+      - name: Run unit tests
+        run: npm run test:unit
+```
+
+This makes sense because:
+- PR checks should only run unit tests (fast, no external dependencies)
+- Integration tests run after staging deployment when API is actually available
+
+---
+
+**Fix 3: Rename ESLint config to .mjs for ES module compatibility**
+
+Rename the file:
+```bash
+mv eslint.config.js eslint.config.mjs
+```
+
+This fixes the Node.js warning about module type detection.
