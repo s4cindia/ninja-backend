@@ -126,6 +126,32 @@ src/
 - Analysis Options: analyzeHeadings, analyzeTables, analyzeLists, analyzeLinks, analyzeReadingOrder, analyzeLanguage, pageRange
 - Issue Severity Levels: critical, major, minor
 
+## Validation Services (Sprint 2)
+- Location: src/services/validation/
+- Services:
+  - WCAGCriteriaService: WCAG 2.1 criteria database (A, AA, AAA levels)
+  - ValidationRuleEngine: Rule-based content validation engine
+  - ComplianceScoringService: Weighted compliance score calculation
+- Features:
+  - 25+ WCAG criteria with principles (perceivable, operable, understandable, robust)
+  - 10 validation rules across categories (text, images, structure, navigation, forms, media)
+  - Weighted scoring (errors=10, warnings=3, info=1)
+  - Compliance levels: high (90+), medium (70+), low (50+), non-compliant
+
+## Testing Framework
+- Framework: Vitest with v8 coverage
+- Config: vitest.config.ts
+- Commands:
+  - npm test - Run all tests
+  - npm run test:unit - Run unit tests only
+  - npm run test:integration - Run integration tests only
+  - npm run test:watch - Watch mode
+  - npm run test:coverage - Run with coverage report
+- Structure:
+  - tests/unit/services/ - Service unit tests
+  - tests/integration/ - API integration tests
+  - tests/fixtures/ - Test fixtures and sample files
+
 ## Database Commands
 - Generate client: npx prisma generate
 - Run migrations: npx prisma migrate dev

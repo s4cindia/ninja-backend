@@ -1,0 +1,176 @@
+**Replit Agent Prompt:**
+```
+Create unit tests for Sprint 2 services. We need tests for the core validation services.
+
+**Task 1: Create WCAG Criteria Service Tests**
+Create file: `tests/unit/services/wcag-criteria.test.ts`
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { WCAGCriteriaService } from '../../../src/services/validation/wcag-criteria.service';
+
+describe('WCAGCriteriaService', () => {
+  let service: WCAGCriteriaService;
+
+  beforeEach(() => {
+    service = new WCAGCriteriaService();
+  });
+
+  describe('getAllCriteria', () => {
+    it('should return all WCAG criteria', () => {
+      const criteria = service.getAllCriteria();
+      expect(criteria).toBeDefined();
+      expect(Array.isArray(criteria)).toBe(true);
+      expect(criteria.length).toBeGreaterThan(0);
+    });
+
+    it('should include perceivable criteria (1.x.x)', () => {
+      const criteria = service.getAllCriteria();
+      const perceivable = criteria.filter(c => c.id.startsWith('1.'));
+      expect(perceivable.length).toBeGreaterThan(0);
+    });
+
+    it('should include operable criteria (2.x.x)', () => {
+      const criteria = service.getAllCriteria();
+      const operable = criteria.filter(c => c.id.startsWith('2.'));
+      expect(operable.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('getCriteriaById', () => {
+    it('should return criterion by valid ID', () => {
+      const criterion = service.getCriteriaById('1.1.1');
+      expect(criterion).toBeDefined();
+      expect(criterion?.id).toBe('1.1.1');
+    });
+
+    it('should return undefined for invalid ID', () => {
+      const criterion = service.getCriteriaById('99.99.99');
+      expect(criterion).toBeUndefined();
+    });
+  });
+
+  describe('getCriteriaByLevel', () => {
+    it('should filter criteria by level A', () => {
+      const levelA = service.getCriteriaByLevel('A');
+      expect(levelA.every(c => c.level === 'A')).toBe(true);
+    });
+
+    it('should filter criteria by level AA', () => {
+      const levelAA = service.getCriteriaByLevel('AA');
+      expect(levelAA.every(c => c.level === 'AA')).toBe(true);
+    });
+  });
+});
+```
+
+**Task 2: Create Validation Rule Engine Tests**
+Create file: `tests/unit/services/validation-rule-engine.test.ts`
+```typescript
+import { describe, it, expect, beforeEach } from 'vitest';
+import { ValidationRuleEngine } from '../../../src/services/validation/validation-rule-engine.service';
+
+describe('ValidationRuleEngine', () => {
+  let engine: ValidationRuleEngine;
+
+  beforeEach(() => {
+    engine = new ValidationRuleEngine();
+  });
+
+  describe('getActiveRules', () => {
+    it('should return active validation rules', () => {
+      const rules = engine.getActiveRules();
+      expect(rules).toBeDefined();
+      expect(Array.isArray(rules)).toBe(true);
+    });
+
+    it('should only return enabled rules', () => {
+      const rules = engine.getActiveRules();
+      expect(rules.every(r => r.enabled !== false)).toBe(true);
+    });
+  });
+
+  describe('getRulesByCategory', () => {
+    it('should filter rules by category', () => {
+      const textRules = engine.getRulesByCategory('text');
+      expect(textRules.every(r => r.category === 'text')).toBe(true);
+    });
+  });
+
+  describe('validateRule', () => {
+    it('should return validation result object', async () => {
+      const mockContent = { type: 'text', content: 'Sample text' };
+      const rules = engine.getActiveRules();
+      
+      if (rules.length > 0) {
+        const result = await engine.validateRule(rules[0], mockContent);
+        expect(result).toHaveProperty('passed');
+        expect(result).toHaveProperty('ruleId');
+      }
+    });
+  });
+});
+```
+
+**Task 3: Create Compliance Scoring Tests**
+Create file: `tests/unit/services/compliance-scoring.test.ts`
+```typescript
+import { describe, it, expect } from 'vitest';
+import { ComplianceScoringService } from '../../../src/services/validation/compliance-scoring.service';
+
+describe('ComplianceScoringService', () => {
+  describe('calculateScore', () => {
+    it('should return 100 for all passed validations', () => {
+      const results = [
+        { passed: true, ruleId: '1', severity: 'error' },
+        { passed: true, ruleId: '2', severity: 'error' },
+        { passed: true, ruleId: '3', severity: 'warning' },
+      ];
+      
+      const service = new ComplianceScoringService();
+      const score = service.calculateScore(results);
+      
+      expect(score.overallScore).toBe(100);
+      expect(score.passed).toBe(true);
+    });
+
+    it('should reduce score for failed validations', () => {
+      const results = [
+        { passed: true, ruleId: '1', severity: 'error' },
+        { passed: false, ruleId: '2', severity: 'error' },
+        { passed: true, ruleId: '3', severity: 'warning' },
+      ];
+      
+      const service = new ComplianceScoringService();
+      const score = service.calculateScore(results);
+      
+      expect(score.overallScore).toBeLessThan(100);
+    });
+
+    it('should handle empty results', () => {
+      const service = new ComplianceScoringService();
+      const score = service.calculateScore([]);
+      
+      expect(score).toBeDefined();
+      expect(typeof score.overallScore).toBe('number');
+    });
+  });
+
+  describe('getComplianceLevel', () => {
+    it('should return appropriate level for score', () => {
+      const service = new ComplianceScoringService();
+      
+      expect(service.getComplianceLevel(95)).toBe('high');
+      expect(service.getComplianceLevel(75)).toBe('medium');
+      expect(service.getComplianceLevel(50)).toBe('low');
+    });
+  });
+});
+```
+
+**Task 4: Run the tests to verify**
+After creating the files, run:
+```bash
+npm run test:unit
+```
+
+All tests should pass. If any fail due to service API differences, adjust the tests to match the actual service implementations.

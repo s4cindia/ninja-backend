@@ -4,17 +4,7 @@ import {
   ReadingOrderValidationResult,
   ValidatorContext,
 } from '../types';
-
-interface ReadingOrderInfo {
-  isLogical: boolean;
-  hasStructureTree: boolean;
-  issues: Array<{
-    type: string;
-    description: string;
-    pageNumber?: number;
-  }>;
-  confidence: number;
-}
+import type { ReadingOrderInfo } from '../../pdf/structure-analyzer.service';
 
 export function validateReadingOrder(
   readingOrderInfo: ReadingOrderInfo,
@@ -74,7 +64,7 @@ export function validateReadingOrder(
           description: orderIssue.description,
         });
       }
-    } else if (orderIssue.type === 'order-mismatch') {
+    } else if (orderIssue.type === 'visual-order') {
       issues.push({
         id: randomUUID(),
         wcagCriterion: '1.3.2',
@@ -85,7 +75,7 @@ export function validateReadingOrder(
         location: { page: orderIssue.pageNumber || 1 },
         remediation: 'Reorder the PDF tags to match the intended reading sequence.',
       });
-    } else {
+    } else if (orderIssue.type === 'float-interruption' || orderIssue.type === 'table-reading') {
       issues.push({
         id: randomUUID(),
         wcagCriterion: '1.3.2',
