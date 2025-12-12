@@ -1,0 +1,83 @@
+# First, pull and merge again
+git fetch origin main
+git merge origin/main
+```
+
+Then **paste this into Replit Agent:**
+```
+Fix merge conflicts and apply CodeRabbit's suggestion for the recalculateResultForFilteredIssues function.
+
+---
+
+**Task 1: Resolve any merge conflicts**
+
+Check files for conflict markers (<<<<<<< HEAD, =======, >>>>>>> origin/main) in:
+- src/controllers/accessibility.controller.ts
+- src/services/accessibility/pdf-structure-validator.service.ts  
+- src/services/accessibility/validators/reading-order-validator.ts
+
+For each conflict, keep the HEAD version (our changes) and remove the conflict markers.
+
+---
+
+**Task 2: Fix the recalculateResultForFilteredIssues function per CodeRabbit feedback**
+
+Update the function in `src/controllers/accessibility.controller.ts` to fix the isValid and summary.passed inconsistencies:
+```typescript
+function recalculateResultForFilteredIssues(
+  originalResult: {
+    isValid: boolean;
+    score: number;
+    issues: Array<{ severity: string }>;
+    summary: { totalChecks: number; passed: number; failed: number; warnings: number };
+    metadata: unknown;
+  },
+  filteredIssues: Array<{ severity: string }>
+) {
+  const criticalCount = filteredIssues.filter(i => i.severity === 'critical').length;
+  const seriousCount = filteredIssues.filter(i => i.severity === 'serious').length;
+  const moderateCount = filteredIssues.filter(i => i.severity === 'moderate').length;
+  const minorCount = filteredIssues.filter(i => i.severity === 'minor').length;
+
+  const totalPenalty = (criticalCount * 25) + (seriousCount * 15) + (moderateCount * 5) + (minorCount * 2);
+  const score = Math.max(0, Math.min(100, 100 - totalPenalty));
+
+  const failed = criticalCount + seriousCount;
+  const warnings = moderateCount + minorCount;
+  const totalChecks = filteredIssues.length;
+
+  return {
+    isValid: failed === 0,  // Valid if no critical/serious issues
+    score,
+    issues: filteredIssues,
+    summary: {
+      totalChecks,
+      passed: totalChecks === 0 ? 0 : Math.max(0, totalChecks - failed - warnings),
+      failed,
+      warnings,
+    },
+    metadata: originalResult.metadata,
+  };
+}
+```
+
+---
+
+**After fixing, verify:**
+```bash
+npm run build
+npm run test:unit
+npm run lint
+```
+
+Then commit and push:
+```bash
+git add -A
+git commit -m "fix: resolve merge conflicts and fix isValid/passed calculation
+
+- Resolve merge conflicts
+- Fix isValid to check for failed (critical/serious) issues only
+- Fix passed calculation for edge cases"
+
+git push origin feature/us-3-1-1-pdf-structure-validation
+```
