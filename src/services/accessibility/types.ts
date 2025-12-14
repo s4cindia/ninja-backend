@@ -64,6 +64,34 @@ export interface LanguageValidationResult {
   hasLanguageDeclaration: boolean;
 }
 
+export interface ImageAltTextStatus {
+  imageId: string;
+  page: number;
+  position: { x: number; y: number; width: number; height: number };
+  hasAltText: boolean;
+  altText: string | null;
+  isDecorative: boolean;
+  wcagCompliant: boolean;
+  issue?: AccessibilityIssue;
+  qualityFlags: string[];
+}
+
+export interface AltTextValidationResult {
+  totalImages: number;
+  withAltText: number;
+  missingAltText: number;
+  decorativeImages: number;
+  compliancePercentage: number;
+  images: ImageAltTextStatus[];
+  issues: AccessibilityIssue[];
+  summary: {
+    totalChecks: number;
+    passed: number;
+    failed: number;
+    warnings: number;
+  };
+}
+
 export interface ValidatorContext {
   documentId: string;
   fileName?: string;

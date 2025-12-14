@@ -28,4 +28,10 @@ router.post(
   accessibilityController.validateLanguage.bind(accessibilityController)
 );
 
+router.post(
+  '/validate/alt-text',
+  authenticate,
+  accessibilityController.validateAltText.bind(accessibilityController)
+);
+
 export default router;
