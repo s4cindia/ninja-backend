@@ -74,7 +74,7 @@ function detectQualityFlags(altText: string): string[] {
 
 export function validateAltText(
   images: ImageInfo[],
-  context: ValidatorContext
+  _context: ValidatorContext
 ): AltTextValidationResult {
   const imageStatuses: ImageAltTextStatus[] = [];
   const issues: AccessibilityIssue[] = [];
