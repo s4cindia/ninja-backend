@@ -34,4 +34,10 @@ router.post(
   accessibilityController.validateAltText.bind(accessibilityController)
 );
 
+router.post(
+  '/validate/contrast',
+  authenticate,
+  accessibilityController.validateContrast.bind(accessibilityController)
+);
+
 export default router;

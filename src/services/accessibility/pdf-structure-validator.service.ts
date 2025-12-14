@@ -3,17 +3,21 @@ import path from 'path';
 import { pdfParserService, ParsedPDF } from '../pdf/pdf-parser.service';
 import { structureAnalyzerService } from '../pdf/structure-analyzer.service';
 import { imageExtractorService } from '../pdf/image-extractor.service';
+import { textExtractorService } from '../pdf/text-extractor.service';
 import {
   StructureValidationResult,
   AccessibilityIssue,
   HeadingInfo,
   ValidatorContext,
   AltTextValidationResult,
+  ContrastValidationResult,
+  TextColorInfo,
 } from './types';
 import { validateHeadingHierarchy } from './validators/heading-validator';
 import { validateReadingOrder } from './validators/reading-order-validator';
 import { validateLanguageDeclaration } from './validators/language-validator';
 import { validateAltText } from './validators/alt-text-validator';
+import { validateContrast } from './validators/contrast-validator';
 
 export interface StructureValidationOptions {
   validateHeadings?: boolean;
@@ -295,6 +299,56 @@ class PdfStructureValidatorService {
 
       const duration = Date.now() - startTime;
       console.log(`Alt text validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
+
+      return result;
+    } finally {
+      if (parsedPdf) {
+        await pdfParserService.close(parsedPdf);
+      }
+    }
+  }
+
+  async validateContrastFromFile(filePath: string): Promise<ContrastValidationResult> {
+    const startTime = Date.now();
+    const documentId = randomUUID();
+
+    let parsedPdf: ParsedPDF | null = null;
+
+    try {
+      parsedPdf = await pdfParserService.parse(filePath);
+
+      const context: ValidatorContext = {
+        documentId,
+        fileName: path.basename(filePath),
+        isTaggedPdf: parsedPdf.structure.metadata.isTagged,
+        pageCount: parsedPdf.structure.pageCount,
+      };
+
+      const documentText = await textExtractorService.extractText(parsedPdf, {
+        includePositions: true,
+        includeFontInfo: true,
+        groupIntoLines: false,
+        groupIntoBlocks: false,
+      });
+
+      const textColorInfos: TextColorInfo[] = documentText.pages.flatMap((page, _pageIdx) =>
+        page.items.map((item, itemIdx) => ({
+          id: `text_p${page.pageNumber}_${itemIdx}`,
+          pageNumber: page.pageNumber,
+          text: item.text,
+          position: item.position,
+          fontSize: item.font.size,
+          isBold: item.font.isBold,
+          foregroundColor: '#000000',
+          backgroundColor: '#FFFFFF',
+          needsManualReview: true,
+        }))
+      );
+
+      const result = validateContrast(textColorInfos, context);
+
+      const duration = Date.now() - startTime;
+      console.log(`Contrast validation completed in ${duration}ms - ${result.passing} passing, ${result.failing} failing`);
 
       return result;
     } finally {
