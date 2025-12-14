@@ -1,0 +1,275 @@
+# Refactoring Task: Extract PDF Controller
+
+## Context
+We're preparing the Ninja Platform backend for Sprint 3 accessibility features. Before adding new routes, we need to refactor `pdf.routes.ts` (521 lines) to follow the thin-routes pattern already established by `job.controller.ts` and `job.routes.ts`.
+
+## Current State
+- `src/routes/pdf.routes.ts` — 521 lines containing route definitions AND handler logic
+- `src/controllers/job.controller.ts` — Example of correct pattern (thin controller)
+- `src/routes/job.routes.ts` — Example of correct pattern (route definitions only)
+- `validateFilePath` utility is duplicated in `pdf.routes.ts` and `accessibility.controller.ts`
+
+## Objective
+Refactor to match the established controller pattern, improving maintainability before Sprint 3.
+
+## Tasks
+
+### Task 1: Create `src/utils/path-validator.ts`
+
+Extract the `validateFilePath` utility first since it's needed by the controller.
+```typescript
+// src/utils/path-validator.ts
+
+import { AppError } from './errors';
+import path from 'path';
+
+/**
+ * Validates that a file path is safe and within allowed directories.
+ * Prevents path traversal attacks.
+ */
+export function validateFilePath(
+  filePath: string,
+  allowedBasePaths: string[]
+): { valid: boolean; error?: string } {
+  // Normalize the path to resolve any '..' or '.' segments
+  const normalizedPath = path.normalize(filePath);
+  
+  // Check for path traversal attempts
+  if (normalizedPath.includes('..')) {
+    return { valid: false, error: 'Path traversal detected' };
+  }
+  
+  // Verify path starts with one of the allowed bases
+  const isAllowed = allowedBasePaths.some(basePath => 
+    normalizedPath.startsWith(path.normalize(basePath))
+  );
+  
+  if (!isAllowed) {
+    return { valid: false, error: 'Path not in allowed directories' };
+  }
+  
+  return { valid: true };
+}
+
+/**
+ * Validates file path or throws AppError
+ */
+export function assertValidFilePath(
+  filePath: string,
+  allowedBasePaths: string[]
+): void {
+  const result = validateFilePath(filePath, allowedBasePaths);
+  if (!result.valid) {
+    throw new AppError(result.error || 'Invalid file path', 'INVALID_PATH', 400);
+  }
+}
+```
+
+**Note:** Review the existing `validateFilePath` implementation in `pdf.routes.ts` and incorporate any additional logic it contains.
+
+---
+
+### Task 2: Create `src/controllers/pdf.controller.ts`
+
+Extract all route handler functions from `pdf.routes.ts` into a new controller.
+
+**Pattern to follow** (reference `job.controller.ts`):
+```typescript
+// src/controllers/pdf.controller.ts
+
+import { Request, Response, NextFunction } from 'express';
+import { AppError } from '../utils/errors';
+import { assertValidFilePath } from '../utils/path-validator';
+import { logger } from '../lib/logger';
+// Import required services
+import { pdfParserService } from '../services/pdf/pdf-parser.service';
+import { structureAnalyzerService } from '../services/pdf/structure-analyzer.service';
+// ... other service imports as needed
+
+/**
+ * Handle PDF file upload
+ * POST /api/v1/pdf/upload
+ */
+export const uploadPdf = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    // Extract handler logic from pdf.routes.ts
+    // ...
+    
+    res.status(201).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Process uploaded PDF
+ * POST /api/v1/pdf/:id/process
+ */
+export const processPdf = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    // Extract handler logic from pdf.routes.ts
+    // ...
+    
+    res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get PDF processing status
+ * GET /api/v1/pdf/:id/status
+ */
+export const getStatus = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    // Extract handler logic from pdf.routes.ts
+    // ...
+    
+    res.status(200).json({ success: true, data: status });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Continue extracting ALL handlers from pdf.routes.ts...
+// Each inline handler in the routes file becomes an exported async function here
+```
+
+**Extract ALL handlers from pdf.routes.ts** — there are approximately 14 route handlers. Each should:
+- Be an exported async function
+- Accept `(req: Request, res: Response, next: NextFunction)`
+- Use try/catch with `next(error)`
+- Delegate business logic to services
+- Handle response formatting
+
+---
+
+### Task 3: Refactor `src/routes/pdf.routes.ts`
+
+Reduce to route definitions only (~50-80 lines).
+```typescript
+// src/routes/pdf.routes.ts
+
+import { Router } from 'express';
+import { authenticate } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validation.middleware';
+import * as pdfController from '../controllers/pdf.controller';
+// Import schemas if validation middleware is used
+// import { uploadSchema, processSchema } from '../schemas/pdf.schemas';
+
+const router = Router();
+
+// All routes require authentication
+router.use(authenticate);
+
+// Upload routes
+router.post('/upload', pdfController.uploadPdf);
+
+// Processing routes
+router.post('/:id/process', pdfController.processPdf);
+router.get('/:id/status', pdfController.getStatus);
+
+// Result/download routes
+router.get('/:id/result', pdfController.getResult);
+router.get('/:id/download', pdfController.downloadPdf);
+
+// Structure/analysis routes
+router.get('/:id/structure', pdfController.getStructure);
+router.get('/:id/text', pdfController.getText);
+router.get('/:id/images', pdfController.getImages);
+
+// Add all other routes following the same pattern...
+// Reference the original pdf.routes.ts for the complete list
+
+export default router;
+```
+
+---
+
+### Task 4: Update `src/controllers/accessibility.controller.ts`
+
+Replace the duplicated `validateFilePath` with import from shared utility.
+
+**Find:**
+```typescript
+// Local validateFilePath function or inline validation logic
+function validateFilePath(...) { ... }
+```
+
+**Replace with:**
+```typescript
+import { validateFilePath, assertValidFilePath } from '../utils/path-validator';
+```
+
+Remove the local function definition and use the imported utility.
+
+---
+
+## Verification Steps
+
+After refactoring, verify everything works:
+```bash
+# 1. Check TypeScript compilation
+npx tsc --noEmit
+
+# 2. Run linter
+npm run lint
+
+# 3. Run tests
+npm test
+
+# 4. Start server and test endpoints manually
+npm run dev
+
+# Test a few endpoints with curl:
+# curl -X GET http://localhost:3000/api/v1/pdf/health
+```
+
+---
+
+## Checklist
+
+- [ ] `src/utils/path-validator.ts` created with `validateFilePath` and `assertValidFilePath`
+- [ ] `src/controllers/pdf.controller.ts` created with ALL handlers extracted
+- [ ] `src/routes/pdf.routes.ts` reduced to ~50-80 lines (route definitions only)
+- [ ] `src/controllers/accessibility.controller.ts` imports from shared utility
+- [ ] No duplicate `validateFilePath` implementations remain
+- [ ] `npx tsc --noEmit` passes with no errors
+- [ ] `npm run lint` passes
+- [ ] `npm test` passes
+- [ ] API endpoints still function correctly
+
+---
+
+## File Summary
+
+| File | Action | Target Size |
+|------|--------|-------------|
+| `src/utils/path-validator.ts` | CREATE | ~40 lines |
+| `src/controllers/pdf.controller.ts` | CREATE | ~400-450 lines |
+| `src/routes/pdf.routes.ts` | REFACTOR | ~50-80 lines |
+| `src/controllers/accessibility.controller.ts` | UPDATE | Import change only |
+
+## Do NOT Change
+- Service layer files (`src/services/pdf/*`)
+- Schema files (`src/schemas/*`)
+- Middleware files
+- Any business logic — only move code, don't modify behavior
+
+## Success Criteria
+- Zero functional changes to API behavior
+- Cleaner separation: routes define paths, controllers handle requests
+- Eliminated code duplication (validateFilePath)
+- pdf.routes.ts under 100 lines
