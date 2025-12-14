@@ -92,6 +92,45 @@ export interface AltTextValidationResult {
   };
 }
 
+export interface ContrastIssue {
+  page: number;
+  elementId: string;
+  text: string;
+  foregroundColor: string;
+  backgroundColor: string;
+  contrastRatio: number;
+  requiredRatio: number;
+  isLargeText: boolean;
+  wcagCriterion: '1.4.3' | '1.4.6';
+}
+
+export interface ContrastValidationResult {
+  totalTextElements: number;
+  passing: number;
+  failing: number;
+  issues: ContrastIssue[];
+  accessibilityIssues: AccessibilityIssue[];
+  needsManualReview: number;
+  summary: {
+    totalChecks: number;
+    passed: number;
+    failed: number;
+    warnings: number;
+  };
+}
+
+export interface TextColorInfo {
+  id: string;
+  pageNumber: number;
+  text: string;
+  position: { x: number; y: number; width: number; height: number };
+  fontSize: number;
+  isBold: boolean;
+  foregroundColor: string | null;
+  backgroundColor: string | null;
+  needsManualReview: boolean;
+}
+
 export interface ValidatorContext {
   documentId: string;
   fileName?: string;
