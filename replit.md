@@ -138,6 +138,25 @@ src/
   - Weighted scoring (errors=10, warnings=3, info=1)
   - Compliance levels: high (90+), medium (70+), low (50+), non-compliant
 
+## Accessibility Validation Services (Sprint 3)
+- Location: src/services/accessibility/
+- Service: src/services/accessibility/pdf-structure-validator.service.ts
+- Validators: src/services/accessibility/validators/
+- Endpoints:
+  - POST /api/v1/accessibility/validate/structure - Full structure validation
+  - POST /api/v1/accessibility/validate/headings - Heading hierarchy validation
+  - POST /api/v1/accessibility/validate/reading-order - Reading order validation
+  - POST /api/v1/accessibility/validate/language - Language declaration validation
+  - POST /api/v1/accessibility/validate/alt-text - Alt text validation (WCAG 1.1.1)
+- Alt Text Validation Features:
+  - Alt text presence checking (WCAG 1.1.1 Level A)
+  - Decorative image detection (Artifact/empty alt compliance)
+  - Quality indicators: too_short, filename_as_alt, starts_with_image_of, too_long, numbers_only
+  - Compliance percentage calculation
+  - Per-image status with wcagCompliant flag
+- Issue Severity Levels: critical, serious, moderate, minor
+- Score calculation: Penalty-based (critical=25, serious=15, moderate=5, minor=2)
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts
