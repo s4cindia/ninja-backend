@@ -157,6 +157,18 @@ src/
 - Issue Severity Levels: critical, serious, moderate, minor
 - Score calculation: Penalty-based (critical=25, serious=15, moderate=5, minor=2)
 
+## Color Contrast Validation (Sprint 3)
+- Service: src/services/accessibility/validators/contrast-validator.ts
+- Endpoint: POST /api/v1/accessibility/validate/contrast
+- Features:
+  - WCAG luminance formula with proper sRGB linearization
+  - Contrast ratio calculation: (L1 + 0.05) / (L2 + 0.05)
+  - AA thresholds (WCAG 1.4.3): 4.5:1 normal text, 3:1 large text
+  - AAA thresholds (WCAG 1.4.6): 7:1 normal text, 4.5:1 large text
+  - Large text: ≥18pt or ≥14pt bold
+  - Color space conversions: RGB, Gray, CMYK
+- Note: Current implementation marks text as needsManualReview since PDF color extraction requires graphics state parsing
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts

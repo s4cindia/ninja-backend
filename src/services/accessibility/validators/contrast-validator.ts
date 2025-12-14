@@ -94,28 +94,62 @@ export function validateContrast(
     }
 
     const large = isLargeText(element.fontSize, element.isBold);
-    const requiredRatio = getRequiredRatio(element.fontSize, element.isBold, 'AA');
+    const requiredRatioAA = getRequiredRatio(element.fontSize, element.isBold, 'AA');
+    const requiredRatioAAA = getRequiredRatio(element.fontSize, element.isBold, 'AAA');
     const contrastRatio = calculateContrastRatio(element.foregroundColor, element.backgroundColor);
+    const truncatedText = element.text.length > 50 ? element.text.substring(0, 50) + '...' : element.text;
 
-    if (contrastRatio >= requiredRatio) {
+    const passesAA = contrastRatio >= requiredRatioAA;
+    const passesAAA = contrastRatio >= requiredRatioAAA;
+
+    if (passesAA) {
       passing++;
+
+      if (!passesAAA) {
+        const contrastIssue: ContrastIssue = {
+          page: element.pageNumber,
+          elementId: element.id,
+          text: truncatedText,
+          foregroundColor: element.foregroundColor,
+          backgroundColor: element.backgroundColor,
+          contrastRatio: Math.round(contrastRatio * 100) / 100,
+          requiredRatio: requiredRatioAAA,
+          isLargeText: large,
+          wcagCriterion: '1.4.6',
+        };
+        issues.push(contrastIssue);
+
+        accessibilityIssues.push({
+          id: randomUUID(),
+          wcagCriterion: '1.4.6',
+          wcagLevel: 'AAA',
+          severity: 'minor',
+          title: 'Color contrast does not meet enhanced requirements',
+          description: `Text "${truncatedText}" has contrast ratio ${contrastIssue.contrastRatio}:1, which meets AA but not AAA requirements (${requiredRatioAAA}:1 needed for ${large ? 'large' : 'normal'} text).`,
+          location: {
+            page: element.pageNumber,
+            element: element.id,
+          },
+          remediation: `To meet WCAG AAA enhanced contrast, increase contrast to at least ${requiredRatioAAA}:1.`,
+        });
+      }
     } else {
       failing++;
 
       const contrastIssue: ContrastIssue = {
         page: element.pageNumber,
         elementId: element.id,
-        text: element.text.length > 50 ? element.text.substring(0, 50) + '...' : element.text,
+        text: truncatedText,
         foregroundColor: element.foregroundColor,
         backgroundColor: element.backgroundColor,
         contrastRatio: Math.round(contrastRatio * 100) / 100,
-        requiredRatio,
+        requiredRatio: requiredRatioAA,
         isLargeText: large,
         wcagCriterion: '1.4.3',
       };
       issues.push(contrastIssue);
 
-      const severity = contrastRatio < requiredRatio * 0.5 ? 'serious' : 'moderate';
+      const severity = contrastRatio < requiredRatioAA * 0.5 ? 'serious' : 'moderate';
 
       accessibilityIssues.push({
         id: randomUUID(),
@@ -123,12 +157,12 @@ export function validateContrast(
         wcagLevel: 'AA',
         severity,
         title: 'Insufficient color contrast',
-        description: `Text "${contrastIssue.text}" has contrast ratio ${contrastIssue.contrastRatio}:1, but requires ${requiredRatio}:1 for ${large ? 'large' : 'normal'} text.`,
+        description: `Text "${truncatedText}" has contrast ratio ${contrastIssue.contrastRatio}:1, but requires ${requiredRatioAA}:1 for ${large ? 'large' : 'normal'} text.`,
         location: {
           page: element.pageNumber,
           element: element.id,
         },
-        remediation: `Increase the contrast between foreground (${element.foregroundColor}) and background (${element.backgroundColor}) colors. Use darker text or lighter background to achieve at least ${requiredRatio}:1 contrast ratio.`,
+        remediation: `Increase the contrast between foreground (${element.foregroundColor}) and background (${element.backgroundColor}) colors. Use darker text or lighter background to achieve at least ${requiredRatioAA}:1 contrast ratio.`,
       });
     }
   }
