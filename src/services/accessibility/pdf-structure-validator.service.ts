@@ -2,15 +2,18 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import { pdfParserService, ParsedPDF } from '../pdf/pdf-parser.service';
 import { structureAnalyzerService } from '../pdf/structure-analyzer.service';
+import { imageExtractorService } from '../pdf/image-extractor.service';
 import {
   StructureValidationResult,
   AccessibilityIssue,
   HeadingInfo,
   ValidatorContext,
+  AltTextValidationResult,
 } from './types';
 import { validateHeadingHierarchy } from './validators/heading-validator';
 import { validateReadingOrder } from './validators/reading-order-validator';
 import { validateLanguageDeclaration } from './validators/language-validator';
+import { validateAltText } from './validators/alt-text-validator';
 
 export interface StructureValidationOptions {
   validateHeadings?: boolean;
@@ -262,6 +265,43 @@ class PdfStructureValidatorService {
 
   async validateByJobId(jobId: string): Promise<StructureValidationResult> {
     throw new Error('Job-based validation requires database integration - use validateStructure with file path instead');
+  }
+
+  async validateAltTextFromFile(filePath: string): Promise<AltTextValidationResult> {
+    const startTime = Date.now();
+    const documentId = randomUUID();
+
+    let parsedPdf: ParsedPDF | null = null;
+
+    try {
+      parsedPdf = await pdfParserService.parse(filePath);
+
+      const context: ValidatorContext = {
+        documentId,
+        fileName: path.basename(filePath),
+        isTaggedPdf: parsedPdf.structure.metadata.isTagged,
+        pageCount: parsedPdf.structure.pageCount,
+      };
+
+      const documentImages = await imageExtractorService.extractImages(parsedPdf, {
+        includeBase64: false,
+        minWidth: 20,
+        minHeight: 20,
+      });
+
+      const allImages = documentImages.pages.flatMap(p => p.images);
+
+      const result = validateAltText(allImages, context);
+
+      const duration = Date.now() - startTime;
+      console.log(`Alt text validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
+
+      return result;
+    } finally {
+      if (parsedPdf) {
+        await pdfParserService.close(parsedPdf);
+      }
+    }
   }
 }
 
