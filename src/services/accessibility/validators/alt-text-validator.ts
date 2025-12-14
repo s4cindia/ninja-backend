@@ -1,34 +1,6 @@
 import { randomUUID } from 'crypto';
-import { AccessibilityIssue, ValidatorContext } from '../types';
+import { AccessibilityIssue, ValidatorContext, ImageAltTextStatus, AltTextValidationResult } from '../types';
 import { ImageInfo } from '../../pdf/image-extractor.service';
-
-export interface ImageAltTextStatus {
-  imageId: string;
-  page: number;
-  position: { x: number; y: number; width: number; height: number };
-  hasAltText: boolean;
-  altText: string | null;
-  isDecorative: boolean;
-  wcagCompliant: boolean;
-  issue?: AccessibilityIssue;
-  qualityFlags: string[];
-}
-
-export interface AltTextValidationResult {
-  totalImages: number;
-  withAltText: number;
-  missingAltText: number;
-  decorativeImages: number;
-  compliancePercentage: number;
-  images: ImageAltTextStatus[];
-  issues: AccessibilityIssue[];
-  summary: {
-    totalChecks: number;
-    passed: number;
-    failed: number;
-    warnings: number;
-  };
-}
 
 const FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.(jpg|jpeg|png|gif|bmp|webp|svg|tiff?)$/i;
 const REDUNDANT_PREFIXES = [
