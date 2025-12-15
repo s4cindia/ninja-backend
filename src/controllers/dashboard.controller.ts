@@ -10,6 +10,7 @@ export const getDashboardStats = async (_req: Request, res: Response) => {
     recentActivity: []
   };
 
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.json(stats);
 };
 
@@ -23,6 +24,7 @@ export const getDashboardActivity = async (req: Request, res: Response) => {
     timestamp: string;
   }> = [];
 
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.json({
     activity,
     limit,
