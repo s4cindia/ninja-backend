@@ -258,18 +258,11 @@ class PdfUaValidatorService {
       });
 
       const headings = structureResult.headings;
-      if (headings.hasProperHierarchy) {
-        checkpoints.push({
-          id: '02-003',
-          category: 'Structure Tree',
-          description: 'Proper tag nesting and hierarchy',
-          status: 'pass',
-          details: 'Heading hierarchy is properly nested',
-        });
-      } else {
-        const skippedLevels = headings.skippedLevels.length > 0;
-        const multipleH1 = headings.multipleH1;
+      const hasHeadingIssues = !headings.hasProperHierarchy;
+      const skippedLevels = headings.skippedLevels.length > 0;
+      const multipleH1 = headings.multipleH1;
 
+      if (hasHeadingIssues) {
         checkpoints.push({
           id: '02-003',
           category: 'Structure Tree',
@@ -280,6 +273,14 @@ class PdfUaValidatorService {
             : skippedLevels 
               ? `Skipped heading levels detected: ${headings.skippedLevels.map(s => `H${s.from} to H${s.to}`).join(', ')}`
               : 'Heading hierarchy issues detected',
+        });
+      } else {
+        checkpoints.push({
+          id: '02-003',
+          category: 'Structure Tree',
+          description: 'Proper tag nesting and hierarchy',
+          status: 'manual',
+          details: 'Heading hierarchy passes automated checks. Full structure tree nesting validation (paragraphs, lists, spans, etc.) requires manual review per Matterhorn Protocol.',
         });
       }
     } catch (error) {
@@ -545,25 +546,33 @@ class PdfUaValidatorService {
         return;
       }
 
-      const fontsWithMapping = fonts.filter(f => f.hasToUnicode || f.hasEncoding);
-      const fontsWithoutMapping = fonts.filter(f => !f.hasToUnicode && !f.hasEncoding);
+      const fontsWithToUnicode = fonts.filter(f => f.hasToUnicode);
+      const fontsWithStandardEncoding = fonts.filter(f => !f.hasToUnicode && f.hasEncoding);
+      const fontsWithNoMapping = fonts.filter(f => !f.hasToUnicode && !f.hasEncoding);
 
-      if (fontsWithoutMapping.length === 0) {
+      if (fontsWithNoMapping.length > 0) {
+        checkpoints.push({
+          id: '08-001',
+          category: 'Unicode Mapping',
+          description: 'All fonts have Unicode mappings (ToUnicode)',
+          status: 'fail',
+          details: `${fontsWithNoMapping.length} of ${fonts.length} fonts lack Unicode mapping: ${fontsWithNoMapping.map(f => f.name).join(', ')}. PDF/UA requires ToUnicode CMaps for all fonts.`,
+        });
+      } else if (fontsWithStandardEncoding.length > 0) {
+        checkpoints.push({
+          id: '08-001',
+          category: 'Unicode Mapping',
+          description: 'All fonts have Unicode mappings (ToUnicode)',
+          status: 'manual',
+          details: `${fontsWithToUnicode.length} fonts have ToUnicode, ${fontsWithStandardEncoding.length} rely on standard encoding. Manual verification needed to confirm text extraction works correctly.`,
+        });
+      } else {
         checkpoints.push({
           id: '08-001',
           category: 'Unicode Mapping',
           description: 'All fonts have Unicode mappings (ToUnicode)',
           status: 'pass',
-          details: `All ${fonts.length} fonts have Unicode mapping (ToUnicode) or standard encoding`,
-        });
-      } else {
-        const fontsWithToUnicode = fonts.filter(f => f.hasToUnicode).length;
-        checkpoints.push({
-          id: '08-001',
-          category: 'Unicode Mapping',
-          description: 'All fonts have Unicode mappings (ToUnicode)',
-          status: fontsWithToUnicode === fonts.length ? 'pass' : 'manual',
-          details: `${fontsWithToUnicode} of ${fonts.length} fonts have ToUnicode mapping. ${fontsWithoutMapping.length} fonts may lack proper Unicode mapping: ${fontsWithoutMapping.map(f => f.name).join(', ')}`,
+          details: `All ${fonts.length} fonts have ToUnicode CMap for proper Unicode mapping`,
         });
       }
 

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { pdfStructureValidatorService } from '../services/accessibility/pdf-structure-validator.service';
+import { pdfUaValidatorService } from '../services/accessibility/pdfua-validator.service';
 import { validateFilePath } from '../utils/path-validator';
 
 function recalculateResultForFilteredIssues(
@@ -254,6 +255,37 @@ export class AccessibilityController {
       }
 
       const result = await pdfStructureValidatorService.validateTablesFromFile(targetPath);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async validatePdfUa(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { filePath, jobId } = req.body;
+
+      let targetPath: string | null = null;
+
+      if (filePath) {
+        targetPath = await validateFilePath(filePath);
+      } else if (jobId) {
+        return res.status(501).json({
+          success: false,
+          error: { message: 'jobId lookup requires pipeline integration - use filePath instead' },
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'filePath is required' },
+        });
+      }
+
+      const result = await pdfUaValidatorService.validatePdfUa(targetPath);
 
       res.json({
         success: true,

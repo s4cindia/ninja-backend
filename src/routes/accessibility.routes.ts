@@ -46,4 +46,10 @@ router.post(
   accessibilityController.validateTables.bind(accessibilityController)
 );
 
+router.post(
+  '/validate/pdfua',
+  authenticate,
+  accessibilityController.validatePdfUa.bind(accessibilityController)
+);
+
 export default router;
