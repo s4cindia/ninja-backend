@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { section508MapperService, WcagValidationResult } from '../services/compliance/section508-mapper.service';
 import { fpcValidatorService } from '../services/compliance/fpc-validator.service';
+import { documentationValidatorService, DocumentationMetadata } from '../services/compliance/documentation-validator.service';
 import { pdfUaValidatorService } from '../services/accessibility/pdfua-validator.service';
 import { validateFilePath } from '../utils/path-validator';
 
@@ -143,6 +144,60 @@ export class ComplianceController {
         data: {
           count: definitions.length,
           criteria: definitions,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async validateDocumentation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const metadata: DocumentationMetadata = req.body;
+
+      if (!metadata || Object.keys(metadata).length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { 
+            message: 'Documentation metadata is required',
+            hint: 'Provide at least one of: hasAccessibilityStatement, hasContactMethod, formats, brailleAvailable, etc.',
+          },
+        });
+      }
+
+      const result = documentationValidatorService.validateDocumentation(metadata);
+
+      return res.status(200).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getDocumentationRequirements(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const requirements = documentationValidatorService.getRequirements();
+
+      return res.status(200).json({
+        success: true,
+        data: requirements,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getDocumentationChecklist(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const checklist = documentationValidatorService.getChecklist();
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          count: checklist.length,
+          items: checklist,
         },
       });
     } catch (error) {
