@@ -449,7 +449,9 @@ class PdfUaValidatorService {
     const documentLanguage = parsedPdf.structure.metadata.language;
 
     if (documentLanguage && documentLanguage.trim().length > 0) {
-      const isValidLangCode = /^[a-z]{2,3}(-[A-Z]{2})?$/i.test(documentLanguage);
+      // BCP 47: language[-script][-region][-variant][-extension][-privateuse]
+      // Examples: en, en-US, zh-Hans, zh-Hant-TW, sr-Latn-RS
+      const isValidLangCode = /^[a-z]{2,3}(-[A-Za-z]{4})?(-[A-Z]{2}|-[0-9]{3})?(-[A-Za-z0-9]{5,8})*$/i.test(documentLanguage);
       
       checkpoints.push({
         id: '05-001',
