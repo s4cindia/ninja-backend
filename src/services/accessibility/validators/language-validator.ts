@@ -8,7 +8,7 @@ import { isValidISO639Code } from './heading-validator';
 
 export function validateLanguageDeclaration(
   documentLanguage: string | null | undefined,
-  context: ValidatorContext
+  _context: ValidatorContext
 ): LanguageValidationResult {
   const issues: AccessibilityIssue[] = [];
 

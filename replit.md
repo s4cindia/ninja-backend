@@ -184,6 +184,34 @@ src/
   - Layout tables: ≤1 row/col, or no headers with 2 rows and 4+ columns
   - Complex tables: >5 rows or columns, or has merged cells (rowSpan/colSpan > 1)
 
+## PDF/UA Compliance Validation (Sprint 3)
+- Service: src/services/accessibility/pdfua-validator.service.ts
+- Endpoint: POST /api/v1/accessibility/validate/pdfua
+- Standard: ISO 14289-1 (PDF/UA) with Matterhorn Protocol checkpoints
+- Features:
+  - PDF/UA identifier detection (pdfuaid:part=1 or part=2 in XMP metadata)
+  - MarkInfo validation (Marked = true)
+  - Structure tree presence and completeness
+  - Figure alt text validation (Alt or ActualText attribute)
+  - Table structure validation (TH scope, id/headers for complex tables)
+  - Document language declaration
+  - Unicode mapping verification (ToUnicode CMaps)
+- Matterhorn Checkpoints:
+  - 01-001: PDF/UA identifier in XMP metadata
+  - 01-002: Document marked as tagged
+  - 02-001: Valid structure tree root
+  - 02-002: All content is tagged (manual review)
+  - 02-003: Proper tag nesting and hierarchy
+  - 05-001: Document Lang attribute
+  - 05-002: Language changes marked (manual review)
+  - 06-001: TH elements have Scope attribute
+  - 06-002: Complex tables have id/headers
+  - 07-001: All Figures have Alt or ActualText
+  - 07-002: Decorative images marked as Artifact
+  - 08-001: All fonts have Unicode mappings
+  - 08-002: No text relies on visual appearance only (manual review)
+- Checkpoint Status: pass, fail, manual (requires human review)
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts

@@ -167,3 +167,22 @@ export interface TableValidationResult {
     warnings: number;
   };
 }
+
+export interface MatterhornCheckpoint {
+  id: string;
+  category: string;
+  description: string;
+  status: 'pass' | 'fail' | 'manual';
+  details?: string;
+}
+
+export interface PdfUaValidationResult {
+  isPdfUaCompliant: boolean;
+  pdfUaVersion: string | null;
+  matterhornCheckpoints: MatterhornCheckpoint[];
+  summary: {
+    passed: number;
+    failed: number;
+    manual: number;
+  };
+}
