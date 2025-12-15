@@ -1,5 +1,5 @@
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFStream, PDFString, PDFHexString } from 'pdf-lib';
-import path from 'path';
+import { PDFDocument, PDFName, PDFDict, PDFStream } from 'pdf-lib';
+import { logger } from '../../lib/logger';
 import { pdfParserService, ParsedPDF } from '../pdf/pdf-parser.service';
 import { structureAnalyzerService } from '../pdf/structure-analyzer.service';
 import { imageExtractorService } from '../pdf/image-extractor.service';
@@ -29,7 +29,7 @@ class PdfUaValidatorService {
 
       const isPdfUaCompliant = summary.failed === 0 && pdfUaVersion !== null;
 
-      console.log(`PDF/UA validation completed - Version: ${pdfUaVersion || 'Not marked'}, Compliant: ${isPdfUaCompliant}`);
+      logger.info(`PDF/UA validation completed - Version: ${pdfUaVersion || 'Not marked'}, Compliant: ${isPdfUaCompliant}`);
 
       return {
         isPdfUaCompliant,
@@ -220,7 +220,6 @@ class PdfUaValidatorService {
       }
 
       const hasKids = structTreeRootDict.has(PDFName.of('K'));
-      const hasRoleMap = structTreeRootDict.has(PDFName.of('RoleMap'));
 
       if (hasKids) {
         checkpoints.push({
@@ -316,7 +315,6 @@ class PdfUaValidatorService {
         return;
       }
 
-      const imagesWithAlt = nonDecorativeImages.filter(img => img.altText && img.altText.trim().length > 0);
       const imagesMissingAlt = nonDecorativeImages.filter(img => !img.altText || img.altText.trim().length === 0);
       const decorativeImages = allImages.filter(img => img.isDecorative);
 

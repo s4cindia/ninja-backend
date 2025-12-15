@@ -269,7 +269,7 @@ class PdfStructureValidatorService {
     return Math.round(score);
   }
 
-  async validateByJobId(jobId: string): Promise<StructureValidationResult> {
+  async validateByJobId(_jobId: string): Promise<StructureValidationResult> {
     throw new Error('Job-based validation requires database integration - use validateStructure with file path instead');
   }
 
