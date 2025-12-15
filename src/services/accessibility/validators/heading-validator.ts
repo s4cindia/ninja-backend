@@ -33,7 +33,7 @@ export function isValidISO639Code(code: string): boolean {
 
 export function validateHeadingHierarchy(
   headings: HeadingInfo[],
-  context: ValidatorContext
+  _context: ValidatorContext
 ): HeadingValidationResult {
   const issues: AccessibilityIssue[] = [];
   let hasH1 = false;
