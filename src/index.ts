@@ -13,10 +13,31 @@ import { startWorkers, stopWorkers } from './workers';
 
 const app: Express = express();
 
-app.use(helmet());
-app.use(cors({
-  origin: config.corsOrigins,
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (!origin) return callback(null, true);
+    const allowedPatterns = [
+      /\.replit\.dev$/,
+      /\.replit\.app$/,
+      /\.repl\.co$/,
+      /^https?:\/\/localhost(:\d+)?$/
+    ];
+    if (allowedPatterns.some(pattern => pattern.test(origin))) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+};
+
+app.use(cors(corsOptions));
+
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
 }));
 
 app.use(express.json({ limit: '10mb' }));
