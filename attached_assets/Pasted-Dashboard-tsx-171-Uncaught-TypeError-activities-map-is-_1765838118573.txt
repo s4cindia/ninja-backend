@@ -1,0 +1,33 @@
+Dashboard.tsx:171 
+ Uncaught TypeError: activities.map is not a function
+    at RecentActivityList (Dashboard.tsx:171:25)
+react-dom.development.js:18704 
+ The above error occurred in the <RecentActivityList> component:
+
+    at RecentActivityList (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/pages/Dashboard.tsx:191:50)
+    at div
+    at div
+    at div
+    at Dashboard (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/pages/Dashboard.tsx:352:71)
+    at RenderedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:4108:5)
+    at Outlet (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:4514:26)
+    at main
+    at div
+    at div
+    at MainLayout (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/components/layout/MainLayout.tsx:30:28)
+    at ProtectedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/components/ProtectedRoute.tsx:20:34)
+    at RenderedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:4108:5)
+    at Routes (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:4578:5)
+    at AppRoutes
+    at Router (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:4521:15)
+    at BrowserRouter (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=0e494066:5267:5)
+    at QueryClientProvider (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/@tanstack_react-query.js?v=0e494066:3096:3)
+    at App
+
+Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://reactjs.org/link/error-boundaries to learn more about error boundaries.
+react-dom.development.js:12056 
+ Uncaught TypeError: activities.map is not a function
+    at RecentActivityList (Dashboard.tsx:171:25)
+﻿
+

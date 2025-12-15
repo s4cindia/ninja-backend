@@ -9,6 +9,7 @@ import aiRoutes from "./ai.routes";
 import pdfRoutes from "./pdf.routes";
 import accessibilityRoutes from "./accessibility.routes";
 import complianceRoutes from "./compliance.routes";
+import dashboardRoutes from "./dashboard.routes";
 
 const router = Router();
 
@@ -71,5 +72,6 @@ router.use("/ai", aiRoutes);
 router.use("/pdf", pdfRoutes);
 router.use("/accessibility", accessibilityRoutes);
 router.use("/compliance", complianceRoutes);
+router.use("/dashboard", dashboardRoutes);
 
 export default router;
