@@ -11,12 +11,10 @@ export const getDashboardStats = async (_req: Request, res: Response) => {
   };
 
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.json({ data: stats });
+  res.json(stats);
 };
 
-export const getDashboardActivity = async (req: Request, res: Response) => {
-  const limit = parseInt(req.query.limit as string) || 10;
-  
+export const getDashboardActivity = async (_req: Request, res: Response) => {
   const activities: Array<{
     id: string;
     type: string;
@@ -25,7 +23,5 @@ export const getDashboardActivity = async (req: Request, res: Response) => {
   }> = [];
 
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.json({
-    data: activities
-  });
+  res.json(activities);
 };
