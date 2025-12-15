@@ -1,290 +1,60 @@
 # Ninja Platform Backend
 
-## Project Overview
-Ninja is an accessibility and compliance validation SaaS platform for educational publishers. It validates EPUB, PDF, and HTML content against WCAG 2.1, Section 508, and European Accessibility Act standards, generating VPATs and ACRs for government/institutional sales.
+## Overview
+Ninja is an accessibility and compliance validation SaaS platform for educational publishers. It validates EPUB, PDF, and HTML content against WCAG 2.1, Section 508, and European Accessibility Act standards. The platform generates VPATs and ACRs to facilitate government and institutional sales.
 
-## Tech Stack
-- Runtime: Node.js 20+
-- Language: TypeScript 5.x (strict mode)
-- Framework: Express 4.x
-- Database: PostgreSQL (Prisma ORM)
-- Queue: BullMQ with Redis
-- Validation: Zod schemas
-- AI: Google Gemini API
-
-## Project Structure
-```
-src/
-├── index.ts              # Application entry point
-├── config/               # Environment configuration
-├── routes/               # API route definitions
-├── controllers/          # Request handlers
-├── services/             # Business logic
-├── middleware/           # Express middleware
-├── models/               # Prisma models
-├── queues/               # BullMQ job queues
-├── workers/              # Background job processors
-└── utils/                # Utility functions
-```
-
-## Critical Rules
-1. NEVER commit secrets to Git
-2. NEVER run DROP TABLE or DROP DATABASE
-3. NEVER modify schema without approval
-4. NEVER use Replit Agent for features - use approved Sprint Prompts only
-5. Use ES Modules (import/export)
-6. Use async/await for all async operations
-7. Validate all inputs with Zod schemas
-
-## API Conventions
-- Base path: /api/v1/
-- Use kebab-case for URLs
-- Return standardized error responses
-- Include request ID in all responses
-
-## AI Integration (Gemini)
-- Config: src/config/ai.config.ts
-- Service: src/services/ai/gemini.service.ts
-- Routes: /api/v1/ai/health (public), /api/v1/ai/test (authenticated)
-- Models: gemini-2.0-flash-lite (default), gemini-2.5-pro (complex tasks)
-- Features: Rate limiting, exponential backoff retry, text/image/chat generation
-- Note: Free tier has strict limits (5-15 RPM). Enable billing for production use.
-
-## Token Counting & Cost Tracking
-- Pricing: src/config/pricing.config.ts (current Gemini rates)
-- Service: src/services/ai/token-counter.service.ts
-- Endpoints:
-  - POST /api/v1/ai/estimate - Estimate cost before API call
-  - GET /api/v1/ai/usage - Get usage summary for tenant
-  - GET /api/v1/ai/usage/recent - Get recent usage records
-- Features: Token estimation, cost calculation, per-tenant usage tracking
-
-## PDF Parsing Service
-- Config: src/config/pdf.config.ts (size limits, page limits, timeout)
-- Service: src/services/pdf/pdf-parser.service.ts
-- Libraries: pdf-lib + pdfjs-dist (legacy build for Node.js)
-- Canvas: @napi-rs/canvas for Node.js DOM polyfills
-- Endpoints:
-  - POST /api/v1/pdf/parse - Parse PDF and return structure
-  - POST /api/v1/pdf/metadata - Get metadata only
-  - POST /api/v1/pdf/validate-basics - Basic accessibility checks
-- Features: Metadata extraction, page info, outline/bookmarks, tagged PDF detection
-- Security: Path validation with realpath to prevent traversal and symlink attacks
-
-## PDF Text Extraction Service
-- Service: src/services/pdf/text-extractor.service.ts
-- Endpoints:
-  - POST /api/v1/pdf/extract-text - Extract all text with positioning and structure
-  - POST /api/v1/pdf/extract-page/:pageNumber - Extract text from specific page
-  - POST /api/v1/pdf/text-stats - Get text statistics and structure analysis
-- Features:
-  - Text extraction with position information (x, y, width, height)
-  - Font info extraction (name, size, bold, italic)
-  - Line grouping with reading order detection
-  - Block grouping (paragraph, heading, list, caption, footer, header)
-  - Heading detection based on font size analysis
-  - Language detection (en, ru, zh, ja, ko, ar, hi)
-  - Reading order detection (left-to-right, right-to-left, mixed)
-  - Word and character counting
-- Options: includePositions, includeFontInfo, groupIntoLines, groupIntoBlocks, pageRange, normalizeWhitespace
-
-## PDF Image Extraction Service
-- Service: src/services/pdf/image-extractor.service.ts
-- Libraries: sharp for image processing
-- Endpoints:
-  - POST /api/v1/pdf/extract-images - Extract all images from PDF
-  - POST /api/v1/pdf/image/:imageId - Get single image by ID
-  - POST /api/v1/pdf/image-stats - Get image statistics
-- Features:
-  - Image extraction with position and dimension information
-  - Format detection (JPEG, PNG, JBIG2, JPX)
-  - Alt text extraction from tagged PDF structure tree
-  - Decorative/artifact image detection
-  - Base64 encoding with optional resizing
-  - Graphics state tracking for accurate image placement
-  - OBJR reference resolution for structure tree mapping
-- Options: includeBase64, maxImageSize, pageRange, formats, minWidth, minHeight
-
-## PDF Structure Analysis Service
-- Service: src/services/pdf/structure-analyzer.service.ts
-- Endpoints:
-  - POST /api/v1/pdf/analyze-structure - Full accessibility structure analysis
-  - POST /api/v1/pdf/analyze-headings - Heading hierarchy analysis only
-  - POST /api/v1/pdf/analyze-tables - Table structure analysis only
-  - POST /api/v1/pdf/analyze-links - Link accessibility analysis only
-- Features:
-  - Heading hierarchy validation (H1 presence, proper nesting, skipped levels)
-  - Table accessibility checks (header rows/columns, summaries)
-  - List detection (ordered, unordered, definition lists)
-  - Link analysis (descriptive text, URL extraction)
-  - Reading order analysis (column detection, structure tree presence)
-  - Language detection and validation (document language, language changes)
-  - Form field analysis (labels, field types)
-  - Bookmark/outline extraction
-  - Accessibility score calculation (0-100 scale)
-  - WCAG criterion mapping for issues
-- Analysis Options: analyzeHeadings, analyzeTables, analyzeLists, analyzeLinks, analyzeReadingOrder, analyzeLanguage, pageRange
-- Issue Severity Levels: critical, major, minor
-
-## Validation Services (Sprint 2)
-- Location: src/services/validation/
-- Services:
-  - WCAGCriteriaService: WCAG 2.1 criteria database (A, AA, AAA levels)
-  - ValidationRuleEngine: Rule-based content validation engine
-  - ComplianceScoringService: Weighted compliance score calculation
-- Features:
-  - 25+ WCAG criteria with principles (perceivable, operable, understandable, robust)
-  - 10 validation rules across categories (text, images, structure, navigation, forms, media)
-  - Weighted scoring (errors=10, warnings=3, info=1)
-  - Compliance levels: high (90+), medium (70+), low (50+), non-compliant
-
-## Accessibility Validation Services (Sprint 3)
-- Location: src/services/accessibility/
-- Service: src/services/accessibility/pdf-structure-validator.service.ts
-- Validators: src/services/accessibility/validators/
-- Endpoints:
-  - POST /api/v1/accessibility/validate/structure - Full structure validation
-  - POST /api/v1/accessibility/validate/headings - Heading hierarchy validation
-  - POST /api/v1/accessibility/validate/reading-order - Reading order validation
-  - POST /api/v1/accessibility/validate/language - Language declaration validation
-  - POST /api/v1/accessibility/validate/alt-text - Alt text validation (WCAG 1.1.1)
-- Alt Text Validation Features:
-  - Alt text presence checking (WCAG 1.1.1 Level A)
-  - Decorative image detection (Artifact/empty alt compliance)
-  - Quality indicators: too_short, filename_as_alt, starts_with_image_of, too_long, numbers_only
-  - Compliance percentage calculation
-  - Per-image status with wcagCompliant flag
-- Issue Severity Levels: critical, serious, moderate, minor
-- Score calculation: Penalty-based (critical=25, serious=15, moderate=5, minor=2)
-
-## Color Contrast Validation (Sprint 3)
-- Service: src/services/accessibility/validators/contrast-validator.ts
-- Endpoint: POST /api/v1/accessibility/validate/contrast
-- Features:
-  - WCAG luminance formula with proper sRGB linearization
-  - Contrast ratio calculation: (L1 + 0.05) / (L2 + 0.05)
-  - AA thresholds (WCAG 1.4.3): 4.5:1 normal text, 3:1 large text
-  - AAA thresholds (WCAG 1.4.6): 7:1 normal text, 4.5:1 large text
-  - Large text: ≥18pt or ≥14pt bold
-  - Color space conversions: RGB, Gray, CMYK
-- Note: Current implementation marks text as needsManualReview since PDF color extraction requires graphics state parsing
-
-## Table Accessibility Validation (Sprint 3)
-- Service: src/services/accessibility/validators/table-validator.ts
-- Endpoint: POST /api/v1/accessibility/validate/tables
-- Features:
-  - Header cell detection (TH elements with scope attribute) (WCAG 1.3.1)
-  - Complex table validation (merged cells need id/headers association)
-  - Layout vs data table detection
-  - Summary/caption requirement for complex tables (>5 rows or merged cells)
-  - Compliance percentage calculation
-  - Per-table status with accessibility flags
-- Issue Types: missing_headers, missing_scope, missing_id_headers, layout_table_marked_data, complex_table_needs_summary
-- Detection Heuristics:
-  - Layout tables: ≤1 row/col, or no headers with 2 rows and 4+ columns
-  - Complex tables: >5 rows or columns, or has merged cells (rowSpan/colSpan > 1)
-
-## PDF/UA Compliance Validation (Sprint 3)
-- Service: src/services/accessibility/pdfua-validator.service.ts
-- Endpoint: POST /api/v1/accessibility/validate/pdfua
-- Standard: ISO 14289-1 (PDF/UA) with Matterhorn Protocol checkpoints
-- Features:
-  - PDF/UA identifier detection (pdfuaid:part=1 or part=2 in XMP metadata)
-  - MarkInfo validation (Marked = true)
-  - Structure tree presence and completeness
-  - Figure alt text validation (Alt or ActualText attribute)
-  - Table structure validation (TH scope, id/headers for complex tables)
-  - Document language declaration
-  - Unicode mapping verification (ToUnicode CMaps)
-- Matterhorn Checkpoints:
-  - 01-001: PDF/UA identifier in XMP metadata
-  - 01-002: Document marked as tagged
-  - 02-001: Valid structure tree root
-  - 02-002: All content is tagged (manual review)
-  - 02-003: Proper tag nesting and hierarchy
-  - 05-001: Document Lang attribute
-  - 05-002: Language changes marked (manual review)
-  - 06-001: TH elements have Scope attribute
-  - 06-002: Complex tables have id/headers
-  - 07-001: All Figures have Alt or ActualText
-  - 07-002: Decorative images marked as Artifact
-  - 08-001: All fonts have Unicode mappings
-  - 08-002: No text relies on visual appearance only (manual review)
-- Checkpoint Status: pass, fail, manual (requires human review)
-
-## Section 508 Mapping Service (Sprint 3)
-- Data: src/data/section508-wcag-mapping.ts (WCAG to Section 508 mapping table)
-- Service: src/services/compliance/section508-mapper.service.ts
-- Endpoint: POST /api/v1/compliance/section508/map
-- Standard: Section 508 Refresh (aligned with WCAG 2.0 AA)
-- Features:
-  - WCAG 2.1 AA to Section 508 criteria mapping
-  - E205 (Electronic Content) compliance evaluation
-  - E205.4 (PDF/UA requirements) integration
-  - Chapter 3 (Functional Performance Criteria) mapping
-  - Chapter 6 (Support Documentation) requirements
-  - "Best Meets" guidance generation for procurement responses
-  - Competitive positioning language for ACRs/VPATs
-- Conformance Levels: Supports, Partially Supports, Does Not Support, Not Applicable
-- Request Body:
-  - filePath: string (PDF file to analyze)
-  - wcagResults: WcagValidationResult[] (optional pre-computed WCAG results)
-  - includePdfUa: boolean (default: true, runs PDF/UA validation)
-  - competitorContext: { name?, knownWeaknesses? } (optional)
-- Response:
-  - overallCompliance: number (0-100%)
-  - criteriaResults: Section508Criterion[]
-  - bestMeetsGuidance: BestMeetsGuidance[]
-  - competitivePositioning: string (markdown formatted)
-  - pdfUaCompliance: { isPdfUaCompliant, version }
-
-## Functional Performance Criteria (FPC) Validator (Sprint 3)
-- Service: src/services/compliance/fpc-validator.service.ts
-- Endpoints:
-  - POST /api/v1/compliance/fpc/validate - Validate all FPC criteria
-  - POST /api/v1/compliance/fpc/validate/:criterionId - Validate specific criterion
-  - GET /api/v1/compliance/fpc/definitions - Get all FPC definitions
-- Standard: Section 508 Chapter 3 Functional Performance Criteria
-- Criteria:
-  - 302.1: Without Vision (maps to WCAG 1.1.1, 1.3.1, 1.3.2, 1.4.1, 4.1.2)
-  - 302.2: With Limited Vision (maps to WCAG 1.4.3, 1.4.4, 1.4.10, 1.4.12)
-  - 302.3: Without Perception of Color (maps to WCAG 1.4.1)
-  - 302.4: Without Hearing (maps to WCAG 1.2.1, 1.2.2, 1.2.3)
-  - 302.5: With Limited Hearing (maps to WCAG 1.2.1, 1.2.2)
-  - 302.6: Without Speech (maps to WCAG 2.1.1)
-  - 302.7: With Limited Manipulation (maps to WCAG 2.1.1, 2.4.7)
-  - 302.8: With Limited Reach and Strength (maps to WCAG 2.4.1, 2.4.3)
-  - 302.9: With Limited Cognitive Abilities (maps to WCAG 3.1.5, 3.2.3, 3.2.4)
-- Request Body: { wcagResults: WcagValidationResult[] }
-- Response: FpcValidationResult with criteria status and summary
-
-## Testing Framework
-- Framework: Vitest with v8 coverage
-- Config: vitest.config.ts
-- Commands:
-  - npm test - Run all tests
-  - npm run test:unit - Run unit tests only
-  - npm run test:integration - Run integration tests only
-  - npm run test:watch - Watch mode
-  - npm run test:coverage - Run with coverage report
-- Structure:
-  - tests/unit/services/ - Service unit tests
-  - tests/integration/ - API integration tests
-  - tests/fixtures/ - Test fixtures and sample files
-
-## Database Commands
-- Generate client: npx prisma generate
-- Run migrations: npx prisma migrate dev
-- View data: npx prisma studio
-
-## Recovery Commands
-If the Repl gets stuck:
-- Restart: kill 1
-- Clear cache: rm -rf node_modules/.cache
-- Reinstall: rm -rf node_modules && npm install
-
-## Development Workflow
+## User Preferences
 1. Use approved Sprint Prompts from docs/sprint-prompts/
 2. For debugging, use Claude Code (not Replit Agent)
 3. Create feature branches: git checkout -b feat/NINJA-XXX-description
 4. Commit with conventional prefixes: feat, fix, docs, chore, etc.
+5. NEVER commit secrets to Git
+6. NEVER run DROP TABLE or DROP DATABASE
+7. NEVER modify schema without approval
+8. NEVER use Replit Agent for features - use approved Sprint Prompts only
+
+## System Architecture
+The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in strict mode, with Express 4.x for the API. PostgreSQL is used as the database with Prisma ORM. Background jobs are managed using BullMQ with Redis. Input validation is enforced with Zod schemas.
+
+**Key Technical Implementations:**
+-   **AI Integration (Google Gemini):** Used for various AI-driven tasks, with support for `gemini-2.0-flash-lite` (default) and `gemini-2.5-pro` (complex tasks). Includes features like rate limiting, exponential backoff, token counting, and cost tracking.
+-   **PDF Processing:**
+    -   **PDF Parsing:** Extracts structure, metadata, page info, outlines, and detects tagged PDFs using `pdf-lib` and `pdfjs-dist`. Employs `@napi-rs/canvas` for Node.js DOM polyfills.
+    -   **Text Extraction:** Extracts text with positioning, font information, line/block grouping, reading order detection, heading detection, and language detection.
+    -   **Image Extraction:** Extracts images with position, dimensions, format detection, alt text extraction from tagged PDFs, and decorative image detection using `sharp`.
+-   **Accessibility & Compliance Validation:**
+    -   **WCAG 2.1 Validation:** Implements a rule-based engine against WCAG 2.1 criteria (A, AA, AAA levels) for text, images, structure, navigation, and forms.
+    -   **Alt Text Validation:** Checks for presence, quality indicators (e.g., too short, filename as alt), and decorative image handling.
+    -   **Color Contrast Validation:** Calculates WCAG luminance-based contrast ratios for text against AA and AAA thresholds, considering large text definitions.
+    -   **Table Accessibility Validation:** Detects header cells, validates complex tables (merged cells), and identifies layout vs. data tables.
+    -   **PDF/UA Compliance:** Validates against ISO 14289-1 (PDF/UA) and Matterhorn Protocol checkpoints, including identifier detection, structure tree, alt text, table structure, and language declarations.
+    -   **Section 508 Mapping:** Maps WCAG 2.1 AA criteria to Section 508 Refresh, including E205 (Electronic Content), E205.4 (PDF/UA), Chapter 3 (Functional Performance Criteria), and Chapter 6 (Support Documentation). Generates "Best Meets" guidance and competitive positioning language.
+    -   **Functional Performance Criteria (FPC) Validation:** Validates against Section 508 Chapter 3 FPC criteria (e.g., Without Vision, With Limited Vision), mapping to relevant WCAG criteria.
+    -   **Chapter 6 Documentation Validation:** Validates compliance with Section 508 Chapter 6 requirements for support documentation, checking for accessibility statements, contact methods, and alternate formats.
+
+**UI/UX Decisions:**
+- API Base Path: `/api/v1/`
+- URLs use kebab-case.
+- Standardized error responses with request IDs.
+
+**Project Structure:**
+- `src/index.ts`: Application entry point
+- `src/config/`: Environment configuration
+- `src/routes/`: API route definitions
+- `src/controllers/`: Request handlers
+- `src/services/`: Business logic
+- `src/middleware/`: Express middleware
+- `src/models/`: Prisma models
+- `src/queues/`: BullMQ job queues
+- `src/workers/`: Background job processors
+- `src/utils/`: Utility functions
+
+## External Dependencies
+-   **Database:** PostgreSQL
+-   **ORM:** Prisma
+-   **Queue:** BullMQ, Redis
+-   **AI:** Google Gemini API
+-   **PDF Processing:** `pdf-lib`, `pdfjs-dist`, `@napi-rs/canvas`
+-   **Image Processing:** `sharp`
+-   **Input Validation:** Zod
+-   **Testing:** Vitest
