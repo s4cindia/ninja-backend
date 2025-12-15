@@ -157,8 +157,12 @@ class FpcValidatorService {
       } else if (result.score !== undefined && result.score > 0) {
         partialCount++;
         if (result.totalChecked !== undefined && result.issueCount !== undefined) {
-          const passRate = ((result.totalChecked - result.issueCount) / result.totalChecked * 100).toFixed(0);
-          remarks.push(`WCAG ${wcagId}: ${passRate}% pass rate`);
+          if (result.totalChecked > 0) {
+            const passRate = ((result.totalChecked - result.issueCount) / result.totalChecked * 100).toFixed(0);
+            remarks.push(`WCAG ${wcagId}: ${passRate}% pass rate`);
+          } else {
+            remarks.push(`WCAG ${wcagId}: Partially meets criteria`);
+          }
         } else {
           remarks.push(`WCAG ${wcagId}: Partially meets criteria`);
         }
@@ -206,16 +210,26 @@ class FpcValidatorService {
     }
   }
 
-  validateWithoutVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+  validateSingleCriterion(criterionId: string, wcagResults: WcagValidationResult[]): FpcCriterion | null {
+    const definition = FPC_DEFINITIONS.find(d => d.id === criterionId);
+    if (!definition) {
+      return null;
+    }
     const wcagResultsMap = new Map<string, WcagValidationResult>();
     wcagResults.forEach(r => wcagResultsMap.set(r.criterionId, r));
-    return this.evaluateFpcCriterion(FPC_DEFINITIONS[0], wcagResultsMap);
+    return this.evaluateFpcCriterion(definition, wcagResultsMap);
+  }
+
+  validateWithoutVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+    const result = this.validateSingleCriterion('302.1', wcagResults);
+    if (!result) throw new Error('FPC criterion 302.1 not found');
+    return result;
   }
 
   validateWithLimitedVision(wcagResults: WcagValidationResult[]): FpcCriterion {
-    const wcagResultsMap = new Map<string, WcagValidationResult>();
-    wcagResults.forEach(r => wcagResultsMap.set(r.criterionId, r));
-    return this.evaluateFpcCriterion(FPC_DEFINITIONS[1], wcagResultsMap);
+    const result = this.validateSingleCriterion('302.2', wcagResults);
+    if (!result) throw new Error('FPC criterion 302.2 not found');
+    return result;
   }
 
   getFpcDefinitions(): FpcDefinition[] {

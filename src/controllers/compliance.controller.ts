@@ -112,10 +112,10 @@ export class ComplianceController {
         });
       }
 
-      const definitions = fpcValidatorService.getFpcDefinitions();
-      const fpcDef = definitions.find(d => d.id === criterionId);
+      const result = fpcValidatorService.validateSingleCriterion(criterionId, wcagResults);
 
-      if (!fpcDef) {
+      if (!result) {
+        const definitions = fpcValidatorService.getFpcDefinitions();
         return res.status(404).json({
           success: false,
           error: { 
@@ -123,16 +123,6 @@ export class ComplianceController {
             availableCriteria: definitions.map(d => d.id),
           },
         });
-      }
-
-      let result;
-      if (criterionId === '302.1') {
-        result = fpcValidatorService.validateWithoutVision(wcagResults);
-      } else if (criterionId === '302.2') {
-        result = fpcValidatorService.validateWithLimitedVision(wcagResults);
-      } else {
-        const fullResult = fpcValidatorService.validateFpc(wcagResults);
-        result = fullResult.criteria.find(c => c.id === criterionId);
       }
 
       return res.status(200).json({

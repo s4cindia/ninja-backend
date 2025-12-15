@@ -1,0 +1,115 @@
+Fix CodeRabbit review comments for US-3.2.2 FPC Validator.
+
+## Issue 1: Replace hardcoded array indices with ID-based lookups
+
+**File:** `src/services/compliance/fpc-validator.service.ts` (lines 209-219)
+
+Replace the brittle array index lookups with ID-based lookups:
+```typescript
+// BEFORE (brittle)
+validateWithoutVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+  const wcagResultsMap = new Map<string, WcagValidationResult>();
+  wcagResults.forEach(r => wcagResultsMap.set(r.criterionId, r));
+  return this.evaluateFpcCriterion(FPC_DEFINITIONS[0], wcagResultsMap);
+}
+
+validateWithLimitedVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+  const wcagResultsMap = new Map<string, WcagValidationResult>();
+  wcagResults.forEach(r => wcagResultsMap.set(r.criterionId, r));
+  return this.evaluateFpcCriterion(FPC_DEFINITIONS[1], wcagResultsMap);
+}
+
+// AFTER (robust) - Replace both methods with a single generic method:
+validateSingleCriterion(criterionId: string, wcagResults: WcagValidationResult[]): FpcCriterion | null {
+  const definition = FPC_DEFINITIONS.find(d => d.id === criterionId);
+  if (!definition) {
+    return null;
+  }
+  const wcagResultsMap = new Map<string, WcagValidationResult>();
+  wcagResults.forEach(r => wcagResultsMap.set(r.criterionId, r));
+  return this.evaluateFpcCriterion(definition, wcagResultsMap);
+}
+
+// Keep the specific methods for backward compatibility, but implement using the generic:
+validateWithoutVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+  const result = this.validateSingleCriterion('302.1', wcagResults);
+  if (!result) throw new Error('FPC criterion 302.1 not found');
+  return result;
+}
+
+validateWithLimitedVision(wcagResults: WcagValidationResult[]): FpcCriterion {
+  const result = this.validateSingleCriterion('302.2', wcagResults);
+  if (!result) throw new Error('FPC criterion 302.2 not found');
+  return result;
+}
+```
+
+## Issue 2: Add division by zero protection
+
+**File:** `src/services/compliance/fpc-validator.service.ts` (lines 157-161)
+
+Add bounds checking to prevent NaN when totalChecked is 0:
+```typescript
+// BEFORE
+} else if (result.score !== undefined && result.score > 0) {
+  partialCount++;
+  if (result.totalChecked !== undefined && result.issueCount !== undefined) {
+    const passRate = ((result.totalChecked - result.issueCount) / result.totalChecked * 100).toFixed(0);
+    remarks.push(`WCAG ${wcagId}: ${passRate}% pass rate`);
+  }
+
+// AFTER
+} else if (result.score !== undefined && result.score > 0) {
+  partialCount++;
+  if (result.totalChecked !== undefined && result.issueCount !== undefined) {
+    if (result.totalChecked > 0) {
+      const passRate = ((result.totalChecked - result.issueCount) / result.totalChecked * 100).toFixed(0);
+      remarks.push(`WCAG ${wcagId}: ${passRate}% pass rate`);
+    } else {
+      remarks.push(`WCAG ${wcagId}: Partially meets criteria`);
+    }
+  } else {
+    remarks.push(`WCAG ${wcagId}: Partially meets criteria`);
+  }
+}
+```
+
+## Issue 3: Optimize controller to use validateSingleCriterion
+
+**File:** `src/controllers/compliance.controller.ts` (lines 129-136)
+
+Simplify the controller logic using the new generic method:
+```typescript
+// BEFORE
+let result;
+if (criterionId === '302.1') {
+  result = fpcValidatorService.validateWithoutVision(wcagResults);
+} else if (criterionId === '302.2') {
+  result = fpcValidatorService.validateWithLimitedVision(wcagResults);
+} else {
+  const fullResult = fpcValidatorService.validateFpc(wcagResults);
+  result = fullResult.criteria.find(c => c.id === criterionId);
+}
+
+// AFTER
+const result = fpcValidatorService.validateSingleCriterion(criterionId, wcagResults);
+
+if (!result) {
+  res.status(404).json({ error: `FPC criterion ${criterionId} not found` });
+  return;
+}
+```
+
+## Verification
+
+After making changes:
+```bash
+npm run build
+npm run lint
+npm test
+```
+
+Ensure:
+- Build passes
+- Lint warnings ≤ 60
+- All tests pass
