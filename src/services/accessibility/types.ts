@@ -137,3 +137,33 @@ export interface ValidatorContext {
   isTaggedPdf: boolean;
   pageCount: number;
 }
+
+export interface TableStatus {
+  tableId: string;
+  page: number;
+  position: { x: number; y: number; width: number; height: number };
+  rowCount: number;
+  columnCount: number;
+  hasHeaderRow: boolean;
+  hasHeaderColumn: boolean;
+  hasSummary: boolean;
+  hasCaption: boolean;
+  isLayoutTable: boolean;
+  isComplexTable: boolean;
+  isAccessible: boolean;
+  issues: AccessibilityIssue[];
+}
+
+export interface TableValidationResult {
+  totalTables: number;
+  compliantTables: number;
+  compliancePercentage: number;
+  tables: TableStatus[];
+  issues: AccessibilityIssue[];
+  summary: {
+    totalChecks: number;
+    passed: number;
+    failed: number;
+    warnings: number;
+  };
+}

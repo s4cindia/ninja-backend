@@ -12,12 +12,14 @@ import {
   AltTextValidationResult,
   ContrastValidationResult,
   TextColorInfo,
+  TableValidationResult,
 } from './types';
 import { validateHeadingHierarchy } from './validators/heading-validator';
 import { validateReadingOrder } from './validators/reading-order-validator';
 import { validateLanguageDeclaration } from './validators/language-validator';
 import { validateAltText } from './validators/alt-text-validator';
 import { validateContrast } from './validators/contrast-validator';
+import { validateTables } from './validators/table-validator';
 
 export interface StructureValidationOptions {
   validateHeadings?: boolean;
@@ -349,6 +351,44 @@ class PdfStructureValidatorService {
 
       const duration = Date.now() - startTime;
       console.log(`Contrast validation completed in ${duration}ms - ${result.passing} passing, ${result.failing} failing`);
+
+      return result;
+    } finally {
+      if (parsedPdf) {
+        await pdfParserService.close(parsedPdf);
+      }
+    }
+  }
+
+  async validateTablesFromFile(filePath: string): Promise<TableValidationResult> {
+    const startTime = Date.now();
+    const documentId = randomUUID();
+
+    let parsedPdf: ParsedPDF | null = null;
+
+    try {
+      parsedPdf = await pdfParserService.parse(filePath);
+
+      const context: ValidatorContext = {
+        documentId,
+        fileName: path.basename(filePath),
+        isTaggedPdf: parsedPdf.structure.metadata.isTagged,
+        pageCount: parsedPdf.structure.pageCount,
+      };
+
+      const structureResult = await structureAnalyzerService.analyzeStructure(parsedPdf, {
+        analyzeHeadings: false,
+        analyzeTables: true,
+        analyzeLists: false,
+        analyzeLinks: false,
+        analyzeReadingOrder: false,
+        analyzeLanguage: false,
+      });
+
+      const result = validateTables(structureResult.tables, context);
+
+      const duration = Date.now() - startTime;
+      console.log(`Table validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
 
       return result;
     } finally {

@@ -40,4 +40,10 @@ router.post(
   accessibilityController.validateContrast.bind(accessibilityController)
 );
 
+router.post(
+  '/validate/tables',
+  authenticate,
+  accessibilityController.validateTables.bind(accessibilityController)
+);
+
 export default router;
