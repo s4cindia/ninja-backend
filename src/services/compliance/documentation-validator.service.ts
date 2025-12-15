@@ -343,7 +343,7 @@ class DocumentationValidatorService {
         case 'alternate-audio':
           checked = metadata.audioAvailable === true;
           break;
-        case 'documentation-accessible-format':
+        case 'documentation-accessible-format': {
           const formats = metadata.formats || [];
           const accessibleFormats = ['html', 'accessible-pdf', 'epub'];
           checked = formats.some(f => accessibleFormats.includes(f.toLowerCase()));
@@ -351,6 +351,7 @@ class DocumentationValidatorService {
             notes = `Available formats: ${formats.join(', ')}`;
           }
           break;
+        }
         default:
           checked = false;
           notes = 'Requires manual verification';
