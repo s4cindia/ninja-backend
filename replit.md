@@ -212,6 +212,32 @@ src/
   - 08-002: No text relies on visual appearance only (manual review)
 - Checkpoint Status: pass, fail, manual (requires human review)
 
+## Section 508 Mapping Service (Sprint 3)
+- Data: src/data/section508-wcag-mapping.ts (WCAG to Section 508 mapping table)
+- Service: src/services/compliance/section508-mapper.service.ts
+- Endpoint: POST /api/v1/compliance/section508/map
+- Standard: Section 508 Refresh (aligned with WCAG 2.0 AA)
+- Features:
+  - WCAG 2.1 AA to Section 508 criteria mapping
+  - E205 (Electronic Content) compliance evaluation
+  - E205.4 (PDF/UA requirements) integration
+  - Chapter 3 (Functional Performance Criteria) mapping
+  - Chapter 6 (Support Documentation) requirements
+  - "Best Meets" guidance generation for procurement responses
+  - Competitive positioning language for ACRs/VPATs
+- Conformance Levels: Supports, Partially Supports, Does Not Support, Not Applicable
+- Request Body:
+  - filePath: string (PDF file to analyze)
+  - wcagResults: WcagValidationResult[] (optional pre-computed WCAG results)
+  - includePdfUa: boolean (default: true, runs PDF/UA validation)
+  - competitorContext: { name?, knownWeaknesses? } (optional)
+- Response:
+  - overallCompliance: number (0-100%)
+  - criteriaResults: Section508Criterion[]
+  - bestMeetsGuidance: BestMeetsGuidance[]
+  - competitivePositioning: string (markdown formatted)
+  - pdfUaCompliance: { isPdfUaCompliant, version }
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts
