@@ -1,5 +1,6 @@
 { pkgs }: {
   deps = [
+    pkgs.psmisc
     pkgs.nodejs_20
     pkgs.postgresql_15
     pkgs.poppler_utils

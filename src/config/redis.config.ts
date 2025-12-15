@@ -9,6 +9,9 @@ export const redisConfig: RedisOptions = {
 };
 
 export function isRedisConfigured(): boolean {
+  if (process.env.ENABLE_WORKERS === 'false') {
+    return false;
+  }
   return !!(
     process.env.KV_URL || 
     process.env.REDIS_URL || 
