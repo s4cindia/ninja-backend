@@ -169,6 +169,21 @@ src/
   - Color space conversions: RGB, Gray, CMYK
 - Note: Current implementation marks text as needsManualReview since PDF color extraction requires graphics state parsing
 
+## Table Accessibility Validation (Sprint 3)
+- Service: src/services/accessibility/validators/table-validator.ts
+- Endpoint: POST /api/v1/accessibility/validate/tables
+- Features:
+  - Header cell detection (TH elements with scope attribute) (WCAG 1.3.1)
+  - Complex table validation (merged cells need id/headers association)
+  - Layout vs data table detection
+  - Summary/caption requirement for complex tables (>5 rows or merged cells)
+  - Compliance percentage calculation
+  - Per-table status with accessibility flags
+- Issue Types: missing_headers, missing_scope, missing_id_headers, layout_table_marked_data, complex_table_needs_summary
+- Detection Heuristics:
+  - Layout tables: ≤1 row/col, or no headers with 2 rows and 4+ columns
+  - Complex tables: >5 rows or columns, or has merged cells (rowSpan/colSpan > 1)
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts
