@@ -1,4 +1,4 @@
-import { section508WcagMappings, Section508WcagMapping, getPdfUaRelevantMappings } from '../../data/section508-wcag-mapping';
+import { section508WcagMappings, Section508WcagMapping } from '../../data/section508-wcag-mapping';
 import { logger } from '../../lib/logger';
 
 export type ConformanceLevel = 
@@ -117,13 +117,11 @@ class Section508MapperService {
     let passedCount = 0;
     let partialCount = 0;
     let failedCount = 0;
-    let notTestedCount = 0;
     const remarks: string[] = [];
 
     for (const wcagId of mapping.wcagCriteria) {
       const result = wcagResultsMap.get(wcagId);
       if (!result) {
-        notTestedCount++;
         continue;
       }
 

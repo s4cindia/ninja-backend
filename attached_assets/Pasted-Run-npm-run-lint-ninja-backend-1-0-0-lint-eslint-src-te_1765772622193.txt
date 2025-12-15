@@ -1,0 +1,117 @@
+Run npm run lint
+
+> ninja-backend@1.0.0 lint
+> eslint src/ tests/ --max-warnings 60
+
+
+/home/runner/work/ninja-backend/ninja-backend/src/index.ts
+Warning:   44:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   45:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   46:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   47:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+ESLint found too many warnings (maximum: 60).
+Warning:   53:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   56:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   61:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   64:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/lib/logger.ts
+Warning:   11:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   15:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/lib/redis.ts
+Warning:   47:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   55:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/middleware/async-handler.middleware.ts
+Warning:   7:14  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/runner/work/ninja-backend/ninja-backend/src/middleware/error-handler.middleware.ts
+Warning:   54:3   warning  'next' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+Warning:   85:21  warning  Unexpected any. Specify a different type                                @typescript-eslint/no-explicit-any
+Warning:   85:58  warning  Unexpected any. Specify a different type                                @typescript-eslint/no-explicit-any
+
+/home/runner/work/ninja-backend/ninja-backend/src/middleware/request-logger.middleware.ts
+Warning:   9:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/queues/index.ts
+Warning:   151:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/accessibility/pdf-structure-validator.service.ts
+Warning:   186:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   303:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   353:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   391:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/accessibility/validators/contrast-validator.ts
+Warning:   170:9  warning  'totalAnalyzed' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/ai/gemini.service.ts
+Warning:    71:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   107:11  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   154:14  warning  'parseError' is defined but never used                                             @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/ai/response-parser.service.ts
+Warning:    1:10  warning  'z' is defined but never used                                                      @typescript-eslint/no-unused-vars
+Warning:   85:9   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/ai/token-counter.service.ts
+Warning:   76:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/compliance/section508-mapper.service.ts
+Warning:     1:57  warning  'getPdfUaRelevantMappings' is defined but never used  @typescript-eslint/no-unused-vars
+Warning:   126:9   warning  'notTestedCount' is assigned a value but never used   @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/image-extractor.service.ts
+Warning:   199:90  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+Warning:   225:19  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+Warning:   407:8   warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+Warning:   498:11  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+Warning:   669:14  warning  'err' is defined but never used             @typescript-eslint/no-unused-vars
+Warning:   716:11  warning  'index' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/structure-analyzer.service.ts
+Warning:   1:62  warning  'PDFNumber' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/text-extractor.service.ts
+Warning:   240:11  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+Warning:   243:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+Warning:   277:82  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+Warning:   278:35  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/runner/work/ninja-backend/ninja-backend/src/services/queue.service.ts
+Warning:   94:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/types/express.d.ts
+Warning:   1:10  warning  'User' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/work/ninja-backend/ninja-backend/src/workers/base.worker.ts
+Warning:   34:9   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   45:11  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   66:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   74:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/workers/index.ts
+Warning:   11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   35:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   37:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   42:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   45:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/accessibility.processor.ts
+Warning:    11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   118:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/file.processor.ts
+Warning:    9:9  warning  'jobId' is assigned a value but never used                                         @typescript-eslint/no-unused-vars
+Warning:   11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   41:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   71:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/vpat.processor.ts
+Warning:   11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+Warning:   26:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+✖ 61 problems (0 errors, 61 warnings)
+
+Error: Process completed with exit code 1.
