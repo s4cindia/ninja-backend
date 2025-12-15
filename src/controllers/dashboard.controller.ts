@@ -12,3 +12,20 @@ export const getDashboardStats = async (_req: Request, res: Response) => {
 
   res.json(stats);
 };
+
+export const getDashboardActivity = async (req: Request, res: Response) => {
+  const limit = parseInt(req.query.limit as string) || 10;
+  
+  const activity: Array<{
+    id: string;
+    type: string;
+    description: string;
+    timestamp: string;
+  }> = [];
+
+  res.json({
+    activity,
+    limit,
+    total: 0
+  });
+};
