@@ -238,6 +238,26 @@ src/
   - competitivePositioning: string (markdown formatted)
   - pdfUaCompliance: { isPdfUaCompliant, version }
 
+## Functional Performance Criteria (FPC) Validator (Sprint 3)
+- Service: src/services/compliance/fpc-validator.service.ts
+- Endpoints:
+  - POST /api/v1/compliance/fpc/validate - Validate all FPC criteria
+  - POST /api/v1/compliance/fpc/validate/:criterionId - Validate specific criterion
+  - GET /api/v1/compliance/fpc/definitions - Get all FPC definitions
+- Standard: Section 508 Chapter 3 Functional Performance Criteria
+- Criteria:
+  - 302.1: Without Vision (maps to WCAG 1.1.1, 1.3.1, 1.3.2, 1.4.1, 4.1.2)
+  - 302.2: With Limited Vision (maps to WCAG 1.4.3, 1.4.4, 1.4.10, 1.4.12)
+  - 302.3: Without Perception of Color (maps to WCAG 1.4.1)
+  - 302.4: Without Hearing (maps to WCAG 1.2.1, 1.2.2, 1.2.3)
+  - 302.5: With Limited Hearing (maps to WCAG 1.2.1, 1.2.2)
+  - 302.6: Without Speech (maps to WCAG 2.1.1)
+  - 302.7: With Limited Manipulation (maps to WCAG 2.1.1, 2.4.7)
+  - 302.8: With Limited Reach and Strength (maps to WCAG 2.4.1, 2.4.3)
+  - 302.9: With Limited Cognitive Abilities (maps to WCAG 3.1.5, 3.2.3, 3.2.4)
+- Request Body: { wcagResults: WcagValidationResult[] }
+- Response: FpcValidationResult with criteria status and summary
+
 ## Testing Framework
 - Framework: Vitest with v8 coverage
 - Config: vitest.config.ts
