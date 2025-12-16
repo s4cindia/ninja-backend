@@ -13,6 +13,7 @@ import dashboardRoutes from "./dashboard.routes";
 import acrRoutes from "./acr.routes";
 import confidenceRoutes from "./confidence.routes";
 import verificationRoutes from "./verification.routes";
+import exportsRoutes from "./exports.routes";
 
 const router = Router();
 
@@ -79,5 +80,6 @@ router.use("/dashboard", dashboardRoutes);
 router.use("/acr", acrRoutes);
 router.use("/confidence", confidenceRoutes);
 router.use("/verification", verificationRoutes);
+router.use("/exports", exportsRoutes);
 
 export default router;

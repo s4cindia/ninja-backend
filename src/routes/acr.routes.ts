@@ -15,5 +15,6 @@ router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(ac
 router.post('/:jobId/validate-credibility', acrController.validateCredibility.bind(acrController));
 router.get('/:jobId/can-finalize', verificationController.canFinalize.bind(verificationController));
 router.get('/:jobId/methodology', acrController.getMethodology.bind(acrController));
+router.post('/:acrId/export', acrController.exportAcr.bind(acrController));
 
 export default router;

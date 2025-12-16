@@ -10,6 +10,7 @@ import {
 } from '../services/acr/attribution.service';
 import { humanVerificationService } from '../services/acr/human-verification.service';
 import { remarksGeneratorService, RemarksGenerationRequest } from '../services/acr/remarks-generator.service';
+import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr/acr-exporter.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -241,6 +242,91 @@ export class AcrController {
         message: generatedRemarks.aiGenerated 
           ? 'Remarks generated using AI. Review and edit as needed.'
           : 'Remarks generated using fallback template.'
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'Validation failed',
+            details: error.issues
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async exportAcr(req: Request, res: Response, next: NextFunction) {
+    try {
+      const ExportOptionsSchema = z.object({
+        format: z.enum(['docx', 'pdf', 'html']),
+        includeMethodology: z.boolean().default(true),
+        includeAttribution: z.boolean().default(true),
+        branding: z.object({
+          companyName: z.string().optional(),
+          logoUrl: z.string().url().optional(),
+          primaryColor: z.string().optional(),
+          footerText: z.string().optional()
+        }).optional()
+      });
+
+      const ExportRequestSchema = z.object({
+        options: ExportOptionsSchema,
+        acrData: z.object({
+          edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
+          productInfo: ProductInfoSchema
+        }).optional()
+      });
+
+      const { acrId } = req.params;
+      const validatedData = ExportRequestSchema.parse(req.body);
+
+      const exportOptions: ExportOptions = {
+        format: validatedData.options.format as ExportFormat,
+        includeMethodology: validatedData.options.includeMethodology,
+        includeAttribution: validatedData.options.includeAttribution,
+        branding: validatedData.options.branding
+      };
+
+      const verificationQueue = await humanVerificationService.getQueue(acrId);
+      
+      const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
+      for (const item of verificationQueue.items) {
+        const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
+        verificationData.set(item.criterionId, {
+          status: item.status,
+          isAiGenerated: item.criterionId === '1.1.1',
+          notes: latestVerification?.notes
+        });
+      }
+
+      const acrGenerationOptions = {
+        edition: validatedData.acrData?.edition || 'VPAT2.5-INT' as const,
+        includeMethodology: exportOptions.includeMethodology,
+        productInfo: validatedData.acrData?.productInfo || {
+          name: 'Unnamed Product',
+          version: '1.0.0',
+          description: 'Product accessibility conformance report',
+          vendor: 'Unknown Vendor',
+          contactEmail: 'contact@example.com',
+          evaluationDate: new Date()
+        }
+      };
+
+      const acrDocument = await acrGeneratorService.generateAcr(
+        acrId,
+        acrGenerationOptions,
+        verificationData
+      );
+
+      const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+
+      res.status(200).json({
+        success: true,
+        data: exportResult,
+        message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
       });
     } catch (error) {
       if (error instanceof z.ZodError) {

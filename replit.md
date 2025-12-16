@@ -78,6 +78,13 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Fallback Support:** Falls back to template-based generation if AI unavailable
         - **Manual Editing:** All AI-generated remarks can be edited by users before finalizing
     -   API endpoints: `POST /api/v1/acr/generate-remarks`
+    -   **ACR Document Export (US-3.3.7):** Export ACRs in multiple formats with attribution and methodology:
+        - **Word Export (.docx):** Matches ITI VPAT 2.5 template structure with tables, attribution tags, methodology section, headers/footers
+        - **PDF Export:** Accessible PDF with document structure, metadata, criteria tables, and legal disclaimer
+        - **HTML Export:** Responsive web publication with WCAG-compliant structure, print stylesheet, and attribution tag styling
+        - **Branding Options:** Custom company name, primary color, and footer text
+        - **Download Management:** Files saved to exports directory with 24-hour expiration
+    -   API endpoints: `POST /api/v1/acr/:acrId/export`, `GET /api/v1/exports/:filename`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
