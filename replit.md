@@ -85,6 +85,13 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Branding Options:** Custom company name, primary color, and footer text
         - **Download Management:** Files saved to exports directory with 24-hour expiration
     -   API endpoints: `POST /api/v1/acr/:acrId/export`, `GET /api/v1/exports/:filename`
+    -   **ACR Versioning and History (US-3.3.8):** Track ACR changes over time for compliance documentation:
+        - **Version Tracking:** Auto-incrementing version numbers with timestamps and user attribution
+        - **Change Logs:** Detailed field-level tracking of what changed between versions (status, edition, product info, criteria)
+        - **Snapshots:** Complete ACR document snapshots stored for each version
+        - **Version Comparison:** Side-by-side comparison showing all changes between any two versions
+        - **In-Memory Storage:** Versions stored in memory (can be persisted to database for durability)
+    -   API endpoints: `GET /api/v1/acr/:acrId/versions`, `POST /api/v1/acr/:acrId/versions`, `GET /api/v1/acr/:acrId/versions/:version`, `GET /api/v1/acr/:acrId/compare?v1=X&v2=Y`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
