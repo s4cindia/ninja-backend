@@ -249,7 +249,7 @@ const MEDIUM_CONFIDENCE_CRITERIA: Record<string, { percentage: number; reason: s
 };
 
 class ConfidenceAnalyzerService {
-  analyzeConfidence(criterionId: string, validationResult?: ValidationResultInput): ConfidenceAssessment {
+  analyzeConfidence(criterionId: string, _validationResult?: ValidationResultInput): ConfidenceAssessment {
     const wcagCriterion = this.getWcagCriterionName(criterionId);
 
     if (ALWAYS_MANUAL_CRITERIA[criterionId]) {
