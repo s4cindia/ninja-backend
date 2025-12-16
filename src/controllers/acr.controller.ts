@@ -1,6 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { acrGeneratorService, AcrGenerationOptions } from '../services/acr/acr-generator.service';
 import { conformanceEngineService } from '../services/acr/conformance-engine.service';
+import { 
+  generateMethodologySection, 
+  generateMethodologyText,
+  LEGAL_DISCLAIMER,
+  TOOL_VERSION,
+  AI_MODEL_INFO 
+} from '../services/acr/attribution.service';
+import { humanVerificationService } from '../services/acr/human-verification.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -134,6 +142,56 @@ export class AcrController {
       success: true,
       data: requirements
     });
+  }
+
+  async getMethodology(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      const verificationQueue = await humanVerificationService.getQueue(jobId);
+      
+      const verificationRecords = verificationQueue.items
+        .filter(item => item.verificationHistory.length > 0)
+        .map(item => {
+          const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
+          return {
+            itemId: item.id,
+            status: item.status,
+            verifiedBy: latestVerification?.verifiedBy,
+            method: latestVerification?.method
+          };
+        });
+
+      const findingsMetadata = verificationQueue.items.map(item => ({
+        findingId: item.id,
+        isAiGenerated: item.criterionId === '1.1.1', 
+        isAltTextSuggestion: item.criterionId === '1.1.1'
+      }));
+
+      const methodology = generateMethodologySection(findingsMetadata, verificationRecords);
+      const methodologyText = generateMethodologyText(methodology);
+
+      res.json({
+        success: true,
+        data: {
+          methodology,
+          formattedText: methodologyText,
+          toolVersion: TOOL_VERSION,
+          aiModel: AI_MODEL_INFO,
+          legalDisclaimer: LEGAL_DISCLAIMER
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 }
 

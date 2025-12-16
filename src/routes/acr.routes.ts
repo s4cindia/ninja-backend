@@ -13,5 +13,6 @@ router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));
 router.post('/:jobId/validate-credibility', acrController.validateCredibility.bind(acrController));
 router.get('/:jobId/can-finalize', verificationController.canFinalize.bind(verificationController));
+router.get('/:jobId/methodology', acrController.getMethodology.bind(acrController));
 
 export default router;
