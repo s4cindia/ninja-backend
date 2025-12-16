@@ -11,6 +11,7 @@ import {
 import { humanVerificationService } from '../services/acr/human-verification.service';
 import { remarksGeneratorService, RemarksGenerationRequest } from '../services/acr/remarks-generator.service';
 import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr/acr-exporter.service';
+import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -327,6 +328,172 @@ export class AcrController {
         success: true,
         data: exportResult,
         message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'Validation failed',
+            details: error.issues
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async getVersions(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { acrId } = req.params;
+      const versions = await acrVersioningService.getVersions(acrId);
+
+      res.json({
+        success: true,
+        data: versions.map(v => ({
+          id: v.id,
+          acrId: v.acrId,
+          version: v.version,
+          createdAt: v.createdAt,
+          createdBy: v.createdBy,
+          changeCount: v.changeLog.length
+        })),
+        total: versions.length
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getVersion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { acrId, version } = req.params;
+      const versionNumber = parseInt(version, 10);
+
+      if (isNaN(versionNumber) || versionNumber < 1) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid version number' }
+        });
+        return;
+      }
+
+      const versionData = await acrVersioningService.getVersion(acrId, versionNumber);
+
+      if (!versionData) {
+        res.status(404).json({
+          success: false,
+          error: { message: `Version ${versionNumber} not found for ACR ${acrId}` }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: versionData
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async compareVersions(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { acrId } = req.params;
+      const v1 = parseInt(req.query.v1 as string, 10);
+      const v2 = parseInt(req.query.v2 as string, 10);
+
+      if (isNaN(v1) || isNaN(v2) || v1 < 1 || v2 < 1) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid version numbers. Provide v1 and v2 query parameters.' }
+        });
+        return;
+      }
+
+      const comparison = await acrVersioningService.compareVersions(acrId, v1, v2);
+
+      if (!comparison) {
+        res.status(404).json({
+          success: false,
+          error: { message: `One or both versions not found for ACR ${acrId}` }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: comparison
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async createVersion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const CreateVersionSchema = z.object({
+        reason: z.string().optional(),
+        acrData: z.object({
+          edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
+          productInfo: ProductInfoSchema
+        }).optional()
+      });
+
+      const { acrId } = req.params;
+      const validatedData = CreateVersionSchema.parse(req.body);
+      const userId = req.user?.id || 'anonymous';
+
+      const verificationQueue = await humanVerificationService.getQueue(acrId);
+      
+      const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
+      for (const item of verificationQueue.items) {
+        const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
+        verificationData.set(item.criterionId, {
+          status: item.status,
+          isAiGenerated: item.criterionId === '1.1.1',
+          notes: latestVerification?.notes
+        });
+      }
+
+      const acrGenerationOptions = {
+        edition: validatedData.acrData?.edition || 'VPAT2.5-INT' as const,
+        includeMethodology: true,
+        productInfo: validatedData.acrData?.productInfo || {
+          name: 'Unnamed Product',
+          version: '1.0.0',
+          description: 'Product accessibility conformance report',
+          vendor: 'Unknown Vendor',
+          contactEmail: 'contact@example.com',
+          evaluationDate: new Date()
+        }
+      };
+
+      const acrDocument = await acrGeneratorService.generateAcr(
+        acrId,
+        acrGenerationOptions,
+        verificationData
+      );
+
+      const version = await acrVersioningService.createVersion(
+        acrId,
+        userId,
+        acrDocument,
+        validatedData.reason
+      );
+
+      res.status(201).json({
+        success: true,
+        data: {
+          id: version.id,
+          acrId: version.acrId,
+          version: version.version,
+          createdAt: version.createdAt,
+          createdBy: version.createdBy,
+          changeCount: version.changeLog.length
+        },
+        message: `Version ${version.version} created successfully`
       });
     } catch (error) {
       if (error instanceof z.ZodError) {

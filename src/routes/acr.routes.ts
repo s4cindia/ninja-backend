@@ -17,4 +17,9 @@ router.get('/:jobId/can-finalize', verificationController.canFinalize.bind(verif
 router.get('/:jobId/methodology', acrController.getMethodology.bind(acrController));
 router.post('/:acrId/export', acrController.exportAcr.bind(acrController));
 
+router.get('/:acrId/versions', acrController.getVersions.bind(acrController));
+router.post('/:acrId/versions', acrController.createVersion.bind(acrController));
+router.get('/:acrId/versions/:version', acrController.getVersion.bind(acrController));
+router.get('/:acrId/compare', acrController.compareVersions.bind(acrController));
+
 export default router;
