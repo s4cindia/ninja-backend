@@ -11,6 +11,7 @@ import accessibilityRoutes from "./accessibility.routes";
 import complianceRoutes from "./compliance.routes";
 import dashboardRoutes from "./dashboard.routes";
 import acrRoutes from "./acr.routes";
+import confidenceRoutes from "./confidence.routes";
 
 const router = Router();
 
@@ -75,5 +76,6 @@ router.use("/accessibility", accessibilityRoutes);
 router.use("/compliance", complianceRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/acr", acrRoutes);
+router.use("/confidence", confidenceRoutes);
 
 export default router;

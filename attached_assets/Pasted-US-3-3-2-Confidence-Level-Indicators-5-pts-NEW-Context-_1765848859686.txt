@@ -1,0 +1,85 @@
+US-3.3.2: Confidence Level Indicators (5 pts) — NEW
+Context
+🔬 RESEARCH DRIVER: Automated accessibility scanners only detect 30-57% of WCAG failures. Human verification is mandatory for credible reporting. AI cannot 'use' a screen reader; it can only predict text about screen readers.
+
+Prerequisites
+US-3.1.1 through US-3.2.3 complete
+Validation results with detection method metadata
+Objective
+Add confidence level indicators to each automated check so users know which items require human verification.
+
+Technical Requirements
+Create confidence level analysis service.
+**Create file: `src/services/acr/confidence-analyzer.service.ts`**
+type ConfidenceLevel = 
+  | 'HIGH'              // 90%+ - automated verification reliable
+  | 'MEDIUM'            // 60-89% - automated + spot check recommended
+  | 'LOW'               // <60% - automated flagging only, human review required
+  | 'MANUAL_REQUIRED';  // Cannot be automated at all
+interface ConfidenceAssessment {
+  criterionId: string;
+  wcagCriterion: string;
+  confidenceLevel: ConfidenceLevel;
+  confidencePercentage: number;
+  reason: string;
+  humanVerificationRequired: boolean;
+  automatedChecks: string[];
+  manualChecksNeeded: string[];
+}
+// Criteria that ALWAYS require manual verification
+const ALWAYS_MANUAL_CRITERIA = [
+  '1.1.1',  // Alt text meaningfulness (can detect presence, not quality)
+  '1.3.1',  // Info and relationships (partial automation only)
+  '2.1.1',  // Keyboard accessibility (cannot automate full workflow)
+  '2.4.1',  // Bypass blocks (requires understanding of content)
+  '2.4.6',  // Headings and labels (descriptive quality)
+  '3.1.2',  // Language of parts (cannot detect need for markup)
+  '3.3.2',  // Labels or instructions (quality assessment)
+];
+// HIGH confidence criteria (fully automatable)
+const HIGH_CONFIDENCE_CRITERIA = [
+  '1.4.3',  // Color contrast (formula-based)
+  '3.1.1',  // Language of page (presence check)
+  '4.1.1',  // Parsing (validation)
+];
+function analyzeConfidence(
+  criterionId: string,
+  validationResult: ValidationResult
+): ConfidenceAssessment {
+  // Determine confidence based on:
+  // 1. Whether criterion is in ALWAYS_MANUAL list
+  // 2. Complexity of automated check
+  // 3. Historical accuracy data
+}
+**Update database schema: `prisma/schema.prisma`**
+model ValidationResultItem {
+  id                String    @id @default(uuid())
+  validationResultId String
+  criterionId       String
+  wcagCriterion     String
+  status            String    // pass, fail, warning
+  confidenceLevel   String    // HIGH, MEDIUM, LOW, MANUAL_REQUIRED
+  confidenceScore   Float
+  humanVerified     Boolean   @default(false)
+  humanVerifiedAt   DateTime?
+  humanVerifiedBy   String?
+  verificationNotes String?
+  validationResult  ValidationResult @relation(fields: [validationResultId], references: [id])
+}
+**Create API endpoint:**
+GET /api/v1/validation/:jobId/confidence-summary
+Response: {
+  totalCriteria: number;
+  highConfidence: number;
+  mediumConfidence: number;
+  lowConfidence: number;
+  manualRequired: number;
+  humanVerificationNeeded: number;
+  items: ConfidenceAssessment[];
+}
+Acceptance Criteria
+ HIGH (90%+): Automated verification reliable
+ MEDIUM (60-89%): Automated + spot check recommended
+ LOW (<60%): Automated flagging only, human review required
+ MANUAL REQUIRED: Criteria that cannot be automated
+ Dashboard shows count of items requiring human verification
