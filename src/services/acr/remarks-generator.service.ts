@@ -47,7 +47,7 @@ function extractQuantitativeData(validationResults: ValidationResult[]): {
   for (const result of validationResults) {
     if (result.passCount !== undefined && result.totalCount !== undefined) {
       totalPass += result.passCount;
-      totalFail += result.failCount || 0;
+      totalFail += result.failCount ?? (result.totalCount - result.passCount);
       totalItems += result.totalCount;
     } else {
       totalItems += 1;

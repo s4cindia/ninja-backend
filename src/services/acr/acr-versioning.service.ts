@@ -30,6 +30,7 @@ export interface VersionComparison {
   };
 }
 
+// TODO: Migrate to database persistence for production (in-memory loses data on restart)
 const versionStore = new Map<string, AcrVersion[]>();
 
 function deepEqual(a: unknown, b: unknown): boolean {

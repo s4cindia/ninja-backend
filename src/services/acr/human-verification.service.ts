@@ -55,6 +55,7 @@ export interface CanFinalizeResult {
   totalRequired: number;
 }
 
+// TODO: Migrate to database persistence for production (currently uses Job.output as backup)
 const verificationStore = new Map<string, VerificationQueueItem[]>();
 const recordStore = new Map<string, VerificationRecord[]>();
 
@@ -261,7 +262,8 @@ class HumanVerificationService {
       await this.persistToJob(jobId);
 
       return await this.getQueue(jobId);
-    } catch {
+    } catch (error) {
+      console.error(`[HumanVerification] getQueueFromJob error:`, error);
       return await this.getQueue(jobId);
     }
   }
@@ -290,7 +292,8 @@ class HumanVerificationService {
           output: outputData
         }
       });
-    } catch {
+    } catch (error) {
+      console.error(`[HumanVerification] Persistence error:`, error);
     }
   }
 
