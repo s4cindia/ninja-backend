@@ -11,16 +11,14 @@ import {
   HeadingLevel,
   WidthType,
   AlignmentType,
-  BorderStyle,
   Header,
   Footer,
-  PageNumber,
-  NumberFormat
+  PageNumber
 } from 'docx';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { AcrDocument, AcrCriterion } from './acr-generator.service';
-import { TOOL_VERSION, LEGAL_DISCLAIMER } from './attribution.service';
+import { AcrDocument } from './acr-generator.service';
+import { TOOL_VERSION } from './attribution.service';
 
 export type ExportFormat = 'docx' | 'pdf' | 'html';
 
@@ -503,23 +501,19 @@ async function exportAcr(
   
   let buffer: Buffer;
   let extension: string;
-  let mimeType: string;
 
   switch (options.format) {
     case 'docx':
       buffer = await exportToDocx(acr, options);
       extension = 'docx';
-      mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
       break;
     case 'pdf':
       buffer = await exportToPdf(acr, options);
       extension = 'pdf';
-      mimeType = 'application/pdf';
       break;
     case 'html':
       buffer = Buffer.from(exportToHtml(acr, options), 'utf-8');
       extension = 'html';
-      mimeType = 'text/html';
       break;
     default:
       throw new Error(`Unsupported export format: ${options.format}`);
