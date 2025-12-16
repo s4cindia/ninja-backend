@@ -10,6 +10,7 @@ import pdfRoutes from "./pdf.routes";
 import accessibilityRoutes from "./accessibility.routes";
 import complianceRoutes from "./compliance.routes";
 import dashboardRoutes from "./dashboard.routes";
+import acrRoutes from "./acr.routes";
 
 const router = Router();
 
@@ -73,5 +74,6 @@ router.use("/pdf", pdfRoutes);
 router.use("/accessibility", accessibilityRoutes);
 router.use("/compliance", complianceRoutes);
 router.use("/dashboard", dashboardRoutes);
+router.use("/acr", acrRoutes);
 
 export default router;
