@@ -45,6 +45,15 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **LOW (<60%):** Automated flagging only, human review required
         - **MANUAL_REQUIRED:** Cannot be automated (e.g., alt text quality, keyboard workflows, heading descriptiveness)
     -   API endpoints: `GET /api/v1/jobs/:id/confidence-summary`, `GET /api/v1/confidence/summary`, `GET /api/v1/confidence/criterion/:criterionId`
+    -   **Human Verification Workflow:** Complete workflow for manual verification of accessibility criteria:
+        - **Verification Queue:** Items sorted by severity (critical > serious > moderate > minor) and confidence level
+        - **Verification Submission:** Record verification status (PENDING, VERIFIED_PASS, VERIFIED_FAIL, VERIFIED_PARTIAL, DEFERRED) with method and notes
+        - **Bulk Verification:** Process multiple items at once with consistent verification data
+        - **Audit Trail:** Complete history of all verification actions with timestamps, user IDs, and method details
+        - **ACR Finalization Gate:** Prevents ACR finalization until all critical/serious severity and LOW/MANUAL_REQUIRED confidence items are verified
+        - **Persistence:** Verification data stored in Job.output JSON field for durability across server restarts
+        - **Item IDs:** Derived from validation result IDs for traceability (format: `resultId_criterionId`)
+    -   API endpoints: `GET /api/v1/verification/:jobId/queue`, `POST /api/v1/verification/verify/:itemId`, `POST /api/v1/verification/bulk`, `GET /api/v1/verification/:jobId/audit-log`, `GET /api/v1/acr/:jobId/can-finalize`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`

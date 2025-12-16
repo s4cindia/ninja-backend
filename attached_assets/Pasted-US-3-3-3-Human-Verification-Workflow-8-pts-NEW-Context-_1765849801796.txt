@@ -1,0 +1,101 @@
+US-3.3.3: Human Verification Workflow (8 pts) — NEW
+Context
+🔬 RESEARCH DRIVER: Audit trails required for legal defensibility (who verified what and when). ACR cannot be finalized until all required items are human-reviewed.
+
+Prerequisites
+US-3.3.2 (Confidence Level Indicators) complete
+Objective
+Create a verification workflow for human review of automated results with complete audit trails.
+
+Technical Requirements
+Create human verification workflow service.
+**Create file: `src/services/acr/human-verification.service.ts`**
+type VerificationStatus = 
+  | 'PENDING'
+  | 'VERIFIED_PASS'
+  | 'VERIFIED_FAIL'
+  | 'VERIFIED_PARTIAL'
+  | 'DEFERRED';
+interface VerificationRecord {
+  id: string;
+  validationItemId: string;
+  status: VerificationStatus;
+  verifiedBy: string;       // User ID
+  verifiedAt: Date;
+  method: string;           // e.g., "Tested with NVDA 2024.1"
+  notes: string;
+  previousStatus?: VerificationStatus;
+}
+interface VerificationQueue {
+  jobId: string;
+  totalItems: number;
+  pendingItems: number;
+  verifiedItems: number;
+  canFinalize: boolean;     // False until all CRITICAL items verified
+  items: VerificationQueueItem[];
+}
+interface VerificationQueueItem {
+  id: string;
+  criterionId: string;
+  wcagCriterion: string;
+  severity: 'critical' | 'serious' | 'moderate' | 'minor';
+  confidenceLevel: ConfidenceLevel;
+  automatedResult: string;
+  status: VerificationStatus;
+  verificationHistory: VerificationRecord[];
+}
+async function submitVerification(
+  itemId: string,
+  verification: {
+    status: VerificationStatus;
+    method: string;
+    notes: string;
+  },
+  userId: string
+): Promise<VerificationRecord> {
+  // Create immutable audit record
+  // Update item status
+  // Check if ACR can now be finalized
+}
+async function canFinalizeAcr(jobId: string): Promise<{
+  canFinalize: boolean;
+  blockers: string[];
+}> {
+  // Check all CRITICAL and HIGH severity items are verified
+  // Return list of blocking items if cannot finalize
+}
+**Update database schema:**
+model VerificationRecord {
+  id              String    @id @default(uuid())
+  validationItemId String
+  status          String
+  verifiedBy      String
+  verifiedAt      DateTime  @default(now())
+  method          String
+  notes           String?
+  validationItem  ValidationResultItem @relation(fields: [validationItemId], references: [id])
+  @@index([validationItemId])
+}
+**Create API endpoints:**
+GET /api/v1/verification/:jobId/queue
+Response: VerificationQueue
+POST /api/v1/verification/:itemId/submit
+Body: { status, method, notes }
+Response: VerificationRecord
+GET /api/v1/verification/:jobId/audit-log
+Response: { records: VerificationRecord[], exportUrl: string }
+GET /api/v1/acr/:jobId/can-finalize
+Response: { canFinalize: boolean, blockers: string[] }
+**Create React component: `src/components/verification/VerificationQueue.tsx`**
+Display verification queue with:
+- Filter by severity, confidence level, status
+- Progress indicator: "X of Y items verified"
+- Method selector (NVDA, JAWS, VoiceOver, Manual Review)
+- Notes field for each verification
+- Bulk verification for similar items
+Acceptance Criteria
+ LOW/MANUAL items appear in verification queue
+ Reviewer can mark: VERIFIED (pass), VERIFIED (fail), VERIFIED (partial), DEFERRED
+ Each verification records: timestamp, reviewer ID, method used, notes
+ ACR cannot be 'Final' until all CRITICAL severity items verified
+ Audit log exportable for compliance documentation
