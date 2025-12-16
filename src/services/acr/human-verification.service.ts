@@ -295,7 +295,7 @@ class HumanVerificationService {
   }
 
   getQueueItem(itemId: string): VerificationQueueItem | undefined {
-    for (const [_, items] of verificationStore) {
+    for (const items of verificationStore.values()) {
       const item = items.find(i => i.id === itemId);
       if (item) return item;
     }

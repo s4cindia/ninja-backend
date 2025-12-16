@@ -55,7 +55,7 @@ export class VerificationController {
   async submitVerification(req: Request, res: Response, next: NextFunction) {
     try {
       const { itemId } = req.params;
-      const userId = (req as any).user?.id || 'anonymous';
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'anonymous';
 
       if (!itemId) {
         res.status(400).json({
@@ -105,7 +105,7 @@ export class VerificationController {
 
   async bulkVerify(req: Request, res: Response, next: NextFunction) {
     try {
-      const userId = (req as any).user?.id || 'anonymous';
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'anonymous';
 
       const validatedData = BulkVerificationSchema.parse(req.body);
       
