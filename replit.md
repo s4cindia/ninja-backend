@@ -31,6 +31,14 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
     -   **Section 508 Mapping:** Maps WCAG 2.1 AA criteria to Section 508 Refresh, including E205 (Electronic Content), E205.4 (PDF/UA), Chapter 3 (Functional Performance Criteria), and Chapter 6 (Support Documentation). Generates "Best Meets" guidance and competitive positioning language.
     -   **Functional Performance Criteria (FPC) Validation:** Validates against Section 508 Chapter 3 FPC criteria (e.g., Without Vision, With Limited Vision), mapping to relevant WCAG criteria.
     -   **Chapter 6 Documentation Validation:** Validates compliance with Section 508 Chapter 6 requirements for support documentation, checking for accessibility statements, contact methods, and alternate formats.
+-   **ACR/VPAT Generation:**
+    -   **Multi-Edition Support:** Generates Accessibility Conformance Reports (ACRs) in four VPAT 2.5 editions:
+        - **VPAT2.5-508:** Section 508 Edition (US Federal procurement)
+        - **VPAT2.5-WCAG:** WCAG Edition (WCAG 2.1 A/AA/AAA)
+        - **VPAT2.5-EU:** EU Edition (EN 301 549)
+        - **VPAT2.5-INT:** International Edition (recommended - combines all standards in one document)
+    -   Each edition returns distinct criteria sets with proper deduplication for the International edition.
+    -   API endpoints: `POST /api/v1/acr/generate`, `GET /api/v1/acr/editions`, `GET /api/v1/acr/editions/:edition`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
