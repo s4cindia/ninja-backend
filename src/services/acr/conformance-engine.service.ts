@@ -84,7 +84,7 @@ function analyzeAutomatedResults(validationResults: ValidationResult[]): Automat
     return {
       level: 'Not Applicable',
       wouldBeSupports: false,
-      remarks: 'No validation data available for this criterion.',
+      remarks: 'Justification: 0 of 0 items of this type were found in the document. Since no applicable content exists, this criterion does not apply.',
       passCount: 0,
       failCount: 0,
       totalCount: 0
@@ -165,7 +165,7 @@ export async function determineConformance(
   if (autoResult.wouldBeSupports && !humanVerification) {
     return {
       level: 'Partially Supports',
-      remarks: `Automated testing indicates compliance (${autoResult.passCount} of ${autoResult.totalCount} items passed). Human verification pending to confirm 'Supports' status.`,
+      remarks: `What works: Automated testing indicates compliance (${autoResult.passCount} of ${autoResult.totalCount} items passed). Limitations: Human verification pending to confirm 'Supports' status - manual review required.`,
       requiresHumanConfirmation: true,
       warningFlags: ['AWAITING_HUMAN_VERIFICATION']
     };
@@ -182,16 +182,23 @@ export async function determineConformance(
     } else if (humanVerification.status === 'VERIFIED_FAIL') {
       return {
         level: 'Does Not Support',
-        remarks: `Automated testing showed compliance, but human verification identified issues. ${humanVerification.notes || 'See detailed findings.'}`,
+        remarks: `Reason: Although ${autoResult.passCount} of ${autoResult.totalCount} items passed automated testing, human verification identified critical issues that prevent conformance. ${humanVerification.notes || 'See detailed findings for specific problems identified.'}`,
         requiresHumanConfirmation: false,
         warningFlags: ['HUMAN_OVERRIDE']
       };
     } else if (humanVerification.status === 'VERIFIED_PARTIAL') {
       return {
         level: 'Partially Supports',
-        remarks: `${autoResult.passCount} of ${autoResult.totalCount} items passed automated validation. Human verification identified partial compliance. ${humanVerification.notes || ''}`.trim(),
+        remarks: `What works: ${autoResult.passCount} of ${autoResult.totalCount} items passed automated validation. Limitations: Human verification identified partial compliance issues. ${humanVerification.notes || 'Some elements require remediation.'}`,
         requiresHumanConfirmation: false,
         warningFlags: []
+      };
+    } else {
+      return {
+        level: 'Partially Supports',
+        remarks: `What works: Automated testing indicates compliance (${autoResult.passCount} of ${autoResult.totalCount} items passed). Limitations: Human verification is pending or deferred - manual review still required to confirm 'Supports' status.`,
+        requiresHumanConfirmation: true,
+        warningFlags: ['AWAITING_HUMAN_VERIFICATION']
       };
     }
   }
