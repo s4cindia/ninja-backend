@@ -1,0 +1,107 @@
+US-3.3.4: Nuanced Compliance Status (5 pts) — NEW
+Context
+🔬 RESEARCH DRIVER: Sophisticated procurement teams view reports claiming 100% 'Supports' ratings as indicators of fraud or incompetence. Credible ACRs require nuanced partial compliance with detailed 'Remarks and Explanations.'
+
+Prerequisites
+US-3.3.3 (Human Verification Workflow) complete
+Objective
+Implement accurate conformance level determination that prevents overstated compliance and requires detailed remarks.
+
+Technical Requirements
+Create nuanced conformance determination engine.
+**Create file: `src/services/acr/conformance-engine.service.ts`**
+interface ConformanceDecision {
+  level: ConformanceLevel;
+  remarks: string;
+  requiresHumanConfirmation: boolean;
+  warningFlags: string[];
+}
+// CRITICAL: Never auto-populate 'Supports' without human confirmation
+async function determineConformance(
+  criterionId: string,
+  validationResults: ValidationResult[],
+  humanVerification?: VerificationRecord
+): Promise<ConformanceDecision> {
+  const autoResult = analyzeAutomatedResults(validationResults);
+  // NEVER return 'Supports' without human verification
+  if (autoResult.wouldBeSupports && !humanVerification) {
+    return {
+      level: 'Partially Supports',
+      remarks: 'Automated testing indicates compliance. Human verification pending.',
+      requiresHumanConfirmation: true,
+      warningFlags: []
+    };
+  }
+  // Require remarks for all non-'Supports' levels
+  if (autoResult.level !== 'Supports' && !autoResult.remarks) {
+    throw new Error(`Remarks required for ${autoResult.level} status`);
+  }
+  return autoResult;
+}
+// Warn if ACR has suspiciously high compliance
+function validateAcrCredibility(acr: AcrDocument): CredibilityWarning[] {
+  const supportsCount = acr.criteria.filter(c => c.level === 'Supports').length;
+  const supportsPercentage = supportsCount / acr.criteria.length * 100;
+  const warnings: CredibilityWarning[] = [];
+  if (supportsPercentage > 95) {
+    warnings.push({
+      type: 'HIGH_COMPLIANCE_WARNING',
+      message: 'ACR shows >95% "Supports" ratings. Sophisticated procurement teams may view this skeptically.',
+      recommendation: 'Review each criterion carefully. Consider adding detailed remarks even for "Supports" items.'
+    });
+  }
+  return warnings;
+}
+**Create remarks validation:**
+interface RemarksRequirement {
+  level: ConformanceLevel;
+  required: boolean;
+  minimumLength: number;
+  mustInclude: string[];
+}
+const REMARKS_REQUIREMENTS: Record<ConformanceLevel, RemarksRequirement> = {
+  'Supports': {
+    required: false,
+    minimumLength: 0,
+    mustInclude: []
+  },
+  'Partially Supports': {
+    required: true,
+    minimumLength: 50,
+    mustInclude: ['what works', 'limitations'] // Must explain both
+  },
+  'Does Not Support': {
+    required: true,
+    minimumLength: 30,
+    mustInclude: ['reason', 'workaround'] // If applicable
+  },
+  'Not Applicable': {
+    required: true,
+    minimumLength: 20,
+    mustInclude: ['justification']
+  }
+};
+function validateRemarks(
+  level: ConformanceLevel,
+  remarks: string
+): { valid: boolean; errors: string[] } {
+  const requirements = REMARKS_REQUIREMENTS[level];
+  const errors: string[] = [];
+  if (requirements.required && !remarks) {
+    errors.push(`Remarks required for "${level}" status`);
+  }
+  if (remarks && remarks.length < requirements.minimumLength) {
+    errors.push(`Remarks must be at least ${requirements.minimumLength} characters`);
+  }
+  return { valid: errors.length === 0, errors };
+}
+**Create API endpoint:**
+POST /api/v1/acr/:jobId/validate-credibility
+Response: { credible: boolean, warnings: CredibilityWarning[] }
+Acceptance Criteria
+ 'Supports' requires human verification (never auto-populated)
+ 'Partially Supports' requires mandatory Remarks (what works AND what doesn't)
+ 'Does Not Support' requires mandatory Remarks (limitations)
+ 'Not Applicable' requires justification
+ CRITICAL: System WARNS if >95% criteria marked 'Supports' (red flag)
+ Remarks include quantitative data (e.g., '387 of 412 images have alt text')

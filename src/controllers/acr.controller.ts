@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { acrGeneratorService, AcrGenerationOptions } from '../services/acr/acr-generator.service';
+import { conformanceEngineService } from '../services/acr/conformance-engine.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -90,6 +91,48 @@ export class AcrController {
     res.json({
       success: true,
       data: info
+    });
+  }
+
+  async validateCredibility(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      const acr = await conformanceEngineService.buildAcrFromJob(jobId);
+
+      if (!acr) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'No ACR data found for this job. Run validation first.' }
+        });
+        return;
+      }
+
+      const result = conformanceEngineService.validateAcrCredibilityFull(acr);
+
+      res.json({
+        success: true,
+        data: result
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getRemarksRequirements(_req: Request, res: Response) {
+    const requirements = conformanceEngineService.getRemarksRequirements();
+    
+    res.json({
+      success: true,
+      data: requirements
     });
   }
 }
