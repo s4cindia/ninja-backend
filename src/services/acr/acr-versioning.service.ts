@@ -39,6 +39,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (a === null || b === null) return a === b;
   if (typeof a !== 'object') return false;
   
+  // Handle Date objects
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime();
+  }
+  
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     return a.every((item, index) => deepEqual(item, b[index]));
@@ -101,6 +106,15 @@ function generateChangeLog(
     }
     if (prevInfo.vendor !== currInfo.vendor) {
       changes.push({ field: 'productInfo.vendor', previousValue: prevInfo.vendor, newValue: currInfo.vendor, reason });
+    }
+    if (prevInfo.description !== currInfo.description) {
+      changes.push({ field: 'productInfo.description', previousValue: prevInfo.description, newValue: currInfo.description, reason });
+    }
+    if (prevInfo.contactEmail !== currInfo.contactEmail) {
+      changes.push({ field: 'productInfo.contactEmail', previousValue: prevInfo.contactEmail, newValue: currInfo.contactEmail, reason });
+    }
+    if (!deepEqual(prevInfo.evaluationDate, currInfo.evaluationDate)) {
+      changes.push({ field: 'productInfo.evaluationDate', previousValue: prevInfo.evaluationDate, newValue: currInfo.evaluationDate, reason });
     }
   }
 
@@ -234,7 +248,10 @@ async function compareVersions(
     changes,
     summary: {
       fieldsChanged: changes.length,
-      criteriaChanged: new Set(criteriaChanges.map(c => c.field.split('.')[1])).size,
+      criteriaChanged: new Set(criteriaChanges.map(c => {
+        const match = c.field.match(/^criteria\.(.+?)\.(conformanceLevel|remarks|attributionTag)$/);
+        return match ? match[1] : c.field.split('.')[1];
+      })).size,
       statusChanged
     }
   };
