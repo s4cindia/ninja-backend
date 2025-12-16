@@ -39,6 +39,12 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **VPAT2.5-INT:** International Edition (recommended - combines all standards in one document)
     -   Each edition returns distinct criteria sets with proper deduplication for the International edition.
     -   API endpoints: `POST /api/v1/acr/generate`, `GET /api/v1/acr/editions`, `GET /api/v1/acr/editions/:edition`
+    -   **Confidence Level Indicators:** Each automated check includes a confidence assessment to indicate human verification needs:
+        - **HIGH (90%+):** Automated verification reliable (e.g., color contrast, parsing, language declaration)
+        - **MEDIUM (60-89%):** Automated + spot check recommended
+        - **LOW (<60%):** Automated flagging only, human review required
+        - **MANUAL_REQUIRED:** Cannot be automated (e.g., alt text quality, keyboard workflows, heading descriptiveness)
+    -   API endpoints: `GET /api/v1/jobs/:id/confidence-summary`, `GET /api/v1/confidence/summary`, `GET /api/v1/confidence/criterion/:criterionId`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
