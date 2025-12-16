@@ -54,6 +54,15 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Persistence:** Verification data stored in Job.output JSON field for durability across server restarts
         - **Item IDs:** Derived from validation result IDs for traceability (format: `resultId_criterionId`)
     -   API endpoints: `GET /api/v1/verification/:jobId/queue`, `POST /api/v1/verification/verify/:itemId`, `POST /api/v1/verification/bulk`, `GET /api/v1/verification/:jobId/audit-log`, `GET /api/v1/acr/:jobId/can-finalize`
+    -   **Nuanced Compliance Status:** Conformance determination engine that prevents overstated compliance:
+        - **Supports:** Only assigned when human verification confirms (VERIFIED_PASS) - never auto-populated
+        - **Partially Supports:** Requires mandatory remarks with "what works" AND "limitations" explained
+        - **Does Not Support:** Requires mandatory remarks with "reason" for non-compliance
+        - **Not Applicable:** Requires justification for why criterion doesn't apply
+        - **Credibility Warnings:** Warns if >95% of criteria marked 'Supports' (red flag for procurement teams)
+        - **Quantitative Data:** All remarks include specific counts (e.g., "387 of 412 items passed")
+        - **Remarks Validation:** Enforces minimum length and required keywords per conformance level
+    -   API endpoints: `POST /api/v1/acr/:jobId/validate-credibility`, `GET /api/v1/acr/remarks-requirements`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
