@@ -151,6 +151,8 @@ function generateChangeLog(
   return changes;
 }
 
+// TODO: POST-MVP - Add optimistic locking to prevent race condition on concurrent version creation
+// TODO: POST-MVP - Migrate to database persistence with transactions
 async function createVersion(
   acrId: string,
   userId: string,

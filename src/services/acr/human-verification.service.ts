@@ -293,7 +293,7 @@ class HumanVerificationService {
         }
       });
     } catch (error) {
-      console.error(`[HumanVerification] Persistence error:`, error);
+      console.error(`[HumanVerification] Persistence failed for job ${jobId}:`, error);
     }
   }
 
@@ -314,6 +314,8 @@ class HumanVerificationService {
     return undefined;
   }
 
+  // TODO: POST-MVP - Add rollback logic if persistToJob fails
+  // TODO: POST-MVP - Add mutex/locking for concurrent verification submissions
   async submitVerification(
     itemId: string,
     verification: SubmitVerificationInput,
