@@ -1,0 +1,74 @@
+Epic 3.3: ACR Generation (Research-Enhanced)
+⚠️ This epic includes 4 NEW stories from ACR research findings addressing legal, credibility, and compliance requirements.
+
+US-3.3.1: Multi-Edition ACR Support (8 pts)
+Context
+🔬 RESEARCH DRIVER: VPAT 2.5 INT Edition is emerging as 'Gold Standard' for multinational vendors, satisfying US (Section 508), EU (EN 301 549), and global requirements in a single document. Should be default recommendation.
+
+Prerequisites
+US-3.2.1 through US-3.2.3 complete
+Section 508 mapping available
+Objective
+Create ACR generation service with INT Edition as the default recommendation.
+
+Technical Requirements
+Create ACR generation service supporting all VPAT 2.5 editions.
+**Create file: `src/services/acr/acr-generator.service.ts`**
+type AcrEdition = 
+  | 'VPAT2.5-508'      // U.S. Federal only
+  | 'VPAT2.5-WCAG'     // General accessibility
+  | 'VPAT2.5-EU'       // EN 301 549 for EAA
+  | 'VPAT2.5-INT';     // International (RECOMMENDED DEFAULT)
+interface AcrGenerationOptions {
+  edition: AcrEdition;
+  includeAppendix: boolean;
+  includeMethodology: boolean;
+  productInfo: ProductInfo;
+}
+interface AcrDocument {
+  id: string;
+  edition: AcrEdition;
+  productInfo: ProductInfo;
+  evaluationMethods: EvaluationMethod[];
+  criteria: AcrCriterion[];
+  generatedAt: Date;
+  version: number;
+  status: 'draft' | 'pending_review' | 'final';
+}
+interface ProductInfo {
+  name: string;
+  version: string;
+  description: string;
+  vendor: string;
+  contactEmail: string;
+  evaluationDate: Date;
+}
+async function generateAcr(
+  jobId: string,
+  options: AcrGenerationOptions
+): Promise<AcrDocument> {
+  // Default to INT edition if not specified
+  const edition = options.edition || 'VPAT2.5-INT';
+  // Show tooltip/guidance about INT edition benefits
+  if (edition === 'VPAT2.5-INT') {
+    // Log: "INT Edition satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document"
+  }
+  // Generate appropriate sections based on edition
+}
+**Create edition templates: `src/services/acr/templates/`**
+- vpat-508-template.ts (Section 508 criteria only)
+- vpat-wcag-template.ts (WCAG 2.x criteria)
+- vpat-eu-template.ts (EN 301 549 mapping)
+- vpat-int-template.ts (All standards combined)
+**Create API endpoints:**
+POST /api/v1/acr/generate
+Body: { jobId: string, options: AcrGenerationOptions }
+Response: AcrDocument
+GET /api/v1/acr/editions
+Response: { editions: AcrEdition[], recommended: 'VPAT2.5-INT' }
+Acceptance Criteria
+ INT Edition recommended as default for maximum coverage
+ Support Section 508 Edition (US Federal only)
+ Support WCAG Edition (General accessibility)
+ Support EU Edition (EN 301 549 for European Accessibility Act)
+ Tooltip explains: 'INT Edition satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document'

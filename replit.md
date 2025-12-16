@@ -31,6 +31,67 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
     -   **Section 508 Mapping:** Maps WCAG 2.1 AA criteria to Section 508 Refresh, including E205 (Electronic Content), E205.4 (PDF/UA), Chapter 3 (Functional Performance Criteria), and Chapter 6 (Support Documentation). Generates "Best Meets" guidance and competitive positioning language.
     -   **Functional Performance Criteria (FPC) Validation:** Validates against Section 508 Chapter 3 FPC criteria (e.g., Without Vision, With Limited Vision), mapping to relevant WCAG criteria.
     -   **Chapter 6 Documentation Validation:** Validates compliance with Section 508 Chapter 6 requirements for support documentation, checking for accessibility statements, contact methods, and alternate formats.
+-   **ACR/VPAT Generation:**
+    -   **Multi-Edition Support:** Generates Accessibility Conformance Reports (ACRs) in four VPAT 2.5 editions:
+        - **VPAT2.5-508:** Section 508 Edition (US Federal procurement)
+        - **VPAT2.5-WCAG:** WCAG Edition (WCAG 2.1 A/AA/AAA)
+        - **VPAT2.5-EU:** EU Edition (EN 301 549)
+        - **VPAT2.5-INT:** International Edition (recommended - combines all standards in one document)
+    -   Each edition returns distinct criteria sets with proper deduplication for the International edition.
+    -   API endpoints: `POST /api/v1/acr/generate`, `GET /api/v1/acr/editions`, `GET /api/v1/acr/editions/:edition`
+    -   **Confidence Level Indicators:** Each automated check includes a confidence assessment to indicate human verification needs:
+        - **HIGH (90%+):** Automated verification reliable (e.g., color contrast, parsing, language declaration)
+        - **MEDIUM (60-89%):** Automated + spot check recommended
+        - **LOW (<60%):** Automated flagging only, human review required
+        - **MANUAL_REQUIRED:** Cannot be automated (e.g., alt text quality, keyboard workflows, heading descriptiveness)
+    -   API endpoints: `GET /api/v1/jobs/:id/confidence-summary`, `GET /api/v1/confidence/summary`, `GET /api/v1/confidence/criterion/:criterionId`
+    -   **Human Verification Workflow:** Complete workflow for manual verification of accessibility criteria:
+        - **Verification Queue:** Items sorted by severity (critical > serious > moderate > minor) and confidence level
+        - **Verification Submission:** Record verification status (PENDING, VERIFIED_PASS, VERIFIED_FAIL, VERIFIED_PARTIAL, DEFERRED) with method and notes
+        - **Bulk Verification:** Process multiple items at once with consistent verification data
+        - **Audit Trail:** Complete history of all verification actions with timestamps, user IDs, and method details
+        - **ACR Finalization Gate:** Prevents ACR finalization until all critical/serious severity and LOW/MANUAL_REQUIRED confidence items are verified
+        - **Persistence:** Verification data stored in Job.output JSON field for durability across server restarts
+        - **Item IDs:** Derived from validation result IDs for traceability (format: `resultId_criterionId`)
+    -   API endpoints: `GET /api/v1/verification/:jobId/queue`, `POST /api/v1/verification/verify/:itemId`, `POST /api/v1/verification/bulk`, `GET /api/v1/verification/:jobId/audit-log`, `GET /api/v1/acr/:jobId/can-finalize`
+    -   **Nuanced Compliance Status:** Conformance determination engine that prevents overstated compliance:
+        - **Supports:** Only assigned when human verification confirms (VERIFIED_PASS) - never auto-populated
+        - **Partially Supports:** Requires mandatory remarks with "what works" AND "limitations" explained
+        - **Does Not Support:** Requires mandatory remarks with "reason" for non-compliance
+        - **Not Applicable:** Requires justification for why criterion doesn't apply
+        - **Credibility Warnings:** Warns if >95% of criteria marked 'Supports' (red flag for procurement teams)
+        - **Quantitative Data:** All remarks include specific counts (e.g., "387 of 412 items passed")
+        - **Remarks Validation:** Enforces minimum length and required keywords per conformance level
+    -   API endpoints: `POST /api/v1/acr/:jobId/validate-credibility`, `GET /api/v1/acr/remarks-requirements`
+    -   **AI Disclaimer and Attribution (US-3.3.5):** Legal protection system distinguishing AI-detected findings from human-verified ones:
+        - **Attribution Tags:** Each finding tagged with `[AUTOMATED]`, `[AI-SUGGESTED]`, or `[HUMAN-VERIFIED]` markers in `attributedRemarks` field
+        - **Assessment Methodology:** Every ACR includes methodology section with `toolVersion` (Ninja Platform v1.0), `aiModelInfo` (Google Gemini), and `disclaimer`
+        - **Legal Disclaimer:** Footer disclaimer clarifies automated testing detects 30-57% of barriers and recommends professional review
+        - **Alt Text Suggestions:** Criterion 1.1.1 receives special handling with "AI-Suggested - Requires Review" prefix for AI-generated alt text
+        - **Integration Points:** Attribution system consumes verification data from human verification workflow; ready for full job pipeline integration
+    -   API endpoints: `GET /api/v1/acr/:jobId/methodology`
+    -   **AI-Assisted Remarks Generation (US-3.3.6):** Generates detailed remarks with quantitative data:
+        - **Gemini AI Integration:** Uses Gemini to generate professional accessibility conformance remarks
+        - **Quantitative Data:** Includes specific counts (e.g., "387 of 412 images have appropriate alt text")
+        - **Conformance-Specific:** Adapts remarks based on conformance level (Supports, Partially Supports, Does Not Support, Not Applicable)
+        - **Suggested Edits:** Provides AI suggestions for improving remarks
+        - **Fallback Support:** Falls back to template-based generation if AI unavailable
+        - **Manual Editing:** All AI-generated remarks can be edited by users before finalizing
+    -   API endpoints: `POST /api/v1/acr/generate-remarks`
+    -   **ACR Document Export (US-3.3.7):** Export ACRs in multiple formats with attribution and methodology:
+        - **Word Export (.docx):** Matches ITI VPAT 2.5 template structure with tables, attribution tags, methodology section, headers/footers
+        - **PDF Export:** Accessible PDF with document structure, metadata, criteria tables, and legal disclaimer
+        - **HTML Export:** Responsive web publication with WCAG-compliant structure, print stylesheet, and attribution tag styling
+        - **Branding Options:** Custom company name, primary color, and footer text
+        - **Download Management:** Files saved to exports directory with 24-hour expiration
+    -   API endpoints: `POST /api/v1/acr/:acrId/export`, `GET /api/v1/exports/:filename`
+    -   **ACR Versioning and History (US-3.3.8):** Track ACR changes over time for compliance documentation:
+        - **Version Tracking:** Auto-incrementing version numbers with timestamps and user attribution
+        - **Change Logs:** Detailed field-level tracking of what changed between versions (status, edition, product info, criteria)
+        - **Snapshots:** Complete ACR document snapshots stored for each version
+        - **Version Comparison:** Side-by-side comparison showing all changes between any two versions
+        - **In-Memory Storage:** Versions stored in memory (can be persisted to database for durability)
+    -   API endpoints: `GET /api/v1/acr/:acrId/versions`, `POST /api/v1/acr/:acrId/versions`, `GET /api/v1/acr/:acrId/versions/:version`, `GET /api/v1/acr/:acrId/compare?v1=X&v2=Y`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`

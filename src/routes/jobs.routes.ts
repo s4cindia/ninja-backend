@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { jobController } from '../controllers/job.controller';
+import { confidenceController } from '../controllers/confidence.controller';
 import { createJobSchema, listJobsSchema } from '../schemas/job.schemas';
 
 const router = Router();
@@ -30,6 +31,10 @@ router.get('/:id/status', (req, res, next) =>
 
 router.get('/:id/results', (req, res, next) => 
   jobController.getResults(req, res, next)
+);
+
+router.get('/:id/confidence-summary', (req, res, next) =>
+  confidenceController.getConfidenceSummary(req, res, next)
 );
 
 router.delete('/:id', (req, res, next) => 
