@@ -70,6 +70,14 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Alt Text Suggestions:** Criterion 1.1.1 receives special handling with "AI-Suggested - Requires Review" prefix for AI-generated alt text
         - **Integration Points:** Attribution system consumes verification data from human verification workflow; ready for full job pipeline integration
     -   API endpoints: `GET /api/v1/acr/:jobId/methodology`
+    -   **AI-Assisted Remarks Generation (US-3.3.6):** Generates detailed remarks with quantitative data:
+        - **Gemini AI Integration:** Uses Gemini to generate professional accessibility conformance remarks
+        - **Quantitative Data:** Includes specific counts (e.g., "387 of 412 images have appropriate alt text")
+        - **Conformance-Specific:** Adapts remarks based on conformance level (Supports, Partially Supports, Does Not Support, Not Applicable)
+        - **Suggested Edits:** Provides AI suggestions for improving remarks
+        - **Fallback Support:** Falls back to template-based generation if AI unavailable
+        - **Manual Editing:** All AI-generated remarks can be edited by users before finalizing
+    -   API endpoints: `POST /api/v1/acr/generate-remarks`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`

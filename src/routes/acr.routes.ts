@@ -8,6 +8,7 @@ const router = Router();
 router.use(authenticate);
 
 router.post('/generate', acrController.generateAcr.bind(acrController));
+router.post('/generate-remarks', acrController.generateRemarks.bind(acrController));
 router.get('/editions', acrController.getEditions.bind(acrController));
 router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController));
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));

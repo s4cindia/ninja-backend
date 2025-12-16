@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { acrGeneratorService, AcrGenerationOptions } from '../services/acr/acr-generator.service';
-import { conformanceEngineService } from '../services/acr/conformance-engine.service';
+import { conformanceEngineService, ConformanceLevel, ValidationResult } from '../services/acr/conformance-engine.service';
 import { 
   generateMethodologySection, 
   generateMethodologyText,
@@ -9,6 +9,7 @@ import {
   AI_MODEL_INFO 
 } from '../services/acr/attribution.service';
 import { humanVerificationService } from '../services/acr/human-verification.service';
+import { remarksGeneratorService, RemarksGenerationRequest } from '../services/acr/remarks-generator.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -49,10 +50,11 @@ export class AcrController {
       
       const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
       for (const item of verificationQueue.items) {
+        const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
         verificationData.set(item.criterionId, {
           status: item.status,
           isAiGenerated: item.criterionId === '1.1.1',
-          notes: item.verificationNotes
+          notes: latestVerification?.notes
         });
       }
 
@@ -202,6 +204,55 @@ export class AcrController {
         }
       });
     } catch (error) {
+      next(error);
+    }
+  }
+
+  async generateRemarks(req: Request, res: Response, next: NextFunction) {
+    try {
+      const GenerateRemarksSchema = z.object({
+        criterionId: z.string().min(1),
+        wcagCriterion: z.string().min(1),
+        validationResults: z.array(z.object({
+          criterionId: z.string(),
+          passed: z.boolean(),
+          passCount: z.number().optional(),
+          failCount: z.number().optional(),
+          totalCount: z.number().optional(),
+          details: z.string().optional()
+        })),
+        conformanceLevel: z.enum(['Supports', 'Partially Supports', 'Does Not Support', 'Not Applicable'])
+      });
+
+      const validatedData = GenerateRemarksSchema.parse(req.body);
+
+      const request: RemarksGenerationRequest = {
+        criterionId: validatedData.criterionId,
+        wcagCriterion: validatedData.wcagCriterion,
+        validationResults: validatedData.validationResults as ValidationResult[],
+        conformanceLevel: validatedData.conformanceLevel as ConformanceLevel
+      };
+
+      const generatedRemarks = await remarksGeneratorService.generateRemarks(request);
+
+      res.status(200).json({
+        success: true,
+        data: generatedRemarks,
+        message: generatedRemarks.aiGenerated 
+          ? 'Remarks generated using AI. Review and edit as needed.'
+          : 'Remarks generated using fallback template.'
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'Validation failed',
+            details: error.issues
+          }
+        });
+        return;
+      }
       next(error);
     }
   }
