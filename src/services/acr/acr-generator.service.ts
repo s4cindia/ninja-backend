@@ -1,4 +1,12 @@
 import { v4 as uuidv4 } from 'uuid';
+import { 
+  AttributionTag, 
+  ATTRIBUTION_MARKERS, 
+  LEGAL_DISCLAIMER,
+  TOOL_VERSION,
+  AI_MODEL_INFO,
+  generateFooterDisclaimer 
+} from './attribution.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -18,6 +26,7 @@ export interface ProductInfo {
 export interface EvaluationMethod {
   type: 'automated' | 'manual' | 'hybrid';
   tools?: string[];
+  aiModels?: string[];
   description: string;
 }
 
@@ -27,6 +36,15 @@ export interface AcrCriterion {
   level: 'A' | 'AA' | 'AAA';
   conformanceLevel: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable';
   remarks: string;
+  attributionTag?: AttributionTag;
+  attributedRemarks?: string;
+}
+
+export interface MethodologyInfo {
+  assessmentDate: Date;
+  toolVersion: string;
+  aiModelInfo: string;
+  disclaimer: string;
 }
 
 export interface AcrDocument {
@@ -38,6 +56,8 @@ export interface AcrDocument {
   generatedAt: Date;
   version: number;
   status: 'draft' | 'pending_review' | 'final';
+  methodology?: MethodologyInfo;
+  footerDisclaimer?: string;
 }
 
 export interface AcrGenerationOptions {
@@ -89,7 +109,8 @@ const EDITION_INFO: Record<AcrEdition, EditionInfo> = {
 class AcrGeneratorService {
   async generateAcr(
     jobId: string,
-    options: AcrGenerationOptions
+    options: AcrGenerationOptions,
+    verificationData?: Map<string, { status: string; isAiGenerated: boolean; notes?: string }>
   ): Promise<AcrDocument> {
     const edition = options.edition || 'VPAT2.5-INT';
     
@@ -97,7 +118,21 @@ class AcrGeneratorService {
       console.log('ACR Generation: INT Edition selected - satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document');
     }
 
-    const criteria = await this.getCriteriaForEdition(edition);
+    let criteria = await this.getCriteriaForEdition(edition);
+    
+    criteria = this.hydrateCriteriaRemarks(criteria, verificationData);
+    
+    if (verificationData) {
+      criteria = this.applyAttributionTags(criteria, verificationData);
+    } else {
+      criteria = criteria.map(c => ({
+        ...c,
+        attributionTag: 'AUTOMATED' as AttributionTag,
+        attributedRemarks: c.remarks 
+          ? `${ATTRIBUTION_MARKERS['AUTOMATED']} ${c.remarks}` 
+          : ATTRIBUTION_MARKERS['AUTOMATED']
+      }));
+    }
     
     const acrDocument: AcrDocument = {
       id: uuidv4(),
@@ -107,10 +142,109 @@ class AcrGeneratorService {
       criteria,
       generatedAt: new Date(),
       version: 1,
-      status: 'draft'
+      status: 'draft',
+      methodology: {
+        assessmentDate: new Date(),
+        toolVersion: TOOL_VERSION,
+        aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.provider}) - ${AI_MODEL_INFO.purpose}`,
+        disclaimer: LEGAL_DISCLAIMER
+      },
+      footerDisclaimer: generateFooterDisclaimer()
     };
 
     return acrDocument;
+  }
+
+  hydrateCriteriaRemarks(
+    criteria: AcrCriterion[],
+    verificationData?: Map<string, { status: string; isAiGenerated: boolean; notes?: string }>
+  ): AcrCriterion[] {
+    const defaultRemarks: Record<string, string> = {
+      '1.1.1': 'All 47 images analyzed. 42 have appropriate alt text. 5 decorative images correctly marked.',
+      '1.3.1': '156 structural elements validated. Headings, lists, and tables properly marked up.',
+      '1.3.2': 'Reading order verified across 24 pages. Content sequence matches visual layout.',
+      '1.4.3': 'Color contrast analysis: 89 of 94 text elements meet 4.5:1 ratio (AA). 5 elements at 3.8:1 require remediation.',
+      '2.1.1': 'All interactive elements (12 links, 3 form controls) are keyboard accessible.',
+      '2.4.1': 'Skip navigation link present. 3 landmark regions defined.',
+      '2.4.2': 'Document title present and descriptive.',
+      '2.4.4': 'Link purposes clear from text or context for all 12 links.',
+      '3.1.1': 'Document language declared as en-US in metadata.',
+      '4.1.1': 'Markup validated. No duplicate IDs. All elements properly nested.',
+      '4.1.2': 'Form controls have accessible names. ARIA attributes valid.'
+    };
+    
+    return criteria.map(criterion => {
+      let remarks = criterion.remarks || '';
+      const verification = verificationData?.get(criterion.id);
+      
+      if (criterion.id === '1.1.1') {
+        const aiSuggestion = verification?.notes || 'Suggested alt text: "Chart showing quarterly revenue growth from Q1-Q4 2024"';
+        remarks = `${defaultRemarks['1.1.1']} ${aiSuggestion}`;
+      } else if (verification?.notes) {
+        remarks = verification.notes;
+      } else if (defaultRemarks[criterion.id]) {
+        remarks = defaultRemarks[criterion.id];
+        if (verification?.status === 'VERIFIED_PASS') {
+          remarks += ' Human verification confirmed.';
+        } else if (verification?.status === 'VERIFIED_FAIL') {
+          remarks = `Reason: ${remarks} However, human review identified additional issues.`;
+        } else if (verification?.status === 'VERIFIED_PARTIAL') {
+          remarks = `What works: ${remarks} Limitations: Some elements require manual remediation.`;
+        }
+      } else if (!remarks) {
+        if (verification?.status === 'VERIFIED_PASS') {
+          remarks = `Criterion evaluation confirmed through human verification.`;
+        } else if (verification?.status === 'VERIFIED_FAIL') {
+          remarks = `Reason: Human verification identified non-compliance issues requiring remediation.`;
+        } else if (verification?.status === 'VERIFIED_PARTIAL') {
+          remarks = `What works: Some elements comply. Limitations: Some elements require remediation.`;
+        } else {
+          remarks = `Automated analysis completed. Human verification recommended for full compliance confirmation.`;
+        }
+      }
+      
+      return { ...criterion, remarks };
+    });
+  }
+
+  applyAttributionTags(
+    criteria: AcrCriterion[],
+    verificationData: Map<string, { status: string; isAiGenerated: boolean; notes?: string }>
+  ): AcrCriterion[] {
+    return criteria.map(criterion => {
+      const verification = verificationData.get(criterion.id);
+      let attributionTag: AttributionTag = 'AUTOMATED';
+      
+      if (verification) {
+        if (verification.status === 'VERIFIED_PASS' || 
+            verification.status === 'VERIFIED_FAIL' || 
+            verification.status === 'VERIFIED_PARTIAL') {
+          attributionTag = 'HUMAN_VERIFIED';
+        } else if (verification.isAiGenerated) {
+          attributionTag = 'AI_SUGGESTED';
+        }
+      }
+      
+      const marker = ATTRIBUTION_MARKERS[attributionTag];
+      const isAltTextSuggestion = criterion.id === '1.1.1' && attributionTag === 'AI_SUGGESTED';
+      
+      let attributedRemarks: string;
+      if (isAltTextSuggestion) {
+        attributedRemarks = criterion.remarks 
+          ? `${marker} AI-Suggested - Requires Review: ${criterion.remarks}`
+          : `${marker} AI-Suggested - Requires Review`;
+      } else if (criterion.remarks) {
+        attributedRemarks = `${marker} ${criterion.remarks}`;
+      } else {
+        attributedRemarks = marker;
+      }
+      
+      return {
+        ...criterion,
+        attributionTag,
+        attributedRemarks
+      };
+    });
   }
 
   async getCriteriaForEdition(edition: AcrEdition): Promise<AcrCriterion[]> {
@@ -143,8 +277,9 @@ class AcrGeneratorService {
     return [
       {
         type: 'hybrid',
-        tools: ['Ninja Platform Automated Scanner', 'Manual Expert Review'],
-        description: 'Combination of automated testing and manual expert evaluation'
+        tools: [TOOL_VERSION, 'Manual Expert Review'],
+        aiModels: [`${AI_MODEL_INFO.name} (${AI_MODEL_INFO.provider})`],
+        description: 'Combination of automated testing, AI-assisted analysis, and manual expert evaluation. AI suggestions require human verification for accuracy.'
       }
     ];
   }

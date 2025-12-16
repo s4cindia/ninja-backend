@@ -45,9 +45,21 @@ export class AcrController {
         }
       };
 
+      const verificationQueue = await humanVerificationService.getQueue(validatedData.jobId);
+      
+      const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
+      for (const item of verificationQueue.items) {
+        verificationData.set(item.criterionId, {
+          status: item.status,
+          isAiGenerated: item.criterionId === '1.1.1',
+          notes: item.verificationNotes
+        });
+      }
+
       const acrDocument = await acrGeneratorService.generateAcr(
         validatedData.jobId,
-        options
+        options,
+        verificationData
       );
 
       res.status(201).json({
@@ -163,7 +175,7 @@ export class AcrController {
         .map(item => {
           const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
           return {
-            itemId: item.id,
+            itemId: item.criterionId,
             status: item.status,
             verifiedBy: latestVerification?.verifiedBy,
             method: latestVerification?.method
@@ -171,7 +183,7 @@ export class AcrController {
         });
 
       const findingsMetadata = verificationQueue.items.map(item => ({
-        findingId: item.id,
+        findingId: item.criterionId,
         isAiGenerated: item.criterionId === '1.1.1', 
         isAltTextSuggestion: item.criterionId === '1.1.1'
       }));

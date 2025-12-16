@@ -63,6 +63,13 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Quantitative Data:** All remarks include specific counts (e.g., "387 of 412 items passed")
         - **Remarks Validation:** Enforces minimum length and required keywords per conformance level
     -   API endpoints: `POST /api/v1/acr/:jobId/validate-credibility`, `GET /api/v1/acr/remarks-requirements`
+    -   **AI Disclaimer and Attribution (US-3.3.5):** Legal protection system distinguishing AI-detected findings from human-verified ones:
+        - **Attribution Tags:** Each finding tagged with `[AUTOMATED]`, `[AI-SUGGESTED]`, or `[HUMAN-VERIFIED]` markers in `attributedRemarks` field
+        - **Assessment Methodology:** Every ACR includes methodology section with `toolVersion` (Ninja Platform v1.0), `aiModelInfo` (Google Gemini), and `disclaimer`
+        - **Legal Disclaimer:** Footer disclaimer clarifies automated testing detects 30-57% of barriers and recommends professional review
+        - **Alt Text Suggestions:** Criterion 1.1.1 receives special handling with "AI-Suggested - Requires Review" prefix for AI-generated alt text
+        - **Integration Points:** Attribution system consumes verification data from human verification workflow; ready for full job pipeline integration
+    -   API endpoints: `GET /api/v1/acr/:jobId/methodology`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
