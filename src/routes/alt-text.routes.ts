@@ -12,6 +12,10 @@ router.post('/generate', altTextController.generate);
 
 router.post('/generate-contextual', altTextController.generateContextual);
 
+router.post('/generate-chart', altTextController.generateChartDescription);
+
+router.post('/classify', altTextController.classifyImage);
+
 router.post('/generate-from-buffer', upload.single('image'), altTextController.generateFromBuffer);
 
 router.post('/job/:jobId/generate', altTextController.generateForJob);

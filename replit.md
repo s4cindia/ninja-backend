@@ -1,7 +1,7 @@
 # Ninja Platform Backend
 
 ## Overview
-Ninja is an accessibility and compliance validation SaaS platform for educational publishers. It validates EPUB, PDF, and HTML content against WCAG 2.1, Section 508, and European Accessibility Act standards. The platform generates VPATs and ACRs to facilitate government and institutional sales.
+Ninja is an accessibility and compliance validation SaaS platform for educational publishers. It validates EPUB, PDF, and HTML content against WCAG 2.1, Section 508, and European Accessibility Act standards. The platform generates VPATs and ACRs to facilitate government and institutional sales, ensuring content meets required accessibility benchmarks.
 
 ## User Preferences
 1. Use approved Sprint Prompts from docs/sprint-prompts/
@@ -14,118 +14,36 @@ Ninja is an accessibility and compliance validation SaaS platform for educationa
 8. NEVER use Replit Agent for features - use approved Sprint Prompts only
 
 ## System Architecture
-The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in strict mode, with Express 4.x for the API. PostgreSQL is used as the database with Prisma ORM. Background jobs are managed using BullMQ with Redis. Input validation is enforced with Zod schemas.
+The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode, and Express 4.x for its API. PostgreSQL with Prisma ORM handles data, while BullMQ and Redis manage background jobs. Zod schemas are used for input validation.
 
 **Key Technical Implementations:**
--   **AI Integration (Google Gemini):** Used for various AI-driven tasks, with support for `gemini-2.0-flash-lite` (default) and `gemini-2.5-pro` (complex tasks). Includes features like rate limiting, exponential backoff, token counting, and cost tracking.
--   **PDF Processing:**
-    -   **PDF Parsing:** Extracts structure, metadata, page info, outlines, and detects tagged PDFs using `pdf-lib` and `pdfjs-dist`. Employs `@napi-rs/canvas` for Node.js DOM polyfills.
-    -   **Text Extraction:** Extracts text with positioning, font information, line/block grouping, reading order detection, heading detection, and language detection.
-    -   **Image Extraction:** Extracts images with position, dimensions, format detection, alt text extraction from tagged PDFs, and decorative image detection using `sharp`.
+-   **AI Integration (Google Gemini):** Utilizes `gemini-2.0-flash-lite` (default) and `gemini-2.5-pro` for various AI-driven tasks, including rate limiting, exponential backoff, token counting, and cost tracking.
+-   **PDF Processing:** Extracts structure, metadata, text (with positioning, font, reading order), and images (with alt text from tagged PDFs) using `pdf-lib`, `pdfjs-dist`, and `sharp`.
 -   **Accessibility & Compliance Validation:**
-    -   **WCAG 2.1 Validation:** Implements a rule-based engine against WCAG 2.1 criteria (A, AA, AAA levels) for text, images, structure, navigation, and forms.
-    -   **Alt Text Validation:** Checks for presence, quality indicators (e.g., too short, filename as alt), and decorative image handling.
-    -   **Color Contrast Validation:** Calculates WCAG luminance-based contrast ratios for text against AA and AAA thresholds, considering large text definitions.
-    -   **Table Accessibility Validation:** Detects header cells, validates complex tables (merged cells), and identifies layout vs. data tables.
-    -   **PDF/UA Compliance:** Validates against ISO 14289-1 (PDF/UA) and Matterhorn Protocol checkpoints, including identifier detection, structure tree, alt text, table structure, and language declarations.
-    -   **Section 508 Mapping:** Maps WCAG 2.1 AA criteria to Section 508 Refresh, including E205 (Electronic Content), E205.4 (PDF/UA), Chapter 3 (Functional Performance Criteria), and Chapter 6 (Support Documentation). Generates "Best Meets" guidance and competitive positioning language.
-    -   **Functional Performance Criteria (FPC) Validation:** Validates against Section 508 Chapter 3 FPC criteria (e.g., Without Vision, With Limited Vision), mapping to relevant WCAG criteria.
-    -   **Chapter 6 Documentation Validation:** Validates compliance with Section 508 Chapter 6 requirements for support documentation, checking for accessibility statements, contact methods, and alternate formats.
+    -   **WCAG 2.1 Validation:** Rule-based engine for A, AA, AAA criteria covering text, images, structure, navigation, and forms. Includes alt text quality, color contrast, and table accessibility checks.
+    -   **PDF/UA Compliance:** Validates against ISO 14289-1 and Matterhorn Protocol.
+    -   **Section 508 Mapping & FPC Validation:** Maps WCAG 2.1 AA to Section 508 Refresh (E205, E205.4, Chapter 3 FPC, Chapter 6 documentation).
 -   **ACR/VPAT Generation:**
-    -   **Multi-Edition Support:** Generates Accessibility Conformance Reports (ACRs) in four VPAT 2.5 editions:
-        - **VPAT2.5-508:** Section 508 Edition (US Federal procurement)
-        - **VPAT2.5-WCAG:** WCAG Edition (WCAG 2.1 A/AA/AAA)
-        - **VPAT2.5-EU:** EU Edition (EN 301 549)
-        - **VPAT2.5-INT:** International Edition (recommended - combines all standards in one document)
-    -   Each edition returns distinct criteria sets with proper deduplication for the International edition.
-    -   API endpoints: `POST /api/v1/acr/generate`, `GET /api/v1/acr/editions`, `GET /api/v1/acr/editions/:edition`
-    -   **Confidence Level Indicators:** Each automated check includes a confidence assessment to indicate human verification needs:
-        - **HIGH (90%+):** Automated verification reliable (e.g., color contrast, parsing, language declaration)
-        - **MEDIUM (60-89%):** Automated + spot check recommended
-        - **LOW (<60%):** Automated flagging only, human review required
-        - **MANUAL_REQUIRED:** Cannot be automated (e.g., alt text quality, keyboard workflows, heading descriptiveness)
-    -   API endpoints: `GET /api/v1/jobs/:id/confidence-summary`, `GET /api/v1/confidence/summary`, `GET /api/v1/confidence/criterion/:criterionId`
-    -   **Human Verification Workflow:** Complete workflow for manual verification of accessibility criteria:
-        - **Verification Queue:** Items sorted by severity (critical > serious > moderate > minor) and confidence level
-        - **Verification Submission:** Record verification status (PENDING, VERIFIED_PASS, VERIFIED_FAIL, VERIFIED_PARTIAL, DEFERRED) with method and notes
-        - **Bulk Verification:** Process multiple items at once with consistent verification data
-        - **Audit Trail:** Complete history of all verification actions with timestamps, user IDs, and method details
-        - **ACR Finalization Gate:** Prevents ACR finalization until all critical/serious severity and LOW/MANUAL_REQUIRED confidence items are verified
-        - **Persistence:** Verification data stored in Job.output JSON field for durability across server restarts
-        - **Item IDs:** Derived from validation result IDs for traceability (format: `resultId_criterionId`)
-    -   API endpoints: `GET /api/v1/verification/:jobId/queue`, `POST /api/v1/verification/verify/:itemId`, `POST /api/v1/verification/bulk`, `GET /api/v1/verification/:jobId/audit-log`, `GET /api/v1/acr/:jobId/can-finalize`
-    -   **Nuanced Compliance Status:** Conformance determination engine that prevents overstated compliance:
-        - **Supports:** Only assigned when human verification confirms (VERIFIED_PASS) - never auto-populated
-        - **Partially Supports:** Requires mandatory remarks with "what works" AND "limitations" explained
-        - **Does Not Support:** Requires mandatory remarks with "reason" for non-compliance
-        - **Not Applicable:** Requires justification for why criterion doesn't apply
-        - **Credibility Warnings:** Warns if >95% of criteria marked 'Supports' (red flag for procurement teams)
-        - **Quantitative Data:** All remarks include specific counts (e.g., "387 of 412 items passed")
-        - **Remarks Validation:** Enforces minimum length and required keywords per conformance level
-    -   API endpoints: `POST /api/v1/acr/:jobId/validate-credibility`, `GET /api/v1/acr/remarks-requirements`
-    -   **AI Disclaimer and Attribution (US-3.3.5):** Legal protection system distinguishing AI-detected findings from human-verified ones:
-        - **Attribution Tags:** Each finding tagged with `[AUTOMATED]`, `[AI-SUGGESTED]`, or `[HUMAN-VERIFIED]` markers in `attributedRemarks` field
-        - **Assessment Methodology:** Every ACR includes methodology section with `toolVersion` (Ninja Platform v1.0), `aiModelInfo` (Google Gemini), and `disclaimer`
-        - **Legal Disclaimer:** Footer disclaimer clarifies automated testing detects 30-57% of barriers and recommends professional review
-        - **Alt Text Suggestions:** Criterion 1.1.1 receives special handling with "AI-Suggested - Requires Review" prefix for AI-generated alt text
-        - **Integration Points:** Attribution system consumes verification data from human verification workflow; ready for full job pipeline integration
-    -   API endpoints: `GET /api/v1/acr/:jobId/methodology`
-    -   **AI-Assisted Remarks Generation (US-3.3.6):** Generates detailed remarks with quantitative data:
-        - **Gemini AI Integration:** Uses Gemini to generate professional accessibility conformance remarks
-        - **Quantitative Data:** Includes specific counts (e.g., "387 of 412 images have appropriate alt text")
-        - **Conformance-Specific:** Adapts remarks based on conformance level (Supports, Partially Supports, Does Not Support, Not Applicable)
-        - **Suggested Edits:** Provides AI suggestions for improving remarks
-        - **Fallback Support:** Falls back to template-based generation if AI unavailable
-        - **Manual Editing:** All AI-generated remarks can be edited by users before finalizing
-    -   API endpoints: `POST /api/v1/acr/generate-remarks`
-    -   **ACR Document Export (US-3.3.7):** Export ACRs in multiple formats with attribution and methodology:
-        - **Word Export (.docx):** Matches ITI VPAT 2.5 template structure with tables, attribution tags, methodology section, headers/footers
-        - **PDF Export:** Accessible PDF with document structure, metadata, criteria tables, and legal disclaimer
-        - **HTML Export:** Responsive web publication with WCAG-compliant structure, print stylesheet, and attribution tag styling
-        - **Branding Options:** Custom company name, primary color, and footer text
-        - **Download Management:** Files saved to exports directory with 24-hour expiration
-    -   API endpoints: `POST /api/v1/acr/:acrId/export`, `GET /api/v1/exports/:filename`
-    -   **ACR Versioning and History (US-3.3.8):** Track ACR changes over time for compliance documentation:
-        - **Version Tracking:** Auto-incrementing version numbers with timestamps and user attribution
-        - **Change Logs:** Detailed field-level tracking of what changed between versions (status, edition, product info, criteria)
-        - **Snapshots:** Complete ACR document snapshots stored for each version
-        - **Version Comparison:** Side-by-side comparison showing all changes between any two versions
-        - **In-Memory Storage:** Versions stored in memory (can be persisted to database for durability)
-    -   API endpoints: `GET /api/v1/acr/:acrId/versions`, `POST /api/v1/acr/:acrId/versions`, `GET /api/v1/acr/:acrId/versions/:version`, `GET /api/v1/acr/:acrId/compare?v1=X&v2=Y`
--   **AI Alt Text Generation (US-3.4.1):** Automated alt text generation for images using Google Gemini Vision:
-    -   **Photo Alt Generator:** Uses Gemini 1.5 Pro vision model to analyze images and generate accessible descriptions
-    -   **Length Constraints:** Short alt (<125 chars) and extended alt (up to 250 chars) with runtime validation and truncation
-    -   **Forbidden Prefix Stripping:** Automatically removes "Image of", "Photo of", "Picture of" prefixes
-    -   **Content Detection Flags:** FACE_DETECTED, TEXT_IN_IMAGE, COMPLEX_SCENE, SENSITIVE_CONTENT
-    -   **Quality Flags:** LOW_CONFIDENCE (when confidence <70%), AUTO_CORRECTED (when sanitization applied), NEEDS_MANUAL_REVIEW
-    -   **Human Review Workflow:** Items flagged for review when confidence <70%, faces detected, sensitive content, or needs manual review
-    -   **Batch Processing:** Rate-limited processing (200ms between requests) for multiple images
-    -   **Database Persistence:** GeneratedAltText model stores all generated alt texts with status tracking (pending, needs_review, approved, edited, rejected)
-    -   API endpoints: `POST /api/v1/alt-text/generate`, `POST /api/v1/alt-text/generate-from-buffer`, `POST /api/v1/alt-text/job/:jobId/generate`, `GET /api/v1/alt-text/job/:jobId`, `PATCH /api/v1/alt-text/:id`
--   **Context-Aware Alt Text Generation (US-3.4.2):** Enhanced alt text generation using surrounding document context:
-    -   **Context Extractor Service:** Extracts document context including text before/after image (up to 500 chars), nearest heading, caption detection, chapter title, and page number
-    -   **Caption Detection:** Automatically identifies figure/image captions using pattern matching (e.g., "Figure 1:", "Photo by:", etc.)
-    -   **Dual Generation:** Returns both context-aware and standalone alt text versions for comparison
-    -   **Context-Aware Prompt:** Enhanced Gemini prompt that incorporates document title, section heading, surrounding text, and caption to generate more relevant descriptions
-    -   **Fallback Support:** Falls back to standalone generation if context-aware fails
-    -   API endpoints: `POST /api/v1/alt-text/generate-contextual`
+    -   **Multi-Edition Support:** Generates VPAT 2.5 editions (508, WCAG, EU, INT) with distinct criteria sets.
+    -   **Confidence Level Indicators:** Assigns HIGH, MEDIUM, LOW, or MANUAL_REQUIRED confidence to automated checks, guiding human verification.
+    -   **Human Verification Workflow:** Provides a complete workflow for manual verification, including queue management, bulk verification, audit trails, and ACR finalization gates.
+    -   **Nuanced Compliance Status:** Conformance determination engine enforcing accurate status (Supports, Partially Supports, Does Not Support, Not Applicable) with mandatory remarks and credibility warnings.
+    -   **AI Disclaimer and Attribution:** Distinguishes AI-detected findings from human-verified ones with attribution tags (`[AUTOMATED]`, `[AI-SUGGESTED]`, `[HUMAN-VERIFIED]`) and includes a legal disclaimer and assessment methodology in ACRs.
+    -   **AI-Assisted Remarks Generation:** Uses Gemini to generate professional, quantitative remarks tailored to conformance levels, with options for suggested edits and manual editing.
+    -   **ACR Document Export:** Exports ACRs to Word (.docx), PDF, and HTML formats, retaining attribution, methodology, and supporting branding options.
+    -   **ACR Versioning and History:** Tracks ACR versions with timestamps, user attribution, change logs, and snapshots, enabling side-by-side comparisons.
+-   **AI Alt Text Generation:**
+    -   **Automated Alt Text:** Uses Google Gemini Vision (1.5 Pro) to generate accessible image descriptions, handling length constraints, forbidden prefixes, and detecting content flags (FACE_DETECTED, TEXT_IN_IMAGE).
+    -   **Context-Aware Alt Text:** Extracts document context (surrounding text, headings, captions) to generate more relevant descriptions, providing both context-aware and standalone versions.
+    -   **Chart/Diagram Descriptions:** Classifies images into types (e.g., BAR_CHART, LINE_CHART) and uses specialized prompts to extract data, analyze trends, and summarize key findings for complex visualizations, generating longer descriptions where needed.
 
 **UI/UX Decisions:**
-- API Base Path: `/api/v1/`
-- URLs use kebab-case.
-- Standardized error responses with request IDs.
+-   API Base Path: `/api/v1/`
+-   URLs use kebab-case.
+-   Standardized error responses with request IDs.
 
 **Project Structure:**
-- `src/index.ts`: Application entry point
-- `src/config/`: Environment configuration
-- `src/routes/`: API route definitions
-- `src/controllers/`: Request handlers
-- `src/services/`: Business logic
-- `src/middleware/`: Express middleware
-- `src/models/`: Prisma models
-- `src/queues/`: BullMQ job queues
-- `src/workers/`: Background job processors
-- `src/utils/`: Utility functions
+The project follows a modular structure with dedicated directories for configuration (`config/`), routes (`routes/`), controllers (`controllers/`), services (`services/`), middleware (`middleware/`), Prisma models (`models/`), BullMQ queues (`queues/`) and workers (`workers/`), and utilities (`utils/`).
 
 ## External Dependencies
 -   **Database:** PostgreSQL

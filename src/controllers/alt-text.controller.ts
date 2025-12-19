@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { photoAltGenerator } from '../services/alt-text/photo-alt-generator.service';
 import { contextExtractor } from '../services/alt-text/context-extractor.service';
+import { chartDiagramGenerator } from '../services/alt-text/chart-diagram-generator.service';
 import prisma from '../lib/prisma';
 import fs from 'fs/promises';
 import path from 'path';
@@ -330,6 +331,112 @@ export const altTextController = {
       res.status(500).json({ 
         success: false, 
         error: 'Failed to generate context-aware alt text' 
+      });
+    }
+  },
+
+  async generateChartDescription(req: Request, res: Response) {
+    try {
+      const { imageId, jobId } = req.body;
+      
+      if (!imageId || !jobId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'imageId and jobId are required' 
+        });
+      }
+      
+      const file = await prisma.file.findFirst({
+        where: { id: imageId }
+      });
+      
+      if (!file) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const imageBuffer = await fs.readFile(file.path);
+      
+      const result = await chartDiagramGenerator.generateChartDescription(
+        imageBuffer,
+        file.mimeType || 'image/jpeg'
+      );
+      result.imageId = imageId;
+      
+      const saved = await prisma.generatedAltText.create({
+        data: {
+          imageId,
+          jobId,
+          shortAlt: result.shortAlt,
+          extendedAlt: result.longDescription,
+          confidence: result.confidence,
+          flags: result.flags,
+          aiModel: result.aiModel,
+          status: result.confidence < 70 ? 'needs_review' : 'pending',
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          ...result,
+          id: saved.id,
+          needsLongDescription: chartDiagramGenerator.needsLongDescription(result),
+        },
+      });
+    } catch (error) {
+      console.error('Chart description generation failed:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to generate chart description' 
+      });
+    }
+  },
+
+  async classifyImage(req: Request, res: Response) {
+    try {
+      const { imageId, jobId } = req.body;
+      
+      if (!imageId || !jobId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'imageId and jobId are required' 
+        });
+      }
+      
+      const file = await prisma.file.findFirst({
+        where: { id: imageId }
+      });
+      
+      if (!file) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const imageBuffer = await fs.readFile(file.path);
+      
+      const imageType = await chartDiagramGenerator.classifyImage(
+        imageBuffer,
+        file.mimeType || 'image/jpeg'
+      );
+      
+      res.json({
+        success: true,
+        data: {
+          imageId,
+          imageType,
+          needsSpecializedDescription: imageType !== 'PHOTO' && imageType !== 'UNKNOWN',
+        },
+      });
+    } catch (error) {
+      console.error('Image classification failed:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to classify image' 
       });
     }
   }
