@@ -15,7 +15,22 @@ type AltTextFlag =
   | 'TEXT_IN_IMAGE'
   | 'LOW_CONFIDENCE'
   | 'SENSITIVE_CONTENT'
-  | 'COMPLEX_SCENE';
+  | 'COMPLEX_SCENE'
+  | 'AUTO_CORRECTED'
+  | 'NEEDS_MANUAL_REVIEW';
+
+const FORBIDDEN_PREFIXES = [
+  /^image of\s+/i,
+  /^photo of\s+/i,
+  /^picture of\s+/i,
+  /^photograph of\s+/i,
+  /^a photo of\s+/i,
+  /^an image of\s+/i,
+  /^a picture of\s+/i,
+];
+
+const MAX_SHORT_ALT_LENGTH = 125;
+const MAX_EXTENDED_ALT_LENGTH = 250;
 
 class PhotoAltGeneratorService {
   private genAI: GoogleGenerativeAI;
@@ -71,15 +86,82 @@ Flags to include if applicable:
       parsed.flags.push('LOW_CONFIDENCE');
     }
 
+    const sanitized = this.sanitizeAndValidate(
+      parsed.shortAlt || '',
+      parsed.extendedAlt || '',
+      parsed.flags || []
+    );
+
     return {
       imageId: '',
-      shortAlt: parsed.shortAlt,
-      extendedAlt: parsed.extendedAlt,
+      shortAlt: sanitized.shortAlt,
+      extendedAlt: sanitized.extendedAlt,
       confidence: parsed.confidence,
-      flags: parsed.flags,
+      flags: sanitized.flags,
       aiModel: 'gemini-1.5-pro',
       generatedAt: new Date(),
     };
+  }
+
+  private sanitizeAndValidate(
+    shortAlt: string,
+    extendedAlt: string,
+    flags: AltTextFlag[]
+  ): { shortAlt: string; extendedAlt: string; flags: AltTextFlag[] } {
+    const resultFlags: AltTextFlag[] = [...flags];
+    let corrected = false;
+
+    let sanitizedShort = this.stripForbiddenPrefixes(shortAlt);
+    let sanitizedExtended = this.stripForbiddenPrefixes(extendedAlt);
+
+    if (sanitizedShort !== shortAlt || sanitizedExtended !== extendedAlt) {
+      corrected = true;
+    }
+
+    if (sanitizedShort.length > MAX_SHORT_ALT_LENGTH) {
+      const truncated = sanitizedShort.substring(0, MAX_SHORT_ALT_LENGTH - 3).trim();
+      const lastSpace = truncated.lastIndexOf(' ');
+      sanitizedShort = lastSpace > MAX_SHORT_ALT_LENGTH * 0.5 
+        ? truncated.substring(0, lastSpace) + '...'
+        : truncated + '...';
+      corrected = true;
+    }
+
+    if (sanitizedExtended.length > MAX_EXTENDED_ALT_LENGTH) {
+      const truncated = sanitizedExtended.substring(0, MAX_EXTENDED_ALT_LENGTH - 3).trim();
+      const lastSpace = truncated.lastIndexOf(' ');
+      sanitizedExtended = lastSpace > MAX_EXTENDED_ALT_LENGTH * 0.5
+        ? truncated.substring(0, lastSpace) + '...'
+        : truncated + '...';
+      corrected = true;
+    }
+
+    if (corrected && !resultFlags.includes('AUTO_CORRECTED')) {
+      resultFlags.push('AUTO_CORRECTED');
+    }
+
+    if (!sanitizedShort || sanitizedShort.length < 10) {
+      if (!resultFlags.includes('NEEDS_MANUAL_REVIEW')) {
+        resultFlags.push('NEEDS_MANUAL_REVIEW');
+      }
+    }
+
+    return {
+      shortAlt: sanitizedShort,
+      extendedAlt: sanitizedExtended,
+      flags: resultFlags,
+    };
+  }
+
+  private stripForbiddenPrefixes(text: string): string {
+    let result = text.trim();
+    for (const prefix of FORBIDDEN_PREFIXES) {
+      result = result.replace(prefix, '');
+    }
+    if (result !== text.trim() && result.length > 0) {
+      result = result.charAt(0).toUpperCase() + result.slice(1);
+    }
+    return result;
   }
 
   async generateBatch(
@@ -116,7 +198,8 @@ Flags to include if applicable:
       result.confidence < 70 ||
       result.flags.includes('FACE_DETECTED') ||
       result.flags.includes('SENSITIVE_CONTENT') ||
-      result.flags.includes('LOW_CONFIDENCE')
+      result.flags.includes('LOW_CONFIDENCE') ||
+      result.flags.includes('NEEDS_MANUAL_REVIEW')
     );
   }
 }
