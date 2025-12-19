@@ -280,7 +280,14 @@ Return JSON only (no markdown):
       const result = await this.model.generateContent([contextPrompt, imagePart]);
       const response = await result.response;
       const text = response.text();
-      const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      
+      let parsed;
+      try {
+        parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      } catch (parseError) {
+        logger.error(`Failed to parse context-aware JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+        return { contextAware: standalone, standalone };
+      }
 
       const sanitized = this.sanitizeAndValidate(
         parsed.shortAlt || '',
@@ -304,7 +311,7 @@ Return JSON only (no markdown):
 
       return { contextAware, standalone };
     } catch (error) {
-      console.error('Context-aware generation failed, returning standalone:', error);
+      logger.error('Context-aware generation failed, returning standalone', error instanceof Error ? error : undefined);
       return { contextAware: standalone, standalone };
     }
   }
