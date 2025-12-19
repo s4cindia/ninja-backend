@@ -129,7 +129,20 @@ Return JSON only (no markdown):
         parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
       } catch (parseError) {
         logger.error('Failed to parse long description JSON:', { text: text.substring(0, 500), error: parseError });
-        throw new Error('Failed to parse AI response as JSON');
+        return {
+          id: '',
+          imageId: '',
+          jobId: '',
+          content: {
+            html: '<p>Description generation failed. Manual description required.</p>',
+            plainText: 'Description generation failed. Manual description required.',
+            markdown: 'Description generation failed. Manual description required.',
+          },
+          wordCount: 6,
+          sections: [],
+          generatedAt: new Date(),
+          aiModel: 'gemini-1.5-pro',
+        };
       }
 
       return {

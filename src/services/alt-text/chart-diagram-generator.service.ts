@@ -299,7 +299,7 @@ ${baseInstructions}
       flags.push('DATA_EXTRACTED');
     }
 
-    if (parsed.confidence < 70) {
+    if (parsed.confidence !== undefined && parsed.confidence < 70) {
       flags.push('LOW_CONFIDENCE');
     }
 

@@ -4,6 +4,7 @@ import { contextExtractor } from '../services/alt-text/context-extractor.service
 import { chartDiagramGenerator } from '../services/alt-text/chart-diagram-generator.service';
 import { longDescriptionGenerator } from '../services/alt-text/long-description-generator.service';
 import prisma from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -630,7 +631,7 @@ export const altTextController = {
           shortAlt: result.shortAlt,
           extendedAlt: result.extendedAlt || '',
           confidence: result.confidence,
-          flags: [...result.flags, 'REGENERATED'],
+          flags: [...new Set([...result.flags, 'REGENERATED'])],
           status: photoAltGenerator.needsHumanReview(result) ? 'needs_review' : 'pending',
           approvedAlt: null,
           approvedBy: null,
@@ -823,7 +824,7 @@ export const altTextController = {
           markdown: result.content.markdown,
           html: result.content.html,
           wordCount: result.wordCount,
-          sections: result.sections || [],
+          sections: (result.sections || []) as unknown as Prisma.InputJsonValue,
           aiModel: result.aiModel,
         },
       });

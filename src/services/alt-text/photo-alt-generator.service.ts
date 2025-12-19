@@ -19,7 +19,9 @@ type AltTextFlag =
   | 'SENSITIVE_CONTENT'
   | 'COMPLEX_SCENE'
   | 'AUTO_CORRECTED'
-  | 'NEEDS_MANUAL_REVIEW';
+  | 'NEEDS_MANUAL_REVIEW'
+  | 'REGENERATED'
+  | 'PARSE_ERROR';
 
 const FORBIDDEN_PREFIXES = [
   /^image of\s+/i,
@@ -201,7 +203,7 @@ Flags to include if applicable:
           shortAlt: '',
           extendedAlt: '',
           confidence: 0,
-          flags: ['LOW_CONFIDENCE'],
+          flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'],
           aiModel: 'gemini-1.5-pro',
           generatedAt: new Date(),
         });

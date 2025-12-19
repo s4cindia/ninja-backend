@@ -99,9 +99,15 @@ class ContextExtractorService {
   ): ImagePosition | null {
     if (!parsedContent.elements) return null;
 
-    const index = parsedContent.elements.findIndex(
-      (el: ParsedElement) => el.type === 'image' && (el.id === imageId || el.src?.includes(imageId))
-    );
+    const index = parsedContent.elements.findIndex((el: ParsedElement) => {
+      if (el.type !== 'image') return false;
+      if (el.id === imageId) return true;
+      if (el.src) {
+        const srcFilename = el.src.split('/').pop();
+        return srcFilename === imageId || el.src.endsWith(`/${imageId}`);
+      }
+      return false;
+    });
 
     if (index === -1) return null;
 
