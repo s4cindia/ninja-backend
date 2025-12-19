@@ -1,0 +1,75 @@
+Fix TypeScript compilation errors in alt-text services.
+
+**1. Fix src/services/alt-text/chart-diagram-generator.service.ts:**
+
+Around line 119 and 146, fix the logger call and error typing:
+
+// Change logger call from:
+logger.error('Failed to parse chart description JSON:', { text, error: parseError });
+
+// To:
+logger.error(`Failed to parse chart description JSON. Response: ${text.substring(0, 200)}...`);
+if (parseError instanceof Error) {
+  logger.error('Parse error:', parseError);
+}
+
+// And for the outer catch block, change:
+} catch (error) {
+  logger.error('Chart description generation failed:', error);
+
+// To:
+} catch (error) {
+  logger.error('Chart description generation failed:', error instanceof Error ? error : new Error(String(error)));
+
+**2. Fix src/services/alt-text/long-description-generator.service.ts:**
+
+Around line 131 and 163, apply the same fixes:
+
+// Change:
+logger.error('Failed to parse long description JSON:', { text, error: parseError });
+
+// To:
+logger.error(`Failed to parse long description JSON. Response: ${text.substring(0, 200)}...`);
+if (parseError instanceof Error) {
+  logger.error('Parse error:', parseError);
+}
+
+// And for the outer catch, change:
+} catch (error) {
+  logger.error('Long description generation failed:', error);
+
+// To:
+} catch (error) {
+  logger.error('Long description generation failed:', error instanceof Error ? error : new Error(String(error)));
+
+**3. Fix src/services/alt-text/photo-alt-generator.service.ts:**
+
+Around line 94, apply the same fix:
+
+// Change:
+logger.error('Failed to parse Gemini response as JSON:', { text, error: parseError });
+
+// To:
+logger.error(`Failed to parse Gemini response as JSON. Response: ${text.substring(0, 200)}...`);
+if (parseError instanceof Error) {
+  logger.error('Parse error:', parseError);
+}
+
+**Alternative approach - if logger doesn't accept Error directly:**
+
+If the logger only accepts string messages, use this pattern instead:
+
+// For parse errors:
+logger.error(`Failed to parse JSON response: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+logger.error(`Response text (truncated): ${text.substring(0, 200)}`);
+
+// For outer catch blocks:
+} catch (error) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  logger.error(`Generation failed: ${errorMessage}`);
+  throw error;
+}
+
+After fixes, verify with:
+npx tsc --noEmit
+npm run build

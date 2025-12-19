@@ -91,7 +91,10 @@ Flags to include if applicable:
     try {
       parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
     } catch (parseError) {
-      logger.error('Failed to parse Gemini response as JSON:', { text: text.substring(0, 500), error: parseError });
+      logger.error(`Failed to parse Gemini response as JSON. Response: ${text.substring(0, 200)}...`);
+      if (parseError instanceof Error) {
+        logger.error(`Parse error: ${parseError.message}`);
+      }
       return {
         imageId: '',
         shortAlt: 'Image description unavailable',

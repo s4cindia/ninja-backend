@@ -128,7 +128,10 @@ Return JSON only (no markdown):
       try {
         parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
       } catch (parseError) {
-        logger.error('Failed to parse long description JSON:', { text: text.substring(0, 500), error: parseError });
+        logger.error(`Failed to parse long description JSON. Response: ${text.substring(0, 200)}...`);
+        if (parseError instanceof Error) {
+          logger.error(`Parse error: ${parseError.message}`);
+        }
         return {
           id: '',
           imageId: '',
@@ -160,7 +163,8 @@ Return JSON only (no markdown):
         aiModel: 'gemini-1.5-pro',
       };
     } catch (error) {
-      logger.error('Long description generation failed:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`Long description generation failed: ${errorMessage}`);
       throw error;
     }
   }

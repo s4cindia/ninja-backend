@@ -116,7 +116,10 @@ Return ONLY the category name, nothing else.
       try {
         parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
       } catch (parseError) {
-        logger.error('Failed to parse chart description JSON:', { text: text.substring(0, 500), error: parseError });
+        logger.error(`Failed to parse chart description JSON. Response: ${text.substring(0, 200)}...`);
+        if (parseError instanceof Error) {
+          logger.error(`Parse error: ${parseError.message}`);
+        }
         return {
           imageId: '',
           imageType,
@@ -143,7 +146,8 @@ Return ONLY the category name, nothing else.
         generatedAt: new Date(),
       };
     } catch (error) {
-      logger.error('Chart description generation failed:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`Chart description generation failed: ${errorMessage}`);
       return {
         imageId: '',
         imageType,
