@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import type { DocumentContext } from './context-extractor.service';
 
 interface AltTextGenerationResult {
   imageId: string;
@@ -201,6 +202,90 @@ Flags to include if applicable:
       result.flags.includes('LOW_CONFIDENCE') ||
       result.flags.includes('NEEDS_MANUAL_REVIEW')
     );
+  }
+
+  async generateContextAwareAltText(
+    imageBuffer: Buffer,
+    mimeType: string,
+    context: DocumentContext
+  ): Promise<{
+    contextAware: AltTextGenerationResult;
+    standalone: AltTextGenerationResult;
+  }> {
+    const standalone = await this.generateAltText(imageBuffer, mimeType);
+
+    const contextPrompt = `
+Describe this image for someone who cannot see it.
+
+DOCUMENT CONTEXT:
+- Document: ${context.documentTitle}
+${context.chapterTitle ? `- Chapter: ${context.chapterTitle}` : ''}
+- Section: ${context.nearestHeading}
+${context.caption ? `- Caption: ${context.caption}` : ''}
+${context.pageNumber ? `- Page: ${context.pageNumber}` : ''}
+
+TEXT BEFORE IMAGE:
+${context.textBefore || '(none available)'}
+
+TEXT AFTER IMAGE:
+${context.textAfter || '(none available)'}
+
+Requirements:
+- Be concise (under 125 characters for short version)
+- Use context to make description more specific and relevant
+- Reference document context when it helps understanding
+- Do NOT start with "Image of", "Photo of", or "Picture of"
+- Do NOT repeat the caption verbatim - provide complementary information
+- Use present tense
+
+Return JSON only (no markdown):
+{
+  "shortAlt": "context-aware description under 125 chars",
+  "extendedAlt": "detailed context-aware description up to 250 chars",
+  "confidence": 85,
+  "flags": [],
+  "usedContext": ["nearestHeading", "caption"]
+}
+`;
+
+    const imagePart = {
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType,
+      },
+    };
+
+    try {
+      const result = await this.model.generateContent([contextPrompt, imagePart]);
+      const response = await result.response;
+      const text = response.text();
+      const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+
+      const sanitized = this.sanitizeAndValidate(
+        parsed.shortAlt || '',
+        parsed.extendedAlt || '',
+        parsed.flags || []
+      );
+
+      if (parsed.confidence < 70 && !sanitized.flags.includes('LOW_CONFIDENCE')) {
+        sanitized.flags.push('LOW_CONFIDENCE');
+      }
+
+      const contextAware: AltTextGenerationResult = {
+        imageId: '',
+        shortAlt: sanitized.shortAlt,
+        extendedAlt: sanitized.extendedAlt,
+        confidence: parsed.confidence || 75,
+        flags: sanitized.flags,
+        aiModel: 'gemini-1.5-pro',
+        generatedAt: new Date(),
+      };
+
+      return { contextAware, standalone };
+    } catch (error) {
+      console.error('Context-aware generation failed, returning standalone:', error);
+      return { contextAware: standalone, standalone };
+    }
   }
 }
 

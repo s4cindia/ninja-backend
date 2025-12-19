@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { photoAltGenerator } from '../services/alt-text/photo-alt-generator.service';
+import { contextExtractor } from '../services/alt-text/context-extractor.service';
 import prisma from '../lib/prisma';
 import fs from 'fs/promises';
 import path from 'path';
@@ -260,6 +261,75 @@ export const altTextController = {
       res.status(500).json({
         success: false,
         error: 'Failed to update alt text'
+      });
+    }
+  },
+
+  async generateContextual(req: Request, res: Response) {
+    try {
+      const { imageId, jobId } = req.body;
+      
+      if (!imageId || !jobId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'imageId and jobId are required' 
+        });
+      }
+      
+      const file = await prisma.file.findFirst({
+        where: { id: imageId }
+      });
+      
+      if (!file) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const imageBuffer = await fs.readFile(file.path);
+      
+      const context = await contextExtractor.extractContext(jobId, imageId);
+      
+      const { contextAware, standalone } = await photoAltGenerator.generateContextAwareAltText(
+        imageBuffer,
+        file.mimeType || 'image/jpeg',
+        context
+      );
+      
+      contextAware.imageId = imageId;
+      standalone.imageId = imageId;
+      
+      const saved = await prisma.generatedAltText.create({
+        data: {
+          imageId,
+          jobId,
+          shortAlt: contextAware.shortAlt,
+          extendedAlt: contextAware.extendedAlt || '',
+          confidence: contextAware.confidence,
+          flags: contextAware.flags,
+          aiModel: contextAware.aiModel,
+          status: photoAltGenerator.needsHumanReview(contextAware) ? 'needs_review' : 'pending',
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          contextAware: {
+            ...contextAware,
+            id: saved.id,
+          },
+          standalone,
+          context,
+          needsReview: photoAltGenerator.needsHumanReview(contextAware),
+        },
+      });
+    } catch (error) {
+      console.error('Context-aware alt text generation failed:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to generate context-aware alt text' 
       });
     }
   }

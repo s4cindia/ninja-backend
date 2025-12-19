@@ -10,6 +10,8 @@ router.use(authenticate);
 
 router.post('/generate', altTextController.generate);
 
+router.post('/generate-contextual', altTextController.generateContextual);
+
 router.post('/generate-from-buffer', upload.single('image'), altTextController.generateFromBuffer);
 
 router.post('/job/:jobId/generate', altTextController.generateForJob);

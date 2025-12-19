@@ -102,6 +102,13 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
     -   **Batch Processing:** Rate-limited processing (200ms between requests) for multiple images
     -   **Database Persistence:** GeneratedAltText model stores all generated alt texts with status tracking (pending, needs_review, approved, edited, rejected)
     -   API endpoints: `POST /api/v1/alt-text/generate`, `POST /api/v1/alt-text/generate-from-buffer`, `POST /api/v1/alt-text/job/:jobId/generate`, `GET /api/v1/alt-text/job/:jobId`, `PATCH /api/v1/alt-text/:id`
+-   **Context-Aware Alt Text Generation (US-3.4.2):** Enhanced alt text generation using surrounding document context:
+    -   **Context Extractor Service:** Extracts document context including text before/after image (up to 500 chars), nearest heading, caption detection, chapter title, and page number
+    -   **Caption Detection:** Automatically identifies figure/image captions using pattern matching (e.g., "Figure 1:", "Photo by:", etc.)
+    -   **Dual Generation:** Returns both context-aware and standalone alt text versions for comparison
+    -   **Context-Aware Prompt:** Enhanced Gemini prompt that incorporates document title, section heading, surrounding text, and caption to generate more relevant descriptions
+    -   **Fallback Support:** Falls back to standalone generation if context-aware fails
+    -   API endpoints: `POST /api/v1/alt-text/generate-contextual`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`

@@ -1,0 +1,441 @@
+Extend alt text generator to incorporate surrounding document context.
+
+**Create file: `src/services/alt-text/context-extractor.service.ts`**
+
+import prisma from '../../lib/prisma';
+
+interface DocumentContext {
+  textBefore: string;      // Up to 500 chars before image
+  textAfter: string;       // Up to 500 chars after image
+  nearestHeading: string;
+  caption?: string;
+  documentTitle: string;
+  chapterTitle?: string;
+  pageNumber?: number;
+}
+
+class ContextExtractorService {
+  /**
+   * Extract context surrounding an image in a document
+   */
+  async extractContext(
+    jobId: string,
+    imageId: string
+  ): Promise<DocumentContext> {
+    // Get job and parsed document data
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { document: true },
+    });
+
+    if (!job) {
+      return this.getDefaultContext();
+    }
+
+    // Try to get parsed content from job metadata or document
+    const parsedContent = await this.getParsedContent(jobId);
+    
+    if (!parsedContent) {
+      return {
+        ...this.getDefaultContext(),
+        documentTitle: job.document?.name || job.fileName || 'Unknown Document',
+      };
+    }
+
+    // Find image position and extract surrounding context
+    const imagePosition = this.findImagePosition(parsedContent, imageId);
+    
+    return {
+      textBefore: this.extractTextBefore(parsedContent, imagePosition, 500),
+      textAfter: this.extractTextAfter(parsedContent, imagePosition, 500),
+      nearestHeading: this.findNearestHeading(parsedContent, imagePosition),
+      caption: this.detectCaption(parsedContent, imagePosition),
+      documentTitle: parsedContent.title || job.document?.name || 'Unknown Document',
+      chapterTitle: this.findChapterTitle(parsedContent, imagePosition),
+      pageNumber: imagePosition?.page,
+    };
+  }
+
+  /**
+   * Get parsed content from job storage
+   */
+  private async getParsedContent(jobId: string): Promise<any> {
+    try {
+      // Check for parsed content in job results
+      const jobResult = await prisma.jobResult.findFirst({
+        where: { 
+          jobId,
+          resultType: 'parsed_content',
+        },
+      });
+
+      if (jobResult?.data) {
+        return typeof jobResult.data === 'string' 
+          ? JSON.parse(jobResult.data) 
+          : jobResult.data;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Failed to get parsed content:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Find image position in parsed content
+   */
+  private findImagePosition(
+    parsedContent: any, 
+    imageId: string
+  ): { index: number; page?: number } | null {
+    if (!parsedContent.elements) return null;
+
+    const index = parsedContent.elements.findIndex(
+      (el: any) => el.type === 'image' && (el.id === imageId || el.src?.includes(imageId))
+    );
+
+    if (index === -1) return null;
+
+    return {
+      index,
+      page: parsedContent.elements[index]?.page,
+    };
+  }
+
+  /**
+   * Extract text before the image position
+   */
+  private extractTextBefore(
+    parsedContent: any, 
+    position: { index: number } | null, 
+    maxChars: number
+  ): string {
+    if (!position || !parsedContent.elements) return '';
+
+    let text = '';
+    for (let i = position.index - 1; i >= 0 && text.length < maxChars; i--) {
+      const el = parsedContent.elements[i];
+      if (el.type === 'text' || el.type === 'paragraph' || el.type === 'heading') {
+        text = (el.content || el.text || '') + ' ' + text;
+      }
+    }
+
+    return text.trim().slice(-maxChars);
+  }
+
+  /**
+   * Extract text after the image position
+   */
+  private extractTextAfter(
+    parsedContent: any, 
+    position: { index: number } | null, 
+    maxChars: number
+  ): string {
+    if (!position || !parsedContent.elements) return '';
+
+    let text = '';
+    for (let i = position.index + 1; i < parsedContent.elements.length && text.length < maxChars; i++) {
+      const el = parsedContent.elements[i];
+      if (el.type === 'text' || el.type === 'paragraph' || el.type === 'heading') {
+        text += ' ' + (el.content || el.text || '');
+      }
+    }
+
+    return text.trim().slice(0, maxChars);
+  }
+
+  /**
+   * Find nearest heading above the image
+   */
+  private findNearestHeading(
+    parsedContent: any, 
+    position: { index: number } | null
+  ): string {
+    if (!position || !parsedContent.elements) return 'Document Content';
+
+    for (let i = position.index - 1; i >= 0; i--) {
+      const el = parsedContent.elements[i];
+      if (el.type === 'heading' || el.tag?.match(/^h[1-6]$/i)) {
+        return el.content || el.text || 'Untitled Section';
+      }
+    }
+
+    return 'Document Content';
+  }
+
+  /**
+   * Detect if text immediately after image is a caption
+   */
+  private detectCaption(
+    parsedContent: any, 
+    position: { index: number } | null
+  ): string | undefined {
+    if (!position || !parsedContent.elements) return undefined;
+
+    const nextElement = parsedContent.elements[position.index + 1];
+    if (!nextElement) return undefined;
+
+    const text = nextElement.content || nextElement.text || '';
+    
+    if (this.isLikelyCaption(text)) {
+      return text.slice(0, 200); // Limit caption length
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Find chapter title containing the image
+   */
+  private findChapterTitle(
+    parsedContent: any, 
+    position: { index: number } | null
+  ): string | undefined {
+    if (!position || !parsedContent.elements) return undefined;
+
+    for (let i = position.index - 1; i >= 0; i--) {
+      const el = parsedContent.elements[i];
+      if (el.type === 'heading' && (el.level === 1 || el.tag === 'h1')) {
+        return el.content || el.text;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Check if text is likely a caption
+   */
+  private isLikelyCaption(text: string): boolean {
+    if (!text || text.length > 300) return false;
+    
+    const captionPatterns = [
+      /^(figure|fig\.?|image|photo|illustration|diagram|chart|table)\s*\d*/i,
+      /^(source|credit|courtesy|photo by|image by):/i,
+      /^\d+\.\s*(figure|fig)/i,
+    ];
+    
+    return captionPatterns.some(p => p.test(text.trim()));
+  }
+
+  /**
+   * Get default context when extraction fails
+   */
+  private getDefaultContext(): DocumentContext {
+    return {
+      textBefore: '',
+      textAfter: '',
+      nearestHeading: 'Document Content',
+      documentTitle: 'Unknown Document',
+    };
+  }
+}
+
+export const contextExtractor = new ContextExtractorService();
+
+**Update file: `src/services/alt-text/photo-alt-generator.service.ts`**
+
+Add this method to the PhotoAltGeneratorService class:
+
+async generateContextAwareAltText(
+  imageBuffer: Buffer,
+  mimeType: string,
+  context: DocumentContext
+): Promise<{
+  contextAware: AltTextGenerationResult;
+  standalone: AltTextGenerationResult;
+}> {
+  // Generate standalone version first
+  const standalone = await this.generateAltText(imageBuffer, mimeType);
+
+  // Build context-aware prompt
+  const contextPrompt = `
+Describe this image for someone who cannot see it.
+
+DOCUMENT CONTEXT:
+- Document: ${context.documentTitle}
+${context.chapterTitle ? `- Chapter: ${context.chapterTitle}` : ''}
+- Section: ${context.nearestHeading}
+${context.caption ? `- Caption: ${context.caption}` : ''}
+${context.pageNumber ? `- Page: ${context.pageNumber}` : ''}
+
+TEXT BEFORE IMAGE:
+${context.textBefore || '(none available)'}
+
+TEXT AFTER IMAGE:
+${context.textAfter || '(none available)'}
+
+Requirements:
+- Be concise (under 125 characters for short version)
+- Use context to make description more specific and relevant
+- Reference document context when it helps understanding
+- Do NOT start with "Image of", "Photo of", or "Picture of"
+- Do NOT repeat the caption verbatim - provide complementary information
+- Use present tense
+
+Return JSON only (no markdown):
+{
+  "shortAlt": "context-aware description under 125 chars",
+  "extendedAlt": "detailed context-aware description up to 250 chars",
+  "confidence": 85,
+  "flags": [],
+  "usedContext": ["nearestHeading", "caption"]
+}
+`;
+
+  const imagePart = {
+    inlineData: {
+      data: imageBuffer.toString('base64'),
+      mimeType,
+    },
+  };
+
+  try {
+    const result = await this.model.generateContent([contextPrompt, imagePart]);
+    const response = await result.response;
+    const text = response.text();
+    const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+
+    // Apply same validation as standalone
+    let shortAlt = this.stripForbiddenPrefixes(parsed.shortAlt || '');
+    let extendedAlt = this.stripForbiddenPrefixes(parsed.extendedAlt || '');
+
+    // Enforce length limits
+    if (shortAlt.length > 125) {
+      shortAlt = shortAlt.slice(0, 122) + '...';
+    }
+    if (extendedAlt.length > 250) {
+      extendedAlt = extendedAlt.slice(0, 247) + '...';
+    }
+
+    const flags = parsed.flags || [];
+    if (parsed.confidence < 70 && !flags.includes('LOW_CONFIDENCE')) {
+      flags.push('LOW_CONFIDENCE');
+    }
+
+    const contextAware: AltTextGenerationResult = {
+      imageId: '',
+      shortAlt,
+      extendedAlt,
+      confidence: parsed.confidence || 75,
+      flags,
+      aiModel: 'gemini-1.5-pro',
+      generatedAt: new Date(),
+    };
+
+    return { contextAware, standalone };
+  } catch (error) {
+    console.error('Context-aware generation failed, returning standalone:', error);
+    // Fall back to standalone if context-aware fails
+    return { contextAware: standalone, standalone };
+  }
+}
+
+// Add helper method if not already present
+private stripForbiddenPrefixes(text: string): string {
+  const prefixes = [
+    /^(an?\s+)?(image|photo|picture|photograph|illustration|graphic|icon|screenshot)\s+(of|showing|depicting|displaying)\s+/i,
+    /^this\s+(image|photo|picture)\s+(shows|depicts|displays)\s+/i,
+  ];
+  
+  let result = text;
+  for (const prefix of prefixes) {
+    result = result.replace(prefix, '');
+  }
+  
+  // Capitalize first letter
+  return result.charAt(0).toUpperCase() + result.slice(1);
+}
+
+**Update file: `src/controllers/alt-text.controller.ts`**
+
+Add this method to altTextController:
+
+import { contextExtractor } from '../services/alt-text/context-extractor.service';
+
+async generateContextual(req: Request, res: Response) {
+  try {
+    const { imageId, jobId } = req.body;
+    
+    if (!imageId || !jobId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'imageId and jobId are required' 
+      });
+    }
+    
+    // Get image from S3
+    const imageKey = `images/${jobId}/${imageId}`;
+    const imageData = await s3Service.getObject(imageKey);
+    
+    if (!imageData) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Image not found' 
+      });
+    }
+    
+    // Extract document context
+    const context = await contextExtractor.extractContext(jobId, imageId);
+    
+    // Generate both versions
+    const { contextAware, standalone } = await photoAltGenerator.generateContextAwareAltText(
+      imageData.buffer,
+      imageData.mimeType || 'image/jpeg',
+      context
+    );
+    
+    contextAware.imageId = imageId;
+    standalone.imageId = imageId;
+    
+    // Store context-aware version as primary
+    const saved = await prisma.generatedAltText.create({
+      data: {
+        imageId,
+        jobId,
+        shortAlt: contextAware.shortAlt,
+        extendedAlt: contextAware.extendedAlt || '',
+        confidence: contextAware.confidence,
+        flags: contextAware.flags,
+        aiModel: contextAware.aiModel,
+        status: photoAltGenerator.needsHumanReview(contextAware) ? 'needs_review' : 'pending',
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        contextAware: {
+          ...contextAware,
+          id: saved.id,
+        },
+        standalone,
+        context,
+        needsReview: photoAltGenerator.needsHumanReview(contextAware),
+      },
+    });
+  } catch (error) {
+    console.error('Context-aware alt text generation failed:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to generate context-aware alt text' 
+    });
+  }
+},
+
+**Update file: `src/routes/alt-text.routes.ts`**
+
+Add route:
+
+// Generate context-aware alt text
+router.post('/generate-contextual', altTextController.generateContextual);
+
+**Acceptance Criteria:**
+- [ ] Extract text before/after image (within 500 chars)
+- [ ] Find nearest heading above the image
+- [ ] Detect and include caption if present
+- [ ] Include document and chapter titles
+- [ ] Return both context-aware and standalone versions
+- [ ] Fall back to standalone if context extraction fails
+- [ ] Store results in database
