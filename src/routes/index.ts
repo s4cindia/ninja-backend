@@ -14,6 +14,7 @@ import acrRoutes from "./acr.routes";
 import confidenceRoutes from "./confidence.routes";
 import verificationRoutes from "./verification.routes";
 import exportsRoutes from "./exports.routes";
+import altTextRoutes from "./alt-text.routes";
 
 const router = Router();
 
@@ -81,5 +82,6 @@ router.use("/acr", acrRoutes);
 router.use("/confidence", confidenceRoutes);
 router.use("/verification", verificationRoutes);
 router.use("/exports", exportsRoutes);
+router.use("/alt-text", altTextRoutes);
 
 export default router;

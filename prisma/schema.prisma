@@ -212,3 +212,24 @@ enum FileStatus {
   PROCESSED
   ERROR
 }
+
+model GeneratedAltText {
+  id              String    @id @default(uuid())
+  imageId         String
+  jobId           String
+  shortAlt        String
+  extendedAlt     String?
+  confidence      Float
+  flags           String[]
+  aiModel         String
+  status          String    @default("pending")
+  approvedAlt     String?
+  approvedBy      String?
+  approvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([imageId])
+  @@index([status])
+}
