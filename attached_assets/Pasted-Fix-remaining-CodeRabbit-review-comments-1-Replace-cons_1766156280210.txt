@@ -1,0 +1,122 @@
+Fix remaining CodeRabbit review comments.
+
+**1. Replace console.error with logger.error in all alt-text services:**
+
+In src/services/alt-text/chart-diagram-generator.service.ts around line 91:
+// Change:
+console.error('Image classification failed:', error);
+// To:
+logger.error('Image classification failed:', error instanceof Error ? error : undefined);
+
+In src/services/alt-text/photo-alt-generator.service.ts around line 200:
+// Change:
+console.error(`Failed to generate alt text for image ${image.id}:`, error);
+// To:
+logger.error(`Failed to generate alt text for image ${image.id}`, error instanceof Error ? error : undefined);
+
+In src/services/alt-text/photo-alt-generator.service.ts around line 307:
+// Change:
+console.error('Context-aware generation failed, returning standalone:', error);
+// To:
+logger.error('Context-aware generation failed, returning standalone', error instanceof Error ? error : undefined);
+
+**2. Add HTML sanitization for AI-generated content in long-description-generator.service.ts:**
+
+Add a sanitizeHtml method and use it:
+
+// Add this method to the class:
+private sanitizeHtml(html: string): string {
+  // Remove potentially dangerous elements and attributes
+  return html
+    // Remove script tags and their content
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    // Remove event handlers
+    .replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, '')
+    // Remove javascript: URLs
+    .replace(/href\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"')
+    // Remove data: URLs in src attributes (potential XSS vector)
+    .replace(/src\s*=\s*["']data:[^"']*["']/gi, 'src=""')
+    // Remove iframe, object, embed tags
+    .replace(/<(iframe|object|embed|form|input|button)[^>]*>.*?<\/\1>/gi, '')
+    .replace(/<(iframe|object|embed|form|input|button)[^>]*\/>/gi, '');
+}
+
+// Update generateAriaMarkup to use it:
+generateAriaMarkup(
+  imageId: string,
+  shortAlt: string,
+  longDescription: LongDescription
+): {
+  imgTag: string;
+  descriptionDiv: string;
+} {
+  const descId = `desc-${this.escapeHtml(imageId)}`;
+  const escapedAlt = this.escapeHtml(shortAlt);
+  const sanitizedHtml = this.sanitizeHtml(longDescription.content.html);
+
+  return {
+    imgTag: `<img src="..." alt="${escapedAlt}" aria-describedby="${descId}" />`,
+    descriptionDiv: `<div id="${descId}" class="sr-only">\n${sanitizedHtml}\n</div>`,
+  };
+}
+
+**3. Wrap Gemini API call in try-catch in photo-alt-generator.service.ts:**
+
+Update the generateAltText method to wrap the entire API call:
+
+async generateAltText(
+  imageBuffer: Buffer,
+  mimeType: string = 'image/jpeg'
+): Promise<AltTextGenerationResult> {
+  const prompt = `...`; // existing prompt
+
+  const imagePart = {
+    inlineData: {
+      data: imageBuffer.toString('base64'),
+      mimeType,
+    },
+  };
+
+  let result;
+  let text: string;
+  
+  try {
+    result = await this.model.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    text = response.text();
+  } catch (apiError) {
+    logger.error('Gemini API call failed', apiError instanceof Error ? apiError : undefined);
+    return {
+      imageId: '',
+      shortAlt: 'Image description unavailable',
+      extendedAlt: '',
+      confidence: 0,
+      flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'] as AltTextFlag[],
+      aiModel: 'gemini-1.5-pro',
+      generatedAt: new Date(),
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+  } catch (parseError) {
+    logger.error(`Failed to parse Gemini response as JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+    return {
+      imageId: '',
+      shortAlt: 'Image description unavailable',
+      extendedAlt: '',
+      confidence: 0,
+      flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'] as AltTextFlag[],
+      aiModel: 'gemini-1.5-pro',
+      generatedAt: new Date(),
+    };
+  }
+
+  // ... rest of the method processing parsed result
+}
+
+After fixes, verify:
+npx tsc --noEmit
+npm run lint
+npm run build

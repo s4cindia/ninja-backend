@@ -83,9 +83,25 @@ Flags to include if applicable:
       },
     };
 
-    const result = await this.model.generateContent([prompt, imagePart]);
-    const response = await result.response;
-    const text = response.text();
+    let result;
+    let text: string;
+    
+    try {
+      result = await this.model.generateContent([prompt, imagePart]);
+      const response = await result.response;
+      text = response.text();
+    } catch (apiError) {
+      logger.error('Gemini API call failed', apiError instanceof Error ? apiError : undefined);
+      return {
+        imageId: '',
+        shortAlt: 'Image description unavailable',
+        extendedAlt: '',
+        confidence: 0,
+        flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'] as AltTextFlag[],
+        aiModel: 'gemini-1.5-pro',
+        generatedAt: new Date(),
+      };
+    }
     
     let parsed;
     try {
@@ -197,7 +213,7 @@ Flags to include if applicable:
         result.imageId = image.id;
         results.push(result);
       } catch (error) {
-        console.error(`Failed to generate alt text for image ${image.id}:`, error);
+        logger.error(`Failed to generate alt text for image ${image.id}`, error instanceof Error ? error : undefined);
         results.push({
           imageId: image.id,
           shortAlt: '',

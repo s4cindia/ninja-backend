@@ -183,6 +183,16 @@ Return JSON only (no markdown):
       .replace(/'/g, '&#039;');
   }
 
+  private sanitizeHtml(html: string): string {
+    return html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, '')
+      .replace(/href\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"')
+      .replace(/src\s*=\s*["']data:[^"']*["']/gi, 'src=""')
+      .replace(/<(iframe|object|embed|form|input|button)[^>]*>.*?<\/\1>/gi, '')
+      .replace(/<(iframe|object|embed|form|input|button)[^>]*\/>/gi, '');
+  }
+
   generateAriaMarkup(
     imageId: string,
     shortAlt: string,
@@ -193,10 +203,11 @@ Return JSON only (no markdown):
   } {
     const descId = `desc-${this.escapeHtml(imageId)}`;
     const escapedAlt = this.escapeHtml(shortAlt);
+    const sanitizedHtml = this.sanitizeHtml(longDescription.content.html);
     
     return {
       imgTag: `<img src="..." alt="${escapedAlt}" aria-describedby="${descId}" />`,
-      descriptionDiv: `<div id="${descId}" class="sr-only">\n${longDescription.content.html}\n</div>`,
+      descriptionDiv: `<div id="${descId}" class="sr-only">\n${sanitizedHtml}\n</div>`,
     };
   }
 }

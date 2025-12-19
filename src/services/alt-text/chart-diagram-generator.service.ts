@@ -88,7 +88,7 @@ Return ONLY the category name, nothing else.
       
       return validTypes.includes(text as ImageType) ? text as ImageType : 'UNKNOWN';
     } catch (error) {
-      console.error('Image classification failed:', error);
+      logger.error('Image classification failed', error instanceof Error ? error : undefined);
       return 'UNKNOWN';
     }
   }
