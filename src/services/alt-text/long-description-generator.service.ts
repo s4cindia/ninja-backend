@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import DOMPurify from 'isomorphic-dompurify';
 import { logger } from '../../lib/logger';
 
 interface LongDescription {
@@ -184,13 +185,10 @@ Return JSON only (no markdown):
   }
 
   private sanitizeHtml(html: string): string {
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/\s*on\w+\s*=\s*["'][^"']*["']/gi, '')
-      .replace(/href\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"')
-      .replace(/src\s*=\s*["']data:[^"']*["']/gi, 'src=""')
-      .replace(/<(iframe|object|embed|form|input|button)[^>]*>.*?<\/\1>/gi, '')
-      .replace(/<(iframe|object|embed|form|input|button)[^>]*\/>/gi, '');
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'strong', 'em', 'br', 'table', 'tr', 'td', 'th', 'thead', 'tbody'],
+      ALLOWED_ATTR: ['class']
+    });
   }
 
   generateAriaMarkup(
