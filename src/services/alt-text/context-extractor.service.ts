@@ -1,4 +1,5 @@
 import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 
 interface DocumentContext {
   textBefore: string;
@@ -41,6 +42,7 @@ class ContextExtractorService {
     });
 
     if (!job) {
+      logger.warn(`Context extraction: Job not found for jobId=${jobId}, using default context`);
       return this.getDefaultContext();
     }
 
@@ -50,6 +52,7 @@ class ContextExtractorService {
     const documentName = (jobInput?.fileName || jobInput?.documentName || 'Unknown Document') as string;
     
     if (!parsedContent) {
+      logger.warn(`Context extraction: No parsed content for jobId=${jobId}, imageId=${imageId}, using default context`);
       return {
         ...this.getDefaultContext(),
         documentTitle: documentName,

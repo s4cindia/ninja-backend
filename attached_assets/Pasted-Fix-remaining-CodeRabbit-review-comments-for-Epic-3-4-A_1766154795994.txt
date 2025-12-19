@@ -1,0 +1,121 @@
+Fix remaining CodeRabbit review comments for Epic 3.4 Alt-Text AI.
+
+**1. Add logging when default context is used in context-extractor.service.ts:**
+
+In src/services/alt-text/context-extractor.service.ts, add logging before returning default context:
+
+import { logger } from '../../lib/logger';
+
+// Around line 20 (when job not found):
+if (!job) {
+  logger.warn(`Context extraction: Job not found for jobId=${jobId}, using default context`);
+  return this.getDefaultContext();
+}
+
+// Around line 29 (when parsed content fails):
+if (!parsedContent) {
+  logger.warn(`Context extraction: No parsed content for jobId=${jobId}, imageId=${imageId}, using default context`);
+  return {
+    ...this.getDefaultContext(),
+    documentTitle: job.document?.name || job.fileName || 'Unknown Document',
+  };
+}
+
+**2. Add GEMINI_API_KEY validation to all three services:**
+
+In src/services/alt-text/photo-alt-generator.service.ts:
+constructor() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY environment variable is required');
+  }
+  this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+}
+
+In src/services/alt-text/chart-diagram-generator.service.ts:
+constructor() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY environment variable is required');
+  }
+  this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+}
+
+In src/services/alt-text/long-description-generator.service.ts:
+constructor() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY environment variable is required');
+  }
+  this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+}
+
+**3. Fix XSS vulnerability in long-description-generator.service.ts:**
+
+Add HTML escape helper and update generateAriaMarkup:
+
+private escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+generateAriaMarkup(
+  imageId: string,
+  shortAlt: string,
+  longDescription: LongDescription
+): {
+  imgTag: string;
+  descriptionDiv: string;
+} {
+  const descId = `desc-${imageId}`;
+  const escapedAlt = this.escapeHtml(shortAlt);
+  
+  return {
+    imgTag: `<img src="..." alt="${escapedAlt}" aria-describedby="${descId}" />`,
+    descriptionDiv: `<div id="${descId}" class="sr-only">\n${longDescription.content.html}\n</div>`,
+  };
+}
+
+**4. Add try-catch for JSON.parse in photo-alt-generator.service.ts:**
+
+Around line 80-84, wrap JSON parsing:
+
+try {
+  const result = await this.model.generateContent([prompt, imagePart]);
+  const response = await result.response;
+  const text = response.text();
+  
+  let parsed;
+  try {
+    parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+  } catch (parseError) {
+    logger.error('Failed to parse Gemini response as JSON:', { text, error: parseError });
+    // Return a fallback result
+    return {
+      imageId: '',
+      shortAlt: 'Image description unavailable',
+      extendedAlt: '',
+      confidence: 0,
+      flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'],
+      aiModel: 'gemini-1.5-pro',
+      generatedAt: new Date(),
+    };
+  }
+  
+  // Continue with parsed data...
+} catch (error) {
+  // Existing error handling
+}
+
+Apply the same pattern to:
+- chart-diagram-generator.service.ts (classifyImage and generateChartDescription methods)
+- long-description-generator.service.ts (generateLongDescription method)
+- context-extractor.service.ts (generateContextAwareAltText method in photo-alt-generator)
+
+After fixes, run:
+npm run lint
+npm run build

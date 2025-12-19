@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import type { DocumentContext } from './context-extractor.service';
+import { logger } from '../../lib/logger';
 
 interface AltTextGenerationResult {
   imageId: string;
@@ -38,7 +39,10 @@ class PhotoAltGeneratorService {
   private model: GenerativeModel;
 
   constructor() {
-    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY environment variable is required');
+    }
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
   }
 
@@ -81,9 +85,24 @@ Flags to include if applicable:
     const response = await result.response;
     const text = response.text();
     
-    const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+    let parsed;
+    try {
+      parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+    } catch (parseError) {
+      logger.error('Failed to parse Gemini response as JSON:', { text: text.substring(0, 500), error: parseError });
+      return {
+        imageId: '',
+        shortAlt: 'Image description unavailable',
+        extendedAlt: '',
+        confidence: 0,
+        flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'] as AltTextFlag[],
+        aiModel: 'gemini-1.5-pro',
+        generatedAt: new Date(),
+      };
+    }
     
-    if (parsed.confidence < 70 && !parsed.flags.includes('LOW_CONFIDENCE')) {
+    if (parsed.confidence < 70 && !parsed.flags?.includes('LOW_CONFIDENCE')) {
+      parsed.flags = parsed.flags || [];
       parsed.flags.push('LOW_CONFIDENCE');
     }
 

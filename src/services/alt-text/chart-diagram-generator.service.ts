@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import { logger } from '../../lib/logger';
 
 type ImageType = 
   | 'BAR_CHART'
@@ -38,7 +39,10 @@ class ChartDiagramGeneratorService {
   private model: GenerativeModel;
 
   constructor() {
-    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY environment variable is required');
+    }
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
   }
 
@@ -108,7 +112,22 @@ Return ONLY the category name, nothing else.
       const response = await result.response;
       const text = response.text();
       
-      const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      let parsed;
+      try {
+        parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      } catch (parseError) {
+        logger.error('Failed to parse chart description JSON:', { text: text.substring(0, 500), error: parseError });
+        return {
+          imageId: '',
+          imageType,
+          shortAlt: `${this.formatImageType(imageType)} requiring manual description`,
+          longDescription: 'Unable to parse AI response. Manual review required.',
+          confidence: 0,
+          flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'],
+          aiModel: 'gemini-1.5-pro',
+          generatedAt: new Date(),
+        };
+      }
 
       return {
         imageId: '',
@@ -124,7 +143,7 @@ Return ONLY the category name, nothing else.
         generatedAt: new Date(),
       };
     } catch (error) {
-      console.error('Chart description generation failed:', error);
+      logger.error('Chart description generation failed:', error);
       return {
         imageId: '',
         imageType,

@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+import { logger } from '../../lib/logger';
 
 interface LongDescription {
   id: string;
@@ -33,7 +34,10 @@ class LongDescriptionGeneratorService {
   private model: GenerativeModel;
 
   constructor() {
-    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('GEMINI_API_KEY environment variable is required');
+    }
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
   }
 
@@ -119,24 +123,31 @@ Return JSON only (no markdown):
       const result = await this.model.generateContent([prompt, imagePart]);
       const response = await result.response;
       const text = response.text();
-      const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      
+      let parsed;
+      try {
+        parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+      } catch (parseError) {
+        logger.error('Failed to parse long description JSON:', { text: text.substring(0, 500), error: parseError });
+        throw new Error('Failed to parse AI response as JSON');
+      }
 
       return {
         id: '',
         imageId: '',
         jobId: '',
         content: {
-          html: parsed.html || this.textToHtml(parsed.plainText),
-          plainText: parsed.plainText,
-          markdown: parsed.markdown || parsed.plainText,
+          html: parsed.html || this.textToHtml(parsed.plainText || ''),
+          plainText: parsed.plainText || '',
+          markdown: parsed.markdown || parsed.plainText || '',
         },
-        wordCount: parsed.wordCount || this.countWords(parsed.plainText),
+        wordCount: parsed.wordCount || this.countWords(parsed.plainText || ''),
         sections: parsed.sections,
         generatedAt: new Date(),
         aiModel: 'gemini-1.5-pro',
       };
     } catch (error) {
-      console.error('Long description generation failed:', error);
+      logger.error('Long description generation failed:', error);
       throw error;
     }
   }
@@ -150,6 +161,15 @@ Return JSON only (no markdown):
     return text.split(/\s+/).filter(w => w.length > 0).length;
   }
 
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   generateAriaMarkup(
     imageId: string,
     shortAlt: string,
@@ -158,8 +178,8 @@ Return JSON only (no markdown):
     imgTag: string;
     descriptionDiv: string;
   } {
-    const descId = `desc-${imageId}`;
-    const escapedAlt = shortAlt.replace(/"/g, '&quot;');
+    const descId = `desc-${this.escapeHtml(imageId)}`;
+    const escapedAlt = this.escapeHtml(shortAlt);
     
     return {
       imgTag: `<img src="..." alt="${escapedAlt}" aria-describedby="${descId}" />`,
