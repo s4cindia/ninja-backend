@@ -439,5 +439,285 @@ export const altTextController = {
         error: 'Failed to classify image' 
       });
     }
+  },
+
+  async getReviewQueue(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { status, minConfidence, maxConfidence, flags } = req.query;
+      
+      const where: any = { jobId };
+      
+      if (status) {
+        where.status = status;
+      }
+      
+      if (minConfidence || maxConfidence) {
+        where.confidence = {};
+        if (minConfidence) where.confidence.gte = parseFloat(minConfidence as string);
+        if (maxConfidence) where.confidence.lte = parseFloat(maxConfidence as string);
+      }
+      
+      if (flags) {
+        const flagList = (flags as string).split(',');
+        where.flags = { hasSome: flagList };
+      }
+      
+      const items = await prisma.generatedAltText.findMany({
+        where,
+        orderBy: [
+          { confidence: 'asc' },
+          { createdAt: 'desc' },
+        ],
+      });
+      
+      const allItems = await prisma.generatedAltText.findMany({ where: { jobId } });
+      const stats = {
+        total: allItems.length,
+        pending: allItems.filter(i => i.status === 'pending').length,
+        needsReview: allItems.filter(i => i.status === 'needs_review').length,
+        approved: allItems.filter(i => i.status === 'approved').length,
+        edited: allItems.filter(i => i.status === 'edited').length,
+        rejected: allItems.filter(i => i.status === 'rejected').length,
+      };
+      
+      res.json({
+        success: true,
+        data: {
+          items,
+          stats,
+          pendingReview: stats.needsReview + stats.pending,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to get review queue:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get review queue' 
+      });
+    }
+  },
+
+  async approve(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { approvedAlt, notes } = req.body;
+      const userId = (req as any).user?.id || 'system';
+      
+      const existing = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      if (!existing) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Alt text record not found' 
+        });
+      }
+      
+      const isEdited = approvedAlt && approvedAlt !== existing.shortAlt;
+      
+      const updated = await prisma.generatedAltText.update({
+        where: { id },
+        data: {
+          status: isEdited ? 'edited' : 'approved',
+          approvedAlt: approvedAlt || existing.shortAlt,
+          approvedBy: userId,
+          approvedAt: new Date(),
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: updated,
+      });
+    } catch (error) {
+      console.error('Failed to approve alt text:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to approve alt text' 
+      });
+    }
+  },
+
+  async reject(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const userId = (req as any).user?.id || 'system';
+      
+      const updated = await prisma.generatedAltText.update({
+        where: { id },
+        data: {
+          status: 'rejected',
+          approvedBy: userId,
+          approvedAt: new Date(),
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: updated,
+        message: 'Alt text rejected. Regenerate or provide manual alt text.',
+      });
+    } catch (error) {
+      console.error('Failed to reject alt text:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to reject alt text' 
+      });
+    }
+  },
+
+  async regenerate(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { additionalContext, useContextAware } = req.body;
+      
+      const existing = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      if (!existing) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Alt text record not found' 
+        });
+      }
+      
+      const file = await prisma.file.findFirst({
+        where: { id: existing.imageId }
+      });
+      
+      if (!file) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const imageBuffer = await fs.readFile(file.path);
+      let result;
+      
+      if (useContextAware) {
+        const context = await contextExtractor.extractContext(existing.jobId, existing.imageId);
+        if (additionalContext) {
+          context.textBefore = additionalContext + '\n' + context.textBefore;
+        }
+        const { contextAware } = await photoAltGenerator.generateContextAwareAltText(
+          imageBuffer,
+          file.mimeType || 'image/jpeg',
+          context
+        );
+        result = contextAware;
+      } else {
+        result = await photoAltGenerator.generateAltText(
+          imageBuffer,
+          file.mimeType || 'image/jpeg'
+        );
+      }
+      
+      const updated = await prisma.generatedAltText.update({
+        where: { id },
+        data: {
+          shortAlt: result.shortAlt,
+          extendedAlt: result.extendedAlt || '',
+          confidence: result.confidence,
+          flags: [...result.flags, 'REGENERATED'],
+          status: photoAltGenerator.needsHumanReview(result) ? 'needs_review' : 'pending',
+          approvedAlt: null,
+          approvedBy: null,
+          approvedAt: null,
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: updated,
+      });
+    } catch (error) {
+      console.error('Failed to regenerate alt text:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to regenerate alt text' 
+      });
+    }
+  },
+
+  async batchApprove(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { minConfidence = 85, ids } = req.body;
+      const userId = (req as any).user?.id || 'system';
+      
+      let where: any = { jobId };
+      
+      if (ids && ids.length > 0) {
+        where.id = { in: ids };
+      } else {
+        where.confidence = { gte: minConfidence };
+        where.status = { in: ['pending', 'needs_review'] };
+        where.NOT = {
+          flags: { hasSome: ['FACE_DETECTED', 'SENSITIVE_CONTENT', 'LOW_CONFIDENCE'] }
+        };
+      }
+      
+      const result = await prisma.generatedAltText.updateMany({
+        where,
+        data: {
+          status: 'approved',
+          approvedBy: userId,
+          approvedAt: new Date(),
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          approved: result.count,
+          message: `Batch approved ${result.count} items`,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to batch approve:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to batch approve' 
+      });
+    }
+  },
+
+  async getById(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      
+      const altText = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      if (!altText) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Alt text record not found' 
+        });
+      }
+      
+      const thumbnailUrl = `/api/v1/images/${altText.jobId}/${altText.imageId}/thumbnail`;
+      
+      res.json({
+        success: true,
+        data: {
+          ...altText,
+          thumbnailUrl,
+          needsReview: ['pending', 'needs_review'].includes(altText.status),
+        },
+      });
+    } catch (error) {
+      console.error('Failed to get alt text:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get alt text' 
+      });
+    }
   }
 };

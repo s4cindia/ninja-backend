@@ -22,6 +22,18 @@ router.post('/job/:jobId/generate', altTextController.generateForJob);
 
 router.get('/job/:jobId', altTextController.getForJob);
 
+router.get('/job/:jobId/review-queue', altTextController.getReviewQueue);
+
+router.post('/job/:jobId/batch-approve', altTextController.batchApprove);
+
+router.get('/:id', altTextController.getById);
+
 router.patch('/:id', altTextController.updateAltText);
+
+router.post('/:id/approve', altTextController.approve);
+
+router.post('/:id/reject', altTextController.reject);
+
+router.post('/:id/regenerate', altTextController.regenerate);
 
 export default router;
