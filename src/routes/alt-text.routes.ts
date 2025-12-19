@@ -36,4 +36,12 @@ router.post('/:id/reject', altTextController.reject);
 
 router.post('/:id/regenerate', altTextController.regenerate);
 
+router.get('/:id/long-description/check', altTextController.checkLongDescriptionNeeded);
+
+router.post('/:id/long-description', altTextController.generateLongDescription);
+
+router.get('/:id/long-description', altTextController.getLongDescription);
+
+router.patch('/long-description/:id', altTextController.updateLongDescription);
+
 export default router;

@@ -37,6 +37,7 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Context-Aware Alt Text:** Extracts document context (surrounding text, headings, captions) to generate more relevant descriptions, providing both context-aware and standalone versions.
     -   **Chart/Diagram Descriptions:** Classifies images into types (e.g., BAR_CHART, LINE_CHART) and uses specialized prompts to extract data, analyze trends, and summarize key findings for complex visualizations, generating longer descriptions where needed.
     -   **Human Review Workflow:** Complete workflow for reviewing AI-generated alt text including review queue with filtering by status/confidence/flags, approve/edit/reject actions, regeneration with context, batch approval for high-confidence items (>85%), and audit trail tracking.
+    -   **Long Descriptions:** Generates detailed prose descriptions (300-500 words) for complex images with aria-describedby support. Includes trigger detection (COMPLEX_CHART, FLOWCHART, DATA_TABLE, etc.), structured sections, and multiple output formats (HTML, Markdown, plain text).
 
 **UI/UX Decisions:**
 -   API Base Path: `/api/v1/`

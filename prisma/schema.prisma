@@ -233,3 +233,26 @@ model GeneratedAltText {
   @@index([imageId])
   @@index([status])
 }
+
+model LongDescription {
+  id              String    @id @default(uuid())
+  imageId         String
+  jobId           String
+  altTextId       String?
+  trigger         String
+  plainText       String
+  markdown        String
+  html            String
+  wordCount       Int
+  sections        Json?
+  status          String    @default("pending")
+  approvedBy      String?
+  approvedAt      DateTime?
+  aiModel         String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([imageId])
+  @@index([altTextId])
+}

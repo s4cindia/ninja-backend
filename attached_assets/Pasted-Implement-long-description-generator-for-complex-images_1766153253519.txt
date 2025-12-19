@@ -1,0 +1,465 @@
+Implement long description generator for complex images with aria-describedby support.
+
+**Create file: `src/services/alt-text/long-description-generator.service.ts`**
+
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import prisma from '../../lib/prisma';
+
+interface LongDescription {
+  id: string;
+  imageId: string;
+  jobId: string;
+  content: {
+    html: string;
+    plainText: string;
+    markdown: string;
+  };
+  wordCount: number;
+  sections?: DescriptionSection[];
+  generatedAt: Date;
+  aiModel: string;
+}
+
+interface DescriptionSection {
+  heading: string;
+  content: string;
+}
+
+// Trigger conditions for long descriptions
+type LongDescriptionTrigger = 
+  | 'COMPLEX_CHART'      // Multiple data series
+  | 'MANY_COMPONENTS'    // >5 distinct elements
+  | 'DENSE_INFORMATION'  // High information density
+  | 'DATA_TABLE'         // Contains tabular data
+  | 'FLOWCHART'          // Process or decision flow
+  | 'MANUAL_REQUEST';    // User requested
+
+class LongDescriptionGeneratorService {
+  private genAI: GoogleGenerativeAI;
+  private model: any;
+
+  constructor() {
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  }
+
+  /**
+   * Determine if image needs a long description
+   */
+  needsLongDescription(
+    imageType: string,
+    flags: string[],
+    shortAltLength: number
+  ): { needed: boolean; triggers: LongDescriptionTrigger[] } {
+    const triggers: LongDescriptionTrigger[] = [];
+
+    // Check image type
+    const complexTypes = ['BAR_CHART', 'LINE_CHART', 'PIE_CHART', 'SCATTER_PLOT', 'TABLE_IMAGE'];
+    if (complexTypes.includes(imageType)) {
+      triggers.push('COMPLEX_CHART');
+    }
+
+    if (imageType === 'FLOWCHART' || imageType === 'ORG_CHART') {
+      triggers.push('FLOWCHART');
+    }
+
+    // Check flags
+    if (flags.includes('COMPLEX_IMAGE') || flags.includes('DATA_VISUALIZATION')) {
+      triggers.push('DENSE_INFORMATION');
+    }
+
+    if (flags.includes('DATA_EXTRACTED')) {
+      triggers.push('DATA_TABLE');
+    }
+
+    // If short alt was truncated, likely needs more
+    if (shortAltLength >= 120) {
+      triggers.push('MANY_COMPONENTS');
+    }
+
+    return {
+      needed: triggers.length > 0,
+      triggers,
+    };
+  }
+
+  /**
+   * Generate long description for complex image
+   */
+  async generateLongDescription(
+    imageBuffer: Buffer,
+    mimeType: string,
+    trigger: LongDescriptionTrigger,
+    existingShortAlt?: string
+  ): Promise<LongDescription> {
+    const prompt = `
+Generate a comprehensive long description for this image to be used with aria-describedby for accessibility.
+
+${existingShortAlt ? `Short alt text: "${existingShortAlt}"` : ''}
+
+Trigger: ${trigger}
+
+Requirements:
+- Write a detailed prose description (300-500 words)
+- Structure with clear sections if the image has distinct parts
+- For charts/graphs: describe all data points, trends, and axes
+- For flowcharts: describe each step and decision in sequence
+- For diagrams: explain all components and their relationships
+- For tables: describe all rows and columns of data
+- Use clear, plain language
+- Do NOT use "Image shows" or similar phrases
+- Present tense
+
+Return JSON only (no markdown):
+{
+  "plainText": "Full prose description...",
+  "markdown": "# Title\\n\\nDescription with **emphasis** and structure...",
+  "html": "<h2>Title</h2><p>Description...</p>",
+  "sections": [
+    { "heading": "Overview", "content": "..." },
+    { "heading": "Data Details", "content": "..." }
+  ],
+  "wordCount": 350
+}
+`;
+
+    const imagePart = {
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType,
+      },
+    };
+
+    try {
+      const result = await this.model.generateContent([prompt, imagePart]);
+      const response = await result.response;
+      const text = response.text();
+      const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+
+      return {
+        id: '',
+        imageId: '',
+        jobId: '',
+        content: {
+          html: parsed.html || this.textToHtml(parsed.plainText),
+          plainText: parsed.plainText,
+          markdown: parsed.markdown || parsed.plainText,
+        },
+        wordCount: parsed.wordCount || this.countWords(parsed.plainText),
+        sections: parsed.sections,
+        generatedAt: new Date(),
+        aiModel: 'gemini-1.5-pro',
+      };
+    } catch (error) {
+      console.error('Long description generation failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Convert plain text to basic HTML
+   */
+  private textToHtml(text: string): string {
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+    return paragraphs.map(p => `<p>${p.trim()}</p>`).join('\n');
+  }
+
+  /**
+   * Count words in text
+   */
+  private countWords(text: string): number {
+    return text.split(/\s+/).filter(w => w.length > 0).length;
+  }
+
+  /**
+   * Generate aria-describedby compatible markup
+   */
+  generateAriaMarkup(
+    imageId: string,
+    shortAlt: string,
+    longDescription: LongDescription
+  ): {
+    imgTag: string;
+    descriptionDiv: string;
+  } {
+    const descId = `desc-${imageId}`;
+    
+    return {
+      imgTag: `<img src="..." alt="${shortAlt}" aria-describedby="${descId}" />`,
+      descriptionDiv: `<div id="${descId}" class="sr-only">\n${longDescription.content.html}\n</div>`,
+    };
+  }
+}
+
+export const longDescriptionGenerator = new LongDescriptionGeneratorService();
+
+**Update Prisma schema - add LongDescription model:**
+
+model LongDescription {
+  id              String    @id @default(uuid())
+  imageId         String
+  jobId           String
+  altTextId       String?   // Reference to GeneratedAltText
+  trigger         String    // What triggered generation
+  plainText       String    @db.Text
+  markdown        String    @db.Text
+  html            String    @db.Text
+  wordCount       Int
+  sections        Json?     // Structured sections
+  status          String    @default("pending") // pending, approved, edited
+  approvedBy      String?
+  approvedAt      DateTime?
+  aiModel         String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([imageId])
+  @@index([altTextId])
+}
+
+Run: npx prisma migrate dev --name add_long_description
+
+**Update file: `src/controllers/alt-text.controller.ts`**
+
+Add import and methods:
+
+import { longDescriptionGenerator } from '../services/alt-text/long-description-generator.service';
+
+// Check if image needs long description
+async checkLongDescriptionNeeded(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    
+    const altText = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    if (!altText) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Alt text record not found' 
+      });
+    }
+    
+    // Determine image type from flags or default to PHOTO
+    const imageType = altText.flags.find(f => 
+      ['BAR_CHART', 'LINE_CHART', 'PIE_CHART', 'FLOWCHART', 'DIAGRAM', 'TABLE_IMAGE'].includes(f)
+    ) || 'PHOTO';
+    
+    const result = longDescriptionGenerator.needsLongDescription(
+      imageType,
+      altText.flags,
+      altText.shortAlt.length
+    );
+    
+    res.json({
+      success: true,
+      data: {
+        imageId: altText.imageId,
+        altTextId: id,
+        ...result,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to check long description need:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to check long description need' 
+    });
+  }
+},
+
+// Generate long description
+async generateLongDescription(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { trigger = 'MANUAL_REQUEST' } = req.body;
+    
+    const altText = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    if (!altText) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Alt text record not found' 
+      });
+    }
+    
+    // Get image from S3
+    const imageKey = `images/${altText.jobId}/${altText.imageId}`;
+    const imageData = await s3Service.getObject(imageKey);
+    
+    if (!imageData) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Image not found' 
+      });
+    }
+    
+    const result = await longDescriptionGenerator.generateLongDescription(
+      imageData.buffer,
+      imageData.mimeType || 'image/jpeg',
+      trigger,
+      altText.shortAlt
+    );
+    
+    // Store in database
+    const saved = await prisma.longDescription.create({
+      data: {
+        imageId: altText.imageId,
+        jobId: altText.jobId,
+        altTextId: id,
+        trigger,
+        plainText: result.content.plainText,
+        markdown: result.content.markdown,
+        html: result.content.html,
+        wordCount: result.wordCount,
+        sections: result.sections || [],
+        aiModel: result.aiModel,
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        id: saved.id,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to generate long description:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to generate long description' 
+    });
+  }
+},
+
+// Get long description for an image
+async getLongDescription(req: Request, res: Response) {
+  try {
+    const { id } = req.params; // altTextId
+    
+    const longDesc = await prisma.longDescription.findFirst({
+      where: { altTextId: id },
+      orderBy: { createdAt: 'desc' },
+    });
+    
+    if (!longDesc) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Long description not found' 
+      });
+    }
+    
+    // Get related alt text
+    const altText = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    // Generate aria markup
+    const ariaMarkup = longDescriptionGenerator.generateAriaMarkup(
+      longDesc.imageId,
+      altText?.shortAlt || '',
+      {
+        id: longDesc.id,
+        imageId: longDesc.imageId,
+        jobId: longDesc.jobId,
+        content: {
+          html: longDesc.html,
+          plainText: longDesc.plainText,
+          markdown: longDesc.markdown,
+        },
+        wordCount: longDesc.wordCount,
+        sections: longDesc.sections as any,
+        generatedAt: longDesc.createdAt,
+        aiModel: longDesc.aiModel,
+      }
+    );
+    
+    res.json({
+      success: true,
+      data: {
+        ...longDesc,
+        ariaMarkup,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get long description:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get long description' 
+    });
+  }
+},
+
+// Update/approve long description
+async updateLongDescription(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { plainText, markdown, html, status } = req.body;
+    const userId = req.user?.id || 'system';
+    
+    const updateData: any = { updatedAt: new Date() };
+    
+    if (plainText) updateData.plainText = plainText;
+    if (markdown) updateData.markdown = markdown;
+    if (html) updateData.html = html;
+    if (status) {
+      updateData.status = status;
+      if (status === 'approved') {
+        updateData.approvedBy = userId;
+        updateData.approvedAt = new Date();
+      }
+    }
+    
+    // Recalculate word count if text changed
+    if (plainText) {
+      updateData.wordCount = plainText.split(/\s+/).filter((w: string) => w.length > 0).length;
+    }
+    
+    const updated = await prisma.longDescription.update({
+      where: { id },
+      data: updateData,
+    });
+    
+    res.json({
+      success: true,
+      data: updated,
+    });
+  } catch (error) {
+    console.error('Failed to update long description:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update long description' 
+    });
+  }
+},
+
+**Update file: `src/routes/alt-text.routes.ts`**
+
+Add routes:
+
+// Long description endpoints
+router.get('/:id/long-description/check', altTextController.checkLongDescriptionNeeded);
+router.post('/:id/long-description', altTextController.generateLongDescription);
+router.get('/:id/long-description', altTextController.getLongDescription);
+router.patch('/long-description/:id', altTextController.updateLongDescription);
+
+**API Summary:**
+
+GET  /api/v1/alt-text/:id/long-description/check  - Check if image needs long description
+POST /api/v1/alt-text/:id/long-description        - Generate long description
+GET  /api/v1/alt-text/:id/long-description        - Get existing long description
+PATCH /api/v1/alt-text/long-description/:id       - Update/approve long description
+
+**Acceptance Criteria:**
+- [ ] Detect when images need long descriptions (charts, diagrams, complex images)
+- [ ] Generate descriptions up to 500 words
+- [ ] Support HTML, plain text, and Markdown formats
+- [ ] Structure with sections for complex images
+- [ ] Generate aria-describedby compatible markup
+- [ ] Store and retrieve long descriptions
+- [ ] Allow editing and approval

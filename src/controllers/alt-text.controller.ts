@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { photoAltGenerator } from '../services/alt-text/photo-alt-generator.service';
 import { contextExtractor } from '../services/alt-text/context-extractor.service';
 import { chartDiagramGenerator } from '../services/alt-text/chart-diagram-generator.service';
+import { longDescriptionGenerator } from '../services/alt-text/long-description-generator.service';
 import prisma from '../lib/prisma';
 import fs from 'fs/promises';
 import path from 'path';
@@ -717,6 +718,211 @@ export const altTextController = {
       res.status(500).json({ 
         success: false, 
         error: 'Failed to get alt text' 
+      });
+    }
+  },
+
+  async checkLongDescriptionNeeded(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      
+      const altText = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      if (!altText) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Alt text record not found' 
+        });
+      }
+      
+      const imageType = altText.flags.find(f => 
+        ['BAR_CHART', 'LINE_CHART', 'PIE_CHART', 'FLOWCHART', 'DIAGRAM', 'TABLE_IMAGE'].includes(f)
+      ) || 'PHOTO';
+      
+      const result = longDescriptionGenerator.needsLongDescription(
+        imageType,
+        altText.flags,
+        altText.shortAlt.length
+      );
+      
+      res.json({
+        success: true,
+        data: {
+          imageId: altText.imageId,
+          altTextId: id,
+          ...result,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to check long description need:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to check long description need' 
+      });
+    }
+  },
+
+  async generateLongDescription(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { trigger = 'MANUAL_REQUEST' } = req.body;
+      
+      const altText = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      if (!altText) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Alt text record not found' 
+        });
+      }
+      
+      const file = await prisma.file.findFirst({
+        where: { id: altText.imageId }
+      });
+      
+      if (!file) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const imageBuffer = await fs.readFile(file.path);
+      
+      const result = await longDescriptionGenerator.generateLongDescription(
+        imageBuffer,
+        file.mimeType || 'image/jpeg',
+        trigger,
+        altText.shortAlt
+      );
+      
+      const saved = await prisma.longDescription.create({
+        data: {
+          imageId: altText.imageId,
+          jobId: altText.jobId,
+          altTextId: id,
+          trigger,
+          plainText: result.content.plainText,
+          markdown: result.content.markdown,
+          html: result.content.html,
+          wordCount: result.wordCount,
+          sections: result.sections || [],
+          aiModel: result.aiModel,
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          ...result,
+          id: saved.id,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to generate long description:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to generate long description' 
+      });
+    }
+  },
+
+  async getLongDescription(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      
+      const longDesc = await prisma.longDescription.findFirst({
+        where: { altTextId: id },
+        orderBy: { createdAt: 'desc' },
+      });
+      
+      if (!longDesc) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Long description not found' 
+        });
+      }
+      
+      const altText = await prisma.generatedAltText.findUnique({
+        where: { id },
+      });
+      
+      const ariaMarkup = longDescriptionGenerator.generateAriaMarkup(
+        longDesc.imageId,
+        altText?.shortAlt || '',
+        {
+          id: longDesc.id,
+          imageId: longDesc.imageId,
+          jobId: longDesc.jobId,
+          content: {
+            html: longDesc.html,
+            plainText: longDesc.plainText,
+            markdown: longDesc.markdown,
+          },
+          wordCount: longDesc.wordCount,
+          sections: longDesc.sections as any,
+          generatedAt: longDesc.createdAt,
+          aiModel: longDesc.aiModel,
+        }
+      );
+      
+      res.json({
+        success: true,
+        data: {
+          ...longDesc,
+          ariaMarkup,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to get long description:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get long description' 
+      });
+    }
+  },
+
+  async updateLongDescription(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { plainText, markdown, html, status } = req.body;
+      const userId = (req as any).user?.id || 'system';
+      
+      const updateData: any = { updatedAt: new Date() };
+      
+      if (plainText) updateData.plainText = plainText;
+      if (markdown) updateData.markdown = markdown;
+      if (html) updateData.html = html;
+      if (status) {
+        updateData.status = status;
+        if (status === 'approved') {
+          updateData.approvedBy = userId;
+          updateData.approvedAt = new Date();
+        }
+      }
+      
+      if (plainText) {
+        updateData.wordCount = plainText.split(/\s+/).filter((w: string) => w.length > 0).length;
+      }
+      
+      const updated = await prisma.longDescription.update({
+        where: { id },
+        data: updateData,
+      });
+      
+      res.json({
+        success: true,
+        data: updated,
+      });
+    } catch (error) {
+      console.error('Failed to update long description:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to update long description' 
       });
     }
   }
