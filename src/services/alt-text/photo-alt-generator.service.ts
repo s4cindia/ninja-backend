@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import type { DocumentContext } from './context-extractor.service';
 
 interface AltTextGenerationResult {
@@ -35,7 +35,7 @@ const MAX_EXTENDED_ALT_LENGTH = 250;
 
 class PhotoAltGeneratorService {
   private genAI: GoogleGenerativeAI;
-  private model: any;
+  private model: GenerativeModel;
 
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);

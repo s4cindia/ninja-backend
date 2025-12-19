@@ -1,0 +1,81 @@
+Fix ESLint warnings in alt-text files. The CI is failing because there are too many warnings.
+
+**Fix src/controllers/alt-text.controller.ts:**
+
+1. Line 505 - Remove unused 'notes' variable or prefix with underscore:
+   const { approvedAlt, notes } = req.body;
+   Change to:
+   const { approvedAlt, _notes } = req.body;
+   Or remove if not needed.
+
+2. Line 547 - Remove unused 'reason' variable or prefix with underscore:
+   const { reason } = req.body;
+   Change to:
+   const { _reason } = req.body;
+   Or remove if not needed.
+
+3. Replace all `any` types with proper types. Examples:
+   - Line 116: `const where: any = { jobId };`
+     Change to: `const where: { jobId: string; status?: string; confidence?: { gte?: number; lte?: number }; flags?: { hasSome: string[] }; NOT?: object } = { jobId };`
+   
+   - Line 205, 232, 450, 506, 548, 652, 654, 867, 893, 895: Replace `any` with specific types or use `unknown` if type is truly unknown.
+
+**Fix src/services/alt-text/chart-diagram-generator.service.ts:**
+
+1. Line 38 - Replace `private model: any;` with:
+   `private model: GenerativeModel;`
+   Add import: `import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';`
+
+2. Line 272 - Replace `any` in determineFlags with proper type:
+   `private determineFlags(imageType: ImageType, parsed: { dataTable?: DataTableRow[]; confidence?: number }): string[]`
+
+**Fix src/services/alt-text/context-extractor.service.ts:**
+
+Replace all `any` types with proper interfaces. Create these types at the top:
+
+interface ParsedContent {
+  title?: string;
+  elements?: ParsedElement[];
+}
+
+interface ParsedElement {
+  type: string;
+  id?: string;
+  src?: string;
+  content?: string;
+  text?: string;
+  tag?: string;
+  level?: number;
+  page?: number;
+}
+
+interface ImagePosition {
+  index: number;
+  page?: number;
+}
+
+Then update method signatures:
+- Line 51: `private async getParsedContent(jobId: string): Promise<ParsedContent | null>`
+- Line 73: `private findImagePosition(parsedContent: ParsedContent, imageId: string): ImagePosition | null`
+- Line 91: `private extractTextBefore(parsedContent: ParsedContent, position: ImagePosition | null, maxChars: number): string`
+- Line 109: `private extractTextAfter(parsedContent: ParsedContent, position: ImagePosition | null, maxChars: number): string`
+- Line 127: `private findNearestHeading(parsedContent: ParsedContent, position: ImagePosition | null): string`
+- Line 143: `private detectCaption(parsedContent: ParsedContent, position: ImagePosition | null): string | undefined`
+- Line 161: `private findChapterTitle(parsedContent: ParsedContent, position: ImagePosition | null): string | undefined`
+
+**Fix src/services/alt-text/long-description-generator.service.ts:**
+
+Line 33 - Replace `private model: any;` with:
+`private model: GenerativeModel;`
+Add import: `import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';`
+
+**Fix src/services/alt-text/photo-alt-generator.service.ts:**
+
+Line 38 - Replace `private model: any;` with:
+`private model: GenerativeModel;`
+Add import: `import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';`
+
+After fixes, run:
+npm run lint
+
+The goal is to reduce warnings to under 60.

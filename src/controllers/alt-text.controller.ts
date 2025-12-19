@@ -113,7 +113,8 @@ export const altTextController = {
         });
       }
       
-      const jobOutput = job.output as any;
+      interface ExtractedImage { id?: string; path?: string; mimeType?: string }
+      const jobOutput = job.output as { extractedImages?: ExtractedImage[] } | null;
       const extractedImages = jobOutput?.extractedImages || [];
       
       if (extractedImages.length === 0) {
@@ -202,9 +203,9 @@ export const altTextController = {
       const { jobId } = req.params;
       const { status } = req.query;
       
-      const where: any = { jobId };
+      const where: { jobId: string; status?: string } = { jobId };
       if (status) {
-        where.status = status;
+        where.status = status as string;
       }
       
       const altTexts = await prisma.generatedAltText.findMany({
@@ -229,7 +230,7 @@ export const altTextController = {
     try {
       const { id } = req.params;
       const { approvedAlt, status } = req.body;
-      const userId = (req as any).user?.id;
+      const userId = (req as Request & { user?: { id: string } }).user?.id;
 
       const altText = await prisma.generatedAltText.findUnique({
         where: { id }
@@ -447,10 +448,16 @@ export const altTextController = {
       const { jobId } = req.params;
       const { status, minConfidence, maxConfidence, flags } = req.query;
       
-      const where: any = { jobId };
+      interface WhereClause {
+        jobId: string;
+        status?: string;
+        confidence?: { gte?: number; lte?: number };
+        flags?: { hasSome: string[] };
+      }
+      const where: WhereClause = { jobId };
       
       if (status) {
-        where.status = status;
+        where.status = status as string;
       }
       
       if (minConfidence || maxConfidence) {
@@ -502,8 +509,8 @@ export const altTextController = {
   async approve(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { approvedAlt, notes } = req.body;
-      const userId = (req as any).user?.id || 'system';
+      const { approvedAlt } = req.body;
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'system';
       
       const existing = await prisma.generatedAltText.findUnique({
         where: { id },
@@ -544,8 +551,7 @@ export const altTextController = {
   async reject(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { reason } = req.body;
-      const userId = (req as any).user?.id || 'system';
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'system';
       
       const updated = await prisma.generatedAltText.update({
         where: { id },
@@ -649,9 +655,16 @@ export const altTextController = {
     try {
       const { jobId } = req.params;
       const { minConfidence = 85, ids } = req.body;
-      const userId = (req as any).user?.id || 'system';
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'system';
       
-      let where: any = { jobId };
+      interface BatchWhereClause {
+        jobId: string;
+        id?: { in: string[] };
+        confidence?: { gte: number };
+        status?: { in: string[] };
+        NOT?: { flags: { hasSome: string[] } };
+      }
+      const where: BatchWhereClause = { jobId };
       
       if (ids && ids.length > 0) {
         where.id = { in: ids };
@@ -864,7 +877,7 @@ export const altTextController = {
             markdown: longDesc.markdown,
           },
           wordCount: longDesc.wordCount,
-          sections: longDesc.sections as any,
+          sections: longDesc.sections as { heading: string; content: string }[] | undefined,
           generatedAt: longDesc.createdAt,
           aiModel: longDesc.aiModel,
         }
@@ -890,9 +903,19 @@ export const altTextController = {
     try {
       const { id } = req.params;
       const { plainText, markdown, html, status } = req.body;
-      const userId = (req as any).user?.id || 'system';
+      const userId = (req as Request & { user?: { id: string } }).user?.id || 'system';
       
-      const updateData: any = { updatedAt: new Date() };
+      interface LongDescUpdateData {
+        updatedAt: Date;
+        plainText?: string;
+        markdown?: string;
+        html?: string;
+        status?: string;
+        approvedBy?: string;
+        approvedAt?: Date;
+        wordCount?: number;
+      }
+      const updateData: LongDescUpdateData = { updatedAt: new Date() };
       
       if (plainText) updateData.plainText = plainText;
       if (markdown) updateData.markdown = markdown;

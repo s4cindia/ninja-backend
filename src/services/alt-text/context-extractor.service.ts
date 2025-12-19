@@ -10,6 +10,27 @@ interface DocumentContext {
   pageNumber?: number;
 }
 
+interface ParsedElement {
+  type: string;
+  id?: string;
+  src?: string;
+  content?: string;
+  text?: string;
+  tag?: string;
+  level?: number;
+  page?: number;
+}
+
+interface ParsedContent {
+  title?: string;
+  elements?: ParsedElement[];
+}
+
+interface ImagePosition {
+  index: number;
+  page?: number;
+}
+
 class ContextExtractorService {
   async extractContext(
     jobId: string,
@@ -23,10 +44,10 @@ class ContextExtractorService {
       return this.getDefaultContext();
     }
 
-    const jobInput = job.input as any;
-    const jobOutput = job.output as any;
+    const jobInput = job.input as Record<string, unknown>;
+    const jobOutput = job.output as Record<string, unknown>;
     const parsedContent = this.getParsedContent(jobOutput);
-    const documentName = jobInput?.fileName || jobInput?.documentName || 'Unknown Document';
+    const documentName = (jobInput?.fileName || jobInput?.documentName || 'Unknown Document') as string;
     
     if (!parsedContent) {
       return {
@@ -48,18 +69,18 @@ class ContextExtractorService {
     };
   }
 
-  private getParsedContent(jobOutput: any): any {
+  private getParsedContent(jobOutput: Record<string, unknown>): ParsedContent | null {
     try {
       if (!jobOutput) return null;
       
       if (jobOutput.parsedContent) {
         return typeof jobOutput.parsedContent === 'string'
           ? JSON.parse(jobOutput.parsedContent)
-          : jobOutput.parsedContent;
+          : jobOutput.parsedContent as ParsedContent;
       }
       
       if (jobOutput.elements) {
-        return jobOutput;
+        return jobOutput as unknown as ParsedContent;
       }
 
       return null;
@@ -70,13 +91,13 @@ class ContextExtractorService {
   }
 
   private findImagePosition(
-    parsedContent: any, 
+    parsedContent: ParsedContent, 
     imageId: string
-  ): { index: number; page?: number } | null {
+  ): ImagePosition | null {
     if (!parsedContent.elements) return null;
 
     const index = parsedContent.elements.findIndex(
-      (el: any) => el.type === 'image' && (el.id === imageId || el.src?.includes(imageId))
+      (el: ParsedElement) => el.type === 'image' && (el.id === imageId || el.src?.includes(imageId))
     );
 
     if (index === -1) return null;
@@ -88,8 +109,8 @@ class ContextExtractorService {
   }
 
   private extractTextBefore(
-    parsedContent: any, 
-    position: { index: number } | null, 
+    parsedContent: ParsedContent, 
+    position: ImagePosition | null, 
     maxChars: number
   ): string {
     if (!position || !parsedContent.elements) return '';
@@ -106,8 +127,8 @@ class ContextExtractorService {
   }
 
   private extractTextAfter(
-    parsedContent: any, 
-    position: { index: number } | null, 
+    parsedContent: ParsedContent, 
+    position: ImagePosition | null, 
     maxChars: number
   ): string {
     if (!position || !parsedContent.elements) return '';
@@ -124,8 +145,8 @@ class ContextExtractorService {
   }
 
   private findNearestHeading(
-    parsedContent: any, 
-    position: { index: number } | null
+    parsedContent: ParsedContent, 
+    position: ImagePosition | null
   ): string {
     if (!position || !parsedContent.elements) return 'Document Content';
 
@@ -140,8 +161,8 @@ class ContextExtractorService {
   }
 
   private detectCaption(
-    parsedContent: any, 
-    position: { index: number } | null
+    parsedContent: ParsedContent, 
+    position: ImagePosition | null
   ): string | undefined {
     if (!position || !parsedContent.elements) return undefined;
 
@@ -158,8 +179,8 @@ class ContextExtractorService {
   }
 
   private findChapterTitle(
-    parsedContent: any, 
-    position: { index: number } | null
+    parsedContent: ParsedContent, 
+    position: ImagePosition | null
   ): string | undefined {
     if (!position || !parsedContent.elements) return undefined;
 

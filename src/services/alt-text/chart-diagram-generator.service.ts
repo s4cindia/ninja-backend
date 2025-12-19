@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 
 type ImageType = 
   | 'BAR_CHART'
@@ -35,7 +35,7 @@ interface DataTableRow {
 
 class ChartDiagramGeneratorService {
   private genAI: GoogleGenerativeAI;
-  private model: any;
+  private model: GenerativeModel;
 
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -269,7 +269,7 @@ ${baseInstructions}
     }
   }
 
-  private determineFlags(imageType: ImageType, parsed: any): string[] {
+  private determineFlags(imageType: ImageType, parsed: { dataTable?: DataTableRow[]; confidence?: number }): string[] {
     const flags: string[] = [];
 
     if (imageType !== 'PHOTO' && imageType !== 'UNKNOWN') {
