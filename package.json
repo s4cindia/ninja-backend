@@ -34,6 +34,7 @@
     "express": "^4.18.2",
     "helmet": "^8.1.0",
     "ioredis": "^5.8.2",
+    "isomorphic-dompurify": "^2.30.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "pdf-lib": "^1.17.1",

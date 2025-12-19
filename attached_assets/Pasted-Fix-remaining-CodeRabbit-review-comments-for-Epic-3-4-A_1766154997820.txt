@@ -1,0 +1,156 @@
+Fix remaining CodeRabbit review comments for Epic 3.4 Alt-Text AI.
+
+**1. Fix duplicate 'REGENERATED' flags and add to type definition:**
+
+In src/services/alt-text/photo-alt-generator.service.ts, add REGENERATED to the AltTextFlag type:
+
+type AltTextFlag = 
+  | 'FACE_DETECTED'
+  | 'TEXT_IN_IMAGE'
+  | 'LOW_CONFIDENCE'
+  | 'SENSITIVE_CONTENT'
+  | 'COMPLEX_SCENE'
+  | 'NEEDS_MANUAL_REVIEW'
+  | 'REGENERATED'
+  | 'PARSE_ERROR';
+
+In src/controllers/alt-text.controller.ts around line 633, prevent duplicate flags:
+
+// Change:
+flags: [...result.flags, 'REGENERATED'],
+
+// To:
+flags: [...new Set([...result.flags, 'REGENERATED'])],
+
+**2. Fix Prisma JSON type issue for sections field:**
+
+In src/controllers/alt-text.controller.ts around line 826:
+
+// Change:
+sections: result.sections || [],
+
+// To:
+sections: (result.sections || []) as unknown as Prisma.InputJsonValue,
+
+Add import at top if not present:
+import { Prisma } from '@prisma/client';
+
+**3. Add imageId parameter to generateChartDescription:**
+
+In src/services/alt-text/chart-diagram-generator.service.ts:
+
+// Change method signature:
+async generateChartDescription(
+  imageBuffer: Buffer,
+  mimeType: string = 'image/jpeg',
+  imageId: string = ''
+): Promise<ChartDescription> {
+
+// Then use it:
+return {
+  imageId,  // Use the parameter instead of empty string
+  imageType,
+  shortAlt: this.truncate(parsed.shortAlt || '', 125),
+  // ... rest
+};
+
+Update the controller call to pass imageId.
+
+**4. Fix undefined confidence check in determineFlags:**
+
+In src/services/alt-text/chart-diagram-generator.service.ts around line 283:
+
+// Change:
+if (parsed.confidence < 70) {
+  flags.push('LOW_CONFIDENCE');
+}
+
+// To:
+if (parsed.confidence !== undefined && parsed.confidence < 70) {
+  flags.push('LOW_CONFIDENCE');
+}
+
+**5. Fix image matching false positive in context-extractor.service.ts:**
+
+In src/services/alt-text/context-extractor.service.ts around line 100:
+
+// Change:
+const index = parsedContent.elements.findIndex(
+  (el: ParsedElement) => el.type === 'image' && (el.id === imageId || el.src?.includes(imageId))
+);
+
+// To:
+const index = parsedContent.elements.findIndex((el: ParsedElement) => {
+  if (el.type !== 'image') return false;
+  if (el.id === imageId) return true;
+  if (el.src) {
+    // Match exact filename or path ending
+    const srcFilename = el.src.split('/').pop();
+    return srcFilename === imageId || el.src.endsWith(`/${imageId}`);
+  }
+  return false;
+});
+
+**6. Improve JSON.parse error handling in long-description-generator.service.ts:**
+
+In src/services/alt-text/long-description-generator.service.ts, wrap JSON.parse:
+
+try {
+  const result = await this.model.generateContent([prompt, imagePart]);
+  const response = await result.response;
+  const text = response.text();
+  
+  let parsed;
+  try {
+    parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+  } catch (parseError) {
+    console.error('Failed to parse long description JSON:', { text, error: parseError });
+    // Return a minimal valid response
+    return {
+      id: '',
+      imageId: '',
+      jobId: '',
+      content: {
+        html: '<p>Description generation failed. Manual description required.</p>',
+        plainText: 'Description generation failed. Manual description required.',
+        markdown: 'Description generation failed. Manual description required.',
+      },
+      wordCount: 6,
+      sections: [],
+      generatedAt: new Date(),
+      aiModel: 'gemini-1.5-pro',
+    };
+  }
+
+  return {
+    id: '',
+    imageId: '',
+    jobId: '',
+    content: {
+      html: parsed.html || this.textToHtml(parsed.plainText),
+      plainText: parsed.plainText,
+      markdown: parsed.markdown || parsed.plainText,
+    },
+    wordCount: parsed.wordCount || this.countWords(parsed.plainText),
+    sections: parsed.sections,
+    generatedAt: new Date(),
+    aiModel: 'gemini-1.5-pro',
+  };
+} catch (error) {
+  console.error('Long description generation failed:', error);
+  throw error;
+}
+
+**7. Add NEEDS_MANUAL_REVIEW flag to batch error fallback:**
+
+In src/services/alt-text/photo-alt-generator.service.ts around line 185:
+
+// Change:
+flags: ['LOW_CONFIDENCE'],
+
+// To:
+flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'],
+
+After fixes, run:
+npm run lint
+npm run build

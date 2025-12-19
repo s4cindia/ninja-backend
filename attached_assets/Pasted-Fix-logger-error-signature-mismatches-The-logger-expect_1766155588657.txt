@@ -1,0 +1,68 @@
+Fix logger.error signature mismatches. The logger expects (message: string, error?: Error) but the code passes object literals.
+
+**1. Fix src/services/alt-text/photo-alt-generator.service.ts:**
+
+Around line 94, change:
+logger.error('Failed to parse Gemini response as JSON:', { text: text.substring(0, 500), error: parseError });
+
+To:
+logger.error(`Failed to parse Gemini response as JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+
+**2. Fix src/services/alt-text/chart-diagram-generator.service.ts:**
+
+Around line 119, change:
+logger.error('Failed to parse chart description JSON:', { text: text.substring(0, 500), error: parseError });
+
+To:
+logger.error(`Failed to parse chart description JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+
+Around line 146, change:
+logger.error('Chart description generation failed:', error);
+
+To:
+logger.error('Chart description generation failed:', error instanceof Error ? error : undefined);
+
+**3. Fix src/services/alt-text/long-description-generator.service.ts:**
+
+Around line 131, change:
+logger.error('Failed to parse long description JSON:', { text: text.substring(0, 500), error: parseError });
+
+To:
+logger.error(`Failed to parse long description JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+
+Around line 163, change:
+logger.error('Long description generation failed:', error);
+
+To:
+logger.error('Long description generation failed:', error instanceof Error ? error : undefined);
+
+**4. Add JSON parse error handling in generateContextAwareAltText (photo-alt-generator.service.ts):**
+
+Around line 283, wrap JSON.parse in try-catch:
+
+try {
+  const result = await this.model.generateContent([contextPrompt, imagePart]);
+  const response = await result.response;
+  const text = response.text();
+  
+  let parsed;
+  try {
+    parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+  } catch (parseError) {
+    logger.error(`Failed to parse context-aware JSON. Response preview: ${text.substring(0, 200)}`, parseError instanceof Error ? parseError : undefined);
+    // Fall back to standalone
+    return { contextAware: standalone, standalone };
+  }
+
+  const sanitized = this.sanitizeAndValidate(
+    parsed.shortAlt || '',
+    parsed.extendedAlt || '',
+    parsed.flags || []
+  );
+  
+  // ... rest of the code
+}
+
+After fixes, verify:
+npx tsc --noEmit
+npm run build

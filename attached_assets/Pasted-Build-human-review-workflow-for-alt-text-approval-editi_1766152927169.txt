@@ -1,0 +1,359 @@
+Build human review workflow for alt text approval, editing, and batch operations.
+
+**Update file: `src/controllers/alt-text.controller.ts`**
+
+Add these methods to altTextController:
+
+// Get review queue for a job
+async getReviewQueue(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const { status, minConfidence, maxConfidence, flags } = req.query;
+    
+    const where: any = { jobId };
+    
+    // Filter by status
+    if (status) {
+      where.status = status;
+    }
+    
+    // Filter by confidence range
+    if (minConfidence || maxConfidence) {
+      where.confidence = {};
+      if (minConfidence) where.confidence.gte = parseFloat(minConfidence as string);
+      if (maxConfidence) where.confidence.lte = parseFloat(maxConfidence as string);
+    }
+    
+    // Filter by flags
+    if (flags) {
+      const flagList = (flags as string).split(',');
+      where.flags = { hasSome: flagList };
+    }
+    
+    const items = await prisma.generatedAltText.findMany({
+      where,
+      orderBy: [
+        { confidence: 'asc' },  // Low confidence first
+        { createdAt: 'desc' },
+      ],
+    });
+    
+    // Calculate stats
+    const allItems = await prisma.generatedAltText.findMany({ where: { jobId } });
+    const stats = {
+      total: allItems.length,
+      pending: allItems.filter(i => i.status === 'pending').length,
+      needsReview: allItems.filter(i => i.status === 'needs_review').length,
+      approved: allItems.filter(i => i.status === 'approved').length,
+      edited: allItems.filter(i => i.status === 'edited').length,
+      rejected: allItems.filter(i => i.status === 'rejected').length,
+    };
+    
+    res.json({
+      success: true,
+      data: {
+        items,
+        stats,
+        pendingReview: stats.needsReview + stats.pending,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get review queue:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get review queue' 
+    });
+  }
+},
+
+// Approve alt text (optionally with edits)
+async approve(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { approvedAlt, notes } = req.body;
+    const userId = req.user?.id || 'system';
+    
+    const existing = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    if (!existing) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Alt text record not found' 
+      });
+    }
+    
+    // Determine if edited or just approved
+    const isEdited = approvedAlt && approvedAlt !== existing.shortAlt;
+    
+    const updated = await prisma.generatedAltText.update({
+      where: { id },
+      data: {
+        status: isEdited ? 'edited' : 'approved',
+        approvedAlt: approvedAlt || existing.shortAlt,
+        approvedBy: userId,
+        approvedAt: new Date(),
+        // Store review notes in a JSON field or separate table if needed
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: updated,
+    });
+  } catch (error) {
+    console.error('Failed to approve alt text:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to approve alt text' 
+    });
+  }
+},
+
+// Reject alt text (requires regeneration or manual entry)
+async reject(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const userId = req.user?.id || 'system';
+    
+    const updated = await prisma.generatedAltText.update({
+      where: { id },
+      data: {
+        status: 'rejected',
+        approvedBy: userId,
+        approvedAt: new Date(),
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: updated,
+      message: 'Alt text rejected. Regenerate or provide manual alt text.',
+    });
+  } catch (error) {
+    console.error('Failed to reject alt text:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to reject alt text' 
+    });
+  }
+},
+
+// Regenerate alt text with optional additional context
+async regenerate(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { additionalContext, useContextAware } = req.body;
+    
+    const existing = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    if (!existing) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Alt text record not found' 
+      });
+    }
+    
+    // Get image from S3
+    const imageKey = `images/${existing.jobId}/${existing.imageId}`;
+    const imageData = await s3Service.getObject(imageKey);
+    
+    if (!imageData) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Image not found' 
+      });
+    }
+    
+    let result;
+    
+    if (useContextAware) {
+      const context = await contextExtractor.extractContext(existing.jobId, existing.imageId);
+      if (additionalContext) {
+        context.textBefore = additionalContext + '\n' + context.textBefore;
+      }
+      const { contextAware } = await photoAltGenerator.generateContextAwareAltText(
+        imageData.buffer,
+        imageData.mimeType || 'image/jpeg',
+        context
+      );
+      result = contextAware;
+    } else {
+      result = await photoAltGenerator.generateAltText(
+        imageData.buffer,
+        imageData.mimeType || 'image/jpeg'
+      );
+    }
+    
+    // Update existing record
+    const updated = await prisma.generatedAltText.update({
+      where: { id },
+      data: {
+        shortAlt: result.shortAlt,
+        extendedAlt: result.extendedAlt || '',
+        confidence: result.confidence,
+        flags: [...result.flags, 'REGENERATED'],
+        status: photoAltGenerator.needsHumanReview(result) ? 'needs_review' : 'pending',
+        approvedAlt: null,
+        approvedBy: null,
+        approvedAt: null,
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: updated,
+    });
+  } catch (error) {
+    console.error('Failed to regenerate alt text:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to regenerate alt text' 
+    });
+  }
+},
+
+// Batch approve high-confidence items
+async batchApprove(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const { minConfidence = 85, ids } = req.body;
+    const userId = req.user?.id || 'system';
+    
+    let where: any = { jobId };
+    
+    if (ids && ids.length > 0) {
+      // Approve specific IDs
+      where.id = { in: ids };
+    } else {
+      // Approve by confidence threshold
+      where.confidence = { gte: minConfidence };
+      where.status = { in: ['pending', 'needs_review'] };
+      // Exclude items with certain flags
+      where.NOT = {
+        flags: { hasSome: ['FACE_DETECTED', 'SENSITIVE_CONTENT', 'LOW_CONFIDENCE'] }
+      };
+    }
+    
+    const result = await prisma.generatedAltText.updateMany({
+      where,
+      data: {
+        status: 'approved',
+        approvedBy: userId,
+        approvedAt: new Date(),
+      },
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        approved: result.count,
+        message: `Batch approved ${result.count} items`,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to batch approve:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to batch approve' 
+    });
+  }
+},
+
+// Get single alt text with image thumbnail URL
+async getById(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    
+    const altText = await prisma.generatedAltText.findUnique({
+      where: { id },
+    });
+    
+    if (!altText) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Alt text record not found' 
+      });
+    }
+    
+    // Generate thumbnail URL (or presigned S3 URL)
+    const thumbnailUrl = `/api/v1/images/${altText.jobId}/${altText.imageId}/thumbnail`;
+    
+    res.json({
+      success: true,
+      data: {
+        ...altText,
+        thumbnailUrl,
+        needsReview: ['pending', 'needs_review'].includes(altText.status),
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get alt text:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get alt text' 
+    });
+  }
+},
+
+**Update file: `src/routes/alt-text.routes.ts`**
+
+Add routes:
+
+// Review queue
+router.get('/job/:jobId/review-queue', altTextController.getReviewQueue);
+
+// Single item operations
+router.get('/:id', altTextController.getById);
+router.post('/:id/approve', altTextController.approve);
+router.post('/:id/reject', altTextController.reject);
+router.post('/:id/regenerate', altTextController.regenerate);
+
+// Batch operations
+router.post('/job/:jobId/batch-approve', altTextController.batchApprove);
+
+**Update Prisma schema if needed - ensure these fields exist:**
+
+model GeneratedAltText {
+  id              String    @id @default(uuid())
+  imageId         String
+  jobId           String
+  shortAlt        String
+  extendedAlt     String?
+  confidence      Float
+  flags           String[]
+  aiModel         String
+  status          String    @default("pending") // pending, needs_review, approved, edited, rejected
+  approvedAlt     String?   // Final approved text (may differ from shortAlt if edited)
+  approvedBy      String?   // User ID who approved
+  approvedAt      DateTime? // When approved
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([imageId])
+  @@index([status])
+  @@index([confidence])
+}
+
+**API Summary:**
+
+GET  /api/v1/alt-text/job/:jobId/review-queue     - Get items to review with filters
+GET  /api/v1/alt-text/:id                          - Get single item with thumbnail
+POST /api/v1/alt-text/:id/approve                  - Approve (with optional edit)
+POST /api/v1/alt-text/:id/reject                   - Reject for regeneration
+POST /api/v1/alt-text/:id/regenerate               - Regenerate with new context
+POST /api/v1/alt-text/job/:jobId/batch-approve     - Batch approve high-confidence items
+
+**Acceptance Criteria:**
+- [ ] Review queue with filtering by status, confidence, flags
+- [ ] Display image alongside generated alt text
+- [ ] Show confidence score and review flags
+- [ ] Approve, edit, reject, or regenerate options
+- [ ] Batch approval for high-confidence items (>85%)
+- [ ] Track who approved and when
+- [ ] Regenerate with additional context option

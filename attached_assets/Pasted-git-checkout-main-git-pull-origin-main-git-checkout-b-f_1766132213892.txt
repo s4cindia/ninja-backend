@@ -1,0 +1,396 @@
+git checkout main
+git pull origin main
+git checkout -b feature/epic-3.4-alt-text-ai
+```
+
+---
+
+## US-3.4.1 Prompt
+
+Provide this to the agent:
+```
+Create AI-powered alt text generator for photographs using Google Gemini Vision.
+
+**Prerequisites:**
+- Google Gemini API key configured in environment (GEMINI_API_KEY)
+- Image extraction service from Sprint 2 working
+- Images stored in S3: /{tenantId}/projects/{projectId}/processed/{jobId}/images/
+
+**Create file: `src/services/alt-text/photo-alt-generator.service.ts`**
+
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+interface AltTextGenerationResult {
+  imageId: string;
+  shortAlt: string;        // <125 chars
+  extendedAlt: string;     // up to 250 chars
+  confidence: number;      // 0-100
+  flags: AltTextFlag[];
+  aiModel: string;
+  generatedAt: Date;
+}
+
+type AltTextFlag = 
+  | 'FACE_DETECTED'
+  | 'TEXT_IN_IMAGE'
+  | 'LOW_CONFIDENCE'
+  | 'SENSITIVE_CONTENT'
+  | 'COMPLEX_SCENE';
+
+class PhotoAltGeneratorService {
+  private genAI: GoogleGenerativeAI;
+  private model: any;
+
+  constructor() {
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  }
+
+  async generateAltText(
+    imageBuffer: Buffer,
+    mimeType: string = 'image/jpeg'
+  ): Promise<AltTextGenerationResult> {
+    const prompt = `
+Describe this image for someone who cannot see it.
+Requirements:
+- Be concise (under 125 characters preferred for short version)
+- Focus on: subjects, actions, setting, important colors
+- Do NOT start with "Image of", "Photo of", or "Picture of"
+- Use present tense
+- If text appears in the image, include it
+
+Return JSON only (no markdown):
+{
+  "shortAlt": "concise description under 125 chars",
+  "extendedAlt": "detailed description up to 250 chars",
+  "confidence": 85,
+  "flags": []
+}
+
+Flags to include if applicable:
+- "FACE_DETECTED" if human faces are visible
+- "TEXT_IN_IMAGE" if text appears in the image
+- "COMPLEX_SCENE" if multiple distinct elements
+- "SENSITIVE_CONTENT" if potentially sensitive
+`;
+
+    const imagePart = {
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType,
+      },
+    };
+
+    const result = await this.model.generateContent([prompt, imagePart]);
+    const response = await result.response;
+    const text = response.text();
+    
+    // Parse JSON response
+    const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+    
+    // Add LOW_CONFIDENCE flag if confidence < 70
+    if (parsed.confidence < 70 && !parsed.flags.includes('LOW_CONFIDENCE')) {
+      parsed.flags.push('LOW_CONFIDENCE');
+    }
+
+    return {
+      imageId: '', // Set by caller
+      shortAlt: parsed.shortAlt,
+      extendedAlt: parsed.extendedAlt,
+      confidence: parsed.confidence,
+      flags: parsed.flags,
+      aiModel: 'gemini-1.5-pro',
+      generatedAt: new Date(),
+    };
+  }
+
+  async generateBatch(
+    images: Array<{ id: string; buffer: Buffer; mimeType: string }>
+  ): Promise<AltTextGenerationResult[]> {
+    const results: AltTextGenerationResult[] = [];
+    
+    for (const image of images) {
+      try {
+        const result = await this.generateAltText(image.buffer, image.mimeType);
+        result.imageId = image.id;
+        results.push(result);
+      } catch (error) {
+        console.error(`Failed to generate alt text for image ${image.id}:`, error);
+        results.push({
+          imageId: image.id,
+          shortAlt: '',
+          extendedAlt: '',
+          confidence: 0,
+          flags: ['LOW_CONFIDENCE'],
+          aiModel: 'gemini-1.5-pro',
+          generatedAt: new Date(),
+        });
+      }
+      
+      // Rate limiting: wait 200ms between requests
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    return results;
+  }
+
+  needsHumanReview(result: AltTextGenerationResult): boolean {
+    return (
+      result.confidence < 70 ||
+      result.flags.includes('FACE_DETECTED') ||
+      result.flags.includes('SENSITIVE_CONTENT') ||
+      result.flags.includes('LOW_CONFIDENCE')
+    );
+  }
+}
+
+export const photoAltGenerator = new PhotoAltGeneratorService();
+
+**Create file: `src/controllers/alt-text.controller.ts`**
+
+import { Request, Response } from 'express';
+import { photoAltGenerator } from '../services/alt-text/photo-alt-generator.service';
+import { s3Service } from '../services/s3.service';
+import prisma from '../lib/prisma';
+
+export const altTextController = {
+  async generate(req: Request, res: Response) {
+    try {
+      const { imageId, jobId } = req.body;
+      
+      if (!imageId || !jobId) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'imageId and jobId are required' 
+        });
+      }
+      
+      // Get image from S3
+      const imageKey = `images/${jobId}/${imageId}`;
+      const imageData = await s3Service.getObject(imageKey);
+      
+      if (!imageData) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Image not found' 
+        });
+      }
+      
+      const result = await photoAltGenerator.generateAltText(
+        imageData.buffer,
+        imageData.mimeType || 'image/jpeg'
+      );
+      result.imageId = imageId;
+      
+      // Store in database
+      const saved = await prisma.generatedAltText.create({
+        data: {
+          imageId,
+          jobId,
+          shortAlt: result.shortAlt,
+          extendedAlt: result.extendedAlt,
+          confidence: result.confidence,
+          flags: result.flags,
+          aiModel: result.aiModel,
+          status: photoAltGenerator.needsHumanReview(result) ? 'needs_review' : 'pending',
+        },
+      });
+      
+      res.json({
+        success: true,
+        data: {
+          ...result,
+          id: saved.id,
+          needsReview: photoAltGenerator.needsHumanReview(result),
+        },
+      });
+    } catch (error) {
+      console.error('Alt text generation failed:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to generate alt text' 
+      });
+    }
+  },
+
+  async generateForJob(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      
+      // Get job to find images
+      const job = await prisma.job.findUnique({
+        where: { id: jobId },
+      });
+      
+      if (!job) {
+        return res.status(404).json({ 
+          success: false, 
+          error: 'Job not found' 
+        });
+      }
+      
+      // List images for job from S3
+      const imageKeys = await s3Service.listObjects(`images/${jobId}/`);
+      
+      if (!imageKeys || imageKeys.length === 0) {
+        return res.json({
+          success: true,
+          data: {
+            total: 0,
+            generated: 0,
+            needsReview: 0,
+            results: [],
+          },
+        });
+      }
+      
+      // Get image buffers
+      const images = await Promise.all(
+        imageKeys.map(async (key) => {
+          const data = await s3Service.getObject(key);
+          const imageId = key.split('/').pop() || key;
+          return {
+            id: imageId,
+            buffer: data?.buffer || Buffer.from([]),
+            mimeType: data?.mimeType || 'image/jpeg',
+          };
+        })
+      );
+      
+      // Filter out empty buffers
+      const validImages = images.filter(img => img.buffer.length > 0);
+      
+      const results = await photoAltGenerator.generateBatch(validImages);
+      
+      // Store all results in database
+      await Promise.all(
+        results.map(result =>
+          prisma.generatedAltText.create({
+            data: {
+              imageId: result.imageId,
+              jobId,
+              shortAlt: result.shortAlt,
+              extendedAlt: result.extendedAlt || '',
+              confidence: result.confidence,
+              flags: result.flags,
+              aiModel: result.aiModel,
+              status: photoAltGenerator.needsHumanReview(result) ? 'needs_review' : 'pending',
+            },
+          })
+        )
+      );
+      
+      const needsReview = results.filter(r => photoAltGenerator.needsHumanReview(r));
+      
+      res.json({
+        success: true,
+        data: {
+          total: results.length,
+          generated: results.filter(r => r.shortAlt).length,
+          needsReview: needsReview.length,
+          results,
+        },
+      });
+    } catch (error) {
+      console.error('Batch alt text generation failed:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to generate alt text for job' 
+      });
+    }
+  },
+
+  async getForJob(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { status } = req.query;
+      
+      const where: any = { jobId };
+      if (status) {
+        where.status = status;
+      }
+      
+      const altTexts = await prisma.generatedAltText.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      });
+      
+      res.json({
+        success: true,
+        data: altTexts,
+      });
+    } catch (error) {
+      console.error('Failed to get alt texts:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Failed to get alt texts' 
+      });
+    }
+  },
+};
+
+**Create file: `src/routes/alt-text.routes.ts`**
+
+import { Router } from 'express';
+import { altTextController } from '../controllers/alt-text.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.use(authenticate);
+
+// Generate alt text for single image
+router.post('/generate', altTextController.generate);
+
+// Generate alt text for all images in a job
+router.post('/job/:jobId/generate', altTextController.generateForJob);
+
+// Get all alt texts for a job
+router.get('/job/:jobId', altTextController.getForJob);
+
+export default router;
+
+**Update `src/routes/index.ts`:**
+
+Add import and route:
+import altTextRoutes from './alt-text.routes';
+
+// In the router setup
+router.use('/alt-text', altTextRoutes);
+
+**Update `prisma/schema.prisma`:**
+
+Add this model:
+
+model GeneratedAltText {
+  id              String    @id @default(uuid())
+  imageId         String
+  jobId           String
+  shortAlt        String
+  extendedAlt     String?
+  confidence      Float
+  flags           String[]
+  aiModel         String
+  status          String    @default("pending") // pending, needs_review, approved, edited, rejected
+  approvedAlt     String?
+  approvedBy      String?
+  approvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([jobId])
+  @@index([imageId])
+  @@index([status])
+}
+
+Run migration:
+npx prisma migrate dev --name add_generated_alt_text
+
+**Acceptance Criteria:**
+- [ ] Generate concise descriptions (<125 chars short, up to 250 extended)
+- [ ] Describe subjects, actions, setting, colors when relevant
+- [ ] Never start with 'Image of' or 'Photo of'
+- [ ] Flag for human review when confidence <70% or faces detected
+- [ ] Store generated alt text in database
+- [ ] Batch processing with rate limiting
+- [ ] API endpoints for single and batch generation
