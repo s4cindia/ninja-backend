@@ -92,6 +92,16 @@ The Ninja platform is built on a Node.js 20+ runtime using TypeScript 5.x in str
         - **Version Comparison:** Side-by-side comparison showing all changes between any two versions
         - **In-Memory Storage:** Versions stored in memory (can be persisted to database for durability)
     -   API endpoints: `GET /api/v1/acr/:acrId/versions`, `POST /api/v1/acr/:acrId/versions`, `GET /api/v1/acr/:acrId/versions/:version`, `GET /api/v1/acr/:acrId/compare?v1=X&v2=Y`
+-   **AI Alt Text Generation (US-3.4.1):** Automated alt text generation for images using Google Gemini Vision:
+    -   **Photo Alt Generator:** Uses Gemini 1.5 Pro vision model to analyze images and generate accessible descriptions
+    -   **Length Constraints:** Short alt (<125 chars) and extended alt (up to 250 chars) with runtime validation and truncation
+    -   **Forbidden Prefix Stripping:** Automatically removes "Image of", "Photo of", "Picture of" prefixes
+    -   **Content Detection Flags:** FACE_DETECTED, TEXT_IN_IMAGE, COMPLEX_SCENE, SENSITIVE_CONTENT
+    -   **Quality Flags:** LOW_CONFIDENCE (when confidence <70%), AUTO_CORRECTED (when sanitization applied), NEEDS_MANUAL_REVIEW
+    -   **Human Review Workflow:** Items flagged for review when confidence <70%, faces detected, sensitive content, or needs manual review
+    -   **Batch Processing:** Rate-limited processing (200ms between requests) for multiple images
+    -   **Database Persistence:** GeneratedAltText model stores all generated alt texts with status tracking (pending, needs_review, approved, edited, rejected)
+    -   API endpoints: `POST /api/v1/alt-text/generate`, `POST /api/v1/alt-text/generate-from-buffer`, `POST /api/v1/alt-text/job/:jobId/generate`, `GET /api/v1/alt-text/job/:jobId`, `PATCH /api/v1/alt-text/:id`
 
 **UI/UX Decisions:**
 - API Base Path: `/api/v1/`
