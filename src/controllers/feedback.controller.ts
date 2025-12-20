@@ -245,4 +245,89 @@ export const feedbackController = {
       });
     }
   },
+
+  async getStats(req: AuthenticatedRequest, res: Response) {
+    try {
+      const tenantId = req.user?.tenantId;
+      const stats = await feedbackService.getStats(tenantId);
+
+      return res.json({
+        success: true,
+        data: stats,
+      });
+    } catch (error) {
+      logger.error('Failed to get feedback stats', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get statistics',
+      });
+    }
+  },
+
+  async getTrends(req: AuthenticatedRequest, res: Response) {
+    try {
+      const tenantId = req.user?.tenantId;
+      const days = Number(req.query.days) || 30;
+
+      if (days < 1 || days > 365) {
+        return res.status(400).json({
+          success: false,
+          error: 'Days must be between 1 and 365',
+        });
+      }
+
+      const trends = await feedbackService.getTrends(tenantId, days);
+
+      return res.json({
+        success: true,
+        data: trends,
+      });
+    } catch (error) {
+      logger.error('Failed to get feedback trends', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get trends',
+      });
+    }
+  },
+
+  async getTopIssues(req: AuthenticatedRequest, res: Response) {
+    try {
+      const tenantId = req.user?.tenantId;
+      const limit = Number(req.query.limit) || 10;
+
+      const topIssues = await feedbackService.getTopIssues(tenantId, limit);
+
+      return res.json({
+        success: true,
+        data: topIssues,
+      });
+    } catch (error) {
+      logger.error('Failed to get top issues', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get top issues',
+      });
+    }
+  },
+
+  async getRequiringAttention(req: AuthenticatedRequest, res: Response) {
+    try {
+      const tenantId = req.user?.tenantId;
+      const limit = Number(req.query.limit) || 10;
+
+      const feedback = await feedbackService.getRequiringAttention(tenantId, limit);
+
+      return res.json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to get feedback requiring attention', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get feedback requiring attention',
+      });
+    }
+  },
 };

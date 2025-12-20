@@ -41,6 +41,30 @@ interface PaginatedResult<T> {
   totalPages: number;
 }
 
+interface FeedbackStats {
+  total: number;
+  byType: Record<string, number>;
+  byStatus: Record<string, number>;
+  byRating: Record<string, number>;
+  averageRating: number;
+  recentCount: number;
+  responseRate: number;
+  averageResponseTimeHours: number | null;
+}
+
+interface FeedbackTrend {
+  date: string;
+  count: number;
+  averageRating: number;
+}
+
+interface TopIssue {
+  type: string;
+  count: number;
+  averageRating: number;
+  unresolvedCount: number;
+}
+
 const TYPE_MAP: Record<string, FeedbackType> = {
   accessibility_issue: 'ACCESSIBILITY_ISSUE',
   alt_text_quality: 'ALT_TEXT_QUALITY',
@@ -218,6 +242,180 @@ class FeedbackService {
       throw new Error(`Invalid feedback status: ${status}`);
     }
     return mapped;
+  }
+
+  async getStats(tenantId?: string): Promise<FeedbackStats> {
+    const where = tenantId ? { tenantId } : {};
+
+    const allFeedback = await prisma.feedback.findMany({ where });
+
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const byType: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    const byRating: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
+    
+    let ratingSum = 0;
+    let ratingCount = 0;
+    let recentCount = 0;
+    let respondedCount = 0;
+    let totalResponseTimeMs = 0;
+    let responseTimeCount = 0;
+
+    for (const feedback of allFeedback) {
+      byType[feedback.type] = (byType[feedback.type] || 0) + 1;
+      byStatus[feedback.status] = (byStatus[feedback.status] || 0) + 1;
+
+      if (feedback.rating) {
+        byRating[String(feedback.rating)] = (byRating[String(feedback.rating)] || 0) + 1;
+        ratingSum += feedback.rating;
+        ratingCount++;
+      }
+
+      if (feedback.createdAt >= sevenDaysAgo) {
+        recentCount++;
+      }
+
+      if (feedback.respondedAt) {
+        respondedCount++;
+        const responseTime = feedback.respondedAt.getTime() - feedback.createdAt.getTime();
+        totalResponseTimeMs += responseTime;
+        responseTimeCount++;
+      }
+    }
+
+    const total = allFeedback.length;
+    const responseRate = total > 0 ? Math.round((respondedCount / total) * 100) : 0;
+    const averageResponseTimeHours = responseTimeCount > 0
+      ? Math.round((totalResponseTimeMs / responseTimeCount) / (1000 * 60 * 60) * 10) / 10
+      : null;
+
+    return {
+      total,
+      byType,
+      byStatus,
+      byRating,
+      averageRating: ratingCount > 0 ? Math.round((ratingSum / ratingCount) * 10) / 10 : 0,
+      recentCount,
+      responseRate,
+      averageResponseTimeHours,
+    };
+  }
+
+  async getTrends(tenantId?: string, days: number = 30): Promise<FeedbackTrend[]> {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    startDate.setHours(0, 0, 0, 0);
+
+    const where: Record<string, unknown> = {
+      createdAt: { gte: startDate },
+    };
+    if (tenantId) where.tenantId = tenantId;
+
+    const feedback = await prisma.feedback.findMany({
+      where,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const trendMap: Record<string, { count: number; ratingSum: number; ratingCount: number }> = {};
+
+    for (const fb of feedback) {
+      const dateKey = fb.createdAt.toISOString().split('T')[0];
+      
+      if (!trendMap[dateKey]) {
+        trendMap[dateKey] = { count: 0, ratingSum: 0, ratingCount: 0 };
+      }
+      
+      trendMap[dateKey].count++;
+      if (fb.rating) {
+        trendMap[dateKey].ratingSum += fb.rating;
+        trendMap[dateKey].ratingCount++;
+      }
+    }
+
+    const trends: FeedbackTrend[] = [];
+    const currentDate = new Date(startDate);
+    const endDate = new Date();
+
+    while (currentDate <= endDate) {
+      const dateKey = currentDate.toISOString().split('T')[0];
+      const data = trendMap[dateKey];
+
+      trends.push({
+        date: dateKey,
+        count: data?.count || 0,
+        averageRating: data?.ratingCount
+          ? Math.round((data.ratingSum / data.ratingCount) * 10) / 10
+          : 0,
+      });
+
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    return trends;
+  }
+
+  async getTopIssues(tenantId?: string, limit: number = 10): Promise<TopIssue[]> {
+    const where = tenantId ? { tenantId } : {};
+
+    const feedback = await prisma.feedback.findMany({ where });
+
+    const issueMap: Record<string, {
+      count: number;
+      ratingSum: number;
+      ratingCount: number;
+      unresolvedCount: number;
+    }> = {};
+
+    for (const fb of feedback) {
+      const key = fb.type;
+      
+      if (!issueMap[key]) {
+        issueMap[key] = { count: 0, ratingSum: 0, ratingCount: 0, unresolvedCount: 0 };
+      }
+
+      issueMap[key].count++;
+      
+      if (fb.rating) {
+        issueMap[key].ratingSum += fb.rating;
+        issueMap[key].ratingCount++;
+      }
+
+      if (fb.status !== 'RESOLVED' && fb.status !== 'DISMISSED') {
+        issueMap[key].unresolvedCount++;
+      }
+    }
+
+    const topIssues: TopIssue[] = Object.entries(issueMap)
+      .map(([type, data]) => ({
+        type,
+        count: data.count,
+        averageRating: data.ratingCount
+          ? Math.round((data.ratingSum / data.ratingCount) * 10) / 10
+          : 0,
+        unresolvedCount: data.unresolvedCount,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, limit);
+
+    return topIssues;
+  }
+
+  async getRequiringAttention(tenantId?: string, limit: number = 10): Promise<PrismaFeedback[]> {
+    const where: Record<string, unknown> = {
+      status: { in: ['NEW', 'REVIEWED'] },
+    };
+    if (tenantId) where.tenantId = tenantId;
+
+    return prisma.feedback.findMany({
+      where,
+      orderBy: [
+        { rating: 'asc' },
+        { createdAt: 'asc' },
+      ],
+      take: limit,
+    });
   }
 }
 

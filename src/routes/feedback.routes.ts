@@ -14,6 +14,11 @@ router.get('/', feedbackController.list);
 
 router.get('/job/:jobId', feedbackController.getJobFeedback);
 
+router.get('/dashboard/stats', feedbackController.getStats);
+router.get('/dashboard/trends', feedbackController.getTrends);
+router.get('/dashboard/top-issues', feedbackController.getTopIssues);
+router.get('/dashboard/requiring-attention', feedbackController.getRequiringAttention);
+
 router.get('/:id', feedbackController.getById);
 
 router.patch('/:id', feedbackController.updateStatus);
