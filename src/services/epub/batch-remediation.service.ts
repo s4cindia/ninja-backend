@@ -242,7 +242,12 @@ class BatchRemediationService {
       return null;
     }
 
-    return batchJob.output as unknown as BatchRemediationResult;
+    const rawOutput = batchJob.output as Record<string, unknown> | null;
+    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
+      return null;
+    }
+
+    return rawOutput as unknown as BatchRemediationResult;
   }
 
   async cancelBatch(batchId: string, tenantId: string): Promise<BatchRemediationResult> {

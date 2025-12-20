@@ -230,10 +230,11 @@ class EPUBJSAuditorService {
     $('a').each((_, el) => {
       const $el = $(el);
       const text = $el.text().trim();
-      const hasImg = $el.find('img[alt]').length > 0;
+      const hasImgWithAlt = $el.find('img[alt]:not([alt=""])').length > 0;
       const hasAriaLabel = $el.attr('aria-label');
       
-      if (!text && !hasImg && !hasAriaLabel) {
+      // Link is empty if: no text, no image with meaningful alt, no aria-label
+      if (!text && !hasImgWithAlt && !hasAriaLabel) {
         localEmptyLinks++;
         stats.emptyLinks++;
       }
