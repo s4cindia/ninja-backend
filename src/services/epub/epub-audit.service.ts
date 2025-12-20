@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import { epubJSAuditor } from './epub-js-auditor.service';
 
 const execFileAsync = promisify(execFile);
 
