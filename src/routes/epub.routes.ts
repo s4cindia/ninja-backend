@@ -31,4 +31,10 @@ router.get('/job/:jobId/comparison', authenticate, epubController.getComparison)
 router.get('/job/:jobId/comparison/summary', authenticate, epubController.getComparisonSummary);
 router.get('/supported-fixes', authenticate, epubController.getSupportedFixes);
 
+router.post('/batch', authenticate, epubController.createBatch);
+router.post('/batch/:batchId/start', authenticate, epubController.startBatch);
+router.get('/batch/:batchId', authenticate, epubController.getBatchStatus);
+router.post('/batch/:batchId/cancel', authenticate, epubController.cancelBatch);
+router.get('/batches', authenticate, epubController.listBatches);
+
 export default router;

@@ -5,6 +5,7 @@ import { autoRemediationService } from '../services/epub/auto-remediation.servic
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
+import { batchRemediationService } from '../services/epub/batch-remediation.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -670,6 +671,205 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to generate comparison',
+      });
+    }
+  },
+
+  async createBatch(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobIds, options } = req.body;
+      const tenantId = req.user?.tenantId;
+      const userId = req.user?.id;
+
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'jobIds array is required',
+        });
+      }
+
+      if (jobIds.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Maximum 100 jobs per batch',
+        });
+      }
+
+      const batch = await batchRemediationService.createBatch(
+        jobIds,
+        tenantId,
+        userId,
+        options || {}
+      );
+
+      return res.status(201).json({
+        success: true,
+        data: batch,
+      });
+    } catch (error) {
+      logger.error('Failed to create batch', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to create batch',
+      });
+    }
+  },
+
+  async startBatch(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const { options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+
+      if (!batch) {
+        return res.status(404).json({
+          success: false,
+          error: 'Batch not found',
+        });
+      }
+
+      if (batch.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          error: `Batch cannot be started (status: ${batch.status})`,
+        });
+      }
+
+      batchRemediationService.processBatch(batchId, tenantId, options || {})
+        .catch(err => logger.error(`Batch ${batchId} processing error`, err));
+
+      return res.json({
+        success: true,
+        data: { ...batch, status: 'processing' },
+        message: 'Batch processing started',
+      });
+    } catch (error) {
+      logger.error('Failed to start batch', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to start batch',
+      });
+    }
+  },
+
+  async getBatchStatus(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+
+      if (!batch) {
+        return res.status(404).json({
+          success: false,
+          error: 'Batch not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: batch,
+      });
+    } catch (error) {
+      logger.error('Failed to get batch status', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get batch status',
+      });
+    }
+  },
+
+  async cancelBatch(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const batch = await batchRemediationService.cancelBatch(batchId, tenantId);
+
+      return res.json({
+        success: true,
+        data: batch,
+        message: 'Batch cancelled',
+      });
+    } catch (error) {
+      logger.error('Failed to cancel batch', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to cancel batch',
+      });
+    }
+  },
+
+  async listBatches(req: AuthenticatedRequest, res: Response) {
+    try {
+      const tenantId = req.user?.tenantId;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (limit < 1 || limit > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Limit must be between 1 and 100',
+        });
+      }
+
+      const { batches, total } = await batchRemediationService.listBatches(
+        tenantId,
+        page,
+        limit
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          batches,
+          total,
+          page,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to list batches', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to list batches',
       });
     }
   },
