@@ -1,19 +1,6 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import crypto from 'crypto';
-
-type FeedbackType = 
-  | 'accessibility_issue'
-  | 'alt_text_quality'
-  | 'audit_accuracy'
-  | 'remediation_suggestion'
-  | 'general'
-  | 'bug_report'
-  | 'feature_request';
-
-type FeedbackRating = 1 | 2 | 3 | 4 | 5;
-
-type FeedbackStatus = 'new' | 'reviewed' | 'in_progress' | 'resolved' | 'dismissed';
+import { FeedbackType, FeedbackStatus, Feedback as PrismaFeedback } from '@prisma/client';
 
 interface FeedbackContext {
   jobId?: string;
@@ -27,37 +14,19 @@ interface FeedbackContext {
 
 interface CreateFeedbackInput {
   type: FeedbackType;
-  rating?: FeedbackRating;
+  rating?: number;
   comment: string;
   context?: FeedbackContext;
   userId?: string;
   userEmail?: string;
-  tenantId?: string;
+  tenantId: string;
   metadata?: Record<string, unknown>;
-}
-
-interface Feedback {
-  id: string;
-  type: FeedbackType;
-  rating?: FeedbackRating;
-  comment: string;
-  context: FeedbackContext;
-  userId?: string;
-  userEmail?: string;
-  tenantId?: string;
-  status: FeedbackStatus;
-  metadata?: Record<string, unknown>;
-  response?: string;
-  respondedBy?: string;
-  respondedAt?: Date;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 interface FeedbackFilters {
   type?: FeedbackType;
   status?: FeedbackStatus;
-  rating?: FeedbackRating;
+  rating?: number;
   jobId?: string;
   userId?: string;
   tenantId?: string;
@@ -72,112 +41,96 @@ interface PaginatedResult<T> {
   totalPages: number;
 }
 
-class FeedbackService {
-  async createFeedback(input: CreateFeedbackInput): Promise<Feedback> {
-    const id = this.generateId();
-    
-    const feedback: Feedback = {
-      id,
-      type: input.type,
-      rating: input.rating,
-      comment: input.comment,
-      context: input.context || {},
-      userId: input.userId,
-      userEmail: input.userEmail,
-      tenantId: input.tenantId,
-      status: 'new',
-      metadata: input.metadata,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+const TYPE_MAP: Record<string, FeedbackType> = {
+  accessibility_issue: 'ACCESSIBILITY_ISSUE',
+  alt_text_quality: 'ALT_TEXT_QUALITY',
+  audit_accuracy: 'AUDIT_ACCURACY',
+  remediation_suggestion: 'REMEDIATION_SUGGESTION',
+  general: 'GENERAL',
+  bug_report: 'BUG_REPORT',
+  feature_request: 'FEATURE_REQUEST',
+};
 
-    await prisma.job.create({
+const STATUS_MAP: Record<string, FeedbackStatus> = {
+  new: 'NEW',
+  reviewed: 'REVIEWED',
+  in_progress: 'IN_PROGRESS',
+  resolved: 'RESOLVED',
+  dismissed: 'DISMISSED',
+};
+
+class FeedbackService {
+  async createFeedback(input: CreateFeedbackInput): Promise<PrismaFeedback> {
+    const feedback = await prisma.feedback.create({
       data: {
-        id,
-        tenantId: input.tenantId || 'system',
-        userId: input.userId || 'anonymous',
-        type: 'BATCH_VALIDATION',
-        status: 'COMPLETED',
-        input: JSON.parse(JSON.stringify({
-          feedbackType: input.type,
-          context: input.context,
-          recordType: 'feedback',
-        })),
-        output: JSON.parse(JSON.stringify(feedback)),
-        completedAt: new Date(),
+        tenantId: input.tenantId,
+        userId: input.userId,
+        userEmail: input.userEmail,
+        type: input.type,
+        rating: input.rating,
+        comment: input.comment,
+        context: input.context ? JSON.parse(JSON.stringify(input.context)) : undefined,
+        metadata: input.metadata ? JSON.parse(JSON.stringify(input.metadata)) : undefined,
+        status: 'NEW',
       },
     });
 
-    logger.info(`Feedback created: ${id} (${input.type})`);
+    logger.info(`Feedback created: ${feedback.id} (${feedback.type})`);
     return feedback;
   }
 
-  async getFeedback(id: string): Promise<Feedback | null> {
-    const job = await prisma.job.findFirst({
-      where: {
-        id,
-        type: 'BATCH_VALIDATION',
-        input: {
-          path: ['recordType'],
-          equals: 'feedback',
-        },
-      },
+  async getFeedback(id: string): Promise<PrismaFeedback | null> {
+    return prisma.feedback.findUnique({
+      where: { id },
     });
-
-    if (!job?.output) {
-      return null;
-    }
-
-    return job.output as unknown as Feedback;
   }
 
   async listFeedback(
     filters: FeedbackFilters = {},
     page: number = 1,
     limit: number = 20
-  ): Promise<PaginatedResult<Feedback>> {
-    const jobs = await prisma.job.findMany({
-      where: {
-        type: 'BATCH_VALIDATION',
-        input: {
-          path: ['recordType'],
-          equals: 'feedback',
-        },
-        ...(filters.tenantId && { tenantId: filters.tenantId }),
-        ...(filters.userId && { userId: filters.userId }),
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  ): Promise<PaginatedResult<PrismaFeedback>> {
+    const where: Record<string, unknown> = {};
 
-    let items = jobs
-      .filter(j => j.output)
-      .map(j => j.output as unknown as Feedback);
-
-    if (filters.type) {
-      items = items.filter(f => f.type === filters.type);
-    }
-    if (filters.status) {
-      items = items.filter(f => f.status === filters.status);
-    }
-    if (filters.rating) {
-      items = items.filter(f => f.rating === filters.rating);
-    }
+    if (filters.tenantId) where.tenantId = filters.tenantId;
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.type) where.type = filters.type;
+    if (filters.status) where.status = filters.status;
+    if (filters.rating) where.rating = filters.rating;
+    
     if (filters.jobId) {
-      items = items.filter(f => f.context.jobId === filters.jobId);
-    }
-    if (filters.startDate) {
-      items = items.filter(f => new Date(f.createdAt) >= filters.startDate!);
-    }
-    if (filters.endDate) {
-      items = items.filter(f => new Date(f.createdAt) <= filters.endDate!);
+      where.context = {
+        path: ['jobId'],
+        equals: filters.jobId,
+      };
     }
 
-    const total = items.length;
-    const totalPages = Math.ceil(total / limit);
-    const offset = (page - 1) * limit;
-    items = items.slice(offset, offset + limit);
+    if (filters.startDate || filters.endDate) {
+      where.createdAt = {};
+      if (filters.startDate) {
+        (where.createdAt as Record<string, Date>).gte = filters.startDate;
+      }
+      if (filters.endDate) {
+        (where.createdAt as Record<string, Date>).lte = filters.endDate;
+      }
+    }
 
-    return { items, total, page, totalPages };
+    const [items, total] = await Promise.all([
+      prisma.feedback.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.feedback.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async updateFeedbackStatus(
@@ -185,30 +138,32 @@ class FeedbackService {
     status: FeedbackStatus,
     response?: string,
     respondedBy?: string
-  ): Promise<Feedback> {
-    const feedback = await this.getFeedback(id);
+  ): Promise<PrismaFeedback> {
+    const feedback = await prisma.feedback.findUnique({
+      where: { id },
+    });
+
     if (!feedback) {
       throw new Error('Feedback not found');
     }
 
-    feedback.status = status;
-    feedback.updatedAt = new Date();
+    const updateData: Record<string, unknown> = {
+      status,
+    };
 
     if (response) {
-      feedback.response = response;
-      feedback.respondedBy = respondedBy;
-      feedback.respondedAt = new Date();
+      updateData.response = response;
+      updateData.respondedBy = respondedBy;
+      updateData.respondedAt = new Date();
     }
 
-    await prisma.job.update({
+    const updated = await prisma.feedback.update({
       where: { id },
-      data: {
-        output: JSON.parse(JSON.stringify(feedback)),
-      },
+      data: updateData,
     });
 
     logger.info(`Feedback ${id} status updated to ${status}`);
-    return feedback;
+    return updated;
   }
 
   async submitQuickRating(
@@ -217,11 +172,11 @@ class FeedbackService {
     isPositive: boolean,
     userId?: string,
     tenantId?: string
-  ): Promise<Feedback> {
+  ): Promise<PrismaFeedback> {
     const typeMap: Record<string, FeedbackType> = {
-      alt_text: 'alt_text_quality',
-      audit: 'audit_accuracy',
-      remediation: 'remediation_suggestion',
+      alt_text: 'ALT_TEXT_QUALITY',
+      audit: 'AUDIT_ACCURACY',
+      remediation: 'REMEDIATION_SUGGESTION',
     };
 
     return this.createFeedback({
@@ -233,21 +188,39 @@ class FeedbackService {
         issueId: entityType === 'audit' || entityType === 'remediation' ? entityId : undefined,
       },
       userId,
-      tenantId,
+      tenantId: tenantId || 'system',
     });
   }
 
-  async getJobFeedback(jobId: string): Promise<Feedback[]> {
-    const { items } = await this.listFeedback({ jobId }, 1, 1000);
-    return items;
+  async getJobFeedback(jobId: string): Promise<PrismaFeedback[]> {
+    return prisma.feedback.findMany({
+      where: {
+        context: {
+          path: ['jobId'],
+          equals: jobId,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
-  private generateId(): string {
-    const timestamp = Date.now().toString(36);
-    const randomPart = crypto.randomBytes(4).toString('hex');
-    return `fb-${timestamp}-${randomPart}`;
+  static toFeedbackType(type: string): FeedbackType {
+    const mapped = TYPE_MAP[type.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid feedback type: ${type}`);
+    }
+    return mapped;
+  }
+
+  static toFeedbackStatus(status: string): FeedbackStatus {
+    const mapped = STATUS_MAP[status.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid feedback status: ${status}`);
+    }
+    return mapped;
   }
 }
 
 export const feedbackService = new FeedbackService();
-export type { Feedback, FeedbackType, FeedbackStatus, FeedbackRating, FeedbackFilters, CreateFeedbackInput };
+export { FeedbackService };
+export type { PrismaFeedback as Feedback, FeedbackFilters, CreateFeedbackInput };

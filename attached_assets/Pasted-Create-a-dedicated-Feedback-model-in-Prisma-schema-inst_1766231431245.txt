@@ -1,0 +1,363 @@
+Create a dedicated Feedback model in Prisma schema instead of using the Job table workaround.
+
+**1. Update prisma/schema.prisma - Add Feedback model and enums:**
+
+Add these after the existing models:
+
+enum FeedbackType {
+  ACCESSIBILITY_ISSUE
+  ALT_TEXT_QUALITY
+  AUDIT_ACCURACY
+  REMEDIATION_SUGGESTION
+  GENERAL
+  BUG_REPORT
+  FEATURE_REQUEST
+}
+
+enum FeedbackStatus {
+  NEW
+  REVIEWED
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+model Feedback {
+  id          String         @id @default(uuid())
+  tenantId    String
+  userId      String?
+  userEmail   String?
+  type        FeedbackType
+  rating      Int?
+  comment     String
+  context     Json?
+  status      FeedbackStatus @default(NEW)
+  metadata    Json?
+  response    String?
+  respondedBy String?
+  respondedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+**2. Run migration:**
+
+npx prisma migrate dev --name add_feedback_model
+
+**3. Update src/services/feedback/feedback.service.ts to use the new model:**
+
+import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
+import { FeedbackType, FeedbackStatus, Feedback as PrismaFeedback } from '@prisma/client';
+import crypto from 'crypto';
+
+interface FeedbackContext {
+  jobId?: string;
+  imageId?: string;
+  altTextId?: string;
+  issueId?: string;
+  pageNumber?: number;
+  elementPath?: string;
+  url?: string;
+}
+
+interface CreateFeedbackInput {
+  type: FeedbackType;
+  rating?: number;
+  comment: string;
+  context?: FeedbackContext;
+  userId?: string;
+  userEmail?: string;
+  tenantId: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface FeedbackFilters {
+  type?: FeedbackType;
+  status?: FeedbackStatus;
+  rating?: number;
+  jobId?: string;
+  userId?: string;
+  tenantId?: string;
+  startDate?: Date;
+  endDate?: Date;
+}
+
+interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
+// Map string types to enum values
+const TYPE_MAP: Record<string, FeedbackType> = {
+  accessibility_issue: 'ACCESSIBILITY_ISSUE',
+  alt_text_quality: 'ALT_TEXT_QUALITY',
+  audit_accuracy: 'AUDIT_ACCURACY',
+  remediation_suggestion: 'REMEDIATION_SUGGESTION',
+  general: 'GENERAL',
+  bug_report: 'BUG_REPORT',
+  feature_request: 'FEATURE_REQUEST',
+};
+
+const STATUS_MAP: Record<string, FeedbackStatus> = {
+  new: 'NEW',
+  reviewed: 'REVIEWED',
+  in_progress: 'IN_PROGRESS',
+  resolved: 'RESOLVED',
+  dismissed: 'DISMISSED',
+};
+
+class FeedbackService {
+  /**
+   * Create new feedback
+   */
+  async createFeedback(input: CreateFeedbackInput): Promise<PrismaFeedback> {
+    const feedback = await prisma.feedback.create({
+      data: {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        userEmail: input.userEmail,
+        type: input.type,
+        rating: input.rating,
+        comment: input.comment,
+        context: input.context as Record<string, unknown> | undefined,
+        metadata: input.metadata,
+        status: 'NEW',
+      },
+    });
+
+    logger.info(`Feedback created: ${feedback.id} (${feedback.type})`);
+    return feedback;
+  }
+
+  /**
+   * Get feedback by ID
+   */
+  async getFeedback(id: string): Promise<PrismaFeedback | null> {
+    return prisma.feedback.findUnique({
+      where: { id },
+    });
+  }
+
+  /**
+   * List feedback with filters and pagination
+   */
+  async listFeedback(
+    filters: FeedbackFilters = {},
+    page: number = 1,
+    limit: number = 20
+  ): Promise<PaginatedResult<PrismaFeedback>> {
+    const where: Record<string, unknown> = {};
+
+    if (filters.tenantId) where.tenantId = filters.tenantId;
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.type) where.type = filters.type;
+    if (filters.status) where.status = filters.status;
+    if (filters.rating) where.rating = filters.rating;
+    
+    if (filters.jobId) {
+      where.context = {
+        path: ['jobId'],
+        equals: filters.jobId,
+      };
+    }
+
+    if (filters.startDate || filters.endDate) {
+      where.createdAt = {};
+      if (filters.startDate) {
+        (where.createdAt as Record<string, Date>).gte = filters.startDate;
+      }
+      if (filters.endDate) {
+        (where.createdAt as Record<string, Date>).lte = filters.endDate;
+      }
+    }
+
+    const [items, total] = await Promise.all([
+      prisma.feedback.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.feedback.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  /**
+   * Update feedback status
+   */
+  async updateFeedbackStatus(
+    id: string,
+    status: FeedbackStatus,
+    response?: string,
+    respondedBy?: string
+  ): Promise<PrismaFeedback> {
+    const feedback = await prisma.feedback.findUnique({
+      where: { id },
+    });
+
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    const updateData: Record<string, unknown> = {
+      status,
+      updatedAt: new Date(),
+    };
+
+    if (response) {
+      updateData.response = response;
+      updateData.respondedBy = respondedBy;
+      updateData.respondedAt = new Date();
+    }
+
+    const updated = await prisma.feedback.update({
+      where: { id },
+      data: updateData,
+    });
+
+    logger.info(`Feedback ${id} status updated to ${status}`);
+    return updated;
+  }
+
+  /**
+   * Submit quick rating (thumbs up/down)
+   */
+  async submitQuickRating(
+    entityType: 'alt_text' | 'audit' | 'remediation',
+    entityId: string,
+    isPositive: boolean,
+    userId?: string,
+    tenantId?: string
+  ): Promise<PrismaFeedback> {
+    const typeMap: Record<string, FeedbackType> = {
+      alt_text: 'ALT_TEXT_QUALITY',
+      audit: 'AUDIT_ACCURACY',
+      remediation: 'REMEDIATION_SUGGESTION',
+    };
+
+    return this.createFeedback({
+      type: typeMap[entityType],
+      rating: isPositive ? 5 : 1,
+      comment: isPositive ? 'Helpful' : 'Not helpful',
+      context: {
+        altTextId: entityType === 'alt_text' ? entityId : undefined,
+        issueId: entityType === 'audit' || entityType === 'remediation' ? entityId : undefined,
+      },
+      userId,
+      tenantId: tenantId || 'system',
+    });
+  }
+
+  /**
+   * Get feedback for a specific job
+   */
+  async getJobFeedback(jobId: string): Promise<PrismaFeedback[]> {
+    return prisma.feedback.findMany({
+      where: {
+        context: {
+          path: ['jobId'],
+          equals: jobId,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Convert string type to enum
+   */
+  static toFeedbackType(type: string): FeedbackType {
+    const mapped = TYPE_MAP[type.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid feedback type: ${type}`);
+    }
+    return mapped;
+  }
+
+  /**
+   * Convert string status to enum
+   */
+  static toFeedbackStatus(status: string): FeedbackStatus {
+    const mapped = STATUS_MAP[status.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid feedback status: ${status}`);
+    }
+    return mapped;
+  }
+}
+
+export const feedbackService = new FeedbackService();
+
+**4. Update src/controllers/feedback.controller.ts to use enums:**
+
+Update the create method to convert string types to enums:
+
+// In create method, after validation:
+const feedbackType = FeedbackService.toFeedbackType(type);
+
+const feedback = await feedbackService.createFeedback({
+  type: feedbackType,
+  rating,
+  comment,
+  context,
+  userId,
+  userEmail,
+  tenantId: tenantId || 'system',
+  metadata,
+});
+
+// In updateStatus method:
+const feedbackStatus = FeedbackService.toFeedbackStatus(status);
+
+const feedback = await feedbackService.updateFeedbackStatus(
+  id,
+  feedbackStatus,
+  response,
+  respondedBy
+);
+
+// In list method, update filter conversion:
+const result = await feedbackService.listFeedback(
+  {
+    type: type ? FeedbackService.toFeedbackType(type as string) : undefined,
+    status: status ? FeedbackService.toFeedbackStatus(status as string) : undefined,
+    rating: rating ? Number(rating) : undefined,
+    jobId: jobId as string | undefined,
+    tenantId,
+  },
+  Number(page),
+  Number(limit)
+);
+
+**5. Add FeedbackService import in controller:**
+
+import { feedbackService, FeedbackService } from '../services/feedback/feedback.service';
+
+**After migration and updates, run:**
+
+npm run build
+npm run lint
+
+**Acceptance Criteria:**
+- [ ] Feedback model created in Prisma schema
+- [ ] Migration runs successfully
+- [ ] FeedbackService uses Prisma Feedback model directly
+- [ ] All 6 endpoints work with new model
+- [ ] Proper enum types for FeedbackType and FeedbackStatus
+- [ ] Indexes for efficient querying

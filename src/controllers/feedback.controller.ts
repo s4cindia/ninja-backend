@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { feedbackService } from '../services/feedback/feedback.service';
+import { feedbackService, FeedbackService } from '../services/feedback/feedback.service';
 import { logger } from '../lib/logger';
 
 interface AuthenticatedRequest extends Request {
@@ -50,14 +50,16 @@ export const feedbackController = {
         });
       }
 
+      const feedbackType = FeedbackService.toFeedbackType(type);
+
       const feedback = await feedbackService.createFeedback({
-        type,
+        type: feedbackType,
         rating,
         comment,
         context,
         userId,
         userEmail,
-        tenantId,
+        tenantId: tenantId || 'system',
         metadata,
       });
 
@@ -115,12 +117,12 @@ export const feedbackController = {
 
       const result = await feedbackService.listFeedback(
         {
-          type: type as string | undefined,
-          status: status as string | undefined,
+          type: type ? FeedbackService.toFeedbackType(type as string) : undefined,
+          status: status ? FeedbackService.toFeedbackStatus(status as string) : undefined,
           rating: rating ? Number(rating) : undefined,
           jobId: jobId as string | undefined,
           tenantId,
-        } as Parameters<typeof feedbackService.listFeedback>[0],
+        },
         Number(page),
         Number(limit)
       );
@@ -159,9 +161,11 @@ export const feedbackController = {
         });
       }
 
+      const feedbackStatus = FeedbackService.toFeedbackStatus(status);
+
       const feedback = await feedbackService.updateFeedbackStatus(
         id,
-        status,
+        feedbackStatus,
         response,
         respondedBy
       );
