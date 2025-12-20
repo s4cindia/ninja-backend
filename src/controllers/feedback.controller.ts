@@ -79,8 +79,9 @@ export const feedbackController = {
   async getById(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
+      const tenantId = req.user?.tenantId;
 
-      const feedback = await feedbackService.getFeedback(id);
+      const feedback = await feedbackService.getFeedback(id, tenantId);
 
       if (!feedback) {
         return res.status(404).json({
@@ -145,6 +146,14 @@ export const feedbackController = {
       const { id } = req.params;
       const { status, response } = req.body;
       const respondedBy = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
 
       if (!status) {
         return res.status(400).json({
@@ -165,6 +174,7 @@ export const feedbackController = {
 
       const feedback = await feedbackService.updateFeedbackStatus(
         id,
+        tenantId,
         feedbackStatus,
         response,
         respondedBy
@@ -190,6 +200,13 @@ export const feedbackController = {
       const { entityType, entityId, isPositive } = req.body;
       const userId = req.user?.id;
       const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
 
       if (!entityType || !entityId || isPositive === undefined) {
         return res.status(400).json({
@@ -220,9 +237,10 @@ export const feedbackController = {
       });
     } catch (error) {
       logger.error('Failed to submit rating', error instanceof Error ? error : undefined);
+      const message = error instanceof Error ? error.message : 'Failed to submit rating';
       return res.status(500).json({
         success: false,
-        error: 'Failed to submit rating',
+        error: message,
       });
     }
   },
@@ -230,8 +248,9 @@ export const feedbackController = {
   async getJobFeedback(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
 
-      const feedback = await feedbackService.getJobFeedback(jobId);
+      const feedback = await feedbackService.getJobFeedback(jobId, tenantId);
 
       return res.json({
         success: true,

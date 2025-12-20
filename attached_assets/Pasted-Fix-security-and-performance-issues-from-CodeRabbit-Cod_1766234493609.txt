@@ -1,0 +1,350 @@
+Fix security and performance issues from CodeRabbit/Codex review for Epic 3.6.
+
+**1. CRITICAL - Add tenant isolation to getFeedback (feedback.service.ts)**
+
+// Before:
+async getFeedback(id: string): Promise<PrismaFeedback | null> {
+  return prisma.feedback.findUnique({
+    where: { id },
+  });
+}
+
+// After:
+async getFeedback(id: string, tenantId?: string): Promise<PrismaFeedback | null> {
+  const feedback = await prisma.feedback.findUnique({
+    where: { id },
+  });
+  
+  // Enforce tenant isolation if tenantId provided
+  if (feedback && tenantId && feedback.tenantId !== tenantId) {
+    return null;
+  }
+  
+  return feedback;
+}
+
+**2. CRITICAL - Add tenant isolation to updateFeedbackStatus (feedback.service.ts)**
+
+// Before:
+async updateFeedbackStatus(
+  id: string,
+  status: FeedbackStatus,
+  ...
+): Promise<PrismaFeedback> {
+  const feedback = await prisma.feedback.findUnique({
+    where: { id },
+  });
+
+// After:
+async updateFeedbackStatus(
+  id: string,
+  tenantId: string,
+  status: FeedbackStatus,
+  response?: string,
+  respondedBy?: string
+): Promise<PrismaFeedback> {
+  // Use single update with tenant check
+  try {
+    const updated = await prisma.feedback.update({
+      where: { id },
+      data: {
+        status,
+        ...(response && {
+          response,
+          respondedBy,
+          respondedAt: new Date(),
+        }),
+      },
+    });
+    
+    // Verify tenant ownership
+    if (updated.tenantId !== tenantId) {
+      throw new Error('Feedback not found');
+    }
+    
+    logger.info(`Feedback ${id} status updated to ${status}`);
+    return updated;
+  } catch (error) {
+    if ((error as { code?: string }).code === 'P2025') {
+      throw new Error('Feedback not found');
+    }
+    throw error;
+  }
+}
+
+**3. CRITICAL - Add tenant isolation to getJobFeedback (feedback.service.ts)**
+
+// Before:
+async getJobFeedback(jobId: string): Promise<PrismaFeedback[]> {
+
+// After:
+async getJobFeedback(jobId: string, tenantId?: string): Promise<PrismaFeedback[]> {
+  const where: Record<string, unknown> = {
+    context: {
+      path: ['jobId'],
+      equals: jobId,
+    },
+  };
+  
+  if (tenantId) {
+    where.tenantId = tenantId;
+  }
+  
+  return prisma.feedback.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+**4. Update controller to pass tenantId (feedback.controller.ts)**
+
+// In getById:
+async getById(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    const feedback = await feedbackService.getFeedback(id, tenantId);
+
+    if (!feedback) {
+      return res.status(404).json({
+        success: false,
+        error: 'Feedback not found',
+      });
+    }
+    // ... rest unchanged
+  }
+}
+
+// In updateStatus:
+async updateStatus(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const { status, response } = req.body;
+    const respondedBy = req.user?.id;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    // ... validation ...
+
+    const feedback = await feedbackService.updateFeedbackStatus(
+      id,
+      tenantId,  // Add tenantId
+      feedbackStatus,
+      response,
+      respondedBy
+    );
+    // ... rest unchanged
+  }
+}
+
+// In getJobFeedback:
+async getJobFeedback(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    const feedback = await feedbackService.getJobFeedback(jobId, tenantId);
+    // ... rest unchanged
+  }
+}
+
+**5. MAJOR - Performance: Use Prisma aggregations in getStats (feedback.service.ts)**
+
+Replace the in-memory aggregation with database aggregations:
+
+async getStats(tenantId?: string): Promise<FeedbackStats> {
+  const where = tenantId ? { tenantId } : {};
+
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+  // Use parallel database queries instead of loading all records
+  const [
+    total,
+    typeCounts,
+    statusCounts,
+    ratingStats,
+    recentCount,
+    responseMetrics,
+  ] = await Promise.all([
+    // Total count
+    prisma.feedback.count({ where }),
+    
+    // Group by type
+    prisma.feedback.groupBy({
+      by: ['type'],
+      where,
+      _count: true,
+    }),
+    
+    // Group by status
+    prisma.feedback.groupBy({
+      by: ['status'],
+      where,
+      _count: true,
+    }),
+    
+    // Rating aggregates
+    prisma.feedback.aggregate({
+      where: { ...where, rating: { not: null } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    }),
+    
+    // Recent count (last 7 days)
+    prisma.feedback.count({
+      where: { ...where, createdAt: { gte: sevenDaysAgo } },
+    }),
+    
+    // Response metrics
+    prisma.feedback.aggregate({
+      where: { ...where, respondedAt: { not: null } },
+      _count: true,
+    }),
+  ]);
+
+  // Get rating distribution
+  const ratingDistribution = await prisma.feedback.groupBy({
+    by: ['rating'],
+    where: { ...where, rating: { not: null } },
+    _count: true,
+  });
+
+  // Build response objects
+  const byType: Record<string, number> = {};
+  for (const item of typeCounts) {
+    byType[item.type] = item._count;
+  }
+
+  const byStatus: Record<string, number> = {};
+  for (const item of statusCounts) {
+    byStatus[item.status] = item._count;
+  }
+
+  const byRating: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
+  for (const item of ratingDistribution) {
+    if (item.rating) {
+      byRating[String(item.rating)] = item._count;
+    }
+  }
+
+  const responseRate = total > 0 
+    ? Math.round((responseMetrics._count / total) * 100) 
+    : 0;
+
+  return {
+    total,
+    byType,
+    byStatus,
+    byRating,
+    averageRating: ratingStats._avg.rating 
+      ? Math.round(ratingStats._avg.rating * 10) / 10 
+      : 0,
+    recentCount,
+    responseRate,
+    averageResponseTimeHours: null, // Would need raw SQL for this calculation
+  };
+}
+
+**6. MINOR - Use enum constant instead of string (feedback.service.ts)**
+
+// In createFeedback:
+// Before:
+status: 'NEW',
+
+// After:
+import { FeedbackStatus } from '@prisma/client';
+// ...
+status: FeedbackStatus.NEW,
+
+**7. MINOR - Add pagination validation (feedback.service.ts)**
+
+// At start of listFeedback:
+async listFeedback(
+  filters: FeedbackFilters = {},
+  page: number = 1,
+  limit: number = 20
+): Promise<PaginatedResult<PrismaFeedback>> {
+  // Validate pagination params
+  page = Math.max(1, Math.floor(page));
+  limit = Math.max(1, Math.min(Math.floor(limit), 100));
+
+  // ... rest of method
+}
+
+**8. MINOR - Add entity type validation in submitQuickRating (feedback.service.ts)**
+
+async submitQuickRating(
+  entityType: 'alt_text' | 'audit' | 'remediation',
+  entityId: string,
+  isPositive: boolean,
+  userId?: string,
+  tenantId?: string
+): Promise<PrismaFeedback> {
+  const VALID_ENTITY_TYPES = ['alt_text', 'audit', 'remediation'] as const;
+  
+  if (!VALID_ENTITY_TYPES.includes(entityType)) {
+    throw new Error(`Invalid entity type: ${entityType}`);
+  }
+
+  if (!tenantId) {
+    throw new Error('tenantId is required for quick rating');
+  }
+
+  const typeMap: Record<string, FeedbackType> = {
+    alt_text: FeedbackType.ALT_TEXT_QUALITY,
+    audit: FeedbackType.AUDIT_ACCURACY,
+    remediation: FeedbackType.REMEDIATION_SUGGESTION,
+  };
+
+  return this.createFeedback({
+    type: typeMap[entityType],
+    rating: isPositive ? 5 : 1,
+    comment: isPositive ? 'Helpful' : 'Not helpful',
+    context: {
+      altTextId: entityType === 'alt_text' ? entityId : undefined,
+      issueId: entityType === 'audit' || entityType === 'remediation' ? entityId : undefined,
+    },
+    userId,
+    tenantId,
+  });
+}
+
+**9. Update quickRating controller to require tenantId:**
+
+async quickRating(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { entityType, entityId, isPositive } = req.body;
+    const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    // ... rest of validation ...
+
+    const feedback = await feedbackService.submitQuickRating(
+      entityType,
+      entityId,
+      isPositive,
+      userId,
+      tenantId
+    );
+    // ... rest unchanged
+  }
+}
+
+After fixes, run:
+npm run build
+npm run lint

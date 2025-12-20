@@ -95,7 +95,7 @@ class FeedbackService {
         comment: input.comment,
         context: input.context ? JSON.parse(JSON.stringify(input.context)) : undefined,
         metadata: input.metadata ? JSON.parse(JSON.stringify(input.metadata)) : undefined,
-        status: 'NEW',
+        status: FeedbackStatus.NEW,
       },
     });
 
@@ -103,10 +103,16 @@ class FeedbackService {
     return feedback;
   }
 
-  async getFeedback(id: string): Promise<PrismaFeedback | null> {
-    return prisma.feedback.findUnique({
+  async getFeedback(id: string, tenantId?: string): Promise<PrismaFeedback | null> {
+    const feedback = await prisma.feedback.findUnique({
       where: { id },
     });
+    
+    if (feedback && tenantId && feedback.tenantId !== tenantId) {
+      return null;
+    }
+    
+    return feedback;
   }
 
   async listFeedback(
@@ -114,6 +120,9 @@ class FeedbackService {
     page: number = 1,
     limit: number = 20
   ): Promise<PaginatedResult<PrismaFeedback>> {
+    page = Math.max(1, Math.floor(page));
+    limit = Math.max(1, Math.min(Math.floor(limit), 100));
+
     const where: Record<string, unknown> = {};
 
     if (filters.tenantId) where.tenantId = filters.tenantId;
@@ -159,35 +168,36 @@ class FeedbackService {
 
   async updateFeedbackStatus(
     id: string,
+    tenantId: string,
     status: FeedbackStatus,
     response?: string,
     respondedBy?: string
   ): Promise<PrismaFeedback> {
-    const feedback = await prisma.feedback.findUnique({
-      where: { id },
-    });
-
-    if (!feedback) {
-      throw new Error('Feedback not found');
+    try {
+      const updated = await prisma.feedback.update({
+        where: { id },
+        data: {
+          status,
+          ...(response && {
+            response,
+            respondedBy,
+            respondedAt: new Date(),
+          }),
+        },
+      });
+      
+      if (updated.tenantId !== tenantId) {
+        throw new Error('Feedback not found');
+      }
+      
+      logger.info(`Feedback ${id} status updated to ${status}`);
+      return updated;
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2025') {
+        throw new Error('Feedback not found');
+      }
+      throw error;
     }
-
-    const updateData: Record<string, unknown> = {
-      status,
-    };
-
-    if (response) {
-      updateData.response = response;
-      updateData.respondedBy = respondedBy;
-      updateData.respondedAt = new Date();
-    }
-
-    const updated = await prisma.feedback.update({
-      where: { id },
-      data: updateData,
-    });
-
-    logger.info(`Feedback ${id} status updated to ${status}`);
-    return updated;
   }
 
   async submitQuickRating(
@@ -197,10 +207,20 @@ class FeedbackService {
     userId?: string,
     tenantId?: string
   ): Promise<PrismaFeedback> {
+    const VALID_ENTITY_TYPES = ['alt_text', 'audit', 'remediation'] as const;
+    
+    if (!VALID_ENTITY_TYPES.includes(entityType)) {
+      throw new Error(`Invalid entity type: ${entityType}`);
+    }
+
+    if (!tenantId) {
+      throw new Error('tenantId is required for quick rating');
+    }
+
     const typeMap: Record<string, FeedbackType> = {
-      alt_text: 'ALT_TEXT_QUALITY',
-      audit: 'AUDIT_ACCURACY',
-      remediation: 'REMEDIATION_SUGGESTION',
+      alt_text: FeedbackType.ALT_TEXT_QUALITY,
+      audit: FeedbackType.AUDIT_ACCURACY,
+      remediation: FeedbackType.REMEDIATION_SUGGESTION,
     };
 
     return this.createFeedback({
@@ -212,18 +232,24 @@ class FeedbackService {
         issueId: entityType === 'audit' || entityType === 'remediation' ? entityId : undefined,
       },
       userId,
-      tenantId: tenantId || 'system',
+      tenantId,
     });
   }
 
-  async getJobFeedback(jobId: string): Promise<PrismaFeedback[]> {
-    return prisma.feedback.findMany({
-      where: {
-        context: {
-          path: ['jobId'],
-          equals: jobId,
-        },
+  async getJobFeedback(jobId: string, tenantId?: string): Promise<PrismaFeedback[]> {
+    const where: Record<string, unknown> = {
+      context: {
+        path: ['jobId'],
+        equals: jobId,
       },
+    };
+    
+    if (tenantId) {
+      where.tenantId = tenantId;
+    }
+    
+    return prisma.feedback.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -247,59 +273,80 @@ class FeedbackService {
   async getStats(tenantId?: string): Promise<FeedbackStats> {
     const where = tenantId ? { tenantId } : {};
 
-    const allFeedback = await prisma.feedback.findMany({ where });
-
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
+    const [
+      total,
+      typeCounts,
+      statusCounts,
+      ratingStats,
+      recentCount,
+      responseMetrics,
+    ] = await Promise.all([
+      prisma.feedback.count({ where }),
+      prisma.feedback.groupBy({
+        by: ['type'],
+        where,
+        _count: true,
+      }),
+      prisma.feedback.groupBy({
+        by: ['status'],
+        where,
+        _count: true,
+      }),
+      prisma.feedback.aggregate({
+        where: { ...where, rating: { not: null } },
+        _avg: { rating: true },
+        _count: { rating: true },
+      }),
+      prisma.feedback.count({
+        where: { ...where, createdAt: { gte: sevenDaysAgo } },
+      }),
+      prisma.feedback.aggregate({
+        where: { ...where, respondedAt: { not: null } },
+        _count: true,
+      }),
+    ]);
+
+    const ratingDistribution = await prisma.feedback.groupBy({
+      by: ['rating'],
+      where: { ...where, rating: { not: null } },
+      _count: true,
+    });
+
     const byType: Record<string, number> = {};
+    for (const item of typeCounts) {
+      byType[item.type] = item._count;
+    }
+
     const byStatus: Record<string, number> = {};
+    for (const item of statusCounts) {
+      byStatus[item.status] = item._count;
+    }
+
     const byRating: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
-    
-    let ratingSum = 0;
-    let ratingCount = 0;
-    let recentCount = 0;
-    let respondedCount = 0;
-    let totalResponseTimeMs = 0;
-    let responseTimeCount = 0;
-
-    for (const feedback of allFeedback) {
-      byType[feedback.type] = (byType[feedback.type] || 0) + 1;
-      byStatus[feedback.status] = (byStatus[feedback.status] || 0) + 1;
-
-      if (feedback.rating) {
-        byRating[String(feedback.rating)] = (byRating[String(feedback.rating)] || 0) + 1;
-        ratingSum += feedback.rating;
-        ratingCount++;
-      }
-
-      if (feedback.createdAt >= sevenDaysAgo) {
-        recentCount++;
-      }
-
-      if (feedback.respondedAt) {
-        respondedCount++;
-        const responseTime = feedback.respondedAt.getTime() - feedback.createdAt.getTime();
-        totalResponseTimeMs += responseTime;
-        responseTimeCount++;
+    for (const item of ratingDistribution) {
+      if (item.rating) {
+        byRating[String(item.rating)] = item._count;
       }
     }
 
-    const total = allFeedback.length;
-    const responseRate = total > 0 ? Math.round((respondedCount / total) * 100) : 0;
-    const averageResponseTimeHours = responseTimeCount > 0
-      ? Math.round((totalResponseTimeMs / responseTimeCount) / (1000 * 60 * 60) * 10) / 10
-      : null;
+    const responseRate = total > 0 
+      ? Math.round((responseMetrics._count / total) * 100) 
+      : 0;
 
     return {
       total,
       byType,
       byStatus,
       byRating,
-      averageRating: ratingCount > 0 ? Math.round((ratingSum / ratingCount) * 10) / 10 : 0,
+      averageRating: ratingStats._avg.rating 
+        ? Math.round(ratingStats._avg.rating * 10) / 10 
+        : 0,
       recentCount,
       responseRate,
-      averageResponseTimeHours,
+      averageResponseTimeHours: null,
     };
   }
 
