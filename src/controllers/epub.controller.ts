@@ -6,6 +6,7 @@ import { fileStorageService } from '../services/storage/file-storage.service';
 import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import { batchRemediationService } from '../services/epub/batch-remediation.service';
+import { epubExportService } from '../services/epub/epub-export.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -870,6 +871,117 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to list batches',
+      });
+    }
+  },
+
+  async exportRemediated(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+      const includeOriginal = req.query.includeOriginal === 'true';
+      const includeComparison = req.query.includeComparison === 'true';
+      const includeReport = req.query.includeReport === 'true';
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const result = await epubExportService.exportRemediated(jobId, tenantId, {
+        includeOriginal,
+        includeComparison,
+        includeReport,
+      });
+
+      res.setHeader('Content-Type', result.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+      res.setHeader('Content-Length', result.size);
+
+      return res.send(result.buffer);
+    } catch (error) {
+      logger.error('Failed to export remediated EPUB', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to export',
+      });
+    }
+  },
+
+  async exportBatch(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobIds, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'jobIds array is required',
+        });
+      }
+
+      if (jobIds.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Maximum 100 jobs per export',
+        });
+      }
+
+      const result = await epubExportService.exportBatch(jobIds, tenantId, options || {});
+
+      res.setHeader('Content-Type', result.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+      res.setHeader('Content-Length', result.size);
+
+      return res.send(result.buffer);
+    } catch (error) {
+      logger.error('Failed to export batch', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to export batch',
+      });
+    }
+  },
+
+  async getAccessibilityReport(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+      const format = req.query.format as string || 'json';
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const report = await epubExportService.generateAccessibilityReport(jobId, tenantId);
+
+      if (format === 'md' || format === 'markdown') {
+        const md = epubExportService.generateReportMarkdown(report);
+        res.setHeader('Content-Type', 'text/markdown');
+        return res.send(md);
+      }
+
+      return res.json({
+        success: true,
+        data: report,
+      });
+    } catch (error) {
+      logger.error('Failed to generate report', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate report',
       });
     }
   },

@@ -37,4 +37,8 @@ router.get('/batch/:batchId', authenticate, epubController.getBatchStatus);
 router.post('/batch/:batchId/cancel', authenticate, epubController.cancelBatch);
 router.get('/batches', authenticate, epubController.listBatches);
 
+router.get('/job/:jobId/export', authenticate, epubController.exportRemediated);
+router.post('/export-batch', authenticate, epubController.exportBatch);
+router.get('/job/:jobId/report', authenticate, epubController.getAccessibilityReport);
+
 export default router;
