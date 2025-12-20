@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
+import { autoRemediationService } from '../services/epub/auto-remediation.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -277,20 +278,93 @@ export const epubController = {
     }
   },
 
-  async runAutoRemediation(req: Request, res: Response) {
+  async runAutoRemediation(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
-      const result = await remediationService.runAutoRemediation(jobId);
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string; buffer?: string } | null;
+      if (!input?.buffer) {
+        return res.status(400).json({
+          success: false,
+          error: 'No EPUB file buffer found in job',
+        });
+      }
+
+      const epubBuffer = Buffer.from(input.buffer, 'base64');
+      const fileName = input.fileName || 'document.epub';
+
+      const result = await autoRemediationService.runAutoRemediation(
+        epubBuffer,
+        jobId,
+        fileName
+      );
 
       return res.json({
         success: true,
-        data: result,
+        data: {
+          jobId: result.jobId,
+          originalFileName: result.originalFileName,
+          remediatedFileName: result.remediatedFileName,
+          totalIssuesFixed: result.totalIssuesFixed,
+          totalIssuesFailed: result.totalIssuesFailed,
+          modifications: result.modifications,
+          remediatedFileBase64: result.remediatedBuffer.toString('base64'),
+          startedAt: result.startedAt,
+          completedAt: result.completedAt,
+        },
       });
     } catch (error) {
       logger.error('Auto-remediation failed', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Auto-remediation failed',
+      });
+    }
+  },
+
+  async getSupportedFixes(_req: Request, res: Response) {
+    try {
+      const codes = autoRemediationService.getSupportedIssueCodes();
+
+      return res.json({
+        success: true,
+        data: {
+          supportedCodes: codes,
+          descriptions: {
+            'EPUB-META-001': 'Add missing language declaration',
+            'EPUB-META-002': 'Add accessibility feature metadata',
+            'EPUB-META-003': 'Add accessibility summary',
+            'EPUB-META-004': 'Add access mode metadata',
+            'EPUB-SEM-001': 'Add lang attribute to HTML elements',
+            'EPUB-IMG-001': 'Mark images without alt as decorative',
+            'EPUB-STRUCT-002': 'Add headers to simple tables',
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to get supported fixes', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get supported fixes',
       });
     }
   },
