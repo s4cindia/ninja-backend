@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -6,7 +6,7 @@ import * as os from 'os';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 interface EpubMessage {
   severity: 'error' | 'warning' | 'info';
@@ -148,7 +148,7 @@ class EpubAuditService {
     const outputPath = epubPath + '.json';
 
     try {
-      await execAsync('java -version');
+      await execFileAsync('java', ['-version']);
     } catch {
       logger.warn('Java not available, skipping EPUBCheck');
       return {
@@ -161,8 +161,9 @@ class EpubAuditService {
     }
 
     try {
-      await execAsync(
-        `java -jar "${this.epubCheckPath}" "${epubPath}" --json "${outputPath}"`,
+      await execFileAsync(
+        'java',
+        ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
         { timeout: 60000 }
       );
 
@@ -204,8 +205,9 @@ class EpubAuditService {
     const aceOutputDir = path.join(tempDir, 'ace-output');
 
     try {
-      await execAsync(
-        `npx @daisy/ace "${epubPath}" --outdir "${aceOutputDir}" --force`,
+      await execFileAsync(
+        'npx',
+        ['@daisy/ace', epubPath, '--outdir', aceOutputDir, '--force'],
         { timeout: 120000 }
       );
 

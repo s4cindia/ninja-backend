@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
@@ -43,14 +44,28 @@ interface RemediationPlan {
   updatedAt: Date;
 }
 
-const AUTO_FIXABLE_CODES = [
-  'EPUB-META-001',
-  'EPUB-META-002',
-  'EPUB-META-003',
-  'EPUB-META-004',
-  'EPUB-NAV-002',
-  'EPUB-NAV-003',
-];
+const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
+  'EPUB-META-001': {
+    handler: () => ({ success: true, message: 'Would add <dc:language>en</dc:language> to package document' }),
+  },
+  'EPUB-META-002': {
+    handler: () => ({ success: true, message: 'Would add schema:accessibilityFeature metadata with standard values' }),
+  },
+  'EPUB-META-003': {
+    handler: () => ({ success: true, message: 'Would add schema:accessibilitySummary with auto-generated description' }),
+  },
+  'EPUB-META-004': {
+    handler: () => ({ success: true, message: 'Would add schema:accessMode with "textual" value' }),
+  },
+  'EPUB-NAV-002': {
+    handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
+  },
+  'EPUB-NAV-003': {
+    handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
+  },
+};
+
+const isAutoFixableCode = (code: string): boolean => code in AUTO_FIX_HANDLERS;
 
 const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
   critical: 'critical',
@@ -72,23 +87,28 @@ class RemediationService {
     const auditData = job.output as Record<string, unknown>;
     const issues = (auditData.combinedIssues as Array<Record<string, unknown>>) || [];
 
-    const tasks: RemediationTask[] = issues.map((issue, index: number) => {
+    const tasks: RemediationTask[] = issues.map((issue) => {
       const issueCode = (issue.code as string) || '';
-      const isAutoFixable = AUTO_FIXABLE_CODES.includes(issueCode);
+      const issueLocation = (issue.location as string) || '';
+      const isAutoFixable = isAutoFixableCode(issueCode);
       const severity = (issue.severity as string) || 'moderate';
+      const taskId = crypto.createHash('md5')
+        .update(`${jobId}-${issueCode}-${issueLocation}`)
+        .digest('hex')
+        .substring(0, 8);
       
       return {
-        id: `task-${jobId.slice(0, 8)}-${index + 1}`,
+        id: `task-${taskId}`,
         jobId,
-        issueId: (issue.id as string) || `issue-${index + 1}`,
+        issueId: (issue.id as string) || `issue-${taskId}`,
         issueCode,
         issueMessage: (issue.message as string) || '',
         severity,
         category: (issue.category as string) || 'general',
-        location: issue.location as string | undefined,
+        location: issueLocation || undefined,
         status: 'pending' as RemediationStatus,
         priority: SEVERITY_TO_PRIORITY[severity] || 'medium',
-        type: isAutoFixable ? 'auto' : 'manual' as RemediationType,
+        type: (isAutoFixable ? 'auto' : 'manual') as RemediationType,
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -154,55 +174,57 @@ class RemediationService {
     resolution?: string,
     resolvedBy?: string
   ): Promise<RemediationTask> {
-    const planJob = await prisma.job.findFirst({
-      where: {
-        type: 'BATCH_VALIDATION',
-        input: {
-          path: ['sourceJobId'],
-          equals: jobId,
+    return await prisma.$transaction(async (tx) => {
+      const planJob = await tx.job.findFirst({
+        where: {
+          type: 'BATCH_VALIDATION',
+          input: {
+            path: ['sourceJobId'],
+            equals: jobId,
+          },
         },
-      },
-      orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!planJob || !planJob.output) {
+        throw new Error('Remediation plan not found');
+      }
+
+      const plan = planJob.output as unknown as RemediationPlan;
+      const taskIndex = plan.tasks.findIndex(t => t.id === taskId);
+      
+      if (taskIndex === -1) {
+        throw new Error('Task not found');
+      }
+
+      const task = plan.tasks[taskIndex];
+      task.status = status;
+      task.updatedAt = new Date();
+
+      if (status === 'completed' || status === 'failed') {
+        task.resolution = resolution;
+        task.resolvedBy = resolvedBy;
+        task.resolvedAt = new Date();
+      }
+
+      plan.stats = {
+        pending: plan.tasks.filter(t => t.status === 'pending').length,
+        inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
+        completed: plan.tasks.filter(t => t.status === 'completed').length,
+        skipped: plan.tasks.filter(t => t.status === 'skipped').length,
+        failed: plan.tasks.filter(t => t.status === 'failed').length,
+        autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
+        manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+      };
+      plan.updatedAt = new Date();
+
+      await tx.job.update({
+        where: { id: planJob.id },
+        data: { output: JSON.parse(JSON.stringify(plan)) },
+      });
+
+      return task;
     });
-
-    if (!planJob || !planJob.output) {
-      throw new Error('Remediation plan not found');
-    }
-
-    const plan = planJob.output as unknown as RemediationPlan;
-    const taskIndex = plan.tasks.findIndex(t => t.id === taskId);
-    
-    if (taskIndex === -1) {
-      throw new Error('Task not found');
-    }
-
-    const task = plan.tasks[taskIndex];
-    task.status = status;
-    task.updatedAt = new Date();
-
-    if (status === 'completed' || status === 'failed') {
-      task.resolution = resolution;
-      task.resolvedBy = resolvedBy;
-      task.resolvedAt = new Date();
-    }
-
-    plan.stats = {
-      pending: plan.tasks.filter(t => t.status === 'pending').length,
-      inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
-      completed: plan.tasks.filter(t => t.status === 'completed').length,
-      skipped: plan.tasks.filter(t => t.status === 'skipped').length,
-      failed: plan.tasks.filter(t => t.status === 'failed').length,
-      autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
-      manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
-    };
-    plan.updatedAt = new Date();
-
-    await prisma.job.update({
-      where: { id: planJob.id },
-      data: { output: JSON.parse(JSON.stringify(plan)) },
-    });
-
-    return task;
   }
 
   async startTask(jobId: string, taskId: string): Promise<RemediationTask> {
@@ -259,23 +281,21 @@ class RemediationService {
     };
   }
 
+  /**
+   * Auto-fix a specific issue.
+   * 
+   * NOTE: This is a placeholder implementation that describes what fixes WOULD be applied.
+   * Actual EPUB modification will be implemented in Epic 3.7 (Complete Remediation).
+   * 
+   * @param task - The remediation task to auto-fix
+   * @returns Description of the fix that would be applied
+   */
   private async autoFix(task: RemediationTask): Promise<{ success: boolean; message: string }> {
-    switch (task.issueCode) {
-      case 'EPUB-META-001':
-        return { success: true, message: 'Would add <dc:language>en</dc:language> to package document' };
-      case 'EPUB-META-002':
-        return { success: true, message: 'Would add schema:accessibilityFeature metadata with standard values' };
-      case 'EPUB-META-003':
-        return { success: true, message: 'Would add schema:accessibilitySummary with auto-generated description' };
-      case 'EPUB-META-004':
-        return { success: true, message: 'Would add schema:accessMode with "textual" value' };
-      case 'EPUB-NAV-002':
-        return { success: true, message: 'Would generate page-list navigation from content structure' };
-      case 'EPUB-NAV-003':
-        return { success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' };
-      default:
-        throw new Error(`No auto-fix available for ${task.issueCode}`);
+    const handler = AUTO_FIX_HANDLERS[task.issueCode];
+    if (!handler) {
+      throw new Error(`No auto-fix available for ${task.issueCode}`);
     }
+    return handler.handler();
   }
 
   async getRemediationSummary(jobId: string): Promise<{

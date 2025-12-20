@@ -4,6 +4,15 @@ import { remediationService } from '../services/epub/remediation.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+    tenantId: string;
+    role: string;
+  };
+}
+
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
     try {
@@ -59,7 +68,11 @@ export const epubController = {
     }
   },
 
-  async auditFromBuffer(req: Request, res: Response) {
+  async auditFromBuffer(req: AuthenticatedRequest, res: Response) {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    let jobId: string | undefined;
+
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -67,9 +80,6 @@ export const epubController = {
           error: 'No EPUB file uploaded',
         });
       }
-
-      const tenantId = (req as unknown as { user?: { tenantId?: string } }).user?.tenantId;
-      const userId = (req as unknown as { user?: { id?: string } }).user?.id;
 
       if (!tenantId || !userId) {
         return res.status(401).json({
@@ -92,6 +102,7 @@ export const epubController = {
           startedAt: new Date(),
         },
       });
+      jobId = job.id;
 
       const result = await epubAuditService.runAudit(
         req.file.buffer,
@@ -99,12 +110,33 @@ export const epubController = {
         req.file.originalname
       );
 
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { 
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: JSON.parse(JSON.stringify(result)),
+        },
+      });
+
       return res.json({
         success: true,
         data: result,
       });
     } catch (error) {
       logger.error('EPUB audit from buffer failed', error instanceof Error ? error : undefined);
+      
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { 
+            status: 'FAILED',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        }).catch(() => {});
+      }
+      
       return res.status(500).json({
         success: false,
         error: 'EPUB audit failed',

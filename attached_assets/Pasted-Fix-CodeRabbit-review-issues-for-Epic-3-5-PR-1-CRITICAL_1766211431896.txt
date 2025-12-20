@@ -1,0 +1,254 @@
+Fix CodeRabbit review issues for Epic 3.5 PR.
+
+**1. CRITICAL - Fix type casting in ternary operator (remediation.service.ts)**
+
+Around line where task type is assigned:
+
+// Before:
+type: isAutoFixable ? 'auto' : 'manual' as RemediationType,
+
+// After:
+type: (isAutoFixable ? 'auto' : 'manual') as RemediationType,
+
+**2. CRITICAL - Add transaction/locking for updateTaskStatus race condition (remediation.service.ts)**
+
+Wrap the update operation in a Prisma transaction. Replace updateTaskStatus method:
+
+async updateTaskStatus(
+  jobId: string,
+  taskId: string,
+  status: RemediationStatus,
+  resolution?: string,
+  resolvedBy?: string
+): Promise<RemediationTask> {
+  // Use transaction to prevent race conditions
+  return await prisma.$transaction(async (tx) => {
+    const result = await tx.jobResult.findFirst({
+      where: {
+        jobId,
+        resultType: 'remediation_plan',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!result) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const plan = result.data as RemediationPlan;
+    const taskIndex = plan.tasks.findIndex(t => t.id === taskId);
+    
+    if (taskIndex === -1) {
+      throw new Error('Task not found');
+    }
+
+    // Update task
+    const task = plan.tasks[taskIndex];
+    task.status = status;
+    task.updatedAt = new Date();
+
+    if (status === 'completed' || status === 'failed') {
+      task.resolution = resolution;
+      task.resolvedBy = resolvedBy;
+      task.resolvedAt = new Date();
+    }
+
+    // Recalculate stats
+    plan.stats = {
+      pending: plan.tasks.filter(t => t.status === 'pending').length,
+      inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
+      completed: plan.tasks.filter(t => t.status === 'completed').length,
+      skipped: plan.tasks.filter(t => t.status === 'skipped').length,
+      failed: plan.tasks.filter(t => t.status === 'failed').length,
+      autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
+      manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+    };
+    plan.updatedAt = new Date();
+
+    // Update with transaction
+    await tx.jobResult.update({
+      where: { id: result.id },
+      data: { data: plan as any },
+    });
+
+    return task;
+  });
+}
+
+**3. MAJOR - Command injection fix for EPUBCheck and ACE (epub-audit.service.ts)**
+
+Add shell-escape package or use execFile instead of exec:
+
+npm install shell-escape
+npm install -D @types/shell-escape
+
+Then update the imports and execution:
+
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+// For EPUBCheck (around line 164), replace execAsync with execFileAsync:
+// Before:
+await execAsync(
+  `java -jar "${this.epubCheckPath}" "${epubPath}" --json "${outputPath}"`,
+  { timeout: 60000 }
+);
+
+// After:
+await execFileAsync(
+  'java',
+  ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
+  { timeout: 60000 }
+);
+
+// For ACE (around line 206), replace:
+// Before:
+await execAsync(
+  `npx @daisy/ace "${epubPath}" --outdir "${aceOutputDir}" --force`,
+  { timeout: 120000 }
+);
+
+// After:
+await execFileAsync(
+  'npx',
+  ['@daisy/ace', epubPath, '--outdir', aceOutputDir, '--force'],
+  { timeout: 120000 }
+);
+
+**4. MAJOR - Synchronize AUTO_FIXABLE_CODES with autoFix handler (remediation.service.ts)**
+
+Replace the two separate definitions with a single map:
+
+// Replace AUTO_FIXABLE_CODES array and autoFix switch with:
+const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
+  'EPUB-META-001': {
+    handler: () => ({ success: true, message: 'Would add <dc:language>en</dc:language> to package document' }),
+  },
+  'EPUB-META-002': {
+    handler: () => ({ success: true, message: 'Would add schema:accessibilityFeature metadata with standard values' }),
+  },
+  'EPUB-META-003': {
+    handler: () => ({ success: true, message: 'Would add schema:accessibilitySummary with auto-generated description' }),
+  },
+  'EPUB-META-004': {
+    handler: () => ({ success: true, message: 'Would add schema:accessMode with "textual" value' }),
+  },
+  'EPUB-NAV-002': {
+    handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
+  },
+  'EPUB-NAV-003': {
+    handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
+  },
+};
+
+// Helper to check if auto-fixable
+const isAutoFixable = (code: string): boolean => code in AUTO_FIX_HANDLERS;
+
+// Update autoFix method:
+private async autoFix(task: RemediationTask): Promise<{ success: boolean; message: string }> {
+  const handler = AUTO_FIX_HANDLERS[task.issueCode];
+  if (!handler) {
+    throw new Error(`No auto-fix available for ${task.issueCode}`);
+  }
+  // Note: This is a placeholder implementation. Epic 3.7 will implement actual EPUB modification.
+  return handler.handler();
+}
+
+// Update task creation to use the helper:
+const isAutoFixableTask = isAutoFixable(issue.code);
+
+**5. MAJOR - Generate stable task IDs (remediation.service.ts)**
+
+Use a hash of issue properties instead of index-based IDs:
+
+// Add crypto import at top:
+import crypto from 'crypto';
+
+// Update task ID generation in createRemediationPlan:
+// Before:
+id: `task-${jobId}-${index + 1}`,
+
+// After:
+id: `task-${crypto.createHash('md5').update(`${jobId}-${issue.code}-${issue.location || ''}`).digest('hex').substring(0, 8)}`,
+
+**6. MAJOR - Update job status after audit (epub.controller.ts)**
+
+In auditUpload method, update job status on success/failure:
+
+// Around line 95-100, wrap in try-finally:
+try {
+  const result = await epubAuditService.runAudit(
+    req.file.buffer,
+    job.id,
+    req.file.originalname
+  );
+
+  // Update job to completed
+  await prisma.job.update({
+    where: { id: job.id },
+    data: { 
+      status: 'COMPLETED',
+      completedAt: new Date(),
+      output: result as any,
+    },
+  });
+
+  return res.json({
+    success: true,
+    data: result,
+  });
+} catch (error) {
+  // Update job to failed
+  await prisma.job.update({
+    where: { id: job.id },
+    data: { 
+      status: 'FAILED',
+      completedAt: new Date(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+    },
+  });
+  throw error;
+}
+
+**7. MAJOR - Improve type safety for user extraction (epub.controller.ts)**
+
+Create a typed request interface or use existing auth types:
+
+// At top of file, add interface:
+interface AuthenticatedRequest extends Request {
+  user?: {
+    tenantId: string;
+    id: string;
+    email?: string;
+  };
+}
+
+// Then use in handler:
+async auditUpload(req: AuthenticatedRequest, res: Response) {
+  const tenantId = req.user?.tenantId;
+  const userId = req.user?.id;
+  // ... rest of code
+}
+
+**8. MINOR - Add JSDoc comment for placeholder autoFix (remediation.service.ts)**
+
+Add documentation above autoFix method:
+
+/**
+ * Auto-fix a specific issue.
+ * 
+ * NOTE: This is a placeholder implementation that describes what fixes WOULD be applied.
+ * Actual EPUB modification will be implemented in Epic 3.7 (Complete Remediation).
+ * 
+ * @param task - The remediation task to auto-fix
+ * @returns Description of the fix that would be applied
+ */
+private async autoFix(task: RemediationTask): Promise<{ success: boolean; message: string }> {
+
+After all fixes, run:
+npm run lint
+npm run build
+
+Verify no errors and warnings ≤ 60.
