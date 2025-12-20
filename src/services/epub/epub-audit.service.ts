@@ -9,8 +9,9 @@ import prisma from '../../lib/prisma';
 const execFileAsync = promisify(execFile);
 
 interface EpubMessage {
-  severity: 'error' | 'warning' | 'info';
+  severity: string;
   message: string;
+  code?: string;
   location?: {
     path?: string;
     line?: number;
@@ -170,23 +171,58 @@ class EpubAuditService {
       const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
       const output = JSON.parse(outputContent);
 
+      const parseMessages = (messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) => {
+        const normalizedMessages = messages.map(m => ({
+          severity: m.severity.toLowerCase(),
+          message: m.message,
+          code: m.ID,
+          location: Array.isArray(m.locations) && m.locations.length > 0 
+            ? m.locations[0] as { path?: string; line?: number; column?: number }
+            : undefined,
+        }));
+        return {
+          errors: normalizedMessages.filter(m => m.severity === 'error'),
+          warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+          fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+        };
+      };
+
+      const parsed = parseMessages(output.messages || []);
       return {
-        isValid: output.publication?.isValid ?? false,
+        isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
         epubVersion: output.publication?.ePubVersion || 'unknown',
-        errors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'error'),
-        warnings: (output.messages || []).filter((m: { severity: string }) => m.severity === 'warning'),
-        fatalErrors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'fatal'),
+        errors: parsed.errors,
+        warnings: parsed.warnings,
+        fatalErrors: parsed.fatalErrors,
       };
     } catch (error) {
       try {
         const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
         const output = JSON.parse(outputContent);
+        
+        const parseMessages = (messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) => {
+          const normalizedMessages = messages.map(m => ({
+            severity: m.severity.toLowerCase(),
+            message: m.message,
+            code: m.ID,
+            location: Array.isArray(m.locations) && m.locations.length > 0 
+              ? m.locations[0] as { path?: string; line?: number; column?: number }
+              : undefined,
+          }));
+          return {
+            errors: normalizedMessages.filter(m => m.severity === 'error'),
+            warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+            fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+          };
+        };
+
+        const parsed = parseMessages(output.messages || []);
         return {
-          isValid: output.publication?.isValid ?? false,
+          isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
           epubVersion: output.publication?.ePubVersion || 'unknown',
-          errors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'error'),
-          warnings: (output.messages || []).filter((m: { severity: string }) => m.severity === 'warning'),
-          fatalErrors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'fatal'),
+          errors: parsed.errors,
+          warnings: parsed.warnings,
+          fatalErrors: parsed.fatalErrors,
         };
       } catch {
         logger.error('EPUBCheck failed', error instanceof Error ? error : undefined);
@@ -284,7 +320,7 @@ class EpubAuditService {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'serious',
-        code: 'EPUBCHECK-ERROR',
+        code: error.code || 'EPUBCHECK-ERROR',
         message: error.message,
         location: error.location?.path,
       }));
@@ -294,7 +330,7 @@ class EpubAuditService {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'moderate',
-        code: 'EPUBCHECK-WARN',
+        code: warning.code || 'EPUBCHECK-WARN',
         message: warning.message,
         location: warning.location?.path,
       }));
