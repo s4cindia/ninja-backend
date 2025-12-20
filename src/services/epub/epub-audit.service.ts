@@ -94,6 +94,22 @@ class EpubAuditService {
     this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
   }
 
+  private parseMessages(messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) {
+    const normalizedMessages = messages.map(m => ({
+      severity: m.severity.toLowerCase(),
+      message: m.message,
+      code: m.ID,
+      location: Array.isArray(m.locations) && m.locations.length > 0 
+        ? m.locations[0] as { path?: string; line?: number; column?: number }
+        : undefined,
+    }));
+    return {
+      errors: normalizedMessages.filter(m => m.severity === 'error'),
+      warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+      fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+    };
+  }
+
   async runAudit(buffer: Buffer, jobId: string, fileName: string): Promise<EpubAuditResult> {
     this.issueCounter = 0;
     
@@ -201,23 +217,7 @@ class EpubAuditService {
       const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
       const output = JSON.parse(outputContent);
 
-      const parseMessages = (messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) => {
-        const normalizedMessages = messages.map(m => ({
-          severity: m.severity.toLowerCase(),
-          message: m.message,
-          code: m.ID,
-          location: Array.isArray(m.locations) && m.locations.length > 0 
-            ? m.locations[0] as { path?: string; line?: number; column?: number }
-            : undefined,
-        }));
-        return {
-          errors: normalizedMessages.filter(m => m.severity === 'error'),
-          warnings: normalizedMessages.filter(m => m.severity === 'warning'),
-          fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
-        };
-      };
-
-      const parsed = parseMessages(output.messages || []);
+      const parsed = this.parseMessages(output.messages || []);
       return {
         isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
         epubVersion: output.publication?.ePubVersion || 'unknown',
@@ -229,24 +229,8 @@ class EpubAuditService {
       try {
         const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
         const output = JSON.parse(outputContent);
-        
-        const parseMessages = (messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) => {
-          const normalizedMessages = messages.map(m => ({
-            severity: m.severity.toLowerCase(),
-            message: m.message,
-            code: m.ID,
-            location: Array.isArray(m.locations) && m.locations.length > 0 
-              ? m.locations[0] as { path?: string; line?: number; column?: number }
-              : undefined,
-          }));
-          return {
-            errors: normalizedMessages.filter(m => m.severity === 'error'),
-            warnings: normalizedMessages.filter(m => m.severity === 'warning'),
-            fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
-          };
-        };
 
-        const parsed = parseMessages(output.messages || []);
+        const parsed = this.parseMessages(output.messages || []);
         return {
           isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
           epubVersion: output.publication?.ePubVersion || 'unknown',

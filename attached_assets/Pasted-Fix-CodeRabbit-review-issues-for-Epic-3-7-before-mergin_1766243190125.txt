@@ -1,0 +1,273 @@
+Fix CodeRabbit review issues for Epic 3.7 before merging.
+
+**1. CRITICAL - Fix alt attribute check logic (epub-js-auditor.service.ts ~line 224):**
+
+// Before (incorrect logic):
+if (!$el.attr('alt') && $el.attr('alt') !== '') {
+  stats.imagesWithoutAlt++;
+}
+
+// After (correct logic):
+const altAttr = $el.attr('alt');
+if (altAttr === undefined) {
+  stats.imagesWithoutAlt++;
+}
+
+**2. MAJOR - Fix issue counter collisions (epub-js-auditor.service.ts ~line 39):**
+
+// Change from instance variable to local counter in audit method
+// Before:
+class EPUBJSAuditorService {
+  private issueCounter = 0;
+
+  async audit(buffer: Buffer): Promise<JSAuditResult> {
+    this.issueCounter = 0;
+    // ...
+  }
+
+  private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
+    return {
+      id: `issue-${++this.issueCounter}`,
+      ...data,
+    };
+  }
+}
+
+// After:
+class EPUBJSAuditorService {
+  async audit(buffer: Buffer): Promise<JSAuditResult> {
+    let issueCounter = 0;
+    
+    const createIssue = (data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue => {
+      return {
+        id: `issue-${++issueCounter}`,
+        ...data,
+      };
+    };
+
+    // Use createIssue() instead of this.createIssue() throughout the method
+    // Pass createIssue as parameter to helper methods or inline the logic
+  }
+}
+
+// Alternatively, use a simpler approach - generate unique IDs:
+private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
+  return {
+    id: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+    ...data,
+  };
+}
+
+**3. MAJOR - Fix heading hierarchy validation (epub-js-auditor.service.ts ~line 288):**
+
+// Before:
+const headings: number[] = [];
+$('h1, h2, h3, h4, h5, h6').each((_, el) => {
+  const level = parseInt((el as cheerio.TagElement).tagName.charAt(1));
+  headings.push(level);
+});
+
+for (let i = 1; i < headings.length; i++) {
+  if (headings[i] > headings[i - 1] + 1) {
+    issues.push(this.createIssue({...}));
+    break;
+  }
+}
+
+// After (check for missing h1 and report all violations):
+const headings: number[] = [];
+$('h1, h2, h3, h4, h5, h6').each((_, el) => {
+  const level = parseInt((el as cheerio.TagElement).tagName.charAt(1));
+  headings.push(level);
+});
+
+// Check for missing h1 at start
+if (headings.length > 0 && headings[0] !== 1) {
+  issues.push(createIssue({
+    code: 'EPUB-STRUCT-003',
+    severity: 'moderate',
+    message: `Document starts with h${headings[0]} instead of h1`,
+    wcagCriteria: '1.3.1',
+    location: filePath,
+    suggestion: 'Start document with an h1 heading',
+    category: 'structure',
+  }));
+}
+
+// Check for skipped levels (report first violation only to avoid noise)
+for (let i = 1; i < headings.length; i++) {
+  if (headings[i] > headings[i - 1] + 1) {
+    issues.push(createIssue({
+      code: 'EPUB-STRUCT-003',
+      severity: 'moderate',
+      message: `Heading hierarchy skips levels (h${headings[i - 1]} to h${headings[i]})`,
+      wcagCriteria: '1.3.1',
+      location: filePath,
+      suggestion: 'Ensure headings follow a logical hierarchy without skipping levels',
+      category: 'structure',
+    }));
+    break; // Keep break to avoid duplicate noise
+  }
+}
+
+**4. MAJOR - Fix fallback logic to merge instead of replace (epub-audit.service.ts ~line 348):**
+
+// Before (replaces issues):
+if (combinedIssues.length === 0 || 
+    (combinedIssues.length === 1 && combinedIssues[0].code === 'EPUBCHECK-ERROR')) {
+  combinedIssues.length = 0;
+  combinedIssues.push(...jsResult.issues.map(...));
+}
+
+// After (always run JS auditor, merge results, avoid duplicates):
+// Run JS auditor for accessibility issues (always, as EPUBCheck focuses on spec compliance)
+logger.info('Running JS accessibility audit');
+try {
+  const jsResult = await epubJSAuditor.audit(buffer);
+  
+  // Merge JS auditor issues, avoiding duplicates by code
+  const existingCodes = new Set(combinedIssues.map(i => i.code));
+  
+  for (const issue of jsResult.issues) {
+    if (!existingCodes.has(issue.code)) {
+      combinedIssues.push({
+        ...issue,
+        source: 'js-auditor' as const,
+      });
+      existingCodes.add(issue.code);
+    }
+  }
+  
+  logger.info(`JS audit added ${jsResult.issues.length} accessibility issues`);
+} catch (jsError) {
+  logger.warn('JS audit failed', jsError instanceof Error ? jsError : undefined);
+}
+
+// Recalculate score with combined issues
+score = this.calculateScore(combinedIssues);
+
+**5. MAJOR - Fix ReDoS vulnerability (epub-modifier.service.ts ~line 113):**
+
+// Add regex escape helper at top of file:
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Before:
+for (const feature of features) {
+  const featurePattern = new RegExp(`schema:accessibilityFeature[^>]*>${feature}<`, 'i');
+
+// After:
+for (const feature of features) {
+  const escapedFeature = escapeRegExp(feature);
+  const featurePattern = new RegExp(`schema:accessibilityFeature[^>]*>${escapedFeature}<`, 'i');
+
+**6. MAJOR - Add error handling for batch job lookup (batch-remediation.service.ts ~line 146):**
+
+// Before:
+const input = (await prisma.job.findUnique({ where: { id: job.jobId } }))?.input as { fileName?: string };
+const fileName = input?.fileName || 'upload.epub';
+const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+
+// After:
+const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+if (!jobRecord) {
+  throw new Error(`Job record not found: ${job.jobId}`);
+}
+
+const input = jobRecord.input as { fileName?: string } | null;
+const fileName = input?.fileName || 'upload.epub';
+
+const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+if (!epubBuffer) {
+  throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
+}
+
+**7. MAJOR - Extract duplicate parseMessages function (epub-audit.service.ts):**
+
+// Move parseMessages to a private class method (define once):
+private parseMessages(messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) {
+  const normalizedMessages = messages.map(m => ({
+    severity: m.severity.toLowerCase(),
+    message: m.message,
+    code: m.ID,
+    location: Array.isArray(m.locations) && m.locations.length > 0 
+      ? m.locations[0] as { path?: string; line?: number; column?: number }
+      : undefined,
+  }));
+  return {
+    errors: normalizedMessages.filter(m => m.severity === 'error'),
+    warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+    fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+  };
+}
+
+// Then use this.parseMessages() in both places where it was defined
+
+**8. MAJOR - Add warning for decorative image assumption (epub-modifier.service.ts ~line 261):**
+
+// Add logging to warn about images being marked decorative:
+async addDecorativeAltAttributes(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+  const markedImages: string[] = [];
+
+  for (const filePath of files) {
+    // ... existing code ...
+
+    $('img').each((_, el) => {
+      const $el = $(el);
+      const altAttr = $el.attr('alt');
+      if (altAttr === undefined) {
+        const src = $el.attr('src') || 'unknown';
+        markedImages.push(src);
+        $el.attr('alt', '');
+        $el.attr('role', 'presentation');
+        modified = true;
+        count++;
+      }
+    });
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'add_decorative_alt',
+        description: `Marked ${count} image(s) as decorative with alt="" - REVIEW RECOMMENDED`,
+        after: `Images marked: ${markedImages.slice(0, 5).join(', ')}${markedImages.length > 5 ? '...' : ''}`,
+      });
+      
+      // Log warning for manual review
+      logger.warn(`Marked ${count} images as decorative in ${filePath}. Manual review recommended to ensure these are not informative images.`);
+    }
+  }
+
+  // ... rest of method
+}
+
+**9. MINOR - Add EPUB_STORAGE_PATH documentation:**
+
+Update .env.example (create if doesn't exist):
+# EPUB Storage - REQUIRED for production (must be persistent volume)
+# Default: /tmp/epub-storage (WARNING: files lost on restart)
+EPUB_STORAGE_PATH=/data/epub-storage
+
+Add runtime warning in file-storage.service.ts:
+const STORAGE_BASE = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+
+if (!process.env.EPUB_STORAGE_PATH) {
+  logger.warn('EPUB_STORAGE_PATH not set. Using /tmp/epub-storage which is NOT persistent. Set EPUB_STORAGE_PATH for production.');
+}
+
+**10. MINOR - Update EPUBCheck to 5.3.0 in setup script:**
+
+Update scripts/setup-epubcheck.sh:
+EPUBCHECK_VERSION="5.3.0"
+
+Update .env example:
+EPUBCHECK_PATH=/home/runner/workspace/lib/epubcheck/epubcheck-5.3.0/epubcheck.jar
+
+After all fixes, run:
+npm run build
+npm run lint

@@ -33,10 +33,7 @@ interface JSAuditResult {
 }
 
 class EPUBJSAuditorService {
-  private issueCounter = 0;
-
   async audit(buffer: Buffer): Promise<JSAuditResult> {
-    this.issueCounter = 0;
     const issues: AccessibilityIssue[] = [];
     const stats = {
       totalDocuments: 0,
@@ -46,6 +43,13 @@ class EPUBJSAuditorService {
       tablesWithoutHeaders: 0,
     };
 
+    const createIssue = (data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue => {
+      return {
+        id: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        ...data,
+      };
+    };
+
     try {
       const zip = await JSZip.loadAsync(buffer);
 
@@ -53,7 +57,7 @@ class EPUBJSAuditorService {
       const metadata = await this.parseMetadata(opf?.content || '');
 
       if (opf) {
-        issues.push(...this.auditMetadata(opf.content, metadata));
+        issues.push(...this.auditMetadata(opf.content, metadata, createIssue));
       }
 
       const files = Object.keys(zip.files);
@@ -64,7 +68,7 @@ class EPUBJSAuditorService {
         if (!content) continue;
 
         stats.totalDocuments++;
-        const docIssues = this.auditContentDocument(content, filePath, stats);
+        const docIssues = this.auditContentDocument(content, filePath, stats, createIssue);
         issues.push(...docIssues);
       }
 
@@ -126,11 +130,15 @@ class EPUBJSAuditorService {
     };
   }
 
-  private auditMetadata(opfContent: string, metadata: Awaited<ReturnType<typeof this.parseMetadata>>): AccessibilityIssue[] {
+  private auditMetadata(
+    opfContent: string,
+    metadata: Awaited<ReturnType<typeof this.parseMetadata>>,
+    createIssue: (data: Omit<AccessibilityIssue, 'id'>) => AccessibilityIssue
+  ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
 
     if (!metadata.language) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-META-001',
         severity: 'serious',
         message: 'Missing dc:language declaration',
@@ -141,7 +149,7 @@ class EPUBJSAuditorService {
     }
 
     if (metadata.accessibilityFeatures.length === 0) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-META-002',
         severity: 'moderate',
         message: 'Missing accessibility feature metadata',
@@ -151,7 +159,7 @@ class EPUBJSAuditorService {
     }
 
     if (!/schema:accessibilitySummary/i.test(opfContent)) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-META-003',
         severity: 'minor',
         message: 'Missing accessibility summary',
@@ -161,7 +169,7 @@ class EPUBJSAuditorService {
     }
 
     if (!/schema:accessMode/i.test(opfContent)) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-META-004',
         severity: 'moderate',
         message: 'Missing access mode metadata',
@@ -176,13 +184,14 @@ class EPUBJSAuditorService {
   private auditContentDocument(
     content: string,
     filePath: string,
-    stats: JSAuditResult['stats']
+    stats: JSAuditResult['stats'],
+    createIssue: (data: Omit<AccessibilityIssue, 'id'>) => AccessibilityIssue
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
     const $ = cheerio.load(content, { xmlMode: true });
 
     if (!$('html').attr('lang') && !$('html').attr('xml:lang')) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-SEM-001',
         severity: 'serious',
         message: 'Missing lang attribute on html element',
@@ -197,14 +206,15 @@ class EPUBJSAuditorService {
     $('img').each((_, el) => {
       stats.totalImages++;
       const $el = $(el);
-      if (!$el.attr('alt') && $el.attr('alt') !== '') {
+      const altAttr = $el.attr('alt');
+      if (altAttr === undefined) {
         localImagesWithoutAlt++;
         stats.imagesWithoutAlt++;
       }
     });
 
     if (localImagesWithoutAlt > 0) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-IMG-001',
         severity: 'critical',
         message: `${localImagesWithoutAlt} image(s) missing alt attribute`,
@@ -229,7 +239,7 @@ class EPUBJSAuditorService {
     });
 
     if (localEmptyLinks > 0) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-SEM-002',
         severity: 'serious',
         message: `${localEmptyLinks} empty link(s) found`,
@@ -250,7 +260,7 @@ class EPUBJSAuditorService {
     });
 
     if (localTablesWithoutHeaders > 0) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-STRUCT-002',
         severity: 'serious',
         message: `${localTablesWithoutHeaders} table(s) missing header cells`,
@@ -268,9 +278,21 @@ class EPUBJSAuditorService {
       if (!isNaN(level)) headings.push(level);
     });
 
+    if (headings.length > 0 && headings[0] !== 1) {
+      issues.push(createIssue({
+        code: 'EPUB-STRUCT-003',
+        severity: 'moderate',
+        message: `Document starts with h${headings[0]} instead of h1`,
+        wcagCriteria: '1.3.1',
+        location: filePath,
+        suggestion: 'Start document with an h1 heading',
+        category: 'structure',
+      }));
+    }
+
     for (let i = 1; i < headings.length; i++) {
       if (headings[i] > headings[i - 1] + 1) {
-        issues.push(this.createIssue({
+        issues.push(createIssue({
           code: 'EPUB-STRUCT-003',
           severity: 'moderate',
           message: `Heading hierarchy skips levels (h${headings[i - 1]} to h${headings[i]})`,
@@ -285,7 +307,7 @@ class EPUBJSAuditorService {
 
     const hasMainLandmark = $('[role="main"], main').length > 0;
     if (!hasMainLandmark) {
-      issues.push(this.createIssue({
+      issues.push(createIssue({
         code: 'EPUB-STRUCT-004',
         severity: 'minor',
         message: 'Missing main landmark',
@@ -297,13 +319,6 @@ class EPUBJSAuditorService {
     }
 
     return issues;
-  }
-
-  private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
-    return {
-      id: `issue-${++this.issueCounter}`,
-      ...data,
-    };
   }
 }
 

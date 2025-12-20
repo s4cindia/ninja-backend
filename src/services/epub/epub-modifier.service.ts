@@ -1,5 +1,10 @@
 import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
+import { logger } from '../../lib/logger';
+
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 interface ModificationResult {
   success: boolean;
@@ -111,7 +116,8 @@ class EPUBModifierService {
     const metadataToAdd: string[] = [];
 
     for (const feature of features) {
-      const featurePattern = new RegExp(`schema:accessibilityFeature[^>]*>${feature}<`, 'i');
+      const escapedFeature = escapeRegExp(feature);
+      const featurePattern = new RegExp(`schema:accessibilityFeature[^>]*>${escapedFeature}<`, 'i');
       if (!featurePattern.test(modified)) {
         metadataToAdd.push(
           `<meta property="schema:accessibilityFeature">${feature}</meta>`
@@ -257,10 +263,14 @@ class EPUBModifierService {
       const $ = cheerio.load(content, { xmlMode: true });
       let modified = false;
       let count = 0;
+      const markedImages: string[] = [];
 
       $('img').each((_, el) => {
         const $el = $(el);
-        if (!$el.attr('alt')) {
+        const altAttr = $el.attr('alt');
+        if (altAttr === undefined) {
+          const src = $el.attr('src') || 'unknown';
+          markedImages.push(src);
           $el.attr('alt', '');
           $el.attr('role', 'presentation');
           modified = true;
@@ -274,8 +284,11 @@ class EPUBModifierService {
           success: true,
           filePath,
           modificationType: 'add_decorative_alt',
-          description: `Marked ${count} image(s) as decorative with alt=""`,
+          description: `Marked ${count} image(s) as decorative with alt="" - REVIEW RECOMMENDED`,
+          after: `Images marked: ${markedImages.slice(0, 5).join(', ')}${markedImages.length > 5 ? '...' : ''}`,
         });
+
+        logger.warn(`Marked ${count} images as decorative in ${filePath}. Manual review recommended to ensure these are not informative images.`);
       }
     }
 

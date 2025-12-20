@@ -143,12 +143,17 @@ class BatchRemediationService {
         job.startedAt = new Date();
         await this.updateBatchStatus(batchId, result);
 
-        const input = (await prisma.job.findUnique({ where: { id: job.jobId } }))?.input as { fileName?: string };
+        const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+        if (!jobRecord) {
+          throw new Error(`Job record not found: ${job.jobId}`);
+        }
+
+        const input = jobRecord.input as { fileName?: string } | null;
         const fileName = input?.fileName || 'upload.epub';
+
         const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
-        
         if (!epubBuffer) {
-          throw new Error('EPUB file not found');
+          throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
         }
 
         const remediationResult = await autoRemediationService.runAutoRemediation(

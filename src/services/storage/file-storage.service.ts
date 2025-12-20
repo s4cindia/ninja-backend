@@ -4,6 +4,10 @@ import { logger } from '../../lib/logger';
 
 const STORAGE_BASE = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
 
+if (!process.env.EPUB_STORAGE_PATH) {
+  logger.warn('EPUB_STORAGE_PATH not set. Using /tmp/epub-storage which is NOT persistent. Set EPUB_STORAGE_PATH for production.');
+}
+
 class FileStorageService {
   async ensureDir(dirPath: string): Promise<void> {
     await fs.mkdir(dirPath, { recursive: true });
