@@ -2,245 +2,309 @@ import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
 import { logger } from '../../lib/logger';
 
-export interface JSAuditorIssue {
+type Severity = 'critical' | 'serious' | 'moderate' | 'minor';
+
+interface AccessibilityIssue {
   id: string;
   code: string;
-  severity: 'critical' | 'serious' | 'moderate' | 'minor';
+  severity: Severity;
   message: string;
+  wcagCriteria?: string;
   location?: string;
   suggestion?: string;
-  wcagCriteria?: string[];
+  category: string;
 }
 
-export interface JSAuditResult {
-  issues: JSAuditorIssue[];
+interface JSAuditResult {
+  issues: AccessibilityIssue[];
   metadata: {
-    hasLanguage: boolean;
-    hasAccessibilityMeta: boolean;
-    hasAccessibilitySummary: boolean;
-    hasWcagConformance: boolean;
+    title?: string;
+    language?: string;
+    hasAccessibilityMetadata: boolean;
+    accessibilityFeatures: string[];
+  };
+  stats: {
+    totalDocuments: number;
+    totalImages: number;
+    imagesWithoutAlt: number;
+    emptyLinks: number;
+    tablesWithoutHeaders: number;
   };
 }
 
-class EpubJSAuditor {
+class EPUBJSAuditorService {
   private issueCounter = 0;
 
   async audit(buffer: Buffer): Promise<JSAuditResult> {
     this.issueCounter = 0;
-    const issues: JSAuditorIssue[] = [];
+    const issues: AccessibilityIssue[] = [];
+    const stats = {
+      totalDocuments: 0,
+      totalImages: 0,
+      imagesWithoutAlt: 0,
+      emptyLinks: 0,
+      tablesWithoutHeaders: 0,
+    };
 
     try {
       const zip = await JSZip.loadAsync(buffer);
-      const opfContent = await this.getOPFContent(zip);
-      
-      const metadata = {
-        hasLanguage: false,
-        hasAccessibilityMeta: false,
-        hasAccessibilitySummary: false,
-        hasWcagConformance: false,
-      };
 
-      if (opfContent) {
-        this.auditMetadata(opfContent.content, opfContent.path, issues, metadata);
+      const opf = await this.getOPF(zip);
+      const metadata = await this.parseMetadata(opf?.content || '');
+
+      if (opf) {
+        issues.push(...this.auditMetadata(opf.content, metadata));
       }
 
-      await this.auditHtmlContent(zip, issues);
+      const files = Object.keys(zip.files);
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+        
+        const content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
 
-      return { issues, metadata };
+        stats.totalDocuments++;
+        const docIssues = this.auditContentDocument(content, filePath, stats);
+        issues.push(...docIssues);
+      }
+
+      return {
+        issues,
+        metadata: {
+          title: metadata.title,
+          language: metadata.language,
+          hasAccessibilityMetadata: metadata.hasAccessibilityMetadata,
+          accessibilityFeatures: metadata.accessibilityFeatures,
+        },
+        stats,
+      };
     } catch (error) {
-      logger.error('JS audit failed', error instanceof Error ? error : undefined);
+      logger.error('JS EPUB audit failed', error instanceof Error ? error : undefined);
       throw error;
     }
   }
 
-  private async getOPFContent(zip: JSZip): Promise<{ content: string; path: string } | null> {
-    const containerPath = 'META-INF/container.xml';
-    const containerFile = zip.file(containerPath);
-    
-    if (!containerFile) {
-      return null;
-    }
+  private async getOPF(zip: JSZip): Promise<{ path: string; content: string } | null> {
+    const containerXml = await zip.file('META-INF/container.xml')?.async('text');
+    if (!containerXml) return null;
 
-    const containerContent = await containerFile.async('text');
-    const $ = cheerio.load(containerContent, { xmlMode: true });
-    const opfPath = $('rootfile').attr('full-path');
+    const match = containerXml.match(/rootfile[^>]+full-path="([^"]+)"/);
+    if (!match) return null;
 
-    if (!opfPath) {
-      return null;
-    }
+    const opfPath = match[1];
+    const opfContent = await zip.file(opfPath)?.async('text');
+    if (!opfContent) return null;
 
-    const opfFile = zip.file(opfPath);
-    if (!opfFile) {
-      return null;
+    return { path: opfPath, content: opfContent };
+  }
+
+  private async parseMetadata(opfContent: string): Promise<{
+    title?: string;
+    language?: string;
+    hasAccessibilityMetadata: boolean;
+    accessibilityFeatures: string[];
+  }> {
+    const getMetaContent = (name: string): string | undefined => {
+      const regex = new RegExp(`<dc:${name}[^>]*>([^<]+)</dc:${name}>`, 'i');
+      const match = opfContent.match(regex);
+      return match ? match[1].trim() : undefined;
+    };
+
+    const accessibilityFeatures: string[] = [];
+    const featureMatches = opfContent.matchAll(/schema:accessibilityFeature[^>]*>([^<]+)</gi);
+    for (const m of featureMatches) {
+      accessibilityFeatures.push(m[1].trim());
     }
 
     return {
-      content: await opfFile.async('text'),
-      path: opfPath,
+      title: getMetaContent('title'),
+      language: getMetaContent('language'),
+      hasAccessibilityMetadata: accessibilityFeatures.length > 0 || 
+        /schema:accessMode/i.test(opfContent) ||
+        /schema:accessibilitySummary/i.test(opfContent),
+      accessibilityFeatures,
     };
   }
 
-  private auditMetadata(
-    opfContent: string,
-    opfPath: string,
-    issues: JSAuditorIssue[],
-    metadata: JSAuditResult['metadata']
-  ): void {
-    metadata.hasLanguage = /<dc:language[^>]*>/i.test(opfContent);
-    if (!metadata.hasLanguage) {
+  private auditMetadata(opfContent: string, metadata: Awaited<ReturnType<typeof this.parseMetadata>>): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+
+    if (!metadata.language) {
       issues.push(this.createIssue({
         code: 'EPUB-META-001',
         severity: 'serious',
-        message: 'Missing dc:language element in package metadata',
-        location: opfPath,
-        suggestion: 'Add <dc:language>en</dc:language> to the metadata section',
-        wcagCriteria: ['3.1.1'],
+        message: 'Missing dc:language declaration',
+        wcagCriteria: '3.1.1',
+        suggestion: 'Add <dc:language> element to specify publication language',
+        category: 'metadata',
       }));
     }
 
-    const hasAccessMode = /schema:accessMode/i.test(opfContent);
-    const hasAccessibilityFeature = /schema:accessibilityFeature/i.test(opfContent);
-    const hasAccessibilityHazard = /schema:accessibilityHazard/i.test(opfContent);
-    
-    metadata.hasAccessibilityMeta = hasAccessMode && hasAccessibilityFeature && hasAccessibilityHazard;
-    if (!metadata.hasAccessibilityMeta) {
-      const missing: string[] = [];
-      if (!hasAccessMode) missing.push('accessMode');
-      if (!hasAccessibilityFeature) missing.push('accessibilityFeature');
-      if (!hasAccessibilityHazard) missing.push('accessibilityHazard');
-      
+    if (metadata.accessibilityFeatures.length === 0) {
       issues.push(this.createIssue({
         code: 'EPUB-META-002',
         severity: 'moderate',
-        message: `Missing accessibility metadata: ${missing.join(', ')}`,
-        location: opfPath,
-        suggestion: 'Add schema.org accessibility metadata properties',
+        message: 'Missing accessibility feature metadata',
+        suggestion: 'Add schema:accessibilityFeature metadata',
+        category: 'metadata',
       }));
     }
 
-    metadata.hasAccessibilitySummary = /schema:accessibilitySummary/i.test(opfContent);
-    if (!metadata.hasAccessibilitySummary) {
+    if (!/schema:accessibilitySummary/i.test(opfContent)) {
       issues.push(this.createIssue({
         code: 'EPUB-META-003',
         severity: 'minor',
         message: 'Missing accessibility summary',
-        location: opfPath,
-        suggestion: 'Add a schema:accessibilitySummary describing the publication\'s accessibility features',
+        suggestion: 'Add schema:accessibilitySummary metadata',
+        category: 'metadata',
       }));
     }
 
-    metadata.hasWcagConformance = /dcterms:conformsTo.*WCAG/i.test(opfContent) || 
-                                   /a11y:conformsTo.*WCAG/i.test(opfContent);
-    if (!metadata.hasWcagConformance) {
+    if (!/schema:accessMode/i.test(opfContent)) {
       issues.push(this.createIssue({
         code: 'EPUB-META-004',
         severity: 'moderate',
-        message: 'Missing WCAG conformance declaration',
-        location: opfPath,
-        suggestion: 'Add dcterms:conformsTo or a11y:conformsTo with WCAG level',
+        message: 'Missing access mode metadata',
+        suggestion: 'Add schema:accessMode metadata',
+        category: 'metadata',
       }));
     }
+
+    return issues;
   }
 
-  private async auditHtmlContent(zip: JSZip, issues: JSAuditorIssue[]): Promise<void> {
-    const htmlFiles = Object.keys(zip.files).filter(
-      path => /\.(html|xhtml|htm)$/i.test(path) && !zip.files[path].dir
-    );
+  private auditContentDocument(
+    content: string,
+    filePath: string,
+    stats: JSAuditResult['stats']
+  ): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+    const $ = cheerio.load(content, { xmlMode: true });
 
-    for (const filePath of htmlFiles) {
-      const content = await zip.file(filePath)?.async('text');
-      if (!content) continue;
-
-      const $ = cheerio.load(content, { xmlMode: true });
-
-      this.auditLangAttribute($, filePath, issues);
-      this.auditImages($, filePath, issues);
-      this.auditTables($, filePath, issues);
-    }
-  }
-
-  private auditLangAttribute($: cheerio.CheerioAPI, filePath: string, issues: JSAuditorIssue[]): void {
-    const html = $('html');
-    const hasLang = html.attr('lang') || html.attr('xml:lang');
-    
-    if (!hasLang) {
+    if (!$('html').attr('lang') && !$('html').attr('xml:lang')) {
       issues.push(this.createIssue({
-        code: 'EPUB-LANG-001',
+        code: 'EPUB-SEM-001',
         severity: 'serious',
-        message: 'HTML document missing lang attribute',
+        message: 'Missing lang attribute on html element',
+        wcagCriteria: '3.1.1',
         location: filePath,
-        suggestion: 'Add lang="en" attribute to the html element',
-        wcagCriteria: ['3.1.1'],
+        suggestion: 'Add lang attribute to <html> element',
+        category: 'semantics',
       }));
     }
-  }
 
-  private auditImages($: cheerio.CheerioAPI, filePath: string, issues: JSAuditorIssue[]): void {
+    let localImagesWithoutAlt = 0;
     $('img').each((_, el) => {
+      stats.totalImages++;
       const $el = $(el);
-      const alt = $el.attr('alt');
-      const role = $el.attr('role');
-      
-      if (alt === undefined && role !== 'presentation') {
-        const src = $el.attr('src') || 'unknown';
-        issues.push(this.createIssue({
-          code: 'EPUB-IMG-001',
-          severity: 'critical',
-          message: `Image missing alt attribute: ${src}`,
-          location: filePath,
-          suggestion: 'Add alt="" for decorative images or descriptive alt text for meaningful images',
-          wcagCriteria: ['1.1.1'],
-        }));
+      if (!$el.attr('alt') && $el.attr('alt') !== '') {
+        localImagesWithoutAlt++;
+        stats.imagesWithoutAlt++;
       }
     });
-  }
 
-  private auditTables($: cheerio.CheerioAPI, filePath: string, issues: JSAuditorIssue[]): void {
-    $('table').each((idx, el) => {
+    if (localImagesWithoutAlt > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-IMG-001',
+        severity: 'critical',
+        message: `${localImagesWithoutAlt} image(s) missing alt attribute`,
+        wcagCriteria: '1.1.1',
+        location: filePath,
+        suggestion: 'Add alt attribute to all images',
+        category: 'images',
+      }));
+    }
+
+    let localEmptyLinks = 0;
+    $('a').each((_, el) => {
+      const $el = $(el);
+      const text = $el.text().trim();
+      const hasImg = $el.find('img[alt]').length > 0;
+      const hasAriaLabel = $el.attr('aria-label');
+      
+      if (!text && !hasImg && !hasAriaLabel) {
+        localEmptyLinks++;
+        stats.emptyLinks++;
+      }
+    });
+
+    if (localEmptyLinks > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-SEM-002',
+        severity: 'serious',
+        message: `${localEmptyLinks} empty link(s) found`,
+        wcagCriteria: '2.4.4',
+        location: filePath,
+        suggestion: 'Add descriptive text or aria-label to links',
+        category: 'semantics',
+      }));
+    }
+
+    let localTablesWithoutHeaders = 0;
+    $('table').each((_, el) => {
       const $table = $(el);
-      const hasHeaders = $table.find('th').length > 0;
-      const hasScope = $table.find('th[scope]').length > 0;
-      const hasCaption = $table.find('caption').length > 0;
+      if ($table.find('th').length === 0) {
+        localTablesWithoutHeaders++;
+        stats.tablesWithoutHeaders++;
+      }
+    });
 
-      if (!hasHeaders) {
-        issues.push(this.createIssue({
-          code: 'EPUB-STRUCT-002',
-          severity: 'serious',
-          message: `Table ${idx + 1} missing header cells (th elements)`,
-          location: filePath,
-          suggestion: 'Add th elements to identify column and/or row headers',
-          wcagCriteria: ['1.3.1'],
-        }));
-      } else if (!hasScope && $table.find('tr').length > 1) {
+    if (localTablesWithoutHeaders > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-STRUCT-002',
+        severity: 'serious',
+        message: `${localTablesWithoutHeaders} table(s) missing header cells`,
+        wcagCriteria: '1.3.1',
+        location: filePath,
+        suggestion: 'Add <th> elements to identify table headers',
+        category: 'structure',
+      }));
+    }
+
+    const headings: number[] = [];
+    $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+      const tagName = (el as { tagName?: string }).tagName || '';
+      const level = parseInt(tagName.charAt(1));
+      if (!isNaN(level)) headings.push(level);
+    });
+
+    for (let i = 1; i < headings.length; i++) {
+      if (headings[i] > headings[i - 1] + 1) {
         issues.push(this.createIssue({
           code: 'EPUB-STRUCT-003',
           severity: 'moderate',
-          message: `Table ${idx + 1} headers missing scope attribute`,
+          message: `Heading hierarchy skips levels (h${headings[i - 1]} to h${headings[i]})`,
+          wcagCriteria: '1.3.1',
           location: filePath,
-          suggestion: 'Add scope="col" or scope="row" to th elements',
-          wcagCriteria: ['1.3.1'],
+          suggestion: 'Ensure headings follow a logical hierarchy without skipping levels',
+          category: 'structure',
         }));
+        break;
       }
+    }
 
-      if (!hasCaption && $table.find('tr').length > 2) {
-        issues.push(this.createIssue({
-          code: 'EPUB-STRUCT-001',
-          severity: 'minor',
-          message: `Table ${idx + 1} missing caption element`,
-          location: filePath,
-          suggestion: 'Add a caption element to describe the table purpose',
-          wcagCriteria: ['1.3.1'],
-        }));
-      }
-    });
+    const hasMainLandmark = $('[role="main"], main').length > 0;
+    if (!hasMainLandmark) {
+      issues.push(this.createIssue({
+        code: 'EPUB-STRUCT-004',
+        severity: 'minor',
+        message: 'Missing main landmark',
+        wcagCriteria: '1.3.1',
+        location: filePath,
+        suggestion: 'Add role="main" or <main> element to identify main content',
+        category: 'structure',
+      }));
+    }
+
+    return issues;
   }
 
-  private createIssue(data: Omit<JSAuditorIssue, 'id'>): JSAuditorIssue {
+  private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
     return {
-      id: `js-issue-${++this.issueCounter}`,
+      id: `issue-${++this.issueCounter}`,
       ...data,
     };
   }
 }
 
-export const epubJSAuditor = new EpubJSAuditor();
+export const epubJSAuditor = new EPUBJSAuditorService();

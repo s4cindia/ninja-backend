@@ -55,13 +55,14 @@ interface AceResult {
 
 interface AccessibilityIssue {
   id: string;
-  source: 'epubcheck' | 'ace';
+  source: 'epubcheck' | 'ace' | 'js-auditor';
   severity: 'critical' | 'serious' | 'moderate' | 'minor';
   code: string;
   message: string;
   wcagCriteria?: string[];
   location?: string;
   suggestion?: string;
+  category?: string;
 }
 
 interface EpubAuditResult {
@@ -115,6 +116,34 @@ class EpubAuditService {
       }
 
       const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+
+      logger.info('Running JS accessibility audit for auto-fixable issues');
+      try {
+        const jsResult = await epubJSAuditor.audit(buffer);
+        
+        const existingCodes = new Set(combinedIssues.map(i => i.code));
+        
+        for (const issue of jsResult.issues) {
+          if (!existingCodes.has(issue.code)) {
+            combinedIssues.push({
+              id: `js-${issue.id}`,
+              source: 'js-auditor' as const,
+              severity: issue.severity,
+              code: issue.code,
+              message: issue.message,
+              wcagCriteria: issue.wcagCriteria ? [issue.wcagCriteria] : undefined,
+              location: issue.location,
+              suggestion: issue.suggestion,
+              category: issue.category,
+            });
+          }
+        }
+        
+        logger.info(`JS audit found ${jsResult.issues.length} additional accessibility issues`);
+      } catch (jsError) {
+        logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
+      }
+
       const score = this.calculateScore(combinedIssues, aceResult);
 
       const result: EpubAuditResult = {

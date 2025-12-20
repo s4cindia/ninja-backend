@@ -1,0 +1,369 @@
+Create a lightweight EPUB accessibility audit that doesn't require EPUBCheck/Java. This will detect issues that our auto-remediation engine can fix.
+
+**Create file: src/services/epub/epub-js-auditor.service.ts**
+
+import JSZip from 'jszip';
+import * as cheerio from 'cheerio';
+import { logger } from '../../lib/logger';
+
+type Severity = 'critical' | 'serious' | 'moderate' | 'minor';
+
+interface AccessibilityIssue {
+  id: string;
+  code: string;
+  severity: Severity;
+  message: string;
+  wcagCriteria?: string;
+  location?: string;
+  suggestion?: string;
+  category: string;
+}
+
+interface JSAuditResult {
+  issues: AccessibilityIssue[];
+  metadata: {
+    title?: string;
+    language?: string;
+    hasAccessibilityMetadata: boolean;
+    accessibilityFeatures: string[];
+  };
+  stats: {
+    totalDocuments: number;
+    totalImages: number;
+    imagesWithoutAlt: number;
+    emptyLinks: number;
+    tablesWithoutHeaders: number;
+  };
+}
+
+class EPUBJSAuditorService {
+  private issueCounter = 0;
+
+  /**
+   * Run JavaScript-based accessibility audit (no Java required)
+   */
+  async audit(buffer: Buffer): Promise<JSAuditResult> {
+    this.issueCounter = 0;
+    const issues: AccessibilityIssue[] = [];
+    const stats = {
+      totalDocuments: 0,
+      totalImages: 0,
+      imagesWithoutAlt: 0,
+      emptyLinks: 0,
+      tablesWithoutHeaders: 0,
+    };
+
+    try {
+      const zip = await JSZip.loadAsync(buffer);
+
+      // Get OPF content
+      const opf = await this.getOPF(zip);
+      const metadata = await this.parseMetadata(opf?.content || '');
+
+      // Audit OPF/Metadata
+      if (opf) {
+        issues.push(...this.auditMetadata(opf.content, metadata));
+      }
+
+      // Audit content documents
+      const files = Object.keys(zip.files);
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+        
+        const content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        stats.totalDocuments++;
+        const docIssues = this.auditContentDocument(content, filePath, stats);
+        issues.push(...docIssues);
+      }
+
+      return {
+        issues,
+        metadata: {
+          title: metadata.title,
+          language: metadata.language,
+          hasAccessibilityMetadata: metadata.hasAccessibilityMetadata,
+          accessibilityFeatures: metadata.accessibilityFeatures,
+        },
+        stats,
+      };
+    } catch (error) {
+      logger.error('JS EPUB audit failed', error instanceof Error ? error : undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Get OPF file path and content
+   */
+  private async getOPF(zip: JSZip): Promise<{ path: string; content: string } | null> {
+    const containerXml = await zip.file('META-INF/container.xml')?.async('text');
+    if (!containerXml) return null;
+
+    const match = containerXml.match(/rootfile[^>]+full-path="([^"]+)"/);
+    if (!match) return null;
+
+    const opfPath = match[1];
+    const opfContent = await zip.file(opfPath)?.async('text');
+    if (!opfContent) return null;
+
+    return { path: opfPath, content: opfContent };
+  }
+
+  /**
+   * Parse metadata from OPF
+   */
+  private async parseMetadata(opfContent: string): Promise<{
+    title?: string;
+    language?: string;
+    hasAccessibilityMetadata: boolean;
+    accessibilityFeatures: string[];
+  }> {
+    const getMetaContent = (name: string): string | undefined => {
+      const regex = new RegExp(`<dc:${name}[^>]*>([^<]+)</dc:${name}>`, 'i');
+      const match = opfContent.match(regex);
+      return match ? match[1].trim() : undefined;
+    };
+
+    const accessibilityFeatures: string[] = [];
+    const featureMatches = opfContent.matchAll(/schema:accessibilityFeature[^>]*>([^<]+)</gi);
+    for (const m of featureMatches) {
+      accessibilityFeatures.push(m[1].trim());
+    }
+
+    return {
+      title: getMetaContent('title'),
+      language: getMetaContent('language'),
+      hasAccessibilityMetadata: accessibilityFeatures.length > 0 || 
+        /schema:accessMode/i.test(opfContent) ||
+        /schema:accessibilitySummary/i.test(opfContent),
+      accessibilityFeatures,
+    };
+  }
+
+  /**
+   * Audit OPF metadata
+   */
+  private auditMetadata(opfContent: string, metadata: ReturnType<typeof this.parseMetadata> extends Promise<infer T> ? T : never): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+
+    // Check language
+    if (!metadata.language) {
+      issues.push(this.createIssue({
+        code: 'EPUB-META-001',
+        severity: 'serious',
+        message: 'Missing dc:language declaration',
+        wcagCriteria: '3.1.1',
+        suggestion: 'Add <dc:language> element to specify publication language',
+        category: 'metadata',
+      }));
+    }
+
+    // Check accessibility features
+    if (metadata.accessibilityFeatures.length === 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-META-002',
+        severity: 'moderate',
+        message: 'Missing accessibility feature metadata',
+        suggestion: 'Add schema:accessibilityFeature metadata',
+        category: 'metadata',
+      }));
+    }
+
+    // Check accessibility summary
+    if (!/schema:accessibilitySummary/i.test(opfContent)) {
+      issues.push(this.createIssue({
+        code: 'EPUB-META-003',
+        severity: 'minor',
+        message: 'Missing accessibility summary',
+        suggestion: 'Add schema:accessibilitySummary metadata',
+        category: 'metadata',
+      }));
+    }
+
+    // Check access modes
+    if (!/schema:accessMode/i.test(opfContent)) {
+      issues.push(this.createIssue({
+        code: 'EPUB-META-004',
+        severity: 'moderate',
+        message: 'Missing access mode metadata',
+        suggestion: 'Add schema:accessMode metadata',
+        category: 'metadata',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Audit a content document
+   */
+  private auditContentDocument(
+    content: string,
+    filePath: string,
+    stats: JSAuditResult['stats']
+  ): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+    const $ = cheerio.load(content, { xmlMode: true });
+
+    // Check html lang attribute
+    if (!$('html').attr('lang') && !$('html').attr('xml:lang')) {
+      issues.push(this.createIssue({
+        code: 'EPUB-SEM-001',
+        severity: 'serious',
+        message: 'Missing lang attribute on html element',
+        wcagCriteria: '3.1.1',
+        location: filePath,
+        suggestion: 'Add lang attribute to <html> element',
+        category: 'semantics',
+      }));
+    }
+
+    // Check images
+    $('img').each((_, el) => {
+      stats.totalImages++;
+      const $el = $(el);
+      if (!$el.attr('alt') && $el.attr('alt') !== '') {
+        stats.imagesWithoutAlt++;
+      }
+    });
+
+    if (stats.imagesWithoutAlt > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-IMG-001',
+        severity: 'critical',
+        message: `${stats.imagesWithoutAlt} image(s) missing alt attribute`,
+        wcagCriteria: '1.1.1',
+        location: filePath,
+        suggestion: 'Add alt attribute to all images',
+        category: 'images',
+      }));
+    }
+
+    // Check empty links
+    $('a').each((_, el) => {
+      const $el = $(el);
+      const text = $el.text().trim();
+      const hasImg = $el.find('img[alt]').length > 0;
+      const hasAriaLabel = $el.attr('aria-label');
+      
+      if (!text && !hasImg && !hasAriaLabel) {
+        stats.emptyLinks++;
+      }
+    });
+
+    if (stats.emptyLinks > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-SEM-002',
+        severity: 'serious',
+        message: `${stats.emptyLinks} empty link(s) found`,
+        wcagCriteria: '2.4.4',
+        location: filePath,
+        suggestion: 'Add descriptive text or aria-label to links',
+        category: 'semantics',
+      }));
+    }
+
+    // Check tables without headers
+    $('table').each((_, el) => {
+      const $table = $(el);
+      if ($table.find('th').length === 0) {
+        stats.tablesWithoutHeaders++;
+      }
+    });
+
+    if (stats.tablesWithoutHeaders > 0) {
+      issues.push(this.createIssue({
+        code: 'EPUB-STRUCT-002',
+        severity: 'serious',
+        message: `${stats.tablesWithoutHeaders} table(s) missing header cells`,
+        wcagCriteria: '1.3.1',
+        location: filePath,
+        suggestion: 'Add <th> elements to identify table headers',
+        category: 'structure',
+      }));
+    }
+
+    // Check heading hierarchy
+    const headings: number[] = [];
+    $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+      const level = parseInt((el as cheerio.TagElement).tagName.charAt(1));
+      headings.push(level);
+    });
+
+    for (let i = 1; i < headings.length; i++) {
+      if (headings[i] > headings[i - 1] + 1) {
+        issues.push(this.createIssue({
+          code: 'EPUB-STRUCT-003',
+          severity: 'moderate',
+          message: `Heading hierarchy skips levels (h${headings[i - 1]} to h${headings[i]})`,
+          wcagCriteria: '1.3.1',
+          location: filePath,
+          suggestion: 'Ensure headings follow a logical hierarchy without skipping levels',
+          category: 'structure',
+        }));
+        break;
+      }
+    }
+
+    // Check for ARIA landmarks
+    const hasMainLandmark = $('[role="main"], main').length > 0;
+    if (!hasMainLandmark) {
+      issues.push(this.createIssue({
+        code: 'EPUB-STRUCT-004',
+        severity: 'minor',
+        message: 'Missing main landmark',
+        wcagCriteria: '1.3.1',
+        location: filePath,
+        suggestion: 'Add role="main" or <main> element to identify main content',
+        category: 'structure',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Create standardized issue
+   */
+  private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
+    return {
+      id: `issue-${++this.issueCounter}`,
+      ...data,
+    };
+  }
+}
+
+export const epubJSAuditor = new EPUBJSAuditorService();
+
+**Update src/services/epub/epub-audit.service.ts to use JS auditor as fallback:**
+
+Add import:
+import { epubJSAuditor } from './epub-js-auditor.service';
+
+Update the runAudit method to use JS auditor when EPUBCheck/Ace fail:
+
+// After the existing audit logic, if we only have EPUBCheck errors or no real issues:
+if (combinedIssues.length === 0 || 
+    (combinedIssues.length === 1 && combinedIssues[0].code === 'EPUBCHECK-ERROR')) {
+  
+  logger.info('Running fallback JS-based audit');
+  const jsResult = await epubJSAuditor.audit(buffer);
+  
+  // Replace or merge issues
+  combinedIssues.length = 0;
+  combinedIssues.push(...jsResult.issues.map(issue => ({
+    ...issue,
+    source: 'js-auditor' as const,
+  })));
+
+  // Update score based on JS audit
+  score = this.calculateScore(combinedIssues);
+}
+
+**Test the full workflow:**
+1. Upload EPUB for audit - should now detect real issues
+2. Create remediation plan - should show auto-fixable tasks
+3. Run auto-remediation - should fix the detected issues
+4. Download remediated file
