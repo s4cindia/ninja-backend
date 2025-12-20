@@ -95,7 +95,8 @@ class EpubAuditService {
     this.issueCounter = 0;
     
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'epub-audit-'));
-    const epubPath = path.join(tempDir, fileName);
+    const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.epub';
+    const epubPath = path.join(tempDir, safeFileName);
     
     try {
       await fs.promises.writeFile(epubPath, buffer);
@@ -106,7 +107,7 @@ class EpubAuditService {
       if (epubCheckResult.fatalErrors.length === 0) {
         try {
           aceResult = await this.runAce(epubPath, tempDir);
-        } catch (aceError) {
+        } catch (_aceError) {
           logger.warn('Ace audit failed, continuing with EPUBCheck results only');
         }
       }
