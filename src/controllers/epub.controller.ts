@@ -3,6 +3,7 @@ import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { epubModifier } from '../services/epub/epub-modifier.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -428,6 +429,125 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: 'Failed to download remediated file',
+      });
+    }
+  },
+
+  async applySpecificFix(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { fixCode, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!fixCode) {
+        return res.status(400).json({
+          success: false,
+          error: 'fixCode is required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      if (!epubBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'EPUB file not found',
+        });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+      let results: ModificationResult[] = [];
+
+      switch (fixCode) {
+        case 'EPUB-META-001':
+          results = [await epubModifier.addLanguage(zip, options?.language)];
+          break;
+        case 'EPUB-META-002':
+          results = await epubModifier.addAccessibilityMetadata(zip, options?.features);
+          break;
+        case 'EPUB-META-003':
+          results = [await epubModifier.addAccessibilitySummary(zip, options?.summary)];
+          break;
+        case 'EPUB-SEM-001':
+          results = await epubModifier.addHtmlLangAttributes(zip, options?.language);
+          break;
+        case 'EPUB-SEM-002':
+          results = await epubModifier.fixEmptyLinks(zip);
+          break;
+        case 'EPUB-IMG-001':
+          if (options?.imageAlts) {
+            results = await epubModifier.addAltText(zip, options.imageAlts);
+          } else {
+            results = await epubModifier.addDecorativeAltAttributes(zip);
+          }
+          break;
+        case 'EPUB-STRUCT-002':
+          results = await epubModifier.addTableHeaders(zip);
+          break;
+        case 'EPUB-STRUCT-003':
+          results = await epubModifier.fixHeadingHierarchy(zip);
+          break;
+        case 'EPUB-STRUCT-004':
+          results = await epubModifier.addAriaLandmarks(zip);
+          break;
+        case 'EPUB-NAV-001':
+          results = await epubModifier.addSkipNavigation(zip);
+          break;
+        case 'EPUB-FIG-001':
+          results = await epubModifier.addFigureStructure(zip);
+          break;
+        default:
+          return res.status(400).json({
+            success: false,
+            error: `Unknown fix code: ${fixCode}`,
+          });
+      }
+
+      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+      return res.json({
+        success: true,
+        data: {
+          fixCode,
+          results,
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to apply specific fix', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to apply fix',
       });
     }
   },

@@ -44,9 +44,22 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Combined Audit Results:** Merges EPUBCheck structural errors (manual fixes) with JS Auditor accessibility issues (auto-fixable) for comprehensive analysis.
     -   **Issue Codes:** EPUB-META-001 (language), EPUB-META-002 (accessibility features), EPUB-META-003 (accessibility summary), EPUB-META-004 (access modes), EPUB-IMG-001 (missing alt), EPUB-STRUCT-002 (table headers), EPUB-SEM-001 (HTML lang attribute).
 -   **EPUB Auto-Remediation Engine:**
-    -   **Supported Auto-Fixes:** 7 handlers for common accessibility issues: language metadata, accessibility metadata, accessibility summary, WCAG conformance, decorative alt attributes, HTML lang attributes, and table headers.
+    -   **Supported Auto-Fixes:** 12 handlers for accessibility issues:
+        -   EPUB-META-001: Add dc:language declaration
+        -   EPUB-META-002: Add accessibility feature metadata
+        -   EPUB-META-003: Add accessibility summary
+        -   EPUB-META-004: Add access mode metadata
+        -   EPUB-SEM-001: Add HTML lang attributes
+        -   EPUB-SEM-002: Fix empty links with aria-label
+        -   EPUB-IMG-001: Add alt text (specific or decorative)
+        -   EPUB-STRUCT-002: Add table headers
+        -   EPUB-STRUCT-003: Fix heading hierarchy (no skipped levels)
+        -   EPUB-STRUCT-004: Add ARIA landmarks (main, navigation, banner, contentinfo)
+        -   EPUB-NAV-001: Add skip navigation links
+        -   EPUB-FIG-001: Add figure/figcaption structure
     -   **File-Based Storage:** EPUB files stored at `/tmp/epub-storage/{jobId}/` with remediated files in subdirectory.
     -   **Remediation Workflow:** Upload → Audit → Create Remediation Plan → Auto-Remediate → Download remediated EPUB.
+    -   **Manual Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-fix` allows applying specific fixes with custom options.
 -   **Feedback Collection:**
     -   **Feedback Model:** Dedicated Prisma model with FeedbackType and FeedbackStatus enums for proper type safety.
     -   **Feedback Types:** ACCESSIBILITY_ISSUE, ALT_TEXT_QUALITY, AUDIT_ACCURACY, REMEDIATION_SUGGESTION, GENERAL, BUG_REPORT, FEATURE_REQUEST.

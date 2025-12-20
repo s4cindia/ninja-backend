@@ -1,0 +1,627 @@
+Extend EPUB modifier service with advanced content modification capabilities.
+
+**Update src/services/epub/epub-modifier.service.ts - Add new methods:**
+
+/**
+ * Add alt text to specific images
+ */
+async addAltText(
+  zip: JSZip,
+  imageAlts: { imageSrc: string; altText: string }[]
+): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+  const altMap = new Map(imageAlts.map(ia => [ia.imageSrc, ia.altText]));
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    let modified = false;
+    const changes: string[] = [];
+
+    $('img').each((_, el) => {
+      const $el = $(el);
+      const src = $el.attr('src') || '';
+      
+      // Match by full path or filename
+      const fileName = src.split('/').pop() || src;
+      const altText = altMap.get(src) || altMap.get(fileName);
+      
+      if (altText && $el.attr('alt') !== altText) {
+        const oldAlt = $el.attr('alt') || '(none)';
+        $el.attr('alt', altText);
+        $el.removeAttr('role'); // Remove presentation role if we're adding real alt
+        modified = true;
+        changes.push(`${fileName}: "${oldAlt}" → "${altText}"`);
+      }
+    });
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'add_alt_text',
+        description: `Updated alt text for ${changes.length} image(s)`,
+        after: changes.join('\n'),
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'add_alt_text',
+      description: 'No images matched for alt text update',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Fix heading hierarchy (ensure no skipped levels)
+ */
+async fixHeadingHierarchy(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    let modified = false;
+    const changes: string[] = [];
+
+    // Get all headings in order
+    const headings: { el: cheerio.Element; level: number }[] = [];
+    $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+      const tagName = (el as cheerio.TagElement).tagName.toLowerCase();
+      const level = parseInt(tagName.charAt(1));
+      headings.push({ el, level });
+    });
+
+    // Check for skipped levels and fix
+    let expectedMaxLevel = 1;
+    for (const heading of headings) {
+      if (heading.level > expectedMaxLevel + 1) {
+        // Skipped level detected - demote to expected level
+        const newLevel = expectedMaxLevel + 1;
+        const $el = $(heading.el);
+        const content = $el.html();
+        const attrs: Record<string, string> = {};
+        
+        // Copy attributes
+        const elAttrs = (heading.el as cheerio.TagElement).attribs || {};
+        Object.keys(elAttrs).forEach(key => {
+          attrs[key] = elAttrs[key];
+        });
+        
+        // Create new heading with correct level
+        const attrString = Object.entries(attrs)
+          .map(([k, v]) => `${k}="${v}"`)
+          .join(' ');
+        
+        const newTag = `<h${newLevel}${attrString ? ' ' + attrString : ''}>${content}</h${newLevel}>`;
+        $el.replaceWith(newTag);
+        
+        changes.push(`h${heading.level} → h${newLevel}`);
+        modified = true;
+        heading.level = newLevel;
+      }
+      expectedMaxLevel = Math.max(expectedMaxLevel, heading.level);
+    }
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'fix_heading_hierarchy',
+        description: `Fixed ${changes.length} heading level(s)`,
+        after: changes.join(', '),
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'fix_heading_hierarchy',
+      description: 'Heading hierarchy is correct',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Add ARIA landmarks to content documents
+ */
+async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    let modified = false;
+    const changes: string[] = [];
+
+    // Add role="main" to main content area if not present
+    const $body = $('body');
+    if ($body.length && !$body.find('[role="main"]').length) {
+      // Look for main element or first significant content container
+      const $main = $('main');
+      if ($main.length) {
+        if (!$main.attr('role')) {
+          $main.attr('role', 'main');
+          changes.push('Added role="main" to <main>');
+          modified = true;
+        }
+      } else {
+        // Add role to body's first major child div or section
+        const $firstSection = $body.children('div, section, article').first();
+        if ($firstSection.length && !$firstSection.attr('role')) {
+          $firstSection.attr('role', 'main');
+          changes.push('Added role="main" to first content section');
+          modified = true;
+        }
+      }
+    }
+
+    // Add role="navigation" to nav elements
+    $('nav').each((_, el) => {
+      const $el = $(el);
+      if (!$el.attr('role')) {
+        $el.attr('role', 'navigation');
+        changes.push('Added role="navigation" to <nav>');
+        modified = true;
+      }
+    });
+
+    // Add role="contentinfo" to footer
+    $('footer').each((_, el) => {
+      const $el = $(el);
+      if (!$el.attr('role')) {
+        $el.attr('role', 'contentinfo');
+        changes.push('Added role="contentinfo" to <footer>');
+        modified = true;
+      }
+    });
+
+    // Add role="banner" to header
+    $('header').first().each((_, el) => {
+      const $el = $(el);
+      if (!$el.attr('role')) {
+        $el.attr('role', 'banner');
+        changes.push('Added role="banner" to <header>');
+        modified = true;
+      }
+    });
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'add_aria_landmarks',
+        description: `Added ${changes.length} ARIA landmark(s)`,
+        after: changes.join('\n'),
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'add_aria_landmarks',
+      description: 'ARIA landmarks already present or not applicable',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Add skip navigation link
+ */
+async addSkipNavigation(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    
+    // Skip if already has skip link
+    if ($('a[href="#main"], a[href="#content"], .skip-link, .skip-nav').length) {
+      continue;
+    }
+
+    const $body = $('body');
+    if (!$body.length) continue;
+
+    // Find or create main content anchor
+    let mainId = 'main-content';
+    const $main = $('[role="main"], main, #main, #content').first();
+    if ($main.length) {
+      if (!$main.attr('id')) {
+        $main.attr('id', mainId);
+      } else {
+        mainId = $main.attr('id')!;
+      }
+    } else {
+      // Add id to first significant content
+      const $firstContent = $body.children('div, section, article').first();
+      if ($firstContent.length) {
+        $firstContent.attr('id', mainId);
+      }
+    }
+
+    // Add skip link at start of body
+    const skipLink = `<a href="#${mainId}" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to main content</a>\n`;
+    $body.prepend(skipLink);
+
+    zip.file(filePath, $.html());
+    results.push({
+      success: true,
+      filePath,
+      modificationType: 'add_skip_navigation',
+      description: 'Added skip navigation link',
+      after: `<a href="#${mainId}" class="skip-link">Skip to main content</a>`,
+    });
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'add_skip_navigation',
+      description: 'Skip navigation already present or not applicable',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Fix empty links by adding aria-label
+ */
+async fixEmptyLinks(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    let modified = false;
+    const changes: string[] = [];
+
+    $('a').each((_, el) => {
+      const $el = $(el);
+      const text = $el.text().trim();
+      const hasImage = $el.find('img[alt]').length > 0;
+      const hasAriaLabel = $el.attr('aria-label');
+      
+      if (!text && !hasImage && !hasAriaLabel) {
+        const href = $el.attr('href') || '';
+        
+        // Try to generate meaningful label from href
+        if (href) {
+          let label = '';
+          if (href.startsWith('#')) {
+            label = `Jump to ${href.substring(1).replace(/[-_]/g, ' ')}`;
+          } else if (href.match(/\.(html|xhtml|htm)$/i)) {
+            label = href.split('/').pop()?.replace(/\.(html|xhtml|htm)$/i, '').replace(/[-_]/g, ' ') || 'Link';
+          } else {
+            label = 'Link';
+          }
+          
+          $el.attr('aria-label', label);
+          changes.push(`Added aria-label="${label}" to empty link`);
+          modified = true;
+        }
+      }
+    });
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'fix_empty_links',
+        description: `Fixed ${changes.length} empty link(s)`,
+        after: changes.join('\n'),
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'fix_empty_links',
+      description: 'No empty links found',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Add figure/figcaption structure to images with captions
+ */
+async addFigureStructure(zip: JSZip): Promise<ModificationResult[]> {
+  const results: ModificationResult[] = [];
+  const files = Object.keys(zip.files);
+
+  for (const filePath of files) {
+    if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+
+    const $ = cheerio.load(content, { xmlMode: true });
+    let modified = false;
+    let count = 0;
+
+    // Find images followed by caption-like elements
+    $('img').each((_, el) => {
+      const $img = $(el);
+      const $parent = $img.parent();
+      
+      // Skip if already in figure
+      if ($parent.is('figure')) return;
+      
+      // Look for adjacent caption
+      const $next = $img.next();
+      const $nextText = $next.text().trim();
+      
+      // Heuristic: next element looks like a caption
+      if ($next.length && $nextText.length > 0 && $nextText.length < 200) {
+        if ($next.is('p, span, div') && 
+            ($next.hasClass('caption') || 
+             $next.hasClass('figure-caption') ||
+             $nextText.toLowerCase().startsWith('figure') ||
+             $nextText.toLowerCase().startsWith('fig.'))) {
+          
+          // Wrap in figure/figcaption
+          const imgHtml = $.html($img);
+          const captionText = $nextText;
+          
+          $img.replaceWith(`<figure>${imgHtml}<figcaption>${captionText}</figcaption></figure>`);
+          $next.remove();
+          
+          modified = true;
+          count++;
+        }
+      }
+    });
+
+    if (modified) {
+      zip.file(filePath, $.html());
+      results.push({
+        success: true,
+        filePath,
+        modificationType: 'add_figure_structure',
+        description: `Added figure/figcaption to ${count} image(s)`,
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    results.push({
+      success: true,
+      filePath: 'all',
+      modificationType: 'add_figure_structure',
+      description: 'No images with captions found to structure',
+    });
+  }
+
+  return results;
+}
+
+**Update src/services/epub/auto-remediation.service.ts - Add new handlers:**
+
+Add these to the remediationHandlers object:
+
+'EPUB-SEM-002': async (zip) => {
+  return epubModifier.fixEmptyLinks(zip);
+},
+'EPUB-STRUCT-003': async (zip) => {
+  return epubModifier.fixHeadingHierarchy(zip);
+},
+'EPUB-STRUCT-004': async (zip) => {
+  return epubModifier.addAriaLandmarks(zip);
+},
+'EPUB-NAV-004': async (zip) => {
+  return epubModifier.addSkipNavigation(zip);
+},
+'EPUB-IMG-002': async (zip) => {
+  return epubModifier.addFigureStructure(zip);
+},
+
+**Update getSupportedFixes in epub.controller.ts:**
+
+Update the descriptions object to include all codes:
+
+descriptions: {
+  'EPUB-META-001': 'Add missing language declaration',
+  'EPUB-META-002': 'Add accessibility feature metadata',
+  'EPUB-META-003': 'Add accessibility summary',
+  'EPUB-META-004': 'Add access mode metadata',
+  'EPUB-SEM-001': 'Add lang attribute to HTML elements',
+  'EPUB-SEM-002': 'Fix empty links with aria-label',
+  'EPUB-IMG-001': 'Mark images without alt as decorative',
+  'EPUB-IMG-002': 'Add figure/figcaption structure',
+  'EPUB-STRUCT-002': 'Add headers to simple tables',
+  'EPUB-STRUCT-003': 'Fix heading hierarchy (no skipped levels)',
+  'EPUB-STRUCT-004': 'Add ARIA landmarks',
+  'EPUB-NAV-004': 'Add skip navigation link',
+},
+
+**Create API endpoint to apply specific fix manually:**
+
+Add to epub.controller.ts:
+
+/**
+ * Apply a specific fix manually
+ */
+async applySpecificFix(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const { fixCode, options } = req.body;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    if (!fixCode) {
+      return res.status(400).json({
+        success: false,
+        error: 'fixCode is required',
+      });
+    }
+
+    // Verify job ownership
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found',
+      });
+    }
+
+    // Get EPUB file
+    const epubBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+    if (!epubBuffer) {
+      return res.status(404).json({
+        success: false,
+        error: 'EPUB file not found',
+      });
+    }
+
+    // Load EPUB
+    const zip = await epubModifier.loadEPUB(epubBuffer);
+
+    // Apply specific fix
+    let results: ModificationResult[] = [];
+    
+    switch (fixCode) {
+      case 'EPUB-META-001':
+        results = [await epubModifier.addLanguage(zip, options?.language)];
+        break;
+      case 'EPUB-META-002':
+        results = await epubModifier.addAccessibilityMetadata(zip, options?.features);
+        break;
+      case 'EPUB-META-003':
+        results = [await epubModifier.addAccessibilitySummary(zip, options?.summary)];
+        break;
+      case 'EPUB-SEM-001':
+        results = await epubModifier.addHtmlLangAttributes(zip, options?.language);
+        break;
+      case 'EPUB-SEM-002':
+        results = await epubModifier.fixEmptyLinks(zip);
+        break;
+      case 'EPUB-IMG-001':
+        results = await epubModifier.addDecorativeAltAttributes(zip);
+        break;
+      case 'EPUB-IMG-002':
+        results = await epubModifier.addFigureStructure(zip);
+        break;
+      case 'EPUB-STRUCT-002':
+        results = await epubModifier.addTableHeaders(zip);
+        break;
+      case 'EPUB-STRUCT-003':
+        results = await epubModifier.fixHeadingHierarchy(zip);
+        break;
+      case 'EPUB-STRUCT-004':
+        results = await epubModifier.addAriaLandmarks(zip);
+        break;
+      case 'EPUB-NAV-004':
+        results = await epubModifier.addSkipNavigation(zip);
+        break;
+      case 'add_alt_text':
+        if (!options?.imageAlts || !Array.isArray(options.imageAlts)) {
+          return res.status(400).json({
+            success: false,
+            error: 'imageAlts array is required for add_alt_text',
+          });
+        }
+        results = await epubModifier.addAltText(zip, options.imageAlts);
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          error: `Unknown fix code: ${fixCode}`,
+        });
+    }
+
+    // Save modified EPUB
+    const modifiedBuffer = await epubModifier.saveEPUB(zip);
+    const fileName = (job.input as { fileName?: string })?.fileName || 'upload.epub';
+    const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
+    
+    await fileStorage.saveRemediatedFile(jobId, modifiedBuffer);
+
+    return res.json({
+      success: true,
+      data: {
+        fixCode,
+        results,
+        downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to apply specific fix', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to apply fix',
+    });
+  }
+},
+
+**Add route in epub.routes.ts:**
+
+router.post('/job/:jobId/apply-fix', epubController.applySpecificFix);
+
+**Acceptance Criteria:**
+- [ ] Add alt text to specific images by src
+- [ ] Fix heading hierarchy (no skipped h1→h3)
+- [ ] Add ARIA landmarks (main, navigation, banner, contentinfo)
+- [ ] Add skip navigation links
+- [ ] Fix empty links with aria-label
+- [ ] Add figure/figcaption structure to images with captions
+- [ ] All new handlers registered in auto-remediation service
+- [ ] Supported fixes endpoint updated with descriptions
+- [ ] New endpoint to apply specific fix manually with options

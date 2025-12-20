@@ -49,11 +49,29 @@ class AutoRemediationService {
     'EPUB-SEM-001': async (zip) => {
       return epubModifier.addHtmlLangAttributes(zip);
     },
-    'EPUB-IMG-001': async (zip) => {
+    'EPUB-SEM-002': async (zip) => {
+      return epubModifier.fixEmptyLinks(zip);
+    },
+    'EPUB-IMG-001': async (zip, options) => {
+      if (options?.imageAlts && Array.isArray(options.imageAlts)) {
+        return epubModifier.addAltText(zip, options.imageAlts as { imageSrc: string; altText: string }[]);
+      }
       return epubModifier.addDecorativeAltAttributes(zip);
     },
     'EPUB-STRUCT-002': async (zip) => {
       return epubModifier.addTableHeaders(zip);
+    },
+    'EPUB-STRUCT-003': async (zip) => {
+      return epubModifier.fixHeadingHierarchy(zip);
+    },
+    'EPUB-STRUCT-004': async (zip) => {
+      return epubModifier.addAriaLandmarks(zip);
+    },
+    'EPUB-NAV-001': async (zip) => {
+      return epubModifier.addSkipNavigation(zip);
+    },
+    'EPUB-FIG-001': async (zip) => {
+      return epubModifier.addFigureStructure(zip);
     },
   };
 
