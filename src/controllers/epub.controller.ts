@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
+import { fileStorageService } from '../services/storage/file-storage.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -104,6 +105,8 @@ export const epubController = {
         },
       });
       jobId = job.id;
+
+      await fileStorageService.saveFile(job.id, req.file.originalname, req.file.buffer);
 
       const result = await epubAuditService.runAudit(
         req.file.buffer,
@@ -301,21 +304,27 @@ export const epubController = {
         });
       }
 
-      const input = job.input as { fileName?: string; buffer?: string } | null;
-      if (!input?.buffer) {
+      const input = job.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'document.epub';
+
+      const epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      if (!epubBuffer) {
         return res.status(400).json({
           success: false,
-          error: 'No EPUB file buffer found in job',
+          error: 'EPUB file not found. File may have been deleted or not uploaded.',
         });
       }
-
-      const epubBuffer = Buffer.from(input.buffer, 'base64');
-      const fileName = input.fileName || 'document.epub';
 
       const result = await autoRemediationService.runAutoRemediation(
         epubBuffer,
         jobId,
         fileName
+      );
+
+      await fileStorageService.saveRemediatedFile(
+        jobId,
+        result.remediatedFileName,
+        result.remediatedBuffer
       );
 
       return res.json({
@@ -327,7 +336,7 @@ export const epubController = {
           totalIssuesFixed: result.totalIssuesFixed,
           totalIssuesFailed: result.totalIssuesFailed,
           modifications: result.modifications,
-          remediatedFileBase64: result.remediatedBuffer.toString('base64'),
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
           startedAt: result.startedAt,
           completedAt: result.completedAt,
         },
@@ -365,6 +374,60 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: 'Failed to get supported fixes',
+      });
+    }
+  },
+
+  async downloadRemediatedFile(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const output = job.output as { autoRemediation?: { remediatedFileName?: string } } | null;
+      const remediatedFileName = output?.autoRemediation?.remediatedFileName;
+
+      if (!remediatedFileName) {
+        return res.status(404).json({
+          success: false,
+          error: 'No remediated file available. Run auto-remediation first.',
+        });
+      }
+
+      const fileBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!fileBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'Remediated file not found on disk',
+        });
+      }
+
+      res.setHeader('Content-Type', 'application/epub+zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${remediatedFileName}"`);
+      res.setHeader('Content-Length', fileBuffer.length);
+      return res.send(fileBuffer);
+    } catch (error) {
+      logger.error('Failed to download remediated file', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to download remediated file',
       });
     }
   },
