@@ -1,0 +1,581 @@
+Create feedback collection service for capturing user feedback on accessibility issues and generated content.
+
+**Create file: src/services/feedback/feedback.service.ts**
+
+import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
+import crypto from 'crypto';
+
+type FeedbackType = 
+  | 'accessibility_issue'
+  | 'alt_text_quality'
+  | 'audit_accuracy'
+  | 'remediation_suggestion'
+  | 'general'
+  | 'bug_report'
+  | 'feature_request';
+
+type FeedbackRating = 1 | 2 | 3 | 4 | 5;
+
+type FeedbackStatus = 'new' | 'reviewed' | 'in_progress' | 'resolved' | 'dismissed';
+
+interface FeedbackContext {
+  jobId?: string;
+  imageId?: string;
+  altTextId?: string;
+  issueId?: string;
+  pageNumber?: number;
+  elementPath?: string;
+  url?: string;
+}
+
+interface CreateFeedbackInput {
+  type: FeedbackType;
+  rating?: FeedbackRating;
+  comment: string;
+  context?: FeedbackContext;
+  userId?: string;
+  userEmail?: string;
+  tenantId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface Feedback {
+  id: string;
+  type: FeedbackType;
+  rating?: FeedbackRating;
+  comment: string;
+  context: FeedbackContext;
+  userId?: string;
+  userEmail?: string;
+  tenantId?: string;
+  status: FeedbackStatus;
+  metadata?: Record<string, unknown>;
+  response?: string;
+  respondedBy?: string;
+  respondedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface FeedbackFilters {
+  type?: FeedbackType;
+  status?: FeedbackStatus;
+  rating?: FeedbackRating;
+  jobId?: string;
+  userId?: string;
+  tenantId?: string;
+  startDate?: Date;
+  endDate?: Date;
+}
+
+interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
+class FeedbackService {
+  /**
+   * Create new feedback
+   */
+  async createFeedback(input: CreateFeedbackInput): Promise<Feedback> {
+    const id = this.generateId();
+    
+    const feedback: Feedback = {
+      id,
+      type: input.type,
+      rating: input.rating,
+      comment: input.comment,
+      context: input.context || {},
+      userId: input.userId,
+      userEmail: input.userEmail,
+      tenantId: input.tenantId,
+      status: 'new',
+      metadata: input.metadata,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Store feedback as a job for persistence
+    await prisma.job.create({
+      data: {
+        id,
+        tenantId: input.tenantId || 'system',
+        userId: input.userId || 'anonymous',
+        type: 'USER_FEEDBACK',
+        status: 'COMPLETED',
+        input: {
+          feedbackType: input.type,
+          context: input.context,
+        },
+        output: feedback as unknown as Record<string, unknown>,
+        completedAt: new Date(),
+      },
+    });
+
+    logger.info(`Feedback created: ${id} (${input.type})`);
+    return feedback;
+  }
+
+  /**
+   * Get feedback by ID
+   */
+  async getFeedback(id: string): Promise<Feedback | null> {
+    const job = await prisma.job.findFirst({
+      where: {
+        id,
+        type: 'USER_FEEDBACK',
+      },
+    });
+
+    if (!job?.output) {
+      return null;
+    }
+
+    return job.output as unknown as Feedback;
+  }
+
+  /**
+   * List feedback with filters and pagination
+   */
+  async listFeedback(
+    filters: FeedbackFilters = {},
+    page: number = 1,
+    limit: number = 20
+  ): Promise<PaginatedResult<Feedback>> {
+    const jobs = await prisma.job.findMany({
+      where: {
+        type: 'USER_FEEDBACK',
+        ...(filters.tenantId && { tenantId: filters.tenantId }),
+        ...(filters.userId && { userId: filters.userId }),
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let items = jobs
+      .filter(j => j.output)
+      .map(j => j.output as unknown as Feedback);
+
+    // Apply additional filters
+    if (filters.type) {
+      items = items.filter(f => f.type === filters.type);
+    }
+    if (filters.status) {
+      items = items.filter(f => f.status === filters.status);
+    }
+    if (filters.rating) {
+      items = items.filter(f => f.rating === filters.rating);
+    }
+    if (filters.jobId) {
+      items = items.filter(f => f.context.jobId === filters.jobId);
+    }
+    if (filters.startDate) {
+      items = items.filter(f => new Date(f.createdAt) >= filters.startDate!);
+    }
+    if (filters.endDate) {
+      items = items.filter(f => new Date(f.createdAt) <= filters.endDate!);
+    }
+
+    const total = items.length;
+    const totalPages = Math.ceil(total / limit);
+    const offset = (page - 1) * limit;
+    items = items.slice(offset, offset + limit);
+
+    return { items, total, page, totalPages };
+  }
+
+  /**
+   * Update feedback status
+   */
+  async updateFeedbackStatus(
+    id: string,
+    status: FeedbackStatus,
+    response?: string,
+    respondedBy?: string
+  ): Promise<Feedback> {
+    const feedback = await this.getFeedback(id);
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    feedback.status = status;
+    feedback.updatedAt = new Date();
+
+    if (response) {
+      feedback.response = response;
+      feedback.respondedBy = respondedBy;
+      feedback.respondedAt = new Date();
+    }
+
+    await prisma.job.update({
+      where: { id },
+      data: {
+        output: feedback as unknown as Record<string, unknown>,
+      },
+    });
+
+    logger.info(`Feedback ${id} status updated to ${status}`);
+    return feedback;
+  }
+
+  /**
+   * Submit quick rating (thumbs up/down)
+   */
+  async submitQuickRating(
+    entityType: 'alt_text' | 'audit' | 'remediation',
+    entityId: string,
+    isPositive: boolean,
+    userId?: string,
+    tenantId?: string
+  ): Promise<Feedback> {
+    const typeMap: Record<string, FeedbackType> = {
+      alt_text: 'alt_text_quality',
+      audit: 'audit_accuracy',
+      remediation: 'remediation_suggestion',
+    };
+
+    return this.createFeedback({
+      type: typeMap[entityType],
+      rating: isPositive ? 5 : 1,
+      comment: isPositive ? 'Helpful' : 'Not helpful',
+      context: {
+        altTextId: entityType === 'alt_text' ? entityId : undefined,
+        issueId: entityType === 'audit' || entityType === 'remediation' ? entityId : undefined,
+      },
+      userId,
+      tenantId,
+    });
+  }
+
+  /**
+   * Get feedback for a specific job
+   */
+  async getJobFeedback(jobId: string): Promise<Feedback[]> {
+    const { items } = await this.listFeedback({ jobId }, 1, 1000);
+    return items;
+  }
+
+  /**
+   * Generate unique ID
+   */
+  private generateId(): string {
+    const timestamp = Date.now().toString(36);
+    const randomPart = crypto.randomBytes(4).toString('hex');
+    return `fb-${timestamp}-${randomPart}`;
+  }
+}
+
+export const feedbackService = new FeedbackService();
+
+**Create file: src/controllers/feedback.controller.ts**
+
+import { Request, Response } from 'express';
+import { feedbackService } from '../services/feedback/feedback.service';
+import { logger } from '../lib/logger';
+
+interface AuthenticatedRequest extends Request {
+  user?: {
+    tenantId: string;
+    id: string;
+    email?: string;
+  };
+}
+
+export const feedbackController = {
+  /**
+   * Create feedback
+   */
+  async create(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { type, rating, comment, context, metadata } = req.body;
+      const userId = req.user?.id;
+      const userEmail = req.user?.email;
+      const tenantId = req.user?.tenantId;
+
+      if (!type || !comment) {
+        return res.status(400).json({
+          success: false,
+          error: 'Type and comment are required',
+        });
+      }
+
+      const validTypes = [
+        'accessibility_issue',
+        'alt_text_quality',
+        'audit_accuracy',
+        'remediation_suggestion',
+        'general',
+        'bug_report',
+        'feature_request',
+      ];
+
+      if (!validTypes.includes(type)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid type. Must be one of: ${validTypes.join(', ')}`,
+        });
+      }
+
+      if (rating !== undefined && (rating < 1 || rating > 5)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Rating must be between 1 and 5',
+        });
+      }
+
+      const feedback = await feedbackService.createFeedback({
+        type,
+        rating,
+        comment,
+        context,
+        userId,
+        userEmail,
+        tenantId,
+        metadata,
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to create feedback', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to create feedback',
+      });
+    }
+  },
+
+  /**
+   * Get feedback by ID
+   */
+  async getById(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { id } = req.params;
+
+      const feedback = await feedbackService.getFeedback(id);
+
+      if (!feedback) {
+        return res.status(404).json({
+          success: false,
+          error: 'Feedback not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to get feedback', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get feedback',
+      });
+    }
+  },
+
+  /**
+   * List feedback with filters
+   */
+  async list(req: AuthenticatedRequest, res: Response) {
+    try {
+      const {
+        type,
+        status,
+        rating,
+        jobId,
+        page = '1',
+        limit = '20',
+      } = req.query;
+
+      const tenantId = req.user?.tenantId;
+
+      const result = await feedbackService.listFeedback(
+        {
+          type: type as string | undefined,
+          status: status as string | undefined,
+          rating: rating ? Number(rating) : undefined,
+          jobId: jobId as string | undefined,
+          tenantId,
+        } as Parameters<typeof feedbackService.listFeedback>[0],
+        Number(page),
+        Number(limit)
+      );
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('Failed to list feedback', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to list feedback',
+      });
+    }
+  },
+
+  /**
+   * Update feedback status
+   */
+  async updateStatus(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const { status, response } = req.body;
+      const respondedBy = req.user?.id;
+
+      if (!status) {
+        return res.status(400).json({
+          success: false,
+          error: 'Status is required',
+        });
+      }
+
+      const validStatuses = ['new', 'reviewed', 'in_progress', 'resolved', 'dismissed'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+        });
+      }
+
+      const feedback = await feedbackService.updateFeedbackStatus(
+        id,
+        status,
+        response,
+        respondedBy
+      );
+
+      return res.json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to update feedback', error instanceof Error ? error : undefined);
+      const message = error instanceof Error ? error.message : 'Failed to update feedback';
+      const statusCode = message === 'Feedback not found' ? 404 : 500;
+      return res.status(statusCode).json({
+        success: false,
+        error: message,
+      });
+    }
+  },
+
+  /**
+   * Submit quick rating (thumbs up/down)
+   */
+  async quickRating(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { entityType, entityId, isPositive } = req.body;
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!entityType || !entityId || isPositive === undefined) {
+        return res.status(400).json({
+          success: false,
+          error: 'entityType, entityId, and isPositive are required',
+        });
+      }
+
+      const validEntityTypes = ['alt_text', 'audit', 'remediation'];
+      if (!validEntityTypes.includes(entityType)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid entityType. Must be one of: ${validEntityTypes.join(', ')}`,
+        });
+      }
+
+      const feedback = await feedbackService.submitQuickRating(
+        entityType,
+        entityId,
+        isPositive,
+        userId,
+        tenantId
+      );
+
+      return res.status(201).json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to submit rating', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to submit rating',
+      });
+    }
+  },
+
+  /**
+   * Get feedback for a specific job
+   */
+  async getJobFeedback(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const feedback = await feedbackService.getJobFeedback(jobId);
+
+      return res.json({
+        success: true,
+        data: feedback,
+      });
+    } catch (error) {
+      logger.error('Failed to get job feedback', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get job feedback',
+      });
+    }
+  },
+};
+
+**Create file: src/routes/feedback.routes.ts**
+
+import { Router } from 'express';
+import { feedbackController } from '../controllers/feedback.controller';
+import { authenticate } from '../middleware/auth.middleware';
+
+const router = Router();
+
+// All routes require authentication
+router.use(authenticate);
+
+// Create feedback
+router.post('/', feedbackController.create);
+
+// Quick rating (thumbs up/down)
+router.post('/quick-rating', feedbackController.quickRating);
+
+// List feedback
+router.get('/', feedbackController.list);
+
+// Get feedback by ID
+router.get('/:id', feedbackController.getById);
+
+// Update feedback status
+router.patch('/:id', feedbackController.updateStatus);
+
+// Get feedback for a job
+router.get('/job/:jobId', feedbackController.getJobFeedback);
+
+export default router;
+
+**Register routes in src/routes/index.ts:**
+
+import feedbackRoutes from './feedback.routes';
+
+router.use('/feedback', feedbackRoutes);
+
+**Acceptance Criteria:**
+- [ ] Create feedback with type, rating, comment
+- [ ] Support context (jobId, imageId, issueId, etc.)
+- [ ] List feedback with filters (type, status, rating)
+- [ ] Update feedback status (new → reviewed → resolved)
+- [ ] Quick rating (thumbs up/down) for alt-text, audits, remediation
+- [ ] Get all feedback for a specific job
+- [ ] Input validation for type, rating, status
+- [ ] Proper error handling and logging

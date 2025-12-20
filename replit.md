@@ -38,6 +38,12 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Chart/Diagram Descriptions:** Classifies images into types (e.g., BAR_CHART, LINE_CHART) and uses specialized prompts to extract data, analyze trends, and summarize key findings for complex visualizations, generating longer descriptions where needed.
     -   **Human Review Workflow:** Complete workflow for reviewing AI-generated alt text including review queue with filtering by status/confidence/flags, approve/edit/reject actions, regeneration with context, batch approval for high-confidence items (>85%), and audit trail tracking.
     -   **Long Descriptions:** Generates detailed prose descriptions (300-500 words) for complex images with aria-describedby support. Includes trigger detection (COMPLEX_CHART, FLOWCHART, DATA_TABLE, etc.), structured sections, and multiple output formats (HTML, Markdown, plain text).
+-   **Feedback Collection:**
+    -   **Feedback Model:** Dedicated Prisma model with FeedbackType and FeedbackStatus enums for proper type safety.
+    -   **Feedback Types:** ACCESSIBILITY_ISSUE, ALT_TEXT_QUALITY, AUDIT_ACCURACY, REMEDIATION_SUGGESTION, GENERAL, BUG_REPORT, FEATURE_REQUEST.
+    -   **Status Workflow:** NEW → REVIEWED → IN_PROGRESS → RESOLVED/DISMISSED.
+    -   **Quick Ratings:** Thumbs up/down for alt-text, audits, and remediation suggestions.
+    -   **Context Tracking:** Links feedback to specific jobs, images, alt-text, or issues.
 
 **UI/UX Decisions:**
 -   API Base Path: `/api/v1/`

@@ -256,3 +256,45 @@ model LongDescription {
   @@index([imageId])
   @@index([altTextId])
 }
+
+enum FeedbackType {
+  ACCESSIBILITY_ISSUE
+  ALT_TEXT_QUALITY
+  AUDIT_ACCURACY
+  REMEDIATION_SUGGESTION
+  GENERAL
+  BUG_REPORT
+  FEATURE_REQUEST
+}
+
+enum FeedbackStatus {
+  NEW
+  REVIEWED
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
+}
+
+model Feedback {
+  id          String         @id @default(uuid())
+  tenantId    String
+  userId      String?
+  userEmail   String?
+  type        FeedbackType
+  rating      Int?
+  comment     String
+  context     Json?
+  status      FeedbackStatus @default(NEW)
+  metadata    Json?
+  response    String?
+  respondedBy String?
+  respondedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
