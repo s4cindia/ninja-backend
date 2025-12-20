@@ -38,6 +38,28 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Chart/Diagram Descriptions:** Classifies images into types (e.g., BAR_CHART, LINE_CHART) and uses specialized prompts to extract data, analyze trends, and summarize key findings for complex visualizations, generating longer descriptions where needed.
     -   **Human Review Workflow:** Complete workflow for reviewing AI-generated alt text including review queue with filtering by status/confidence/flags, approve/edit/reject actions, regeneration with context, batch approval for high-confidence items (>85%), and audit trail tracking.
     -   **Long Descriptions:** Generates detailed prose descriptions (300-500 words) for complex images with aria-describedby support. Includes trigger detection (COMPLEX_CHART, FLOWCHART, DATA_TABLE, etc.), structured sections, and multiple output formats (HTML, Markdown, plain text).
+-   **EPUB Accessibility Auditing:**
+    -   **EPUBCheck Integration:** Validates EPUB structural compliance using EPUBCheck 5.1.0 (Java-based), detecting spec violations with original error codes (OPF-xxx, RSC-xxx).
+    -   **JS Accessibility Auditor:** Lightweight JavaScript-based auditor that detects auto-fixable accessibility issues without requiring Java. Checks for missing language, accessibility metadata, alt text, table headers, heading hierarchy, and ARIA landmarks.
+    -   **Combined Audit Results:** Merges EPUBCheck structural errors (manual fixes) with JS Auditor accessibility issues (auto-fixable) for comprehensive analysis.
+    -   **Issue Codes:** EPUB-META-001 (language), EPUB-META-002 (accessibility features), EPUB-META-003 (accessibility summary), EPUB-META-004 (access modes), EPUB-IMG-001 (missing alt), EPUB-STRUCT-002 (table headers), EPUB-SEM-001 (HTML lang attribute).
+-   **EPUB Auto-Remediation Engine:**
+    -   **Supported Auto-Fixes:** 12 handlers for accessibility issues:
+        -   EPUB-META-001: Add dc:language declaration
+        -   EPUB-META-002: Add accessibility feature metadata
+        -   EPUB-META-003: Add accessibility summary
+        -   EPUB-META-004: Add access mode metadata
+        -   EPUB-SEM-001: Add HTML lang attributes
+        -   EPUB-SEM-002: Fix empty links with aria-label
+        -   EPUB-IMG-001: Add alt text (specific or decorative)
+        -   EPUB-STRUCT-002: Add table headers
+        -   EPUB-STRUCT-003: Fix heading hierarchy (no skipped levels)
+        -   EPUB-STRUCT-004: Add ARIA landmarks (main, navigation, banner, contentinfo)
+        -   EPUB-NAV-001: Add skip navigation links
+        -   EPUB-FIG-001: Add figure/figcaption structure
+    -   **File-Based Storage:** EPUB files stored at `/tmp/epub-storage/{jobId}/` with remediated files in subdirectory.
+    -   **Remediation Workflow:** Upload → Audit → Create Remediation Plan → Auto-Remediate → Download remediated EPUB.
+    -   **Manual Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-fix` allows applying specific fixes with custom options.
 -   **Feedback Collection:**
     -   **Feedback Model:** Dedicated Prisma model with FeedbackType and FeedbackStatus enums for proper type safety.
     -   **Feedback Types:** ACCESSIBILITY_ISSUE, ALT_TEXT_QUALITY, AUDIT_ACCURACY, REMEDIATION_SUGGESTION, GENERAL, BUG_REPORT, FEATURE_REQUEST.

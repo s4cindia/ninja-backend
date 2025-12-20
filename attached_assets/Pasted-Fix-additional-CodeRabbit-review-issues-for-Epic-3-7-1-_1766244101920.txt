@@ -1,0 +1,127 @@
+Fix additional CodeRabbit review issues for Epic 3.7.
+
+**1. MINOR - Add validation for batch output structure (batch-remediation.service.ts ~line 129):**
+
+// Before:
+const result = batchJob.output as unknown as BatchRemediationResult;
+
+// After:
+const rawOutput = batchJob.output as Record<string, unknown> | null;
+
+if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
+  throw new Error('Invalid batch data structure');
+}
+
+const result = rawOutput as unknown as BatchRemediationResult;
+
+**2. MINOR - Use consistent fileName throughout batch processing (batch-remediation.service.ts):**
+
+// Around line 152-185, use the freshly fetched fileName consistently:
+
+// Fetch fresh job data
+const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+if (!jobRecord) {
+  throw new Error(`Job record not found: ${job.jobId}`);
+}
+
+const input = jobRecord.input as { fileName?: string } | null;
+const fileName = input?.fileName || 'upload.epub';
+
+// Update job.fileName to match (for consistency in results)
+job.fileName = fileName;
+
+const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+
+if (!epubBuffer) {
+  throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
+}
+
+// Run auto-remediation with consistent fileName
+const remediationResult = await autoRemediationService.runAutoRemediation(
+  epubBuffer,
+  job.jobId,
+  fileName  // Use local variable, not job.fileName
+);
+
+// ... later in comparison section (around line 174):
+if (options.generateComparison) {
+  const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
+  const remediatedBuffer = await fileStorageService.getRemediatedFile(job.jobId, remediatedFileName);
+  if (remediatedBuffer) {
+    await epubComparisonService.compareEPUBs(
+      epubBuffer,
+      remediatedBuffer,
+      job.jobId,
+      fileName  // Use local variable for consistency
+    );
+  }
+}
+
+**3. MINOR - Add defensive checks to parseMessages (epub-audit.service.ts):**
+
+// Update the parseMessages method to handle missing/malformed fields:
+private parseMessages(messages: Array<Record<string, unknown>>): {
+  errors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+  warnings: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+  fatalErrors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+} {
+  const normalizedMessages = messages
+    .filter(m => m && typeof m === 'object')
+    .map(m => {
+      // Safely get severity with fallback
+      const rawSeverity = m.severity;
+      const severity = typeof rawSeverity === 'string' ? rawSeverity.toLowerCase() : 'unknown';
+      
+      // Safely get message
+      const message = typeof m.message === 'string' ? m.message : 'Unknown message';
+      
+      // Safely get code/ID
+      const code = typeof m.ID === 'string' ? m.ID : undefined;
+      
+      // Safely get location
+      let location: { path?: string; line?: number; column?: number } | undefined;
+      if (Array.isArray(m.locations) && m.locations.length > 0) {
+        const loc = m.locations[0] as Record<string, unknown> | null;
+        if (loc && typeof loc === 'object') {
+          location = {
+            path: typeof loc.path === 'string' ? loc.path : undefined,
+            line: typeof loc.line === 'number' ? loc.line : undefined,
+            column: typeof loc.column === 'number' ? loc.column : undefined,
+          };
+        }
+      }
+      
+      return { severity, message, code, location };
+    });
+    
+  return {
+    errors: normalizedMessages.filter(m => m.severity === 'error'),
+    warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+    fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+  };
+}
+
+**4. MINOR - Use crypto for unique ID generation (epub-js-auditor.service.ts ~line 46):**
+
+// Add import at top:
+import crypto from 'crypto';
+
+// Update createIssue to use crypto for robust unique IDs:
+const createIssue = (data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue => {
+  return {
+    id: `issue-${crypto.randomUUID()}`,
+    ...data,
+  };
+};
+
+// If crypto.randomUUID is not available (older Node), use:
+const createIssue = (data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue => {
+  return {
+    id: `issue-${crypto.randomBytes(8).toString('hex')}`,
+    ...data,
+  };
+};
+
+After all fixes, run:
+npm run build
+npm run lint

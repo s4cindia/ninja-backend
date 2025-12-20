@@ -5,12 +5,14 @@ import * as path from 'path';
 import * as os from 'os';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import { epubJSAuditor } from './epub-js-auditor.service';
 
 const execFileAsync = promisify(execFile);
 
 interface EpubMessage {
-  severity: 'error' | 'warning' | 'info';
+  severity: string;
   message: string;
+  code?: string;
   location?: {
     path?: string;
     line?: number;
@@ -53,13 +55,14 @@ interface AceResult {
 
 interface AccessibilityIssue {
   id: string;
-  source: 'epubcheck' | 'ace';
+  source: 'epubcheck' | 'ace' | 'js-auditor';
   severity: 'critical' | 'serious' | 'moderate' | 'minor';
   code: string;
   message: string;
   wcagCriteria?: string[];
   location?: string;
   suggestion?: string;
+  category?: string;
 }
 
 interface EpubAuditResult {
@@ -91,6 +94,41 @@ class EpubAuditService {
     this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
   }
 
+  private parseMessages(messages: Array<Record<string, unknown>>): {
+    errors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+    warnings: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+    fatalErrors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+  } {
+    const normalizedMessages = messages
+      .filter(m => m && typeof m === 'object')
+      .map(m => {
+        const rawSeverity = m.severity;
+        const severity = typeof rawSeverity === 'string' ? rawSeverity.toLowerCase() : 'unknown';
+        const message = typeof m.message === 'string' ? m.message : 'Unknown message';
+        const code = typeof m.ID === 'string' ? m.ID : undefined;
+
+        let location: { path?: string; line?: number; column?: number } | undefined;
+        if (Array.isArray(m.locations) && m.locations.length > 0) {
+          const loc = m.locations[0] as Record<string, unknown> | null;
+          if (loc && typeof loc === 'object') {
+            location = {
+              path: typeof loc.path === 'string' ? loc.path : undefined,
+              line: typeof loc.line === 'number' ? loc.line : undefined,
+              column: typeof loc.column === 'number' ? loc.column : undefined,
+            };
+          }
+        }
+
+        return { severity, message, code, location };
+      });
+
+    return {
+      errors: normalizedMessages.filter(m => m.severity === 'error'),
+      warnings: normalizedMessages.filter(m => m.severity === 'warning'),
+      fatalErrors: normalizedMessages.filter(m => m.severity === 'fatal'),
+    };
+  }
+
   async runAudit(buffer: Buffer, jobId: string, fileName: string): Promise<EpubAuditResult> {
     this.issueCounter = 0;
     
@@ -113,6 +151,34 @@ class EpubAuditService {
       }
 
       const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+
+      logger.info('Running JS accessibility audit for auto-fixable issues');
+      try {
+        const jsResult = await epubJSAuditor.audit(buffer);
+        
+        const existingCodes = new Set(combinedIssues.map(i => i.code));
+        
+        for (const issue of jsResult.issues) {
+          if (!existingCodes.has(issue.code)) {
+            combinedIssues.push({
+              id: `js-${issue.id}`,
+              source: 'js-auditor' as const,
+              severity: issue.severity,
+              code: issue.code,
+              message: issue.message,
+              wcagCriteria: issue.wcagCriteria ? [issue.wcagCriteria] : undefined,
+              location: issue.location,
+              suggestion: issue.suggestion,
+              category: issue.category,
+            });
+          }
+        }
+        
+        logger.info(`JS audit found ${jsResult.issues.length} additional accessibility issues`);
+      } catch (jsError) {
+        logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
+      }
+
       const score = this.calculateScore(combinedIssues, aceResult);
 
       const result: EpubAuditResult = {
@@ -170,23 +236,26 @@ class EpubAuditService {
       const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
       const output = JSON.parse(outputContent);
 
+      const parsed = this.parseMessages(output.messages || []);
       return {
-        isValid: output.publication?.isValid ?? false,
+        isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
         epubVersion: output.publication?.ePubVersion || 'unknown',
-        errors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'error'),
-        warnings: (output.messages || []).filter((m: { severity: string }) => m.severity === 'warning'),
-        fatalErrors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'fatal'),
+        errors: parsed.errors,
+        warnings: parsed.warnings,
+        fatalErrors: parsed.fatalErrors,
       };
     } catch (error) {
       try {
         const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
         const output = JSON.parse(outputContent);
+
+        const parsed = this.parseMessages(output.messages || []);
         return {
-          isValid: output.publication?.isValid ?? false,
+          isValid: parsed.errors.length === 0 && parsed.fatalErrors.length === 0,
           epubVersion: output.publication?.ePubVersion || 'unknown',
-          errors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'error'),
-          warnings: (output.messages || []).filter((m: { severity: string }) => m.severity === 'warning'),
-          fatalErrors: (output.messages || []).filter((m: { severity: string }) => m.severity === 'fatal'),
+          errors: parsed.errors,
+          warnings: parsed.warnings,
+          fatalErrors: parsed.fatalErrors,
         };
       } catch {
         logger.error('EPUBCheck failed', error instanceof Error ? error : undefined);
@@ -284,7 +353,7 @@ class EpubAuditService {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'serious',
-        code: 'EPUBCHECK-ERROR',
+        code: error.code || 'EPUBCHECK-ERROR',
         message: error.message,
         location: error.location?.path,
       }));
@@ -294,7 +363,7 @@ class EpubAuditService {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'moderate',
-        code: 'EPUBCHECK-WARN',
+        code: warning.code || 'EPUBCHECK-WARN',
         message: warning.message,
         location: warning.location?.path,
       }));

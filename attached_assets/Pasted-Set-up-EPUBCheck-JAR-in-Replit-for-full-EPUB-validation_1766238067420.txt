@@ -1,0 +1,115 @@
+Set up EPUBCheck JAR in Replit for full EPUB validation.
+
+**1. Download EPUBCheck:**
+
+cd /home/runner/workspace
+mkdir -p lib/epubcheck
+cd lib/epubcheck
+
+# Download EPUBCheck 5.1.0 (latest stable)
+curl -L "https://github.com/w3c/epubcheck/releases/download/v5.1.0/epubcheck-5.1.0.zip" -o epubcheck.zip
+
+# Unzip
+unzip epubcheck.zip
+
+# Verify
+ls -la epubcheck-5.1.0/
+# Should see epubcheck.jar
+
+# Clean up zip
+rm epubcheck.zip
+
+**2. Verify Java is available:**
+
+java -version
+# Should show OpenJDK 19 or similar
+
+**3. Test EPUBCheck manually:**
+
+# Create a simple test (if you have a test.epub)
+java -jar /home/runner/workspace/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar --help
+
+**4. Update .env or environment:**
+
+Add to .env file:
+EPUBCHECK_PATH=/home/runner/workspace/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar
+
+**5. Update src/services/epub/epub-audit.service.ts:**
+
+Update the constructor to use the correct path:
+
+constructor() {
+  this.epubCheckPath = process.env.EPUBCHECK_PATH || 
+    '/home/runner/workspace/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar';
+}
+
+**6. Add lib/epubcheck to .gitignore:**
+
+Add this line to .gitignore:
+lib/epubcheck/
+
+**7. Create setup script for other developers:**
+
+Create file: scripts/setup-epubcheck.sh
+
+#!/bin/bash
+# Setup EPUBCheck for EPUB validation
+
+EPUBCHECK_VERSION="5.1.0"
+INSTALL_DIR="lib/epubcheck"
+
+echo "Setting up EPUBCheck ${EPUBCHECK_VERSION}..."
+
+# Check Java
+if ! command -v java &> /dev/null; then
+    echo "ERROR: Java is required but not installed."
+    exit 1
+fi
+
+# Create directory
+mkdir -p "${INSTALL_DIR}"
+cd "${INSTALL_DIR}"
+
+# Download if not exists
+if [ ! -f "epubcheck-${EPUBCHECK_VERSION}/epubcheck.jar" ]; then
+    echo "Downloading EPUBCheck..."
+    curl -L "https://github.com/w3c/epubcheck/releases/download/v${EPUBCHECK_VERSION}/epubcheck-${EPUBCHECK_VERSION}.zip" -o epubcheck.zip
+    unzip -o epubcheck.zip
+    rm epubcheck.zip
+    echo "EPUBCheck installed successfully!"
+else
+    echo "EPUBCheck already installed."
+fi
+
+# Verify
+java -jar "epubcheck-${EPUBCHECK_VERSION}/epubcheck.jar" --version
+
+echo ""
+echo "Add to your .env:"
+echo "EPUBCHECK_PATH=$(pwd)/epubcheck-${EPUBCHECK_VERSION}/epubcheck.jar"
+
+Make it executable:
+chmod +x scripts/setup-epubcheck.sh
+
+**8. Update replit.md documentation:**
+
+Add section:
+## EPUBCheck Setup
+
+EPUBCheck requires Java and must be installed separately:
+
+\`\`\`bash
+./scripts/setup-epubcheck.sh
+\`\`\`
+
+Then add to .env:
+\`\`\`
+EPUBCHECK_PATH=/home/runner/workspace/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar
+\`\`\`
+
+**9. Test the full audit flow:**
+
+After setup, restart the server and test:
+1. Upload an EPUB file
+2. Check that EPUBCheck runs (look for detailed validation errors, not just "Java not available")
+3. Verify remediation plan has proper issue codes

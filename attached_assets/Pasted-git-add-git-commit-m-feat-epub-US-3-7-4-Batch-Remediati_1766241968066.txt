@@ -1,0 +1,671 @@
+git add .
+git commit -m "feat(epub): US-3.7.4 - Batch Remediation
+
+- BatchRemediationService for multi-file processing
+- Create batches with up to 100 jobs
+- Sequential processing with per-job status tracking
+- Aggregate summary (issues fixed/failed, success rate)
+- stopOnError and generateComparison options
+- Cancel running batches
+- List batches with pagination
+- Background processing with immediate response
+- In-memory tracking + database persistence
+
+Endpoints:
+- POST /batch - Create batch
+- POST /batch/:batchId/start - Start processing
+- GET /batch/:batchId - Get status
+- POST /batch/:batchId/cancel - Cancel batch
+- GET /batches - List batches"
+```
+
+---
+
+## Epic 3.7 Progress
+
+| Story | Points | Description | Status |
+|-------|--------|-------------|--------|
+| US-3.7.1 | 8 | EPUB Auto-Remediation Engine | ✅ Complete |
+| US-3.7.2 | 8 | EPUB Content Modification | ✅ Complete |
+| US-3.7.3 | 5 | Before/After Comparison | ✅ Complete |
+| US-3.7.4 | 5 | Batch Remediation | ✅ Complete |
+| US-3.7.5 | 3 | Remediated EPUB Export | 🔄 Next |
+
+---
+
+## US-3.7.5: Remediated EPUB Export (3 pts)
+
+Provide this to the agent:
+```
+Create export service for remediated EPUB files with multiple output options.
+
+**Create file: src/services/epub/epub-export.service.ts**
+
+import JSZip from 'jszip';
+import { fileStorage } from '../storage/file-storage.service';
+import { epubComparisonService } from './epub-comparison.service';
+import { logger } from '../../lib/logger';
+import prisma from '../../lib/prisma';
+
+interface ExportOptions {
+  includeOriginal?: boolean;
+  includeComparison?: boolean;
+  includeReport?: boolean;
+  format?: 'epub' | 'zip';
+}
+
+interface ExportResult {
+  fileName: string;
+  mimeType: string;
+  buffer: Buffer;
+  size: number;
+  contents?: string[];
+}
+
+interface AccessibilityReport {
+  jobId: string;
+  fileName: string;
+  generatedAt: Date;
+  originalIssues: number;
+  fixedIssues: number;
+  remainingIssues: number;
+  fixRate: number;
+  modifications: {
+    type: string;
+    category: string;
+    description: string;
+    wcagCriteria?: string;
+  }[];
+  wcagCompliance: {
+    criterion: string;
+    status: 'pass' | 'partial' | 'fail';
+    notes?: string;
+  }[];
+}
+
+class EPUBExportService {
+  /**
+   * Export remediated EPUB with options
+   */
+  async exportRemediated(
+    jobId: string,
+    tenantId: string,
+    options: ExportOptions = {}
+  ): Promise<ExportResult> {
+    // Verify job ownership
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+
+    if (!job) {
+      throw new Error('Job not found');
+    }
+
+    const fileName = (job.input as { fileName?: string })?.fileName || 'document.epub';
+    const baseName = fileName.replace(/\.epub$/i, '');
+
+    // Get remediated file
+    const remediatedBuffer = await fileStorage.getRemediatedFile(jobId);
+    if (!remediatedBuffer) {
+      throw new Error('Remediated EPUB not found. Run auto-remediation first.');
+    }
+
+    // Simple export - just the EPUB
+    if (!options.includeOriginal && !options.includeComparison && !options.includeReport) {
+      return {
+        fileName: `${baseName}_remediated.epub`,
+        mimeType: 'application/epub+zip',
+        buffer: remediatedBuffer,
+        size: remediatedBuffer.length,
+      };
+    }
+
+    // Package export - create ZIP with multiple files
+    const zip = new JSZip();
+    const contents: string[] = [];
+
+    // Add remediated EPUB
+    zip.file(`${baseName}_remediated.epub`, remediatedBuffer);
+    contents.push(`${baseName}_remediated.epub`);
+
+    // Add original if requested
+    if (options.includeOriginal) {
+      const originalBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+      if (originalBuffer) {
+        zip.file(`${baseName}_original.epub`, originalBuffer);
+        contents.push(`${baseName}_original.epub`);
+      }
+    }
+
+    // Add comparison report if requested
+    if (options.includeComparison) {
+      const originalBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+      if (originalBuffer) {
+        try {
+          const comparison = await epubComparisonService.compareEPUBs(
+            originalBuffer,
+            remediatedBuffer,
+            jobId,
+            fileName
+          );
+          
+          const comparisonJson = JSON.stringify(comparison, null, 2);
+          zip.file(`${baseName}_comparison.json`, comparisonJson);
+          contents.push(`${baseName}_comparison.json`);
+
+          // Also create human-readable comparison
+          const comparisonMd = this.generateComparisonMarkdown(comparison);
+          zip.file(`${baseName}_comparison.md`, comparisonMd);
+          contents.push(`${baseName}_comparison.md`);
+        } catch (error) {
+          logger.warn('Failed to generate comparison for export', error instanceof Error ? error : undefined);
+        }
+      }
+    }
+
+    // Add accessibility report if requested
+    if (options.includeReport) {
+      try {
+        const report = await this.generateAccessibilityReport(jobId, tenantId);
+        
+        const reportJson = JSON.stringify(report, null, 2);
+        zip.file(`${baseName}_accessibility_report.json`, reportJson);
+        contents.push(`${baseName}_accessibility_report.json`);
+
+        // Also create human-readable report
+        const reportMd = this.generateReportMarkdown(report);
+        zip.file(`${baseName}_accessibility_report.md`, reportMd);
+        contents.push(`${baseName}_accessibility_report.md`);
+      } catch (error) {
+        logger.warn('Failed to generate report for export', error instanceof Error ? error : undefined);
+      }
+    }
+
+    // Add README
+    const readme = this.generateReadme(baseName, contents, options);
+    zip.file('README.md', readme);
+    contents.push('README.md');
+
+    const zipBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 },
+    });
+
+    return {
+      fileName: `${baseName}_remediated_package.zip`,
+      mimeType: 'application/zip',
+      buffer: zipBuffer,
+      size: zipBuffer.length,
+      contents,
+    };
+  }
+
+  /**
+   * Export multiple remediated EPUBs as a single ZIP
+   */
+  async exportBatch(
+    jobIds: string[],
+    tenantId: string,
+    options: ExportOptions = {}
+  ): Promise<ExportResult> {
+    const zip = new JSZip();
+    const contents: string[] = [];
+    const errors: string[] = [];
+
+    for (const jobId of jobIds) {
+      try {
+        const job = await prisma.job.findFirst({
+          where: { id: jobId, tenantId },
+        });
+
+        if (!job) {
+          errors.push(`Job ${jobId}: Not found`);
+          continue;
+        }
+
+        const fileName = (job.input as { fileName?: string })?.fileName || 'document.epub';
+        const baseName = fileName.replace(/\.epub$/i, '');
+
+        const remediatedBuffer = await fileStorage.getRemediatedFile(jobId);
+        if (!remediatedBuffer) {
+          errors.push(`Job ${jobId}: Remediated file not found`);
+          continue;
+        }
+
+        // Create folder for each job
+        const folder = zip.folder(baseName);
+        if (folder) {
+          folder.file(`${baseName}_remediated.epub`, remediatedBuffer);
+          contents.push(`${baseName}/${baseName}_remediated.epub`);
+
+          if (options.includeOriginal) {
+            const originalBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+            if (originalBuffer) {
+              folder.file(`${baseName}_original.epub`, originalBuffer);
+              contents.push(`${baseName}/${baseName}_original.epub`);
+            }
+          }
+
+          if (options.includeReport) {
+            try {
+              const report = await this.generateAccessibilityReport(jobId, tenantId);
+              const reportMd = this.generateReportMarkdown(report);
+              folder.file(`${baseName}_report.md`, reportMd);
+              contents.push(`${baseName}/${baseName}_report.md`);
+            } catch {
+              // Skip report if generation fails
+            }
+          }
+        }
+      } catch (error) {
+        errors.push(`Job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    // Add manifest
+    const manifest = {
+      exportedAt: new Date().toISOString(),
+      totalJobs: jobIds.length,
+      successfulJobs: jobIds.length - errors.length,
+      failedJobs: errors.length,
+      contents,
+      errors: errors.length > 0 ? errors : undefined,
+    };
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+    const zipBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 },
+    });
+
+    return {
+      fileName: `batch_export_${Date.now()}.zip`,
+      mimeType: 'application/zip',
+      buffer: zipBuffer,
+      size: zipBuffer.length,
+      contents,
+    };
+  }
+
+  /**
+   * Generate accessibility report for a job
+   */
+  async generateAccessibilityReport(
+    jobId: string,
+    tenantId: string
+  ): Promise<AccessibilityReport> {
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+
+    if (!job) {
+      throw new Error('Job not found');
+    }
+
+    const output = job.output as Record<string, unknown> || {};
+    const auditResult = output.combinedIssues as Array<Record<string, unknown>> || [];
+    const autoRemediation = output.autoRemediation as Record<string, unknown> || {};
+
+    const fileName = (job.input as { fileName?: string })?.fileName || 'document.epub';
+    const modifications = (autoRemediation.modifications as Array<Record<string, unknown>> || [])
+      .filter((m: Record<string, unknown>) => m.success)
+      .map((m: Record<string, unknown>) => ({
+        type: String(m.issueCode || ''),
+        category: this.getCategory(String(m.issueCode || '')),
+        description: String(m.description || ''),
+        wcagCriteria: this.getWcagCriteria(String(m.issueCode || '')),
+      }));
+
+    const originalIssues = auditResult.length;
+    const fixedIssues = modifications.length;
+    const remainingIssues = originalIssues - fixedIssues;
+
+    return {
+      jobId,
+      fileName,
+      generatedAt: new Date(),
+      originalIssues,
+      fixedIssues,
+      remainingIssues: Math.max(0, remainingIssues),
+      fixRate: originalIssues > 0 ? Math.round((fixedIssues / originalIssues) * 100) : 100,
+      modifications,
+      wcagCompliance: this.assessWcagCompliance(auditResult, modifications),
+    };
+  }
+
+  /**
+   * Get category for issue code
+   */
+  private getCategory(code: string): string {
+    if (code.startsWith('EPUB-META')) return 'metadata';
+    if (code.startsWith('EPUB-IMG')) return 'images';
+    if (code.startsWith('EPUB-STRUCT')) return 'structure';
+    if (code.startsWith('EPUB-SEM')) return 'semantics';
+    if (code.startsWith('EPUB-NAV')) return 'navigation';
+    return 'other';
+  }
+
+  /**
+   * Get WCAG criteria for issue code
+   */
+  private getWcagCriteria(code: string): string | undefined {
+    const wcagMap: Record<string, string> = {
+      'EPUB-META-001': '3.1.1',
+      'EPUB-SEM-001': '3.1.1',
+      'EPUB-IMG-001': '1.1.1',
+      'EPUB-SEM-002': '2.4.4',
+      'EPUB-STRUCT-002': '1.3.1',
+      'EPUB-STRUCT-003': '1.3.1',
+      'EPUB-STRUCT-004': '1.3.1',
+      'EPUB-NAV-004': '2.4.1',
+    };
+    return wcagMap[code];
+  }
+
+  /**
+   * Assess WCAG compliance based on issues and fixes
+   */
+  private assessWcagCompliance(
+    issues: Array<Record<string, unknown>>,
+    modifications: Array<{ wcagCriteria?: string }>
+  ): AccessibilityReport['wcagCompliance'] {
+    const criteria = [
+      { criterion: '1.1.1', name: 'Non-text Content' },
+      { criterion: '1.3.1', name: 'Info and Relationships' },
+      { criterion: '2.4.1', name: 'Bypass Blocks' },
+      { criterion: '2.4.4', name: 'Link Purpose' },
+      { criterion: '3.1.1', name: 'Language of Page' },
+    ];
+
+    const fixedCriteria = new Set(
+      modifications.filter(m => m.wcagCriteria).map(m => m.wcagCriteria)
+    );
+
+    const issueCriteria = new Set(
+      issues.filter(i => i.wcagCriteria).map(i => String(i.wcagCriteria))
+    );
+
+    return criteria.map(c => {
+      const hadIssue = issueCriteria.has(c.criterion);
+      const wasFixed = fixedCriteria.has(c.criterion);
+
+      let status: 'pass' | 'partial' | 'fail';
+      if (!hadIssue) {
+        status = 'pass';
+      } else if (wasFixed) {
+        status = 'pass';
+      } else {
+        status = 'fail';
+      }
+
+      return {
+        criterion: `${c.criterion} ${c.name}`,
+        status,
+        notes: hadIssue && wasFixed ? 'Fixed by auto-remediation' : undefined,
+      };
+    });
+  }
+
+  /**
+   * Generate comparison markdown
+   */
+  private generateComparisonMarkdown(comparison: Awaited<ReturnType<typeof epubComparisonService.compareEPUBs>>): string {
+    let md = `# EPUB Remediation Comparison Report\n\n`;
+    md += `**Original:** ${comparison.originalFileName}\n`;
+    md += `**Remediated:** ${comparison.remediatedFileName}\n`;
+    md += `**Generated:** ${comparison.generatedAt.toISOString()}\n\n`;
+
+    md += `## Summary\n\n`;
+    md += `| Metric | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Total Files | ${comparison.summary.totalFiles} |\n`;
+    md += `| Modified Files | ${comparison.summary.modifiedFiles} |\n`;
+    md += `| Total Changes | ${comparison.summary.totalChanges} |\n\n`;
+
+    md += `### Changes by Type\n\n`;
+    md += `- Metadata: ${comparison.summary.changesByType.metadata}\n`;
+    md += `- Content: ${comparison.summary.changesByType.content}\n`;
+    md += `- Structure: ${comparison.summary.changesByType.structure}\n`;
+    md += `- Accessibility: ${comparison.summary.changesByType.accessibility}\n\n`;
+
+    md += `## Modifications\n\n`;
+    for (const mod of comparison.modifications) {
+      md += `### ${mod.type}\n`;
+      md += `- **Category:** ${mod.category}\n`;
+      md += `- **File:** ${mod.filePath}\n`;
+      md += `- **Description:** ${mod.description}\n`;
+      if (mod.wcagCriteria) md += `- **WCAG:** ${mod.wcagCriteria}\n`;
+      if (mod.before) md += `- **Before:** \`${mod.before}\`\n`;
+      if (mod.after) md += `- **After:** \`${mod.after}\`\n`;
+      md += `\n`;
+    }
+
+    return md;
+  }
+
+  /**
+   * Generate accessibility report markdown
+   */
+  private generateReportMarkdown(report: AccessibilityReport): string {
+    let md = `# Accessibility Report\n\n`;
+    md += `**File:** ${report.fileName}\n`;
+    md += `**Generated:** ${report.generatedAt.toISOString()}\n\n`;
+
+    md += `## Summary\n\n`;
+    md += `| Metric | Value |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Original Issues | ${report.originalIssues} |\n`;
+    md += `| Fixed Issues | ${report.fixedIssues} |\n`;
+    md += `| Remaining Issues | ${report.remainingIssues} |\n`;
+    md += `| Fix Rate | ${report.fixRate}% |\n\n`;
+
+    md += `## WCAG Compliance\n\n`;
+    md += `| Criterion | Status |\n`;
+    md += `|-----------|--------|\n`;
+    for (const c of report.wcagCompliance) {
+      const icon = c.status === 'pass' ? '✅' : c.status === 'partial' ? '⚠️' : '❌';
+      md += `| ${c.criterion} | ${icon} ${c.status}${c.notes ? ` (${c.notes})` : ''} |\n`;
+    }
+    md += `\n`;
+
+    if (report.modifications.length > 0) {
+      md += `## Modifications Applied\n\n`;
+      for (const mod of report.modifications) {
+        md += `- **${mod.type}** (${mod.category}): ${mod.description}`;
+        if (mod.wcagCriteria) md += ` [WCAG ${mod.wcagCriteria}]`;
+        md += `\n`;
+      }
+    }
+
+    return md;
+  }
+
+  /**
+   * Generate README for export package
+   */
+  private generateReadme(baseName: string, contents: string[], options: ExportOptions): string {
+    let md = `# ${baseName} - Remediated EPUB Package\n\n`;
+    md += `This package contains the accessibility-remediated version of your EPUB file.\n\n`;
+
+    md += `## Contents\n\n`;
+    for (const file of contents) {
+      md += `- ${file}\n`;
+    }
+    md += `\n`;
+
+    md += `## Files Description\n\n`;
+    md += `- **_remediated.epub** - The accessibility-fixed EPUB file\n`;
+    if (options.includeOriginal) {
+      md += `- **_original.epub** - The original EPUB file for reference\n`;
+    }
+    if (options.includeComparison) {
+      md += `- **_comparison.json/.md** - Detailed comparison of changes made\n`;
+    }
+    if (options.includeReport) {
+      md += `- **_accessibility_report.json/.md** - Accessibility compliance report\n`;
+    }
+    md += `\n`;
+
+    md += `## Usage\n\n`;
+    md += `1. Open the \`_remediated.epub\` file in your EPUB reader or editor\n`;
+    md += `2. Review the accessibility report to understand changes made\n`;
+    md += `3. Test with assistive technologies before distribution\n\n`;
+
+    md += `---\n`;
+    md += `*Generated by Ninja Accessibility Platform*\n`;
+
+    return md;
+  }
+}
+
+export const epubExportService = new EPUBExportService();
+
+**Add export endpoints to epub.controller.ts:**
+
+import { epubExportService } from '../services/epub/epub-export.service';
+
+/**
+ * Export remediated EPUB
+ */
+async exportRemediated(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+    const { includeOriginal, includeComparison, includeReport } = req.query;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const options = {
+      includeOriginal: includeOriginal === 'true',
+      includeComparison: includeComparison === 'true',
+      includeReport: includeReport === 'true',
+    };
+
+    const result = await epubExportService.exportRemediated(jobId, tenantId, options);
+
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+    res.setHeader('Content-Length', result.size);
+
+    return res.send(result.buffer);
+  } catch (error) {
+    logger.error('Failed to export', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to export',
+    });
+  }
+},
+
+/**
+ * Export batch of remediated EPUBs
+ */
+async exportBatch(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobIds } = req.body;
+    const tenantId = req.user?.tenantId;
+    const { includeOriginal, includeReport } = req.query;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'jobIds array is required',
+      });
+    }
+
+    if (jobIds.length > 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 50 files per batch export',
+      });
+    }
+
+    const options = {
+      includeOriginal: includeOriginal === 'true',
+      includeReport: includeReport === 'true',
+    };
+
+    const result = await epubExportService.exportBatch(jobIds, tenantId, options);
+
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+    res.setHeader('Content-Length', result.size);
+
+    return res.send(result.buffer);
+  } catch (error) {
+    logger.error('Failed to export batch', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to export batch',
+    });
+  }
+},
+
+/**
+ * Get accessibility report for a job
+ */
+async getAccessibilityReport(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+    const format = req.query.format as string || 'json';
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const report = await epubExportService.generateAccessibilityReport(jobId, tenantId);
+
+    if (format === 'md' || format === 'markdown') {
+      const md = epubExportService['generateReportMarkdown'](report);
+      res.setHeader('Content-Type', 'text/markdown');
+      return res.send(md);
+    }
+
+    return res.json({
+      success: true,
+      data: report,
+    });
+  } catch (error) {
+    logger.error('Failed to generate report', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to generate report',
+    });
+  }
+},
+
+**Add routes to epub.routes.ts:**
+
+// Export routes
+router.get('/job/:jobId/export', epubController.exportRemediated);
+router.post('/export-batch', epubController.exportBatch);
+router.get('/job/:jobId/report', epubController.getAccessibilityReport);
+
+**Acceptance Criteria:**
+- [ ] Export remediated EPUB as single file
+- [ ] Export as ZIP with original + remediated + reports
+- [ ] Include comparison report (JSON + Markdown)
+- [ ] Include accessibility report (JSON + Markdown)
+- [ ] Batch export multiple EPUBs as ZIP
+- [ ] Generate WCAG compliance assessment
+- [ ] README file in package exports
+- [ ] Proper Content-Disposition headers for download
+- [ ] Support format query param for reports (json/md)

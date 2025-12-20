@@ -1,0 +1,338 @@
+import { autoRemediationService } from './auto-remediation.service';
+import { epubComparisonService } from './epub-comparison.service';
+import { fileStorageService } from '../storage/file-storage.service';
+import { logger } from '../../lib/logger';
+import prisma from '../../lib/prisma';
+import { Prisma, JobStatus } from '@prisma/client';
+
+type BatchStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+interface BatchJob {
+  jobId: string;
+  fileName: string;
+  status: BatchStatus;
+  issuesFixed?: number;
+  issuesFailed?: number;
+  error?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+}
+
+interface BatchRemediationResult {
+  batchId: string;
+  status: BatchStatus;
+  totalJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  jobs: BatchJob[];
+  summary: {
+    totalIssuesFixed: number;
+    totalIssuesFailed: number;
+    successRate: number;
+  };
+  startedAt: Date;
+  completedAt?: Date;
+}
+
+interface BatchOptions {
+  fixCodes?: string[];
+  stopOnError?: boolean;
+  generateComparison?: boolean;
+  notifyOnComplete?: boolean;
+}
+
+class BatchRemediationService {
+  private activeBatches: Map<string, BatchRemediationResult> = new Map();
+
+  async createBatch(
+    jobIds: string[],
+    tenantId: string,
+    userId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batchId = `batch-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+    const jobs = await prisma.job.findMany({
+      where: {
+        id: { in: jobIds },
+        tenantId,
+      },
+    });
+
+    if (jobs.length !== jobIds.length) {
+      const foundIds = new Set(jobs.map(j => j.id));
+      const missingIds = jobIds.filter(id => !foundIds.has(id));
+      throw new Error(`Jobs not found: ${missingIds.join(', ')}`);
+    }
+
+    const batchJobs: BatchJob[] = jobs.map(job => ({
+      jobId: job.id,
+      fileName: (job.input as { fileName?: string })?.fileName || 'unknown.epub',
+      status: 'pending' as BatchStatus,
+    }));
+
+    const result: BatchRemediationResult = {
+      batchId,
+      status: 'pending',
+      totalJobs: batchJobs.length,
+      completedJobs: 0,
+      failedJobs: 0,
+      jobs: batchJobs,
+      summary: {
+        totalIssuesFixed: 0,
+        totalIssuesFailed: 0,
+        successRate: 0,
+      },
+      startedAt: new Date(),
+    };
+
+    await prisma.job.create({
+      data: {
+        id: batchId,
+        tenantId,
+        userId,
+        type: 'BATCH_VALIDATION',
+        status: JobStatus.QUEUED,
+        input: {
+          recordType: 'batch_remediation',
+          jobIds,
+          options: JSON.parse(JSON.stringify(options)),
+        } as Prisma.InputJsonValue,
+        output: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+      },
+    });
+
+    this.activeBatches.set(batchId, result);
+
+    logger.info(`Created batch remediation ${batchId} with ${jobIds.length} jobs`);
+
+    return result;
+  }
+
+  async processBatch(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batchJob = await prisma.job.findFirst({
+      where: {
+        id: batchId,
+        tenantId,
+        type: 'BATCH_VALIDATION',
+      },
+    });
+
+    if (!batchJob) {
+      throw new Error('Batch not found');
+    }
+
+    const rawOutput = batchJob.output as Record<string, unknown> | null;
+    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
+      throw new Error('Invalid batch data structure');
+    }
+
+    const result = rawOutput as unknown as BatchRemediationResult;
+    result.status = 'processing';
+
+    await this.updateBatchStatus(batchId, result);
+
+    for (let i = 0; i < result.jobs.length; i++) {
+      const job = result.jobs[i];
+
+      if (job.status === 'cancelled') {
+        continue;
+      }
+
+      try {
+        job.status = 'processing';
+        job.startedAt = new Date();
+        await this.updateBatchStatus(batchId, result);
+
+        const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+        if (!jobRecord) {
+          throw new Error(`Job record not found: ${job.jobId}`);
+        }
+
+        const input = jobRecord.input as { fileName?: string } | null;
+        const fileName = input?.fileName || 'upload.epub';
+
+        // Update job.fileName to match for consistency in results
+        job.fileName = fileName;
+
+        const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+        if (!epubBuffer) {
+          throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
+        }
+
+        const remediationResult = await autoRemediationService.runAutoRemediation(
+          epubBuffer,
+          job.jobId,
+          fileName
+        );
+
+        job.status = 'completed';
+        job.issuesFixed = remediationResult.totalIssuesFixed;
+        job.issuesFailed = remediationResult.totalIssuesFailed;
+        job.completedAt = new Date();
+
+        result.completedJobs++;
+        result.summary.totalIssuesFixed += remediationResult.totalIssuesFixed;
+        result.summary.totalIssuesFailed += remediationResult.totalIssuesFailed;
+
+        if (options.generateComparison) {
+          const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
+          const remediatedBuffer = await fileStorageService.getRemediatedFile(job.jobId, remediatedFileName);
+          if (remediatedBuffer) {
+            await epubComparisonService.compareEPUBs(
+              epubBuffer,
+              remediatedBuffer,
+              job.jobId,
+              fileName
+            );
+          }
+        }
+
+        logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
+
+      } catch (error) {
+        job.status = 'failed';
+        job.error = error instanceof Error ? error.message : 'Unknown error';
+        job.completedAt = new Date();
+        result.failedJobs++;
+
+        logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
+
+        if (options.stopOnError) {
+          result.status = 'failed';
+          break;
+        }
+      }
+
+      await this.updateBatchStatus(batchId, result);
+    }
+
+    result.status = result.failedJobs === result.totalJobs ? 'failed' : 'completed';
+    result.completedAt = new Date();
+    result.summary.successRate = result.totalJobs > 0
+      ? Math.round((result.completedJobs / result.totalJobs) * 100)
+      : 0;
+
+    await this.updateBatchStatus(batchId, result);
+    this.activeBatches.delete(batchId);
+
+    logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
+
+    return result;
+  }
+
+  async getBatchStatus(batchId: string, tenantId: string): Promise<BatchRemediationResult | null> {
+    if (this.activeBatches.has(batchId)) {
+      return this.activeBatches.get(batchId)!;
+    }
+
+    const batchJob = await prisma.job.findFirst({
+      where: {
+        id: batchId,
+        tenantId,
+        type: 'BATCH_VALIDATION',
+      },
+    });
+
+    if (!batchJob?.output) {
+      return null;
+    }
+
+    const rawOutput = batchJob.output as Record<string, unknown> | null;
+    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
+      return null;
+    }
+
+    return rawOutput as unknown as BatchRemediationResult;
+  }
+
+  async cancelBatch(batchId: string, tenantId: string): Promise<BatchRemediationResult> {
+    const result = await this.getBatchStatus(batchId, tenantId);
+
+    if (!result) {
+      throw new Error('Batch not found');
+    }
+
+    if (result.status !== 'processing' && result.status !== 'pending') {
+      throw new Error('Batch cannot be cancelled (already completed or failed)');
+    }
+
+    result.status = 'cancelled';
+    result.completedAt = new Date();
+
+    for (const job of result.jobs) {
+      if (job.status === 'pending') {
+        job.status = 'cancelled' as BatchStatus;
+      }
+    }
+
+    await this.updateBatchStatus(batchId, result);
+    this.activeBatches.delete(batchId);
+
+    logger.info(`Batch ${batchId} cancelled`);
+
+    return result;
+  }
+
+  async listBatches(
+    tenantId: string,
+    page: number = 1,
+    limit: number = 20
+  ): Promise<{ batches: BatchRemediationResult[]; total: number }> {
+    const [jobs, total] = await Promise.all([
+      prisma.job.findMany({
+        where: {
+          tenantId,
+          type: 'BATCH_VALIDATION',
+          input: {
+            path: ['recordType'],
+            equals: 'batch_remediation',
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.job.count({
+        where: {
+          tenantId,
+          type: 'BATCH_VALIDATION',
+          input: {
+            path: ['recordType'],
+            equals: 'batch_remediation',
+          },
+        },
+      }),
+    ]);
+
+    const batches = jobs
+      .filter(j => j.output)
+      .map(j => j.output as unknown as BatchRemediationResult);
+
+    return { batches, total };
+  }
+
+  private async updateBatchStatus(batchId: string, result: BatchRemediationResult): Promise<void> {
+    const status = result.status === 'completed' ? JobStatus.COMPLETED
+      : result.status === 'failed' ? JobStatus.FAILED
+      : result.status === 'cancelled' ? JobStatus.CANCELLED
+      : JobStatus.PROCESSING;
+
+    await prisma.job.update({
+      where: { id: batchId },
+      data: {
+        status,
+        output: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+        ...(result.completedAt && { completedAt: result.completedAt }),
+      },
+    });
+
+    this.activeBatches.set(batchId, result);
+  }
+}
+
+export const batchRemediationService = new BatchRemediationService();

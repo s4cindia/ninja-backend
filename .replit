@@ -52,3 +52,4 @@ outputType = "webview"
 
 [userenv.shared]
 ENABLE_WORKERS = "false"
+EPUBCHECK_PATH = "/home/runner/workspace/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar"

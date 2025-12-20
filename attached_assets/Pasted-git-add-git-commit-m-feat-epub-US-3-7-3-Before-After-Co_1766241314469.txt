@@ -1,0 +1,604 @@
+git add .
+git commit -m "feat(epub): US-3.7.3 - Before/After Comparison
+
+- EPUBComparisonService using diff library
+- File-level change detection (added/removed/modified/unchanged)
+- Line-by-line diffs for modified files
+- Modification categorization (metadata, accessibility, structure)
+- WCAG criteria mapping (1.1.1, 1.3.1, 2.4.1, 2.4.4, 3.1.1)
+- Before/after snippets for context
+
+Endpoints:
+- GET /job/:jobId/comparison (full with diffs)
+- GET /job/:jobId/comparison/summary (lighter payload)"
+```
+
+---
+
+## Epic 3.7 Progress
+
+| Story | Points | Description | Status |
+|-------|--------|-------------|--------|
+| US-3.7.1 | 8 | EPUB Auto-Remediation Engine | ✅ Complete |
+| US-3.7.2 | 8 | EPUB Content Modification | ✅ Complete |
+| US-3.7.3 | 5 | Before/After Comparison | ✅ Complete |
+| US-3.7.4 | 5 | Batch Remediation | 🔄 Next |
+| US-3.7.5 | 3 | Remediated EPUB Export | Pending |
+
+---
+
+## US-3.7.4: Batch Remediation (5 pts)
+
+Provide this to the agent:
+```
+Create batch remediation service to process multiple EPUB files in a single operation.
+
+**Create file: src/services/epub/batch-remediation.service.ts**
+
+import { autoRemediationService } from './auto-remediation.service';
+import { epubComparisonService } from './epub-comparison.service';
+import { fileStorage } from '../storage/file-storage.service';
+import { logger } from '../../lib/logger';
+import prisma from '../../lib/prisma';
+
+type BatchStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+
+interface BatchJob {
+  jobId: string;
+  fileName: string;
+  status: BatchStatus;
+  issuesFixed?: number;
+  issuesFailed?: number;
+  error?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+}
+
+interface BatchRemediationResult {
+  batchId: string;
+  status: BatchStatus;
+  totalJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  jobs: BatchJob[];
+  summary: {
+    totalIssuesFixed: number;
+    totalIssuesFailed: number;
+    successRate: number;
+  };
+  startedAt: Date;
+  completedAt?: Date;
+}
+
+interface BatchOptions {
+  fixCodes?: string[];
+  stopOnError?: boolean;
+  generateComparison?: boolean;
+  notifyOnComplete?: boolean;
+}
+
+class BatchRemediationService {
+  private activeBatches: Map<string, BatchRemediationResult> = new Map();
+
+  /**
+   * Create a new batch remediation job
+   */
+  async createBatch(
+    jobIds: string[],
+    tenantId: string,
+    userId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batchId = `batch-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+
+    // Validate all jobs exist and belong to tenant
+    const jobs = await prisma.job.findMany({
+      where: {
+        id: { in: jobIds },
+        tenantId,
+      },
+    });
+
+    if (jobs.length !== jobIds.length) {
+      const foundIds = new Set(jobs.map(j => j.id));
+      const missingIds = jobIds.filter(id => !foundIds.has(id));
+      throw new Error(`Jobs not found: ${missingIds.join(', ')}`);
+    }
+
+    const batchJobs: BatchJob[] = jobs.map(job => ({
+      jobId: job.id,
+      fileName: (job.input as { fileName?: string })?.fileName || 'unknown.epub',
+      status: 'pending' as BatchStatus,
+    }));
+
+    const result: BatchRemediationResult = {
+      batchId,
+      status: 'pending',
+      totalJobs: batchJobs.length,
+      completedJobs: 0,
+      failedJobs: 0,
+      jobs: batchJobs,
+      summary: {
+        totalIssuesFixed: 0,
+        totalIssuesFailed: 0,
+        successRate: 0,
+      },
+      startedAt: new Date(),
+    };
+
+    // Store batch in database
+    await prisma.job.create({
+      data: {
+        id: batchId,
+        tenantId,
+        userId,
+        type: 'BATCH_VALIDATION',
+        status: 'PENDING',
+        input: {
+          recordType: 'batch_remediation',
+          jobIds,
+          options,
+        },
+        output: result,
+      },
+    });
+
+    this.activeBatches.set(batchId, result);
+
+    logger.info(`Created batch remediation ${batchId} with ${jobIds.length} jobs`);
+
+    return result;
+  }
+
+  /**
+   * Start processing a batch
+   */
+  async processBatch(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batchJob = await prisma.job.findFirst({
+      where: {
+        id: batchId,
+        tenantId,
+        type: 'BATCH_VALIDATION',
+      },
+    });
+
+    if (!batchJob) {
+      throw new Error('Batch not found');
+    }
+
+    const result = batchJob.output as unknown as BatchRemediationResult;
+    result.status = 'processing';
+
+    // Update status
+    await this.updateBatchStatus(batchId, result);
+
+    // Process each job
+    for (let i = 0; i < result.jobs.length; i++) {
+      const job = result.jobs[i];
+
+      try {
+        job.status = 'processing';
+        job.startedAt = new Date();
+        await this.updateBatchStatus(batchId, result);
+
+        // Get EPUB buffer
+        const epubBuffer = await fileStorage.getFile(`uploads/${job.jobId}`);
+        if (!epubBuffer) {
+          throw new Error('EPUB file not found');
+        }
+
+        // Run auto-remediation
+        const remediationResult = await autoRemediationService.runAutoRemediation(
+          epubBuffer,
+          job.jobId,
+          job.fileName
+        );
+
+        job.status = 'completed';
+        job.issuesFixed = remediationResult.totalIssuesFixed;
+        job.issuesFailed = remediationResult.totalIssuesFailed;
+        job.completedAt = new Date();
+
+        result.completedJobs++;
+        result.summary.totalIssuesFixed += remediationResult.totalIssuesFixed;
+        result.summary.totalIssuesFailed += remediationResult.totalIssuesFailed;
+
+        // Generate comparison if requested
+        if (options.generateComparison) {
+          const remediatedBuffer = await fileStorage.getRemediatedFile(job.jobId);
+          if (remediatedBuffer) {
+            await epubComparisonService.compareEPUBs(
+              epubBuffer,
+              remediatedBuffer,
+              job.jobId,
+              job.fileName
+            );
+          }
+        }
+
+        logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
+
+      } catch (error) {
+        job.status = 'failed';
+        job.error = error instanceof Error ? error.message : 'Unknown error';
+        job.completedAt = new Date();
+        result.failedJobs++;
+
+        logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
+
+        if (options.stopOnError) {
+          result.status = 'failed';
+          break;
+        }
+      }
+
+      await this.updateBatchStatus(batchId, result);
+    }
+
+    // Finalize
+    result.status = result.failedJobs === result.totalJobs ? 'failed' : 'completed';
+    result.completedAt = new Date();
+    result.summary.successRate = result.totalJobs > 0
+      ? Math.round((result.completedJobs / result.totalJobs) * 100)
+      : 0;
+
+    await this.updateBatchStatus(batchId, result);
+    this.activeBatches.delete(batchId);
+
+    logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
+
+    return result;
+  }
+
+  /**
+   * Get batch status
+   */
+  async getBatchStatus(batchId: string, tenantId: string): Promise<BatchRemediationResult | null> {
+    // Check active batches first
+    if (this.activeBatches.has(batchId)) {
+      return this.activeBatches.get(batchId)!;
+    }
+
+    // Check database
+    const batchJob = await prisma.job.findFirst({
+      where: {
+        id: batchId,
+        tenantId,
+        type: 'BATCH_VALIDATION',
+      },
+    });
+
+    if (!batchJob?.output) {
+      return null;
+    }
+
+    return batchJob.output as unknown as BatchRemediationResult;
+  }
+
+  /**
+   * Cancel a running batch
+   */
+  async cancelBatch(batchId: string, tenantId: string): Promise<BatchRemediationResult> {
+    const result = await this.getBatchStatus(batchId, tenantId);
+
+    if (!result) {
+      throw new Error('Batch not found');
+    }
+
+    if (result.status !== 'processing' && result.status !== 'pending') {
+      throw new Error('Batch cannot be cancelled (already completed or failed)');
+    }
+
+    result.status = 'cancelled';
+    result.completedAt = new Date();
+
+    // Mark pending jobs as cancelled
+    for (const job of result.jobs) {
+      if (job.status === 'pending') {
+        job.status = 'cancelled' as BatchStatus;
+      }
+    }
+
+    await this.updateBatchStatus(batchId, result);
+    this.activeBatches.delete(batchId);
+
+    logger.info(`Batch ${batchId} cancelled`);
+
+    return result;
+  }
+
+  /**
+   * List batches for tenant
+   */
+  async listBatches(
+    tenantId: string,
+    page: number = 1,
+    limit: number = 20
+  ): Promise<{ batches: BatchRemediationResult[]; total: number }> {
+    const [jobs, total] = await Promise.all([
+      prisma.job.findMany({
+        where: {
+          tenantId,
+          type: 'BATCH_VALIDATION',
+          input: {
+            path: ['recordType'],
+            equals: 'batch_remediation',
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.job.count({
+        where: {
+          tenantId,
+          type: 'BATCH_VALIDATION',
+          input: {
+            path: ['recordType'],
+            equals: 'batch_remediation',
+          },
+        },
+      }),
+    ]);
+
+    const batches = jobs
+      .filter(j => j.output)
+      .map(j => j.output as unknown as BatchRemediationResult);
+
+    return { batches, total };
+  }
+
+  /**
+   * Update batch status in database
+   */
+  private async updateBatchStatus(batchId: string, result: BatchRemediationResult): Promise<void> {
+    const status = result.status === 'completed' ? 'COMPLETED'
+      : result.status === 'failed' ? 'FAILED'
+      : result.status === 'cancelled' ? 'FAILED'
+      : 'PROCESSING';
+
+    await prisma.job.update({
+      where: { id: batchId },
+      data: {
+        status,
+        output: result as unknown as Record<string, unknown>,
+        ...(result.completedAt && { completedAt: result.completedAt }),
+      },
+    });
+
+    this.activeBatches.set(batchId, result);
+  }
+}
+
+export const batchRemediationService = new BatchRemediationService();
+
+**Add batch endpoints to epub.controller.ts:**
+
+import { batchRemediationService } from '../services/epub/batch-remediation.service';
+
+/**
+ * Create batch remediation job
+ */
+async createBatch(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobIds, options } = req.body;
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+
+    if (!tenantId || !userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'jobIds array is required',
+      });
+    }
+
+    if (jobIds.length > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 100 jobs per batch',
+      });
+    }
+
+    const batch = await batchRemediationService.createBatch(
+      jobIds,
+      tenantId,
+      userId,
+      options || {}
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: batch,
+    });
+  } catch (error) {
+    logger.error('Failed to create batch', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create batch',
+    });
+  }
+},
+
+/**
+ * Start batch processing
+ */
+async startBatch(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { batchId } = req.params;
+    const { options } = req.body;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    // Start processing in background
+    batchRemediationService.processBatch(batchId, tenantId, options || {})
+      .catch(err => logger.error(`Batch ${batchId} processing error`, err));
+
+    // Return immediately with pending status
+    const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+
+    return res.json({
+      success: true,
+      data: batch,
+      message: 'Batch processing started',
+    });
+  } catch (error) {
+    logger.error('Failed to start batch', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to start batch',
+    });
+  }
+},
+
+/**
+ * Get batch status
+ */
+async getBatchStatus(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { batchId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        error: 'Batch not found',
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: batch,
+    });
+  } catch (error) {
+    logger.error('Failed to get batch status', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to get batch status',
+    });
+  }
+},
+
+/**
+ * Cancel batch
+ */
+async cancelBatch(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { batchId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const batch = await batchRemediationService.cancelBatch(batchId, tenantId);
+
+    return res.json({
+      success: true,
+      data: batch,
+    });
+  } catch (error) {
+    logger.error('Failed to cancel batch', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to cancel batch',
+    });
+  }
+},
+
+/**
+ * List batches
+ */
+async listBatches(req: AuthenticatedRequest, res: Response) {
+  try {
+    const tenantId = req.user?.tenantId;
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    if (limit < 1 || limit > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Limit must be between 1 and 100',
+      });
+    }
+
+    const { batches, total } = await batchRemediationService.listBatches(
+      tenantId,
+      page,
+      limit
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        batches,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to list batches', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to list batches',
+    });
+  }
+},
+
+**Add routes to epub.routes.ts:**
+
+// Batch remediation routes
+router.post('/batch', epubController.createBatch);
+router.post('/batch/:batchId/start', epubController.startBatch);
+router.get('/batch/:batchId', epubController.getBatchStatus);
+router.post('/batch/:batchId/cancel', epubController.cancelBatch);
+router.get('/batches', epubController.listBatches);
+
+**Acceptance Criteria:**
+- [ ] Create batch with multiple job IDs
+- [ ] Validate all jobs exist and belong to tenant
+- [ ] Process jobs sequentially with progress tracking
+- [ ] Track per-job status (pending/processing/completed/failed)
+- [ ] Aggregate summary (total fixed, failed, success rate)
+- [ ] Support stopOnError option
+- [ ] Support generateComparison option
+- [ ] Cancel running batches
+- [ ] List batches with pagination
+- [ ] Maximum 100 jobs per batch
+- [ ] Background processing with immediate response
