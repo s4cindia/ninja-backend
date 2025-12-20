@@ -115,3 +115,6 @@ data/uploads/*
 
 # Local state (Replit Agent)
 .local/
+
+# EPUBCheck JAR (downloaded separately)
+lib/epubcheck/
