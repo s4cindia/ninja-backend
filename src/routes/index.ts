@@ -15,6 +15,7 @@ import confidenceRoutes from "./confidence.routes";
 import verificationRoutes from "./verification.routes";
 import exportsRoutes from "./exports.routes";
 import altTextRoutes from "./alt-text.routes";
+import epubRoutes from "./epub.routes";
 
 const router = Router();
 
@@ -83,5 +84,6 @@ router.use("/confidence", confidenceRoutes);
 router.use("/verification", verificationRoutes);
 router.use("/exports", exportsRoutes);
 router.use("/alt-text", altTextRoutes);
+router.use("/epub", epubRoutes);
 
 export default router;

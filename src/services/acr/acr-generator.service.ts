@@ -7,6 +7,7 @@ import {
   AI_MODEL_INFO,
   generateFooterDisclaimer 
 } from './attribution.service';
+import { logger } from '../../lib/logger';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -115,7 +116,7 @@ class AcrGeneratorService {
     const edition = options.edition || 'VPAT2.5-INT';
     
     if (edition === 'VPAT2.5-INT') {
-      console.log('ACR Generation: INT Edition selected - satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document');
+      logger.info('ACR Generation: INT Edition selected - satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document');
     }
 
     let criteria = await this.getCriteriaForEdition(edition);

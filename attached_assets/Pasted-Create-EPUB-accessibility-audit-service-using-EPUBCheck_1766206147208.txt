@@ -1,0 +1,595 @@
+Create EPUB accessibility audit service using EPUBCheck and Ace by DAISY.
+
+**Install dependencies:**
+npm install @daisy/ace --save
+
+Note: EPUBCheck requires Java runtime. Check if available with `java -version`.
+
+**Create file: src/services/epub/epub-audit.service.ts**
+
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { logger } from '../../lib/logger';
+import prisma from '../../lib/prisma';
+
+const execAsync = promisify(exec);
+
+interface EpubMessage {
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  location?: {
+    path?: string;
+    line?: number;
+    column?: number;
+  };
+}
+
+interface EpubCheckResult {
+  isValid: boolean;
+  epubVersion: string;
+  errors: EpubMessage[];
+  warnings: EpubMessage[];
+  fatalErrors: EpubMessage[];
+}
+
+interface AceViolation {
+  rule: string;
+  impact: 'critical' | 'serious' | 'moderate' | 'minor';
+  description: string;
+  wcag?: string[];
+  location?: string;
+  html?: string;
+}
+
+interface AceResult {
+  score: number;
+  violations: AceViolation[];
+  metadata: {
+    conformsTo: string[];
+    accessMode: string[];
+    accessibilityFeature: string[];
+    accessibilityHazard: string[];
+    accessibilitySummary?: string;
+  };
+  outlines: {
+    toc: any[];
+    headings: any[];
+  };
+}
+
+interface AccessibilityIssue {
+  id: string;
+  source: 'epubcheck' | 'ace';
+  severity: 'critical' | 'serious' | 'moderate' | 'minor';
+  code: string;
+  message: string;
+  wcagCriteria?: string[];
+  location?: string;
+  suggestion?: string;
+}
+
+interface EpubAuditResult {
+  jobId: string;
+  fileName: string;
+  epubVersion: string;
+  isValid: boolean;
+  isAccessible: boolean;
+  score: number;
+  epubCheckResult: EpubCheckResult;
+  aceResult: AceResult | null;
+  combinedIssues: AccessibilityIssue[];
+  summary: {
+    critical: number;
+    serious: number;
+    moderate: number;
+    minor: number;
+    total: number;
+  };
+  accessibilityMetadata: AceResult['metadata'] | null;
+  auditedAt: Date;
+}
+
+class EpubAuditService {
+  private epubCheckPath: string;
+  private issueCounter = 0;
+
+  constructor() {
+    // EPUBCheck jar path - adjust based on installation
+    this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
+  }
+
+  /**
+   * Run full EPUB audit
+   */
+  async runAudit(buffer: Buffer, jobId: string, fileName: string): Promise<EpubAuditResult> {
+    this.issueCounter = 0;
+    
+    // Create temp directory for EPUB file
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'epub-audit-'));
+    const epubPath = path.join(tempDir, fileName);
+    
+    try {
+      // Write buffer to temp file
+      await fs.promises.writeFile(epubPath, buffer);
+
+      // Run EPUBCheck
+      const epubCheckResult = await this.runEpubCheck(epubPath);
+
+      // Run Ace (only if EPUBCheck passes basic validation)
+      let aceResult: AceResult | null = null;
+      if (epubCheckResult.fatalErrors.length === 0) {
+        try {
+          aceResult = await this.runAce(epubPath, tempDir);
+        } catch (aceError) {
+          logger.warn('Ace audit failed, continuing with EPUBCheck results only:', aceError instanceof Error ? aceError : undefined);
+        }
+      }
+
+      // Combine issues
+      const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+
+      // Calculate score
+      const score = this.calculateScore(combinedIssues, aceResult);
+
+      const result: EpubAuditResult = {
+        jobId,
+        fileName,
+        epubVersion: epubCheckResult.epubVersion,
+        isValid: epubCheckResult.isValid,
+        isAccessible: score >= 70 && combinedIssues.filter(i => i.severity === 'critical').length === 0,
+        score,
+        epubCheckResult,
+        aceResult,
+        combinedIssues,
+        summary: {
+          critical: combinedIssues.filter(i => i.severity === 'critical').length,
+          serious: combinedIssues.filter(i => i.severity === 'serious').length,
+          moderate: combinedIssues.filter(i => i.severity === 'moderate').length,
+          minor: combinedIssues.filter(i => i.severity === 'minor').length,
+          total: combinedIssues.length,
+        },
+        accessibilityMetadata: aceResult?.metadata || null,
+        auditedAt: new Date(),
+      };
+
+      // Store result
+      await this.storeResult(result);
+
+      return result;
+    } finally {
+      // Cleanup temp directory
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Run EPUBCheck validation
+   */
+  private async runEpubCheck(epubPath: string): Promise<EpubCheckResult> {
+    const outputPath = epubPath + '.json';
+
+    try {
+      // Check if Java is available
+      await execAsync('java -version');
+    } catch {
+      logger.warn('Java not available, skipping EPUBCheck');
+      return {
+        isValid: true,
+        epubVersion: 'unknown',
+        errors: [],
+        warnings: [],
+        fatalErrors: [{ severity: 'error', message: 'Java runtime not available for EPUBCheck' }],
+      };
+    }
+
+    try {
+      // Run EPUBCheck with JSON output
+      await execAsync(
+        `java -jar "${this.epubCheckPath}" "${epubPath}" --json "${outputPath}"`,
+        { timeout: 60000 }
+      );
+
+      // Parse results
+      const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
+      const output = JSON.parse(outputContent);
+
+      return {
+        isValid: output.publication?.isValid ?? false,
+        epubVersion: output.publication?.ePubVersion || 'unknown',
+        errors: (output.messages || []).filter((m: any) => m.severity === 'error'),
+        warnings: (output.messages || []).filter((m: any) => m.severity === 'warning'),
+        fatalErrors: (output.messages || []).filter((m: any) => m.severity === 'fatal'),
+      };
+    } catch (error) {
+      // EPUBCheck returns non-zero exit code for invalid EPUBs
+      // Try to parse output anyway
+      try {
+        const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
+        const output = JSON.parse(outputContent);
+        return {
+          isValid: output.publication?.isValid ?? false,
+          epubVersion: output.publication?.ePubVersion || 'unknown',
+          errors: (output.messages || []).filter((m: any) => m.severity === 'error'),
+          warnings: (output.messages || []).filter((m: any) => m.severity === 'warning'),
+          fatalErrors: (output.messages || []).filter((m: any) => m.severity === 'fatal'),
+        };
+      } catch {
+        logger.error('EPUBCheck failed:', error instanceof Error ? error : undefined);
+        return {
+          isValid: false,
+          epubVersion: 'unknown',
+          errors: [],
+          warnings: [],
+          fatalErrors: [{ severity: 'error', message: 'EPUBCheck execution failed' }],
+        };
+      }
+    }
+  }
+
+  /**
+   * Run DAISY Ace accessibility check
+   */
+  private async runAce(epubPath: string, tempDir: string): Promise<AceResult> {
+    const aceOutputDir = path.join(tempDir, 'ace-output');
+
+    try {
+      // Run Ace
+      await execAsync(
+        `npx @daisy/ace "${epubPath}" --outdir "${aceOutputDir}" --force`,
+        { timeout: 120000 }
+      );
+
+      // Parse report
+      const reportPath = path.join(aceOutputDir, 'report.json');
+      const reportContent = await fs.promises.readFile(reportPath, 'utf-8');
+      const report = JSON.parse(reportContent);
+
+      // Extract violations
+      const violations: AceViolation[] = [];
+      for (const assertion of report.assertions || []) {
+        for (const violation of assertion.assertions || []) {
+          violations.push({
+            rule: violation['@type'] || 'unknown',
+            impact: this.mapAceImpact(violation.earl?.result?.outcome),
+            description: violation.earl?.result?.description || violation.assertion || '',
+            wcag: violation['dcterms:references'],
+            location: assertion['earl:testSubject']?.url,
+            html: violation.earl?.result?.pointer?.css,
+          });
+        }
+      }
+
+      // Extract metadata
+      const metadata = {
+        conformsTo: report.data?.['dc:conformsTo'] || [],
+        accessMode: report.data?.accessMode || [],
+        accessibilityFeature: report.data?.accessibilityFeature || [],
+        accessibilityHazard: report.data?.accessibilityHazard || [],
+        accessibilitySummary: report.data?.accessibilitySummary,
+      };
+
+      return {
+        score: this.calculateAceScore(violations),
+        violations,
+        metadata,
+        outlines: {
+          toc: report.outlines?.toc || [],
+          headings: report.outlines?.headings || [],
+        },
+      };
+    } catch (error) {
+      logger.error('Ace audit failed:', error instanceof Error ? error : undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Map Ace outcome to impact level
+   */
+  private mapAceImpact(outcome: string): AceViolation['impact'] {
+    switch (outcome) {
+      case 'fail': return 'critical';
+      case 'cantTell': return 'serious';
+      case 'inapplicable': return 'minor';
+      default: return 'moderate';
+    }
+  }
+
+  /**
+   * Calculate Ace-based score
+   */
+  private calculateAceScore(violations: AceViolation[]): number {
+    let score = 100;
+    for (const v of violations) {
+      switch (v.impact) {
+        case 'critical': score -= 15; break;
+        case 'serious': score -= 8; break;
+        case 'moderate': score -= 4; break;
+        case 'minor': score -= 1; break;
+      }
+    }
+    return Math.max(0, score);
+  }
+
+  /**
+   * Combine EPUBCheck and Ace results
+   */
+  private combineResults(
+    epubCheck: EpubCheckResult,
+    ace: AceResult | null
+  ): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+
+    // Add EPUBCheck issues
+    for (const error of [...epubCheck.fatalErrors, ...epubCheck.errors]) {
+      issues.push(this.createIssue({
+        source: 'epubcheck',
+        severity: 'serious',
+        code: 'EPUBCHECK-ERROR',
+        message: error.message,
+        location: error.location?.path,
+      }));
+    }
+
+    for (const warning of epubCheck.warnings) {
+      issues.push(this.createIssue({
+        source: 'epubcheck',
+        severity: 'moderate',
+        code: 'EPUBCHECK-WARN',
+        message: warning.message,
+        location: warning.location?.path,
+      }));
+    }
+
+    // Add Ace violations
+    if (ace) {
+      for (const violation of ace.violations) {
+        issues.push(this.createIssue({
+          source: 'ace',
+          severity: violation.impact,
+          code: violation.rule,
+          message: violation.description,
+          wcagCriteria: violation.wcag,
+          location: violation.location,
+        }));
+      }
+    }
+
+    return issues;
+  }
+
+  /**
+   * Create standardized issue
+   */
+  private createIssue(data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue {
+    return {
+      id: `issue-${++this.issueCounter}`,
+      ...data,
+    };
+  }
+
+  /**
+   * Calculate combined score
+   */
+  private calculateScore(issues: AccessibilityIssue[], ace: AceResult | null): number {
+    // Use Ace score if available, otherwise calculate from issues
+    if (ace) {
+      return ace.score;
+    }
+
+    let score = 100;
+    for (const issue of issues) {
+      switch (issue.severity) {
+        case 'critical': score -= 15; break;
+        case 'serious': score -= 8; break;
+        case 'moderate': score -= 4; break;
+        case 'minor': score -= 1; break;
+      }
+    }
+    return Math.max(0, score);
+  }
+
+  /**
+   * Store audit result
+   */
+  private async storeResult(result: EpubAuditResult): Promise<void> {
+    await prisma.jobResult.create({
+      data: {
+        jobId: result.jobId,
+        resultType: 'epub_accessibility_audit',
+        data: result as any,
+      },
+    });
+  }
+}
+
+export const epubAuditService = new EpubAuditService();
+
+**Create file: src/controllers/epub.controller.ts**
+
+import { Request, Response } from 'express';
+import { epubAuditService } from '../services/epub/epub-audit.service';
+import { s3Service } from '../services/s3.service';
+import prisma from '../lib/prisma';
+
+export const epubController = {
+  /**
+   * Audit EPUB accessibility
+   */
+  async auditEPUB(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const job = await prisma.job.findUnique({
+        where: { id: jobId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const fileKey = `uploads/${jobId}/${job.fileName}`;
+      const fileData = await s3Service.getObject(fileKey);
+
+      if (!fileData) {
+        return res.status(404).json({
+          success: false,
+          error: 'EPUB file not found',
+        });
+      }
+
+      const result = await epubAuditService.runAudit(
+        fileData.buffer,
+        jobId,
+        job.fileName
+      );
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      console.error('EPUB audit failed:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to audit EPUB',
+      });
+    }
+  },
+
+  /**
+   * Get audit result
+   */
+  async getAuditResult(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const result = await prisma.jobResult.findFirst({
+        where: {
+          jobId,
+          resultType: 'epub_accessibility_audit',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!result) {
+        return res.status(404).json({
+          success: false,
+          error: 'Audit result not found',
+        });
+      }
+
+      res.json({
+        success: true,
+        data: result.data,
+      });
+    } catch (error) {
+      console.error('Failed to get audit result:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to get audit result',
+      });
+    }
+  },
+
+  /**
+   * Upload and audit EPUB
+   */
+  async uploadAndAudit(req: Request, res: Response) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No file uploaded',
+        });
+      }
+
+      const { organizationId = 'default' } = req.body;
+
+      const job = await prisma.job.create({
+        data: {
+          fileName: req.file.originalname,
+          fileType: 'epub',
+          status: 'processing',
+          organizationId,
+        },
+      });
+
+      await s3Service.uploadFile(
+        `uploads/${job.id}/${req.file.originalname}`,
+        req.file.buffer,
+        req.file.mimetype
+      );
+
+      const result = await epubAuditService.runAudit(
+        req.file.buffer,
+        job.id,
+        req.file.originalname
+      );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { status: 'completed' },
+      });
+
+      res.json({
+        success: true,
+        data: {
+          jobId: job.id,
+          ...result,
+        },
+      });
+    } catch (error) {
+      console.error('Upload and audit failed:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to upload and audit EPUB',
+      });
+    }
+  },
+};
+
+**Create file: src/routes/epub.routes.ts**
+
+import { Router } from 'express';
+import multer from 'multer';
+import { epubController } from '../controllers/epub.controller';
+
+const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Audit existing job's EPUB
+router.post('/job/:jobId/audit', epubController.auditEPUB);
+
+// Get audit result
+router.get('/job/:jobId/audit', epubController.getAuditResult);
+
+// Upload and audit EPUB
+router.post('/upload-and-audit', upload.single('file'), epubController.uploadAndAudit);
+
+export default router;
+
+**Register routes in src/routes/index.ts:**
+
+import epubRoutes from './epub.routes';
+
+router.use('/epub', epubRoutes);
+
+**Environment variable (optional):**
+EPUBCHECK_PATH=/path/to/epubcheck.jar
+
+**Acceptance Criteria:**
+- [ ] Run EPUBCheck for structure validation (gracefully handle if Java unavailable)
+- [ ] Run DAISY Ace for accessibility checking
+- [ ] Support EPUB 2 and EPUB 3 formats
+- [ ] Check EPUB accessibility metadata presence
+- [ ] Combine results into unified issue list
+- [ ] Calculate accessibility score
+- [ ] Store audit results in database
+- [ ] API endpoints for audit and results
