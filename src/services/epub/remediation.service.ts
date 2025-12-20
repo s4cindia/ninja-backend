@@ -85,9 +85,27 @@ class RemediationService {
     }
 
     const auditData = job.output as Record<string, unknown>;
-    const issues = (auditData.combinedIssues as Array<Record<string, unknown>>) || [];
 
-    const tasks: RemediationTask[] = issues.map((issue) => {
+    if (!auditData || typeof auditData !== 'object') {
+      throw new Error('Invalid audit data format');
+    }
+
+    const combinedIssues = auditData.combinedIssues;
+    if (combinedIssues !== undefined && !Array.isArray(combinedIssues)) {
+      throw new Error('Invalid audit data: combinedIssues must be an array');
+    }
+
+    const issues = (combinedIssues as Array<Record<string, unknown>>) || [];
+
+    const validatedIssues = issues.filter(issue => {
+      if (!issue || typeof issue !== 'object') {
+        logger.warn('Skipping invalid issue entry');
+        return false;
+      }
+      return true;
+    });
+
+    const tasks: RemediationTask[] = validatedIssues.map((issue) => {
       const issueCode = (issue.code as string) || '';
       const issueLocation = (issue.location as string) || '';
       const isAutoFixable = isAutoFixableCode(issueCode);
