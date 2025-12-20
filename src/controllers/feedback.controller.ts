@@ -19,6 +19,13 @@ export const feedbackController = {
       const userEmail = req.user?.email;
       const tenantId = req.user?.tenantId;
 
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
       if (!type || !comment) {
         return res.status(400).json({
           success: false,
@@ -59,7 +66,7 @@ export const feedbackController = {
         context,
         userId,
         userEmail,
-        tenantId: tenantId || 'system',
+        tenantId,
         metadata,
       });
 
