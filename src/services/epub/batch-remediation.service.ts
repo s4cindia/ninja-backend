@@ -126,7 +126,12 @@ class BatchRemediationService {
       throw new Error('Batch not found');
     }
 
-    const result = batchJob.output as unknown as BatchRemediationResult;
+    const rawOutput = batchJob.output as Record<string, unknown> | null;
+    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
+      throw new Error('Invalid batch data structure');
+    }
+
+    const result = rawOutput as unknown as BatchRemediationResult;
     result.status = 'processing';
 
     await this.updateBatchStatus(batchId, result);
@@ -151,6 +156,9 @@ class BatchRemediationService {
         const input = jobRecord.input as { fileName?: string } | null;
         const fileName = input?.fileName || 'upload.epub';
 
+        // Update job.fileName to match for consistency in results
+        job.fileName = fileName;
+
         const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
         if (!epubBuffer) {
           throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
@@ -159,7 +167,7 @@ class BatchRemediationService {
         const remediationResult = await autoRemediationService.runAutoRemediation(
           epubBuffer,
           job.jobId,
-          job.fileName
+          fileName
         );
 
         job.status = 'completed';
@@ -179,7 +187,7 @@ class BatchRemediationService {
               epubBuffer,
               remediatedBuffer,
               job.jobId,
-              job.fileName
+              fileName
             );
           }
         }

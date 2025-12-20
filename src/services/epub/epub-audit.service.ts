@@ -94,15 +94,34 @@ class EpubAuditService {
     this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
   }
 
-  private parseMessages(messages: Array<{ severity: string; message: string; ID?: string; locations?: unknown[] }>) {
-    const normalizedMessages = messages.map(m => ({
-      severity: m.severity.toLowerCase(),
-      message: m.message,
-      code: m.ID,
-      location: Array.isArray(m.locations) && m.locations.length > 0 
-        ? m.locations[0] as { path?: string; line?: number; column?: number }
-        : undefined,
-    }));
+  private parseMessages(messages: Array<Record<string, unknown>>): {
+    errors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+    warnings: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+    fatalErrors: Array<{ severity: string; message: string; code?: string; location?: { path?: string; line?: number; column?: number } }>;
+  } {
+    const normalizedMessages = messages
+      .filter(m => m && typeof m === 'object')
+      .map(m => {
+        const rawSeverity = m.severity;
+        const severity = typeof rawSeverity === 'string' ? rawSeverity.toLowerCase() : 'unknown';
+        const message = typeof m.message === 'string' ? m.message : 'Unknown message';
+        const code = typeof m.ID === 'string' ? m.ID : undefined;
+
+        let location: { path?: string; line?: number; column?: number } | undefined;
+        if (Array.isArray(m.locations) && m.locations.length > 0) {
+          const loc = m.locations[0] as Record<string, unknown> | null;
+          if (loc && typeof loc === 'object') {
+            location = {
+              path: typeof loc.path === 'string' ? loc.path : undefined,
+              line: typeof loc.line === 'number' ? loc.line : undefined,
+              column: typeof loc.column === 'number' ? loc.column : undefined,
+            };
+          }
+        }
+
+        return { severity, message, code, location };
+      });
+
     return {
       errors: normalizedMessages.filter(m => m.severity === 'error'),
       warnings: normalizedMessages.filter(m => m.severity === 'warning'),

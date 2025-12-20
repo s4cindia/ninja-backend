@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
+import crypto from 'crypto';
 import { logger } from '../../lib/logger';
 
 type Severity = 'critical' | 'serious' | 'moderate' | 'minor';
@@ -45,7 +46,7 @@ class EPUBJSAuditorService {
 
     const createIssue = (data: Omit<AccessibilityIssue, 'id'>): AccessibilityIssue => {
       return {
-        id: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        id: `issue-${crypto.randomBytes(8).toString('hex')}`,
         ...data,
       };
     };
