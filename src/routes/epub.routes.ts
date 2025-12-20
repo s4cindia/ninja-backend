@@ -20,4 +20,10 @@ router.post('/audit/:jobId', authenticate, epubController.auditEPUB);
 router.post('/audit-upload', authenticate, upload.single('file'), epubController.auditFromBuffer);
 router.get('/audit/:jobId/result', authenticate, epubController.getAuditResult);
 
+router.post('/job/:jobId/remediation', authenticate, epubController.createRemediationPlan);
+router.get('/job/:jobId/remediation', authenticate, epubController.getRemediationPlan);
+router.get('/job/:jobId/remediation/summary', authenticate, epubController.getRemediationSummary);
+router.patch('/job/:jobId/remediation/task/:taskId', authenticate, epubController.updateTaskStatus);
+router.post('/job/:jobId/remediation/auto-fix', authenticate, epubController.runAutoRemediation);
+
 export default router;

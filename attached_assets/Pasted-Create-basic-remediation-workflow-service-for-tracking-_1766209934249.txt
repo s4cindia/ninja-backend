@@ -1,0 +1,532 @@
+Create basic remediation workflow service for tracking and managing accessibility fixes.
+
+**Create file: src/services/epub/remediation.service.ts**
+
+import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
+
+type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
+type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
+type RemediationType = 'auto' | 'manual' | 'hybrid';
+
+interface RemediationTask {
+  id: string;
+  jobId: string;
+  issueId: string;
+  issueCode: string;
+  issueMessage: string;
+  severity: string;
+  category: string;
+  location?: string;
+  status: RemediationStatus;
+  priority: RemediationPriority;
+  type: RemediationType;
+  suggestion?: string;
+  resolution?: string;
+  resolvedBy?: string;
+  resolvedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface RemediationPlan {
+  jobId: string;
+  fileName: string;
+  totalIssues: number;
+  tasks: RemediationTask[];
+  stats: {
+    pending: number;
+    inProgress: number;
+    completed: number;
+    skipped: number;
+    failed: number;
+    autoFixable: number;
+    manualRequired: number;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Issues that can be auto-fixed
+const AUTO_FIXABLE_CODES = [
+  'EPUB-META-001', // Missing language - can add default
+  'EPUB-META-002', // Missing accessibility features - can add basic metadata
+  'EPUB-META-003', // Missing accessibility summary - can generate
+  'EPUB-META-004', // Missing access modes - can add defaults
+  'EPUB-NAV-002',  // Missing page list - can generate placeholder
+  'EPUB-NAV-003',  // Missing landmarks - can generate basic landmarks
+];
+
+// Map severity to priority
+const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
+  critical: 'critical',
+  serious: 'high',
+  moderate: 'medium',
+  minor: 'low',
+};
+
+class RemediationService {
+  /**
+   * Create remediation plan from audit results
+   */
+  async createRemediationPlan(jobId: string): Promise<RemediationPlan> {
+    // Get audit results
+    const auditResult = await prisma.jobResult.findFirst({
+      where: {
+        jobId,
+        resultType: 'epub_accessibility_audit',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!auditResult) {
+      throw new Error('No audit results found for this job');
+    }
+
+    const auditData = auditResult.data as any;
+    const issues = auditData.combinedIssues || [];
+
+    // Create tasks from issues
+    const tasks: RemediationTask[] = issues.map((issue: any, index: number) => {
+      const isAutoFixable = AUTO_FIXABLE_CODES.includes(issue.code);
+      
+      return {
+        id: `task-${jobId}-${index + 1}`,
+        jobId,
+        issueId: issue.id,
+        issueCode: issue.code,
+        issueMessage: issue.message,
+        severity: issue.severity,
+        category: issue.category || 'general',
+        location: issue.location,
+        status: 'pending' as RemediationStatus,
+        priority: SEVERITY_TO_PRIORITY[issue.severity] || 'medium',
+        type: isAutoFixable ? 'auto' : 'manual' as RemediationType,
+        suggestion: issue.suggestion,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    });
+
+    // Sort by priority
+    const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+    const plan: RemediationPlan = {
+      jobId,
+      fileName: auditData.fileName,
+      totalIssues: tasks.length,
+      tasks,
+      stats: {
+        pending: tasks.length,
+        inProgress: 0,
+        completed: 0,
+        skipped: 0,
+        failed: 0,
+        autoFixable: tasks.filter(t => t.type === 'auto').length,
+        manualRequired: tasks.filter(t => t.type === 'manual').length,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Store plan
+    await prisma.jobResult.create({
+      data: {
+        jobId,
+        resultType: 'remediation_plan',
+        data: plan as any,
+      },
+    });
+
+    return plan;
+  }
+
+  /**
+   * Get remediation plan for a job
+   */
+  async getRemediationPlan(jobId: string): Promise<RemediationPlan | null> {
+    const result = await prisma.jobResult.findFirst({
+      where: {
+        jobId,
+        resultType: 'remediation_plan',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return result?.data as RemediationPlan | null;
+  }
+
+  /**
+   * Update task status
+   */
+  async updateTaskStatus(
+    jobId: string,
+    taskId: string,
+    status: RemediationStatus,
+    resolution?: string,
+    resolvedBy?: string
+  ): Promise<RemediationTask> {
+    const plan = await this.getRemediationPlan(jobId);
+    if (!plan) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const taskIndex = plan.tasks.findIndex(t => t.id === taskId);
+    if (taskIndex === -1) {
+      throw new Error('Task not found');
+    }
+
+    // Update task
+    const task = plan.tasks[taskIndex];
+    task.status = status;
+    task.updatedAt = new Date();
+
+    if (status === 'completed' || status === 'failed') {
+      task.resolution = resolution;
+      task.resolvedBy = resolvedBy;
+      task.resolvedAt = new Date();
+    }
+
+    // Recalculate stats
+    plan.stats = {
+      pending: plan.tasks.filter(t => t.status === 'pending').length,
+      inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
+      completed: plan.tasks.filter(t => t.status === 'completed').length,
+      skipped: plan.tasks.filter(t => t.status === 'skipped').length,
+      failed: plan.tasks.filter(t => t.status === 'failed').length,
+      autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
+      manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+    };
+    plan.updatedAt = new Date();
+
+    // Update stored plan
+    await prisma.jobResult.updateMany({
+      where: {
+        jobId,
+        resultType: 'remediation_plan',
+      },
+      data: {
+        data: plan as any,
+      },
+    });
+
+    return task;
+  }
+
+  /**
+   * Start task (set to in_progress)
+   */
+  async startTask(jobId: string, taskId: string): Promise<RemediationTask> {
+    return this.updateTaskStatus(jobId, taskId, 'in_progress');
+  }
+
+  /**
+   * Complete task
+   */
+  async completeTask(
+    jobId: string,
+    taskId: string,
+    resolution: string,
+    resolvedBy: string
+  ): Promise<RemediationTask> {
+    return this.updateTaskStatus(jobId, taskId, 'completed', resolution, resolvedBy);
+  }
+
+  /**
+   * Skip task
+   */
+  async skipTask(jobId: string, taskId: string, reason: string): Promise<RemediationTask> {
+    return this.updateTaskStatus(jobId, taskId, 'skipped', reason);
+  }
+
+  /**
+   * Run auto-remediation for eligible tasks
+   */
+  async runAutoRemediation(jobId: string): Promise<{
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    results: { taskId: string; success: boolean; message: string }[];
+  }> {
+    const plan = await this.getRemediationPlan(jobId);
+    if (!plan) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const autoTasks = plan.tasks.filter(
+      t => t.type === 'auto' && t.status === 'pending'
+    );
+
+    const results: { taskId: string; success: boolean; message: string }[] = [];
+
+    for (const task of autoTasks) {
+      try {
+        const result = await this.autoFix(task);
+        await this.completeTask(jobId, task.id, result.message, 'system');
+        results.push({ taskId: task.id, success: true, message: result.message });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Auto-fix failed';
+        await this.updateTaskStatus(jobId, task.id, 'failed', message);
+        results.push({ taskId: task.id, success: false, message });
+      }
+    }
+
+    return {
+      attempted: autoTasks.length,
+      succeeded: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length,
+      results,
+    };
+  }
+
+  /**
+   * Auto-fix a specific issue
+   */
+  private async autoFix(task: RemediationTask): Promise<{ success: boolean; message: string }> {
+    // Note: Full implementation requires EPUB modification (Epic 3.7)
+    // For now, return suggested fixes that would be applied
+    
+    switch (task.issueCode) {
+      case 'EPUB-META-001':
+        return {
+          success: true,
+          message: 'Would add <dc:language>en</dc:language> to package document',
+        };
+      
+      case 'EPUB-META-002':
+        return {
+          success: true,
+          message: 'Would add schema:accessibilityFeature metadata with standard values',
+        };
+      
+      case 'EPUB-META-003':
+        return {
+          success: true,
+          message: 'Would add schema:accessibilitySummary with auto-generated description',
+        };
+      
+      case 'EPUB-META-004':
+        return {
+          success: true,
+          message: 'Would add schema:accessMode with "textual" value',
+        };
+      
+      case 'EPUB-NAV-002':
+        return {
+          success: true,
+          message: 'Would generate page-list navigation from content structure',
+        };
+      
+      case 'EPUB-NAV-003':
+        return {
+          success: true,
+          message: 'Would generate landmarks navigation with bodymatter, toc entries',
+        };
+      
+      default:
+        throw new Error(`No auto-fix available for ${task.issueCode}`);
+    }
+  }
+
+  /**
+   * Get remediation summary for a job
+   */
+  async getRemediationSummary(jobId: string): Promise<{
+    totalTasks: number;
+    completionPercentage: number;
+    stats: RemediationPlan['stats'];
+    criticalRemaining: number;
+    estimatedTimeMinutes: number;
+  }> {
+    const plan = await this.getRemediationPlan(jobId);
+    if (!plan) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const completedOrSkipped = plan.stats.completed + plan.stats.skipped;
+    const completionPercentage = plan.totalIssues > 0
+      ? Math.round((completedOrSkipped / plan.totalIssues) * 100)
+      : 100;
+
+    const criticalRemaining = plan.tasks.filter(
+      t => t.priority === 'critical' && t.status === 'pending'
+    ).length;
+
+    // Estimate 5 min per manual task, 0 for auto
+    const pendingManual = plan.tasks.filter(
+      t => t.type === 'manual' && t.status === 'pending'
+    ).length;
+    const estimatedTimeMinutes = pendingManual * 5;
+
+    return {
+      totalTasks: plan.totalIssues,
+      completionPercentage,
+      stats: plan.stats,
+      criticalRemaining,
+      estimatedTimeMinutes,
+    };
+  }
+}
+
+export const remediationService = new RemediationService();
+
+**Update file: src/controllers/epub.controller.ts**
+
+Add these methods to the existing controller:
+
+import { remediationService } from '../services/epub/remediation.service';
+
+// Add to epubController object:
+
+/**
+ * Create remediation plan from audit results
+ */
+async createRemediationPlan(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+
+    const plan = await remediationService.createRemediationPlan(jobId);
+
+    res.json({
+      success: true,
+      data: plan,
+    });
+  } catch (error) {
+    console.error('Failed to create remediation plan:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to create remediation plan',
+    });
+  }
+},
+
+/**
+ * Get remediation plan
+ */
+async getRemediationPlan(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+
+    const plan = await remediationService.getRemediationPlan(jobId);
+
+    if (!plan) {
+      return res.status(404).json({
+        success: false,
+        error: 'Remediation plan not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: plan,
+    });
+  } catch (error) {
+    console.error('Failed to get remediation plan:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get remediation plan',
+    });
+  }
+},
+
+/**
+ * Get remediation summary
+ */
+async getRemediationSummary(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+
+    const summary = await remediationService.getRemediationSummary(jobId);
+
+    res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    console.error('Failed to get remediation summary:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to get remediation summary',
+    });
+  }
+},
+
+/**
+ * Update task status
+ */
+async updateTaskStatus(req: Request, res: Response) {
+  try {
+    const { jobId, taskId } = req.params;
+    const { status, resolution, resolvedBy } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        error: 'Status is required',
+      });
+    }
+
+    const task = await remediationService.updateTaskStatus(
+      jobId,
+      taskId,
+      status,
+      resolution,
+      resolvedBy
+    );
+
+    res.json({
+      success: true,
+      data: task,
+    });
+  } catch (error) {
+    console.error('Failed to update task:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to update task',
+    });
+  }
+},
+
+/**
+ * Run auto-remediation
+ */
+async runAutoRemediation(req: Request, res: Response) {
+  try {
+    const { jobId } = req.params;
+
+    const result = await remediationService.runAutoRemediation(jobId);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error('Auto-remediation failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Auto-remediation failed',
+    });
+  }
+},
+
+**Update file: src/routes/epub.routes.ts**
+
+Add these routes:
+
+// Remediation routes
+router.post('/job/:jobId/remediation', epubController.createRemediationPlan);
+router.get('/job/:jobId/remediation', epubController.getRemediationPlan);
+router.get('/job/:jobId/remediation/summary', epubController.getRemediationSummary);
+router.patch('/job/:jobId/remediation/task/:taskId', epubController.updateTaskStatus);
+router.post('/job/:jobId/remediation/auto-fix', epubController.runAutoRemediation);
+
+**Acceptance Criteria:**
+- [ ] Create remediation plan from audit results
+- [ ] List tasks with priority (critical → low)
+- [ ] Track task status (pending, in_progress, completed, skipped, failed)
+- [ ] Identify auto-fixable vs manual tasks
+- [ ] Update individual task status
+- [ ] Run auto-remediation for eligible tasks
+- [ ] Get remediation summary with completion percentage
+- [ ] Store remediation plan in database

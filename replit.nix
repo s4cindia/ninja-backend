@@ -1,5 +1,6 @@
 { pkgs }: {
   deps = [
+    pkgs.gh
     pkgs.psmisc
     pkgs.nodejs_20
     pkgs.postgresql_15
