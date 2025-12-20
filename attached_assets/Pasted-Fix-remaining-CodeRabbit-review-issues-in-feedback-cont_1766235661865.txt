@@ -1,0 +1,101 @@
+Fix remaining CodeRabbit review issues in feedback.controller.ts
+
+**1. Use enum values instead of hardcoded arrays (lines 36-51, 172-178):**
+
+At the top of the file, add imports and derive valid values from enums:
+
+import { FeedbackType, FeedbackStatus } from '@prisma/client';
+
+// Derive valid values from enums
+const VALID_FEEDBACK_TYPES = Object.values(FeedbackType);
+const VALID_FEEDBACK_STATUSES = Object.values(FeedbackStatus);
+
+Then update the validations:
+
+// In create method (replace hardcoded validTypes around line 36-51):
+if (!VALID_FEEDBACK_TYPES.includes(type.toUpperCase() as FeedbackType)) {
+  return res.status(400).json({
+    success: false,
+    error: `Invalid type. Must be one of: ${VALID_FEEDBACK_TYPES.join(', ')}`,
+  });
+}
+
+// In updateStatus method (replace hardcoded validStatuses around line 172-178):
+if (!VALID_FEEDBACK_STATUSES.includes(status.toUpperCase() as FeedbackStatus)) {
+  return res.status(400).json({
+    success: false,
+    error: `Invalid status. Must be one of: ${VALID_FEEDBACK_STATUSES.join(', ')}`,
+  });
+}
+
+**2. Add tenantId validation to getById (around line 86-111):**
+
+async getById(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const feedback = await feedbackService.getFeedback(id, tenantId);
+    // ... rest unchanged
+
+**3. Add limit validation to getTopIssues (around line 320-338):**
+
+async getTopIssues(req: AuthenticatedRequest, res: Response) {
+  try {
+    const tenantId = req.user?.tenantId;
+    const limit = Number(req.query.limit) || 10;
+
+    if (limit < 1 || limit > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Limit must be between 1 and 100',
+      });
+    }
+
+    const topIssues = await feedbackService.getTopIssues(tenantId, limit);
+    // ... rest unchanged
+
+**4. Add limit validation to getRequiringAttention (around line 340-358):**
+
+async getRequiringAttention(req: AuthenticatedRequest, res: Response) {
+  try {
+    const tenantId = req.user?.tenantId;
+    const limit = Number(req.query.limit) || 10;
+
+    if (limit < 1 || limit > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Limit must be between 1 and 100',
+      });
+    }
+
+    const feedback = await feedbackService.getRequiringAttention(tenantId, limit);
+    // ... rest unchanged
+
+**5. Also add tenantId check to getJobFeedback if not already present:**
+
+async getJobFeedback(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const feedback = await feedbackService.getJobFeedback(jobId, tenantId);
+    // ... rest unchanged
+
+After fixes, run:
+npm run build
+npm run lint

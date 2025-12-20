@@ -1,6 +1,10 @@
 import { Request, Response } from 'express';
+import { FeedbackType, FeedbackStatus } from '@prisma/client';
 import { feedbackService, FeedbackService } from '../services/feedback/feedback.service';
 import { logger } from '../lib/logger';
+
+const VALID_FEEDBACK_TYPES = Object.values(FeedbackType);
+const VALID_FEEDBACK_STATUSES = Object.values(FeedbackStatus);
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -33,20 +37,10 @@ export const feedbackController = {
         });
       }
 
-      const validTypes = [
-        'accessibility_issue',
-        'alt_text_quality',
-        'audit_accuracy',
-        'remediation_suggestion',
-        'general',
-        'bug_report',
-        'feature_request',
-      ];
-
-      if (!validTypes.includes(type)) {
+      if (!VALID_FEEDBACK_TYPES.includes(type.toUpperCase() as FeedbackType)) {
         return res.status(400).json({
           success: false,
-          error: `Invalid type. Must be one of: ${validTypes.join(', ')}`,
+          error: `Invalid type. Must be one of: ${VALID_FEEDBACK_TYPES.join(', ')}`,
         });
       }
 
@@ -87,6 +81,13 @@ export const feedbackController = {
     try {
       const { id } = req.params;
       const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
 
       const feedback = await feedbackService.getFeedback(id, tenantId);
 
@@ -169,11 +170,10 @@ export const feedbackController = {
         });
       }
 
-      const validStatuses = ['new', 'reviewed', 'in_progress', 'resolved', 'dismissed'];
-      if (!validStatuses.includes(status)) {
+      if (!VALID_FEEDBACK_STATUSES.includes(status.toUpperCase() as FeedbackStatus)) {
         return res.status(400).json({
           success: false,
-          error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+          error: `Invalid status. Must be one of: ${VALID_FEEDBACK_STATUSES.join(', ')}`,
         });
       }
 
@@ -257,6 +257,13 @@ export const feedbackController = {
       const { jobId } = req.params;
       const tenantId = req.user?.tenantId;
 
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
       const feedback = await feedbackService.getJobFeedback(jobId, tenantId);
 
       return res.json({
@@ -322,6 +329,13 @@ export const feedbackController = {
       const tenantId = req.user?.tenantId;
       const limit = Number(req.query.limit) || 10;
 
+      if (limit < 1 || limit > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Limit must be between 1 and 100',
+        });
+      }
+
       const topIssues = await feedbackService.getTopIssues(tenantId, limit);
 
       return res.json({
@@ -341,6 +355,13 @@ export const feedbackController = {
     try {
       const tenantId = req.user?.tenantId;
       const limit = Number(req.query.limit) || 10;
+
+      if (limit < 1 || limit > 100) {
+        return res.status(400).json({
+          success: false,
+          error: 'Limit must be between 1 and 100',
+        });
+      }
 
       const feedback = await feedbackService.getRequiringAttention(tenantId, limit);
 
