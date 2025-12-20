@@ -4,6 +4,7 @@ import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { epubModifier } from '../services/epub/epub-modifier.service';
+import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -548,6 +549,127 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to apply fix',
+      });
+    }
+  },
+
+  async getComparison(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string };
+      const fileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
+
+      const originalBuffer = await fileStorageService.getFile(jobId, fileName);
+      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+
+      if (!originalBuffer || !remediatedBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'Both original and remediated files required',
+        });
+      }
+
+      const comparison = await epubComparisonService.compareEPUBs(
+        originalBuffer,
+        remediatedBuffer,
+        jobId,
+        fileName
+      );
+
+      return res.json({
+        success: true,
+        data: comparison,
+      });
+    } catch (error) {
+      logger.error('Failed to generate comparison', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate comparison',
+      });
+    }
+  },
+
+  async getComparisonSummary(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string };
+      const fileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
+
+      const originalBuffer = await fileStorageService.getFile(jobId, fileName);
+      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+
+      if (!originalBuffer || !remediatedBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'Both original and remediated files required',
+        });
+      }
+
+      const comparison = await epubComparisonService.compareEPUBs(
+        originalBuffer,
+        remediatedBuffer,
+        jobId,
+        fileName
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          jobId: comparison.jobId,
+          originalFileName: comparison.originalFileName,
+          remediatedFileName: comparison.remediatedFileName,
+          summary: comparison.summary,
+          modifications: comparison.modifications,
+          generatedAt: comparison.generatedAt,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to generate comparison summary', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate comparison',
       });
     }
   },

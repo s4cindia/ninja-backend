@@ -1,0 +1,579 @@
+git add .
+git commit -m "feat(epub): US-3.7.2 - Advanced EPUB Content Modification
+
+- addAltText(): Add specific alt text to images by src
+- fixHeadingHierarchy(): Fix skipped heading levels
+- addAriaLandmarks(): Add ARIA roles (main, navigation, banner, contentinfo)
+- addSkipNavigation(): Add skip-to-content links
+- fixEmptyLinks(): Add aria-label to empty links
+- addFigureStructure(): Wrap images with figure/figcaption
+
+12 auto-remediation handlers total
+New endpoint: POST /job/:jobId/apply-fix for manual fixes with options"
+```
+
+---
+
+## Epic 3.7 Progress
+
+| Story | Points | Description | Status |
+|-------|--------|-------------|--------|
+| US-3.7.1 | 8 | EPUB Auto-Remediation Engine | ✅ Complete |
+| US-3.7.2 | 8 | EPUB Content Modification | ✅ Complete |
+| US-3.7.3 | 5 | Before/After Comparison | 🔄 Next |
+| US-3.7.4 | 5 | Batch Remediation | Pending |
+| US-3.7.5 | 3 | Remediated EPUB Export | Pending |
+
+---
+
+## US-3.7.3: Before/After Comparison (5 pts)
+
+Provide this to the agent:
+```
+Create before/after comparison service to show what changes were made during remediation.
+
+**Create file: src/services/epub/epub-comparison.service.ts**
+
+import JSZip from 'jszip';
+import * as cheerio from 'cheerio';
+import { diffLines, diffWords } from 'diff';
+import { logger } from '../../lib/logger';
+
+interface FileComparison {
+  filePath: string;
+  fileType: 'opf' | 'html' | 'css' | 'other';
+  status: 'added' | 'removed' | 'modified' | 'unchanged';
+  changeCount: number;
+  diff?: DiffResult[];
+  beforeSnippet?: string;
+  afterSnippet?: string;
+}
+
+interface DiffResult {
+  type: 'added' | 'removed' | 'unchanged';
+  value: string;
+  lineNumber?: number;
+}
+
+interface ComparisonSummary {
+  totalFiles: number;
+  modifiedFiles: number;
+  addedFiles: number;
+  removedFiles: number;
+  unchangedFiles: number;
+  totalChanges: number;
+  changesByType: {
+    metadata: number;
+    content: number;
+    structure: number;
+    accessibility: number;
+  };
+}
+
+interface EPUBComparisonResult {
+  jobId: string;
+  originalFileName: string;
+  remediatedFileName: string;
+  summary: ComparisonSummary;
+  files: FileComparison[];
+  modifications: ModificationDetail[];
+  generatedAt: Date;
+}
+
+interface ModificationDetail {
+  type: string;
+  category: 'metadata' | 'content' | 'structure' | 'accessibility';
+  description: string;
+  filePath: string;
+  before?: string;
+  after?: string;
+  wcagCriteria?: string;
+}
+
+class EPUBComparisonService {
+  /**
+   * Compare original and remediated EPUB files
+   */
+  async compareEPUBs(
+    originalBuffer: Buffer,
+    remediatedBuffer: Buffer,
+    jobId: string,
+    originalFileName: string
+  ): Promise<EPUBComparisonResult> {
+    const originalZip = await JSZip.loadAsync(originalBuffer);
+    const remediatedZip = await JSZip.loadAsync(remediatedBuffer);
+
+    const files: FileComparison[] = [];
+    const modifications: ModificationDetail[] = [];
+
+    const originalFiles = new Set(Object.keys(originalZip.files).filter(f => !originalZip.files[f].dir));
+    const remediatedFiles = new Set(Object.keys(remediatedZip.files).filter(f => !remediatedZip.files[f].dir));
+
+    // Check all files
+    const allFiles = new Set([...originalFiles, ...remediatedFiles]);
+
+    for (const filePath of allFiles) {
+      const inOriginal = originalFiles.has(filePath);
+      const inRemediated = remediatedFiles.has(filePath);
+
+      if (!inOriginal && inRemediated) {
+        // Added file
+        files.push({
+          filePath,
+          fileType: this.getFileType(filePath),
+          status: 'added',
+          changeCount: 1,
+        });
+      } else if (inOriginal && !inRemediated) {
+        // Removed file
+        files.push({
+          filePath,
+          fileType: this.getFileType(filePath),
+          status: 'removed',
+          changeCount: 1,
+        });
+      } else {
+        // Compare content
+        const originalContent = await originalZip.file(filePath)?.async('text') || '';
+        const remediatedContent = await remediatedZip.file(filePath)?.async('text') || '';
+
+        if (originalContent === remediatedContent) {
+          files.push({
+            filePath,
+            fileType: this.getFileType(filePath),
+            status: 'unchanged',
+            changeCount: 0,
+          });
+        } else {
+          const comparison = this.compareFileContents(
+            originalContent,
+            remediatedContent,
+            filePath
+          );
+          files.push(comparison.fileComparison);
+          modifications.push(...comparison.modifications);
+        }
+      }
+    }
+
+    // Build summary
+    const summary = this.buildSummary(files, modifications);
+
+    return {
+      jobId,
+      originalFileName,
+      remediatedFileName: originalFileName.replace(/\.epub$/i, '_remediated.epub'),
+      summary,
+      files: files.filter(f => f.status !== 'unchanged'), // Only return changed files
+      modifications,
+      generatedAt: new Date(),
+    };
+  }
+
+  /**
+   * Compare two file contents and identify specific changes
+   */
+  private compareFileContents(
+    original: string,
+    remediated: string,
+    filePath: string
+  ): { fileComparison: FileComparison; modifications: ModificationDetail[] } {
+    const modifications: ModificationDetail[] = [];
+    const fileType = this.getFileType(filePath);
+
+    // Use line-based diff for readability
+    const diff = diffLines(original, remediated);
+    const diffResults: DiffResult[] = [];
+    let changeCount = 0;
+
+    for (const part of diff) {
+      if (part.added) {
+        diffResults.push({ type: 'added', value: part.value });
+        changeCount++;
+      } else if (part.removed) {
+        diffResults.push({ type: 'removed', value: part.value });
+        changeCount++;
+      } else {
+        // Only include context (first/last few chars) for unchanged parts
+        if (part.value.length > 100) {
+          diffResults.push({ 
+            type: 'unchanged', 
+            value: part.value.substring(0, 50) + '\n...[unchanged]...\n' + part.value.substring(part.value.length - 50)
+          });
+        } else {
+          diffResults.push({ type: 'unchanged', value: part.value });
+        }
+      }
+    }
+
+    // Identify specific modifications based on file type
+    if (fileType === 'opf') {
+      modifications.push(...this.identifyOPFChanges(original, remediated, filePath));
+    } else if (fileType === 'html') {
+      modifications.push(...this.identifyHTMLChanges(original, remediated, filePath));
+    }
+
+    return {
+      fileComparison: {
+        filePath,
+        fileType,
+        status: 'modified',
+        changeCount,
+        diff: diffResults,
+        beforeSnippet: original.substring(0, 200),
+        afterSnippet: remediated.substring(0, 200),
+      },
+      modifications,
+    };
+  }
+
+  /**
+   * Identify specific changes in OPF file
+   */
+  private identifyOPFChanges(original: string, remediated: string, filePath: string): ModificationDetail[] {
+    const modifications: ModificationDetail[] = [];
+
+    // Check for added language
+    if (!/<dc:language/i.test(original) && /<dc:language/i.test(remediated)) {
+      const match = remediated.match(/<dc:language[^>]*>([^<]+)<\/dc:language>/i);
+      modifications.push({
+        type: 'add_language',
+        category: 'metadata',
+        description: 'Added document language declaration',
+        filePath,
+        after: match ? match[0] : '<dc:language>en</dc:language>',
+        wcagCriteria: '3.1.1',
+      });
+    }
+
+    // Check for added accessibility metadata
+    if (!/schema:accessibilityFeature/i.test(original) && /schema:accessibilityFeature/i.test(remediated)) {
+      modifications.push({
+        type: 'add_accessibility_metadata',
+        category: 'accessibility',
+        description: 'Added accessibility feature metadata',
+        filePath,
+        wcagCriteria: 'EPUB Accessibility 1.0',
+      });
+    }
+
+    // Check for accessibility summary
+    if (!/schema:accessibilitySummary/i.test(original) && /schema:accessibilitySummary/i.test(remediated)) {
+      const match = remediated.match(/<meta[^>]+schema:accessibilitySummary[^>]*>([^<]+)</i);
+      modifications.push({
+        type: 'add_accessibility_summary',
+        category: 'accessibility',
+        description: 'Added accessibility summary',
+        filePath,
+        after: match ? match[1] : 'Accessibility summary added',
+      });
+    }
+
+    // Check for access modes
+    if (!/schema:accessMode/i.test(original) && /schema:accessMode/i.test(remediated)) {
+      modifications.push({
+        type: 'add_access_modes',
+        category: 'accessibility',
+        description: 'Added access mode metadata',
+        filePath,
+      });
+    }
+
+    return modifications;
+  }
+
+  /**
+   * Identify specific changes in HTML files
+   */
+  private identifyHTMLChanges(original: string, remediated: string, filePath: string): ModificationDetail[] {
+    const modifications: ModificationDetail[] = [];
+    const $original = cheerio.load(original, { xmlMode: true });
+    const $remediated = cheerio.load(remediated, { xmlMode: true });
+
+    // Check for added lang attribute
+    const originalLang = $original('html').attr('lang');
+    const remediatedLang = $remediated('html').attr('lang');
+    if (!originalLang && remediatedLang) {
+      modifications.push({
+        type: 'add_html_lang',
+        category: 'accessibility',
+        description: `Added lang="${remediatedLang}" to HTML element`,
+        filePath,
+        before: '<html>',
+        after: `<html lang="${remediatedLang}">`,
+        wcagCriteria: '3.1.1',
+      });
+    }
+
+    // Check for added alt attributes
+    const originalImgsWithoutAlt = $original('img:not([alt])').length;
+    const remediatedImgsWithoutAlt = $remediated('img:not([alt])').length;
+    if (originalImgsWithoutAlt > remediatedImgsWithoutAlt) {
+      const fixed = originalImgsWithoutAlt - remediatedImgsWithoutAlt;
+      modifications.push({
+        type: 'add_alt_text',
+        category: 'accessibility',
+        description: `Added alt attributes to ${fixed} image(s)`,
+        filePath,
+        wcagCriteria: '1.1.1',
+      });
+    }
+
+    // Check for ARIA landmarks
+    const originalLandmarks = $original('[role="main"], [role="navigation"], [role="banner"], [role="contentinfo"]').length;
+    const remediatedLandmarks = $remediated('[role="main"], [role="navigation"], [role="banner"], [role="contentinfo"]').length;
+    if (remediatedLandmarks > originalLandmarks) {
+      const added = remediatedLandmarks - originalLandmarks;
+      modifications.push({
+        type: 'add_aria_landmarks',
+        category: 'structure',
+        description: `Added ${added} ARIA landmark(s)`,
+        filePath,
+        wcagCriteria: '1.3.1',
+      });
+    }
+
+    // Check for skip navigation
+    if (!$original('.skip-link, a[href="#main"], a[href="#content"]').length &&
+        $remediated('.skip-link, a[href="#main"], a[href="#content"]').length) {
+      modifications.push({
+        type: 'add_skip_navigation',
+        category: 'accessibility',
+        description: 'Added skip navigation link',
+        filePath,
+        wcagCriteria: '2.4.1',
+      });
+    }
+
+    // Check for table headers
+    const originalTablesWithoutHeaders = $original('table').filter((_, t) => 
+      $original(t).find('th').length === 0
+    ).length;
+    const remediatedTablesWithoutHeaders = $remediated('table').filter((_, t) => 
+      $remediated(t).find('th').length === 0
+    ).length;
+    if (originalTablesWithoutHeaders > remediatedTablesWithoutHeaders) {
+      const fixed = originalTablesWithoutHeaders - remediatedTablesWithoutHeaders;
+      modifications.push({
+        type: 'add_table_headers',
+        category: 'structure',
+        description: `Added headers to ${fixed} table(s)`,
+        filePath,
+        wcagCriteria: '1.3.1',
+      });
+    }
+
+    // Check for figure/figcaption
+    const originalFigures = $original('figure').length;
+    const remediatedFigures = $remediated('figure').length;
+    if (remediatedFigures > originalFigures) {
+      const added = remediatedFigures - originalFigures;
+      modifications.push({
+        type: 'add_figure_structure',
+        category: 'structure',
+        description: `Wrapped ${added} image(s) with figure/figcaption`,
+        filePath,
+        wcagCriteria: '1.3.1',
+      });
+    }
+
+    return modifications;
+  }
+
+  /**
+   * Get file type from path
+   */
+  private getFileType(filePath: string): 'opf' | 'html' | 'css' | 'other' {
+    if (filePath.endsWith('.opf')) return 'opf';
+    if (filePath.match(/\.(html|xhtml|htm)$/i)) return 'html';
+    if (filePath.endsWith('.css')) return 'css';
+    return 'other';
+  }
+
+  /**
+   * Build comparison summary
+   */
+  private buildSummary(files: FileComparison[], modifications: ModificationDetail[]): ComparisonSummary {
+    const changesByType = {
+      metadata: 0,
+      content: 0,
+      structure: 0,
+      accessibility: 0,
+    };
+
+    for (const mod of modifications) {
+      changesByType[mod.category]++;
+    }
+
+    return {
+      totalFiles: files.length,
+      modifiedFiles: files.filter(f => f.status === 'modified').length,
+      addedFiles: files.filter(f => f.status === 'added').length,
+      removedFiles: files.filter(f => f.status === 'removed').length,
+      unchangedFiles: files.filter(f => f.status === 'unchanged').length,
+      totalChanges: modifications.length,
+      changesByType,
+    };
+  }
+}
+
+export const epubComparisonService = new EPUBComparisonService();
+
+**Install diff package:**
+
+npm install diff
+npm install -D @types/diff
+
+**Add comparison endpoint to epub.controller.ts:**
+
+import { epubComparisonService } from '../services/epub/epub-comparison.service';
+
+/**
+ * Get before/after comparison of remediated EPUB
+ */
+async getComparison(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    // Verify job ownership
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found',
+      });
+    }
+
+    // Get original and remediated files
+    const originalBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+    const remediatedBuffer = await fileStorage.getRemediatedFile(jobId);
+
+    if (!originalBuffer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Original EPUB file not found',
+      });
+    }
+
+    if (!remediatedBuffer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Remediated EPUB not found. Run auto-remediation first.',
+      });
+    }
+
+    const fileName = (job.input as { fileName?: string })?.fileName || 'upload.epub';
+
+    // Generate comparison
+    const comparison = await epubComparisonService.compareEPUBs(
+      originalBuffer,
+      remediatedBuffer,
+      jobId,
+      fileName
+    );
+
+    return res.json({
+      success: true,
+      data: comparison,
+    });
+  } catch (error) {
+    logger.error('Failed to generate comparison', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to generate comparison',
+    });
+  }
+},
+
+/**
+ * Get comparison summary only (lighter response)
+ */
+async getComparisonSummary(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { jobId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required',
+      });
+    }
+
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found',
+      });
+    }
+
+    const originalBuffer = await fileStorage.getFile(`uploads/${jobId}`);
+    const remediatedBuffer = await fileStorage.getRemediatedFile(jobId);
+
+    if (!originalBuffer || !remediatedBuffer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Both original and remediated files required',
+      });
+    }
+
+    const fileName = (job.input as { fileName?: string })?.fileName || 'upload.epub';
+
+    const comparison = await epubComparisonService.compareEPUBs(
+      originalBuffer,
+      remediatedBuffer,
+      jobId,
+      fileName
+    );
+
+    // Return only summary and modifications (no diffs)
+    return res.json({
+      success: true,
+      data: {
+        jobId: comparison.jobId,
+        originalFileName: comparison.originalFileName,
+        remediatedFileName: comparison.remediatedFileName,
+        summary: comparison.summary,
+        modifications: comparison.modifications,
+        generatedAt: comparison.generatedAt,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to generate comparison summary', error instanceof Error ? error : undefined);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to generate comparison',
+    });
+  }
+},
+
+**Add routes to epub.routes.ts:**
+
+// Comparison routes
+router.get('/job/:jobId/comparison', epubController.getComparison);
+router.get('/job/:jobId/comparison/summary', epubController.getComparisonSummary);
+
+**Acceptance Criteria:**
+- [ ] Compare original and remediated EPUB files
+- [ ] Show file-level changes (added, removed, modified, unchanged)
+- [ ] Generate line-by-line diffs for modified files
+- [ ] Identify specific modification types (metadata, accessibility, structure)
+- [ ] Map modifications to WCAG criteria
+- [ ] Provide before/after snippets
+- [ ] Summary endpoint for quick overview
+- [ ] Full comparison endpoint with detailed diffs

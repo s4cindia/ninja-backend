@@ -27,6 +27,8 @@ router.patch('/job/:jobId/remediation/task/:taskId', authenticate, epubControlle
 router.post('/job/:jobId/auto-remediate', authenticate, epubController.runAutoRemediation);
 router.post('/job/:jobId/apply-fix', authenticate, epubController.applySpecificFix);
 router.get('/job/:jobId/download-remediated', authenticate, epubController.downloadRemediatedFile);
+router.get('/job/:jobId/comparison', authenticate, epubController.getComparison);
+router.get('/job/:jobId/comparison/summary', authenticate, epubController.getComparisonSummary);
 router.get('/supported-fixes', authenticate, epubController.getSupportedFixes);
 
 export default router;
