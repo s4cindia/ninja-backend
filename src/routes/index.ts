@@ -16,6 +16,7 @@ import verificationRoutes from "./verification.routes";
 import exportsRoutes from "./exports.routes";
 import altTextRoutes from "./alt-text.routes";
 import epubRoutes from "./epub.routes";
+import feedbackRoutes from "./feedback.routes";
 
 const router = Router();
 
@@ -85,5 +86,6 @@ router.use("/verification", verificationRoutes);
 router.use("/exports", exportsRoutes);
 router.use("/alt-text", altTextRoutes);
 router.use("/epub", epubRoutes);
+router.use("/feedback", feedbackRoutes);
 
 export default router;
