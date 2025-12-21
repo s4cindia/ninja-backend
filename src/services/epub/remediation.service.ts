@@ -44,7 +44,9 @@ interface RemediationPlan {
   updatedAt: Date;
 }
 
+// Auto-fixable codes - must match handlers in auto-remediation.service.ts
 const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
+  // Metadata issues
   'EPUB-META-001': {
     handler: () => ({ success: true, message: 'Would add <dc:language>en</dc:language> to package document' }),
   },
@@ -57,11 +59,34 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   'EPUB-META-004': {
     handler: () => ({ success: true, message: 'Would add schema:accessMode with "textual" value' }),
   },
-  'EPUB-NAV-002': {
-    handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
+  // Semantic issues
+  'EPUB-SEM-001': {
+    handler: () => ({ success: true, message: 'Would add lang attribute to HTML elements' }),
   },
-  'EPUB-NAV-003': {
-    handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
+  'EPUB-SEM-002': {
+    handler: () => ({ success: true, message: 'Would fix empty links with aria-label' }),
+  },
+  // Image issues
+  'EPUB-IMG-001': {
+    handler: () => ({ success: true, message: 'Would add alt text to images' }),
+  },
+  // Structure issues
+  'EPUB-STRUCT-002': {
+    handler: () => ({ success: true, message: 'Would add table headers' }),
+  },
+  'EPUB-STRUCT-003': {
+    handler: () => ({ success: true, message: 'Would fix heading hierarchy' }),
+  },
+  'EPUB-STRUCT-004': {
+    handler: () => ({ success: true, message: 'Would add ARIA landmarks' }),
+  },
+  // Navigation issues
+  'EPUB-NAV-001': {
+    handler: () => ({ success: true, message: 'Would add skip navigation links' }),
+  },
+  // Figure issues
+  'EPUB-FIG-001': {
+    handler: () => ({ success: true, message: 'Would add figure/figcaption structure' }),
   },
 };
 
