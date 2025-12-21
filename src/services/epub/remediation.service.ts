@@ -44,7 +44,7 @@ interface RemediationPlan {
   updatedAt: Date;
 }
 
-// Auto-fixable codes - synced with auto-remediation.service.ts handlers
+// Auto-fixable codes - must match handlers in auto-remediation.service.ts
 const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
   // Metadata issues
   'EPUB-META-001': {
@@ -83,12 +83,6 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   // Navigation issues
   'EPUB-NAV-001': {
     handler: () => ({ success: true, message: 'Would add skip navigation links' }),
-  },
-  'EPUB-NAV-002': {
-    handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
-  },
-  'EPUB-NAV-003': {
-    handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
   },
   // Figure issues
   'EPUB-FIG-001': {
