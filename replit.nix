@@ -1,5 +1,11 @@
 { pkgs }: {
   deps = [
+    pkgs.libsecret
+    pkgs.xorg.libXtst
+    pkgs.xorg.libXScrnSaver
+    pkgs.libnotify
+    pkgs.gtk3
+    pkgs.dbus
     pkgs.pango
     pkgs.alsa-lib
     pkgs.mesa
