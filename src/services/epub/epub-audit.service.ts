@@ -92,7 +92,6 @@ class EpubAuditService {
 
   constructor() {
     // Use project-local EPUBCheck JAR, fallback to env variable
-    // Note: Using __dirname to get reliable path regardless of cwd
     this.epubCheckPath = process.env.EPUBCHECK_PATH || 
       path.resolve(__dirname, '../../../lib/epubcheck/epubcheck.jar');
   }
