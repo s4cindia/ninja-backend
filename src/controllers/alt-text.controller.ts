@@ -102,15 +102,19 @@ export const altTextController = {
   async generateForJob(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
+      const userId = req.user?.id;
       
-      const job = await prisma.job.findUnique({
-        where: { id: jobId },
+      const job = await prisma.job.findFirst({
+        where: { 
+          id: jobId,
+          userId: userId,
+        },
       });
       
       if (!job) {
         return res.status(404).json({ 
           success: false, 
-          error: 'Job not found' 
+          error: 'Job not found or access denied' 
         });
       }
       

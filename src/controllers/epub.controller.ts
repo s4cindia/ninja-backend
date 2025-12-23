@@ -22,16 +22,13 @@ interface AuthenticatedRequest extends Request {
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
     try {
+      const job = req.job;
       const { jobId } = req.params;
-
-      const job = await prisma.job.findUnique({
-        where: { id: jobId },
-      });
 
       if (!job) {
         return res.status(404).json({
           success: false,
-          error: 'Job not found',
+          error: 'Job not found or access denied',
         });
       }
 
