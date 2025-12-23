@@ -12,6 +12,7 @@ import { humanVerificationService } from '../services/acr/human-verification.ser
 import { remarksGeneratorService, RemarksGenerationRequest } from '../services/acr/remarks-generator.service';
 import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr/acr-exporter.service';
 import { acrVersioningService } from '../services/acr/acr-versioning.service';
+import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -34,6 +35,36 @@ const GenerateAcrSchema = z.object({
 });
 
 export class AcrController {
+  async getAnalysis(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      const analysis = await acrAnalysisService.getAnalysisForJob(jobId);
+
+      res.json({
+        success: true,
+        data: analysis,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Job not found') {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found' }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
   async generateAcr(req: Request, res: Response, next: NextFunction) {
     try {
       const validatedData = GenerateAcrSchema.parse(req.body);

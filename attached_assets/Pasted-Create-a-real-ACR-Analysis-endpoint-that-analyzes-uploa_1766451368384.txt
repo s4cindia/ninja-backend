@@ -1,0 +1,388 @@
+Create a real ACR Analysis endpoint that analyzes uploaded documents for WCAG/Section 508 compliance.
+
+**Endpoint:** GET /api/v1/acr/analysis/:jobId
+
+**1. Create ACR routes** (src/routes/acr.routes.ts):
+```typescript
+import { Router } from 'express';
+import { authenticate } from '../middleware/auth.middleware';
+import * as acrController from '../controllers/acr.controller';
+
+const router = Router();
+
+// Get ACR analysis for a job
+router.get('/analysis/:jobId', authenticate, acrController.getAnalysis);
+
+// Get available VPAT editions
+router.get('/editions', authenticate, acrController.getEditions);
+
+// Generate ACR report
+router.post('/generate/:jobId', authenticate, acrController.generateAcr);
+
+export default router;
+```
+
+**2. Create ACR controller** (src/controllers/acr.controller.ts):
+```typescript
+import { Request, Response } from 'express';
+import * as acrService from '../services/acr/acr.service';
+
+export const getAnalysis = async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+    const userId = req.user?.id;
+
+    console.log('[ACR] Getting analysis for job:', jobId);
+
+    const analysis = await acrService.getAnalysisForJob(jobId, userId);
+
+    res.json({
+      success: true,
+      data: analysis,
+    });
+  } catch (error) {
+    console.error('[ACR] Analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to get analysis',
+    });
+  }
+};
+
+export const getEditions = async (req: Request, res: Response) => {
+  try {
+    const editions = await acrService.getVpatEditions();
+    res.json({
+      success: true,
+      data: editions,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get editions',
+    });
+  }
+};
+
+export const generateAcr = async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+    const { editionId, productInfo } = req.body;
+    const userId = req.user?.id;
+
+    const acr = await acrService.generateAcrReport(jobId, editionId, productInfo, userId);
+
+    res.json({
+      success: true,
+      data: acr,
+    });
+  } catch (error) {
+    console.error('[ACR] Generate error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to generate ACR',
+    });
+  }
+};
+```
+
+**3. Create ACR service** (src/services/acr/acr.service.ts):
+```typescript
+import prisma from '../../lib/prisma';
+import { analyzeWithAI } from '../ai/gemini.service';
+
+// WCAG 2.1 Level A & AA criteria for analysis
+const WCAG_CRITERIA = [
+  { id: '1.1.1', name: 'Non-text Content', level: 'A', category: 'Perceivable' },
+  { id: '1.2.1', name: 'Audio-only and Video-only', level: 'A', category: 'Perceivable' },
+  { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', category: 'Perceivable' },
+  { id: '1.2.3', name: 'Audio Description or Media Alternative', level: 'A', category: 'Perceivable' },
+  { id: '1.2.5', name: 'Audio Description (Prerecorded)', level: 'AA', category: 'Perceivable' },
+  { id: '1.3.1', name: 'Info and Relationships', level: 'A', category: 'Perceivable' },
+  { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', category: 'Perceivable' },
+  { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', category: 'Perceivable' },
+  { id: '1.4.1', name: 'Use of Color', level: 'A', category: 'Perceivable' },
+  { id: '1.4.2', name: 'Audio Control', level: 'A', category: 'Perceivable' },
+  { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', category: 'Perceivable' },
+  { id: '1.4.4', name: 'Resize Text', level: 'AA', category: 'Perceivable' },
+  { id: '1.4.5', name: 'Images of Text', level: 'AA', category: 'Perceivable' },
+  { id: '2.1.1', name: 'Keyboard', level: 'A', category: 'Operable' },
+  { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', category: 'Operable' },
+  { id: '2.2.1', name: 'Timing Adjustable', level: 'A', category: 'Operable' },
+  { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', category: 'Operable' },
+  { id: '2.3.1', name: 'Three Flashes or Below', level: 'A', category: 'Operable' },
+  { id: '2.4.1', name: 'Bypass Blocks', level: 'A', category: 'Operable' },
+  { id: '2.4.2', name: 'Page Titled', level: 'A', category: 'Operable' },
+  { id: '2.4.3', name: 'Focus Order', level: 'A', category: 'Operable' },
+  { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', category: 'Operable' },
+  { id: '2.4.5', name: 'Multiple Ways', level: 'AA', category: 'Operable' },
+  { id: '2.4.6', name: 'Headings and Labels', level: 'AA', category: 'Operable' },
+  { id: '2.4.7', name: 'Focus Visible', level: 'AA', category: 'Operable' },
+  { id: '3.1.1', name: 'Language of Page', level: 'A', category: 'Understandable' },
+  { id: '3.1.2', name: 'Language of Parts', level: 'AA', category: 'Understandable' },
+  { id: '3.2.1', name: 'On Focus', level: 'A', category: 'Understandable' },
+  { id: '3.2.2', name: 'On Input', level: 'A', category: 'Understandable' },
+  { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', category: 'Understandable' },
+  { id: '3.2.4', name: 'Consistent Identification', level: 'AA', category: 'Understandable' },
+  { id: '3.3.1', name: 'Error Identification', level: 'A', category: 'Understandable' },
+  { id: '3.3.2', name: 'Labels or Instructions', level: 'A', category: 'Understandable' },
+  { id: '3.3.3', name: 'Error Suggestion', level: 'AA', category: 'Understandable' },
+  { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', category: 'Understandable' },
+  { id: '4.1.1', name: 'Parsing', level: 'A', category: 'Robust' },
+  { id: '4.1.2', name: 'Name, Role, Value', level: 'A', category: 'Robust' },
+];
+
+export interface CriterionAnalysis {
+  id: string;
+  name: string;
+  level: string;
+  category: string;
+  status: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+  confidence: number;
+  findings: string[];
+  recommendation: string;
+}
+
+export interface AcrAnalysis {
+  jobId: string;
+  criteria: CriterionAnalysis[];
+  overallConfidence: number;
+  analyzedAt: string;
+  summary: {
+    supports: number;
+    partiallySupports: number;
+    doesNotSupport: number;
+    notApplicable: number;
+  };
+}
+
+export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
+  // Get the job and its audit results
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+    include: { file: true },
+  });
+
+  if (!job) {
+    throw new Error('Job not found');
+  }
+
+  // Check if we already have analysis cached
+  if (job.metadata && (job.metadata as any).acrAnalysis) {
+    console.log('[ACR] Returning cached analysis for job:', jobId);
+    return (job.metadata as any).acrAnalysis;
+  }
+
+  // Get audit results from job output
+  const auditOutput = job.output as any;
+  const issues = auditOutput?.combinedIssues || auditOutput?.issues || [];
+
+  console.log('[ACR] Analyzing job:', jobId, 'with', issues.length, 'issues');
+
+  // Analyze each WCAG criterion based on audit results
+  const criteria: CriterionAnalysis[] = await analyzeWcagCriteria(issues, job);
+
+  // Calculate summary
+  const summary = {
+    supports: criteria.filter(c => c.status === 'supports').length,
+    partiallySupports: criteria.filter(c => c.status === 'partially_supports').length,
+    doesNotSupport: criteria.filter(c => c.status === 'does_not_support').length,
+    notApplicable: criteria.filter(c => c.status === 'not_applicable').length,
+  };
+
+  // Calculate overall confidence
+  const overallConfidence = Math.round(
+    criteria.reduce((sum, c) => sum + c.confidence, 0) / criteria.length
+  );
+
+  const analysis: AcrAnalysis = {
+    jobId,
+    criteria,
+    overallConfidence,
+    analyzedAt: new Date().toISOString(),
+    summary,
+  };
+
+  // Cache the analysis in job metadata
+  await prisma.job.update({
+    where: { id: jobId },
+    data: {
+      metadata: {
+        ...(job.metadata as object || {}),
+        acrAnalysis: analysis,
+      },
+    },
+  });
+
+  return analysis;
+}
+
+async function analyzeWcagCriteria(issues: any[], job: any): Promise<CriterionAnalysis[]> {
+  const criteriaAnalysis: CriterionAnalysis[] = [];
+
+  for (const criterion of WCAG_CRITERIA) {
+    // Find issues related to this criterion
+    const relatedIssues = issues.filter(issue => 
+      issue.wcagCriteria?.includes(criterion.id) ||
+      issue.code?.includes(criterion.id.replace(/\./g, ''))
+    );
+
+    let status: CriterionAnalysis['status'];
+    let confidence: number;
+    let findings: string[] = [];
+    let recommendation = '';
+
+    if (relatedIssues.length === 0) {
+      // No issues found - could be supports or not applicable
+      status = 'supports';
+      confidence = 75; // Medium-high confidence when no issues found
+      findings = ['No accessibility issues detected for this criterion'];
+      recommendation = 'Continue to maintain compliance with this criterion';
+    } else {
+      // Analyze severity of issues
+      const criticalCount = relatedIssues.filter(i => i.severity === 'critical').length;
+      const seriousCount = relatedIssues.filter(i => i.severity === 'serious').length;
+      const moderateCount = relatedIssues.filter(i => i.severity === 'moderate').length;
+
+      if (criticalCount > 0) {
+        status = 'does_not_support';
+        confidence = 90;
+        recommendation = 'Critical issues must be resolved for compliance';
+      } else if (seriousCount > 0) {
+        status = 'partially_supports';
+        confidence = 80;
+        recommendation = 'Serious issues should be addressed to improve compliance';
+      } else if (moderateCount > 0) {
+        status = 'partially_supports';
+        confidence = 70;
+        recommendation = 'Moderate issues may affect some users';
+      } else {
+        status = 'supports';
+        confidence = 85;
+        recommendation = 'Minor issues detected but overall compliance is maintained';
+      }
+
+      findings = relatedIssues.map(issue => 
+        `${issue.severity?.toUpperCase() || 'ISSUE'}: ${issue.message || issue.description}`
+      ).slice(0, 5); // Limit to 5 findings
+    }
+
+    criteriaAnalysis.push({
+      id: criterion.id,
+      name: criterion.name,
+      level: criterion.level,
+      category: criterion.category,
+      status,
+      confidence,
+      findings,
+      recommendation,
+    });
+  }
+
+  return criteriaAnalysis;
+}
+
+export async function getVpatEditions() {
+  return {
+    editions: [
+      {
+        id: 'VPAT2.5-508',
+        name: 'Section 508 Edition',
+        description: 'U.S. Federal procurement requirements only',
+        standards: ['Section 508'],
+        recommended: false,
+      },
+      {
+        id: 'VPAT2.5-WCAG',
+        name: 'WCAG Edition',
+        description: 'General web accessibility (WCAG 2.1)',
+        standards: ['WCAG 2.1'],
+        recommended: false,
+      },
+      {
+        id: 'VPAT2.5-EU',
+        name: 'EU Edition',
+        description: 'European Accessibility Act (EN 301 549)',
+        standards: ['EN 301 549'],
+        recommended: false,
+      },
+      {
+        id: 'VPAT2.5-INT',
+        name: 'International Edition',
+        description: 'Satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document',
+        standards: ['Section 508', 'EN 301 549', 'WCAG 2.1'],
+        recommended: true,
+      },
+    ],
+    recommended: 'VPAT2.5-INT',
+  };
+}
+
+export async function generateAcrReport(
+  jobId: string, 
+  editionId: string, 
+  productInfo: any,
+  userId?: string
+) {
+  const analysis = await getAnalysisForJob(jobId, userId);
+  
+  // Generate ACR report based on analysis and edition
+  const report = {
+    id: `acr-${jobId}-${Date.now()}`,
+    jobId,
+    edition: editionId,
+    productInfo,
+    analysis,
+    generatedAt: new Date().toISOString(),
+    status: 'draft',
+  };
+
+  return report;
+}
+```
+
+**4. Register ACR routes** (src/index.ts or src/app.ts):
+```typescript
+import acrRoutes from './routes/acr.routes';
+
+// Add with other routes:
+app.use('/api/v1/acr', acrRoutes);
+```
+
+**5. Test the endpoint:**
+
+After implementing, test with:
+```bash
+curl http://localhost:5000/api/v1/acr/analysis/{jobId} \
+  -H "Authorization: Bearer <token>"
+```
+
+**Expected response:**
+```json
+{
+  "success": true,
+  "data": {
+    "jobId": "xxx",
+    "criteria": [
+      {
+        "id": "1.1.1",
+        "name": "Non-text Content",
+        "level": "A",
+        "category": "Perceivable",
+        "status": "supports",
+        "confidence": 85,
+        "findings": ["No accessibility issues detected"],
+        "recommendation": "Continue to maintain compliance"
+      }
+    ],
+    "overallConfidence": 78,
+    "analyzedAt": "2025-12-22T...",
+    "summary": {
+      "supports": 30,
+      "partiallySupports": 5,
+      "doesNotSupport": 2,
+      "notApplicable": 0
+    }
+  }
+}
+```
