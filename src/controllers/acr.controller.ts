@@ -38,6 +38,7 @@ export class AcrController {
   async getAnalysis(req: Request, res: Response, next: NextFunction) {
     try {
       const { jobId } = req.params;
+      const userId = req.user?.id;
 
       if (!jobId) {
         res.status(400).json({
@@ -47,7 +48,7 @@ export class AcrController {
         return;
       }
 
-      const analysis = await acrAnalysisService.getAnalysisForJob(jobId);
+      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId);
 
       res.json({
         success: true,

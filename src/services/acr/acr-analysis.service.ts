@@ -41,6 +41,8 @@ const WCAG_CRITERIA = [
   { id: '4.1.2', name: 'Name, Role, Value', level: 'A', category: 'Robust' },
 ];
 
+const KNOWN_SEVERITIES = ['critical', 'serious', 'moderate', 'minor'];
+
 export interface CriterionAnalysis {
   id: string;
   name: string;
@@ -77,10 +79,26 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
   const criteriaAnalysis: CriterionAnalysis[] = [];
 
   for (const criterion of WCAG_CRITERIA) {
-    const relatedIssues = issues.filter(issue => 
-      issue.wcagCriteria?.includes(criterion.id) ||
-      issue.code?.includes(criterion.id.replace(/\./g, ''))
-    );
+    const criterionCode = criterion.id.replace(/\./g, '');
+    
+    const relatedIssues = issues.filter(issue => {
+      if (issue.wcagCriteria?.includes(criterion.id)) {
+        return true;
+      }
+      
+      if (issue.code) {
+        const code = issue.code.toUpperCase();
+        return (
+          code === criterionCode ||
+          code === `WCAG-${criterionCode}` ||
+          code.startsWith(`${criterionCode}-`) ||
+          code.endsWith(`-${criterionCode}`) ||
+          new RegExp(`[-_]${criterionCode}(?:[-_]|$)`).test(code)
+        );
+      }
+      
+      return false;
+    });
 
     let status: CriterionAnalysis['status'];
     let confidence: number;
@@ -96,6 +114,10 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
       const criticalCount = relatedIssues.filter(i => i.severity === 'critical').length;
       const seriousCount = relatedIssues.filter(i => i.severity === 'serious').length;
       const moderateCount = relatedIssues.filter(i => i.severity === 'moderate').length;
+      const minorCount = relatedIssues.filter(i => i.severity === 'minor').length;
+      const unknownCount = relatedIssues.filter(i => 
+        !i.severity || !KNOWN_SEVERITIES.includes(i.severity)
+      ).length;
 
       if (criticalCount > 0) {
         status = 'does_not_support';
@@ -109,14 +131,25 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
         status = 'partially_supports';
         confidence = 70;
         recommendation = 'Moderate issues may affect some users';
-      } else {
+      } else if (unknownCount > 0) {
+        status = 'partially_supports';
+        confidence = 60;
+        recommendation = 'Issues with unknown severity require manual review';
+      } else if (minorCount > 0) {
         status = 'supports';
         confidence = 85;
         recommendation = 'Minor issues detected but overall compliance is maintained';
+      } else {
+        status = 'supports';
+        confidence = 85;
+        recommendation = 'Issues detected but overall compliance is maintained';
       }
 
       findings = relatedIssues.map(issue => 
-        `${(issue.severity || 'ISSUE').toUpperCase()}: ${issue.message || issue.description || 'No details'}`
+        `${(issue.severity || 'ISSUE').toUpperCase()}: ${
+          issue.message || issue.description || 
+          (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
+        }`
       ).slice(0, 5);
     }
 
@@ -135,9 +168,15 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
   return criteriaAnalysis;
 }
 
-export async function getAnalysisForJob(jobId: string): Promise<AcrAnalysis> {
-  const job = await prisma.job.findUnique({
-    where: { id: jobId },
+export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
+  const whereClause: { id: string; userId?: string } = { id: jobId };
+  
+  if (userId) {
+    whereClause.userId = userId;
+  }
+
+  const job = await prisma.job.findFirst({
+    where: whereClause,
   });
 
   if (!job) {
@@ -176,13 +215,14 @@ export async function getAnalysisForJob(jobId: string): Promise<AcrAnalysis> {
     summary,
   };
 
+  const updatedOutput = auditOutput 
+    ? { ...auditOutput, acrAnalysis: JSON.parse(JSON.stringify(analysis)) }
+    : { acrAnalysis: JSON.parse(JSON.stringify(analysis)) };
+
   await prisma.job.update({
     where: { id: jobId },
     data: {
-      output: {
-        ...(auditOutput as object || {}),
-        acrAnalysis: JSON.parse(JSON.stringify(analysis)),
-      },
+      output: updatedOutput,
     },
   });
 
