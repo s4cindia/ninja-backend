@@ -91,7 +91,9 @@ class EpubAuditService {
   private issueCounter = 0;
 
   constructor() {
-    this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
+    // Use project-local EPUBCheck JAR, fallback to env variable
+    this.epubCheckPath = process.env.EPUBCHECK_PATH || 
+      path.join(process.cwd(), 'lib', 'epubcheck', 'epubcheck.jar');
   }
 
   private parseMessages(messages: Array<Record<string, unknown>>): {
@@ -141,16 +143,11 @@ class EpubAuditService {
 
       const epubCheckResult = await this.runEpubCheck(epubPath);
 
-      let aceResult: AceResult | null = null;
-      if (epubCheckResult.fatalErrors.length === 0) {
-        try {
-          aceResult = await this.runAce(epubPath, tempDir);
-        } catch (_aceError) {
-          logger.warn('Ace audit failed, continuing with EPUBCheck results only');
-        }
-      }
+      // ACE/Daisy is disabled in Replit due to Electron dependencies
+      // Using EPUBCheck + JS Auditor as the accessibility audit pipeline
+      const aceResult: AceResult | null = null;
 
-      const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+      const combinedIssues = this.combineResults(epubCheckResult);
 
       logger.info('Running JS accessibility audit for auto-fixable issues');
       try {
@@ -198,7 +195,7 @@ class EpubAuditService {
           minor: combinedIssues.filter(i => i.severity === 'minor').length,
           total: combinedIssues.length,
         },
-        accessibilityMetadata: aceResult?.metadata || null,
+        accessibilityMetadata: null, // ACE disabled - no accessibility metadata available
         auditedAt: new Date(),
       };
 
@@ -348,7 +345,7 @@ class EpubAuditService {
 
   private combineResults(
     epubCheck: EpubCheckResult,
-    ace: AceResult | null
+    ace: AceResult | null = null
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
 
