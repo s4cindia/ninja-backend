@@ -1,5 +1,9 @@
 { pkgs }: {
   deps = [
+    pkgs.libGL
+    pkgs.xorg.libXrender
+    pkgs.xorg.libXcursor
+    pkgs.libxkbcommon
     pkgs.freetype
     pkgs.fontconfig
     pkgs.xorg.libxcb
