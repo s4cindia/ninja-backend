@@ -1,5 +1,14 @@
 { pkgs }: {
   deps = [
+    pkgs.freetype
+    pkgs.fontconfig
+    pkgs.xorg.libxcb
+    pkgs.xorg.libXi
+    pkgs.xorg.libXfixes
+    pkgs.xorg.libXext
+    pkgs.xorg.libX11
+    pkgs.expat
+    pkgs.cairo
     pkgs.libsecret
     pkgs.xorg.libXtst
     pkgs.xorg.libXScrnSaver
