@@ -210,10 +210,14 @@ class EpubAuditService {
   private async runEpubCheck(epubPath: string): Promise<EpubCheckResult> {
     const outputPath = epubPath + '.json';
 
+    logger.info(`Running EPUBCheck on: ${epubPath}`);
+    logger.info(`EPUBCheck JAR path: ${this.epubCheckPath}`);
+
     try {
       await execFileAsync('java', ['-version']);
-    } catch {
-      logger.warn('Java not available, skipping EPUBCheck');
+      logger.info('Java is available');
+    } catch (javaError) {
+      logger.warn(`Java not available, skipping EPUBCheck: ${javaError instanceof Error ? javaError.message : 'unknown error'}`);
       return {
         isValid: true,
         epubVersion: 'unknown',
@@ -224,11 +228,13 @@ class EpubAuditService {
     }
 
     try {
+      logger.info(`Executing: java -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
       await execFileAsync(
         'java',
         ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
         { timeout: 60000 }
       );
+      logger.info('EPUBCheck completed successfully');
 
       const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
       const output = JSON.parse(outputContent);
