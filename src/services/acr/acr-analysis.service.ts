@@ -80,6 +80,7 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
 
   for (const criterion of WCAG_CRITERIA) {
     const criterionCode = criterion.id.replace(/\./g, '');
+    const pattern = criterionCode.toUpperCase();
     
     const relatedIssues = issues.filter(issue => {
       if (issue.wcagCriteria?.includes(criterion.id)) {
@@ -88,13 +89,13 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
       
       if (issue.code) {
         const code = issue.code.toUpperCase();
-        return (
-          code === criterionCode ||
-          code === `WCAG-${criterionCode}` ||
-          code.startsWith(`${criterionCode}-`) ||
-          code.endsWith(`-${criterionCode}`) ||
-          new RegExp(`[-_]${criterionCode}(?:[-_]|$)`).test(code)
-        );
+        
+        if (code === pattern) return true;
+        
+        if (code === `WCAG-${pattern}`) return true;
+        
+        const regex = new RegExp(`(?:^|[-_])${pattern}(?:[-_]|$)`);
+        if (regex.test(code)) return true;
       }
       
       return false;
