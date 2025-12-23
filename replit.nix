@@ -1,5 +1,16 @@
 { pkgs }: {
   deps = [
+    pkgs.pango
+    pkgs.alsa-lib
+    pkgs.mesa
+    pkgs.libdrm
+    pkgs.xorg.libXrandr
+    pkgs.xorg.libXdamage
+    pkgs.xorg.libXcomposite
+    pkgs.cups
+    pkgs.at-spi2-atk
+    pkgs.nspr
+    pkgs.nss
     pkgs.glib
     pkgs.unzip
     pkgs.zip
