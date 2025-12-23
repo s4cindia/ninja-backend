@@ -1,0 +1,197 @@
+Fix CodeRabbit review issues for the ACR Analysis endpoint.
+
+**CRITICAL SECURITY FIX: Add tenant/user scoping**
+
+The analysis endpoint must verify the user owns the job to prevent cross-tenant data leaks.
+
+In src/services/acr/acr-analysis.service.ts, update getAnalysisForJob:
+```typescript
+export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
+  // Build query with user scoping
+  const whereClause: any = { id: jobId };
+  
+  // If userId provided, scope to user's jobs only
+  if (userId) {
+    whereClause.userId = userId;
+  }
+
+  const job = await prisma.job.findFirst({
+    where: whereClause,
+  });
+
+  if (!job) {
+    throw new Error('Job not found');
+  }
+  
+  // ... rest of the function
+}
+```
+
+In src/controllers/acr.controller.ts, pass userId to service:
+```typescript
+export const getAnalysis = async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+    const userId = req.user?.id;  // Get from authenticated user
+
+    const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId);
+    // ...
+  }
+};
+```
+
+---
+
+**FIX 2: Improve code matching logic to prevent false positives (lines 80-83)**
+```typescript
+// Before - too loose, "111" matches "1112":
+const relatedIssues = issues.filter(issue => 
+  issue.wcagCriteria?.includes(criterion.id) ||
+  issue.code?.includes(criterion.id.replace(/\./g, ''))
+);
+
+// After - more precise matching:
+const criterionCode = criterion.id.replace(/\./g, '');
+const relatedIssues = issues.filter(issue => {
+  // Check if wcagCriteria array contains this criterion
+  if (issue.wcagCriteria?.includes(criterion.id)) {
+    return true;
+  }
+  
+  // Check for exact code match or proper prefix/suffix
+  if (issue.code) {
+    const code = issue.code.toUpperCase();
+    return (
+      code === criterionCode ||
+      code === `WCAG-${criterionCode}` ||
+      code.startsWith(`${criterionCode}-`) ||
+      code.endsWith(`-${criterionCode}`) ||
+      // Match patterns like EPUB-META-111, PDF-111
+      new RegExp(`[-_]${criterionCode}(?:[-_]|$)`).test(code)
+    );
+  }
+  
+  return false;
+});
+```
+
+---
+
+**FIX 3: Handle missing/unknown severity values (lines 96-121)**
+```typescript
+if (relatedIssues.length === 0) {
+  // ... existing code
+} else {
+  const criticalCount = relatedIssues.filter(i => i.severity === 'critical').length;
+  const seriousCount = relatedIssues.filter(i => i.severity === 'serious').length;
+  const moderateCount = relatedIssues.filter(i => i.severity === 'moderate').length;
+  const minorCount = relatedIssues.filter(i => i.severity === 'minor').length;
+  const unknownCount = relatedIssues.filter(i => 
+    !i.severity || !['critical', 'serious', 'moderate', 'minor'].includes(i.severity)
+  ).length;
+
+  if (criticalCount > 0) {
+    status = 'does_not_support';
+    confidence = 90;
+    recommendation = 'Critical issues must be resolved for compliance';
+  } else if (seriousCount > 0) {
+    status = 'partially_supports';
+    confidence = 80;
+    recommendation = 'Serious issues should be addressed to improve compliance';
+  } else if (moderateCount > 0) {
+    status = 'partially_supports';
+    confidence = 70;
+    recommendation = 'Moderate issues may affect some users';
+  } else if (unknownCount > 0) {
+    status = 'partially_supports';
+    confidence = 60;
+    recommendation = 'Issues with unknown severity require manual review';
+  } else if (minorCount > 0) {
+    status = 'supports';
+    confidence = 85;
+    recommendation = 'Minor issues detected but overall compliance is maintained';
+  } else {
+    status = 'supports';
+    confidence = 85;
+    recommendation = 'Issues detected but overall compliance is maintained';
+  }
+}
+```
+
+---
+
+**FIX 4: Improve fallback message for missing issue details (line 119)**
+```typescript
+findings = relatedIssues.map(issue => 
+  `${(issue.severity || 'ISSUE').toUpperCase()}: ${
+    issue.message || issue.description || 
+    (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
+  }`
+).slice(0, 5);
+```
+
+---
+
+**FIX 5: Fix potential runtime error when spreading auditOutput (lines 179-187)**
+```typescript
+// Before - could fail if auditOutput is null:
+await prisma.job.update({
+  where: { id: jobId },
+  data: {
+    output: {
+      ...(auditOutput as object || {}),
+      acrAnalysis: JSON.parse(JSON.stringify(analysis)),
+    },
+  },
+});
+
+// After - safer spreading:
+await prisma.job.update({
+  where: { id: jobId },
+  data: {
+    output: {
+      ...(auditOutput || {}),
+      acrAnalysis: structuredClone(analysis),  // Better than JSON.parse/stringify
+    },
+  },
+});
+```
+
+Note: If using Node.js < 17, keep JSON.parse(JSON.stringify(analysis)) but fix the spread:
+```typescript
+output: auditOutput 
+  ? { ...auditOutput, acrAnalysis: JSON.parse(JSON.stringify(analysis)) }
+  : { acrAnalysis: JSON.parse(JSON.stringify(analysis)) },
+```
+
+---
+
+**FIX 6: Add comment documenting expected audit output structure**
+
+Add at top of analyzeWcagCriteria function or near line 154:
+```typescript
+/**
+ * Analyzes audit issues against WCAG criteria.
+ * 
+ * Expected job.output structure:
+ * - combinedIssues: Array of issues from combined audit sources (preferred)
+ * - issues: Array of issues from single audit source (fallback)
+ * 
+ * Each issue may have:
+ * - wcagCriteria: string[] - WCAG criterion IDs (e.g., ["1.1.1", "1.3.1"])
+ * - code: string - Issue code that may contain criterion reference
+ * - severity: 'critical' | 'serious' | 'moderate' | 'minor'
+ * - message: string - Human-readable issue description
+ * - description: string - Alternative description field
+ */
+const issues: AuditIssue[] = auditOutput?.combinedIssues || auditOutput?.issues || [];
+```
+
+---
+
+After all fixes, run:
+```bash
+npm run build
+npm run lint
+npm run test
+```
