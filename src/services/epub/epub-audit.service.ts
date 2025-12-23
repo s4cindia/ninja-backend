@@ -277,7 +277,10 @@ class EpubAuditService {
       await execFileAsync(
         'npx',
         ['@daisy/ace', epubPath, '--outdir', aceOutputDir, '--force'],
-        { timeout: 120000 }
+        { 
+          timeout: 120000,
+          env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' }
+        }
       );
 
       const reportPath = path.join(aceOutputDir, 'report.json');
