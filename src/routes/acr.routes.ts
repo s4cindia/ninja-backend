@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get('/analysis/:jobId', acrController.getAnalysis.bind(acrController));
 router.post('/generate', acrController.generateAcr.bind(acrController));
 router.post('/generate-remarks', acrController.generateRemarks.bind(acrController));
 router.get('/editions', acrController.getEditions.bind(acrController));
