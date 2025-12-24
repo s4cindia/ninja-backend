@@ -34,7 +34,7 @@ export const authorizeJob = async (req: Request, res: Response, next: NextFuncti
     const job = await authorizeJobAccess(jobId, userId);
     req.job = job;
     next();
-  } catch (error) {
+  } catch {
     res.status(404).json({ 
       success: false,
       error: { message: 'Resource not found or access denied' }
@@ -67,7 +67,7 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
     const job = await authorizeJobAccess(acrId, userId);
     req.job = job;
     next();
-  } catch (error) {
+  } catch {
     res.status(404).json({ 
       success: false, 
       error: { message: 'Resource not found or access denied' } 
