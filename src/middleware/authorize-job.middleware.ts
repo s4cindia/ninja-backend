@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { authorizeJobAccess } from '../utils/authorization';
 import { Job } from '@prisma/client';
+import { logger } from '../lib/logger';
 
 declare global {
   namespace Express {
@@ -34,7 +35,8 @@ export const authorizeJob = async (req: Request, res: Response, next: NextFuncti
     const job = await authorizeJobAccess(jobId, userId);
     req.job = job;
     next();
-  } catch {
+  } catch (error) {
+    logger.warn(`Authorization failed for job ${req.params.jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     res.status(404).json({ 
       success: false,
       error: { message: 'Resource not found or access denied' }
@@ -67,7 +69,8 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
     const job = await authorizeJobAccess(acrId, userId);
     req.job = job;
     next();
-  } catch {
+  } catch (error) {
+    logger.warn(`Authorization failed for ACR ${req.params.acrId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     res.status(404).json({ 
       success: false, 
       error: { message: 'Resource not found or access denied' } 
