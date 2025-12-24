@@ -184,6 +184,11 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
     throw new Error('Job not found');
   }
 
+  if (job.status !== 'COMPLETED') {
+    logger.warn(`[ACR] Cannot analyze job ${jobId} - status is ${job.status}, not COMPLETED`);
+    throw new Error('Cannot analyze job - audit not yet completed');
+  }
+
   const auditOutput = job.output as Record<string, unknown> | null;
   
   if (auditOutput?.acrAnalysis) {
