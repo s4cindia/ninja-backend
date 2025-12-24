@@ -131,11 +131,11 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
         html: v.html,
       })),
       metadata: {
-        conformsTo: result.data.metadata.conformsTo || [],
-        accessMode: result.data.metadata.accessMode || [],
-        accessibilityFeature: result.data.metadata.accessibilityFeature || [],
-        accessibilityHazard: result.data.metadata.accessibilityHazard || [],
-        accessibilitySummary: result.data.metadata.accessibilitySummary,
+        conformsTo: result.data.metadata?.conformsTo || [],
+        accessMode: result.data.metadata?.accessMode || [],
+        accessibilityFeature: result.data.metadata?.accessibilityFeature || [],
+        accessibilityHazard: result.data.metadata?.accessibilityHazard || [],
+        accessibilitySummary: result.data.metadata?.accessibilitySummary,
       },
       outlines: {
         toc: result.data.outlines?.toc || [],
