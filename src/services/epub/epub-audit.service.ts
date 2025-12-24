@@ -212,6 +212,7 @@ class EpubAuditService {
           moderate: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
           minor: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
           total: combinedIssues.filter(i => i.source === 'js-auditor').length,
+          // All JS Auditor issues are auto-fixable by design - it specifically detects issues with remediation handlers
           autoFixable: combinedIssues.filter(i => i.source === 'js-auditor').length,
         },
       };
