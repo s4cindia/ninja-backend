@@ -1,235 +1,232 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
-interface WcagCriterionAnalysis {
-  id: string;
-  name: string;
-  level: 'A' | 'AA' | 'AAA';
-  category: string;
-  status: 'pass' | 'fail' | 'partial' | 'not_applicable' | 'not_tested';
-  confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'MANUAL_REQUIRED';
-  issueCount: number;
-  remarks: string;
-}
-
-interface AcrAnalysis {
-  jobId: string;
-  analyzedAt: Date;
-  wcagVersion: string;
-  totalCriteria: number;
-  passedCriteria: number;
-  failedCriteria: number;
-  partialCriteria: number;
-  notApplicableCriteria: number;
-  notTestedCriteria: number;
-  overallScore: number;
-  criteria: WcagCriterionAnalysis[];
-  summary: {
-    perceivable: { pass: number; fail: number; total: number };
-    operable: { pass: number; fail: number; total: number };
-    understandable: { pass: number; fail: number; total: number };
-    robust: { pass: number; fail: number; total: number };
-  };
-}
-
-const WCAG_21_AA_CRITERIA: Array<{ id: string; name: string; level: 'A' | 'AA'; category: string }> = [
-  { id: '1.1.1', name: 'Non-text Content', level: 'A', category: 'perceivable' },
-  { id: '1.2.1', name: 'Audio-only and Video-only (Prerecorded)', level: 'A', category: 'perceivable' },
-  { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', category: 'perceivable' },
-  { id: '1.2.3', name: 'Audio Description or Media Alternative (Prerecorded)', level: 'A', category: 'perceivable' },
-  { id: '1.2.5', name: 'Audio Description (Prerecorded)', level: 'AA', category: 'perceivable' },
-  { id: '1.3.1', name: 'Info and Relationships', level: 'A', category: 'perceivable' },
-  { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', category: 'perceivable' },
-  { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', category: 'perceivable' },
-  { id: '1.3.4', name: 'Orientation', level: 'AA', category: 'perceivable' },
-  { id: '1.3.5', name: 'Identify Input Purpose', level: 'AA', category: 'perceivable' },
-  { id: '1.4.1', name: 'Use of Color', level: 'A', category: 'perceivable' },
-  { id: '1.4.2', name: 'Audio Control', level: 'A', category: 'perceivable' },
-  { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', category: 'perceivable' },
-  { id: '1.4.4', name: 'Resize Text', level: 'AA', category: 'perceivable' },
-  { id: '1.4.5', name: 'Images of Text', level: 'AA', category: 'perceivable' },
-  { id: '1.4.10', name: 'Reflow', level: 'AA', category: 'perceivable' },
-  { id: '1.4.11', name: 'Non-text Contrast', level: 'AA', category: 'perceivable' },
-  { id: '1.4.12', name: 'Text Spacing', level: 'AA', category: 'perceivable' },
-  { id: '1.4.13', name: 'Content on Hover or Focus', level: 'AA', category: 'perceivable' },
-  { id: '2.1.1', name: 'Keyboard', level: 'A', category: 'operable' },
-  { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', category: 'operable' },
-  { id: '2.1.4', name: 'Character Key Shortcuts', level: 'A', category: 'operable' },
-  { id: '2.2.1', name: 'Timing Adjustable', level: 'A', category: 'operable' },
-  { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', category: 'operable' },
-  { id: '2.3.1', name: 'Three Flashes or Below Threshold', level: 'A', category: 'operable' },
-  { id: '2.4.1', name: 'Bypass Blocks', level: 'A', category: 'operable' },
-  { id: '2.4.2', name: 'Page Titled', level: 'A', category: 'operable' },
-  { id: '2.4.3', name: 'Focus Order', level: 'A', category: 'operable' },
-  { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', category: 'operable' },
-  { id: '2.4.5', name: 'Multiple Ways', level: 'AA', category: 'operable' },
-  { id: '2.4.6', name: 'Headings and Labels', level: 'AA', category: 'operable' },
-  { id: '2.4.7', name: 'Focus Visible', level: 'AA', category: 'operable' },
-  { id: '2.5.1', name: 'Pointer Gestures', level: 'A', category: 'operable' },
-  { id: '2.5.2', name: 'Pointer Cancellation', level: 'A', category: 'operable' },
-  { id: '2.5.3', name: 'Label in Name', level: 'A', category: 'operable' },
-  { id: '2.5.4', name: 'Motion Actuation', level: 'A', category: 'operable' },
-  { id: '3.1.1', name: 'Language of Page', level: 'A', category: 'understandable' },
-  { id: '3.1.2', name: 'Language of Parts', level: 'AA', category: 'understandable' },
-  { id: '3.2.1', name: 'On Focus', level: 'A', category: 'understandable' },
-  { id: '3.2.2', name: 'On Input', level: 'A', category: 'understandable' },
-  { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', category: 'understandable' },
-  { id: '3.2.4', name: 'Consistent Identification', level: 'AA', category: 'understandable' },
-  { id: '3.3.1', name: 'Error Identification', level: 'A', category: 'understandable' },
-  { id: '3.3.2', name: 'Labels or Instructions', level: 'A', category: 'understandable' },
-  { id: '3.3.3', name: 'Error Suggestion', level: 'AA', category: 'understandable' },
-  { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', category: 'understandable' },
-  { id: '4.1.1', name: 'Parsing', level: 'A', category: 'robust' },
-  { id: '4.1.2', name: 'Name, Role, Value', level: 'A', category: 'robust' },
-  { id: '4.1.3', name: 'Status Messages', level: 'AA', category: 'robust' },
+const WCAG_CRITERIA = [
+  { id: '1.1.1', name: 'Non-text Content', level: 'A', category: 'Perceivable' },
+  { id: '1.2.1', name: 'Audio-only and Video-only', level: 'A', category: 'Perceivable' },
+  { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', category: 'Perceivable' },
+  { id: '1.2.3', name: 'Audio Description or Media Alternative', level: 'A', category: 'Perceivable' },
+  { id: '1.2.5', name: 'Audio Description (Prerecorded)', level: 'AA', category: 'Perceivable' },
+  { id: '1.3.1', name: 'Info and Relationships', level: 'A', category: 'Perceivable' },
+  { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', category: 'Perceivable' },
+  { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', category: 'Perceivable' },
+  { id: '1.4.1', name: 'Use of Color', level: 'A', category: 'Perceivable' },
+  { id: '1.4.2', name: 'Audio Control', level: 'A', category: 'Perceivable' },
+  { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', category: 'Perceivable' },
+  { id: '1.4.4', name: 'Resize Text', level: 'AA', category: 'Perceivable' },
+  { id: '1.4.5', name: 'Images of Text', level: 'AA', category: 'Perceivable' },
+  { id: '2.1.1', name: 'Keyboard', level: 'A', category: 'Operable' },
+  { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', category: 'Operable' },
+  { id: '2.2.1', name: 'Timing Adjustable', level: 'A', category: 'Operable' },
+  { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', category: 'Operable' },
+  { id: '2.3.1', name: 'Three Flashes or Below', level: 'A', category: 'Operable' },
+  { id: '2.4.1', name: 'Bypass Blocks', level: 'A', category: 'Operable' },
+  { id: '2.4.2', name: 'Page Titled', level: 'A', category: 'Operable' },
+  { id: '2.4.3', name: 'Focus Order', level: 'A', category: 'Operable' },
+  { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', category: 'Operable' },
+  { id: '2.4.5', name: 'Multiple Ways', level: 'AA', category: 'Operable' },
+  { id: '2.4.6', name: 'Headings and Labels', level: 'AA', category: 'Operable' },
+  { id: '2.4.7', name: 'Focus Visible', level: 'AA', category: 'Operable' },
+  { id: '3.1.1', name: 'Language of Page', level: 'A', category: 'Understandable' },
+  { id: '3.1.2', name: 'Language of Parts', level: 'AA', category: 'Understandable' },
+  { id: '3.2.1', name: 'On Focus', level: 'A', category: 'Understandable' },
+  { id: '3.2.2', name: 'On Input', level: 'A', category: 'Understandable' },
+  { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', category: 'Understandable' },
+  { id: '3.2.4', name: 'Consistent Identification', level: 'AA', category: 'Understandable' },
+  { id: '3.3.1', name: 'Error Identification', level: 'A', category: 'Understandable' },
+  { id: '3.3.2', name: 'Labels or Instructions', level: 'A', category: 'Understandable' },
+  { id: '3.3.3', name: 'Error Suggestion', level: 'AA', category: 'Understandable' },
+  { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', category: 'Understandable' },
+  { id: '4.1.1', name: 'Parsing', level: 'A', category: 'Robust' },
+  { id: '4.1.2', name: 'Name, Role, Value', level: 'A', category: 'Robust' },
 ];
 
-function mapIssueToWcagCriteria(issueCode: string): string[] {
-  const mapping: Record<string, string[]> = {
-    'EPUB-IMG-001': ['1.1.1'],
-    'EPUB-META-001': ['3.1.1'],
-    'EPUB-META-002': ['4.1.2'],
-    'EPUB-META-003': ['4.1.2'],
-    'EPUB-META-004': ['4.1.2'],
-    'EPUB-SEM-001': ['3.1.1'],
-    'EPUB-SEM-002': ['2.4.4'],
-    'EPUB-STRUCT-002': ['1.3.1'],
-    'EPUB-STRUCT-003': ['1.3.1', '2.4.6'],
-    'EPUB-STRUCT-004': ['2.4.1'],
-    'EPUB-NAV-001': ['2.4.1'],
-    'EPUB-FIG-001': ['1.1.1', '1.3.1'],
-  };
+const KNOWN_SEVERITIES = ['critical', 'serious', 'moderate', 'minor'];
 
-  for (const [pattern, criteria] of Object.entries(mapping)) {
-    if (issueCode.includes(pattern) || issueCode.startsWith(pattern.split('-')[0])) {
-      return criteria;
-    }
-  }
-  
-  return [];
+export interface CriterionAnalysis {
+  id: string;
+  name: string;
+  level: string;
+  category: string;
+  status: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+  confidence: number;
+  findings: string[];
+  recommendation: string;
 }
 
-export async function getAnalysisForJob(jobId: string, userId: string): Promise<AcrAnalysis> {
-  const job = await prisma.job.findFirst({
-    where: {
-      id: jobId,
-      userId: userId
-    },
-  });
+export interface AcrAnalysis {
+  jobId: string;
+  criteria: CriterionAnalysis[];
+  overallConfidence: number;
+  analyzedAt: string;
+  summary: {
+    supports: number;
+    partiallySupports: number;
+    doesNotSupport: number;
+    notApplicable: number;
+  };
+}
 
-  if (!job) {
-    throw new Error('Job not found or access denied');
-  }
+interface AuditIssue {
+  code?: string;
+  wcagCriteria?: string[];
+  severity?: string;
+  message?: string;
+  description?: string;
+}
 
-  if (job.status !== 'COMPLETED') {
-    throw new Error('Job is not completed yet');
-  }
+function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
+  const criteriaAnalysis: CriterionAnalysis[] = [];
 
-  if (job.output && typeof job.output === 'object' && 'acrAnalysis' in (job.output as Record<string, unknown>)) {
-    const cached = (job.output as Record<string, unknown>).acrAnalysis as AcrAnalysis;
-    logger.info(`Returning cached ACR analysis for job ${jobId}`);
-    return cached;
-  }
+  for (const criterion of WCAG_CRITERIA) {
+    const criterionCode = criterion.id.replace(/\./g, '');
+    const pattern = criterionCode.toUpperCase();
+    
+    const relatedIssues = issues.filter(issue => {
+      if (issue.wcagCriteria?.includes(criterion.id)) {
+        return true;
+      }
+      
+      if (issue.code) {
+        const code = issue.code.toUpperCase();
+        
+        if (code === pattern) return true;
+        
+        if (code === `WCAG-${pattern}`) return true;
+        
+        const regex = new RegExp(`(?:^|[-_])${pattern}(?:[-_]|$)`);
+        if (regex.test(code)) return true;
+      }
+      
+      return false;
+    });
 
-  const issues = (job.output as Record<string, unknown>)?.combinedIssues as Array<{
-    code: string;
-    severity: string;
-    message: string;
-    wcagCriteria?: string[];
-  }> || [];
+    let status: CriterionAnalysis['status'];
+    let confidence: number;
+    let findings: string[] = [];
+    let recommendation = '';
 
-  const criteriaIssueMap = new Map<string, number>();
-  
-  for (const issue of issues) {
-    const wcagCriteria = issue.wcagCriteria || mapIssueToWcagCriteria(issue.code);
-    for (const criterion of wcagCriteria) {
-      criteriaIssueMap.set(criterion, (criteriaIssueMap.get(criterion) || 0) + 1);
-    }
-  }
-
-  const analyzedCriteria: WcagCriterionAnalysis[] = WCAG_21_AA_CRITERIA.map(criterion => {
-    const issueCount = criteriaIssueMap.get(criterion.id) || 0;
-    let status: WcagCriterionAnalysis['status'];
-    let confidence: WcagCriterionAnalysis['confidence'];
-    let remarks: string;
-
-    if (issueCount === 0) {
-      status = 'pass';
-      confidence = 'HIGH';
-      remarks = 'No issues detected for this criterion.';
-    } else if (issueCount <= 2) {
-      status = 'partial';
-      confidence = 'MEDIUM';
-      remarks = `${issueCount} issue(s) detected. Manual review recommended.`;
+    if (relatedIssues.length === 0) {
+      status = 'supports';
+      confidence = 75;
+      findings = ['No accessibility issues detected for this criterion'];
+      recommendation = 'Continue to maintain compliance with this criterion';
     } else {
-      status = 'fail';
-      confidence = 'LOW';
-      remarks = `${issueCount} issues detected. Requires remediation.`;
+      const criticalCount = relatedIssues.filter(i => i.severity === 'critical').length;
+      const seriousCount = relatedIssues.filter(i => i.severity === 'serious').length;
+      const moderateCount = relatedIssues.filter(i => i.severity === 'moderate').length;
+      const minorCount = relatedIssues.filter(i => i.severity === 'minor').length;
+      const unknownCount = relatedIssues.filter(i => 
+        !i.severity || !KNOWN_SEVERITIES.includes(i.severity)
+      ).length;
+
+      if (criticalCount > 0) {
+        status = 'does_not_support';
+        confidence = 90;
+        recommendation = 'Critical issues must be resolved for compliance';
+      } else if (seriousCount > 0) {
+        status = 'partially_supports';
+        confidence = 80;
+        recommendation = 'Serious issues should be addressed to improve compliance';
+      } else if (moderateCount > 0) {
+        status = 'partially_supports';
+        confidence = 70;
+        recommendation = 'Moderate issues may affect some users';
+      } else if (unknownCount > 0) {
+        status = 'partially_supports';
+        confidence = 60;
+        recommendation = 'Issues with unknown severity require manual review';
+      } else if (minorCount > 0) {
+        status = 'supports';
+        confidence = 85;
+        recommendation = 'Minor issues detected but overall compliance is maintained';
+      } else {
+        status = 'supports';
+        confidence = 85;
+        recommendation = 'Issues detected but overall compliance is maintained';
+      }
+
+      findings = relatedIssues.map(issue => 
+        `${(issue.severity || 'ISSUE').toUpperCase()}: ${
+          issue.message || issue.description || 
+          (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
+        }`
+      ).slice(0, 5);
     }
 
-    return {
+    criteriaAnalysis.push({
       id: criterion.id,
       name: criterion.name,
       level: criterion.level,
       category: criterion.category,
       status,
       confidence,
-      issueCount,
-      remarks,
-    };
-  });
-
-  const summary = {
-    perceivable: { pass: 0, fail: 0, total: 0 },
-    operable: { pass: 0, fail: 0, total: 0 },
-    understandable: { pass: 0, fail: 0, total: 0 },
-    robust: { pass: 0, fail: 0, total: 0 },
-  };
-
-  for (const criterion of analyzedCriteria) {
-    const cat = criterion.category as keyof typeof summary;
-    summary[cat].total++;
-    if (criterion.status === 'pass') {
-      summary[cat].pass++;
-    } else if (criterion.status === 'fail') {
-      summary[cat].fail++;
-    }
+      findings,
+      recommendation,
+    });
   }
 
-  const passedCriteria = analyzedCriteria.filter(c => c.status === 'pass').length;
-  const failedCriteria = analyzedCriteria.filter(c => c.status === 'fail').length;
-  const partialCriteria = analyzedCriteria.filter(c => c.status === 'partial').length;
-  const notApplicableCriteria = analyzedCriteria.filter(c => c.status === 'not_applicable').length;
-  const notTestedCriteria = analyzedCriteria.filter(c => c.status === 'not_tested').length;
+  return criteriaAnalysis;
+}
 
-  const overallScore = Math.round((passedCriteria / analyzedCriteria.length) * 100);
+export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
+  const whereClause: { id: string; userId?: string } = { id: jobId };
+  
+  if (userId) {
+    whereClause.userId = userId;
+  }
+
+  const job = await prisma.job.findFirst({
+    where: whereClause,
+  });
+
+  if (!job) {
+    throw new Error('Job not found');
+  }
+
+  const auditOutput = job.output as Record<string, unknown> | null;
+  
+  if (auditOutput?.acrAnalysis) {
+    logger.info(`[ACR] Returning cached analysis for job: ${jobId}`);
+    return auditOutput.acrAnalysis as AcrAnalysis;
+  }
+
+  const issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
+
+  logger.info(`[ACR] Analyzing job: ${jobId} with ${issues.length} issues`);
+
+  const criteria = analyzeWcagCriteria(issues);
+
+  const summary = {
+    supports: criteria.filter(c => c.status === 'supports').length,
+    partiallySupports: criteria.filter(c => c.status === 'partially_supports').length,
+    doesNotSupport: criteria.filter(c => c.status === 'does_not_support').length,
+    notApplicable: criteria.filter(c => c.status === 'not_applicable').length,
+  };
+
+  const overallConfidence = Math.round(
+    criteria.reduce((sum, c) => sum + c.confidence, 0) / criteria.length
+  );
 
   const analysis: AcrAnalysis = {
     jobId,
-    analyzedAt: new Date(),
-    wcagVersion: '2.1',
-    totalCriteria: analyzedCriteria.length,
-    passedCriteria,
-    failedCriteria,
-    partialCriteria,
-    notApplicableCriteria,
-    notTestedCriteria,
-    overallScore,
-    criteria: analyzedCriteria,
+    criteria,
+    overallConfidence,
+    analyzedAt: new Date().toISOString(),
     summary,
   };
+
+  const updatedOutput = auditOutput 
+    ? { ...auditOutput, acrAnalysis: JSON.parse(JSON.stringify(analysis)) }
+    : { acrAnalysis: JSON.parse(JSON.stringify(analysis)) };
 
   await prisma.job.update({
     where: { id: jobId },
     data: {
-      output: JSON.parse(JSON.stringify({
-        ...(job.output as Record<string, unknown> || {}),
-        acrAnalysis: analysis,
-      })),
+      output: updatedOutput,
     },
   });
 
-  logger.info(`Generated and cached ACR analysis for job ${jobId}`);
   return analysis;
 }
 
