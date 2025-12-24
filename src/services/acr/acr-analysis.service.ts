@@ -75,6 +75,18 @@ interface AuditIssue {
   description?: string;
 }
 
+function isValidAcrAnalysis(data: unknown): data is AcrAnalysis {
+  if (!data || typeof data !== 'object') return false;
+  const analysis = data as Record<string, unknown>;
+  return (
+    typeof analysis.jobId === 'string' &&
+    typeof analysis.overallConfidence === 'number' &&
+    Array.isArray(analysis.criteria) &&
+    typeof analysis.summary === 'object' &&
+    analysis.summary !== null
+  );
+}
+
 function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
   const criteriaAnalysis: CriterionAnalysis[] = [];
 
@@ -191,9 +203,9 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
 
   const auditOutput = job.output as Record<string, unknown> | null;
   
-  if (auditOutput?.acrAnalysis) {
+  if (auditOutput?.acrAnalysis && isValidAcrAnalysis(auditOutput.acrAnalysis)) {
     logger.info(`[ACR] Returning cached analysis for job: ${jobId}`);
-    return auditOutput.acrAnalysis as AcrAnalysis;
+    return auditOutput.acrAnalysis;
   }
 
   const issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
