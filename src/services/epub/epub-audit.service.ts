@@ -219,7 +219,7 @@ class EpubAuditService {
     } catch (javaError) {
       logger.warn(`Java not available, skipping EPUBCheck: ${javaError instanceof Error ? javaError.message : 'unknown error'}`);
       return {
-        isValid: true,
+        isValid: false,
         epubVersion: 'unknown',
         errors: [],
         warnings: [],

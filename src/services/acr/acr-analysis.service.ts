@@ -121,6 +121,10 @@ export async function getAnalysisForJob(jobId: string, userId: string): Promise<
     throw new Error('Job not found or access denied');
   }
 
+  if (job.status !== 'COMPLETED') {
+    throw new Error('Job is not completed yet');
+  }
+
   if (job.output && typeof job.output === 'object' && 'acrAnalysis' in (job.output as Record<string, unknown>)) {
     const cached = (job.output as Record<string, unknown>).acrAnalysis as AcrAnalysis;
     logger.info(`Returning cached ACR analysis for job ${jobId}`);
