@@ -122,7 +122,7 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
 
     const aceResult: AceResult = {
       score: result.data.score,
-      violations: result.data.violations.map((v) => ({
+      violations: (result.data.violations || []).map((v) => ({
         rule: v.ruleId,
         impact: validateImpact(v.impact),
         description: v.description,
