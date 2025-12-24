@@ -35,6 +35,14 @@ interface AceMicroserviceViolation {
   html?: string;
 }
 
+function validateImpact(impact: string): AceViolation['impact'] {
+  const validImpacts = ['critical', 'serious', 'moderate', 'minor'] as const;
+  if (validImpacts.includes(impact as typeof validImpacts[number])) {
+    return impact as AceViolation['impact'];
+  }
+  return 'moderate'; // default fallback
+}
+
 interface AceMicroserviceResponse {
   success: boolean;
   data?: {
@@ -111,7 +119,7 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
       score: result.data.score,
       violations: result.data.violations.map((v) => ({
         rule: v.ruleId,
-        impact: v.impact as AceViolation['impact'],
+        impact: validateImpact(v.impact),
         description: v.description,
         wcag: v.wcagCriteria,
         location: v.location,
