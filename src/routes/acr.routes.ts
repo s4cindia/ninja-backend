@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
+import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
 
@@ -13,6 +14,7 @@ router.post('/generate-remarks', acrController.generateRemarks.bind(acrControlle
 router.get('/editions', acrController.getEditions.bind(acrController));
 router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController));
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));
+router.get('/analysis/:jobId', authorizeJob, acrController.getAnalysis.bind(acrController));
 router.post('/:jobId/validate-credibility', acrController.validateCredibility.bind(acrController));
 router.get('/:jobId/can-finalize', verificationController.canFinalize.bind(verificationController));
 router.get('/:jobId/methodology', acrController.getMethodology.bind(acrController));

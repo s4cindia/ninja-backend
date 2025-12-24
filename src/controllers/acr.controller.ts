@@ -541,6 +541,45 @@ export class AcrController {
       next(error);
     }
   }
+
+  async getAnalysis(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      const userId = req.user?.id;
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      if (!userId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId);
+
+      res.json({
+        success: true,
+        data: analysis
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found or access denied' }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
 }
 
 export const acrController = new AcrController();

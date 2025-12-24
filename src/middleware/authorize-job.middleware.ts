@@ -1,11 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { authorizeJobAccess } from '../utils/authorization';
-import { Job } from '@prisma/client';
 
 declare global {
   namespace Express {
     interface Request {
-      job?: Job;
+      job?: Awaited<ReturnType<typeof authorizeJobAccess>>;
     }
   }
 }
@@ -15,30 +14,20 @@ export const authorizeJob = async (req: Request, res: Response, next: NextFuncti
     const jobId = req.params.jobId;
     const userId = req.user?.id;
     
-    if (!userId) {
-      res.status(401).json({ 
+    if (!userId || !jobId) {
+      return res.status(401).json({ 
         success: false,
-        error: { message: 'Authentication required' }
+        error: { message: 'Unauthorized' }
       });
-      return;
-    }
-    
-    if (!jobId) {
-      res.status(400).json({ 
-        success: false,
-        error: { message: 'Job ID is required' }
-      });
-      return;
     }
     
     const job = await authorizeJobAccess(jobId, userId);
     req.job = job;
     next();
   } catch (error) {
-    res.status(404).json({ 
+    return res.status(404).json({ 
       success: false,
       error: { message: 'Resource not found or access denied' }
     });
-    return;
   }
 };
