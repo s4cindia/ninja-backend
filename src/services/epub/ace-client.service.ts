@@ -72,18 +72,24 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
       contentType: 'application/epub+zip',
     });
 
-    const response = await fetch(`${aceServiceUrl}/audit`, {
-      method: 'POST',
-      body: formData as unknown as RequestInit['body'],
-      headers: formData.getHeaders(),
+    const result = await new Promise<AceMicroserviceResponse>((resolve, reject) => {
+      formData.submit(`${aceServiceUrl}/audit`, (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        let data = '';
+        res.on('data', (chunk: Buffer | string) => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e);
+          }
+        });
+        res.on('error', reject);
+      });
     });
-
-    if (!response.ok) {
-      logger.warn(`[ACE Client] HTTP error ${response.status}: ${response.statusText}`);
-      return null;
-    }
-
-    const result = await response.json() as AceMicroserviceResponse;
 
     if (!result.success || !result.data) {
       logger.warn(`[ACE Client] Audit failed: ${result.error || 'Unknown error'}`);
