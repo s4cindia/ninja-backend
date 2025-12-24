@@ -91,7 +91,9 @@ class EpubAuditService {
   private issueCounter = 0;
 
   constructor() {
-    this.epubCheckPath = process.env.EPUBCHECK_PATH || '/usr/local/lib/epubcheck/epubcheck.jar';
+    // Use project-local EPUBCheck JAR, fallback to env variable
+    this.epubCheckPath = process.env.EPUBCHECK_PATH || 
+      path.resolve(__dirname, '../../../lib/epubcheck/epubcheck.jar');
   }
 
   private parseMessages(messages: Array<Record<string, unknown>>): {
@@ -141,16 +143,11 @@ class EpubAuditService {
 
       const epubCheckResult = await this.runEpubCheck(epubPath);
 
-      let aceResult: AceResult | null = null;
-      if (epubCheckResult.fatalErrors.length === 0) {
-        try {
-          aceResult = await this.runAce(epubPath, tempDir);
-        } catch (_aceError) {
-          logger.warn('Ace audit failed, continuing with EPUBCheck results only');
-        }
-      }
+      // ACE/Daisy is disabled in Replit due to Electron dependencies
+      // Using EPUBCheck + JS Auditor as the accessibility audit pipeline
+      const aceResult: AceResult | null = null;
 
-      const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+      const combinedIssues = this.combineResults(epubCheckResult);
 
       logger.info('Running JS accessibility audit for auto-fixable issues');
       try {
@@ -198,7 +195,7 @@ class EpubAuditService {
           minor: combinedIssues.filter(i => i.severity === 'minor').length,
           total: combinedIssues.length,
         },
-        accessibilityMetadata: aceResult?.metadata || null,
+        accessibilityMetadata: null, // ACE disabled - no accessibility metadata available
         auditedAt: new Date(),
       };
 
@@ -213,12 +210,16 @@ class EpubAuditService {
   private async runEpubCheck(epubPath: string): Promise<EpubCheckResult> {
     const outputPath = epubPath + '.json';
 
+    logger.info(`Running EPUBCheck on: ${epubPath}`);
+    logger.info(`EPUBCheck JAR path: ${this.epubCheckPath}`);
+
     try {
       await execFileAsync('java', ['-version']);
-    } catch {
-      logger.warn('Java not available, skipping EPUBCheck');
+      logger.info('Java is available');
+    } catch (javaError) {
+      logger.warn(`Java not available, skipping EPUBCheck: ${javaError instanceof Error ? javaError.message : 'unknown error'}`);
       return {
-        isValid: true,
+        isValid: false,
         epubVersion: 'unknown',
         errors: [],
         warnings: [],
@@ -227,11 +228,13 @@ class EpubAuditService {
     }
 
     try {
+      logger.info(`Executing: java -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
       await execFileAsync(
         'java',
         ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
         { timeout: 60000 }
       );
+      logger.info('EPUBCheck completed successfully');
 
       const outputContent = await fs.promises.readFile(outputPath, 'utf-8');
       const output = JSON.parse(outputContent);
@@ -277,7 +280,10 @@ class EpubAuditService {
       await execFileAsync(
         'npx',
         ['@daisy/ace', epubPath, '--outdir', aceOutputDir, '--force'],
-        { timeout: 120000 }
+        { 
+          timeout: 120000,
+          env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' }
+        }
       );
 
       const reportPath = path.join(aceOutputDir, 'report.json');
@@ -345,7 +351,7 @@ class EpubAuditService {
 
   private combineResults(
     epubCheck: EpubCheckResult,
-    ace: AceResult | null
+    ace: AceResult | null = null
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
 

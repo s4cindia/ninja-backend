@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { epubController } from '../controllers/epub.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { authorizeJob } from '../middleware/authorize-job.middleware';
 
 const router = Router();
 const upload = multer({
@@ -16,19 +17,20 @@ const upload = multer({
   },
 });
 
-router.post('/audit/:jobId', authenticate, epubController.auditEPUB);
+router.post('/audit/:jobId', authenticate, authorizeJob, epubController.auditEPUB);
 router.post('/audit-upload', authenticate, upload.single('file'), epubController.auditFromBuffer);
-router.get('/audit/:jobId/result', authenticate, epubController.getAuditResult);
+router.get('/audit/:jobId/result', authenticate, authorizeJob, epubController.getAuditResult);
+router.get('/job/:jobId/audit/result', authenticate, authorizeJob, epubController.getAuditResult);
 
-router.post('/job/:jobId/remediation', authenticate, epubController.createRemediationPlan);
-router.get('/job/:jobId/remediation', authenticate, epubController.getRemediationPlan);
-router.get('/job/:jobId/remediation/summary', authenticate, epubController.getRemediationSummary);
-router.patch('/job/:jobId/remediation/task/:taskId', authenticate, epubController.updateTaskStatus);
-router.post('/job/:jobId/auto-remediate', authenticate, epubController.runAutoRemediation);
-router.post('/job/:jobId/apply-fix', authenticate, epubController.applySpecificFix);
-router.get('/job/:jobId/download-remediated', authenticate, epubController.downloadRemediatedFile);
-router.get('/job/:jobId/comparison', authenticate, epubController.getComparison);
-router.get('/job/:jobId/comparison/summary', authenticate, epubController.getComparisonSummary);
+router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubController.createRemediationPlan);
+router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
+router.get('/job/:jobId/remediation/summary', authenticate, authorizeJob, epubController.getRemediationSummary);
+router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
+router.post('/job/:jobId/auto-remediate', authenticate, authorizeJob, epubController.runAutoRemediation);
+router.post('/job/:jobId/apply-fix', authenticate, authorizeJob, epubController.applySpecificFix);
+router.get('/job/:jobId/download-remediated', authenticate, authorizeJob, epubController.downloadRemediatedFile);
+router.get('/job/:jobId/comparison', authenticate, authorizeJob, epubController.getComparison);
+router.get('/job/:jobId/comparison/summary', authenticate, authorizeJob, epubController.getComparisonSummary);
 router.get('/supported-fixes', authenticate, epubController.getSupportedFixes);
 
 router.post('/batch', authenticate, epubController.createBatch);
@@ -37,8 +39,8 @@ router.get('/batch/:batchId', authenticate, epubController.getBatchStatus);
 router.post('/batch/:batchId/cancel', authenticate, epubController.cancelBatch);
 router.get('/batches', authenticate, epubController.listBatches);
 
-router.get('/job/:jobId/export', authenticate, epubController.exportRemediated);
+router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
 router.post('/export-batch', authenticate, epubController.exportBatch);
-router.get('/job/:jobId/report', authenticate, epubController.getAccessibilityReport);
+router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
 
 export default router;

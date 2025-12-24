@@ -1,0 +1,82 @@
+[ERROR] POST /api/v1/epub/audit-upload 401 - 5ms
+[INFO] POST /api/v1/auth/refresh 200 - 2262ms
+[2025-12-23T03:40:29.150Z] [INFO] Saved EPUB file: /tmp/epub-storage/18653abb-7337-44c2-8251-443149f00bf4/pg1342-images-3.epub
+[2025-12-23T03:40:41.877Z] [ERROR] Ace audit failed
+Error: Command failed: npx @daisy/ace /tmp/epub-audit-CcBv0Q/pg1342-images-3.epub --outdir /tmp/epub-audit-CcBv0Q/ace-output --force
+/home/runner/workspace/node_modules/electron/dist/electron: error while loading shared libraries: libglib-2.0.so.0: cannot open shared object file: No such file or directory
+
+    at genericNodeError (node:internal/errors:984:15)
+    at wrappedFn (node:internal/errors:538:14)
+    at ChildProcess.exithandler (node:child_process:422:12)
+    at ChildProcess.emit (node:events:524:28)
+    at maybeClose (node:internal/child_process:1104:16)
+    at Process.ChildProcess._handle.onexit (node:internal/child_process:304:5)
+[2025-12-23T03:40:41.879Z] [WARN] Ace audit failed, continuing with EPUBCheck results only
+[2025-12-23T03:40:41.879Z] [INFO] Running JS accessibility audit for auto-fixable issues
+[2025-12-23T03:40:42.148Z] [INFO] JS audit found 24 additional accessibility issues
+[INFO] POST /api/v1/epub/audit-upload 200 - 17601ms
+[ERROR] GET /api/v1/epub/job/18653abb-7337-44c2-8251-443149f00bf4/audit/result 404 - 2ms
+[INFO] GET /api/v1/acr/editions 304 - 231ms
+[INFO] GET /api/v1/jobs 200 - 2561ms
+[INFO] GET /api/v1/jobs 304 - 691ms
+[2025-12-23T03:41:24.371Z] [INFO] [ACR] Analyzing job: 18653abb-7337-44c2-8251-443149f00bf4 with 24 issues
+[INFO] GET /api/v1/acr/analysis/18653abb-7337-44c2-8251-443149f00bf4 200 - 1840ms
+[2025-12-23T03:41:25.905Z] [INFO] [ACR] Returning cached analysis for job: 18653abb-7337-44c2-8251-443149f00bf4
+[INFO] GET /api/v1/acr/analysis/18653abb-7337-44c2-8251-443149f00bf4 200 - 462ms
+[INFO] GET /api/v1/dashboard/stats 200 - 459ms
+[INFO] GET /api/v1/dashboard/activity?limit=5 200 - 463ms
+[2025-12-23T03:42:13.598Z] [INFO] Saved EPUB file: /tmp/epub-storage/c5fd3e71-f347-4958-a8df-6822ed4500af/pg1342-images-3.epub
+[2025-12-23T03:42:20.726Z] [ERROR] Ace audit failed
+Error: Command failed: npx @daisy/ace /tmp/epub-audit-6xyoxD/pg1342-images-3.epub --outdir /tmp/epub-audit-6xyoxD/ace-output --force
+/home/runner/workspace/node_modules/electron/dist/electron: error while loading shared libraries: libglib-2.0.so.0: cannot open shared object file: No such file or directory
+
+    at genericNodeError (node:internal/errors:984:15)
+    at wrappedFn (node:internal/errors:538:14)
+    at ChildProcess.exithandler (node:child_process:422:12)
+    at ChildProcess.emit (node:events:524:28)
+    at maybeClose (node:internal/child_process:1104:16)
+    at Process.ChildProcess._handle.onexit (node:internal/child_process:304:5)
+[2025-12-23T03:42:20.726Z] [WARN] Ace audit failed, continuing with EPUBCheck results only
+[2025-12-23T03:42:20.726Z] [INFO] Running JS accessibility audit for auto-fixable issues
+[2025-12-23T03:42:20.917Z] [INFO] JS audit found 24 additional accessibility issues
+[INFO] POST /api/v1/epub/audit-upload 200 - 12833ms
+[ERROR] GET /api/v1/epub/job/c5fd3e71-f347-4958-a8df-6822ed4500af/audit/result 404 - 2ms
+[INFO] GET /api/v1/acr/editions 304 - 467ms
+[INFO] GET /api/v1/jobs 200 - 2362ms
+[INFO] GET /api/v1/jobs 304 - 927ms
+[2025-12-23T03:43:42.689Z] [INFO] [ACR] Analyzing job: c5fd3e71-f347-4958-a8df-6822ed4500af with 24 issues
+[INFO] GET /api/v1/acr/analysis/c5fd3e71-f347-4958-a8df-6822ed4500af 200 - 1858ms
+[2025-12-23T03:43:44.243Z] [INFO] [ACR] Returning cached analysis for job: c5fd3e71-f347-4958-a8df-6822ed4500af
+[INFO] GET /api/v1/acr/analysis/c5fd3e71-f347-4958-a8df-6822ed4500af 200 - 469ms
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }
+[2025-12-23T03:54:57.396Z] [INFO] Saved EPUB file: /tmp/epub-storage/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f/pg84-images-3.epub
+[2025-12-23T03:54:57.929Z] [INFO] Running JS accessibility audit for auto-fixable issues
+[2025-12-23T03:54:57.934Z] [ERROR] JS EPUB audit failed
+Error: Corrupted zip: can't find end of central directory
+    at ZipEntries.readEndOfCentral (/home/runner/workspace/node_modules/jszip/lib/zipEntries.js:170:23)
+    at ZipEntries.load (/home/runner/workspace/node_modules/jszip/lib/zipEntries.js:255:14)
+    at /home/runner/workspace/node_modules/jszip/lib/load.js:48:24
+    at EPUBJSAuditorService.audit (/home/runner/workspace/src/services/epub/epub-js-auditor.service.ts:55:19)
+    at EpubAuditService.runAudit (/home/runner/workspace/src/services/epub/epub-audit.service.ts:157:26)
+    at auditFromBuffer (/home/runner/workspace/src/controllers/epub.controller.ts:115:22)
+[2025-12-23T03:54:57.955Z] [WARN] JS audit failed: Corrupted zip: can't find end of central directory
+[INFO] POST /api/v1/epub/audit-upload 200 - 4239ms
+[ERROR] GET /api/v1/epub/job/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f/audit/result 404 - 1ms
+[INFO] GET /api/v1/acr/editions 304 - 238ms
+[INFO] GET /api/v1/jobs 200 - 2539ms
+[INFO] GET /api/v1/jobs 304 - 927ms
+[2025-12-23T03:55:23.163Z] [INFO] [ACR] Analyzing job: c7a4bb68-844e-4386-bfd9-e1f6da66fb0f with 1 issues
+[INFO] GET /api/v1/acr/analysis/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f 200 - 1636ms
+[2025-12-23T03:55:24.481Z] [INFO] [ACR] Returning cached analysis for job: c7a4bb68-844e-4386-bfd9-e1f6da66fb0f
+[INFO] GET /api/v1/acr/analysis/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f 200 - 469ms
+[ERROR] GET /api/v1/verification/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f/queue 401 - 2ms
+[INFO] POST /api/v1/auth/refresh 200 - 700ms
+[INFO] GET /api/v1/verification/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f/queue 200 - 1400ms
+[2025-12-23T03:56:01.161Z] [INFO] [ACR] Returning cached analysis for job: c7a4bb68-844e-4386-bfd9-e1f6da66fb0f
+[INFO] GET /api/v1/acr/analysis/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f 304 - 698ms
+[2025-12-23T03:56:01.777Z] [INFO] [ACR] Returning cached analysis for job: c7a4bb68-844e-4386-bfd9-e1f6da66fb0f
+[INFO] GET /api/v1/acr/analysis/c7a4bb68-844e-4386-bfd9-e1f6da66fb0f 304 - 467ms
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }

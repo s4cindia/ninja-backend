@@ -15,8 +15,13 @@ export class ConfidenceController {
         return;
       }
 
-      const job = await prisma.job.findUnique({
-        where: { id: jobId },
+      const userId = req.user?.id;
+      
+      const job = await prisma.job.findFirst({
+        where: { 
+          id: jobId,
+          userId: userId,
+        },
         include: {
           validationResults: {
             include: {
@@ -29,7 +34,7 @@ export class ConfidenceController {
       if (!job) {
         res.status(404).json({
           success: false,
-          error: { message: 'Job not found' }
+          error: { message: 'Job not found or access denied' }
         });
         return;
       }
