@@ -47,6 +47,8 @@ export const authorizeJob = async (req: Request, res: Response, next: NextFuncti
 
 export const authorizeAcr = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // ACR (Accessibility Conformance Report) is generated from job audit results
+    // The acrId parameter is actually the jobId of the source audit job
     const acrId = req.params.acrId;
     const userId = req.user?.id;
 
@@ -66,6 +68,7 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
+    // Reuse job authorization since ACR is derived from job data
     const job = await authorizeJobAccess(acrId, userId);
     req.job = job;
     next();
