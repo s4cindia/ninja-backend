@@ -93,6 +93,11 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
           reject(err);
           return;
         }
+        if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+          clearTimeout(timeout);
+          reject(new Error(`ACE microservice returned status ${res.statusCode}`));
+          return;
+        }
         let data = '';
         res.on('data', (chunk: Buffer | string) => data += chunk);
         res.on('end', () => {
