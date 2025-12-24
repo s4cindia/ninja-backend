@@ -83,6 +83,11 @@ interface EpubAuditResult {
     minor: number;
     total: number;
   };
+  summaryBySource: {
+    epubcheck: { critical: number; serious: number; moderate: number; minor: number; total: number };
+    ace: { critical: number; serious: number; moderate: number; minor: number; total: number };
+    'js-auditor': { critical: number; serious: number; moderate: number; minor: number; total: number; autoFixable: number };
+  };
   accessibilityMetadata: AceResult['metadata'] | null;
   auditedAt: Date;
 }
@@ -186,6 +191,32 @@ class EpubAuditService {
 
       const score = this.calculateScore(combinedIssues, aceResult);
 
+      const summaryBySource = {
+        epubcheck: {
+          critical: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'critical').length,
+          serious: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'serious').length,
+          moderate: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'moderate').length,
+          minor: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'minor').length,
+          total: combinedIssues.filter(i => i.source === 'epubcheck').length,
+        },
+        ace: {
+          critical: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'critical').length,
+          serious: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'serious').length,
+          moderate: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'moderate').length,
+          minor: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'minor').length,
+          total: combinedIssues.filter(i => i.source === 'ace').length,
+        },
+        'js-auditor': {
+          critical: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'critical').length,
+          serious: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'serious').length,
+          moderate: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
+          minor: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
+          total: combinedIssues.filter(i => i.source === 'js-auditor').length,
+          // All JS Auditor issues are auto-fixable by design - it specifically detects issues with remediation handlers
+          autoFixable: combinedIssues.filter(i => i.source === 'js-auditor').length,
+        },
+      };
+
       const result: EpubAuditResult = {
         jobId,
         fileName,
@@ -203,6 +234,7 @@ class EpubAuditService {
           minor: combinedIssues.filter(i => i.severity === 'minor').length,
           total: combinedIssues.length,
         },
+        summaryBySource,
         accessibilityMetadata: aceResult?.metadata || null,
         auditedAt: new Date(),
       };
