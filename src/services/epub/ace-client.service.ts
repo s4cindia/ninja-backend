@@ -72,22 +72,33 @@ export async function callAceMicroservice(epubBuffer: Buffer, fileName: string):
       contentType: 'application/epub+zip',
     });
 
+    const timeoutMs = 120000; // 2 minutes
+
     const result = await new Promise<AceMicroserviceResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('ACE microservice request timed out'));
+      }, timeoutMs);
+
       formData.submit(`${aceServiceUrl}/audit`, (err, res) => {
         if (err) {
+          clearTimeout(timeout);
           reject(err);
           return;
         }
         let data = '';
         res.on('data', (chunk: Buffer | string) => data += chunk);
         res.on('end', () => {
+          clearTimeout(timeout);
           try {
             resolve(JSON.parse(data));
           } catch (e) {
             reject(e);
           }
         });
-        res.on('error', reject);
+        res.on('error', (e) => {
+          clearTimeout(timeout);
+          reject(e);
+        });
       });
     });
 
