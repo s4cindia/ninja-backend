@@ -6,6 +6,7 @@ import * as os from 'os';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { epubJSAuditor } from './epub-js-auditor.service';
+import { callAceMicroservice } from './ace-client.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -143,11 +144,18 @@ class EpubAuditService {
 
       const epubCheckResult = await this.runEpubCheck(epubPath);
 
-      // ACE/Daisy is disabled in Replit due to Electron dependencies
-      // Using EPUBCheck + JS Auditor as the accessibility audit pipeline
-      const aceResult: AceResult | null = null;
+      // Call ACE microservice if configured
+      let aceResult: AceResult | null = null;
+      try {
+        aceResult = await callAceMicroservice(buffer, fileName);
+        if (aceResult) {
+          logger.info(`ACE audit complete: score=${aceResult.score}, violations=${aceResult.violations.length}`);
+        }
+      } catch (aceError) {
+        logger.warn(`ACE microservice call failed: ${aceError instanceof Error ? aceError.message : 'Unknown error'}`);
+      }
 
-      const combinedIssues = this.combineResults(epubCheckResult);
+      const combinedIssues = this.combineResults(epubCheckResult, aceResult);
 
       logger.info('Running JS accessibility audit for auto-fixable issues');
       try {
@@ -195,7 +203,7 @@ class EpubAuditService {
           minor: combinedIssues.filter(i => i.severity === 'minor').length,
           total: combinedIssues.length,
         },
-        accessibilityMetadata: null, // ACE disabled - no accessibility metadata available
+        accessibilityMetadata: aceResult?.metadata || null,
         auditedAt: new Date(),
       };
 
