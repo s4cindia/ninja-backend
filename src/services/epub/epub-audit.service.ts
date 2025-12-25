@@ -219,6 +219,9 @@ class EpubAuditService {
       }
 
       const scoreBreakdown = this.calculateScore(deduplicatedIssues);
+      
+      logger.info(`[EPUB Audit] Score calculation: ${JSON.stringify(scoreBreakdown)}`);
+      logger.info(`[EPUB Audit] Issues by severity - critical: ${deduplicatedIssues.filter(i => i.severity === 'critical').length}, serious: ${deduplicatedIssues.filter(i => i.severity === 'serious').length}, moderate: ${deduplicatedIssues.filter(i => i.severity === 'moderate').length}, minor: ${deduplicatedIssues.filter(i => i.severity === 'minor').length}`);
 
       const summaryBySource = {
         epubcheck: {
