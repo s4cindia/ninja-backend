@@ -34,16 +34,32 @@ export class EpubContentService {
 
     try {
       const zip = new AdmZip(epubBuffer);
-      const entry = zip.getEntry(normalizedPath);
       
+      let entry = zip.getEntry(normalizedPath);
+
       if (!entry) {
+        const searchFileName = path.basename(normalizedPath);
+        const entries = zip.getEntries();
+
+        for (const e of entries) {
+          if (e.entryName.endsWith(searchFileName) || e.entryName.endsWith('/' + searchFileName)) {
+            entry = e;
+            logger.info(`[EPUB Content] Found file at: ${e.entryName}`);
+            break;
+          }
+        }
+      }
+
+      if (!entry) {
+        const availableFiles = zip.getEntries().map(e => e.entryName).slice(0, 20);
+        logger.warn(`[EPUB Content] File not found: ${normalizedPath}. Available: ${availableFiles.join(', ')}`);
         throw new Error('File not found in EPUB');
       }
 
       const content = entry.getData().toString('utf8');
-      const contentType = this.getContentType(normalizedPath);
+      const contentType = this.getContentType(entry.entryName);
 
-      logger.info(`[EPUB Content] Served ${normalizedPath} from job ${jobId}`);
+      logger.info(`[EPUB Content] Served ${entry.entryName} from job ${jobId}`);
 
       return { content, contentType };
     } catch (error) {
