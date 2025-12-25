@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { epubController } from '../controllers/epub.controller';
+import { epubContentController } from '../controllers/epub-content.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 
@@ -42,5 +43,6 @@ router.get('/batches', authenticate, epubController.listBatches);
 router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
 router.post('/export-batch', authenticate, epubController.exportBatch);
 router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
+router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
 
 export default router;
