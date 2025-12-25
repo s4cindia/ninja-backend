@@ -307,6 +307,40 @@ export const epubController = {
     }
   },
 
+  async reauditEpub(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No EPUB file uploaded. Please upload the remediated EPUB file.',
+        });
+      }
+
+      logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${req.file.originalname}`);
+
+      const result = await remediationService.reauditEpub(jobId, {
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+      });
+
+      logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Re-audit complete: ${result.resolved} issues verified as fixed`,
+      });
+    } catch (error) {
+      logger.error('Re-audit failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Re-audit failed',
+      });
+    }
+  },
+
   async runAutoRemediation(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { epubAuditService } from './epub-audit.service';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -23,7 +24,7 @@ interface RemediationTask {
   resolvedBy?: string;
   resolvedAt?: Date;
   notes?: string;
-  completionMethod?: 'auto' | 'manual';
+  completionMethod?: 'auto' | 'manual' | 'verified';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -218,7 +219,7 @@ class RemediationService {
     status: RemediationStatus,
     resolution?: string,
     resolvedBy?: string,
-    options?: { notes?: string; completionMethod?: 'auto' | 'manual' }
+    options?: { notes?: string; completionMethod?: 'auto' | 'manual' | 'verified' }
   ): Promise<RemediationTask> {
     return await prisma.$transaction(async (tx) => {
       const planJob = await tx.job.findFirst({
@@ -401,6 +402,107 @@ class RemediationService {
       criticalRemaining,
       estimatedTimeMinutes,
     };
+  }
+
+  async reauditEpub(
+    jobId: string,
+    file: { buffer: Buffer; originalname: string }
+  ): Promise<{
+    originalIssues: number;
+    newIssues: number;
+    resolved: number;
+    stillPending: number;
+    verifiedTasks: string[];
+    newIssuesFound: Array<{ code: string; message: string; severity: string }>;
+    comparison: {
+      before: { total: number; bySeverity: Record<string, number> };
+      after: { total: number; bySeverity: Record<string, number> };
+    };
+  }> {
+    const originalPlan = await this.getRemediationPlan(jobId);
+    if (!originalPlan) {
+      throw new Error('Original remediation plan not found');
+    }
+
+    logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${file.originalname}`);
+
+    const newAuditResult = await epubAuditService.runAudit(
+      file.buffer,
+      `reaudit-${jobId}`,
+      file.originalname
+    );
+
+    logger.info(`[Re-audit] New audit found ${newAuditResult.combinedIssues.length} issues`);
+
+    const resolvedIssueCodes = this.findResolvedIssues(
+      originalPlan.tasks,
+      newAuditResult.combinedIssues
+    );
+
+    logger.info(`[Re-audit] Resolved issues: ${resolvedIssueCodes.join(', ')}`);
+
+    const verifiedTasks: string[] = [];
+    for (const task of originalPlan.tasks) {
+      if (resolvedIssueCodes.includes(task.issueCode) && task.status === 'pending') {
+        await this.updateTaskStatus(
+          jobId,
+          task.id,
+          'completed',
+          'Verified fixed via re-audit',
+          'system',
+          { completionMethod: 'verified' }
+        );
+        verifiedTasks.push(task.id);
+      }
+    }
+
+    const originalIssueCodes = new Set(originalPlan.tasks.map(t => t.issueCode));
+    const newIssuesFound = newAuditResult.combinedIssues
+      .filter((i: { code: string }) => !originalIssueCodes.has(i.code))
+      .map((i: { code: string; message: string; severity: string }) => ({
+        code: i.code,
+        message: i.message,
+        severity: i.severity,
+      }));
+
+    const beforeBySeverity: Record<string, number> = {};
+    for (const task of originalPlan.tasks) {
+      beforeBySeverity[task.severity] = (beforeBySeverity[task.severity] || 0) + 1;
+    }
+
+    const afterBySeverity: Record<string, number> = {};
+    for (const issue of newAuditResult.combinedIssues) {
+      afterBySeverity[issue.severity] = (afterBySeverity[issue.severity] || 0) + 1;
+    }
+
+    return {
+      originalIssues: originalPlan.tasks.length,
+      newIssues: newAuditResult.combinedIssues.length,
+      resolved: resolvedIssueCodes.length,
+      stillPending: originalPlan.tasks.length - verifiedTasks.length,
+      verifiedTasks,
+      newIssuesFound,
+      comparison: {
+        before: { total: originalPlan.tasks.length, bySeverity: beforeBySeverity },
+        after: { total: newAuditResult.combinedIssues.length, bySeverity: afterBySeverity },
+      },
+    };
+  }
+
+  private findResolvedIssues(
+    originalTasks: RemediationTask[],
+    newIssues: Array<{ code: string }>
+  ): string[] {
+    const newIssueCodes = new Set(newIssues.map(i => i.code));
+    const resolvedCodes: string[] = [];
+    
+    for (const task of originalTasks) {
+      if (!newIssueCodes.has(task.issueCode) && task.status === 'pending') {
+        resolvedCodes.push(task.issueCode);
+      }
+    }
+    
+    return [...new Set(resolvedCodes)];
   }
 }
 
