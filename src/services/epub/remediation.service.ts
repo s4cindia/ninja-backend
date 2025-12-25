@@ -27,6 +27,12 @@ interface RemediationTask {
   completionMethod?: 'auto' | 'manual' | 'verified';
   createdAt: Date;
   updatedAt: Date;
+  filePath?: string;
+  selector?: string;
+  wcagCriteria?: string[];
+  source?: string;
+  html?: string;
+  remediation?: string;
 }
 
 interface RemediationPlan {
@@ -143,6 +149,13 @@ class RemediationService {
         .digest('hex')
         .substring(0, 8);
       
+      const wcagCriteriaRaw = issue.wcagCriteria;
+      const wcagCriteria: string[] | undefined = Array.isArray(wcagCriteriaRaw) 
+        ? wcagCriteriaRaw.map(String)
+        : typeof wcagCriteriaRaw === 'string' 
+          ? [wcagCriteriaRaw]
+          : undefined;
+      
       return {
         id: `task-${taskId}`,
         jobId,
@@ -158,6 +171,12 @@ class RemediationService {
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
+        filePath: (issue.filePath as string) || (issue.location as string) || undefined,
+        selector: (issue.selector as string) || undefined,
+        wcagCriteria,
+        source: (issue.source as string) || undefined,
+        html: (issue.html as string) || (issue.snippet as string) || undefined,
+        remediation: this.getRemediationGuidance(issueCode),
       };
     });
 
@@ -487,6 +506,27 @@ class RemediationService {
         after: { total: newAuditResult.combinedIssues.length, bySeverity: afterBySeverity },
       },
     };
+  }
+
+  private getRemediationGuidance(code: string): string {
+    const guidance: Record<string, string> = {
+      'EPUB-META-001': 'Add <dc:language> element to the package document (OPF) with the primary language code (e.g., "en" for English).',
+      'EPUB-META-002': 'Add schema:accessibilityFeature metadata with values like "alternativeText", "readingOrder", "structuralNavigation".',
+      'EPUB-META-003': 'Add schema:accessibilitySummary with a description of the publication\'s accessibility features.',
+      'EPUB-META-004': 'Add schema:accessMode metadata specifying how content can be consumed (e.g., "textual", "visual").',
+      'EPUB-SEM-001': 'Add lang attribute to HTML elements to specify the document language for screen readers.',
+      'EPUB-SEM-002': 'Add descriptive aria-label or visible text content to empty links.',
+      'EPUB-IMG-001': 'Add meaningful alt text describing the image content, or alt="" for decorative images.',
+      'EPUB-STRUCT-002': 'Add <th> elements with scope attributes to data tables for proper header associations.',
+      'EPUB-STRUCT-003': 'Fix heading hierarchy to avoid skipped levels (e.g., h1 → h2 → h3, not h1 → h3).',
+      'EPUB-STRUCT-004': 'Add ARIA landmark roles (main, navigation, banner, contentinfo) to major page regions.',
+      'EPUB-NAV-001': 'Add skip navigation link at the top of content pages to bypass repetitive navigation.',
+      'EPUB-FIG-001': 'Wrap images in <figure> elements with <figcaption> for proper figure structure.',
+      'COLOR-CONTRAST': 'Adjust text/background colors to meet WCAG contrast ratio requirements (4.5:1 for normal text, 3:1 for large text).',
+      'LINK-TEXT': 'Replace generic link text like "click here" with descriptive text indicating the link destination.',
+      'FORM-LABEL': 'Associate form inputs with visible <label> elements using for/id attributes.',
+    };
+    return guidance[code] || 'Review and manually remediate this accessibility issue according to WCAG guidelines.';
   }
 
   private findResolvedIssues(
