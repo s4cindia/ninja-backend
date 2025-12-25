@@ -341,6 +341,88 @@ export const epubController = {
     }
   },
 
+  async transferToAcr(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const result = await remediationService.transferToAcr(jobId);
+
+      logger.info(`[ACR Transfer] Job ${jobId}: ${result.transferredTasks} tasks transferred`);
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('ACR transfer failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to transfer to ACR workflow',
+      });
+    }
+  },
+
+  async getAcrWorkflow(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId } = req.params;
+
+      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId);
+
+      if (!workflow) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR workflow not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: workflow,
+      });
+    } catch (error) {
+      logger.error('Failed to get ACR workflow', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get ACR workflow',
+      });
+    }
+  },
+
+  async updateAcrCriteria(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId, criteriaId } = req.params;
+      const { status, notes } = req.body;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      if (!status || !['verified', 'failed', 'not_applicable'].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Status must be one of: verified, failed, not_applicable',
+        });
+      }
+
+      const result = await remediationService.updateAcrCriteriaStatus(
+        acrWorkflowId,
+        criteriaId,
+        status,
+        verifiedBy,
+        notes
+      );
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Criteria ${criteriaId} updated to ${status}`,
+      });
+    } catch (error) {
+      logger.error('Failed to update ACR criteria', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to update ACR criteria',
+      });
+    }
+  },
+
   async runAutoRemediation(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;

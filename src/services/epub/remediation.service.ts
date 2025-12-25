@@ -504,6 +504,245 @@ class RemediationService {
     
     return [...new Set(resolvedCodes)];
   }
+
+  async transferToAcr(jobId: string): Promise<{
+    acrWorkflowId: string;
+    transferredTasks: number;
+    message: string;
+  }> {
+    const plan = await this.getRemediationPlan(jobId);
+    if (!plan) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const pendingTasks = plan.tasks.filter(t => t.status === 'pending');
+
+    if (pendingTasks.length === 0) {
+      throw new Error('No pending tasks to transfer. All tasks are already completed.');
+    }
+
+    const originalJob = await prisma.job.findFirst({
+      where: { id: jobId },
+    });
+
+    if (!originalJob) {
+      throw new Error('Original job not found');
+    }
+
+    const acrCriteria = pendingTasks.map(task => ({
+      id: `acr-${task.id}`,
+      code: task.issueCode,
+      description: task.issueMessage,
+      severity: task.severity,
+      location: task.location,
+      status: 'not_verified' as const,
+      wcagCriteria: task.suggestion?.match(/WCAG\s*\d+\.\d+\.\d+/)?.[0] || null,
+      sourceTaskId: task.id,
+      verifiedBy: null,
+      verifiedAt: null,
+      notes: null,
+    }));
+
+    const acrWorkflow = {
+      sourceJobId: jobId,
+      fileName: plan.fileName,
+      status: 'needs_verification',
+      sourceType: 'remediation',
+      totalCriteria: pendingTasks.length,
+      verifiedCount: 0,
+      criteria: acrCriteria,
+      stats: {
+        notVerified: pendingTasks.length,
+        verified: 0,
+        failed: 0,
+        notApplicable: 0,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const acrJob = await prisma.job.create({
+      data: {
+        tenantId: originalJob.tenantId,
+        userId: originalJob.userId,
+        type: 'ACR_WORKFLOW',
+        status: 'PROCESSING',
+        input: { sourceJobId: jobId, sourceType: 'remediation' },
+        output: JSON.parse(JSON.stringify(acrWorkflow)),
+        startedAt: new Date(),
+      },
+    });
+
+    for (const task of pendingTasks) {
+      await this.updateTaskStatus(
+        jobId,
+        task.id,
+        'pending',
+        undefined,
+        undefined,
+        { notes: `Transferred to ACR workflow: ${acrJob.id}` }
+      );
+    }
+
+    logger.info(`[ACR Transfer] Transferred ${pendingTasks.length} tasks from job ${jobId} to ACR workflow ${acrJob.id}`);
+
+    return {
+      acrWorkflowId: acrJob.id,
+      transferredTasks: pendingTasks.length,
+      message: `${pendingTasks.length} tasks transferred to ACR workflow for verification`,
+    };
+  }
+
+  async getAcrWorkflow(acrWorkflowId: string): Promise<{
+    id: string;
+    sourceJobId: string;
+    fileName: string;
+    status: string;
+    totalCriteria: number;
+    verifiedCount: number;
+    criteria: Array<{
+      id: string;
+      code: string;
+      description: string;
+      severity: string;
+      status: string;
+    }>;
+    stats: {
+      notVerified: number;
+      verified: number;
+      failed: number;
+      notApplicable: number;
+    };
+  } | null> {
+    const acrJob = await prisma.job.findFirst({
+      where: {
+        id: acrWorkflowId,
+        type: 'ACR_WORKFLOW',
+      },
+    });
+
+    if (!acrJob || !acrJob.output) {
+      return null;
+    }
+
+    const workflow = acrJob.output as {
+      sourceJobId: string;
+      fileName: string;
+      status: string;
+      totalCriteria: number;
+      verifiedCount: number;
+      criteria: Array<{
+        id: string;
+        code: string;
+        description: string;
+        severity: string;
+        status: string;
+      }>;
+      stats: {
+        notVerified: number;
+        verified: number;
+        failed: number;
+        notApplicable: number;
+      };
+    };
+
+    return {
+      id: acrJob.id,
+      ...workflow,
+    };
+  }
+
+  async updateAcrCriteriaStatus(
+    acrWorkflowId: string,
+    criteriaId: string,
+    status: 'verified' | 'failed' | 'not_applicable',
+    verifiedBy: string,
+    notes?: string
+  ): Promise<{ success: boolean; criteria: unknown }> {
+    return await prisma.$transaction(async (tx) => {
+      const acrJob = await tx.job.findFirst({
+        where: {
+          id: acrWorkflowId,
+          type: 'ACR_WORKFLOW',
+        },
+      });
+
+      if (!acrJob || !acrJob.output) {
+        throw new Error('ACR workflow not found');
+      }
+
+      const workflow = acrJob.output as {
+        criteria: Array<{
+          id: string;
+          status: string;
+          verifiedBy: string | null;
+          verifiedAt: Date | null;
+          notes: string | null;
+        }>;
+        stats: {
+          notVerified: number;
+          verified: number;
+          failed: number;
+          notApplicable: number;
+        };
+        verifiedCount: number;
+        status: string;
+        totalCriteria: number;
+      };
+
+      const criteriaIndex = workflow.criteria.findIndex(c => c.id === criteriaId);
+      if (criteriaIndex === -1) {
+        throw new Error('Criteria not found');
+      }
+
+      const criteria = workflow.criteria[criteriaIndex];
+      const oldStatus = criteria.status;
+      
+      criteria.status = status;
+      criteria.verifiedBy = verifiedBy;
+      criteria.verifiedAt = new Date();
+      if (notes) {
+        criteria.notes = notes;
+      }
+
+      if (oldStatus === 'not_verified') {
+        workflow.stats.notVerified--;
+      } else if (oldStatus === 'verified') {
+        workflow.stats.verified--;
+      } else if (oldStatus === 'failed') {
+        workflow.stats.failed--;
+      } else if (oldStatus === 'not_applicable') {
+        workflow.stats.notApplicable--;
+      }
+
+      if (status === 'verified') {
+        workflow.stats.verified++;
+      } else if (status === 'failed') {
+        workflow.stats.failed++;
+      } else if (status === 'not_applicable') {
+        workflow.stats.notApplicable++;
+      }
+
+      workflow.verifiedCount = workflow.stats.verified + workflow.stats.failed + workflow.stats.notApplicable;
+
+      if (workflow.verifiedCount === workflow.totalCriteria) {
+        workflow.status = 'completed';
+      } else {
+        workflow.status = 'in_progress';
+      }
+
+      await tx.job.update({
+        where: { id: acrWorkflowId },
+        data: {
+          output: JSON.parse(JSON.stringify(workflow)),
+          status: workflow.status === 'completed' ? 'COMPLETED' : 'PROCESSING',
+          completedAt: workflow.status === 'completed' ? new Date() : undefined,
+        },
+      });
+
+      return { success: true, criteria };
+    });
+  }
 }
 
 export const remediationService = new RemediationService();
