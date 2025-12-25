@@ -473,9 +473,9 @@ class EpubAuditService {
 
   private calculateScore(issues: AccessibilityIssue[]): ScoreBreakdown {
     const weights = {
-      critical: 10,
-      serious: 5,
-      moderate: 2,
+      critical: 15,
+      serious: 8,
+      moderate: 4,
       minor: 1,
     };
 
@@ -501,7 +501,7 @@ class EpubAuditService {
 
     return {
       score: Math.max(0, 100 - totalDeduction),
-      formula: '100 - (critical × 10) - (serious × 5) - (moderate × 2) - (minor × 1)',
+      formula: '100 - (critical × 15) - (serious × 8) - (moderate × 4) - (minor × 1)',
       weights,
       deductions,
       totalDeduction,

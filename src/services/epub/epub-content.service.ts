@@ -56,12 +56,25 @@ export class EpubContentService {
         throw new Error('File not found in EPUB');
       }
 
-      const content = entry.getData().toString('utf8');
       const contentType = this.getContentType(entry.entryName);
+      
+      const isBinary = contentType.startsWith('image/') ||
+                       contentType === 'application/octet-stream';
 
-      logger.info(`[EPUB Content] Served ${entry.entryName} from job ${jobId}`);
+      let content: string;
+      let finalContentType: string;
 
-      return { content, contentType };
+      if (isBinary) {
+        content = entry.getData().toString('base64');
+        finalContentType = `${contentType};base64`;
+      } else {
+        content = entry.getData().toString('utf8');
+        finalContentType = contentType;
+      }
+
+      logger.info(`[EPUB Content] Served ${entry.entryName} from job ${jobId} (binary: ${isBinary})`);
+
+      return { content, contentType: finalContentType };
     } catch (error) {
       if (error instanceof Error && error.message.includes('not found')) {
         throw error;

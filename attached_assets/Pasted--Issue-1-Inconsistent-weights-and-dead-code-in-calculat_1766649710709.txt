@@ -1,0 +1,69 @@
+ Issue 1: Inconsistent weights and dead code in calculateScore
+
+  The method has dead code after an early return and inconsistent weights. Fix in epub-audit.service.ts:
+
+  private calculateScore(issues: AccessibilityIssue[]): ScoreBreakdown {
+    // Use consistent weights matching PR description
+    const weights = {
+      critical: 15,
+      serious: 8,
+      moderate: 4,
+      minor: 1,
+    };
+
+    const counts = {
+      critical: issues.filter(i => i.severity === 'critical').length,
+      serious: issues.filter(i => i.severity === 'serious').length,
+      moderate: issues.filter(i => i.severity === 'moderate').length,
+      minor: issues.filter(i => i.severity === 'minor').length,
+    };
+
+    const deductions = {
+      critical: { count: counts.critical, points: counts.critical * weights.critical },
+      serious: { count: counts.serious, points: counts.serious * weights.serious },
+      moderate: { count: counts.moderate, points: counts.moderate * weights.moderate },
+      minor: { count: counts.minor, points: counts.minor * weights.minor },
+    };
+
+    const totalDeduction =
+      deductions.critical.points +
+      deductions.serious.points +
+      deductions.moderate.points +
+      deductions.minor.points;
+
+    return {
+      score: Math.max(0, 100 - totalDeduction),
+      formula: '100 - (critical × 15) - (serious × 8) - (moderate × 4) - (minor × 1)',
+      weights,
+      deductions,
+      totalDeduction,
+      maxScore: 100,
+    };
+  }
+
+  Remove the dead code (lines with early return and switch statement).
+
+  ---
+  Issue 2: Binary files corrupted by UTF-8 decoding
+
+  Fix in epub-content.service.ts - handle binary files properly:
+
+  async getContent(jobId: string, filePath: string): Promise<{ content: string; contentType: string }> {
+    // ... existing code to find entry ...
+
+    const contentType = this.getContentType(entry.entryName);
+
+    // Check if binary content type
+    const isBinary = contentType.startsWith('image/') ||
+                     contentType === 'application/octet-stream';
+
+    if (isBinary) {
+      // Return base64-encoded for binary files
+      const content = entry.getData().toString('base64');
+      return { content, contentType: `${contentType};base64` };
+    }
+
+    // UTF-8 for text content
+    const content = entry.getData().toString('utf8');
+    return { content, contentType };
+  }
