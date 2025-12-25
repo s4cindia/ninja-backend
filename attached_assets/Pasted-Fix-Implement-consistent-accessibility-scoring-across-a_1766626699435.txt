@@ -1,0 +1,83 @@
+Fix: Implement consistent accessibility scoring across all audit sources
+
+  The current score (72) doesn't match expected calculation with 9 critical issues. Review and fix the scoring logic in epub-audit.service.ts.
+
+  Recommended scoring approach:
+
+  // In epub-audit.service.ts
+
+  interface ScoreBreakdown {
+    score: number;
+    deductions: {
+      critical: { count: number; points: number };
+      serious: { count: number; points: number };
+      moderate: { count: number; points: number };
+      minor: { count: number; points: number };
+    };
+    maxScore: number;
+  }
+
+  function calculateAccessibilityScore(issues: AuditIssue[]): ScoreBreakdown {
+    const weights = {
+      critical: 10,  // Reduced from 15 to prevent quick zeroing
+      serious: 5,
+      moderate: 2,
+      minor: 1,
+    };
+
+    const counts = {
+      critical: issues.filter(i => i.severity === 'critical').length,
+      serious: issues.filter(i => i.severity === 'serious').length,
+      moderate: issues.filter(i => i.severity === 'moderate').length,
+      minor: issues.filter(i => i.severity === 'minor').length,
+    };
+
+    const deductions = {
+      critical: { count: counts.critical, points: counts.critical * weights.critical },
+      serious: { count: counts.serious, points: counts.serious * weights.serious },
+      moderate: { count: counts.moderate, points: counts.moderate * weights.moderate },
+      minor: { count: counts.minor, points: counts.minor * weights.minor },
+    };
+
+    const totalDeduction =
+      deductions.critical.points +
+      deductions.serious.points +
+      deductions.moderate.points +
+      deductions.minor.points;
+
+    return {
+      score: Math.max(0, 100 - totalDeduction),
+      deductions,
+      maxScore: 100,
+    };
+  }
+
+  Update the audit response to include score breakdown:
+
+  // In the audit result response
+  {
+    score: scoreBreakdown.score,
+    scoreBreakdown: {
+      formula: "100 - (critical × 10) - (serious × 5) - (moderate × 2) - (minor × 1)",
+      weights: { critical: 10, serious: 5, moderate: 2, minor: 1 },
+      deductions: scoreBreakdown.deductions,
+      totalDeduction: 100 - scoreBreakdown.score,
+    },
+    // ... rest of audit result
+  }
+
+  With revised weights (10/5/2/1), the screenshot example would be:
+  - 9 critical × 10 = 90
+  - 0 serious × 5 = 0
+  - 2 moderate × 2 = 4
+  - 3 minor × 1 = 3
+  - Score: 100 - 97 = 3
+
+  Alternative: Cap deductions per category to prevent single category from zeroing score:
+
+  const cappedDeductions = {
+    critical: Math.min(counts.critical * weights.critical, 50), // Max 50 from critical
+    serious: Math.min(counts.serious * weights.serious, 25),
+    moderate: Math.min(counts.moderate * weights.moderate, 15),
+    minor: Math.min(counts.minor * weights.minor, 10),
+  };

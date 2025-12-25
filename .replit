@@ -41,7 +41,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "npx ts-node-dev --respawn --transpile-only src/index.ts"
+args = "npm run dev"
 waitForPort = 5000
 
 [userenv]

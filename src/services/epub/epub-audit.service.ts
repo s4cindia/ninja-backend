@@ -66,6 +66,20 @@ interface AccessibilityIssue {
   category?: string;
 }
 
+interface ScoreBreakdown {
+  score: number;
+  formula: string;
+  weights: { critical: number; serious: number; moderate: number; minor: number };
+  deductions: {
+    critical: { count: number; points: number };
+    serious: { count: number; points: number };
+    moderate: { count: number; points: number };
+    minor: { count: number; points: number };
+  };
+  totalDeduction: number;
+  maxScore: number;
+}
+
 interface EpubAuditResult {
   jobId: string;
   fileName: string;
@@ -73,6 +87,7 @@ interface EpubAuditResult {
   isValid: boolean;
   isAccessible: boolean;
   score: number;
+  scoreBreakdown: ScoreBreakdown;
   epubCheckResult: EpubCheckResult;
   aceResult: AceResult | null;
   combinedIssues: AccessibilityIssue[];
@@ -203,7 +218,7 @@ class EpubAuditService {
         logger.info(`[EPUB Audit] Deduplicated ${combinedIssues.length - deduplicatedIssues.length} duplicate issues`);
       }
 
-      const score = this.calculateScore(deduplicatedIssues, aceResult);
+      const scoreBreakdown = this.calculateScore(deduplicatedIssues);
 
       const summaryBySource = {
         epubcheck: {
@@ -236,8 +251,9 @@ class EpubAuditService {
         fileName,
         epubVersion: epubCheckResult.epubVersion,
         isValid: epubCheckResult.isValid,
-        isAccessible: score >= 70 && deduplicatedIssues.filter(i => i.severity === 'critical').length === 0,
-        score,
+        isAccessible: scoreBreakdown.score >= 70 && deduplicatedIssues.filter(i => i.severity === 'critical').length === 0,
+        score: scoreBreakdown.score,
+        scoreBreakdown,
         epubCheckResult,
         aceResult,
         combinedIssues: deduplicatedIssues,
@@ -452,21 +468,42 @@ class EpubAuditService {
     };
   }
 
-  private calculateScore(issues: AccessibilityIssue[], ace: AceResult | null): number {
-    if (ace) {
-      return ace.score;
-    }
+  private calculateScore(issues: AccessibilityIssue[]): ScoreBreakdown {
+    const weights = {
+      critical: 10,
+      serious: 5,
+      moderate: 2,
+      minor: 1,
+    };
 
-    let score = 100;
-    for (const issue of issues) {
-      switch (issue.severity) {
-        case 'critical': score -= 15; break;
-        case 'serious': score -= 8; break;
-        case 'moderate': score -= 4; break;
-        case 'minor': score -= 1; break;
-      }
-    }
-    return Math.max(0, score);
+    const counts = {
+      critical: issues.filter(i => i.severity === 'critical').length,
+      serious: issues.filter(i => i.severity === 'serious').length,
+      moderate: issues.filter(i => i.severity === 'moderate').length,
+      minor: issues.filter(i => i.severity === 'minor').length,
+    };
+
+    const deductions = {
+      critical: { count: counts.critical, points: counts.critical * weights.critical },
+      serious: { count: counts.serious, points: counts.serious * weights.serious },
+      moderate: { count: counts.moderate, points: counts.moderate * weights.moderate },
+      minor: { count: counts.minor, points: counts.minor * weights.minor },
+    };
+
+    const totalDeduction =
+      deductions.critical.points +
+      deductions.serious.points +
+      deductions.moderate.points +
+      deductions.minor.points;
+
+    return {
+      score: Math.max(0, 100 - totalDeduction),
+      formula: '100 - (critical × 10) - (serious × 5) - (moderate × 2) - (minor × 1)',
+      weights,
+      deductions,
+      totalDeduction,
+      maxScore: 100,
+    };
   }
 
   private async storeResult(result: EpubAuditResult): Promise<void> {
