@@ -14,10 +14,6 @@ externalPort = 80
 localPort = 5000
 externalPort = 80
 
-[[ports]]
-localPort = 5555
-externalPort = 3000
-
 [env]
 NODE_OPTIONS = "--max-old-space-size=4096"
 
@@ -40,13 +36,13 @@ args = "Backend Server"
 name = "Backend Server"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
 waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
 
 [userenv]
 
