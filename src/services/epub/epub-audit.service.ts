@@ -189,31 +189,45 @@ class EpubAuditService {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
       }
 
-      const score = this.calculateScore(combinedIssues, aceResult);
+      const seen = new Set<string>();
+      const deduplicatedIssues = combinedIssues.filter(issue => {
+        const key = `${issue.source}-${issue.code}-${issue.location || ''}-${issue.message}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+
+      if (deduplicatedIssues.length < combinedIssues.length) {
+        logger.info(`[EPUB Audit] Deduplicated ${combinedIssues.length - deduplicatedIssues.length} duplicate issues`);
+      }
+
+      const score = this.calculateScore(deduplicatedIssues, aceResult);
 
       const summaryBySource = {
         epubcheck: {
-          critical: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'critical').length,
-          serious: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'serious').length,
-          moderate: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'moderate').length,
-          minor: combinedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'minor').length,
-          total: combinedIssues.filter(i => i.source === 'epubcheck').length,
+          critical: deduplicatedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'critical').length,
+          serious: deduplicatedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'serious').length,
+          moderate: deduplicatedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'moderate').length,
+          minor: deduplicatedIssues.filter(i => i.source === 'epubcheck' && i.severity === 'minor').length,
+          total: deduplicatedIssues.filter(i => i.source === 'epubcheck').length,
         },
         ace: {
-          critical: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'critical').length,
-          serious: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'serious').length,
-          moderate: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'moderate').length,
-          minor: combinedIssues.filter(i => i.source === 'ace' && i.severity === 'minor').length,
-          total: combinedIssues.filter(i => i.source === 'ace').length,
+          critical: deduplicatedIssues.filter(i => i.source === 'ace' && i.severity === 'critical').length,
+          serious: deduplicatedIssues.filter(i => i.source === 'ace' && i.severity === 'serious').length,
+          moderate: deduplicatedIssues.filter(i => i.source === 'ace' && i.severity === 'moderate').length,
+          minor: deduplicatedIssues.filter(i => i.source === 'ace' && i.severity === 'minor').length,
+          total: deduplicatedIssues.filter(i => i.source === 'ace').length,
         },
         'js-auditor': {
-          critical: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'critical').length,
-          serious: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'serious').length,
-          moderate: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
-          minor: combinedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
-          total: combinedIssues.filter(i => i.source === 'js-auditor').length,
+          critical: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'critical').length,
+          serious: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'serious').length,
+          moderate: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
+          minor: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
+          total: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
           // All JS Auditor issues are auto-fixable by design - it specifically detects issues with remediation handlers
-          autoFixable: combinedIssues.filter(i => i.source === 'js-auditor').length,
+          autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
         },
       };
 
@@ -222,17 +236,17 @@ class EpubAuditService {
         fileName,
         epubVersion: epubCheckResult.epubVersion,
         isValid: epubCheckResult.isValid,
-        isAccessible: score >= 70 && combinedIssues.filter(i => i.severity === 'critical').length === 0,
+        isAccessible: score >= 70 && deduplicatedIssues.filter(i => i.severity === 'critical').length === 0,
         score,
         epubCheckResult,
         aceResult,
-        combinedIssues,
+        combinedIssues: deduplicatedIssues,
         summary: {
-          critical: combinedIssues.filter(i => i.severity === 'critical').length,
-          serious: combinedIssues.filter(i => i.severity === 'serious').length,
-          moderate: combinedIssues.filter(i => i.severity === 'moderate').length,
-          minor: combinedIssues.filter(i => i.severity === 'minor').length,
-          total: combinedIssues.length,
+          critical: deduplicatedIssues.filter(i => i.severity === 'critical').length,
+          serious: deduplicatedIssues.filter(i => i.severity === 'serious').length,
+          moderate: deduplicatedIssues.filter(i => i.severity === 'moderate').length,
+          minor: deduplicatedIssues.filter(i => i.severity === 'minor').length,
+          total: deduplicatedIssues.length,
         },
         summaryBySource,
         accessibilityMetadata: aceResult?.metadata || null,
