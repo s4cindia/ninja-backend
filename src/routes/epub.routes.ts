@@ -27,6 +27,7 @@ router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubControlle
 router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
 router.get('/job/:jobId/remediation/summary', authenticate, authorizeJob, epubController.getRemediationSummary);
 router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
+router.patch('/job/:jobId/remediation/task/:taskId/fix', authenticate, authorizeJob, epubController.markManualTaskFixed);
 router.post('/job/:jobId/auto-remediate', authenticate, authorizeJob, epubController.runAutoRemediation);
 router.post('/job/:jobId/apply-fix', authenticate, authorizeJob, epubController.applySpecificFix);
 router.get('/job/:jobId/download-remediated', authenticate, authorizeJob, epubController.downloadRemediatedFile);

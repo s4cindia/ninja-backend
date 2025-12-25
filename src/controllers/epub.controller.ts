@@ -248,7 +248,7 @@ export const epubController = {
   async updateTaskStatus(req: Request, res: Response) {
     try {
       const { jobId, taskId } = req.params;
-      const { status, resolution, resolvedBy } = req.body;
+      const { status, resolution, resolvedBy, notes, completionMethod } = req.body;
 
       if (!status) {
         return res.status(400).json({
@@ -262,7 +262,8 @@ export const epubController = {
         taskId,
         status,
         resolution,
-        resolvedBy
+        resolvedBy,
+        { notes, completionMethod }
       );
 
       return res.json({
@@ -274,6 +275,34 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to update task',
+      });
+    }
+  },
+
+  async markManualTaskFixed(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId, taskId } = req.params;
+      const { notes, resolution } = req.body;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      const task = await remediationService.markManualTaskFixed(
+        jobId,
+        taskId,
+        { notes, verifiedBy, resolution }
+      );
+
+      logger.info(`Manual task ${taskId} marked as fixed by ${verifiedBy}`);
+
+      return res.json({
+        success: true,
+        data: task,
+        message: 'Task marked as manually fixed',
+      });
+    } catch (error) {
+      logger.error('Failed to mark task as fixed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
       });
     }
   },

@@ -22,6 +22,8 @@ interface RemediationTask {
   resolution?: string;
   resolvedBy?: string;
   resolvedAt?: Date;
+  notes?: string;
+  completionMethod?: 'auto' | 'manual';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -215,7 +217,8 @@ class RemediationService {
     taskId: string,
     status: RemediationStatus,
     resolution?: string,
-    resolvedBy?: string
+    resolvedBy?: string,
+    options?: { notes?: string; completionMethod?: 'auto' | 'manual' }
   ): Promise<RemediationTask> {
     return await prisma.$transaction(async (tx) => {
       const planJob = await tx.job.findFirst({
@@ -248,6 +251,12 @@ class RemediationService {
         task.resolution = resolution;
         task.resolvedBy = resolvedBy;
         task.resolvedAt = new Date();
+        if (options?.completionMethod) {
+          task.completionMethod = options.completionMethod;
+        }
+        if (options?.notes) {
+          task.notes = options.notes;
+        }
       }
 
       plan.stats = {
@@ -268,6 +277,24 @@ class RemediationService {
 
       return task;
     });
+  }
+
+  async markManualTaskFixed(
+    jobId: string,
+    taskId: string,
+    data: { notes?: string; verifiedBy?: string; resolution?: string }
+  ): Promise<RemediationTask> {
+    const resolution = data.resolution || 'Manually verified and fixed';
+    const verifiedBy = data.verifiedBy || 'user';
+    
+    return this.updateTaskStatus(
+      jobId,
+      taskId,
+      'completed',
+      resolution,
+      verifiedBy,
+      { notes: data.notes, completionMethod: 'manual' }
+    );
   }
 
   async startTask(jobId: string, taskId: string): Promise<RemediationTask> {
