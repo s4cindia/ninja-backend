@@ -1,0 +1,70 @@
+Current Report Issues
+
+  Accessibility Report
+
+  | Current                         | Problem                                                        |
+  |---------------------------------|----------------------------------------------------------------|
+  | Shows 5 hardcoded WCAG criteria | Should dynamically include ALL criteria based on actual issues |
+  | modifications: [] is empty      | Should show all modifications made                             |
+  | No individual issue list        | Missing full details of each issue                             |
+
+  Comparison Report
+
+  | Current                      | Problem                                             |
+  |------------------------------|-----------------------------------------------------|
+  | File-level changes only      | Missing per-issue before/after status               |
+  | No issue resolution tracking | Should show which specific issues were fixed/failed |
+
+  ---
+  Recommended Improvements
+
+  1. Accessibility Report - Add Full Issue List
+
+  issues: [
+    {
+      code: "EPUB-001",
+      severity: "critical",
+      message: "Missing alt text for image",
+      location: "chapter1.xhtml:42",
+      filePath: "OEBPS/chapter1.xhtml",
+      wcagCriteria: ["1.1.1"],
+      source: "ACE",
+      type: "auto-fixable",
+      status: "pending"
+    },
+    ...all 14 issues
+  ]
+
+  2. WCAG Compliance - Dynamic Criteria
+
+  Instead of hardcoded 5 criteria, derive from actual issues found:
+  - If issues contain alt-text problems → include 1.1.1
+  - If issues contain landmark problems → include 2.4.1, 1.3.6
+  - If issues contain table problems → include 1.3.1
+
+  3. Comparison Report - Per-Issue Tracking
+
+  issueResolutions: [
+    {
+      code: "EPUB-001",
+      originalStatus: "pending",
+      finalStatus: "fixed",
+      resolutionType: "auto-remediated"
+    },
+    ...
+  ]
+
+  ---
+  Replit Prompts for Backend Improvements
+
+  Prompt 1: Enhance Accessibility Report
+
+  In ninja-backend/src/services/epub/epub-export.service.ts, enhance generateAccessibilityReport():
+
+  1. Add a full "issues" array to the report containing ALL issues from the audit (not just summary counts). Each issue should have: code, severity, message, location, filePath, wcagCriteria, source, type (auto/manual), status
+
+  2. Make wcagCompliance dynamic - derive WCAG criteria from actual issues found instead of hardcoding only 5 criteria
+
+  3. Ensure modifications array is populated from the remediation results
+
+  4. Update generateReportMarkdown() to include a full issues table
