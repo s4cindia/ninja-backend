@@ -186,8 +186,16 @@ class EPUBComparisonService {
       afterIssues.map(i => `${i.code}:${i.location || ''}`)
     );
 
+    modifications.forEach(m => {
+      if (!MODIFICATION_TYPE_TO_ISSUE_CODE[m.type]) {
+        logger.warn(`Unknown modification type not in mapping: ${m.type}`);
+      }
+    });
+
     const modificationCodes = new Set(
-      modifications.map(m => MODIFICATION_TYPE_TO_ISSUE_CODE[m.type] || m.type.toUpperCase())
+      modifications
+        .map(m => MODIFICATION_TYPE_TO_ISSUE_CODE[m.type])
+        .filter((code): code is string => code !== undefined)
     );
 
     return beforeIssues.map(issue => {
