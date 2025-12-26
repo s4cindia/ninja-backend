@@ -3,6 +3,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import { epubComparisonService } from './epub-comparison.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import { AUTO_FIXABLE_ISSUE_CODES } from '../../constants/auto-fix-codes';
 
 interface ExportOptions {
   includeOriginal?: boolean;
@@ -379,12 +380,7 @@ class EPUBExportService {
   }
 
   private isAutoFixable(code: string): boolean {
-    const autoFixableCodes = [
-      'EPUB-META-001', 'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
-      'EPUB-SEM-001', 'EPUB-SEM-002', 'EPUB-IMG-001', 'EPUB-STRUCT-002',
-      'EPUB-STRUCT-003', 'EPUB-STRUCT-004', 'EPUB-NAV-001', 'EPUB-FIG-001',
-    ];
-    return autoFixableCodes.includes(code);
+    return AUTO_FIXABLE_ISSUE_CODES.has(code);
   }
 
   private getCategory(code: string): string {

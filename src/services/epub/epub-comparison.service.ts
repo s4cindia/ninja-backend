@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
 import { diffLines } from 'diff';
 import { logger } from '../../lib/logger';
+import { AUTO_FIXABLE_ISSUE_CODES, MODIFICATION_TYPE_TO_ISSUE_CODE } from '../../constants/auto-fix-codes';
 
 interface FileComparison {
   filePath: string;
@@ -185,36 +186,15 @@ class EPUBComparisonService {
       afterIssues.map(i => `${i.code}:${i.location || ''}`)
     );
 
-    const modificationTypeToIssueCode: Record<string, string> = {
-      'add_language': 'EPUB-META-001',
-      'add_accessibility_metadata': 'EPUB-META-002',
-      'add_accessibility_summary': 'EPUB-META-003',
-      'add_access_modes': 'EPUB-META-004',
-      'add_html_lang': 'EPUB-SEM-001',
-      'fix_empty_links': 'EPUB-SEM-002',
-      'add_alt_text': 'EPUB-IMG-001',
-      'add_table_headers': 'EPUB-STRUCT-002',
-      'fix_heading_hierarchy': 'EPUB-STRUCT-003',
-      'add_aria_landmarks': 'EPUB-STRUCT-004',
-      'add_skip_navigation': 'EPUB-NAV-001',
-      'add_figure_structure': 'EPUB-FIG-001',
-    };
-
     const modificationCodes = new Set(
-      modifications.map(m => modificationTypeToIssueCode[m.type] || m.type.toUpperCase())
+      modifications.map(m => MODIFICATION_TYPE_TO_ISSUE_CODE[m.type] || m.type.toUpperCase())
     );
-
-    const autoFixableCodes = new Set([
-      'EPUB-META-001', 'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
-      'EPUB-SEM-001', 'EPUB-SEM-002', 'EPUB-IMG-001', 'EPUB-STRUCT-002',
-      'EPUB-STRUCT-003', 'EPUB-STRUCT-004', 'EPUB-NAV-001', 'EPUB-FIG-001',
-    ]);
 
     return beforeIssues.map(issue => {
       const issueKey = `${issue.code}:${issue.location || ''}`;
       const stillExists = afterIssueKeys.has(issueKey);
       const wasModified = modificationCodes.has(issue.code);
-      const isAutoFixable = autoFixableCodes.has(issue.code);
+      const isAutoFixable = AUTO_FIXABLE_ISSUE_CODES.has(issue.code);
 
       let finalStatus: 'fixed' | 'pending' | 'failed';
       let resolutionType: 'auto-fixed' | 'manual' | 'failed' | 'skipped';
@@ -250,12 +230,6 @@ class EPUBComparisonService {
       minor: 0,
     };
 
-    const autoFixableCodes = new Set([
-      'EPUB-META-001', 'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
-      'EPUB-SEM-001', 'EPUB-SEM-002', 'EPUB-IMG-001', 'EPUB-STRUCT-002',
-      'EPUB-STRUCT-003', 'EPUB-STRUCT-004', 'EPUB-NAV-001', 'EPUB-FIG-001',
-    ]);
-
     let autoCount = 0;
     let manualCount = 0;
 
@@ -265,7 +239,7 @@ class EPUBComparisonService {
         bySeverity[severity]++;
       }
 
-      if (autoFixableCodes.has(issue.code)) {
+      if (AUTO_FIXABLE_ISSUE_CODES.has(issue.code)) {
         autoCount++;
       } else {
         manualCount++;
