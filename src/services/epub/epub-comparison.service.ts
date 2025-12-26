@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
 import { diffLines } from 'diff';
 import { logger } from '../../lib/logger';
+import { AUTO_FIXABLE_ISSUE_CODES, MODIFICATION_TYPE_TO_ISSUE_CODE } from '../../constants/auto-fix-codes';
 
 interface FileComparison {
   filePath: string;
@@ -41,6 +42,9 @@ interface EPUBComparisonResult {
   summary: ComparisonSummary;
   files: FileComparison[];
   modifications: ModificationDetail[];
+  issueResolutions: IssueResolution[];
+  beforeAudit: AuditSummary;
+  afterAudit: AuditSummary;
   generatedAt: Date;
 }
 
@@ -54,12 +58,45 @@ interface ModificationDetail {
   wcagCriteria?: string;
 }
 
+interface IssueResolution {
+  code: string;
+  severity: string;
+  message: string;
+  location: string;
+  originalStatus: 'pending' | 'failed';
+  finalStatus: 'fixed' | 'pending' | 'failed';
+  resolutionType: 'auto-fixed' | 'manual' | 'failed' | 'skipped';
+}
+
+interface AuditSummary {
+  totalIssues: number;
+  bySeverity: {
+    critical: number;
+    serious: number;
+    moderate: number;
+    minor: number;
+  };
+  byType: {
+    auto: number;
+    manual: number;
+  };
+}
+
+interface AuditIssue {
+  code: string;
+  severity: string;
+  message: string;
+  location?: string;
+}
+
 class EPUBComparisonService {
   async compareEPUBs(
     originalBuffer: Buffer,
     remediatedBuffer: Buffer,
     jobId: string,
-    originalFileName: string
+    originalFileName: string,
+    beforeIssues?: AuditIssue[],
+    afterIssues?: AuditIssue[]
   ): Promise<EPUBComparisonResult> {
     const originalZip = await JSZip.loadAsync(originalBuffer);
     const remediatedZip = await JSZip.loadAsync(remediatedBuffer);
@@ -114,6 +151,15 @@ class EPUBComparisonService {
     }
 
     const summary = this.buildSummary(files, modifications);
+    
+    const issueResolutions = this.buildIssueResolutions(
+      beforeIssues || [],
+      afterIssues || [],
+      modifications
+    );
+    
+    const beforeAudit = this.buildAuditSummary(beforeIssues || []);
+    const afterAudit = this.buildAuditSummary(afterIssues || []);
 
     logger.info(`EPUB comparison complete for ${jobId}: ${summary.modifiedFiles} modified, ${modifications.length} changes`);
 
@@ -124,7 +170,101 @@ class EPUBComparisonService {
       summary,
       files,
       modifications,
+      issueResolutions,
+      beforeAudit,
+      afterAudit,
       generatedAt: new Date(),
+    };
+  }
+
+  private buildIssueResolutions(
+    beforeIssues: AuditIssue[],
+    afterIssues: AuditIssue[],
+    modifications: ModificationDetail[]
+  ): IssueResolution[] {
+    const afterIssueKeys = new Set(
+      afterIssues.map(i => `${i.code}:${i.location || ''}`)
+    );
+
+    modifications.forEach(m => {
+      if (!MODIFICATION_TYPE_TO_ISSUE_CODE[m.type]) {
+        logger.warn(`Unknown modification type not in mapping: ${m.type}`);
+      }
+    });
+
+    const modificationKeys = new Set(
+      modifications
+        .map(m => {
+          const code = MODIFICATION_TYPE_TO_ISSUE_CODE[m.type];
+          if (!code) return null;
+          return `${code}:${m.filePath || ''}`;
+        })
+        .filter((key): key is string => key !== null)
+    );
+
+    return beforeIssues.map(issue => {
+      const issueKey = `${issue.code}:${issue.location || ''}`;
+      const stillExists = afterIssueKeys.has(issueKey);
+      const wasModified = modificationKeys.has(`${issue.code}:${issue.location || ''}`);
+      const isAutoFixable = AUTO_FIXABLE_ISSUE_CODES.has(issue.code);
+
+      let finalStatus: 'fixed' | 'pending' | 'failed';
+      let resolutionType: 'auto-fixed' | 'manual' | 'failed' | 'skipped';
+
+      if (!stillExists) {
+        finalStatus = 'fixed';
+        resolutionType = isAutoFixable ? 'auto-fixed' : 'manual';
+      } else if (wasModified) {
+        finalStatus = 'failed';
+        resolutionType = 'failed';
+      } else {
+        finalStatus = 'pending';
+        resolutionType = 'skipped';
+      }
+
+      return {
+        code: issue.code,
+        severity: issue.severity,
+        message: issue.message,
+        location: issue.location || '',
+        originalStatus: 'pending' as const,
+        finalStatus,
+        resolutionType,
+      };
+    });
+  }
+
+  private buildAuditSummary(issues: AuditIssue[]): AuditSummary {
+    const bySeverity = {
+      critical: 0,
+      serious: 0,
+      moderate: 0,
+      minor: 0,
+    };
+
+    let autoCount = 0;
+    let manualCount = 0;
+
+    for (const issue of issues) {
+      const severity = issue.severity.toLowerCase() as keyof typeof bySeverity;
+      if (severity in bySeverity) {
+        bySeverity[severity]++;
+      }
+
+      if (AUTO_FIXABLE_ISSUE_CODES.has(issue.code)) {
+        autoCount++;
+      } else {
+        manualCount++;
+      }
+    }
+
+    return {
+      totalIssues: issues.length,
+      bySeverity,
+      byType: {
+        auto: autoCount,
+        manual: manualCount,
+      },
     };
   }
 
@@ -380,6 +520,99 @@ class EPUBComparisonService {
     }
     
     return result.modifications;
+  }
+
+  generateComparisonMarkdown(comparison: EPUBComparisonResult): string {
+    const { summary, beforeAudit, afterAudit, issueResolutions, modifications } = comparison;
+
+    let md = `# EPUB Comparison Report\n\n`;
+    md += `**Original:** ${comparison.originalFileName}\n`;
+    md += `**Remediated:** ${comparison.remediatedFileName}\n`;
+    md += `**Generated:** ${comparison.generatedAt.toISOString()}\n\n`;
+
+    md += `## File Changes Summary\n\n`;
+    md += `| Metric | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Total Files | ${summary.totalFiles} |\n`;
+    md += `| Modified Files | ${summary.modifiedFiles} |\n`;
+    md += `| Added Files | ${summary.addedFiles} |\n`;
+    md += `| Removed Files | ${summary.removedFiles} |\n`;
+    md += `| Total Changes | ${summary.totalChanges} |\n\n`;
+
+    md += `### Changes by Category\n\n`;
+    md += `| Category | Count |\n`;
+    md += `|----------|-------|\n`;
+    md += `| Metadata | ${summary.changesByType.metadata} |\n`;
+    md += `| Content | ${summary.changesByType.content} |\n`;
+    md += `| Structure | ${summary.changesByType.structure} |\n`;
+    md += `| Accessibility | ${summary.changesByType.accessibility} |\n\n`;
+
+    md += `## Audit Comparison\n\n`;
+    md += `### Before Remediation\n\n`;
+    md += `| Metric | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Total Issues | ${beforeAudit.totalIssues} |\n`;
+    md += `| Critical | ${beforeAudit.bySeverity.critical} |\n`;
+    md += `| Serious | ${beforeAudit.bySeverity.serious} |\n`;
+    md += `| Moderate | ${beforeAudit.bySeverity.moderate} |\n`;
+    md += `| Minor | ${beforeAudit.bySeverity.minor} |\n`;
+    md += `| Auto-fixable | ${beforeAudit.byType.auto} |\n`;
+    md += `| Manual | ${beforeAudit.byType.manual} |\n\n`;
+
+    md += `### After Remediation\n\n`;
+    md += `| Metric | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Total Issues | ${afterAudit.totalIssues} |\n`;
+    md += `| Critical | ${afterAudit.bySeverity.critical} |\n`;
+    md += `| Serious | ${afterAudit.bySeverity.serious} |\n`;
+    md += `| Moderate | ${afterAudit.bySeverity.moderate} |\n`;
+    md += `| Minor | ${afterAudit.bySeverity.minor} |\n`;
+    md += `| Auto-fixable | ${afterAudit.byType.auto} |\n`;
+    md += `| Manual | ${afterAudit.byType.manual} |\n\n`;
+
+    const fixedCount = issueResolutions.filter(r => r.finalStatus === 'fixed').length;
+    const pendingCount = issueResolutions.filter(r => r.finalStatus === 'pending').length;
+    const failedCount = issueResolutions.filter(r => r.finalStatus === 'failed').length;
+
+    md += `### Resolution Summary\n\n`;
+    md += `| Status | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Fixed | ${fixedCount} |\n`;
+    md += `| Pending | ${pendingCount} |\n`;
+    md += `| Failed | ${failedCount} |\n\n`;
+
+    if (issueResolutions.length > 0) {
+      md += `## Issue Resolutions\n\n`;
+      md += `| Code | Severity | Original | Final | Type | Message |\n`;
+      md += `|------|----------|----------|-------|------|--------|\n`;
+      for (const res of issueResolutions) {
+        const statusIcon = res.finalStatus === 'fixed' ? '✅' : res.finalStatus === 'failed' ? '❌' : '⏳';
+        md += `| ${res.code} | ${res.severity} | ${res.originalStatus} | ${statusIcon} ${res.finalStatus} | ${res.resolutionType} | ${res.message.substring(0, 50)}${res.message.length > 50 ? '...' : ''} |\n`;
+      }
+      md += '\n';
+    }
+
+    if (modifications.length > 0) {
+      md += `## Modifications Applied\n\n`;
+      for (const mod of modifications) {
+        md += `### ${mod.type}\n`;
+        md += `- **Category:** ${mod.category}\n`;
+        md += `- **Description:** ${mod.description}\n`;
+        if (mod.wcagCriteria) {
+          md += `- **WCAG Criterion:** ${mod.wcagCriteria}\n`;
+        }
+        md += `- **File:** ${mod.filePath}\n`;
+        if (mod.before) {
+          md += `- **Before:** \`${mod.before}\`\n`;
+        }
+        if (mod.after) {
+          md += `- **After:** \`${mod.after}\`\n`;
+        }
+        md += '\n';
+      }
+    }
+
+    return md;
   }
 }
 

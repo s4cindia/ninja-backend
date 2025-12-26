@@ -3,6 +3,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import { epubComparisonService } from './epub-comparison.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import { AUTO_FIXABLE_ISSUE_CODES } from '../../constants/auto-fix-codes';
 
 interface ExportOptions {
   includeOriginal?: boolean;
@@ -19,6 +20,26 @@ interface ExportResult {
   contents?: string[];
 }
 
+interface IssueDetail {
+  code: string;
+  severity: string;
+  message: string;
+  location: string;
+  filePath?: string;
+  wcagCriteria: string[];
+  source: string;
+  type: 'auto' | 'manual';
+  status: 'pending' | 'fixed' | 'failed';
+}
+
+interface IssueResolution {
+  code: string;
+  location: string;
+  originalStatus: 'pending';
+  finalStatus: 'fixed' | 'pending' | 'failed';
+  resolutionType: 'auto-remediated' | 'manual' | 'not-fixed';
+}
+
 interface AccessibilityReport {
   jobId: string;
   fileName: string;
@@ -27,17 +48,23 @@ interface AccessibilityReport {
   fixedIssues: number;
   remainingIssues: number;
   fixRate: number;
+  issues: IssueDetail[];
   modifications: {
     type: string;
     category: string;
     description: string;
     wcagCriteria?: string;
+    filePath?: string;
   }[];
   wcagCompliance: {
     criterion: string;
+    name: string;
     status: 'pass' | 'partial' | 'fail';
+    issueCount: number;
+    fixedCount: number;
     notes?: string;
   }[];
+  issueResolutions: IssueResolution[];
 }
 
 class EPUBExportService {
@@ -278,17 +305,63 @@ class EPUBExportService {
     const autoRemediation = output.autoRemediation as Record<string, unknown> || {};
 
     const fileName = (job.input as { fileName?: string })?.fileName || 'document.epub';
+    
+    const fixedCodes = new Set<string>();
     const modifications = (autoRemediation.modifications as Array<Record<string, unknown>> || [])
       .filter((m: Record<string, unknown>) => m.success)
-      .map((m: Record<string, unknown>) => ({
-        type: String(m.issueCode || ''),
-        category: this.getCategory(String(m.issueCode || '')),
-        description: String(m.description || ''),
-        wcagCriteria: this.getWcagCriteria(String(m.issueCode || '')),
-      }));
+      .map((m: Record<string, unknown>) => {
+        const code = String(m.issueCode || '');
+        fixedCodes.add(`${code}:${m.location || ''}`);
+        return {
+          type: code,
+          category: this.getCategory(code),
+          description: String(m.description || ''),
+          wcagCriteria: this.getWcagCriteria(code),
+          filePath: String(m.location || m.filePath || ''),
+        };
+      });
+
+    const issues: IssueDetail[] = auditResult.map((issue: Record<string, unknown>) => {
+      const code = String(issue.code || '');
+      const location = String(issue.location || '');
+      const isFixed = fixedCodes.has(`${code}:${location}`);
+      const isAutoFixable = this.isAutoFixable(code);
+      
+      let wcagCriteria: string[] = [];
+      if (Array.isArray(issue.wcagCriteria)) {
+        wcagCriteria = issue.wcagCriteria.map(String);
+      } else if (typeof issue.wcagCriteria === 'string') {
+        wcagCriteria = [issue.wcagCriteria];
+      } else {
+        const mapped = this.getWcagCriteria(code);
+        if (mapped) wcagCriteria = [mapped];
+      }
+
+      return {
+        code,
+        severity: String(issue.severity || 'moderate'),
+        message: String(issue.message || 'Accessibility issue detected'),
+        location,
+        filePath: String(issue.filePath || issue.location || ''),
+        wcagCriteria,
+        source: String(issue.source || 'unknown'),
+        type: isAutoFixable ? 'auto' as const : 'manual' as const,
+        status: isFixed ? 'fixed' as const : 'pending' as const,
+      };
+    });
+
+    const issueResolutions: IssueResolution[] = issues.map(issue => ({
+      code: issue.code,
+      location: issue.location,
+      originalStatus: 'pending' as const,
+      finalStatus: issue.status === 'fixed' ? 'fixed' as const : 'pending' as const,
+      resolutionType: issue.status === 'fixed' 
+        ? 'auto-remediated' as const 
+        : 'not-fixed' as const,
+    }));
 
     const originalIssues = auditResult.length;
-    const fixedIssues = modifications.length;
+    const fixedIssues = issues.filter(i => i.status === 'fixed').length;
     const remainingIssues = originalIssues - fixedIssues;
 
     return {
@@ -299,9 +372,15 @@ class EPUBExportService {
       fixedIssues,
       remainingIssues: Math.max(0, remainingIssues),
       fixRate: originalIssues > 0 ? Math.round((fixedIssues / originalIssues) * 100) : 100,
+      issues,
       modifications,
-      wcagCompliance: this.assessWcagCompliance(auditResult, modifications),
+      wcagCompliance: this.assessWcagCompliance(issues),
+      issueResolutions,
     };
+  }
+
+  private isAutoFixable(code: string): boolean {
+    return AUTO_FIXABLE_ISSUE_CODES.has(code);
   }
 
   private getCategory(code: string): string {
@@ -333,44 +412,61 @@ class EPUBExportService {
   }
 
   private assessWcagCompliance(
-    issues: Array<Record<string, unknown>>,
-    modifications: Array<{ wcagCriteria?: string }>
+    issues: IssueDetail[]
   ): AccessibilityReport['wcagCompliance'] {
-    const criteria = [
-      { criterion: '1.1.1', name: 'Non-text Content' },
-      { criterion: '1.3.1', name: 'Info and Relationships' },
-      { criterion: '2.4.1', name: 'Bypass Blocks' },
-      { criterion: '2.4.4', name: 'Link Purpose' },
-      { criterion: '3.1.1', name: 'Language of Page' },
-    ];
+    const wcagNames: Record<string, string> = {
+      '1.1.1': 'Non-text Content',
+      '1.3.1': 'Info and Relationships',
+      '1.3.6': 'Identify Purpose',
+      '2.4.1': 'Bypass Blocks',
+      '2.4.4': 'Link Purpose (In Context)',
+      '2.4.6': 'Headings and Labels',
+      '3.1.1': 'Language of Page',
+      '3.1.2': 'Language of Parts',
+      '4.1.1': 'Parsing',
+      '4.1.2': 'Name, Role, Value',
+    };
 
-    const fixedCriteria = new Set(
-      modifications.filter(m => m.wcagCriteria).map(m => m.wcagCriteria)
-    );
+    const criteriaStats = new Map<string, { total: number; fixed: number }>();
 
-    const issueCriteria = new Set(
-      issues.filter(i => i.wcagCriteria).map(i => String(i.wcagCriteria))
-    );
+    for (const issue of issues) {
+      for (const criterion of issue.wcagCriteria) {
+        if (!criteriaStats.has(criterion)) {
+          criteriaStats.set(criterion, { total: 0, fixed: 0 });
+        }
+        const stats = criteriaStats.get(criterion)!;
+        stats.total++;
+        if (issue.status === 'fixed') {
+          stats.fixed++;
+        }
+      }
+    }
 
-    return criteria.map(c => {
-      const hadIssue = issueCriteria.has(c.criterion);
-      const wasFixed = fixedCriteria.has(c.criterion);
+    const compliance: AccessibilityReport['wcagCompliance'] = [];
 
+    for (const [criterion, stats] of criteriaStats) {
       let status: 'pass' | 'partial' | 'fail';
-      if (!hadIssue) {
+      if (stats.fixed === stats.total) {
         status = 'pass';
-      } else if (wasFixed) {
-        status = 'pass';
+      } else if (stats.fixed > 0) {
+        status = 'partial';
       } else {
         status = 'fail';
       }
 
-      return {
-        criterion: c.criterion,
+      compliance.push({
+        criterion,
+        name: wcagNames[criterion] || `WCAG ${criterion}`,
         status,
-        notes: `${c.name}${hadIssue ? (wasFixed ? ' - Fixed' : ' - Issues remain') : ' - No issues found'}`,
-      };
-    });
+        issueCount: stats.total,
+        fixedCount: stats.fixed,
+        notes: `${stats.fixed}/${stats.total} issues resolved`,
+      });
+    }
+
+    compliance.sort((a, b) => a.criterion.localeCompare(b.criterion));
+
+    return compliance;
   }
 
   private generateComparisonMarkdown(comparison: Record<string, unknown>): string {
@@ -422,22 +518,67 @@ class EPUBExportService {
     md += `| Fix Rate | ${report.fixRate}% |\n\n`;
 
     md += `## WCAG Compliance\n\n`;
-    md += `| Criterion | Status | Notes |\n`;
-    md += `|-----------|--------|-------|\n`;
-    for (const c of report.wcagCompliance) {
-      const statusIcon = c.status === 'pass' ? '✅' : c.status === 'partial' ? '⚠️' : '❌';
-      md += `| ${c.criterion} | ${statusIcon} ${c.status} | ${c.notes || ''} |\n`;
+    if (report.wcagCompliance.length > 0) {
+      md += `| Criterion | Name | Status | Issues | Fixed |\n`;
+      md += `|-----------|------|--------|--------|-------|\n`;
+      for (const c of report.wcagCompliance) {
+        const statusIcon = c.status === 'pass' ? '✅' : c.status === 'partial' ? '⚠️' : '❌';
+        md += `| ${c.criterion} | ${c.name} | ${statusIcon} ${c.status} | ${c.issueCount} | ${c.fixedCount} |\n`;
+      }
+    } else {
+      md += `No WCAG criteria issues found.\n`;
     }
     md += '\n';
 
+    if (report.issues.length > 0) {
+      md += `## All Issues (${report.issues.length})\n\n`;
+      md += `| Code | Severity | Status | Type | Location | WCAG |\n`;
+      md += `|------|----------|--------|------|----------|------|\n`;
+      for (const issue of report.issues) {
+        const statusIcon = issue.status === 'fixed' ? '✅' : '❌';
+        const wcag = issue.wcagCriteria.join(', ') || '-';
+        md += `| ${issue.code} | ${issue.severity} | ${statusIcon} ${issue.status} | ${issue.type} | ${issue.location} | ${wcag} |\n`;
+      }
+      md += '\n';
+
+      md += `### Issue Details\n\n`;
+      for (const issue of report.issues) {
+        const statusIcon = issue.status === 'fixed' ? '✅' : '❌';
+        md += `#### ${statusIcon} ${issue.code}\n`;
+        md += `- **Message:** ${issue.message}\n`;
+        md += `- **Severity:** ${issue.severity}\n`;
+        md += `- **Location:** ${issue.location}\n`;
+        md += `- **Source:** ${issue.source}\n`;
+        md += `- **Type:** ${issue.type === 'auto' ? 'Auto-fixable' : 'Manual fix required'}\n`;
+        md += `- **Status:** ${issue.status}\n`;
+        if (issue.wcagCriteria.length > 0) {
+          md += `- **WCAG Criteria:** ${issue.wcagCriteria.join(', ')}\n`;
+        }
+        md += '\n';
+      }
+    }
+
     if (report.modifications.length > 0) {
-      md += `## Applied Fixes\n\n`;
+      md += `## Applied Fixes (${report.modifications.length})\n\n`;
       for (const mod of report.modifications) {
         md += `- **${mod.type}** (${mod.category}): ${mod.description}`;
         if (mod.wcagCriteria) {
           md += ` [WCAG ${mod.wcagCriteria}]`;
         }
+        if (mod.filePath) {
+          md += ` - ${mod.filePath}`;
+        }
         md += '\n';
+      }
+      md += '\n';
+    }
+
+    if (report.issueResolutions.length > 0) {
+      md += `## Issue Resolutions\n\n`;
+      md += `| Code | Location | Original | Final | Resolution Type |\n`;
+      md += `|------|----------|----------|-------|----------------|\n`;
+      for (const res of report.issueResolutions) {
+        md += `| ${res.code} | ${res.location} | ${res.originalStatus} | ${res.finalStatus} | ${res.resolutionType} |\n`;
       }
     }
 
