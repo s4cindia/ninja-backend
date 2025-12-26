@@ -531,18 +531,22 @@ class RemediationService {
 
   private findResolvedIssues(
     originalTasks: RemediationTask[],
-    newIssues: Array<{ code: string }>
+    newIssues: Array<{ code: string; location?: string }>
   ): string[] {
-    const newIssueCodes = new Set(newIssues.map(i => i.code));
-    const resolvedCodes: string[] = [];
-    
+    const newIssueKeys = new Set(
+      newIssues.map(i => `${i.code}:${i.location || ''}`)
+    );
+
+    const resolvedTaskIds: string[] = [];
+
     for (const task of originalTasks) {
-      if (!newIssueCodes.has(task.issueCode) && task.status === 'pending') {
-        resolvedCodes.push(task.issueCode);
+      const taskKey = `${task.issueCode}:${task.location || ''}`;
+      if (!newIssueKeys.has(taskKey) && task.status === 'pending') {
+        resolvedTaskIds.push(task.id);
       }
     }
-    
-    return [...new Set(resolvedCodes)];
+
+    return resolvedTaskIds;
   }
 
   async transferToAcr(jobId: string): Promise<{
@@ -576,7 +580,9 @@ class RemediationService {
       severity: task.severity,
       location: task.location,
       status: 'not_verified' as const,
-      wcagCriteria: task.suggestion?.match(/WCAG\s*\d+\.\d+\.\d+/)?.[0] || null,
+      wcagCriteria: Array.isArray(task.wcagCriteria)
+        ? task.wcagCriteria.join(', ')
+        : task.wcagCriteria || null,
       sourceTaskId: task.id,
       verifiedBy: null,
       verifiedAt: null,
@@ -633,7 +639,7 @@ class RemediationService {
     };
   }
 
-  async getAcrWorkflow(acrWorkflowId: string): Promise<{
+  async getAcrWorkflow(acrWorkflowId: string, tenantId?: string): Promise<{
     id: string;
     sourceJobId: string;
     fileName: string;
@@ -658,6 +664,7 @@ class RemediationService {
       where: {
         id: acrWorkflowId,
         type: 'ACR_WORKFLOW',
+        ...(tenantId && { tenantId }),
       },
     });
 
@@ -697,13 +704,15 @@ class RemediationService {
     criteriaId: string,
     status: 'verified' | 'failed' | 'not_applicable',
     verifiedBy: string,
-    notes?: string
+    notes?: string,
+    tenantId?: string
   ): Promise<{ success: boolean; criteria: unknown }> {
     return await prisma.$transaction(async (tx) => {
       const acrJob = await tx.job.findFirst({
         where: {
           id: acrWorkflowId,
           type: 'ACR_WORKFLOW',
+          ...(tenantId && { tenantId }),
         },
       });
 

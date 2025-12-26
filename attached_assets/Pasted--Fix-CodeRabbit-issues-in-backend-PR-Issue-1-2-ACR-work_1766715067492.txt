@@ -1,0 +1,89 @@
+ Fix CodeRabbit issues in backend PR
+
+  Issue 1 & 2: ACR workflow lacks tenant authorization
+
+  Fix routes (src/routes/epub.routes.ts):
+
+  // Add authorization middleware or verify tenant in controller
+  router.get('/acr/:acrWorkflowId', authenticate, epubController.getAcrWorkflow);
+  router.patch('/acr/:acrWorkflowId/criteria/:criteriaId', authenticate, epubController.updateAcrCriteria);
+
+  Fix controller (src/controllers/epub.controller.ts):
+
+  async getAcrWorkflow(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId } = req.params;
+      const tenantId = req.user?.tenantId; // Get tenant from authenticated user
+
+      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId, tenantId);
+
+      if (!workflow) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR workflow not found',
+        });
+      }
+      // ... rest of handler
+    }
+  }
+
+  Fix service (src/services/epub/remediation.service.ts):
+
+  async getAcrWorkflow(acrWorkflowId: string, tenantId?: string) {
+    const acrJob = await prisma.job.findFirst({
+      where: {
+        id: acrWorkflowId,
+        type: 'ACR_WORKFLOW',
+        ...(tenantId && { tenantId }), // Add tenant filter
+      },
+    });
+    // ... rest of method
+  }
+
+  ---
+  Issue 3: Issue resolution uses code only (not unique ID)
+
+  Fix findResolvedIssues (src/services/epub/remediation.service.ts):
+
+  private findResolvedIssues(
+    originalTasks: RemediationTask[],
+    newIssues: Array<{ code: string; location?: string }>
+  ): string[] {
+    // Create composite key: code + location
+    const newIssueKeys = new Set(
+      newIssues.map(i => `${i.code}:${i.location || ''}`)
+    );
+
+    const resolvedTaskIds: string[] = [];
+
+    for (const task of originalTasks) {
+      const taskKey = `${task.issueCode}:${task.location || ''}`;
+      if (!newIssueKeys.has(taskKey) && task.status === 'pending') {
+        resolvedTaskIds.push(task.id);
+      }
+    }
+
+    return resolvedTaskIds;
+  }
+
+  ---
+  Issue 4: Fragile WCAG criteria extraction
+
+  Fix transferToAcr (src/services/epub/remediation.service.ts):
+
+  const acrCriteria = pendingTasks.map(task => ({
+    id: `acr-${task.id}`,
+    code: task.issueCode,
+    description: task.issueMessage,
+    severity: task.severity,
+    location: task.location,
+    status: 'not_verified' as const,
+    // Use wcagCriteria field directly, not regex extraction
+    wcagCriteria: Array.isArray(task.wcagCriteria)
+      ? task.wcagCriteria.join(', ')
+      : task.wcagCriteria || null,
+    sourceTaskId: task.id,
+    verifiedBy: null,
+    verifiedAt: null,
+    notes: null,
+  }));

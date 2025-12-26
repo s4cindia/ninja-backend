@@ -365,8 +365,9 @@ export const epubController = {
   async getAcrWorkflow(req: AuthenticatedRequest, res: Response) {
     try {
       const { acrWorkflowId } = req.params;
+      const tenantId = req.user?.tenantId;
 
-      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId);
+      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId, tenantId);
 
       if (!workflow) {
         return res.status(404).json({
@@ -392,6 +393,7 @@ export const epubController = {
     try {
       const { acrWorkflowId, criteriaId } = req.params;
       const { status, notes } = req.body;
+      const tenantId = req.user?.tenantId;
       const verifiedBy = req.user?.email || req.user?.id || 'user';
 
       if (!status || !['verified', 'failed', 'not_applicable'].includes(status)) {
@@ -406,7 +408,8 @@ export const epubController = {
         criteriaId,
         status,
         verifiedBy,
-        notes
+        notes,
+        tenantId
       );
 
       return res.json({
