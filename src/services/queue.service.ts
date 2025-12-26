@@ -32,7 +32,7 @@ interface JobUpdateData {
   error?: string;
 }
 
-function getQueueForJobType(type: JobType): Queue<JobData, JobResult> {
+function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
   switch (type) {
     case JOB_TYPES.PDF_ACCESSIBILITY:
     case JOB_TYPES.EPUB_ACCESSIBILITY:
@@ -43,6 +43,8 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> {
     case JOB_TYPES.ALT_TEXT_GENERATION:
     case JOB_TYPES.METADATA_EXTRACTION:
       return getFileProcessingQueue();
+    case JOB_TYPES.ACR_WORKFLOW:
+      return null;
     default: {
       const exhaustiveCheck: never = type;
       throw new Error(`Unknown job type: ${exhaustiveCheck}`);
@@ -86,6 +88,10 @@ export class QueueService {
 
     try {
       const queue = getQueueForJobType(type);
+      if (!queue) {
+        console.log(`📋 Job ${dbJob.id} created (processed synchronously): ${type}`);
+        return dbJob.id;
+      }
       await queue.add(type, jobData, {
         jobId: dbJob.id,
         priority,
@@ -146,9 +152,11 @@ export class QueueService {
     if (areQueuesAvailable()) {
       try {
         const queue = getQueueForJobType(job.type);
-        const queueJob = await queue.getJob(jobId);
-        if (queueJob) {
-          await queueJob.remove();
+        if (queue) {
+          const queueJob = await queue.getJob(jobId);
+          if (queueJob) {
+            await queueJob.remove();
+          }
         }
       } catch (err) {
         console.error('Failed to remove job from queue:', err);
