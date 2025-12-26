@@ -192,16 +192,20 @@ class EPUBComparisonService {
       }
     });
 
-    const modificationCodes = new Set(
+    const modificationKeys = new Set(
       modifications
-        .map(m => MODIFICATION_TYPE_TO_ISSUE_CODE[m.type])
-        .filter((code): code is string => code !== undefined)
+        .map(m => {
+          const code = MODIFICATION_TYPE_TO_ISSUE_CODE[m.type];
+          if (!code) return null;
+          return `${code}:${m.filePath || ''}`;
+        })
+        .filter((key): key is string => key !== null)
     );
 
     return beforeIssues.map(issue => {
       const issueKey = `${issue.code}:${issue.location || ''}`;
       const stillExists = afterIssueKeys.has(issueKey);
-      const wasModified = modificationCodes.has(issue.code);
+      const wasModified = modificationKeys.has(`${issue.code}:${issue.location || ''}`);
       const isAutoFixable = AUTO_FIXABLE_ISSUE_CODES.has(issue.code);
 
       let finalStatus: 'fixed' | 'pending' | 'failed';
