@@ -248,7 +248,7 @@ export const epubController = {
   async updateTaskStatus(req: Request, res: Response) {
     try {
       const { jobId, taskId } = req.params;
-      const { status, resolution, resolvedBy } = req.body;
+      const { status, resolution, resolvedBy, notes, completionMethod } = req.body;
 
       if (!status) {
         return res.status(400).json({
@@ -262,7 +262,8 @@ export const epubController = {
         taskId,
         status,
         resolution,
-        resolvedBy
+        resolvedBy,
+        { notes, completionMethod }
       );
 
       return res.json({
@@ -274,6 +275,153 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to update task',
+      });
+    }
+  },
+
+  async markManualTaskFixed(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId, taskId } = req.params;
+      const { notes, resolution } = req.body;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      const task = await remediationService.markManualTaskFixed(
+        jobId,
+        taskId,
+        { notes, verifiedBy, resolution }
+      );
+
+      logger.info(`Manual task ${taskId} marked as fixed by ${verifiedBy}`);
+
+      return res.json({
+        success: true,
+        data: task,
+        message: 'Task marked as manually fixed',
+      });
+    } catch (error) {
+      logger.error('Failed to mark task as fixed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
+      });
+    }
+  },
+
+  async reauditEpub(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No EPUB file uploaded. Please upload the remediated EPUB file.',
+        });
+      }
+
+      logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${req.file.originalname}`);
+
+      const result = await remediationService.reauditEpub(jobId, {
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+      });
+
+      logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Re-audit complete: ${result.resolved} issues verified as fixed`,
+      });
+    } catch (error) {
+      logger.error('Re-audit failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Re-audit failed',
+      });
+    }
+  },
+
+  async transferToAcr(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const result = await remediationService.transferToAcr(jobId);
+
+      logger.info(`[ACR Transfer] Job ${jobId}: ${result.transferredTasks} tasks transferred`);
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('ACR transfer failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to transfer to ACR workflow',
+      });
+    }
+  },
+
+  async getAcrWorkflow(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId, tenantId);
+
+      if (!workflow) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR workflow not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: workflow,
+      });
+    } catch (error) {
+      logger.error('Failed to get ACR workflow', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get ACR workflow',
+      });
+    }
+  },
+
+  async updateAcrCriteria(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId, criteriaId } = req.params;
+      const { status, notes } = req.body;
+      const tenantId = req.user?.tenantId;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      if (!status || !['verified', 'failed', 'not_applicable'].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Status must be one of: verified, failed, not_applicable',
+        });
+      }
+
+      const result = await remediationService.updateAcrCriteriaStatus(
+        acrWorkflowId,
+        criteriaId,
+        status,
+        verifiedBy,
+        notes,
+        tenantId
+      );
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Criteria ${criteriaId} updated to ${status}`,
+      });
+    } catch (error) {
+      logger.error('Failed to update ACR criteria', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to update ACR criteria',
       });
     }
   },

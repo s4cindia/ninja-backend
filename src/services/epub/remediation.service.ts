@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { epubAuditService } from './epub-audit.service';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -22,8 +23,16 @@ interface RemediationTask {
   resolution?: string;
   resolvedBy?: string;
   resolvedAt?: Date;
+  notes?: string;
+  completionMethod?: 'auto' | 'manual' | 'verified';
   createdAt: Date;
   updatedAt: Date;
+  filePath?: string;
+  selector?: string;
+  wcagCriteria?: string[];
+  source?: string;
+  html?: string;
+  remediation?: string;
 }
 
 interface RemediationPlan {
@@ -140,6 +149,13 @@ class RemediationService {
         .digest('hex')
         .substring(0, 8);
       
+      const wcagCriteriaRaw = issue.wcagCriteria;
+      const wcagCriteria: string[] | undefined = Array.isArray(wcagCriteriaRaw) 
+        ? wcagCriteriaRaw.map(String)
+        : typeof wcagCriteriaRaw === 'string' 
+          ? [wcagCriteriaRaw]
+          : undefined;
+      
       return {
         id: `task-${taskId}`,
         jobId,
@@ -155,6 +171,12 @@ class RemediationService {
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
+        filePath: (issue.filePath as string) || (issue.location as string) || undefined,
+        selector: (issue.selector as string) || undefined,
+        wcagCriteria,
+        source: (issue.source as string) || undefined,
+        html: (issue.html as string) || (issue.snippet as string) || undefined,
+        remediation: this.getRemediationGuidance(issueCode),
       };
     });
 
@@ -215,7 +237,8 @@ class RemediationService {
     taskId: string,
     status: RemediationStatus,
     resolution?: string,
-    resolvedBy?: string
+    resolvedBy?: string,
+    options?: { notes?: string; completionMethod?: 'auto' | 'manual' | 'verified' }
   ): Promise<RemediationTask> {
     return await prisma.$transaction(async (tx) => {
       const planJob = await tx.job.findFirst({
@@ -248,6 +271,12 @@ class RemediationService {
         task.resolution = resolution;
         task.resolvedBy = resolvedBy;
         task.resolvedAt = new Date();
+        if (options?.completionMethod) {
+          task.completionMethod = options.completionMethod;
+        }
+        if (options?.notes) {
+          task.notes = options.notes;
+        }
       }
 
       plan.stats = {
@@ -268,6 +297,24 @@ class RemediationService {
 
       return task;
     });
+  }
+
+  async markManualTaskFixed(
+    jobId: string,
+    taskId: string,
+    data: { notes?: string; verifiedBy?: string; resolution?: string }
+  ): Promise<RemediationTask> {
+    const resolution = data.resolution || 'Manually verified and fixed';
+    const verifiedBy = data.verifiedBy || 'user';
+    
+    return this.updateTaskStatus(
+      jobId,
+      taskId,
+      'completed',
+      resolution,
+      verifiedBy,
+      { notes: data.notes, completionMethod: 'manual' }
+    );
   }
 
   async startTask(jobId: string, taskId: string): Promise<RemediationTask> {
@@ -374,6 +421,376 @@ class RemediationService {
       criticalRemaining,
       estimatedTimeMinutes,
     };
+  }
+
+  async reauditEpub(
+    jobId: string,
+    file: { buffer: Buffer; originalname: string }
+  ): Promise<{
+    originalIssues: number;
+    newIssues: number;
+    resolved: number;
+    stillPending: number;
+    verifiedTasks: string[];
+    newIssuesFound: Array<{ code: string; message: string; severity: string }>;
+    comparison: {
+      before: { total: number; bySeverity: Record<string, number> };
+      after: { total: number; bySeverity: Record<string, number> };
+    };
+  }> {
+    const originalPlan = await this.getRemediationPlan(jobId);
+    if (!originalPlan) {
+      throw new Error('Original remediation plan not found');
+    }
+
+    logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${file.originalname}`);
+
+    const newAuditResult = await epubAuditService.runAudit(
+      file.buffer,
+      `reaudit-${jobId}`,
+      file.originalname
+    );
+
+    logger.info(`[Re-audit] New audit found ${newAuditResult.combinedIssues.length} issues`);
+
+    const resolvedIssueCodes = this.findResolvedIssues(
+      originalPlan.tasks,
+      newAuditResult.combinedIssues
+    );
+
+    logger.info(`[Re-audit] Resolved issues: ${resolvedIssueCodes.join(', ')}`);
+
+    const verifiedTasks: string[] = [];
+    for (const task of originalPlan.tasks) {
+      if (resolvedIssueCodes.includes(task.issueCode) && task.status === 'pending') {
+        await this.updateTaskStatus(
+          jobId,
+          task.id,
+          'completed',
+          'Verified fixed via re-audit',
+          'system',
+          { completionMethod: 'verified' }
+        );
+        verifiedTasks.push(task.id);
+      }
+    }
+
+    const originalIssueCodes = new Set(originalPlan.tasks.map(t => t.issueCode));
+    const newIssuesFound = newAuditResult.combinedIssues
+      .filter((i: { code: string }) => !originalIssueCodes.has(i.code))
+      .map((i: { code: string; message: string; severity: string }) => ({
+        code: i.code,
+        message: i.message,
+        severity: i.severity,
+      }));
+
+    const beforeBySeverity: Record<string, number> = {};
+    for (const task of originalPlan.tasks) {
+      beforeBySeverity[task.severity] = (beforeBySeverity[task.severity] || 0) + 1;
+    }
+
+    const afterBySeverity: Record<string, number> = {};
+    for (const issue of newAuditResult.combinedIssues) {
+      afterBySeverity[issue.severity] = (afterBySeverity[issue.severity] || 0) + 1;
+    }
+
+    return {
+      originalIssues: originalPlan.tasks.length,
+      newIssues: newAuditResult.combinedIssues.length,
+      resolved: resolvedIssueCodes.length,
+      stillPending: originalPlan.tasks.length - verifiedTasks.length,
+      verifiedTasks,
+      newIssuesFound,
+      comparison: {
+        before: { total: originalPlan.tasks.length, bySeverity: beforeBySeverity },
+        after: { total: newAuditResult.combinedIssues.length, bySeverity: afterBySeverity },
+      },
+    };
+  }
+
+  private getRemediationGuidance(code: string): string {
+    const guidance: Record<string, string> = {
+      'EPUB-META-001': 'Add <dc:language> element to the package document (OPF) with the primary language code (e.g., "en" for English).',
+      'EPUB-META-002': 'Add schema:accessibilityFeature metadata with values like "alternativeText", "readingOrder", "structuralNavigation".',
+      'EPUB-META-003': 'Add schema:accessibilitySummary with a description of the publication\'s accessibility features.',
+      'EPUB-META-004': 'Add schema:accessMode metadata specifying how content can be consumed (e.g., "textual", "visual").',
+      'EPUB-SEM-001': 'Add lang attribute to HTML elements to specify the document language for screen readers.',
+      'EPUB-SEM-002': 'Add descriptive aria-label or visible text content to empty links.',
+      'EPUB-IMG-001': 'Add meaningful alt text describing the image content, or alt="" for decorative images.',
+      'EPUB-STRUCT-002': 'Add <th> elements with scope attributes to data tables for proper header associations.',
+      'EPUB-STRUCT-003': 'Fix heading hierarchy to avoid skipped levels (e.g., h1 → h2 → h3, not h1 → h3).',
+      'EPUB-STRUCT-004': 'Add ARIA landmark roles (main, navigation, banner, contentinfo) to major page regions.',
+      'EPUB-NAV-001': 'Add skip navigation link at the top of content pages to bypass repetitive navigation.',
+      'EPUB-FIG-001': 'Wrap images in <figure> elements with <figcaption> for proper figure structure.',
+      'COLOR-CONTRAST': 'Adjust text/background colors to meet WCAG contrast ratio requirements (4.5:1 for normal text, 3:1 for large text).',
+      'LINK-TEXT': 'Replace generic link text like "click here" with descriptive text indicating the link destination.',
+      'FORM-LABEL': 'Associate form inputs with visible <label> elements using for/id attributes.',
+    };
+    return guidance[code] || 'Review and manually remediate this accessibility issue according to WCAG guidelines.';
+  }
+
+  private findResolvedIssues(
+    originalTasks: RemediationTask[],
+    newIssues: Array<{ code: string; location?: string }>
+  ): string[] {
+    const newIssueKeys = new Set(
+      newIssues.map(i => `${i.code}:${i.location || ''}`)
+    );
+
+    const resolvedTaskIds: string[] = [];
+
+    for (const task of originalTasks) {
+      const taskKey = `${task.issueCode}:${task.location || ''}`;
+      if (!newIssueKeys.has(taskKey) && task.status === 'pending') {
+        resolvedTaskIds.push(task.id);
+      }
+    }
+
+    return resolvedTaskIds;
+  }
+
+  async transferToAcr(jobId: string): Promise<{
+    acrWorkflowId: string;
+    transferredTasks: number;
+    message: string;
+  }> {
+    const plan = await this.getRemediationPlan(jobId);
+    if (!plan) {
+      throw new Error('Remediation plan not found');
+    }
+
+    const pendingTasks = plan.tasks.filter(t => t.status === 'pending');
+
+    if (pendingTasks.length === 0) {
+      throw new Error('No pending tasks to transfer. All tasks are already completed.');
+    }
+
+    const originalJob = await prisma.job.findFirst({
+      where: { id: jobId },
+    });
+
+    if (!originalJob) {
+      throw new Error('Original job not found');
+    }
+
+    const acrCriteria = pendingTasks.map(task => ({
+      id: `acr-${task.id}`,
+      code: task.issueCode,
+      description: task.issueMessage,
+      severity: task.severity,
+      location: task.location,
+      status: 'not_verified' as const,
+      wcagCriteria: Array.isArray(task.wcagCriteria)
+        ? task.wcagCriteria.join(', ')
+        : task.wcagCriteria || null,
+      sourceTaskId: task.id,
+      verifiedBy: null,
+      verifiedAt: null,
+      notes: null,
+    }));
+
+    const acrWorkflow = {
+      sourceJobId: jobId,
+      fileName: plan.fileName,
+      status: 'needs_verification',
+      sourceType: 'remediation',
+      totalCriteria: pendingTasks.length,
+      verifiedCount: 0,
+      criteria: acrCriteria,
+      stats: {
+        notVerified: pendingTasks.length,
+        verified: 0,
+        failed: 0,
+        notApplicable: 0,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const acrJob = await prisma.job.create({
+      data: {
+        tenantId: originalJob.tenantId,
+        userId: originalJob.userId,
+        type: 'ACR_WORKFLOW',
+        status: 'PROCESSING',
+        input: { sourceJobId: jobId, sourceType: 'remediation' },
+        output: JSON.parse(JSON.stringify(acrWorkflow)),
+        startedAt: new Date(),
+      },
+    });
+
+    for (const task of pendingTasks) {
+      await this.updateTaskStatus(
+        jobId,
+        task.id,
+        'pending',
+        undefined,
+        undefined,
+        { notes: `Transferred to ACR workflow: ${acrJob.id}` }
+      );
+    }
+
+    logger.info(`[ACR Transfer] Transferred ${pendingTasks.length} tasks from job ${jobId} to ACR workflow ${acrJob.id}`);
+
+    return {
+      acrWorkflowId: acrJob.id,
+      transferredTasks: pendingTasks.length,
+      message: `${pendingTasks.length} tasks transferred to ACR workflow for verification`,
+    };
+  }
+
+  async getAcrWorkflow(acrWorkflowId: string, tenantId?: string): Promise<{
+    id: string;
+    sourceJobId: string;
+    fileName: string;
+    status: string;
+    totalCriteria: number;
+    verifiedCount: number;
+    criteria: Array<{
+      id: string;
+      code: string;
+      description: string;
+      severity: string;
+      status: string;
+    }>;
+    stats: {
+      notVerified: number;
+      verified: number;
+      failed: number;
+      notApplicable: number;
+    };
+  } | null> {
+    const acrJob = await prisma.job.findFirst({
+      where: {
+        id: acrWorkflowId,
+        type: 'ACR_WORKFLOW',
+        ...(tenantId && { tenantId }),
+      },
+    });
+
+    if (!acrJob || !acrJob.output) {
+      return null;
+    }
+
+    const workflow = acrJob.output as {
+      sourceJobId: string;
+      fileName: string;
+      status: string;
+      totalCriteria: number;
+      verifiedCount: number;
+      criteria: Array<{
+        id: string;
+        code: string;
+        description: string;
+        severity: string;
+        status: string;
+      }>;
+      stats: {
+        notVerified: number;
+        verified: number;
+        failed: number;
+        notApplicable: number;
+      };
+    };
+
+    return {
+      id: acrJob.id,
+      ...workflow,
+    };
+  }
+
+  async updateAcrCriteriaStatus(
+    acrWorkflowId: string,
+    criteriaId: string,
+    status: 'verified' | 'failed' | 'not_applicable',
+    verifiedBy: string,
+    notes?: string,
+    tenantId?: string
+  ): Promise<{ success: boolean; criteria: unknown }> {
+    return await prisma.$transaction(async (tx) => {
+      const acrJob = await tx.job.findFirst({
+        where: {
+          id: acrWorkflowId,
+          type: 'ACR_WORKFLOW',
+          ...(tenantId && { tenantId }),
+        },
+      });
+
+      if (!acrJob || !acrJob.output) {
+        throw new Error('ACR workflow not found');
+      }
+
+      const workflow = acrJob.output as {
+        criteria: Array<{
+          id: string;
+          status: string;
+          verifiedBy: string | null;
+          verifiedAt: Date | null;
+          notes: string | null;
+        }>;
+        stats: {
+          notVerified: number;
+          verified: number;
+          failed: number;
+          notApplicable: number;
+        };
+        verifiedCount: number;
+        status: string;
+        totalCriteria: number;
+      };
+
+      const criteriaIndex = workflow.criteria.findIndex(c => c.id === criteriaId);
+      if (criteriaIndex === -1) {
+        throw new Error('Criteria not found');
+      }
+
+      const criteria = workflow.criteria[criteriaIndex];
+      const oldStatus = criteria.status;
+      
+      criteria.status = status;
+      criteria.verifiedBy = verifiedBy;
+      criteria.verifiedAt = new Date();
+      if (notes) {
+        criteria.notes = notes;
+      }
+
+      if (oldStatus === 'not_verified') {
+        workflow.stats.notVerified--;
+      } else if (oldStatus === 'verified') {
+        workflow.stats.verified--;
+      } else if (oldStatus === 'failed') {
+        workflow.stats.failed--;
+      } else if (oldStatus === 'not_applicable') {
+        workflow.stats.notApplicable--;
+      }
+
+      if (status === 'verified') {
+        workflow.stats.verified++;
+      } else if (status === 'failed') {
+        workflow.stats.failed++;
+      } else if (status === 'not_applicable') {
+        workflow.stats.notApplicable++;
+      }
+
+      workflow.verifiedCount = workflow.stats.verified + workflow.stats.failed + workflow.stats.notApplicable;
+
+      if (workflow.verifiedCount === workflow.totalCriteria) {
+        workflow.status = 'completed';
+      } else {
+        workflow.status = 'in_progress';
+      }
+
+      await tx.job.update({
+        where: { id: acrWorkflowId },
+        data: {
+          output: JSON.parse(JSON.stringify(workflow)),
+          status: workflow.status === 'completed' ? 'COMPLETED' : 'PROCESSING',
+          completedAt: workflow.status === 'completed' ? new Date() : undefined,
+        },
+      });
+
+      return { success: true, criteria };
+    });
   }
 }
 

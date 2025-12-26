@@ -27,6 +27,11 @@ router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubControlle
 router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
 router.get('/job/:jobId/remediation/summary', authenticate, authorizeJob, epubController.getRemediationSummary);
 router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
+router.patch('/job/:jobId/remediation/task/:taskId/fix', authenticate, authorizeJob, epubController.markManualTaskFixed);
+router.post('/job/:jobId/reaudit', authenticate, authorizeJob, upload.single('file'), epubController.reauditEpub);
+router.post('/job/:jobId/transfer-to-acr', authenticate, authorizeJob, epubController.transferToAcr);
+router.get('/acr/:acrWorkflowId', authenticate, epubController.getAcrWorkflow);
+router.patch('/acr/:acrWorkflowId/criteria/:criteriaId', authenticate, epubController.updateAcrCriteria);
 router.post('/job/:jobId/auto-remediate', authenticate, authorizeJob, epubController.runAutoRemediation);
 router.post('/job/:jobId/apply-fix', authenticate, authorizeJob, epubController.applySpecificFix);
 router.get('/job/:jobId/download-remediated', authenticate, authorizeJob, epubController.downloadRemediatedFile);
