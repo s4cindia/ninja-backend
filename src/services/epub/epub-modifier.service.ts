@@ -109,6 +109,62 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
   return { matched: false };
 }
 
+function handleEpubTypeRoleAddition(
+  content: string,
+  oldContent: string,
+  newContent: string
+): { result: string; matched: boolean; matchedContent?: string } {
+  const epubTypeMatch = oldContent.match(/epub:type\s*=\s*["']([^"']+)["']/);
+  if (!epubTypeMatch) {
+    return { result: content, matched: false };
+  }
+
+  const epubTypeValue = epubTypeMatch[1];
+  logger.info(`Looking for epub:type="${epubTypeValue}"`);
+
+  const roleMatch = newContent.match(/role\s*=\s*["']([^"']+)["']/);
+  if (!roleMatch) {
+    return { result: content, matched: false };
+  }
+
+  const roleValue = roleMatch[1];
+  logger.info(`Will add role="${roleValue}"`);
+
+  const elementRegex = new RegExp(
+    `(<[a-zA-Z][^>]*)(epub:type\\s*=\\s*["']${escapeRegExp(epubTypeValue)}["'])([^>]*>)`,
+    'gi'
+  );
+
+  let matchCount = 0;
+  const newContentResult = content.replace(elementRegex, (fullMatch, before, epubTypePart, after) => {
+    if (fullMatch.toLowerCase().includes('role=')) {
+      logger.info(`Element already has role, skipping: ${fullMatch.substring(0, 80)}...`);
+      return fullMatch;
+    }
+
+    matchCount++;
+    logger.info(`Found match ${matchCount}: ${fullMatch.substring(0, 80)}...`);
+
+    return `${before}${epubTypePart} role="${roleValue}"${after}`;
+  });
+
+  if (matchCount > 0) {
+    logger.info(`Modified ${matchCount} element(s) with epub:type="${epubTypeValue}"`);
+    return {
+      result: newContentResult,
+      matched: true,
+      matchedContent: `${matchCount} elements with epub:type="${epubTypeValue}"`,
+    };
+  }
+
+  logger.warn(`No elements found with epub:type="${epubTypeValue}"`);
+
+  const existingEpubTypes = content.match(/epub:type\s*=\s*["'][^"']+["']/gi) || [];
+  logger.info(`Existing epub:types in file: ${[...new Set(existingEpubTypes)].join(', ')}`);
+
+  return { result: content, matched: false };
+}
+
 function performFlexibleReplace(content: string, oldContent: string, newContent: string): { 
   result: string; 
   matched: boolean; 
@@ -124,6 +180,13 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
   }
 
   logger.info(`Exact match failed, trying flexible patterns...`);
+
+  if (oldContent.includes('epub:type') && newContent.includes('role=')) {
+    const epubRoleResult = handleEpubTypeRoleAddition(content, oldContent, newContent);
+    if (epubRoleResult.matched) {
+      return epubRoleResult;
+    }
+  }
 
   const flexResult = tryFlexibleMatch(content, oldContent, newContent);
   if (flexResult.matched) {
@@ -913,8 +976,26 @@ class EPUBModifierService {
 
   async applyQuickFix(
     zip: JSZip,
-    changes: FileChange[]
+    changes: FileChange[],
+    jobId?: string,
+    issueId?: string
   ): Promise<{ modifiedFiles: string[]; results: ModificationResult[]; hasErrors: boolean }> {
+    logger.info('='.repeat(60));
+    logger.info('APPLY QUICK FIX - DEBUG');
+    logger.info('='.repeat(60));
+    logger.info(`Job ID: ${jobId || 'N/A'}`);
+    logger.info(`Issue ID: ${issueId || 'N/A'}`);
+    logger.info(`Number of changes: ${changes.length}`);
+
+    for (let i = 0; i < changes.length; i++) {
+      const c = changes[i];
+      logger.info(`Change ${i + 1}:`);
+      logger.info(`  Type: ${c.type}`);
+      logger.info(`  File: ${c.filePath}`);
+      logger.info(`  Old: ${c.oldContent?.substring(0, 100) || 'N/A'}...`);
+      logger.info(`  New: ${c.content?.substring(0, 100) || 'N/A'}...`);
+    }
+
     const modifiedFiles: string[] = [];
     const results: ModificationResult[] = [];
     let hasErrors = false;

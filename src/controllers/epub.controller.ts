@@ -1281,7 +1281,7 @@ export const epubController = {
       }
 
       const zip = await epubModifier.loadEPUB(epubBuffer);
-      const result = await epubModifier.applyQuickFix(zip, changes);
+      const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
 
       if (result.modifiedFiles.length === 0) {
         return res.status(400).json({

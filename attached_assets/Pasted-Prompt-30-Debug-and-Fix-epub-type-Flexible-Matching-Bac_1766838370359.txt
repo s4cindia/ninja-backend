@@ -1,0 +1,157 @@
+Prompt 30: Debug and Fix epub:type Flexible Matching (Backend)
+
+  Problem
+
+  The flexible pattern matching is still failing for epub:type attributes. The template sends epub:type="chapter" but the file has epub:type="toc", epub:type="dedication", etc.
+
+  The core issue is that the template is sending wrong values - it's not a backend matching problem, it's that the frontend is asking to match patterns that don't exist in the file.
+
+  However, we can make the backend smarter to handle this.
+
+  ---
+  Step 1: Add debug logging to see what's being sent
+
+  File: src/services/epub/epub-modifier.service.ts
+
+  Add detailed logging:
+
+  async applyQuickFix(jobId: string, issueId: string, changes: FileChange[]) {
+    logger.info('='.repeat(60));
+    logger.info('APPLY QUICK FIX - DEBUG');
+    logger.info('='.repeat(60));
+    logger.info(`Job ID: ${jobId}`);
+    logger.info(`Issue ID: ${issueId}`);
+    logger.info(`Number of changes: ${changes.length}`);
+
+    for (let i = 0; i < changes.length; i++) {
+      const change = changes[i];
+      logger.info(`Change ${i + 1}:`);
+      logger.info(`  Type: ${change.type}`);
+      logger.info(`  File: ${change.filePath}`);
+      logger.info(`  Old: ${change.oldContent?.substring(0, 100)}...`);
+      logger.info(`  New: ${change.content?.substring(0, 100)}...`);
+    }
+
+    // ... rest of the code
+  }
+
+  ---
+  Step 2: Add smarter epub:type handling
+
+  For epub:type role additions, don't require exact oldContent match. Instead, find ANY element with the specified epub:type and add the role:
+
+  private handleEpubTypeRoleAddition(
+    content: string,
+    oldContent: string,
+    newContent: string
+  ): { content: string; modified: boolean; matchedContent?: string } {
+
+    // Extract the epub:type value from oldContent
+    const epubTypeMatch = oldContent.match(/epub:type\s*=\s*["']([^"']+)["']/);
+    if (!epubTypeMatch) {
+      return { content, modified: false };
+    }
+
+    const epubTypeValue = epubTypeMatch[1];
+    logger.info(`Looking for epub:type="${epubTypeValue}"`);
+
+    // Extract the role from newContent
+    const roleMatch = newContent.match(/role\s*=\s*["']([^"']+)["']/);
+    if (!roleMatch) {
+      return { content, modified: false };
+    }
+
+    const roleValue = roleMatch[1];
+    logger.info(`Will add role="${roleValue}"`);
+
+    // Find elements with this epub:type (flexible matching)
+    // Match: <tagname ... epub:type="value" ... >
+    const elementRegex = new RegExp(
+      `(<[a-zA-Z][^>]*)(epub:type\\s*=\\s*["']${epubTypeValue}["'])([^>]*>)`,
+      'gi'
+    );
+
+    let matchCount = 0;
+    const newContentResult = content.replace(elementRegex, (fullMatch, before, epubTypePart, after) => {
+      // Check if role already exists
+      if (fullMatch.toLowerCase().includes('role=')) {
+        logger.info(`Element already has role, skipping: ${fullMatch.substring(0, 80)}...`);
+        return fullMatch;
+      }
+
+      matchCount++;
+      logger.info(`Found match ${matchCount}: ${fullMatch.substring(0, 80)}...`);
+
+      // Add role after epub:type
+      return `${before}${epubTypePart} role="${roleValue}"${after}`;
+    });
+
+    if (matchCount > 0) {
+      logger.info(`Modified ${matchCount} element(s) with epub:type="${epubTypeValue}"`);
+      return {
+        content: newContentResult,
+        modified: true,
+        matchedContent: `${matchCount} elements with epub:type="${epubTypeValue}"`
+      };
+    }
+
+    logger.warn(`No elements found with epub:type="${epubTypeValue}"`);
+
+    // Log what epub:types DO exist in the file
+    const existingEpubTypes = content.match(/epub:type\s*=\s*["'][^"']+["']/gi) || [];
+    logger.info(`Existing epub:types in file: ${[...new Set(existingEpubTypes)].join(', ')}`);
+
+    return { content, modified: false };
+  }
+
+  ---
+  Step 3: Integrate into the replace handler
+
+  case 'replace':
+    if (change.oldContent && change.content) {
+      // Check if this is an epub:type role addition
+      if (change.oldContent.includes('epub:type') && change.content.includes('role=')) {
+        const result = this.handleEpubTypeRoleAddition(content, change.oldContent, change.content);
+        if (result.modified) {
+          content = result.content;
+          modifiedFiles.push(actualPath);
+          results.push({
+            success: true,
+            filePath: actualPath,
+            modificationType: 'replace',
+            description: `Added ARIA role to ${result.matchedContent}`,
+          });
+          break;  // Exit the switch
+        }
+      }
+
+      // Fall through to existing flexible matching...
+      // ... existing code ...
+    }
+    break;
+
+  ---
+  Step 4: Return proper error when no matches found
+
+  When the fix fails because the epub:type value doesn't exist in the file, return a helpful error:
+
+  // At the end of applyQuickFix, check results
+  const failedChanges = results.filter(r => !r.success);
+  const successfulChanges = results.filter(r => r.success);
+
+  if (successfulChanges.length === 0) {
+    return {
+      success: false,
+      error: 'No files were modified',
+      data: {
+        results,
+        hint: 'The specified patterns were not found in the file. Check that the epub:type values exist.',
+      },
+    };
+  }
+
+  return {
+    success: true,
+    modifiedFiles,
+    data: { results },
+  };
