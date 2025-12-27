@@ -1,0 +1,83 @@
+ Prompt 15: Fix Audit Classification to Match Remediation Plan
+
+  Problem
+
+  The audit results page shows "5 auto-fixable" but the remediation plan correctly shows "2 auto-fixable". This creates user confusion because the numbers don't match.
+
+  Root Cause: The JS Auditor marks all its issues as autoFixable: true, but the remediation plan uses the 3-tier classification from fix-classification.ts.
+
+  Solution
+
+  Apply the same getFixType() classification in the audit phase so numbers are consistent throughout.
+
+  Files to Modify
+
+  1. Find the JS Auditor service (likely src/services/js-auditor.service.ts or similar):
+
+  // Import the classification function
+  import { getFixType } from '../constants/fix-classification';
+
+  // When creating issues, use proper classification instead of hardcoded autoFixable
+  function createIssue(code: string, message: string, ...otherParams) {
+    const fixType = getFixType(code);
+
+    return {
+      code,
+      message,
+      // REMOVE or UPDATE this:
+      // autoFixable: true,  // OLD - incorrect
+
+      // ADD this:
+      type: fixType,  // 'auto' | 'quickfix' | 'manual'
+      autoFixable: fixType === 'auto',  // Only true for actual auto-fixable
+      ...otherParams
+    };
+  }
+
+  2. Update the audit endpoint response (likely src/routes/epub.routes.ts or src/controllers/epub.controller.ts):
+
+  When returning audit results, ensure the stats use proper classification:
+
+  // Calculate stats using the same classification
+  const autoFixableCount = issues.filter(i => getFixType(i.code) === 'auto').length;
+  const quickFixCount = issues.filter(i => getFixType(i.code) === 'quickfix').length;
+  const manualCount = issues.filter(i => getFixType(i.code) === 'manual').length;
+
+  return {
+    // ...
+    stats: {
+      total: issues.length,
+      autoFixable: autoFixableCount,    // Should be 2, not 5
+      quickFixable: quickFixCount,       // Should be 3
+      manualRequired: manualCount,
+      // ...
+    }
+  };
+
+  3. Verify fix-classification.ts has proper mappings:
+
+  const AUTO_FIXABLE_CODES = new Set([
+    'EPUB-STRUCT-004',  // Add main landmark - no user input needed
+    // Add other truly auto-fixable codes
+  ]);
+
+  const QUICK_FIXABLE_CODES = new Set([
+    'EPUB-META-002',    // Accessibility features - needs user selection
+    'EPUB-META-003',    // Accessibility summary - needs user text
+    'EPUB-META-004',    // Access mode - needs user selection
+    'METADATA-ACCESSMODE',
+    'METADATA-ACCESSIBILITYFEATURE',
+    'METADATA-ACCESSIBILITYHAZARD',
+    'METADATA-ACCESSIBILITYSUMMARY',
+    // ... other quickfix codes
+  ]);
+
+  Expected Result
+
+  | Stage          | Before Fix     | After Fix      |
+  |----------------|----------------|----------------|
+  | Audit          | 5 auto-fixable | 2 auto-fixable |
+  | Plan           | 2 auto-fixable | 2 auto-fixable |
+  | After Auto-Fix | 2 fixed        | 2 fixed        |
+
+  Numbers should be consistent: 2 → 2 → 2

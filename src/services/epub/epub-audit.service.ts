@@ -8,6 +8,7 @@ import prisma from '../../lib/prisma';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
+import { getFixType } from '../../constants/fix-classification';
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +104,11 @@ interface EpubAuditResult {
     epubcheck: { critical: number; serious: number; moderate: number; minor: number; total: number };
     ace: { critical: number; serious: number; moderate: number; minor: number; total: number };
     'js-auditor': { critical: number; serious: number; moderate: number; minor: number; total: number; autoFixable: number };
+  };
+  classificationStats: {
+    autoFixable: number;
+    quickFixable: number;
+    manualRequired: number;
   };
   accessibilityMetadata: AceResult['metadata'] | null;
   auditedAt: Date;
@@ -315,10 +321,20 @@ class EpubAuditService {
           moderate: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
           minor: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
           total: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
-          // All JS Auditor issues are auto-fixable by design - it specifically detects issues with remediation handlers
-          autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
+          autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor' && getFixType(i.code) === 'auto').length,
         },
       };
+
+      const classificationStats = {
+        autoFixable: deduplicatedIssues.filter(i => getFixType(i.code) === 'auto').length,
+        quickFixable: deduplicatedIssues.filter(i => getFixType(i.code) === 'quickfix').length,
+        manualRequired: deduplicatedIssues.filter(i => getFixType(i.code) === 'manual').length,
+      };
+
+      logger.info(`\n📊 CLASSIFICATION STATS:`);
+      logger.info(`  Auto-fixable: ${classificationStats.autoFixable}`);
+      logger.info(`  Quick-fixable: ${classificationStats.quickFixable}`);
+      logger.info(`  Manual required: ${classificationStats.manualRequired}`);
 
       const result: EpubAuditResult = {
         jobId,
@@ -339,6 +355,7 @@ class EpubAuditService {
           total: deduplicatedIssues.length,
         },
         summaryBySource,
+        classificationStats,
         accessibilityMetadata: aceResult?.metadata || null,
         auditedAt: new Date(),
       };
