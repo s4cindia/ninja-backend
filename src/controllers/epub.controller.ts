@@ -226,6 +226,11 @@ export const epubController = {
       logger.info(`  Plan total tasks: ${plan.stats.pending}`);
       logger.info(`  By Source: EPUBCheck=${plan.stats.bySource?.epubCheck || 0}, ACE=${plan.stats.bySource?.ace || 0}, JS Auditor=${plan.stats.bySource?.jsAuditor || 0}`);
       logger.info(`  By Classification: Auto=${plan.stats.autoFixable}, QuickFix=${plan.stats.quickFixable}, Manual=${plan.stats.manualRequired}`);
+      
+      logger.info('\nTASK TYPES IN RESPONSE:');
+      plan.tasks.forEach((task, i) => {
+        logger.info(`  ${i + 1}. [${task.type}] ${task.issueCode} @ ${task.location || 'N/A'}`);
+      });
 
       if (plan.tallyValidation && !plan.tallyValidation.isValid) {
         logger.error('TALLY VALIDATION FAILED - Issues may be missing');

@@ -38,6 +38,8 @@ interface RemediationTask {
   status: RemediationStatus;
   priority: RemediationPriority;
   type: RemediationType;
+  autoFixable: boolean;
+  quickFixable: boolean;
   suggestion?: string;
   resolution?: string;
   resolvedBy?: string;
@@ -193,7 +195,6 @@ class RemediationService {
     const tasks: RemediationTask[] = validatedIssues.map((issue) => {
       const issueCode = (issue.code as string) || '';
       const issueLocation = (issue.location as string) || '';
-      const isAutoFixable = isAutoFixableCode(issueCode);
       const severity = (issue.severity as string) || 'moderate';
       const taskId = crypto.createHash('md5')
         .update(`${jobId}-${issueCode}-${issueLocation}`)
@@ -207,6 +208,7 @@ class RemediationService {
           ? [wcagCriteriaRaw]
           : undefined;
       
+      const fixType = getFixType(issueCode);
       return {
         id: `task-${taskId}`,
         jobId,
@@ -218,7 +220,9 @@ class RemediationService {
         location: issueLocation || undefined,
         status: 'pending' as RemediationStatus,
         priority: SEVERITY_TO_PRIORITY[severity] || 'medium',
-        type: getFixType(issueCode),
+        type: fixType,
+        autoFixable: fixType === 'auto',
+        quickFixable: fixType === 'quickfix',
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
