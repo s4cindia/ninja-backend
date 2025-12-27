@@ -52,5 +52,6 @@ router.post('/export-batch', authenticate, epubController.exportBatch);
 router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
 router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
 router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJob, epubController.scanEpubTypes);
+router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, epubController.markTaskFixed);
 
 export default router;

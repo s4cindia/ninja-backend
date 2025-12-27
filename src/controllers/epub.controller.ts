@@ -1465,4 +1465,27 @@ export const epubController = {
       });
     }
   },
+
+  async markTaskFixed(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId, taskId } = req.params;
+      const { resolution } = req.body;
+
+      const task = await remediationService.updateTaskStatus(
+        jobId,
+        taskId,
+        'completed',
+        resolution || 'Marked as fixed via Quick Fix Panel',
+        req.user?.email || 'system'
+      );
+
+      return res.json({ success: true, data: task });
+    } catch (error) {
+      console.error('markTaskFixed error:', error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
+      });
+    }
+  },
 };
