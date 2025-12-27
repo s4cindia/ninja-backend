@@ -1280,19 +1280,34 @@ export const epubController = {
       let modifiedFiles: string[] = [];
       let hasErrors = false;
 
-      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
-        const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+      const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
 
+      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
         if (options?.epubTypes && Array.isArray(options.epubTypes)) {
           epubTypesToFix.push(...options.epubTypes);
         } else if (options?.epubType && options?.role) {
           epubTypesToFix.push({ epubType: options.epubType, role: options.role });
         }
+      }
 
-        if (epubTypesToFix.length === 0) {
-          return res.status(400).json({ success: false, error: 'No epub:types specified to fix' });
+      if (changes && Array.isArray(changes)) {
+        for (const change of changes) {
+          const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
+          const roleMatch = change.content?.match(/role="([^"]+)"/) || change.newContent?.match(/role="([^"]+)"/);
+
+          if (epubTypeMatch && roleMatch) {
+            const epubType = epubTypeMatch[1];
+            const role = roleMatch[1];
+
+            if (!epubTypesToFix.find(e => e.epubType === epubType)) {
+              epubTypesToFix.push({ epubType, role });
+            }
+          }
         }
+      }
 
+      if (epubTypesToFix.length > 0) {
+        console.log('Using cross-file epub:type fix for:', epubTypesToFix);
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
         modifiedFiles = [...new Set(results.filter(r => r.success).map(r => r.filePath))];
         hasErrors = results.some(r => !r.success);

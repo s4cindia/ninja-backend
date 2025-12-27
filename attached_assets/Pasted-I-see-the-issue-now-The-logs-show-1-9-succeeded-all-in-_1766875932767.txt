@@ -1,0 +1,158 @@
+I see the issue now. The logs show:
+
+  1. 9 succeeded - all in wasteland-content.xhtml
+  2. 2 failed - toc and landmarks because they're in wasteland-nav.xhtml but the backend is only looking in wasteland-content.xhtml
+
+  The fix request is being sent with wasteland-content.xhtml as the file path for ALL changes, but toc and landmarks are in wasteland-nav.xhtml.
+
+  Prompt 36: Backend - Search ALL Files for epub:type (Not Just One File)
+
+  Problem
+
+  The current apply-fix logic only searches one file. It needs to search ALL XHTML files to find where each epub:type exists.
+
+  ---
+  File: src/services/epub/epub-modifier.service.ts
+
+  Replace the epub:type handling logic in applyQuickFix to use the addAriaRolesToEpubTypes method that searches ALL files:
+
+  async addAriaRolesToEpubTypes(
+    zip: JSZip,
+    epubTypesToFix: Array<{ epubType: string; role: string }>
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+
+    // Get ALL XHTML files - this is the key fix
+    const xhtmlFiles = Object.keys(zip.files).filter(path =>
+      /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+    );
+
+    console.log(`Searching ${xhtmlFiles.length} files for epub:type attributes`);
+    console.log(`Files to search:`, xhtmlFiles);
+    console.log(`epub:types to fix:`, epubTypesToFix);
+
+    for (const filePath of xhtmlFiles) {
+      try {
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        const $ = cheerio.load(content, { xmlMode: true, decodeEntities: false });
+        let fileModified = false;
+        const modifications: string[] = [];
+
+        for (const { epubType, role } of epubTypesToFix) {
+          // Find ALL elements with this epub:type in THIS file
+          $('*').each((_, elem) => {
+            const attr = $(elem).attr('epub:type');
+            if (!attr) return;
+
+            const types = attr.split(/\s+/);
+            if (!types.includes(epubType)) return;
+
+            // Skip if already has a role
+            if ($(elem).attr('role')) return;
+
+            // Add the role
+            $(elem).attr('role', role);
+            fileModified = true;
+
+            const tagName = elem.tagName || 'element';
+            modifications.push(`Added role="${role}" to <${tagName} epub:type="${epubType}">`);
+
+            results.push({
+              success: true,
+              filePath,
+              modificationType: 'add_role',
+              description: `Added role="${role}" to <${tagName}> with epub:type="${epubType}"`,
+              before: `<${tagName} epub:type="${attr}">`,
+              after: `<${tagName} epub:type="${attr}" role="${role}">`,
+            });
+          });
+        }
+
+        if (fileModified) {
+          // Save the modified content back to the zip
+          const newContent = $.xml();
+          zip.file(filePath, newContent);
+          console.log(`Modified ${filePath}:`, modifications);
+        }
+      } catch (err) {
+        console.error(`Error processing ${filePath}:`, err);
+      }
+    }
+
+    // Log summary
+    const successCount = results.length;
+    console.log(`Total modifications: ${successCount}`);
+
+    return results;
+  }
+
+  ---
+  File: src/controllers/epub.controller.ts
+
+  Update the controller to use this method for epub:type fixes:
+
+  case 'EPUB-SEM-003':
+  case 'EPUB-TYPE-HAS-MATCHING-ROLE': {
+    // Build list of epub:types to fix
+    const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+
+    if (options?.epubTypes && Array.isArray(options.epubTypes)) {
+      epubTypesToFix.push(...options.epubTypes);
+    } else if (options?.epubType && options?.role) {
+      epubTypesToFix.push({ epubType: options.epubType, role: options.role });
+    }
+
+    // Also handle the changes array format from frontend
+    if (changes && Array.isArray(changes)) {
+      for (const change of changes) {
+        // Extract epub:type and role from oldContent/newContent
+        const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
+        const roleMatch = change.newContent?.match(/role="([^"]+)"/);
+
+        if (epubTypeMatch && roleMatch) {
+          const epubType = epubTypeMatch[1];
+          const role = roleMatch[1];
+
+          // Avoid duplicates
+          if (!epubTypesToFix.find(e => e.epubType === epubType)) {
+            epubTypesToFix.push({ epubType, role });
+          }
+        }
+      }
+    }
+
+    console.log('epub:types to fix:', epubTypesToFix);
+
+    if (epubTypesToFix.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No epub:types specified to fix',
+      });
+    }
+
+    // Use the method that searches ALL files
+    results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+
+    // Skip the normal changes processing since we handled it above
+    skipChangesProcessing = true;
+    break;
+  }
+
+  Add at the top of the handler:
+  let skipChangesProcessing = false;
+
+  And wrap the existing changes loop:
+  if (!skipChangesProcessing && changes && changes.length > 0) {
+    // existing changes processing logic
+  }
+
+  ---
+  Key Change: Instead of looking for the exact string epub:type="toc" in a specific file, the new method:
+  1. Iterates through ALL XHTML files in the EPUB
+  2. Uses cheerio to find elements with the matching epub:type attribute
+  3. Adds the role attribute to each matching element
+  4. Returns results showing which files were actually modified
+
+  This ensures toc and landmarks in wasteland-nav.xhtml get fixed even though the frontend might send wasteland-content.xhtml as the file path.
