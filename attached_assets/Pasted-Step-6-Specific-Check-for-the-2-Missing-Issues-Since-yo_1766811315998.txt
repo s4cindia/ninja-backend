@@ -1,0 +1,67 @@
+Step 6: Specific Check for the 2 Missing Issues
+
+  Since you know 2 issues are missing, let's identify them specifically:
+
+  // Add this at the end of buildRemediationPlan
+
+  // Get all unique codes from input
+  const inputCodes = new Map<string, any>();
+  inputIssues.forEach(issue => {
+    const key = `${issue.code}:${issue.location || ''}`;
+    inputCodes.set(key, issue);
+  });
+
+  // Get all unique codes from output
+  const outputCodes = new Set<string>();
+  tasks.forEach(task => {
+    const key = `${task.issueCode}:${task.location || ''}`;
+    outputCodes.add(key);
+  });
+
+  // Find missing
+  console.log('\n🔎 DETAILED MISSING ISSUE CHECK:');
+  console.log(`  Input unique keys: ${inputCodes.size}`);
+  console.log(`  Output unique keys: ${outputCodes.size}`);
+
+  const missingKeys: string[] = [];
+  inputCodes.forEach((issue, key) => {
+    if (!outputCodes.has(key)) {
+      missingKeys.push(key);
+      console.log(`\n  ❌ MISSING: ${key}`);
+      console.log(`     Code: ${issue.code}`);
+      console.log(`     Source: ${issue.source}`);
+      console.log(`     Location: ${issue.location}`);
+      console.log(`     Message: ${issue.message?.substring(0, 100)}`);
+      console.log(`     Full issue:`, JSON.stringify(issue, null, 2));
+    }
+  });
+
+  if (missingKeys.length === 0) {
+    console.log('  ✅ No missing issues found');
+  } else {
+    console.log(`\n  ⚠️ ${missingKeys.length} ISSUES ARE MISSING!`);
+  }
+
+  ---
+  What to Look For in the Console Output
+
+  After running with this debugging, look for:
+
+  1. Where the count drops - Find the stage where issues go from 14 to 12
+  2. Which specific issues are missing - The detailed check will show exact codes
+  3. What's special about the missing issues - Do they have:
+    - Same code as another issue?
+    - Empty location?
+    - Special characters in the code?
+    - Different source format?
+
+  ---
+  Common Causes of Missing Issues
+
+  | Cause                        | How to Identify                                   | Fix                         |
+  |------------------------------|---------------------------------------------------|-----------------------------|
+  | Duplicate code deduplication | Two issues have same code but different locations | Use code + location as key  |
+  | Undefined/null filtering     | Issue has missing required field                  | Add default values          |
+  | Source mismatch              | ace vs ACE vs Ace                                 | Normalize to lowercase      |
+  | Array spread issue           | [...undefined] throws error                       | Add `                       |
+  | Async race condition         | Data not ready when accessed                      | Add await/proper sequencing |

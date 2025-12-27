@@ -266,6 +266,43 @@ class RemediationService {
     printTrackingReport();
     compareSnapshots('8_PLAN_INPUT', '9_TASKS_CREATED');
 
+    const inputCodes = new Map<string, Record<string, unknown>>();
+    validatedIssues.forEach(issue => {
+      const code = issue.code as string || 'UNKNOWN';
+      const location = issue.location as string || '';
+      const key = `${code}:${location}`;
+      inputCodes.set(key, issue);
+    });
+
+    const outputCodes = new Set<string>();
+    tasks.forEach(task => {
+      const key = `${task.issueCode}:${task.location || ''}`;
+      outputCodes.add(key);
+    });
+
+    logger.info('\nDETAILED MISSING ISSUE CHECK:');
+    logger.info(`  Input unique keys: ${inputCodes.size}`);
+    logger.info(`  Output unique keys: ${outputCodes.size}`);
+
+    const missingKeys: string[] = [];
+    inputCodes.forEach((issue, key) => {
+      if (!outputCodes.has(key)) {
+        missingKeys.push(key);
+        logger.error(`\n  MISSING: ${key}`);
+        logger.error(`     Code: ${issue.code}`);
+        logger.error(`     Source: ${issue.source}`);
+        logger.error(`     Location: ${issue.location}`);
+        logger.error(`     Message: ${(issue.message as string)?.substring(0, 100)}`);
+        logger.error(`     Full issue: ${JSON.stringify(issue, null, 2)}`);
+      }
+    });
+
+    if (missingKeys.length === 0) {
+      logger.info('  No missing issues found');
+    } else {
+      logger.error(`\n  ${missingKeys.length} ISSUES ARE MISSING!`);
+    }
+
     const planTally = createTally(tasks, 'remediation_plan');
     logger.info('\nPlan Tally:');
     logger.info(`  By Source: EPUBCheck=${planTally.bySource.epubCheck}, ACE=${planTally.bySource.ace}, JS Auditor=${planTally.bySource.jsAuditor}`);
