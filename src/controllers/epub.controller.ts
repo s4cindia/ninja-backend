@@ -1340,4 +1340,56 @@ export const epubController = {
       });
     }
   },
+
+  async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
+    const { jobId } = req.params;
+    const { filePath } = req.query;
+    const tenantId = req.user?.tenantId;
+
+    try {
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+
+      if (!epubBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'EPUB file not found',
+        });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+      const result = await epubModifier.scanEpubTypes(zip, filePath as string | undefined);
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error(`Failed to scan epub:types: ${error}`);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to scan file',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
 };
