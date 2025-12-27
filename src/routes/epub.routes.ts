@@ -34,6 +34,7 @@ router.get('/acr/:acrWorkflowId', authenticate, epubController.getAcrWorkflow);
 router.patch('/acr/:acrWorkflowId/criteria/:criteriaId', authenticate, epubController.updateAcrCriteria);
 router.post('/job/:jobId/auto-remediate', authenticate, authorizeJob, epubController.runAutoRemediation);
 router.post('/job/:jobId/apply-fix', authenticate, authorizeJob, epubController.applySpecificFix);
+router.post('/job/:jobId/apply-quick-fix', authenticate, authorizeJob, epubController.applyQuickFix);
 router.get('/job/:jobId/download-remediated', authenticate, authorizeJob, epubController.downloadRemediatedFile);
 router.get('/job/:jobId/comparison', authenticate, authorizeJob, epubController.getComparison);
 router.get('/job/:jobId/comparison/summary', authenticate, authorizeJob, epubController.getComparisonSummary);

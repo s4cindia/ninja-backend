@@ -2,6 +2,12 @@ import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
 import { logger } from '../../lib/logger';
 
+const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
+
+function isTextFile(filePath: string): boolean {
+  return EPUB_TEXT_FILE_EXTENSIONS.some(ext => filePath.toLowerCase().endsWith(ext));
+}
+
 function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -760,6 +766,213 @@ class EPUBModifierService {
 
     return results;
   }
+
+  async applyQuickFix(
+    zip: JSZip,
+    changes: FileChange[]
+  ): Promise<{ modifiedFiles: string[]; results: ModificationResult[]; hasErrors: boolean }> {
+    const modifiedFiles: string[] = [];
+    const results: ModificationResult[] = [];
+    let hasErrors = false;
+
+    for (const change of changes) {
+      const filePath = change.filePath;
+      
+      let file = zip.file(filePath);
+      let actualPath = filePath;
+      if (!file) {
+        file = zip.file(`EPUB/${filePath}`);
+        if (file) actualPath = `EPUB/${filePath}`;
+      }
+      if (!file) {
+        file = zip.file(`OEBPS/${filePath}`);
+        if (file) actualPath = `OEBPS/${filePath}`;
+      }
+
+      if (!file) {
+        logger.warn(`File not found in EPUB: ${filePath}`);
+        results.push({
+          success: false,
+          filePath,
+          modificationType: change.type,
+          description: `File not found in EPUB: ${filePath}`,
+        });
+        hasErrors = true;
+        continue;
+      }
+
+      const content = await file.async('string');
+      const before = content.substring(0, 200);
+      let modified = content;
+      let changeApplied = false;
+
+      switch (change.type) {
+        case 'insert':
+          {
+            if (!isTextFile(actualPath)) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: `Insert not allowed for binary/non-text file: ${actualPath}`,
+              });
+              hasErrors = true;
+              continue;
+            }
+            
+            if (filePath.endsWith('.opf')) {
+              if (modified.includes('</metadata>')) {
+                modified = modified.replace('</metadata>', `${change.content}\n</metadata>`);
+                changeApplied = true;
+              } else {
+                results.push({
+                  success: false,
+                  filePath: actualPath,
+                  modificationType: change.type,
+                  description: 'No </metadata> tag found for insertion',
+                });
+                hasErrors = true;
+                continue;
+              }
+            } else if (change.oldContent) {
+              if (!content.includes(change.oldContent)) {
+                results.push({
+                  success: false,
+                  filePath: actualPath,
+                  modificationType: change.type,
+                  description: 'Insert anchor (oldContent) not found in file',
+                });
+                hasErrors = true;
+                continue;
+              }
+              modified = content.replace(change.oldContent, change.oldContent + (change.content || ''));
+              changeApplied = true;
+            } else {
+              modified += '\n' + (change.content || '');
+              changeApplied = true;
+            }
+          }
+          break;
+
+        case 'replace':
+          {
+            if (!isTextFile(actualPath)) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: `Replace not allowed for binary/non-text file: ${actualPath}`,
+              });
+              hasErrors = true;
+              continue;
+            }
+            
+            if (!change.oldContent) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: 'oldContent is required for replace operation',
+              });
+              hasErrors = true;
+              continue;
+            }
+            if (!content.includes(change.oldContent)) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: 'oldContent not found in file - no replacement made',
+              });
+              hasErrors = true;
+              continue;
+            }
+            modified = content.replace(change.oldContent, change.content || '');
+            changeApplied = true;
+          }
+          break;
+
+        case 'delete':
+          {
+            if (!isTextFile(actualPath)) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: `Delete not allowed for binary/non-text file: ${actualPath}`,
+              });
+              hasErrors = true;
+              continue;
+            }
+            
+            if (!change.oldContent) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: 'oldContent is required for delete operation',
+              });
+              hasErrors = true;
+              continue;
+            }
+            if (!content.includes(change.oldContent)) {
+              results.push({
+                success: false,
+                filePath: actualPath,
+                modificationType: change.type,
+                description: 'oldContent not found in file - no deletion made',
+              });
+              hasErrors = true;
+              continue;
+            }
+            modified = content.replace(change.oldContent, '');
+            changeApplied = true;
+          }
+          break;
+        
+        default:
+          results.push({
+            success: false,
+            filePath: actualPath,
+            modificationType: String(change.type),
+            description: `Unsupported change type: ${change.type}. Supported types: insert, replace, delete`,
+          });
+          hasErrors = true;
+          continue;
+      }
+
+      if (changeApplied) {
+        zip.file(actualPath, modified);
+        modifiedFiles.push(actualPath);
+
+        results.push({
+          success: true,
+          filePath: actualPath,
+          modificationType: change.type,
+          description: change.description || `Applied ${change.type} operation`,
+          before,
+          after: modified.substring(0, 200),
+        });
+
+        logger.info(`Quick fix modified file: ${actualPath}`);
+      }
+    }
+
+    logger.info(`Quick fix applied to ${modifiedFiles.length} files, errors: ${hasErrors}`);
+
+    return { modifiedFiles, results, hasErrors };
+  }
 }
+
+interface FileChange {
+  type: 'insert' | 'replace' | 'delete';
+  filePath: string;
+  content?: string;
+  oldContent?: string;
+  lineNumber?: number;
+  description?: string;
+}
+
+export type { FileChange };
 
 export const epubModifier = new EPUBModifierService();
