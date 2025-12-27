@@ -1343,26 +1343,16 @@ export const epubController = {
 
   async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
     const { jobId } = req.params;
-    const { filePath } = req.query;
     const tenantId = req.user?.tenantId;
 
     try {
       if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
+        return res.status(401).json({ success: false, error: 'Authentication required' });
       }
 
-      const job = await prisma.job.findFirst({
-        where: { id: jobId, tenantId },
-      });
-
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
       if (!job) {
-        return res.status(404).json({
-          success: false,
-          error: 'Job not found',
-        });
+        return res.status(404).json({ success: false, error: 'Job not found' });
       }
 
       const input = job.input as { fileName?: string } | null;
@@ -1377,19 +1367,14 @@ export const epubController = {
       }
 
       if (!epubBuffer) {
-        return res.status(404).json({
-          success: false,
-          error: 'EPUB file not found',
-        });
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
       }
 
       const zip = await epubModifier.loadEPUB(epubBuffer);
-      const result = await epubModifier.scanEpubTypes(zip, filePath as string | undefined);
+      // No filePath parameter - scan entire EPUB
+      const result = await epubModifier.scanEpubTypes(zip);
 
-      return res.json({
-        success: true,
-        data: result,
-      });
+      return res.json({ success: true, data: result });
     } catch (error) {
       logger.error(`Failed to scan epub:types: ${error}`);
       return res.status(500).json({

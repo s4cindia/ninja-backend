@@ -1209,7 +1209,7 @@ class EPUBModifierService {
     return { modifiedFiles, results, hasErrors };
   }
 
-  async scanEpubTypes(zip: JSZip, targetFilePath?: string): Promise<{
+  async scanEpubTypes(zip: JSZip): Promise<{
     epubTypes: Array<{
       value: string;
       file: string;
@@ -1219,6 +1219,14 @@ class EPUBModifierService {
     }>;
     files: string[];
   }> {
+    const epubTypeMap = new Map<string, {
+      value: string;
+      files: Set<string>;
+      count: number;
+      elementType: string;
+    }>();
+    const scannedFiles: string[] = [];
+
     const roleMapping: Record<string, string> = {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
@@ -1253,34 +1261,14 @@ class EPUBModifierService {
       'pagebreak': 'doc-pagebreak',
       'page-list': 'doc-pagelist',
       'cover': 'doc-cover',
-      'halftitlepage': 'doc-cover',
-      'imprint': 'doc-colophon',
-      'contributors': 'doc-credits',
-      'notice': 'doc-notice',
-      'errata': 'doc-errata',
-      'loi': 'doc-loi',
-      'lot': 'doc-lot',
-      'sidebar': 'complementary',
-      'pullquote': 'doc-pullquote',
     };
 
-    const epubTypeMap = new Map<string, {
-      value: string;
-      files: Set<string>;
-      count: number;
-      elementType: string;
-    }>();
-    const scannedFiles: string[] = [];
-
+    // Scan ALL XHTML files - no filtering
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
 
     for (const filePath of xhtmlFiles) {
-      if (targetFilePath && !filePath.includes(targetFilePath.replace(/^.*\//, ''))) {
-        continue;
-      }
-
       try {
         const content = await zip.file(filePath)?.async('text');
         if (!content) continue;
