@@ -12,6 +12,150 @@ function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+interface FlexibleMatchResult {
+  matched: boolean;
+  matchedContent?: string;
+  newContent?: string;
+}
+
+function tryFlexibleMatch(content: string, oldContent: string, newContent: string): FlexibleMatchResult {
+  const flexiblePattern = escapeRegExp(oldContent)
+    .replace(/\\s+/g, '\\s*')
+    .replace(/"/g, '["\']')
+    .replace(/'/g, '["\']');
+
+  try {
+    const regex = new RegExp(flexiblePattern, 'g');
+    const match = content.match(regex);
+
+    if (match && match.length > 0) {
+      logger.info(`Flexible match found: "${match[0].substring(0, 80)}..."`);
+      return {
+        matched: true,
+        matchedContent: match[0],
+        newContent: content.replace(match[0], newContent),
+      };
+    }
+  } catch (e) {
+    logger.warn(`Flexible pattern failed: ${e}`);
+  }
+
+  return { matched: false };
+}
+
+function tryEpubTypePatternMatch(content: string, oldContent: string, newContent: string): FlexibleMatchResult {
+  const epubTypeMatch = oldContent.match(/epub:type\s*=\s*["']([^"']+)["']/);
+  if (epubTypeMatch) {
+    const epubTypeValue = epubTypeMatch[1];
+    const regex = new RegExp(`epub:type\\s*=\\s*["']${escapeRegExp(epubTypeValue)}["']`, 'g');
+    const match = content.match(regex);
+
+    if (match && match.length > 0) {
+      logger.info(`epub:type pattern matched: "${match[0]}"`);
+      const quoteChar = match[0].includes('"') ? '"' : "'";
+      const replacement = newContent.replace(/["']/g, quoteChar);
+
+      return {
+        matched: true,
+        matchedContent: match[0],
+        newContent: content.replace(match[0], replacement),
+      };
+    }
+  }
+
+  return { matched: false };
+}
+
+function tryTagPatternMatch(content: string, oldContent: string, newContent: string): FlexibleMatchResult {
+  const tagMatch = oldContent.match(/<(\w+)([^>]*)>/);
+  if (tagMatch) {
+    const tagName = tagMatch[1];
+    const attrs = tagMatch[2].trim();
+    const tagRegex = new RegExp(`<${tagName}\\s+[^>]*>`, 'g');
+    let match;
+
+    while ((match = tagRegex.exec(content)) !== null) {
+      const foundTag = match[0];
+      const keyAttrMatch = attrs.match(/(\w+)\s*=\s*["']([^"']+)["']/);
+
+      if (keyAttrMatch) {
+        const attrName = keyAttrMatch[1];
+        const attrValue = keyAttrMatch[2];
+
+        if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
+          logger.info(`Tag pattern matched: "${foundTag.substring(0, 80)}..."`);
+
+          const newAttrMatch = newContent.match(/(\w+)\s*=\s*["']([^"']+)["']\s*$/);
+          if (newAttrMatch && !foundTag.includes(newAttrMatch[1])) {
+            const updatedTag = foundTag.replace(/>$/, ` ${newAttrMatch[0]}>`);
+
+            return {
+              matched: true,
+              matchedContent: foundTag,
+              newContent: content.replace(foundTag, updatedTag),
+            };
+          }
+          
+          return {
+            matched: true,
+            matchedContent: foundTag,
+            newContent: content.replace(foundTag, newContent),
+          };
+        }
+      }
+    }
+  }
+
+  return { matched: false };
+}
+
+function performFlexibleReplace(content: string, oldContent: string, newContent: string): { 
+  result: string; 
+  matched: boolean; 
+  matchedContent?: string;
+} {
+  if (content.includes(oldContent)) {
+    logger.info(`Exact match found for: ${oldContent.substring(0, 50)}...`);
+    return {
+      result: content.replace(oldContent, newContent),
+      matched: true,
+      matchedContent: oldContent,
+    };
+  }
+
+  logger.info(`Exact match failed, trying flexible patterns...`);
+
+  const flexResult = tryFlexibleMatch(content, oldContent, newContent);
+  if (flexResult.matched) {
+    return {
+      result: flexResult.newContent!,
+      matched: true,
+      matchedContent: flexResult.matchedContent,
+    };
+  }
+
+  const epubTypeResult = tryEpubTypePatternMatch(content, oldContent, newContent);
+  if (epubTypeResult.matched) {
+    return {
+      result: epubTypeResult.newContent!,
+      matched: true,
+      matchedContent: epubTypeResult.matchedContent,
+    };
+  }
+
+  const tagResult = tryTagPatternMatch(content, oldContent, newContent);
+  if (tagResult.matched) {
+    return {
+      result: tagResult.newContent!,
+      matched: true,
+      matchedContent: tagResult.matchedContent,
+    };
+  }
+
+  logger.warn(`No match found for: ${oldContent.substring(0, 100)}...`);
+  return { result: content, matched: false };
+}
+
 interface ModificationResult {
   success: boolean;
   filePath: string;
@@ -888,18 +1032,23 @@ class EPUBModifierService {
               hasErrors = true;
               continue;
             }
-            if (!content.includes(change.oldContent)) {
+            
+            const replaceResult = performFlexibleReplace(content, change.oldContent, change.content || '');
+            if (!replaceResult.matched) {
               results.push({
                 success: false,
                 filePath: actualPath,
                 modificationType: change.type,
-                description: 'oldContent not found in file - no replacement made',
+                description: 'oldContent not found in file (exact and flexible matching failed)',
               });
               hasErrors = true;
               continue;
             }
-            modified = content.replace(change.oldContent, change.content || '');
+            modified = replaceResult.result;
             changeApplied = true;
+            if (replaceResult.matchedContent && replaceResult.matchedContent !== change.oldContent) {
+              logger.info(`Flexible match used - original: "${change.oldContent.substring(0, 50)}...", matched: "${replaceResult.matchedContent.substring(0, 50)}..."`);
+            }
           }
           break;
 
@@ -926,18 +1075,23 @@ class EPUBModifierService {
               hasErrors = true;
               continue;
             }
-            if (!content.includes(change.oldContent)) {
+            
+            const deleteResult = performFlexibleReplace(content, change.oldContent, '');
+            if (!deleteResult.matched) {
               results.push({
                 success: false,
                 filePath: actualPath,
                 modificationType: change.type,
-                description: 'oldContent not found in file - no deletion made',
+                description: 'oldContent not found in file (exact and flexible matching failed)',
               });
               hasErrors = true;
               continue;
             }
-            modified = content.replace(change.oldContent, '');
+            modified = deleteResult.result;
             changeApplied = true;
+            if (deleteResult.matchedContent && deleteResult.matchedContent !== change.oldContent) {
+              logger.info(`Flexible match used for delete - original: "${change.oldContent.substring(0, 50)}...", matched: "${deleteResult.matchedContent.substring(0, 50)}..."`);
+            }
           }
           break;
         
