@@ -790,6 +790,17 @@ class EPUBModifierService {
       }
 
       if (!file) {
+        if (filePath.endsWith('.opf') || change.type === 'insert' && filePath.includes('opf')) {
+          const opfData = await this.getOPF(zip);
+          if (opfData) {
+            file = zip.file(opfData.path);
+            actualPath = opfData.path;
+            logger.info(`Auto-detected OPF file: ${actualPath} (requested: ${filePath})`);
+          }
+        }
+      }
+
+      if (!file) {
         logger.warn(`File not found in EPUB: ${filePath}`);
         results.push({
           success: false,
