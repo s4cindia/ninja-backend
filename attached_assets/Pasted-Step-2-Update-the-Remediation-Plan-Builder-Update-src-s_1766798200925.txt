@@ -1,0 +1,201 @@
+Step 2: Update the Remediation Plan Builder
+
+  Update src/services/remediation-plan.service.ts:
+
+  import { createTally, validateTallyTransition, IssueTally, TallyValidationResult } from '../types/issue-tally.types';
+
+  // Fix type classification
+  const QUICK_FIXABLE_CODES = new Set([
+    'METADATA-ACCESSMODE', 'METADATA-ACCESSIBILITYFEATURE',
+    'METADATA-ACCESSIBILITYHAZARD', 'METADATA-ACCESSIBILITYSUMMARY',
+    'EPUB-IMG-001', 'EPUB-CONTRAST-001',
+  ]);
+
+  const AUTO_FIXABLE_CODES = new Set([
+    'EPUB-META-001', 'EPUB-NAV-001', 'EPUB-SEM-002',
+    'EPUB-STRUCT-003', 'EPUB-STRUCT-004',
+  ]);
+
+  function getFixType(code: string): 'auto' | 'quickfix' | 'manual' {
+    const upperCode = code?.toUpperCase() || '';
+    if (AUTO_FIXABLE_CODES.has(upperCode)) return 'auto';
+    if (QUICK_FIXABLE_CODES.has(upperCode)) return 'quickfix';
+    return 'manual';
+  }
+
+  function getFixTypeLabel(fixType: string): string {
+    switch (fixType) {
+      case 'auto': return 'Auto-Fixable';
+      case 'quickfix': return 'Quick Fix';
+      default: return 'Manual';
+    }
+  }
+
+  interface RemediationTask {
+    id: string;
+    issueCode: string;
+    message: string;
+    severity: string;
+    location?: string;
+    source: string;
+    fixType: 'auto' | 'quickfix' | 'manual';
+    fixTypeLabel: string;
+    status: 'pending' | 'in_progress' | 'fixed' | 'failed' | 'skipped';
+  }
+
+  interface RemediationPlanStats {
+    total: number;
+    bySource: { epubCheck: number; ace: number; jsAuditor: number };
+    bySeverity: { critical: number; serious: number; moderate: number; minor: number };
+    byClassification: { autoFixable: number; quickFix: number; manual: number };
+  }
+
+  interface RemediationPlan {
+    id: string;
+    jobId: string;
+    epubId: string;
+    tasks: RemediationTask[];
+    stats: RemediationPlanStats;
+    auditTally: IssueTally;
+    planTally: IssueTally;
+    tallyValidation: TallyValidationResult;
+    createdAt: string;
+  }
+
+  /**
+   * Build remediation plan from ALL audit issues
+   * IMPORTANT: This must include issues from ALL sources (EPUBCheck, ACE, JS Auditor)
+   */
+  export function buildRemediationPlan(
+    jobId: string,
+    epubId: string,
+    auditResults: {
+      epubCheckIssues?: any[];
+      aceIssues?: any[];
+      jsAuditorIssues?: any[];
+      allIssues?: any[];
+    }
+  ): RemediationPlan {
+    console.log('\n========================================');
+    console.log('Building Remediation Plan');
+    console.log('========================================');
+
+    // STEP 1: Collect ALL issues from ALL sources
+    let allIssues: any[] = [];
+
+    if (auditResults.allIssues && auditResults.allIssues.length > 0) {
+      allIssues = auditResults.allIssues;
+      console.log(`Using pre-combined issues: ${allIssues.length}`);
+    } else {
+      // Combine from separate sources - INCLUDE ALL!
+      const epubCheckIssues = (auditResults.epubCheckIssues || []).map(issue => ({
+        ...issue,
+        source: 'epubcheck',
+      }));
+
+      const aceIssues = (auditResults.aceIssues || []).map(issue => ({
+        ...issue,
+        source: 'ace',
+      }));
+
+      const jsAuditorIssues = (auditResults.jsAuditorIssues || []).map(issue => ({
+        ...issue,
+        source: 'jsauditor',
+      }));
+
+      allIssues = [...epubCheckIssues, ...aceIssues, ...jsAuditorIssues];
+
+      console.log('\nIssues collected from sources:');
+      console.log(`  EPUBCheck: ${epubCheckIssues.length}`);
+      console.log(`  ACE:       ${aceIssues.length}`);
+      console.log(`  JS Auditor: ${jsAuditorIssues.length}`);
+      console.log(`  ─────────────────────`);
+      console.log(`  TOTAL:     ${allIssues.length}`);
+    }
+
+    // STEP 2: Create audit tally (baseline)
+    const auditTally = createTally(allIssues, 'audit');
+
+    console.log('\n📊 Audit Tally:');
+    console.log(`  By Source: EPUBCheck=${auditTally.bySource.epubCheck}, ACE=${auditTally.bySource.ace}, JS Auditor=${auditTally.bySource.jsAuditor}`);
+    console.log(`  By Severity: Critical=${auditTally.bySeverity.critical}, Serious=${auditTally.bySeverity.serious}, Moderate=${auditTally.bySeverity.moderate}, Minor=${auditTally.bySeverity.minor}`);
+    console.log(`  Grand Total: ${auditTally.grandTotal}`);
+
+    // STEP 3: Convert ALL issues to tasks - DO NOT FILTER!
+    const tasks: RemediationTask[] = allIssues.map((issue, index) => {
+      const fixType = getFixType(issue.code);
+      return {
+        id: `task-${index}-${issue.code || 'unknown'}`,
+        issueCode: issue.code || 'UNKNOWN',
+        message: issue.message || issue.description || 'No description',
+        severity: issue.severity || 'moderate',
+        location: issue.location || issue.file,
+        source: issue.source || 'unknown',
+        fixType,
+        fixTypeLabel: getFixTypeLabel(fixType),
+        status: 'pending',
+      };
+    });
+
+    // STEP 4: Create plan tally
+    const planTally = createTally(tasks, 'remediation_plan');
+
+    console.log('\n📊 Plan Tally:');
+    console.log(`  By Source: EPUBCheck=${planTally.bySource.epubCheck}, ACE=${planTally.bySource.ace}, JS Auditor=${planTally.bySource.jsAuditor}`);
+    console.log(`  By Classification: Auto=${planTally.byClassification.autoFixable}, QuickFix=${planTally.byClassification.quickFix}, Manual=${planTally.byClassification.manual}`);
+    console.log(`  Grand Total: ${planTally.grandTotal}`);
+
+    // STEP 5: Validate tally transition
+    const tallyValidation = validateTallyTransition(auditTally, planTally);
+
+    if (tallyValidation.isValid) {
+      console.log('\n✅ TALLY VALIDATION PASSED');
+      console.log(`   All ${auditTally.grandTotal} issues accounted for`);
+    } else {
+      console.error('\n❌ TALLY VALIDATION FAILED!');
+      console.error('   Errors:', tallyValidation.errors);
+      console.error('   Discrepancies:', tallyValidation.discrepancies);
+    }
+
+    // STEP 6: Build stats for API response
+    const stats: RemediationPlanStats = {
+      total: tasks.length,
+      bySource: {
+        epubCheck: planTally.bySource.epubCheck,
+        ace: planTally.bySource.ace,
+        jsAuditor: planTally.bySource.jsAuditor,
+      },
+      bySeverity: {
+        critical: planTally.bySeverity.critical,
+        serious: planTally.bySeverity.serious,
+        moderate: planTally.bySeverity.moderate,
+        minor: planTally.bySeverity.minor,
+      },
+      byClassification: {
+        autoFixable: planTally.byClassification.autoFixable,
+        quickFix: planTally.byClassification.quickFix,
+        manual: planTally.byClassification.manual,
+      },
+    };
+
+    console.log('\n========================================');
+    console.log('Remediation Plan Summary');
+    console.log('========================================');
+    console.log(`Total Tasks: ${stats.total}`);
+    console.log(`  Auto-Fixable: ${stats.byClassification.autoFixable}`);
+    console.log(`  Quick Fix:    ${stats.byClassification.quickFix}`);
+    console.log(`  Manual:       ${stats.byClassification.manual}`);
+    console.log('========================================\n');
+
+    return {
+      id: `plan-${Date.now()}`,
+      jobId,
+      epubId,
+      tasks,
+      stats,
+      auditTally,
+      planTally,
+      tallyValidation,
+      createdAt: new Date().toISOString(),
+    };
+  }

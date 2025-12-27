@@ -7,6 +7,13 @@ import {
   getFixTypeLabel,
   FixType,
 } from '../../constants/fix-classification';
+import {
+  createTally,
+  validateTallyTransition,
+  IssueTally,
+  TallyValidationResult,
+  normalizeSource,
+} from '../../types/issue-tally.types';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -55,7 +62,12 @@ interface RemediationPlan {
     quickFixable: number;
     manualRequired: number;
     byFixType: Record<FixType, number>;
+    bySource: { epubCheck: number; ace: number; jsAuditor: number };
+    bySeverity: { critical: number; serious: number; moderate: number; minor: number };
   };
+  auditTally?: IssueTally;
+  planTally?: IssueTally;
+  tallyValidation?: TallyValidationResult;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -138,6 +150,10 @@ class RemediationService {
 
     const issues = (combinedIssues as Array<Record<string, unknown>>) || [];
 
+    logger.info('\n========================================');
+    logger.info('Building Remediation Plan');
+    logger.info('========================================');
+
     const validatedIssues = issues.filter(issue => {
       if (!issue || typeof issue !== 'object') {
         logger.warn('Skipping invalid issue entry');
@@ -145,6 +161,14 @@ class RemediationService {
       }
       return true;
     });
+
+    logger.info(`Total issues from audit: ${validatedIssues.length}`);
+
+    const auditTally = createTally(validatedIssues, 'audit');
+    logger.info('\nAudit Tally:');
+    logger.info(`  By Source: EPUBCheck=${auditTally.bySource.epubCheck}, ACE=${auditTally.bySource.ace}, JS Auditor=${auditTally.bySource.jsAuditor}`);
+    logger.info(`  By Severity: Critical=${auditTally.bySeverity.critical}, Serious=${auditTally.bySeverity.serious}, Moderate=${auditTally.bySeverity.moderate}, Minor=${auditTally.bySeverity.minor}`);
+    logger.info(`  Grand Total: ${auditTally.grandTotal}`);
 
     const tasks: RemediationTask[] = validatedIssues.map((issue) => {
       const issueCode = (issue.code as string) || '';
@@ -190,6 +214,24 @@ class RemediationService {
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
+    const planTally = createTally(tasks, 'remediation_plan');
+    logger.info('\nPlan Tally:');
+    logger.info(`  By Source: EPUBCheck=${planTally.bySource.epubCheck}, ACE=${planTally.bySource.ace}, JS Auditor=${planTally.bySource.jsAuditor}`);
+    logger.info(`  By Classification: Auto=${planTally.byClassification.autoFixable}, QuickFix=${planTally.byClassification.quickFix}, Manual=${planTally.byClassification.manual}`);
+    logger.info(`  Grand Total: ${planTally.grandTotal}`);
+
+    const tallyValidation = validateTallyTransition(auditTally, planTally);
+    if (tallyValidation.isValid) {
+      logger.info('\nTALLY VALIDATION PASSED');
+      logger.info(`   All ${auditTally.grandTotal} issues accounted for`);
+    } else {
+      logger.error('\nTALLY VALIDATION FAILED!');
+      logger.error(`   Errors: ${tallyValidation.errors.join(', ')}`);
+      tallyValidation.discrepancies.forEach(d => {
+        logger.error(`   ${d.field}: expected ${d.expected}, got ${d.actual} (diff: ${d.difference})`);
+      });
+    }
+
     const plan: RemediationPlan = {
       jobId,
       fileName: (auditData.fileName as string) || 'unknown.epub',
@@ -201,18 +243,41 @@ class RemediationService {
         completed: 0,
         skipped: 0,
         failed: 0,
-        autoFixable: tasks.filter(t => t.type === 'auto').length,
-        quickFixable: tasks.filter(t => t.type === 'quickfix').length,
-        manualRequired: tasks.filter(t => t.type === 'manual').length,
+        autoFixable: planTally.byClassification.autoFixable,
+        quickFixable: planTally.byClassification.quickFix,
+        manualRequired: planTally.byClassification.manual,
         byFixType: {
-          auto: tasks.filter(t => t.type === 'auto').length,
-          quickfix: tasks.filter(t => t.type === 'quickfix').length,
-          manual: tasks.filter(t => t.type === 'manual').length,
+          auto: planTally.byClassification.autoFixable,
+          quickfix: planTally.byClassification.quickFix,
+          manual: planTally.byClassification.manual,
+        },
+        bySource: {
+          epubCheck: planTally.bySource.epubCheck,
+          ace: planTally.bySource.ace,
+          jsAuditor: planTally.bySource.jsAuditor,
+        },
+        bySeverity: {
+          critical: planTally.bySeverity.critical,
+          serious: planTally.bySeverity.serious,
+          moderate: planTally.bySeverity.moderate,
+          minor: planTally.bySeverity.minor,
         },
       },
+      auditTally,
+      planTally,
+      tallyValidation,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
+    logger.info('\n========================================');
+    logger.info('Remediation Plan Summary');
+    logger.info('========================================');
+    logger.info(`Total Tasks: ${plan.stats.pending}`);
+    logger.info(`  Auto-Fixable: ${plan.stats.autoFixable}`);
+    logger.info(`  Quick Fix:    ${plan.stats.quickFixable}`);
+    logger.info(`  Manual:       ${plan.stats.manualRequired}`);
+    logger.info('========================================\n');
 
     await prisma.job.create({
       data: {
@@ -292,19 +357,31 @@ class RemediationService {
         }
       }
 
+      const updatedTally = createTally(plan.tasks, 'in_progress');
       plan.stats = {
         pending: plan.tasks.filter(t => t.status === 'pending').length,
         inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
         completed: plan.tasks.filter(t => t.status === 'completed').length,
         skipped: plan.tasks.filter(t => t.status === 'skipped').length,
         failed: plan.tasks.filter(t => t.status === 'failed').length,
-        autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
-        quickFixable: plan.tasks.filter(t => t.type === 'quickfix').length,
-        manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+        autoFixable: updatedTally.byClassification.autoFixable,
+        quickFixable: updatedTally.byClassification.quickFix,
+        manualRequired: updatedTally.byClassification.manual,
         byFixType: {
-          auto: plan.tasks.filter(t => t.type === 'auto').length,
-          quickfix: plan.tasks.filter(t => t.type === 'quickfix').length,
-          manual: plan.tasks.filter(t => t.type === 'manual').length,
+          auto: updatedTally.byClassification.autoFixable,
+          quickfix: updatedTally.byClassification.quickFix,
+          manual: updatedTally.byClassification.manual,
+        },
+        bySource: {
+          epubCheck: updatedTally.bySource.epubCheck,
+          ace: updatedTally.bySource.ace,
+          jsAuditor: updatedTally.bySource.jsAuditor,
+        },
+        bySeverity: {
+          critical: updatedTally.bySeverity.critical,
+          serious: updatedTally.bySeverity.serious,
+          moderate: updatedTally.bySeverity.moderate,
+          minor: updatedTally.bySeverity.minor,
         },
       };
       plan.updatedAt = new Date();
