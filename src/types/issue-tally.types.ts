@@ -102,7 +102,7 @@ export function getFixTypeForCode(code: string): 'auto' | 'quickfix' | 'manual' 
  * Create a tally from a list of issues
  */
 export function createTally(
-  issues: any[],
+  issues: Record<string, unknown>[],
   stage: IssueTally['stage']
 ): IssueTally {
   const bySource: SourceTally = { epubCheck: 0, ace: 0, jsAuditor: 0, total: 0 };
@@ -112,14 +112,14 @@ export function createTally(
 
   for (const issue of issues) {
     // By source
-    const source = normalizeSource(issue.source || issue.ruleSource || '');
+    const source = normalizeSource(String(issue.source || issue.ruleSource || ''));
     if (source === 'epubcheck') bySource.epubCheck++;
     else if (source === 'ace') bySource.ace++;
     else if (source === 'jsauditor') bySource.jsAuditor++;
     bySource.total++;
 
     // By severity
-    const severity = (issue.severity || 'moderate').toLowerCase();
+    const severity = String(issue.severity || 'moderate').toLowerCase();
     if (severity === 'critical') bySeverity.critical++;
     else if (severity === 'serious') bySeverity.serious++;
     else if (severity === 'moderate') bySeverity.moderate++;
@@ -127,7 +127,7 @@ export function createTally(
     bySeverity.total++;
 
     // By classification - check both code and issueCode (for tasks)
-    const issueCode = issue.code || issue.issueCode || '';
+    const issueCode = String(issue.code || issue.issueCode || '');
     const fixType = issue.fixType || issue.type || getFixTypeForCode(issueCode);
     if (fixType === 'auto') byClassification.autoFixable++;
     else if (fixType === 'quickfix') byClassification.quickFix++;
@@ -135,7 +135,7 @@ export function createTally(
     byClassification.total++;
 
     // By status
-    const status = (issue.status || 'pending').toLowerCase().replace('_', '');
+    const status = String(issue.status || 'pending').toLowerCase().replace('_', '');
     if (status === 'pending') byStatus.pending++;
     else if (status === 'inprogress') byStatus.inProgress++;
     else if (status === 'fixed') byStatus.fixed++;

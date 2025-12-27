@@ -185,7 +185,7 @@ class EpubAuditService {
 
       const combinedIssues = this.combineResults(epubCheckResult, aceResult);
 
-      captureIssueSnapshot('1_AFTER_COMBINE_EPUBCHECK_ACE', combinedIssues, true);
+      captureIssueSnapshot('1_AFTER_COMBINE_EPUBCHECK_ACE', combinedIssues as unknown as Record<string, unknown>[], true);
 
       logger.info('\nJS AUDITOR INTEGRATION:');
       try {
@@ -247,12 +247,12 @@ class EpubAuditService {
         }
         
         logger.info(`  After merge, combined has: ${combinedIssues.length} issues`);
-        captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues, true);
+        captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues as unknown as Record<string, unknown>[], true);
       } catch (jsError) {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
       }
 
-      captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues, true);
+      captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues as unknown as Record<string, unknown>[], true);
 
       logger.info('\nFINAL DEDUPLICATION:');
       logger.info(`  Input count: ${combinedIssues.length}`);
@@ -285,7 +285,7 @@ class EpubAuditService {
       }
       logger.info(`  Output count: ${deduplicatedIssues.length}`);
 
-      captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues, true);
+      captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues as unknown as Record<string, unknown>[], true);
 
       compareSnapshots('1_AFTER_COMBINE_EPUBCHECK_ACE', '4_AFTER_DEDUPLICATION');
 

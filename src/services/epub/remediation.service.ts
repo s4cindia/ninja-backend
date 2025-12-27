@@ -4,7 +4,6 @@ import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
 import {
   getFixType,
-  getFixTypeLabel,
   FixType,
 } from '../../constants/fix-classification';
 import {
@@ -12,7 +11,6 @@ import {
   validateTallyTransition,
   IssueTally,
   TallyValidationResult,
-  normalizeSource,
 } from '../../types/issue-tally.types';
 import { captureIssueSnapshot, compareSnapshots } from '../../utils/issue-flow-logger';
 import {
@@ -127,7 +125,7 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   },
 };
 
-const isAutoFixableCode = (code: string): boolean => getFixType(code) === 'auto';
+const _isAutoFixableCode = (code: string): boolean => getFixType(code) === 'auto';
 
 const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
   critical: 'critical',
@@ -244,7 +242,7 @@ class RemediationService {
       location: t.location,
       message: t.issueMessage,
     })));
-    captureIssueSnapshot('9_TASKS_CREATED', tasks, true);
+    captureIssueSnapshot('9_TASKS_CREATED', tasks as unknown as Record<string, unknown>[], true);
 
     logger.info(`\nPLAN OUTPUT: ${tasks.length} tasks created`);
 
@@ -307,7 +305,7 @@ class RemediationService {
       logger.error(`\n  ${missingKeys.length} ISSUES ARE MISSING!`);
     }
 
-    const planTally = createTally(tasks, 'remediation_plan');
+    const planTally = createTally(tasks as unknown as Record<string, unknown>[], 'remediation_plan');
     logger.info('\nPlan Tally:');
     logger.info(`  By Source: EPUBCheck=${planTally.bySource.epubCheck}, ACE=${planTally.bySource.ace}, JS Auditor=${planTally.bySource.jsAuditor}`);
     logger.info(`  By Classification: Auto=${planTally.byClassification.autoFixable}, QuickFix=${planTally.byClassification.quickFix}, Manual=${planTally.byClassification.manual}`);
@@ -450,7 +448,7 @@ class RemediationService {
         }
       }
 
-      const updatedTally = createTally(plan.tasks, 'in_progress');
+      const updatedTally = createTally(plan.tasks as unknown as Record<string, unknown>[], 'in_progress');
       plan.stats = {
         pending: plan.tasks.filter(t => t.status === 'pending').length,
         inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,

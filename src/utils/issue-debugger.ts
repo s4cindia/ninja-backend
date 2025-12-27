@@ -18,11 +18,11 @@ const trackedIssues = new Map<string, TrackedIssue>();
 /**
  * Generate a unique hash for an issue
  */
-function generateIssueHash(issue: any): string {
-  const code = issue.code || issue.ruleId || 'UNKNOWN';
-  const source = (issue.source || 'unknown').toLowerCase();
-  const location = issue.location || issue.file || issue.path || '';
-  const message = (issue.message || issue.description || '').substring(0, 50);
+function generateIssueHash(issue: Record<string, unknown>): string {
+  const code = String(issue.code || issue.ruleId || 'UNKNOWN');
+  const source = String(issue.source || 'unknown').toLowerCase();
+  const location = String(issue.location || issue.file || issue.path || '');
+  const message = String(issue.message || issue.description || '').substring(0, 50);
 
   return `${code}|${source}|${location}|${message}`;
 }
@@ -30,7 +30,7 @@ function generateIssueHash(issue: any): string {
 /**
  * Register issues at a specific stage
  */
-export function trackIssuesAtStage(stage: string, issues: any[]): void {
+export function trackIssuesAtStage(stage: string, issues: Record<string, unknown>[]): void {
   logger.info(`\nTRACKING ISSUES AT: ${stage}`);
   logger.info(`   Count: ${issues.length}`);
 
@@ -43,9 +43,9 @@ export function trackIssuesAtStage(stage: string, issues: any[]): void {
     if (!trackedIssues.has(hash)) {
       trackedIssues.set(hash, {
         id: `issue-${trackedIssues.size}`,
-        code: issue.code || issue.ruleId || 'UNKNOWN',
-        source: issue.source || 'unknown',
-        location: issue.location || issue.file || '',
+        code: String(issue.code || issue.ruleId || 'UNKNOWN'),
+        source: String(issue.source || 'unknown'),
+        location: String(issue.location || issue.file || ''),
         hash,
         seenAt: [stage],
       });
