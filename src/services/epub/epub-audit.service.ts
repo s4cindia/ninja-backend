@@ -228,19 +228,36 @@ class EpubAuditService {
 
       captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues, true);
 
+      logger.info('\nFINAL DEDUPLICATION:');
+      logger.info(`  Input count: ${combinedIssues.length}`);
+
       const seen = new Set<string>();
+      const removedInDedup: Array<{code: string; source: string; location: string; key: string}> = [];
+      
       const deduplicatedIssues = combinedIssues.filter(issue => {
         const key = `${issue.source}-${issue.code}-${issue.location || ''}-${issue.message}`;
         if (seen.has(key)) {
+          removedInDedup.push({
+            code: issue.code,
+            source: issue.source,
+            location: issue.location || '',
+            key,
+          });
           return false;
         }
         seen.add(key);
         return true;
       });
 
-      if (deduplicatedIssues.length < combinedIssues.length) {
-        logger.info(`[EPUB Audit] Deduplicated ${combinedIssues.length - deduplicatedIssues.length} duplicate issues`);
+      if (removedInDedup.length > 0) {
+        logger.info(`  Removed ${removedInDedup.length} duplicates:`);
+        removedInDedup.forEach(item => {
+          logger.info(`    - [${item.source}] ${item.code} @ ${item.location || 'N/A'}`);
+        });
+      } else {
+        logger.info(`  No duplicates removed`);
       }
+      logger.info(`  Output count: ${deduplicatedIssues.length}`);
 
       captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues, true);
 
