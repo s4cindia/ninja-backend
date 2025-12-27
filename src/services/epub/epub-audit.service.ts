@@ -185,10 +185,22 @@ class EpubAuditService {
       try {
         const jsResult = await epubJSAuditor.audit(buffer);
         
-        const existingCodes = new Set(combinedIssues.map(i => i.code));
+        const existingKeys = new Set(combinedIssues.map(i => 
+          `${i.code}:${i.location || ''}:${i.source || ''}`
+        ));
+        
+        let jsAddedCount = 0;
+        let jsSkippedCount = 0;
         
         for (const issue of jsResult.issues) {
-          if (!existingCodes.has(issue.code)) {
+          const key = `${issue.code}:${issue.location || ''}:js-auditor`;
+          const keyWithoutSource = `${issue.code}:${issue.location || ''}`;
+          
+          const isDuplicate = [...existingKeys].some(existingKey => 
+            existingKey.startsWith(keyWithoutSource)
+          );
+          
+          if (!isDuplicate) {
             combinedIssues.push({
               id: `js-${issue.id}`,
               source: 'js-auditor' as const,
@@ -200,10 +212,15 @@ class EpubAuditService {
               suggestion: issue.suggestion,
               category: issue.category,
             });
+            existingKeys.add(key);
+            jsAddedCount++;
+          } else {
+            logger.debug(`Skipping duplicate JS Auditor issue: ${issue.code} @ ${issue.location || 'N/A'}`);
+            jsSkippedCount++;
           }
         }
         
-        logger.info(`JS audit found ${jsResult.issues.length} additional accessibility issues`);
+        logger.info(`JS audit: ${jsResult.issues.length} total, ${jsAddedCount} added, ${jsSkippedCount} skipped (duplicates)`);
         captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues, true);
       } catch (jsError) {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
