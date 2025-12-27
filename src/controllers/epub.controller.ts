@@ -1309,9 +1309,58 @@ export const epubController = {
       if (epubTypesToFix.length > 0) {
         console.log('Using cross-file epub:type fix for:', epubTypesToFix);
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
-        modifiedFiles = [...new Set(results.filter(r => r.success).map(r => r.filePath))];
-        hasErrors = results.some(r => !r.success);
-      } else if (changes && Array.isArray(changes) && changes.length > 0) {
+        console.log('Fix results:', results.length, 'modifications');
+
+        let tasksAutoCompleted = 0;
+        try {
+          const plan = await remediationService.getRemediationPlan(jobId);
+          if (plan?.tasks) {
+            const relatedTasks = plan.tasks.filter(
+              (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
+            );
+
+            console.log(`Auto-completing ${relatedTasks.length} EPUB-TYPE-HAS-MATCHING-ROLE tasks`);
+
+            for (const task of relatedTasks) {
+              try {
+                await remediationService.updateTaskStatus(
+                  jobId,
+                  task.id,
+                  'completed',
+                  `Auto-fixed: ARIA roles added to all epub:type elements`,
+                  req.user?.email || 'system'
+                );
+                tasksAutoCompleted++;
+                console.log(`Auto-completed task: ${task.id}`);
+              } catch (taskErr) {
+                console.error(`Failed to auto-complete task ${task.id}:`, taskErr);
+              }
+            }
+          }
+        } catch (planErr) {
+          console.error('Failed to get remediation plan for auto-complete:', planErr);
+        }
+
+        if (results.length > 0) {
+          const modifiedBuffer = await epubModifier.saveEPUB(zip);
+          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            results,
+            modificationsCount: results.length,
+            tasksAutoCompleted,
+            message: results.length > 0
+              ? `Applied ${results.length} role additions, auto-completed ${tasksAutoCompleted} tasks`
+              : `No new modifications (already fixed), auto-completed ${tasksAutoCompleted} tasks`,
+            downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+          },
+        });
+      }
+
+      if (changes && Array.isArray(changes) && changes.length > 0) {
         logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
         logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
 
@@ -1327,16 +1376,6 @@ export const epubController = {
       }
 
       if (modifiedFiles.length === 0) {
-        if (epubTypesToFix.length > 0) {
-          return res.json({
-            success: true,
-            data: {
-              results: [],
-              message: 'No modifications needed - epub:type roles already present',
-              alreadyFixed: true,
-            },
-          });
-        }
         return res.status(400).json({
           success: false,
           error: 'No files were modified',
@@ -1353,41 +1392,21 @@ export const epubController = {
       let tasksUpdated = 0;
       if (successCount > 0) {
         try {
-          const plan = await remediationService.getRemediationPlan(jobId);
-          
-          if (epubTypesToFix.length > 0) {
-            const relatedTasks = plan?.tasks?.filter(
-              (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
-            ) || [];
-
-            for (const task of relatedTasks) {
+          const taskToUpdate = taskId || issueId;
+          if (taskToUpdate) {
+            const plan = await remediationService.getRemediationPlan(jobId);
+            const task = plan?.tasks.find((t: any) => t.id === taskToUpdate || t.issueId === taskToUpdate);
+            if (task) {
               await remediationService.updateTaskStatus(
                 jobId,
                 task.id,
                 'completed',
-                `Fixed via Quick Fix Panel (cross-file fix applied ${successCount} roles)`,
-                req.user?.email || req.user?.id || 'system',
+                'Quick fix applied',
+                req.user?.email || req.user?.id || 'user',
                 { completionMethod: 'auto' }
               );
-              tasksUpdated++;
-            }
-            console.log(`Marked ${tasksUpdated} EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete`);
-          } else {
-            const taskToUpdate = taskId || issueId;
-            if (taskToUpdate) {
-              const task = plan?.tasks.find((t: any) => t.id === taskToUpdate || t.issueId === taskToUpdate);
-              if (task) {
-                await remediationService.updateTaskStatus(
-                  jobId,
-                  task.id,
-                  'completed',
-                  'Quick fix applied',
-                  req.user?.email || req.user?.id || 'user',
-                  { completionMethod: 'auto' }
-                );
-                tasksUpdated = 1;
-                console.log(`Task ${task.id} marked as completed`);
-              }
+              tasksUpdated = 1;
+              console.log(`Task ${task.id} marked as completed`);
             }
           }
         } catch (taskError) {
@@ -1404,9 +1423,6 @@ export const epubController = {
           modifiedFiles,
           results,
           tasksUpdated,
-          message: epubTypesToFix.length > 0 
-            ? `Fixed ${successCount} elements, marked ${tasksUpdated} tasks complete`
-            : undefined,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });
