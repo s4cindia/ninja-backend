@@ -9,6 +9,7 @@ import { batchRemediationService } from '../services/epub/batch-remediation.serv
 import { epubExportService } from '../services/epub/epub-export.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -185,38 +186,66 @@ export const epubController = {
   },
 
   async createRemediationPlan(req: Request, res: Response) {
+    const { jobId } = req.params;
+
+    logger.info('\n' + '='.repeat(70));
+    logger.info('API: CREATE REMEDIATION PLAN');
+    logger.info('='.repeat(70));
+    logger.info(`Job ID: ${jobId}`);
+
+    clearSnapshots();
+
     try {
-      const { jobId } = req.params;
       const plan = await remediationService.createRemediationPlan(jobId);
+
+      logger.info('\nFINAL VALIDATION:');
+      logger.info(`  Plan total tasks: ${plan.stats.pending}`);
+      logger.info(`  By Source: EPUBCheck=${plan.stats.bySource?.epubCheck || 0}, ACE=${plan.stats.bySource?.ace || 0}, JS Auditor=${plan.stats.bySource?.jsAuditor || 0}`);
+      logger.info(`  By Classification: Auto=${plan.stats.autoFixable}, QuickFix=${plan.stats.quickFixable}, Manual=${plan.stats.manualRequired}`);
+
+      if (plan.tallyValidation && !plan.tallyValidation.isValid) {
+        logger.error('TALLY VALIDATION FAILED - Issues may be missing');
+        logger.info('\nALL SNAPSHOTS:');
+        getAllSnapshots().forEach(snap => {
+          logger.info(`  ${snap.stage}: ${snap.count} issues`);
+        });
+      } else {
+        logger.info(`All issues included in plan`);
+      }
+
+      const responseData = {
+        jobId: plan.jobId,
+        fileName: plan.fileName,
+        totalIssues: plan.totalIssues,
+        tasks: plan.tasks,
+        stats: plan.stats,
+        tally: {
+          audit: plan.auditTally ? {
+            total: plan.auditTally.grandTotal,
+            bySource: plan.auditTally.bySource,
+            bySeverity: plan.auditTally.bySeverity,
+          } : null,
+          plan: plan.planTally ? {
+            total: plan.planTally.grandTotal,
+            bySource: plan.planTally.bySource,
+            byClassification: plan.planTally.byClassification,
+          } : null,
+          validation: plan.tallyValidation ? {
+            isValid: plan.tallyValidation.isValid,
+            errors: plan.tallyValidation.errors,
+            discrepancies: plan.tallyValidation.discrepancies,
+          } : null,
+        },
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+        _debug: process.env.NODE_ENV === 'development' ? {
+          snapshots: getAllSnapshots(),
+        } : undefined,
+      };
 
       return res.json({
         success: true,
-        data: {
-          jobId: plan.jobId,
-          fileName: plan.fileName,
-          totalIssues: plan.totalIssues,
-          tasks: plan.tasks,
-          stats: plan.stats,
-          tally: {
-            audit: plan.auditTally ? {
-              total: plan.auditTally.grandTotal,
-              bySource: plan.auditTally.bySource,
-              bySeverity: plan.auditTally.bySeverity,
-            } : null,
-            plan: plan.planTally ? {
-              total: plan.planTally.grandTotal,
-              bySource: plan.planTally.bySource,
-              byClassification: plan.planTally.byClassification,
-            } : null,
-            validation: plan.tallyValidation ? {
-              isValid: plan.tallyValidation.isValid,
-              errors: plan.tallyValidation.errors,
-              discrepancies: plan.tallyValidation.discrepancies,
-            } : null,
-          },
-          createdAt: plan.createdAt,
-          updatedAt: plan.updatedAt,
-        },
+        data: responseData,
       });
     } catch (error) {
       logger.error('Failed to create remediation plan', error instanceof Error ? error : undefined);
