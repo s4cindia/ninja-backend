@@ -2,10 +2,15 @@ import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
+import {
+  getFixType,
+  getFixTypeLabel,
+  FixType,
+} from '../../constants/fix-classification';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
-type RemediationType = 'auto' | 'manual' | 'hybrid';
+type RemediationType = FixType;
 
 interface RemediationTask {
   id: string;
@@ -47,7 +52,9 @@ interface RemediationPlan {
     skipped: number;
     failed: number;
     autoFixable: number;
+    quickFixable: number;
     manualRequired: number;
+    byFixType: Record<FixType, number>;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -99,7 +106,7 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   },
 };
 
-const isAutoFixableCode = (code: string): boolean => code in AUTO_FIX_HANDLERS;
+const isAutoFixableCode = (code: string): boolean => getFixType(code) === 'auto';
 
 const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
   critical: 'critical',
@@ -167,7 +174,7 @@ class RemediationService {
         location: issueLocation || undefined,
         status: 'pending' as RemediationStatus,
         priority: SEVERITY_TO_PRIORITY[severity] || 'medium',
-        type: (isAutoFixable ? 'auto' : 'manual') as RemediationType,
+        type: getFixType(issueCode),
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -195,7 +202,13 @@ class RemediationService {
         skipped: 0,
         failed: 0,
         autoFixable: tasks.filter(t => t.type === 'auto').length,
+        quickFixable: tasks.filter(t => t.type === 'quickfix').length,
         manualRequired: tasks.filter(t => t.type === 'manual').length,
+        byFixType: {
+          auto: tasks.filter(t => t.type === 'auto').length,
+          quickfix: tasks.filter(t => t.type === 'quickfix').length,
+          manual: tasks.filter(t => t.type === 'manual').length,
+        },
       },
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -286,7 +299,13 @@ class RemediationService {
         skipped: plan.tasks.filter(t => t.status === 'skipped').length,
         failed: plan.tasks.filter(t => t.status === 'failed').length,
         autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
+        quickFixable: plan.tasks.filter(t => t.type === 'quickfix').length,
         manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+        byFixType: {
+          auto: plan.tasks.filter(t => t.type === 'auto').length,
+          quickfix: plan.tasks.filter(t => t.type === 'quickfix').length,
+          manual: plan.tasks.filter(t => t.type === 'manual').length,
+        },
       };
       plan.updatedAt = new Date();
 
