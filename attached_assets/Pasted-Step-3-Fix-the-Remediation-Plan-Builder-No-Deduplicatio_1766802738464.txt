@@ -1,0 +1,149 @@
+Step 3: Fix the Remediation Plan Builder - No Deduplication
+
+  Update src/services/remediation-plan.service.ts:
+
+  import { captureIssueSnapshot, compareSnapshots } from '../utils/issue-flow-logger';
+
+  export function buildRemediationPlan(
+    jobId: string,
+    epubId: string,
+    auditResults: {
+      epubCheckIssues?: any[];
+      aceIssues?: any[];
+      jsAuditorIssues?: any[];
+      allIssues?: any[];
+    }
+  ): RemediationPlan {
+    console.log('\n' + '='.repeat(70));
+    console.log('BUILDING REMEDIATION PLAN');
+    console.log('='.repeat(70));
+
+    // Step 1: Collect ALL issues
+    let allIssues: any[] = [];
+
+    if (auditResults.allIssues && auditResults.allIssues.length > 0) {
+      allIssues = auditResults.allIssues;
+      console.log(`Using pre-combined allIssues: ${allIssues.length}`);
+    } else {
+      // Combine from separate arrays
+      const epubCheck = auditResults.epubCheckIssues || [];
+      const ace = auditResults.aceIssues || [];
+      const jsAuditor = auditResults.jsAuditorIssues || [];
+
+      console.log('\nCombining from separate sources:');
+      console.log(`  EPUBCheck: ${epubCheck.length}`);
+      console.log(`  ACE: ${ace.length}`);
+      console.log(`  JS Auditor: ${jsAuditor.length}`);
+
+      // IMPORTANT: Use spread operator to combine, no filtering!
+      allIssues = [...epubCheck, ...ace, ...jsAuditor];
+
+      console.log(`  TOTAL: ${allIssues.length}`);
+
+      // Verify
+      const expected = epubCheck.length + ace.length + jsAuditor.length;
+      if (allIssues.length !== expected) {
+        console.error(`❌ COMBINATION ERROR: Got ${allIssues.length}, expected ${expected}`);
+      }
+    }
+
+    captureIssueSnapshot('8_PLAN_INPUT', allIssues, true);
+
+    // Step 2: Convert to tasks - DO NOT FILTER OR DEDUPLICATE
+    // Each issue becomes exactly one task
+    const tasks: RemediationTask[] = allIssues.map((issue, index) => {
+      const code = issue.code || issue.ruleId || 'UNKNOWN';
+      const source = issue.source || 'unknown';
+      const fixType = getFixType(code);
+
+      return {
+        id: `task-${index}-${code}-${source}`,
+        issueCode: code,
+        message: issue.message || issue.description || 'No description',
+        severity: issue.severity || 'moderate',
+        location: issue.location || issue.file || '',
+        source: source,
+        fixType,
+        fixTypeLabel: getFixTypeLabel(fixType),
+        status: 'pending',
+        // Keep original issue data for debugging
+        _originalIssue: issue,
+      };
+    });
+
+    captureIssueSnapshot('9_TASKS_CREATED', tasks, true);
+
+    // Step 3: Validate - tasks count MUST equal input count
+    if (tasks.length !== allIssues.length) {
+      console.error('❌ TASK CREATION ERROR!');
+      console.error(`   Input issues: ${allIssues.length}`);
+      console.error(`   Created tasks: ${tasks.length}`);
+      console.error(`   Missing: ${allIssues.length - tasks.length}`);
+    } else {
+      console.log(`✅ All ${allIssues.length} issues converted to tasks`);
+    }
+
+    // Compare snapshots
+    compareSnapshots('8_PLAN_INPUT', '9_TASKS_CREATED');
+
+    // Step 4: Calculate stats
+    const stats = calculateStats(tasks);
+
+    console.log('\n📊 REMEDIATION PLAN STATS:');
+    console.log(`  Total Tasks: ${stats.total}`);
+    console.log(`  By Source: EPUBCheck=${stats.bySource.epubCheck}, ACE=${stats.bySource.ace}, JS Auditor=${stats.bySource.jsAuditor}`);
+    console.log(`  By Classification: Auto=${stats.byClassification.autoFixable}, QuickFix=${stats.byClassification.quickFix}, Manual=${stats.byClassification.manual}`);
+
+    // Verify stats add up
+    const sourceSum = stats.bySource.epubCheck + stats.bySource.ace + stats.bySource.jsAuditor;
+    const classSum = stats.byClassification.autoFixable + stats.byClassification.quickFix + stats.byClassification.manual;
+
+    if (sourceSum !== stats.total) {
+      console.error(`❌ Source sum mismatch: ${sourceSum} !== ${stats.total}`);
+    }
+    if (classSum !== stats.total) {
+      console.error(`❌ Classification sum mismatch: ${classSum} !== ${stats.total}`);
+    }
+
+    return {
+      id: `plan-${Date.now()}`,
+      jobId,
+      epubId,
+      tasks,
+      stats,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function calculateStats(tasks: RemediationTask[]): RemediationPlanStats {
+    const bySource = { epubCheck: 0, ace: 0, jsAuditor: 0 };
+    const bySeverity = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+    const byClassification = { autoFixable: 0, quickFix: 0, manual: 0 };
+
+    for (const task of tasks) {
+      // Source
+      const source = task.source?.toLowerCase() || '';
+      if (source.includes('epubcheck')) bySource.epubCheck++;
+      else if (source.includes('ace')) bySource.ace++;
+      else if (source.includes('js') || source.includes('auditor')) bySource.jsAuditor++;
+
+      // Severity
+      const severity = task.severity?.toLowerCase() || 'moderate';
+      if (severity === 'critical') bySeverity.critical++;
+      else if (severity === 'serious') bySeverity.serious++;
+      else if (severity === 'moderate') bySeverity.moderate++;
+      else bySeverity.minor++;
+
+      // Classification
+      if (task.fixType === 'auto') byClassification.autoFixable++;
+      else if (task.fixType === 'quickfix') byClassification.quickFix++;
+      else byClassification.manual++;
+    }
+
+    return {
+      total: tasks.length,
+      bySource,
+      bySeverity,
+      byClassification,
+    };
+  }

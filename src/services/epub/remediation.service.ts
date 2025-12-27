@@ -14,6 +14,7 @@ import {
   TallyValidationResult,
   normalizeSource,
 } from '../../types/issue-tally.types';
+import { captureIssueSnapshot, compareSnapshots } from '../../utils/issue-flow-logger';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -164,6 +165,8 @@ class RemediationService {
 
     logger.info(`Total issues from audit: ${validatedIssues.length}`);
 
+    captureIssueSnapshot('8_PLAN_INPUT', validatedIssues, true);
+
     const auditTally = createTally(validatedIssues, 'audit');
     logger.info('\nAudit Tally:');
     logger.info(`  By Source: EPUBCheck=${auditTally.bySource.epubCheck}, ACE=${auditTally.bySource.ace}, JS Auditor=${auditTally.bySource.jsAuditor}`);
@@ -213,6 +216,19 @@ class RemediationService {
 
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+    captureIssueSnapshot('9_TASKS_CREATED', tasks, true);
+
+    if (tasks.length !== validatedIssues.length) {
+      logger.error('TASK CREATION ERROR!');
+      logger.error(`   Input issues: ${validatedIssues.length}`);
+      logger.error(`   Created tasks: ${tasks.length}`);
+      logger.error(`   Missing: ${validatedIssues.length - tasks.length}`);
+    } else {
+      logger.info(`All ${validatedIssues.length} issues converted to tasks`);
+    }
+
+    compareSnapshots('8_PLAN_INPUT', '9_TASKS_CREATED');
 
     const planTally = createTally(tasks, 'remediation_plan');
     logger.info('\nPlan Tally:');
