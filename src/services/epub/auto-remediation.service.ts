@@ -3,6 +3,17 @@ import { remediationService } from './remediation.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import JSZip from 'jszip';
+import { isAutoFixable } from '../../constants/fix-classification';
+
+interface ModificationEntry {
+  issueCode: string;
+  taskId: string;
+  success: boolean;
+  description: string;
+  before?: string;
+  after?: string;
+  status?: 'fixed' | 'failed' | 'skipped';
+}
 
 interface AutoRemediationResult {
   jobId: string;
@@ -10,14 +21,9 @@ interface AutoRemediationResult {
   remediatedFileName: string;
   totalIssuesFixed: number;
   totalIssuesFailed: number;
-  modifications: {
-    issueCode: string;
-    taskId: string;
-    success: boolean;
-    description: string;
-    before?: string;
-    after?: string;
-  }[];
+  quickFixPending: number;
+  manualPending: number;
+  modifications: ModificationEntry[];
   remediatedBuffer: Buffer;
   startedAt: Date;
   completedAt: Date;
@@ -96,8 +102,26 @@ class AutoRemediationService {
       const autoTasks = plan.tasks.filter(
         t => t.type === 'auto' && t.status === 'pending'
       );
+      const quickFixTasks = plan.tasks.filter(t => t.type === 'quickfix');
+      const manualTasks = plan.tasks.filter(t => t.type === 'manual');
+
+      logger.info(`Auto-remediation starting for ${jobId}:`);
+      logger.info(`  - ${autoTasks.length} auto-fixable tasks`);
+      logger.info(`  - ${quickFixTasks.length} quick-fix tasks (will be skipped)`);
+      logger.info(`  - ${manualTasks.length} manual tasks (will be skipped)`);
 
       for (const task of autoTasks) {
+        if (!isAutoFixable(task.issueCode)) {
+          logger.warn(`Task ${task.id} (${task.issueCode}) is not auto-fixable, skipping`);
+          modifications.push({
+            issueCode: task.issueCode,
+            taskId: task.id,
+            success: false,
+            description: 'Requires user input via Quick Fix',
+            status: 'skipped',
+          });
+          continue;
+        }
         const handler = this.remediationHandlers[task.issueCode];
         
         if (!handler) {
@@ -158,6 +182,26 @@ class AutoRemediationService {
         }
       }
 
+      for (const task of quickFixTasks) {
+        modifications.push({
+          issueCode: task.issueCode,
+          taskId: task.id,
+          success: false,
+          description: 'Requires Quick Fix Panel - user input needed',
+          status: 'skipped',
+        });
+      }
+
+      for (const task of manualTasks) {
+        modifications.push({
+          issueCode: task.issueCode,
+          taskId: task.id,
+          success: false,
+          description: 'Requires manual code editing',
+          status: 'skipped',
+        });
+      }
+
       const remediatedBuffer = await epubModifier.saveEPUB(zip);
       const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
 
@@ -169,6 +213,8 @@ class AutoRemediationService {
         remediatedFileName,
         totalIssuesFixed: totalFixed,
         totalIssuesFailed: totalFailed,
+        quickFixPending: quickFixTasks.length,
+        manualPending: manualTasks.length,
         modifications,
         remediatedBuffer,
         startedAt,
@@ -176,17 +222,26 @@ class AutoRemediationService {
       };
 
       const existingJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const autoRemediationOutput = {
+        jobId: result.jobId,
+        originalFileName: result.originalFileName,
+        remediatedFileName: result.remediatedFileName,
+        totalIssuesFixed: result.totalIssuesFixed,
+        totalIssuesFailed: result.totalIssuesFailed,
+        quickFixPending: result.quickFixPending,
+        manualPending: result.manualPending,
+        modifications: result.modifications,
+        startedAt: result.startedAt.toISOString(),
+        completedAt: result.completedAt.toISOString(),
+        hasRemediatedFile: true,
+      };
       await prisma.job.update({
         where: { id: jobId },
         data: {
-          output: {
+          output: JSON.parse(JSON.stringify({
             ...((existingJob?.output as Record<string, unknown>) || {}),
-            autoRemediation: {
-              ...result,
-              remediatedBuffer: undefined,
-              hasRemediatedFile: true,
-            },
-          },
+            autoRemediation: autoRemediationOutput,
+          })),
         },
       });
 
