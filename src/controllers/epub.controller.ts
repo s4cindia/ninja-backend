@@ -1238,101 +1238,133 @@ export const epubController = {
   async applyQuickFix(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
-      const { issueId, changes } = req.body;
+      const { issueId, changes, fixCode, taskId, options } = req.body;
       const tenantId = req.user?.tenantId;
 
-      logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
-      logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
+      console.log('applyQuickFix called:', { jobId, fixCode, taskId, issueId, options });
 
       if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
+        return res.status(401).json({ success: false, error: 'Authentication required' });
       }
 
-      if (!changes || !Array.isArray(changes) || changes.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'changes array is required and must not be empty',
-        });
-      }
-
-      const job = await prisma.job.findFirst({
-        where: { id: jobId, tenantId },
-      });
-
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
       if (!job) {
-        return res.status(404).json({
-          success: false,
-          error: 'Job not found',
-        });
+        return res.status(404).json({ success: false, error: 'Job not found' });
       }
 
       const input = job.input as { fileName?: string };
       const originalFileName = input?.fileName || 'upload.epub';
-      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
-      
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
       if (!epubBuffer) {
-        return res.status(404).json({
-          success: false,
-          error: 'EPUB file not found',
-        });
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
       }
 
       const zip = await epubModifier.loadEPUB(epubBuffer);
-      const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
 
-      if (result.modifiedFiles.length === 0) {
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+
+      let results: ModificationResult[] = [];
+      let modifiedFiles: string[] = [];
+      let hasErrors = false;
+
+      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
+        const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+
+        if (options?.epubTypes && Array.isArray(options.epubTypes)) {
+          epubTypesToFix.push(...options.epubTypes);
+        } else if (options?.epubType && options?.role) {
+          epubTypesToFix.push({ epubType: options.epubType, role: options.role });
+        }
+
+        if (epubTypesToFix.length === 0) {
+          return res.status(400).json({ success: false, error: 'No epub:types specified to fix' });
+        }
+
+        results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+        modifiedFiles = [...new Set(results.filter(r => r.success).map(r => r.filePath))];
+        hasErrors = results.some(r => !r.success);
+      } else if (changes && Array.isArray(changes) && changes.length > 0) {
+        logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
+        logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
+
+        const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
+        results = result.results;
+        modifiedFiles = result.modifiedFiles;
+        hasErrors = result.hasErrors;
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Either fixCode with options or changes array is required',
+        });
+      }
+
+      if (modifiedFiles.length === 0) {
         return res.status(400).json({
           success: false,
           error: 'No files were modified',
-          data: {
-            results: result.results,
-          },
+          data: { results },
         });
       }
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
       let taskUpdated = false;
-      if (issueId && !result.hasErrors) {
+      const taskToUpdate = taskId || issueId;
+      if (taskToUpdate && successCount > 0) {
         try {
           const plan = await remediationService.getRemediationPlan(jobId);
-          const task = plan?.tasks.find(t => t.id === issueId || t.issueId === issueId);
-          
+          const task = plan?.tasks.find(t => t.id === taskToUpdate || t.issueId === taskToUpdate);
+
           if (task) {
             await remediationService.updateTaskStatus(
               jobId,
               task.id,
               'completed',
-              'Quick fix applied',
+              fixCode ? `Applied ${successCount} ARIA role fixes via Quick Fix Panel` : 'Quick fix applied',
               req.user?.email || req.user?.id || 'user',
               { completionMethod: 'auto' }
             );
             taskUpdated = true;
+            console.log(`Task ${task.id} marked as completed`);
           } else {
-            logger.warn(`Task ${issueId} not found in remediation plan for job ${jobId}`);
+            logger.warn(`Task ${taskToUpdate} not found in remediation plan for job ${jobId}`);
           }
         } catch (taskError) {
-          logger.warn(`Could not update task status for ${issueId}: ${taskError}`);
+          console.error('Failed to update task status:', taskError);
         }
       }
 
       return res.json({
-        success: !result.hasErrors,
+        success: !hasErrors,
         data: {
-          success: !result.hasErrors,
-          modifiedFiles: result.modifiedFiles,
-          results: result.results,
+          success: failCount === 0,
+          successCount,
+          failCount,
+          modifiedFiles,
+          results,
           taskUpdated,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });
     } catch (error) {
-      logger.error(`Failed to apply quick fix: ${error}`);
+      console.error('applyQuickFix error:', error);
       return res.status(500).json({
         success: false,
         error: 'Failed to apply fix',

@@ -1209,6 +1209,69 @@ class EPUBModifierService {
     return { modifiedFiles, results, hasErrors };
   }
 
+  async addAriaRolesToEpubTypes(
+    zip: JSZip,
+    epubTypesToFix: Array<{ epubType: string; role: string }>
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+
+    const xhtmlFiles = Object.keys(zip.files).filter(path =>
+      /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+    );
+
+    console.log(`Adding ARIA roles to ${epubTypesToFix.length} epub:types across ${xhtmlFiles.length} files`);
+
+    for (const filePath of xhtmlFiles) {
+      try {
+        const content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        const $ = cheerio.load(content, { xmlMode: true, decodeEntities: false });
+        let fileModified = false;
+
+        for (const { epubType, role } of epubTypesToFix) {
+          $('*').filter((_, el) => {
+            const attr = $(el).attr('epub:type');
+            if (!attr) return false;
+            const types = attr.split(/\s+/);
+            return types.includes(epubType) && !$(el).attr('role');
+          }).each((_, elem) => {
+            const tagName = elem.tagName || 'element';
+            const beforeSnippet = `<${tagName} epub:type="${$(elem).attr('epub:type')}">`;
+
+            $(elem).attr('role', role);
+            fileModified = true;
+
+            results.push({
+              success: true,
+              filePath,
+              modificationType: 'add_role',
+              description: `Added role="${role}" to element with epub:type="${epubType}"`,
+              before: beforeSnippet,
+              after: `<${tagName} epub:type="${$(elem).attr('epub:type')}" role="${role}">`,
+            });
+          });
+        }
+
+        if (fileModified) {
+          zip.file(filePath, $.xml());
+          console.log(`Modified ${filePath}`);
+        }
+      } catch (err) {
+        console.error(`Error processing ${filePath}:`, err);
+        results.push({
+          success: false,
+          filePath,
+          modificationType: 'add_role',
+          description: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        });
+      }
+    }
+
+    console.log(`Completed: ${results.filter(r => r.success).length} successful, ${results.filter(r => !r.success).length} failed`);
+    return results;
+  }
+
   async scanEpubTypes(zip: JSZip): Promise<{
     epubTypes: Array<{
       value: string;
