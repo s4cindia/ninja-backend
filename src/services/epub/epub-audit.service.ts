@@ -462,7 +462,13 @@ class EpubAuditService {
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
 
-    for (const error of [...epubCheck.fatalErrors, ...epubCheck.errors]) {
+    logger.info('\nPARSING EPUBCHECK RESULTS:');
+    const epubCheckErrors = [...epubCheck.fatalErrors, ...epubCheck.errors];
+    logger.info(`  Fatal errors: ${epubCheck.fatalErrors.length}`);
+    logger.info(`  Errors: ${epubCheck.errors.length}`);
+    logger.info(`  Warnings: ${epubCheck.warnings.length}`);
+
+    for (const error of epubCheckErrors) {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'serious',
@@ -482,18 +488,37 @@ class EpubAuditService {
       }));
     }
 
+    logger.info(`  EPUBCheck issues added: ${issues.length}`);
+
     if (ace) {
+      logger.info('\nPARSING ACE RESULTS:');
+      logger.info(`  Raw violations count: ${ace.violations?.length || 0}`);
+      
+      const aceCodeCounts: Record<string, number> = {};
+      
       for (const violation of ace.violations) {
+        const code = violation.rule || 'ACE-UNKNOWN';
+        aceCodeCounts[code] = (aceCodeCounts[code] || 0) + 1;
+        
         issues.push(this.createIssue({
           source: 'ace',
           severity: violation.impact,
-          code: violation.rule,
+          code: code,
           message: violation.description,
           wcagCriteria: violation.wcag,
           location: violation.location,
         }));
       }
+      
+      logger.info(`  ACE issues added: ${ace.violations.length}`);
+      logger.info(`  ACE issues by code: ${JSON.stringify(aceCodeCounts)}`);
+    } else {
+      logger.info('\nACE RESULTS: null (microservice not available or failed)');
     }
+
+    logger.info(`\nTOTAL COMBINED ISSUES: ${issues.length}`);
+    logger.info(`  EPUBCheck: ${issues.filter(i => i.source === 'epubcheck').length}`);
+    logger.info(`  ACE: ${issues.filter(i => i.source === 'ace').length}`);
 
     return issues;
   }
