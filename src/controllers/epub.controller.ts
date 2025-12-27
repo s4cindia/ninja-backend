@@ -1342,41 +1342,53 @@ export const epubController = {
   },
 
   async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
-    const { jobId } = req.params;
-    const tenantId = req.user?.tenantId;
-
+    console.log('=== scanEpubTypes endpoint called ===');
     try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      console.log('jobId:', jobId);
+      console.log('tenantId:', tenantId);
+
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
       }
 
       const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
       if (!job) {
+        console.log('Job not found');
         return res.status(404).json({ success: false, error: 'Job not found' });
       }
 
       const input = job.input as { fileName?: string } | null;
       const fileName = input?.fileName || 'document.epub';
+      console.log('fileName:', fileName);
 
       let epubBuffer = await fileStorageService.getRemediatedFile(
         jobId,
         fileName.replace(/\.epub$/i, '_remediated.epub')
       );
+      console.log('Remediated file found:', !!epubBuffer);
+
       if (!epubBuffer) {
         epubBuffer = await fileStorageService.getFile(jobId, fileName);
+        console.log('Original file found:', !!epubBuffer);
       }
 
       if (!epubBuffer) {
         return res.status(404).json({ success: false, error: 'EPUB file not found' });
       }
 
+      console.log('EPUB buffer size:', epubBuffer.length);
+
       const zip = await epubModifier.loadEPUB(epubBuffer);
-      // No filePath parameter - scan entire EPUB
       const result = await epubModifier.scanEpubTypes(zip);
+
+      console.log('Returning result with', result.epubTypes.length, 'epub:types');
 
       return res.json({ success: true, data: result });
     } catch (error) {
-      logger.error(`Failed to scan epub:types: ${error}`);
+      console.error('scanEpubTypes error:', error);
       return res.status(500).json({
         success: false,
         error: 'Failed to scan file',

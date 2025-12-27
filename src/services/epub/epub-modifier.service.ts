@@ -1219,6 +1219,8 @@ class EPUBModifierService {
     }>;
     files: string[];
   }> {
+    console.log('=== scanEpubTypes START ===');
+
     const epubTypeMap = new Map<string, {
       value: string;
       files: Set<string>;
@@ -1239,45 +1241,50 @@ class EPUBModifierService {
       'titlepage': 'doc-cover',
       'dedication': 'doc-dedication',
       'epigraph': 'doc-epigraph',
-      'foreword': 'doc-foreword',
-      'preface': 'doc-preface',
-      'introduction': 'doc-introduction',
-      'prologue': 'doc-prologue',
-      'epilogue': 'doc-epilogue',
-      'afterword': 'doc-afterword',
-      'appendix': 'doc-appendix',
-      'glossary': 'doc-glossary',
-      'bibliography': 'doc-bibliography',
-      'index': 'doc-index',
-      'colophon': 'doc-colophon',
-      'acknowledgments': 'doc-acknowledgments',
       'noteref': 'doc-noteref',
-      'footnote': 'doc-footnote',
-      'endnote': 'doc-endnote',
       'rearnote': 'doc-endnote',
       'rearnotes': 'doc-endnotes',
-      'footnotes': 'doc-footnotes',
-      'endnotes': 'doc-endnotes',
-      'pagebreak': 'doc-pagebreak',
-      'page-list': 'doc-pagelist',
-      'cover': 'doc-cover',
     };
 
-    // Scan ALL XHTML files - no filtering
-    const xhtmlFiles = Object.keys(zip.files).filter(path =>
+    const allFiles = Object.keys(zip.files);
+    console.log('All files in EPUB:', allFiles);
+
+    const xhtmlFiles = allFiles.filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
+    console.log('XHTML files to scan:', xhtmlFiles);
 
     for (const filePath of xhtmlFiles) {
       try {
         const content = await zip.file(filePath)?.async('text');
-        if (!content) continue;
+        if (!content) {
+          console.log(`No content for ${filePath}`);
+          continue;
+        }
+
+        console.log(`\n--- Scanning: ${filePath} ---`);
+        console.log(`Content length: ${content.length} chars`);
+
+        const rawMatches = content.match(/epub:type\s*=\s*["'][^"']+["']/g);
+        console.log(`Raw epub:type matches in ${filePath}:`, rawMatches);
 
         scannedFiles.push(filePath);
-        const $ = cheerio.load(content, { xml: true });
 
-        $('[epub\\:type]').each((_, elem) => {
+        const $ = cheerio.load(content, {
+          xmlMode: true,
+          decodeEntities: false
+        });
+
+        const selector1 = $('[epub\\:type]');
+        const selector2 = $('*').filter((_, el) => $(el).attr('epub:type') !== undefined);
+
+        console.log(`Selector [epub\\:type] found: ${selector1.length} elements`);
+        console.log(`Filter method found: ${selector2.length} elements`);
+
+        selector2.each((_, elem) => {
           const epubTypeAttr = $(elem).attr('epub:type');
+          console.log(`Found element: <${elem.tagName}> with epub:type="${epubTypeAttr}"`);
+
           if (!epubTypeAttr) return;
 
           const types = epubTypeAttr.trim().split(/\s+/);
@@ -1301,7 +1308,7 @@ class EPUBModifierService {
           }
         });
       } catch (err) {
-        logger.warn(`Failed to parse ${filePath} for epub:type scanning: ${err}`);
+        console.error(`Error parsing ${filePath}:`, err);
       }
     }
 
@@ -1313,7 +1320,10 @@ class EPUBModifierService {
       elementType: data.elementType,
     }));
 
-    logger.info(`Found ${epubTypes.length} unique epub:type values in ${scannedFiles.length} files`);
+    console.log('\n=== scanEpubTypes RESULT ===');
+    console.log('Total unique epub:types found:', epubTypes.length);
+    console.log('epub:types:', epubTypes);
+    console.log('Files scanned:', scannedFiles);
 
     return {
       epubTypes: epubTypes.sort((a, b) => b.count - a.count),
