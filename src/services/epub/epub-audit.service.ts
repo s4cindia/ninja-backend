@@ -7,6 +7,8 @@ import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
+import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
+import { getFixType } from '../../constants/fix-classification';
 
 const execFileAsync = promisify(execFile);
 
@@ -103,6 +105,11 @@ interface EpubAuditResult {
     ace: { critical: number; serious: number; moderate: number; minor: number; total: number };
     'js-auditor': { critical: number; serious: number; moderate: number; minor: number; total: number; autoFixable: number };
   };
+  classificationStats: {
+    autoFixable: number;
+    quickFixable: number;
+    manualRequired: number;
+  };
   accessibilityMetadata: AceResult['metadata'] | null;
   auditedAt: Date;
 }
@@ -154,6 +161,7 @@ class EpubAuditService {
 
   async runAudit(buffer: Buffer, jobId: string, fileName: string): Promise<EpubAuditResult> {
     this.issueCounter = 0;
+    clearSnapshots();
     
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'epub-audit-'));
     const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.epub';
@@ -177,14 +185,34 @@ class EpubAuditService {
 
       const combinedIssues = this.combineResults(epubCheckResult, aceResult);
 
-      logger.info('Running JS accessibility audit for auto-fixable issues');
+      captureIssueSnapshot('1_AFTER_COMBINE_EPUBCHECK_ACE', combinedIssues as unknown as Record<string, unknown>[], true);
+
+      logger.info('\nJS AUDITOR INTEGRATION:');
       try {
         const jsResult = await epubJSAuditor.audit(buffer);
         
-        const existingCodes = new Set(combinedIssues.map(i => i.code));
+        logger.info(`  JS Auditor found: ${jsResult.issues.length} issues`);
+        logger.info(`  Before merge, combined has: ${combinedIssues.length} issues`);
+        
+        const existingKeys = new Set(combinedIssues.map(i => 
+          `${i.code}:${i.location || ''}:${i.source || ''}`
+        ));
+        
+        logger.info(`  Existing keys count: ${existingKeys.size}`);
+        
+        let jsAddedCount = 0;
+        let jsSkippedCount = 0;
+        const skippedJsIssues: Array<{code: string; location: string; matchedKey: string}> = [];
         
         for (const issue of jsResult.issues) {
-          if (!existingCodes.has(issue.code)) {
+          const key = `${issue.code}:${issue.location || ''}:js-auditor`;
+          const keyWithoutSource = `${issue.code}:${issue.location || ''}`;
+          
+          const matchedKey = [...existingKeys].find(existingKey => 
+            existingKey.startsWith(keyWithoutSource)
+          );
+          
+          if (!matchedKey) {
             combinedIssues.push({
               id: `js-${issue.id}`,
               source: 'js-auditor' as const,
@@ -196,27 +224,76 @@ class EpubAuditService {
               suggestion: issue.suggestion,
               category: issue.category,
             });
+            existingKeys.add(key);
+            jsAddedCount++;
+          } else {
+            skippedJsIssues.push({
+              code: issue.code,
+              location: issue.location || '',
+              matchedKey,
+            });
+            jsSkippedCount++;
           }
         }
         
-        logger.info(`JS audit found ${jsResult.issues.length} additional accessibility issues`);
+        logger.info(`  JS issues added: ${jsAddedCount}`);
+        logger.info(`  JS issues skipped (duplicates): ${jsSkippedCount}`);
+        
+        if (skippedJsIssues.length > 0) {
+          logger.info(`  Skipped JS issues:`);
+          skippedJsIssues.forEach(item => {
+            logger.info(`    - ${item.code} @ ${item.location || 'N/A'} (matched: ${item.matchedKey})`);
+          });
+        }
+        
+        logger.info(`  After merge, combined has: ${combinedIssues.length} issues`);
+        captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues as unknown as Record<string, unknown>[], true);
       } catch (jsError) {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
       }
 
+      captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues as unknown as Record<string, unknown>[], true);
+
+      logger.info('\nFINAL DEDUPLICATION:');
+      logger.info(`  Input count: ${combinedIssues.length}`);
+
       const seen = new Set<string>();
+      const removedInDedup: Array<{code: string; source: string; location: string; key: string}> = [];
+      
       const deduplicatedIssues = combinedIssues.filter(issue => {
         const key = `${issue.source}-${issue.code}-${issue.location || ''}-${issue.message}`;
         if (seen.has(key)) {
+          removedInDedup.push({
+            code: issue.code,
+            source: issue.source,
+            location: issue.location || '',
+            key,
+          });
           return false;
         }
         seen.add(key);
         return true;
       });
 
-      if (deduplicatedIssues.length < combinedIssues.length) {
-        logger.info(`[EPUB Audit] Deduplicated ${combinedIssues.length - deduplicatedIssues.length} duplicate issues`);
+      if (removedInDedup.length > 0) {
+        logger.info(`  Removed ${removedInDedup.length} duplicates:`);
+        removedInDedup.forEach(item => {
+          logger.info(`    - [${item.source}] ${item.code} @ ${item.location || 'N/A'}`);
+        });
+      } else {
+        logger.info(`  No duplicates removed`);
       }
+      logger.info(`  Output count: ${deduplicatedIssues.length}`);
+
+      captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues as unknown as Record<string, unknown>[], true);
+
+      compareSnapshots('1_AFTER_COMBINE_EPUBCHECK_ACE', '4_AFTER_DEDUPLICATION');
+
+      logger.info('\n📊 AUDIT ISSUE FLOW SUMMARY:');
+      logger.info(`  EPUBCheck+ACE combined: ${combinedIssues.length - (deduplicatedIssues.filter(i => i.source === 'js-auditor').length)}`);
+      logger.info(`  JS Auditor added: ${deduplicatedIssues.filter(i => i.source === 'js-auditor').length}`);
+      logger.info(`  After deduplication: ${deduplicatedIssues.length}`);
+      logger.info(`  By Source: epubcheck=${deduplicatedIssues.filter(i => i.source === 'epubcheck').length}, ace=${deduplicatedIssues.filter(i => i.source === 'ace').length}, js-auditor=${deduplicatedIssues.filter(i => i.source === 'js-auditor').length}`);
 
       const scoreBreakdown = this.calculateScore(deduplicatedIssues);
       
@@ -244,10 +321,20 @@ class EpubAuditService {
           moderate: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'moderate').length,
           minor: deduplicatedIssues.filter(i => i.source === 'js-auditor' && i.severity === 'minor').length,
           total: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
-          // All JS Auditor issues are auto-fixable by design - it specifically detects issues with remediation handlers
-          autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
+          autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor' && getFixType(i.code) === 'auto').length,
         },
       };
+
+      const classificationStats = {
+        autoFixable: deduplicatedIssues.filter(i => getFixType(i.code) === 'auto').length,
+        quickFixable: deduplicatedIssues.filter(i => getFixType(i.code) === 'quickfix').length,
+        manualRequired: deduplicatedIssues.filter(i => getFixType(i.code) === 'manual').length,
+      };
+
+      logger.info(`\n📊 CLASSIFICATION STATS:`);
+      logger.info(`  Auto-fixable: ${classificationStats.autoFixable}`);
+      logger.info(`  Quick-fixable: ${classificationStats.quickFixable}`);
+      logger.info(`  Manual required: ${classificationStats.manualRequired}`);
 
       const result: EpubAuditResult = {
         jobId,
@@ -268,6 +355,7 @@ class EpubAuditService {
           total: deduplicatedIssues.length,
         },
         summaryBySource,
+        classificationStats,
         accessibilityMetadata: aceResult?.metadata || null,
         auditedAt: new Date(),
       };
@@ -428,7 +516,13 @@ class EpubAuditService {
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
 
-    for (const error of [...epubCheck.fatalErrors, ...epubCheck.errors]) {
+    logger.info('\nPARSING EPUBCHECK RESULTS:');
+    const epubCheckErrors = [...epubCheck.fatalErrors, ...epubCheck.errors];
+    logger.info(`  Fatal errors: ${epubCheck.fatalErrors.length}`);
+    logger.info(`  Errors: ${epubCheck.errors.length}`);
+    logger.info(`  Warnings: ${epubCheck.warnings.length}`);
+
+    for (const error of epubCheckErrors) {
       issues.push(this.createIssue({
         source: 'epubcheck',
         severity: 'serious',
@@ -448,18 +542,37 @@ class EpubAuditService {
       }));
     }
 
+    logger.info(`  EPUBCheck issues added: ${issues.length}`);
+
     if (ace) {
+      logger.info('\nPARSING ACE RESULTS:');
+      logger.info(`  Raw violations count: ${ace.violations?.length || 0}`);
+      
+      const aceCodeCounts: Record<string, number> = {};
+      
       for (const violation of ace.violations) {
+        const code = violation.rule || 'ACE-UNKNOWN';
+        aceCodeCounts[code] = (aceCodeCounts[code] || 0) + 1;
+        
         issues.push(this.createIssue({
           source: 'ace',
           severity: violation.impact,
-          code: violation.rule,
+          code: code,
           message: violation.description,
           wcagCriteria: violation.wcag,
           location: violation.location,
         }));
       }
+      
+      logger.info(`  ACE issues added: ${ace.violations.length}`);
+      logger.info(`  ACE issues by code: ${JSON.stringify(aceCodeCounts)}`);
+    } else {
+      logger.info('\nACE RESULTS: null (microservice not available or failed)');
     }
+
+    logger.info(`\nTOTAL COMBINED ISSUES: ${issues.length}`);
+    logger.info(`  EPUBCheck: ${issues.filter(i => i.source === 'epubcheck').length}`);
+    logger.info(`  ACE: ${issues.filter(i => i.source === 'ace').length}`);
 
     return issues;
   }

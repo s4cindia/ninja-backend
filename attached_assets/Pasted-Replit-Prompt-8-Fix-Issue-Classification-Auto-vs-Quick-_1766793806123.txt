@@ -1,0 +1,166 @@
+Replit Prompt 8: Fix Issue Classification (Auto vs Quick Fix vs Manual)
+
+  Context: The current system incorrectly classifies all issues with fix templates as "Auto-Fixable". This causes:
+  1. METADATA-ACCESSMODE and similar issues showing as "Auto-Fixable" when they require user input
+  2. Remediation Plan showing "0 Manual" when some issues clearly need user decisions
+  3. Mismatch between issue card badges ("Manual") and plan counts ("5 Auto-Fixable")
+  4. The 5th issue disappearing because it can't be auto-fixed but isn't tracked properly
+
+  Goal: Implement a three-tier classification system:
+  - Auto-Fixable: Can be fixed automatically without user input
+  - Quick Fix: Has a guided template but requires user choices
+  - Manual: Requires code editing, no template available
+
+  ---
+  Step 1: Create the Classification Constants (Backend)
+
+  Create or update src/constants/fix-classification.ts:
+
+  /**
+   * Issue Fix Classification System
+   *
+   * Three categories:
+   * 1. AUTO_FIXABLE - Can be fixed automatically without user input
+   * 2. QUICK_FIXABLE - Has a Quick Fix template that requires user choices
+   * 3. MANUAL - Requires manual code editing
+   */
+
+  // Issues that can be fixed COMPLETELY AUTOMATICALLY (no user input needed)
+  // These apply sensible defaults or extract information from the EPUB
+  export const AUTO_FIXABLE_CODES = new Set([
+    // Language - can detect from content or use 'en' default
+    'EPUB-META-001',
+    'OPF-014',        // Missing dc:language
+    'OPF-014b',
+
+    // Structure fixes that don't need user decisions
+    'EPUB-NAV-001',   // Navigation document order
+    'EPUB-SEM-002',   // Page break markers
+    'EPUB-STRUCT-003', // Reading order
+    'EPUB-STRUCT-004', // List structure
+    'EPUB-FIG-001',   // Figure structure (add figure/figcaption)
+
+    // Landmark additions with obvious values
+    'EPUB-SEM-001',   // Add landmark roles (can auto-detect body, nav, etc.)
+  ]);
+
+  // Issues that have Quick Fix templates but REQUIRE USER INPUT
+  // These show the Quick Fix Panel for user to make choices
+  export const QUICK_FIXABLE_CODES = new Set([
+    // Metadata that requires user decisions
+    'METADATA-ACCESSMODE',
+    'METADATA-ACCESSIBILITYFEATURE',
+    'METADATA-ACCESSIBILITYHAZARD',
+    'METADATA-ACCESSIBILITYSUMMARY',
+    'EPUB-META-002',  // accessibilityFeature
+    'EPUB-META-003',  // accessibilityHazard
+    'EPUB-META-004',  // accessibilitySummary
+
+    // Image alt text - user must describe or mark as decorative
+    'EPUB-IMG-001',
+    'IMG-001',
+    'ACE-IMG-001',
+
+    // Color contrast - user must choose acceptable colors
+    'EPUB-CONTRAST-001',
+    'COLOR-CONTRAST',
+
+    // Heading hierarchy - user may need to choose correct levels
+    'EPUB-STRUCT-002',
+
+    // Duplicate landmarks - user must provide unique labels
+    'EPUB-SEM-003',
+    'LANDMARK-UNIQUE',
+  ]);
+
+  // Mapping from ACE/EPUBCheck codes to our internal codes
+  export const CODE_MAPPING: Record<string, string> = {
+    // ACE codes
+    'metadata-accessmode-missing': 'METADATA-ACCESSMODE',
+    'metadata-accessibilityfeature-missing': 'METADATA-ACCESSIBILITYFEATURE',
+    'metadata-accessibilityhazard-missing': 'METADATA-ACCESSIBILITYHAZARD',
+    'metadata-accessibilitysummary-missing': 'METADATA-ACCESSIBILITYSUMMARY',
+    'metadata-accessmode': 'METADATA-ACCESSMODE',
+    'metadata-accessibilityFeature': 'METADATA-ACCESSIBILITYFEATURE',
+    'metadata-accessibilityHazard': 'METADATA-ACCESSIBILITYHAZARD',
+    'metadata-accessibilitySummary': 'METADATA-ACCESSIBILITYSUMMARY',
+  };
+
+  /**
+   * Fix type enumeration
+   */
+  export type FixType = 'auto' | 'quickfix' | 'manual';
+
+  /**
+   * Normalize issue code for consistent lookup
+   */
+  export function normalizeIssueCode(code: string): string {
+    // Check mapping first
+    const mapped = CODE_MAPPING[code] || CODE_MAPPING[code.toLowerCase()];
+    if (mapped) return mapped;
+
+    // Return uppercase version for consistency
+    return code.toUpperCase();
+  }
+
+  /**
+   * Determine the fix type for an issue
+   */
+  export function getFixType(issueCode: string): FixType {
+    const normalized = normalizeIssueCode(issueCode);
+
+    if (AUTO_FIXABLE_CODES.has(normalized) || AUTO_FIXABLE_CODES.has(issueCode)) {
+      return 'auto';
+    }
+
+    if (QUICK_FIXABLE_CODES.has(normalized) || QUICK_FIXABLE_CODES.has(issueCode)) {
+      return 'quickfix';
+    }
+
+    return 'manual';
+  }
+
+  /**
+   * Check functions for convenience
+   */
+  export function isAutoFixable(issueCode: string): boolean {
+    return getFixType(issueCode) === 'auto';
+  }
+
+  export function isQuickFixable(issueCode: string): boolean {
+    return getFixType(issueCode) === 'quickfix';
+  }
+
+  export function requiresManualFix(issueCode: string): boolean {
+    return getFixType(issueCode) === 'manual';
+  }
+
+  /**
+   * Check if an issue can be addressed without external tools (auto or quickfix)
+   */
+  export function canFixInApp(issueCode: string): boolean {
+    const fixType = getFixType(issueCode);
+    return fixType === 'auto' || fixType === 'quickfix';
+  }
+
+  /**
+   * Get human-readable label for fix type
+   */
+  export function getFixTypeLabel(fixType: FixType): string {
+    switch (fixType) {
+      case 'auto': return 'Auto-Fixable';
+      case 'quickfix': return 'Quick Fix';
+      case 'manual': return 'Manual';
+    }
+  }
+
+  /**
+   * Get badge color for fix type
+   */
+  export function getFixTypeBadgeColor(fixType: FixType): string {
+    switch (fixType) {
+      case 'auto': return 'green';
+      case 'quickfix': return 'blue';
+      case 'manual': return 'yellow';
+    }
+  }

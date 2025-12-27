@@ -1,0 +1,137 @@
+Step 2: Add Tracking Throughout the Pipeline
+
+  Update your code to track issues at every step:
+
+  // In your audit/remediation flow
+
+  import {
+    trackIssuesAtStage,
+    printTrackingReport,
+    clearTracking,
+    findMissingIssues
+  } from '../utils/issue-debugger';
+
+  // === In getAuditResults or wherever you fetch audit data ===
+
+  export async function getAuditResults(jobId: string) {
+    clearTracking();
+
+    // After fetching ACE results
+    const aceResults = await fetchAceResults(jobId);
+    const aceIssues = aceResults.violations || aceResults.assertions || [];
+    trackIssuesAtStage('ACE_RAW', aceIssues);
+    console.log(`ACE raw issues: ${aceIssues.length}`);
+
+    // List each ACE issue
+    console.log('\n📋 ACE ISSUES (RAW):');
+    aceIssues.forEach((issue, i) => {
+      console.log(`  ${i + 1}. code=${issue.code || issue.ruleId}, location=${issue.location || issue.file || 'N/A'}`);
+    });
+
+    // After fetching JS Auditor results
+    const jsResults = await fetchJsAuditorResults(jobId);
+    const jsIssues = jsResults.issues || jsResults.fixableIssues || [];
+    trackIssuesAtStage('JS_RAW', jsIssues);
+    console.log(`\nJS Auditor raw issues: ${jsIssues.length}`);
+
+    // Normalize ACE issues
+    const normalizedAce = aceIssues.map((issue, i) => ({
+      ...issue,
+      source: 'ace',
+      code: issue.code || issue.ruleId || `ACE-${i}`,
+    }));
+    trackIssuesAtStage('ACE_NORMALIZED', normalizedAce);
+
+    // Normalize JS issues
+    const normalizedJs = jsIssues.map((issue, i) => ({
+      ...issue,
+      source: 'jsauditor',
+      code: issue.code || `JS-${i}`,
+    }));
+    trackIssuesAtStage('JS_NORMALIZED', normalizedJs);
+
+    // Combine
+    const allIssues = [...normalizedAce, ...normalizedJs];
+    trackIssuesAtStage('ALL_COMBINED', allIssues);
+
+    console.log(`\n📊 COMBINATION CHECK:`);
+    console.log(`  ACE normalized: ${normalizedAce.length}`);
+    console.log(`  JS normalized: ${normalizedJs.length}`);
+    console.log(`  Combined: ${allIssues.length}`);
+    console.log(`  Expected: ${normalizedAce.length + normalizedJs.length}`);
+
+    // Check for missing after combination
+    const missingAfterCombine = findMissingIssues('ACE_NORMALIZED', 'ALL_COMBINED');
+    if (missingAfterCombine.length > 0) {
+      console.log(`\n⚠️ MISSING AFTER COMBINATION:`);
+      missingAfterCombine.forEach(issue => {
+        console.log(`  - ${issue.code} @ ${issue.location}`);
+      });
+    }
+
+    return {
+      aceIssues: normalizedAce,
+      jsAuditorIssues: normalizedJs,
+      allIssues,
+    };
+  }
+
+  // === In buildRemediationPlan ===
+
+  export function buildRemediationPlan(jobId: string, epubId: string, auditResults: any) {
+    console.log('\n' + '='.repeat(80));
+    console.log('BUILD REMEDIATION PLAN - DETAILED TRACKING');
+    console.log('='.repeat(80));
+
+    const { aceIssues = [], jsAuditorIssues = [], allIssues } = auditResults;
+
+    // Track input
+    const inputIssues = allIssues || [...aceIssues, ...jsAuditorIssues];
+    trackIssuesAtStage('PLAN_INPUT', inputIssues);
+
+    console.log(`\n📥 PLAN INPUT:`);
+    console.log(`  Total issues received: ${inputIssues.length}`);
+
+    // List every single input issue
+    console.log(`\n📋 ALL INPUT ISSUES:`);
+    inputIssues.forEach((issue, i) => {
+      console.log(`  ${i + 1}. [${issue.source}] ${issue.code} @ ${issue.location || 'N/A'}`);
+    });
+
+    // Convert to tasks
+    const tasks = inputIssues.map((issue, index) => {
+      const task = {
+        id: `task-${index}`,
+        issueCode: issue.code,
+        source: issue.source,
+        location: issue.location,
+        // ... other fields
+      };
+      return task;
+    });
+
+    trackIssuesAtStage('PLAN_TASKS', tasks.map(t => ({
+      code: t.issueCode,
+      source: t.source,
+      location: t.location,
+    })));
+
+    console.log(`\n📤 PLAN OUTPUT:`);
+    console.log(`  Total tasks created: ${tasks.length}`);
+
+    // Check for missing
+    const missingInPlan = findMissingIssues('PLAN_INPUT', 'PLAN_TASKS');
+    if (missingInPlan.length > 0) {
+      console.log(`\n❌ ISSUES MISSING FROM PLAN:`);
+      missingInPlan.forEach(issue => {
+        console.log(`  - [${issue.source}] ${issue.code}`);
+        console.log(`    Location: ${issue.location}`);
+        console.log(`    Last seen at: ${issue.seenAt[issue.seenAt.length - 1]}`);
+      });
+    }
+
+    // Print full report
+    printTrackingReport();
+
+    return { tasks, stats: calculateStats(tasks) };
+  }

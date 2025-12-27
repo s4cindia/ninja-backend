@@ -1,0 +1,80 @@
+Step 5: Update API Endpoint with Full Logging
+
+  // In src/routes/remediation.routes.ts
+
+  import { captureIssueSnapshot, compareSnapshots, getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
+
+  router.post('/remediation/plan', async (req, res) => {
+    const { jobId } = req.body;
+
+    console.log('\n' + '🔷'.repeat(35));
+    console.log('API: CREATE REMEDIATION PLAN');
+    console.log('🔷'.repeat(35));
+    console.log(`Job ID: ${jobId}`);
+
+    clearSnapshots();
+
+    try {
+      // Get audit results
+      const auditResults = await getAuditResults(jobId);
+
+      console.log('\n📥 AUDIT RESULTS RECEIVED:');
+      console.log(`  EPUBCheck: ${auditResults.epubCheckIssues?.length || 0}`);
+      console.log(`  ACE: ${auditResults.aceIssues?.length || 0}`);
+      console.log(`  JS Auditor: ${auditResults.jsAuditorIssues?.length || 0}`);
+      console.log(`  All Issues: ${auditResults.allIssues?.length || 0}`);
+
+      // Build plan
+      const plan = buildRemediationPlan(
+        jobId,
+        auditResults.epubId || jobId,
+        {
+          epubCheckIssues: auditResults.epubCheckIssues || [],
+          aceIssues: auditResults.aceIssues || [],
+          jsAuditorIssues: auditResults.jsAuditorIssues || [],
+          allIssues: auditResults.allIssues,
+        }
+      );
+
+      // Final validation
+      const expectedTotal = (auditResults.epubCheckIssues?.length || 0) +
+                            (auditResults.aceIssues?.length || 0) +
+                            (auditResults.jsAuditorIssues?.length || 0);
+
+      console.log('\n📊 FINAL VALIDATION:');
+      console.log(`  Expected total: ${expectedTotal}`);
+      console.log(`  Plan total: ${plan.stats.total}`);
+
+      if (plan.stats.total !== expectedTotal) {
+        console.error(`❌ MISSING ISSUES: ${expectedTotal - plan.stats.total}`);
+
+        // Log all snapshots for debugging
+        console.log('\n📸 ALL SNAPSHOTS:');
+        getAllSnapshots().forEach(snap => {
+          console.log(`  ${snap.stage}: ${snap.count} issues`);
+        });
+      } else {
+        console.log(`✅ All ${expectedTotal} issues included in plan`);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...plan,
+          // Include debug info in dev mode
+          _debug: process.env.NODE_ENV === 'development' ? {
+            snapshots: getAllSnapshots(),
+            expectedTotal,
+            actualTotal: plan.stats.total,
+          } : undefined,
+        },
+      });
+
+    } catch (error) {
+      console.error('❌ Error creating remediation plan:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });

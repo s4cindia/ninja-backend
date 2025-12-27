@@ -1,0 +1,80 @@
+Prompt 18: Fix Backend Lint Warnings and PR Review Comments
+
+  Issue 1: Unused Variable (Lint)
+
+  File: src/services/epub/remediation.service.ts line 128
+
+  // Remove the unused variable
+  // DELETE this line:
+  const _isAutoFixableCode = ...
+
+  // Or if you need it later, actually use it
+
+  Issue 2 (P1): OPF-014 Has No Handler
+
+  File: src/constants/fix-classification.ts
+
+  Remove codes that don't have handlers in auto-remediation.service.ts:
+
+  export const AUTO_FIXABLE_CODES = new Set([
+    // REMOVE these - no handlers exist:
+    // 'OPF-014',
+    // 'OPF-014b',
+
+    // KEEP only codes with actual handlers:
+    'EPUB-META-001',
+    'EPUB-NAV-001',
+    'EPUB-SEM-001',
+    'EPUB-SEM-002',
+    'EPUB-STRUCT-003',
+    'EPUB-STRUCT-004',
+    'EPUB-FIG-001',
+  ]);
+
+  Issue 3: Duplicate Classification Sets
+
+  File: src/types/issue-tally.types.ts
+
+  Replace the duplicate sets with imports:
+
+  // At top of file, import from the canonical source:
+  import { getFixType } from '../constants/fix-classification';
+
+  // Replace the getFixTypeForCode function:
+  export function getFixTypeForCode(code: string): 'auto' | 'quickfix' | 'manual' {
+    return getFixType(code);
+  }
+
+  // DELETE the duplicate QUICK_FIXABLE and AUTO_FIXABLE sets
+
+  Issue 4: Include Source in Composite Key
+
+  File: src/utils/issue-flow-logger.ts lines 94-95, 106-107
+
+  // Change from:
+  const snap2Codes = new Set(snap2.issues.map(i => `${i.code}:${i.location}`));
+  const missing = snap1.issues.filter(i => !snap2Codes.has(`${i.code}:${i.location}`));
+
+  // To (include source):
+  const snap2Codes = new Set(snap2.issues.map(i => `${i.source}:${i.code}:${i.location}`));
+  const missing = snap1.issues.filter(i => !snap2Codes.has(`${i.source}:${i.code}:${i.location}`));
+
+  // Also fix lines 106-107 similarly
+
+  Issue 5: Conflicting isAutoFixable Implementations
+
+  File: src/services/epub/auto-remediation.service.ts
+
+  Remove the class method and use only the imported function:
+
+  // At top - already imported:
+  import { isAutoFixable } from '../../constants/fix-classification';
+
+  // DELETE the class method (around lines 261-263):
+  // private isAutoFixable(code: string): boolean {
+  //   return this.remediationHandlers.has(code);
+  // }
+
+  // Use the imported function consistently throughout
+
+  ---

@@ -1,0 +1,145 @@
+Prompt 12: Deep Debug - Find the Missing 2 Issues (ninja-backend)
+
+  Repository: ninja-backend
+  Problem: 14 audit issues → 12 plan issues. 2 issues disappearing somewhere.
+
+  ---
+  Step 1: Create a Detailed Issue Tracker
+
+  Create src/utils/issue-debugger.ts:
+
+  /**
+   * Deep debugging utility to track every single issue
+   */
+
+  interface TrackedIssue {
+    id: string;
+    code: string;
+    source: string;
+    location: string;
+    hash: string;  // Unique identifier
+    seenAt: string[];  // Which stages this issue was seen at
+  }
+
+  const trackedIssues = new Map<string, TrackedIssue>();
+
+  /**
+   * Generate a unique hash for an issue
+   */
+  function generateIssueHash(issue: any): string {
+    const code = issue.code || issue.ruleId || 'UNKNOWN';
+    const source = (issue.source || 'unknown').toLowerCase();
+    const location = issue.location || issue.file || issue.path || '';
+    const message = (issue.message || issue.description || '').substring(0, 50);
+
+    return `${code}|${source}|${location}|${message}`;
+  }
+
+  /**
+   * Register issues at a specific stage
+   */
+  export function trackIssuesAtStage(stage: string, issues: any[]): void {
+    console.log(`\n🔍 TRACKING ISSUES AT: ${stage}`);
+    console.log(`   Count: ${issues.length}`);
+
+    const stageHashes = new Set<string>();
+
+    issues.forEach((issue, index) => {
+      const hash = generateIssueHash(issue);
+      stageHashes.add(hash);
+
+      if (!trackedIssues.has(hash)) {
+        trackedIssues.set(hash, {
+          id: `issue-${trackedIssues.size}`,
+          code: issue.code || issue.ruleId || 'UNKNOWN',
+          source: issue.source || 'unknown',
+          location: issue.location || issue.file || '',
+          hash,
+          seenAt: [stage],
+        });
+      } else {
+        trackedIssues.get(hash)!.seenAt.push(stage);
+      }
+    });
+
+    console.log(`   Unique hashes at this stage: ${stageHashes.size}`);
+  }
+
+  /**
+   * Find issues that were seen at stage1 but not at stage2
+   */
+  export function findMissingIssues(stage1: string, stage2: string): TrackedIssue[] {
+    const missing: TrackedIssue[] = [];
+
+    trackedIssues.forEach((issue) => {
+      const seenAtStage1 = issue.seenAt.includes(stage1);
+      const seenAtStage2 = issue.seenAt.includes(stage2);
+
+      if (seenAtStage1 && !seenAtStage2) {
+        missing.push(issue);
+      }
+    });
+
+    return missing;
+  }
+
+  /**
+   * Print detailed report of all tracked issues
+   */
+  export function printTrackingReport(): void {
+    console.log('\n' + '='.repeat(80));
+    console.log('ISSUE TRACKING REPORT');
+    console.log('='.repeat(80));
+
+    // Group by final stage seen
+    const stageGroups = new Map<string, TrackedIssue[]>();
+
+    trackedIssues.forEach((issue) => {
+      const lastStage = issue.seenAt[issue.seenAt.length - 1];
+      if (!stageGroups.has(lastStage)) {
+        stageGroups.set(lastStage, []);
+      }
+      stageGroups.get(lastStage)!.push(issue);
+    });
+
+    console.log(`\nTotal unique issues tracked: ${trackedIssues.size}`);
+    console.log('\nIssues by last seen stage:');
+
+    stageGroups.forEach((issues, stage) => {
+      console.log(`\n  ${stage}: ${issues.length} issues`);
+      issues.forEach((issue) => {
+        console.log(`    - [${issue.source}] ${issue.code} @ ${issue.location || 'N/A'}`);
+        console.log(`      Journey: ${issue.seenAt.join(' → ')}`);
+      });
+    });
+
+    // Find issues that didn't make it to final stage
+    const finalStage = 'PLAN_TASKS';
+    const missingFromFinal = Array.from(trackedIssues.values()).filter(
+      issue => !issue.seenAt.includes(finalStage)
+    );
+
+    if (missingFromFinal.length > 0) {
+      console.log('\n⚠️ ISSUES THAT DID NOT REACH FINAL STAGE:');
+      missingFromFinal.forEach((issue) => {
+        console.log(`  - [${issue.source}] ${issue.code}`);
+        console.log(`    Location: ${issue.location || 'N/A'}`);
+        console.log(`    Last seen: ${issue.seenAt[issue.seenAt.length - 1]}`);
+        console.log(`    Full journey: ${issue.seenAt.join(' → ')}`);
+      });
+    }
+  }
+
+  /**
+   * Clear tracking data
+   */
+  export function clearTracking(): void {
+    trackedIssues.clear();
+  }
+
+  /**
+   * Get all tracked issues
+   */
+  export function getAllTrackedIssues(): TrackedIssue[] {
+    return Array.from(trackedIssues.values());
+  }

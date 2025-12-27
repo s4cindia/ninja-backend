@@ -1,0 +1,849 @@
+
+> ninja-backend@1.0.0 dev
+[INFO] 04:59:40 ts-node-dev ver. 2.0.0 (using ts-node ver. 10.9.2, typescript ver. 5.9.3)
+[2025-12-27T04:59:43.298Z] [WARN] EPUB_STORAGE_PATH not set. Using /tmp/epub-storage which is NOT persistent. Set EPUB_STORAGE_PATH for production.
+🚀 Ninja Backend v1.0.0 running on port 5000
+📍 Environment: production
+❤️  Health check: http://localhost:5000/health
+📚 API Base: http://localhost:5000/api/v1
+🚀 Starting job workers...
+⚠️  Cannot create worker for accessibility-validation - Redis not configured
+⚠️  Cannot create worker for vpat-generation - Redis not configured
+⚠️  Cannot create worker for file-processing - Redis not configured
+⚠️  No workers started (Redis may not be configured)
+[INFO] GET /health 200 - 5ms
+[2025-12-27T05:00:07.826Z] [INFO] Saved EPUB file: /tmp/epub-storage/015372e8-10b9-4411-acce-cb95fbc1a65b/wasteland-woff.epub
+[2025-12-27T05:00:07.828Z] [INFO] Running EPUBCheck on: /tmp/epub-audit-xEl1IL/wasteland-woff.epub
+[2025-12-27T05:00:07.828Z] [INFO] EPUBCheck JAR path: /home/runner/workspace/lib/epubcheck/epubcheck.jar
+[2025-12-27T05:00:07.927Z] [INFO] Java is available
+[2025-12-27T05:00:07.927Z] [INFO] Executing: java -jar /home/runner/workspace/lib/epubcheck/epubcheck.jar /tmp/epub-audit-xEl1IL/wasteland-woff.epub --json /tmp/epub-audit-xEl1IL/wasteland-woff.epub.json
+[2025-12-27T05:00:12.389Z] [INFO] EPUBCheck completed successfully
+[2025-12-27T05:00:12.390Z] [INFO] [ACE Client] Starting audit for wasteland-woff.epub
+[2025-12-27T05:00:16.469Z] [INFO] [ACE Client] Audit completed for wasteland-woff.epub - Score: 0
+[2025-12-27T05:00:16.469Z] [INFO] ACE audit complete: score=0, violations=102
+[2025-12-27T05:00:16.469Z] [INFO] 
+PARSING EPUBCHECK RESULTS:
+[2025-12-27T05:00:16.469Z] [INFO]   Fatal errors: 0
+[2025-12-27T05:00:16.469Z] [INFO]   Errors: 0
+[2025-12-27T05:00:16.469Z] [INFO]   Warnings: 0
+[2025-12-27T05:00:16.469Z] [INFO]   EPUBCheck issues added: 0
+[2025-12-27T05:00:16.469Z] [INFO] 
+PARSING ACE RESULTS:
+[2025-12-27T05:00:16.469Z] [INFO]   Raw violations count: 102
+[2025-12-27T05:00:16.470Z] [INFO]   ACE issues added: 102
+[2025-12-27T05:00:16.470Z] [INFO]   ACE issues by code: {"METADATA-ACCESSMODE":1,"METADATA-ACCESSMODESUFFICIENT":1,"METADATA-ACCESSIBILITYFEATURE":1,"METADATA-ACCESSIBILITYHAZARD":1,"METADATA-ACCESSIBILITYSUMMARY":1,"COLOR-CONTRAST":43,"EPUB-TYPE-HAS-MATCHING-ROLE":53,"LANDMARK-UNIQUE":1}
+[2025-12-27T05:00:16.470Z] [INFO] 
+TOTAL COMBINED ISSUES: 102
+[2025-12-27T05:00:16.470Z] [INFO]   EPUBCheck: 0
+[2025-12-27T05:00:16.470Z] [INFO]   ACE: 102
+
+============================================================
+📸 ISSUE SNAPSHOT: 1_AFTER_COMBINE_EPUBCHECK_ACE
+============================================================
+Total: 102
+By Source: {
+  "ace": 102
+}
+By Code: {
+  "METADATA-ACCESSMODE": 1,
+  "METADATA-ACCESSMODESUFFICIENT": 1,
+  "METADATA-ACCESSIBILITYFEATURE": 1,
+  "METADATA-ACCESSIBILITYHAZARD": 1,
+  "METADATA-ACCESSIBILITYSUMMARY": 1,
+  "COLOR-CONTRAST": 43,
+  "EPUB-TYPE-HAS-MATCHING-ROLE": 53,
+  "LANDMARK-UNIQUE": 1
+}
+
+All Issues:
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  8. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  9. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  10. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  11. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  12. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  13. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  14. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  15. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  16. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  17. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  18. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  19. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  20. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  21. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  22. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  23. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  24. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  25. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  26. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  27. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  28. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  29. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  30. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  31. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  32. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  33. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  34. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  35. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  36. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  37. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  38. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  39. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  40. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  41. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  42. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  43. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  44. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  45. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  46. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  47. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  48. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  49. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  50. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  51. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  52. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  53. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  54. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  55. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  56. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  57. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  58. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  59. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  60. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  61. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  62. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  63. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  64. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  65. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  66. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  67. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  68. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  69. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  70. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  71. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  72. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  73. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  74. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  75. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  76. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  77. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  78. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  79. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  80. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  81. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  82. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  83. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  84. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  85. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  86. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  87. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  88. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  89. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  90. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  91. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  92. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  93. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  94. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  95. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  96. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  97. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  98. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  99. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  100. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  101. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  102. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+[2025-12-27T05:00:16.472Z] [INFO] 
+JS AUDITOR INTEGRATION:
+[2025-12-27T05:00:16.528Z] [INFO]   JS Auditor found: 5 issues
+[2025-12-27T05:00:16.528Z] [INFO]   Before merge, combined has: 102 issues
+[2025-12-27T05:00:16.528Z] [INFO]   Existing keys count: 9
+[2025-12-27T05:00:16.529Z] [INFO]   JS issues added: 5
+[2025-12-27T05:00:16.529Z] [INFO]   JS issues skipped (duplicates): 0
+[2025-12-27T05:00:16.529Z] [INFO]   After merge, combined has: 107 issues
+
+============================================================
+📸 ISSUE SNAPSHOT: 2_AFTER_JS_AUDITOR
+============================================================
+Total: 107
+By Source: {
+  "ace": 102,
+  "jsauditor": 5
+}
+By Code: {
+  "METADATA-ACCESSMODE": 1,
+  "METADATA-ACCESSMODESUFFICIENT": 1,
+  "METADATA-ACCESSIBILITYFEATURE": 1,
+  "METADATA-ACCESSIBILITYHAZARD": 1,
+  "METADATA-ACCESSIBILITYSUMMARY": 1,
+  "COLOR-CONTRAST": 43,
+  "EPUB-TYPE-HAS-MATCHING-ROLE": 53,
+  "LANDMARK-UNIQUE": 1,
+  "EPUB-META-002": 1,
+  "EPUB-META-003": 1,
+  "EPUB-META-004": 1,
+  "EPUB-STRUCT-004": 2
+}
+
+All Issues:
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  8. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  9. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  10. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  11. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  12. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  13. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  14. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  15. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  16. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  17. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  18. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  19. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  20. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  21. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  22. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  23. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  24. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  25. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  26. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  27. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  28. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  29. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  30. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  31. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  32. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  33. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  34. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  35. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  36. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  37. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  38. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  39. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  40. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  41. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  42. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  43. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  44. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  45. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  46. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  47. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  48. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  49. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  50. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  51. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  52. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  53. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  54. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  55. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  56. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  57. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  58. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  59. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  60. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  61. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  62. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  63. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  64. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  65. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  66. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  67. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  68. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  69. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  70. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  71. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  72. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  73. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  74. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  75. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  76. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  77. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  78. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  79. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  80. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  81. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  82. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  83. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  84. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  85. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  86. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  87. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  88. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  89. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  90. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  91. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  92. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  93. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  94. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  95. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  96. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  97. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  98. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  99. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  100. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  101. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  102. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+  103. [jsauditor] EPUB-META-002 @ N/A
+  104. [jsauditor] EPUB-META-003 @ N/A
+  105. [jsauditor] EPUB-META-004 @ N/A
+  106. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  107. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+
+============================================================
+📸 ISSUE SNAPSHOT: 3_BEFORE_DEDUPLICATION
+============================================================
+Total: 107
+By Source: {
+  "ace": 102,
+  "jsauditor": 5
+}
+By Code: {
+  "METADATA-ACCESSMODE": 1,
+  "METADATA-ACCESSMODESUFFICIENT": 1,
+  "METADATA-ACCESSIBILITYFEATURE": 1,
+  "METADATA-ACCESSIBILITYHAZARD": 1,
+  "METADATA-ACCESSIBILITYSUMMARY": 1,
+  "COLOR-CONTRAST": 43,
+  "EPUB-TYPE-HAS-MATCHING-ROLE": 53,
+  "LANDMARK-UNIQUE": 1,
+  "EPUB-META-002": 1,
+  "EPUB-META-003": 1,
+  "EPUB-META-004": 1,
+  "EPUB-STRUCT-004": 2
+}
+
+All Issues:
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  8. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  9. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  10. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  11. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  12. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  13. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  14. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  15. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  16. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  17. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  18. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  19. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  20. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  21. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  22. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  23. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  24. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  25. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  26. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  27. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  28. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  29. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  30. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  31. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  32. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  33. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  34. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  35. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  36. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  37. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  38. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  39. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  40. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  41. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  42. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  43. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  44. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  45. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  46. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  47. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  48. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  49. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  50. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  51. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  52. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  53. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  54. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  55. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  56. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  57. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  58. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  59. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  60. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  61. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  62. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  63. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  64. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  65. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  66. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  67. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  68. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  69. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  70. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  71. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  72. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  73. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  74. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  75. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  76. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  77. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  78. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  79. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  80. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  81. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  82. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  83. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  84. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  85. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  86. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  87. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  88. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  89. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  90. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  91. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  92. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  93. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  94. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  95. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  96. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  97. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  98. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  99. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  100. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  101. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  102. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+  103. [jsauditor] EPUB-META-002 @ N/A
+  104. [jsauditor] EPUB-META-003 @ N/A
+  105. [jsauditor] EPUB-META-004 @ N/A
+  106. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  107. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:00:16.534Z] [INFO] 
+FINAL DEDUPLICATION:
+[2025-12-27T05:00:16.534Z] [INFO]   Input count: 107
+[2025-12-27T05:00:16.534Z] [INFO]   Removed 93 duplicates:
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.534Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.535Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:16.536Z] [INFO]   Output count: 14
+
+============================================================
+📸 ISSUE SNAPSHOT: 4_AFTER_DEDUPLICATION
+============================================================
+Total: 14
+By Source: {
+  "ace": 9,
+  "jsauditor": 5
+}
+By Code: {
+  "METADATA-ACCESSMODE": 1,
+  "METADATA-ACCESSMODESUFFICIENT": 1,
+  "METADATA-ACCESSIBILITYFEATURE": 1,
+  "METADATA-ACCESSIBILITYHAZARD": 1,
+  "METADATA-ACCESSIBILITYSUMMARY": 1,
+  "COLOR-CONTRAST": 1,
+  "EPUB-TYPE-HAS-MATCHING-ROLE": 2,
+  "LANDMARK-UNIQUE": 1,
+  "EPUB-META-002": 1,
+  "EPUB-META-003": 1,
+  "EPUB-META-004": 1,
+  "EPUB-STRUCT-004": 2
+}
+
+All Issues:
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  8. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  9. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+  10. [jsauditor] EPUB-META-002 @ N/A
+  11. [jsauditor] EPUB-META-003 @ N/A
+  12. [jsauditor] EPUB-META-004 @ N/A
+  13. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  14. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+
+============================================================
+🔍 COMPARISON: 1_AFTER_COMBINE_EPUBCHECK_ACE → 4_AFTER_DEDUPLICATION
+============================================================
+Count: 102 → 14 (-88)
+
+✅ No issues lost
+
+➕ ADDED ISSUES (5):
+  1. [jsauditor] EPUB-META-002 @ N/A
+  2. [jsauditor] EPUB-META-003 @ N/A
+  3. [jsauditor] EPUB-META-004 @ N/A
+  4. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  5. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:00:16.537Z] [INFO] 
+📊 AUDIT ISSUE FLOW SUMMARY:
+[2025-12-27T05:00:16.537Z] [INFO]   EPUBCheck+ACE combined: 102
+[2025-12-27T05:00:16.538Z] [INFO]   JS Auditor added: 5
+[2025-12-27T05:00:16.538Z] [INFO]   After deduplication: 14
+[2025-12-27T05:00:16.538Z] [INFO]   By Source: epubcheck=0, ace=9, js-auditor=5
+[2025-12-27T05:00:16.538Z] [INFO] [EPUB Audit] Score calculation: {"score":0,"formula":"100 - (critical × 15) - (serious × 8) - (moderate × 4) - (minor × 1)","weights":{"critical":15,"serious":8,"moderate":4,"minor":1},"deductions":{"critical":{"count":9,"points":135},"serious":{"count":0,"points":0},"moderate":{"count":2,"points":8},"minor":{"count":3,"points":3}},"totalDeduction":146,"maxScore":100}
+[2025-12-27T05:00:16.538Z] [INFO] [EPUB Audit] Issues by severity - critical: 9, serious: 0, moderate: 2, minor: 3
+[INFO] POST /api/v1/epub/audit-upload 200 - 15336ms
+[2025-12-27T05:00:19.685Z] [INFO] 
+API RESPONSE - AUDIT RESULTS:
+[2025-12-27T05:00:19.686Z] [INFO]   Job ID: 015372e8-10b9-4411-acce-cb95fbc1a65b
+[2025-12-27T05:00:19.686Z] [INFO]   Combined issues count: 14
+[2025-12-27T05:00:19.686Z] [INFO]   By Source: {"ace":9,"js-auditor":5}
+[2025-12-27T05:00:19.686Z] [INFO]   All issues being returned:
+[2025-12-27T05:00:19.686Z] [INFO]     1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+[2025-12-27T05:00:19.686Z] [INFO]     2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+[2025-12-27T05:00:19.686Z] [INFO]     3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+[2025-12-27T05:00:19.686Z] [INFO]     4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+[2025-12-27T05:00:19.686Z] [INFO]     5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+[2025-12-27T05:00:19.686Z] [INFO]     6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:00:19.686Z] [INFO]     7. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:00:19.686Z] [INFO]     8. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+[2025-12-27T05:00:19.686Z] [INFO]     9. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+[2025-12-27T05:00:19.686Z] [INFO]     10. [js-auditor] EPUB-META-002 @ N/A
+[2025-12-27T05:00:19.686Z] [INFO]     11. [js-auditor] EPUB-META-003 @ N/A
+[2025-12-27T05:00:19.686Z] [INFO]     12. [js-auditor] EPUB-META-004 @ N/A
+[2025-12-27T05:00:19.686Z] [INFO]     13. [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+[2025-12-27T05:00:19.686Z] [INFO]     14. [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[INFO] GET /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/audit/result 200 - 934ms
+prisma:error Error in PostgreSQL connection: Error { kind: Db, cause: Some(DbError { severity: "FATAL", parsed_severity: Some(Fatal), code: SqlState(E57P01), message: "terminating connection due to administrator command", detail: None, hint: None, position: None, where_: None, schema: None, table: None, column: None, datatype: None, constraint: None, file: Some("postgres.c"), line: Some(3289), routine: Some("ProcessInterrupts") }) }
+prisma:error 
+Invalid `prisma.user.findUnique()` invocation:
+
+
+Can't reach database server at `ep-gentle-queen-afjv5nsc.c-2.us-west-2.aws.neon.tech:5432`
+
+Please make sure your database server is running at `ep-gentle-queen-afjv5nsc.c-2.us-west-2.aws.neon.tech:5432`.
+[ERROR] POST /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/remediation 401 - 5006ms
+[INFO] POST /api/v1/auth/refresh 200 - 1845ms
+[2025-12-27T05:02:24.698Z] [INFO] 
+======================================================================
+[2025-12-27T05:02:24.698Z] [INFO] API: CREATE REMEDIATION PLAN
+[2025-12-27T05:02:24.698Z] [INFO] ======================================================================
+[2025-12-27T05:02:24.698Z] [INFO] Job ID: 015372e8-10b9-4411-acce-cb95fbc1a65b
+[2025-12-27T05:02:25.159Z] [INFO] 
+================================================================================
+[2025-12-27T05:02:25.159Z] [INFO] BUILD REMEDIATION PLAN - DETAILED TRACKING
+[2025-12-27T05:02:25.159Z] [INFO] ================================================================================
+[2025-12-27T05:02:25.160Z] [INFO] 
+PLAN INPUT: 14 issues received
+[2025-12-27T05:02:25.160Z] [INFO] 
+TRACKING ISSUES AT: PLAN_INPUT
+[2025-12-27T05:02:25.160Z] [INFO]    Count: 14
+[2025-12-27T05:02:25.160Z] [INFO]    Unique hashes at this stage: 14
+
+============================================================
+📸 ISSUE SNAPSHOT: 8_PLAN_INPUT
+============================================================
+Total: 14
+By Source: {
+  "ace": 9,
+  "jsauditor": 5
+}
+By Code: {
+  "METADATA-ACCESSMODE": 1,
+  "METADATA-ACCESSMODESUFFICIENT": 1,
+  "METADATA-ACCESSIBILITYFEATURE": 1,
+  "METADATA-ACCESSIBILITYHAZARD": 1,
+  "METADATA-ACCESSIBILITYSUMMARY": 1,
+  "COLOR-CONTRAST": 1,
+  "EPUB-TYPE-HAS-MATCHING-ROLE": 2,
+  "LANDMARK-UNIQUE": 1,
+  "EPUB-META-002": 1,
+  "EPUB-META-003": 1,
+  "EPUB-META-004": 1,
+  "EPUB-STRUCT-004": 2
+}
+
+All Issues:
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  8. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  9. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+  10. [jsauditor] EPUB-META-002 @ N/A
+  11. [jsauditor] EPUB-META-003 @ N/A
+  12. [jsauditor] EPUB-META-004 @ N/A
+  13. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  14. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:02:25.161Z] [INFO] 
+ALL INPUT ISSUES:
+[2025-12-27T05:02:25.161Z] [INFO]   1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.161Z] [INFO]   2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.161Z] [INFO]   3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.161Z] [INFO]   4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.161Z] [INFO]   5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.161Z] [INFO]   6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:02:25.161Z] [INFO]   7. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:02:25.161Z] [INFO]   8. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+[2025-12-27T05:02:25.161Z] [INFO]   9. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+[2025-12-27T05:02:25.161Z] [INFO]   10. [js-auditor] EPUB-META-002 @ N/A
+[2025-12-27T05:02:25.161Z] [INFO]   11. [js-auditor] EPUB-META-003 @ N/A
+[2025-12-27T05:02:25.161Z] [INFO]   12. [js-auditor] EPUB-META-004 @ N/A
+[2025-12-27T05:02:25.161Z] [INFO]   13. [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+[2025-12-27T05:02:25.161Z] [INFO]   14. [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:02:25.162Z] [INFO] 
+Audit Tally:
+[2025-12-27T05:02:25.162Z] [INFO]   By Source: EPUBCheck=0, ACE=9, JS Auditor=5
+[2025-12-27T05:02:25.162Z] [INFO]   By Severity: Critical=9, Serious=0, Moderate=2, Minor=3
+[2025-12-27T05:02:25.162Z] [INFO]   Grand Total: 14
+[2025-12-27T05:02:25.163Z] [INFO] 
+TRACKING ISSUES AT: PLAN_TASKS
+[2025-12-27T05:02:25.163Z] [INFO]    Count: 14
+[2025-12-27T05:02:25.163Z] [INFO]    Unique hashes at this stage: 14
+
+============================================================
+📸 ISSUE SNAPSHOT: 9_TASKS_CREATED
+============================================================
+Total: 14
+By Source: {
+  "ace": 9,
+  "jsauditor": 5
+}
+By Code: {
+  "UNKNOWN": 14
+}
+
+All Issues:
+  1. [ace] UNKNOWN @ EPUB/wasteland.opf
+  2. [ace] UNKNOWN @ EPUB/wasteland.opf
+  3. [ace] UNKNOWN @ EPUB/wasteland.opf
+  4. [ace] UNKNOWN @ EPUB/wasteland.opf
+  5. [ace] UNKNOWN @ EPUB/wasteland.opf
+  6. [ace] UNKNOWN @ wasteland-content.xhtml
+  7. [ace] UNKNOWN @ wasteland-content.xhtml
+  8. [ace] UNKNOWN @ wasteland-nav.xhtml
+  9. [ace] UNKNOWN @ wasteland-nav.xhtml
+  10. [jsauditor] UNKNOWN @ N/A
+  11. [jsauditor] UNKNOWN @ N/A
+  12. [jsauditor] UNKNOWN @ N/A
+  13. [jsauditor] UNKNOWN @ EPUB/wasteland-content.xhtml
+  14. [jsauditor] UNKNOWN @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:02:25.163Z] [INFO] 
+PLAN OUTPUT: 14 tasks created
+[2025-12-27T05:02:25.163Z] [INFO] All 14 issues converted to tasks
+[2025-12-27T05:02:25.164Z] [INFO] 
+================================================================================
+[2025-12-27T05:02:25.164Z] [INFO] ISSUE TRACKING REPORT
+[2025-12-27T05:02:25.164Z] [INFO] ================================================================================
+[2025-12-27T05:02:25.164Z] [INFO] 
+Total unique issues tracked: 14
+[2025-12-27T05:02:25.164Z] [INFO] 
+Issues by last seen stage:
+[2025-12-27T05:02:25.164Z] [INFO] 
+  PLAN_TASKS: 14 issues
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [js-auditor] EPUB-META-002 @ N/A
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [js-auditor] EPUB-META-003 @ N/A
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [js-auditor] EPUB-META-004 @ N/A
+[2025-12-27T05:02:25.164Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.164Z] [INFO]     - [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+[2025-12-27T05:02:25.165Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+[2025-12-27T05:02:25.165Z] [INFO]     - [js-auditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:02:25.165Z] [INFO]       Journey: PLAN_INPUT -> PLAN_TASKS
+
+============================================================
+🔍 COMPARISON: 8_PLAN_INPUT → 9_TASKS_CREATED
+============================================================
+Count: 14 → 14 (0)
+
+⚠️ MISSING ISSUES (14):
+  1. [ace] METADATA-ACCESSMODE @ EPUB/wasteland.opf
+  2. [ace] METADATA-ACCESSMODESUFFICIENT @ EPUB/wasteland.opf
+  3. [ace] METADATA-ACCESSIBILITYFEATURE @ EPUB/wasteland.opf
+  4. [ace] METADATA-ACCESSIBILITYHAZARD @ EPUB/wasteland.opf
+  5. [ace] METADATA-ACCESSIBILITYSUMMARY @ EPUB/wasteland.opf
+  6. [ace] COLOR-CONTRAST @ wasteland-content.xhtml
+  7. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-content.xhtml
+  8. [ace] EPUB-TYPE-HAS-MATCHING-ROLE @ wasteland-nav.xhtml
+  9. [ace] LANDMARK-UNIQUE @ wasteland-nav.xhtml
+  10. [jsauditor] EPUB-META-002 @ N/A
+  11. [jsauditor] EPUB-META-003 @ N/A
+  12. [jsauditor] EPUB-META-004 @ N/A
+  13. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-content.xhtml
+  14. [jsauditor] EPUB-STRUCT-004 @ EPUB/wasteland-nav.xhtml
+
+➕ ADDED ISSUES (14):
+  1. [ace] UNKNOWN @ EPUB/wasteland.opf
+  2. [ace] UNKNOWN @ EPUB/wasteland.opf
+  3. [ace] UNKNOWN @ EPUB/wasteland.opf
+  4. [ace] UNKNOWN @ EPUB/wasteland.opf
+  5. [ace] UNKNOWN @ EPUB/wasteland.opf
+  6. [ace] UNKNOWN @ wasteland-content.xhtml
+  7. [ace] UNKNOWN @ wasteland-content.xhtml
+  8. [ace] UNKNOWN @ wasteland-nav.xhtml
+  9. [ace] UNKNOWN @ wasteland-nav.xhtml
+  10. [jsauditor] UNKNOWN @ N/A
+  11. [jsauditor] UNKNOWN @ N/A
+  12. [jsauditor] UNKNOWN @ N/A
+  13. [jsauditor] UNKNOWN @ EPUB/wasteland-content.xhtml
+  14. [jsauditor] UNKNOWN @ EPUB/wasteland-nav.xhtml
+[2025-12-27T05:02:25.166Z] [INFO] 
+DETAILED MISSING ISSUE CHECK:
+[2025-12-27T05:02:25.166Z] [INFO]   Input unique keys: 14
+[2025-12-27T05:02:25.166Z] [INFO]   Output unique keys: 14
+[2025-12-27T05:02:25.166Z] [INFO]   No missing issues found
+[2025-12-27T05:02:25.166Z] [INFO] 
+Plan Tally:
+[2025-12-27T05:02:25.166Z] [INFO]   By Source: EPUBCheck=0, ACE=9, JS Auditor=5
+[2025-12-27T05:02:25.166Z] [INFO]   By Classification: Auto=0, QuickFix=0, Manual=14
+[2025-12-27T05:02:25.166Z] [INFO]   Grand Total: 14
+[2025-12-27T05:02:25.166Z] [INFO] 
+TALLY VALIDATION PASSED
+[2025-12-27T05:02:25.166Z] [INFO]    All 14 issues accounted for
+[2025-12-27T05:02:25.167Z] [INFO] 
+========================================
+[2025-12-27T05:02:25.167Z] [INFO] Remediation Plan Summary
+[2025-12-27T05:02:25.167Z] [INFO] ========================================
+[2025-12-27T05:02:25.168Z] [INFO] Total Tasks: 14
+[2025-12-27T05:02:25.168Z] [INFO]   Auto-Fixable: 0
+[2025-12-27T05:02:25.168Z] [INFO]   Quick Fix:    0
+[2025-12-27T05:02:25.168Z] [INFO]   Manual:       14
+[2025-12-27T05:02:25.168Z] [INFO] ========================================
+
+[2025-12-27T05:02:25.639Z] [INFO] Created remediation plan for job 015372e8-10b9-4411-acce-cb95fbc1a65b with 14 tasks
+[2025-12-27T05:02:25.640Z] [INFO] 
+FINAL VALIDATION:
+[2025-12-27T05:02:25.640Z] [INFO]   Plan total tasks: 14
+[2025-12-27T05:02:25.640Z] [INFO]   By Source: EPUBCheck=0, ACE=9, JS Auditor=5
+[2025-12-27T05:02:25.640Z] [INFO]   By Classification: Auto=0, QuickFix=0, Manual=14
+[2025-12-27T05:02:25.640Z] [INFO] All issues included in plan
+[INFO] POST /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/remediation 200 - 2095ms
+[2025-12-27T05:03:37.431Z] [INFO] Auto-remediation starting for 015372e8-10b9-4411-acce-cb95fbc1a65b:
+[2025-12-27T05:03:37.431Z] [INFO]   - 2 auto-fixable tasks
+[2025-12-27T05:03:37.431Z] [INFO]   - 9 quick-fix tasks (will be skipped)
+[2025-12-27T05:03:37.431Z] [INFO]   - 3 manual tasks (will be skipped)
+[2025-12-27T05:03:41.403Z] [INFO] Auto-remediation complete for 015372e8-10b9-4411-acce-cb95fbc1a65b: 3 fixed, 0 failed
+[2025-12-27T05:03:41.404Z] [INFO] Saved remediated EPUB: /tmp/epub-storage/015372e8-10b9-4411-acce-cb95fbc1a65b/remediated/wasteland-woff_remediated.epub
+[INFO] POST /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/auto-remediate 200 - 5823ms
+[2025-12-27T05:03:47.869Z] [INFO] EPUB comparison complete for 015372e8-10b9-4411-acce-cb95fbc1a65b: 2 modified, 2 changes
+[INFO] GET /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/comparison/summary 200 - 1059ms
+[INFO] GET /api/v1/epub/job/015372e8-10b9-4411-acce-cb95fbc1a65b/remediation 200 - 687ms

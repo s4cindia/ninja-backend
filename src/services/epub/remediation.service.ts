@@ -2,10 +2,27 @@ import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
+import {
+  getFixType,
+  FixType,
+} from '../../constants/fix-classification';
+import {
+  createTally,
+  validateTallyTransition,
+  IssueTally,
+  TallyValidationResult,
+} from '../../types/issue-tally.types';
+import { captureIssueSnapshot, compareSnapshots } from '../../utils/issue-flow-logger';
+import {
+  trackIssuesAtStage,
+  printTrackingReport,
+  clearTracking,
+  findMissingIssues,
+} from '../../utils/issue-debugger';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
-type RemediationType = 'auto' | 'manual' | 'hybrid';
+type RemediationType = FixType;
 
 interface RemediationTask {
   id: string;
@@ -19,6 +36,8 @@ interface RemediationTask {
   status: RemediationStatus;
   priority: RemediationPriority;
   type: RemediationType;
+  autoFixable: boolean;
+  quickFixable: boolean;
   suggestion?: string;
   resolution?: string;
   resolvedBy?: string;
@@ -47,8 +66,15 @@ interface RemediationPlan {
     skipped: number;
     failed: number;
     autoFixable: number;
+    quickFixable: number;
     manualRequired: number;
+    byFixType: Record<FixType, number>;
+    bySource: { epubCheck: number; ace: number; jsAuditor: number };
+    bySeverity: { critical: number; serious: number; moderate: number; minor: number };
   };
+  auditTally?: IssueTally;
+  planTally?: IssueTally;
+  tallyValidation?: TallyValidationResult;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -99,8 +125,6 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   },
 };
 
-const isAutoFixableCode = (code: string): boolean => code in AUTO_FIX_HANDLERS;
-
 const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
   critical: 'critical',
   serious: 'high',
@@ -131,6 +155,12 @@ class RemediationService {
 
     const issues = (combinedIssues as Array<Record<string, unknown>>) || [];
 
+    logger.info('\n' + '='.repeat(80));
+    logger.info('BUILD REMEDIATION PLAN - DETAILED TRACKING');
+    logger.info('='.repeat(80));
+
+    clearTracking();
+
     const validatedIssues = issues.filter(issue => {
       if (!issue || typeof issue !== 'object') {
         logger.warn('Skipping invalid issue entry');
@@ -139,10 +169,28 @@ class RemediationService {
       return true;
     });
 
+    logger.info(`\nPLAN INPUT: ${validatedIssues.length} issues received`);
+
+    trackIssuesAtStage('PLAN_INPUT', validatedIssues);
+    captureIssueSnapshot('8_PLAN_INPUT', validatedIssues, true);
+
+    logger.info('\nALL INPUT ISSUES:');
+    validatedIssues.forEach((issue, i) => {
+      const code = issue.code as string || 'UNKNOWN';
+      const source = issue.source as string || 'unknown';
+      const location = issue.location as string || 'N/A';
+      logger.info(`  ${i + 1}. [${source}] ${code} @ ${location}`);
+    });
+
+    const auditTally = createTally(validatedIssues, 'audit');
+    logger.info('\nAudit Tally:');
+    logger.info(`  By Source: EPUBCheck=${auditTally.bySource.epubCheck}, ACE=${auditTally.bySource.ace}, JS Auditor=${auditTally.bySource.jsAuditor}`);
+    logger.info(`  By Severity: Critical=${auditTally.bySeverity.critical}, Serious=${auditTally.bySeverity.serious}, Moderate=${auditTally.bySeverity.moderate}, Minor=${auditTally.bySeverity.minor}`);
+    logger.info(`  Grand Total: ${auditTally.grandTotal}`);
+
     const tasks: RemediationTask[] = validatedIssues.map((issue) => {
       const issueCode = (issue.code as string) || '';
       const issueLocation = (issue.location as string) || '';
-      const isAutoFixable = isAutoFixableCode(issueCode);
       const severity = (issue.severity as string) || 'moderate';
       const taskId = crypto.createHash('md5')
         .update(`${jobId}-${issueCode}-${issueLocation}`)
@@ -156,6 +204,7 @@ class RemediationService {
           ? [wcagCriteriaRaw]
           : undefined;
       
+      const fixType = getFixType(issueCode);
       return {
         id: `task-${taskId}`,
         jobId,
@@ -167,7 +216,9 @@ class RemediationService {
         location: issueLocation || undefined,
         status: 'pending' as RemediationStatus,
         priority: SEVERITY_TO_PRIORITY[severity] || 'medium',
-        type: (isAutoFixable ? 'auto' : 'manual') as RemediationType,
+        type: fixType,
+        autoFixable: fixType === 'auto',
+        quickFixable: fixType === 'quickfix',
         suggestion: issue.suggestion as string | undefined,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -183,6 +234,93 @@ class RemediationService {
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
+    trackIssuesAtStage('PLAN_TASKS', tasks.map(t => ({
+      code: t.issueCode,
+      source: t.source,
+      location: t.location,
+      message: t.issueMessage,
+    })));
+    captureIssueSnapshot('9_TASKS_CREATED', tasks as unknown as Record<string, unknown>[], true);
+
+    logger.info(`\nPLAN OUTPUT: ${tasks.length} tasks created`);
+
+    if (tasks.length !== validatedIssues.length) {
+      logger.error('TASK CREATION ERROR!');
+      logger.error(`   Input issues: ${validatedIssues.length}`);
+      logger.error(`   Created tasks: ${tasks.length}`);
+      logger.error(`   Missing: ${validatedIssues.length - tasks.length}`);
+    } else {
+      logger.info(`All ${validatedIssues.length} issues converted to tasks`);
+    }
+
+    const missingInPlan = findMissingIssues('PLAN_INPUT', 'PLAN_TASKS');
+    if (missingInPlan.length > 0) {
+      logger.error('\nISSUES MISSING FROM PLAN:');
+      missingInPlan.forEach(issue => {
+        logger.error(`  - [${issue.source}] ${issue.code}`);
+        logger.error(`    Location: ${issue.location}`);
+        logger.error(`    Last seen at: ${issue.seenAt[issue.seenAt.length - 1]}`);
+      });
+    }
+
+    printTrackingReport();
+    compareSnapshots('8_PLAN_INPUT', '9_TASKS_CREATED');
+
+    const inputCodes = new Map<string, Record<string, unknown>>();
+    validatedIssues.forEach(issue => {
+      const code = issue.code as string || 'UNKNOWN';
+      const location = issue.location as string || '';
+      const key = `${code}:${location}`;
+      inputCodes.set(key, issue);
+    });
+
+    const outputCodes = new Set<string>();
+    tasks.forEach(task => {
+      const key = `${task.issueCode}:${task.location || ''}`;
+      outputCodes.add(key);
+    });
+
+    logger.info('\nDETAILED MISSING ISSUE CHECK:');
+    logger.info(`  Input unique keys: ${inputCodes.size}`);
+    logger.info(`  Output unique keys: ${outputCodes.size}`);
+
+    const missingKeys: string[] = [];
+    inputCodes.forEach((issue, key) => {
+      if (!outputCodes.has(key)) {
+        missingKeys.push(key);
+        logger.error(`\n  MISSING: ${key}`);
+        logger.error(`     Code: ${issue.code}`);
+        logger.error(`     Source: ${issue.source}`);
+        logger.error(`     Location: ${issue.location}`);
+        logger.error(`     Message: ${(issue.message as string)?.substring(0, 100)}`);
+        logger.error(`     Full issue: ${JSON.stringify(issue, null, 2)}`);
+      }
+    });
+
+    if (missingKeys.length === 0) {
+      logger.info('  No missing issues found');
+    } else {
+      logger.error(`\n  ${missingKeys.length} ISSUES ARE MISSING!`);
+    }
+
+    const planTally = createTally(tasks as unknown as Record<string, unknown>[], 'remediation_plan');
+    logger.info('\nPlan Tally:');
+    logger.info(`  By Source: EPUBCheck=${planTally.bySource.epubCheck}, ACE=${planTally.bySource.ace}, JS Auditor=${planTally.bySource.jsAuditor}`);
+    logger.info(`  By Classification: Auto=${planTally.byClassification.autoFixable}, QuickFix=${planTally.byClassification.quickFix}, Manual=${planTally.byClassification.manual}`);
+    logger.info(`  Grand Total: ${planTally.grandTotal}`);
+
+    const tallyValidation = validateTallyTransition(auditTally, planTally);
+    if (tallyValidation.isValid) {
+      logger.info('\nTALLY VALIDATION PASSED');
+      logger.info(`   All ${auditTally.grandTotal} issues accounted for`);
+    } else {
+      logger.error('\nTALLY VALIDATION FAILED!');
+      logger.error(`   Errors: ${tallyValidation.errors.join(', ')}`);
+      tallyValidation.discrepancies.forEach(d => {
+        logger.error(`   ${d.field}: expected ${d.expected}, got ${d.actual} (diff: ${d.difference})`);
+      });
+    }
+
     const plan: RemediationPlan = {
       jobId,
       fileName: (auditData.fileName as string) || 'unknown.epub',
@@ -194,12 +332,41 @@ class RemediationService {
         completed: 0,
         skipped: 0,
         failed: 0,
-        autoFixable: tasks.filter(t => t.type === 'auto').length,
-        manualRequired: tasks.filter(t => t.type === 'manual').length,
+        autoFixable: planTally.byClassification.autoFixable,
+        quickFixable: planTally.byClassification.quickFix,
+        manualRequired: planTally.byClassification.manual,
+        byFixType: {
+          auto: planTally.byClassification.autoFixable,
+          quickfix: planTally.byClassification.quickFix,
+          manual: planTally.byClassification.manual,
+        },
+        bySource: {
+          epubCheck: planTally.bySource.epubCheck,
+          ace: planTally.bySource.ace,
+          jsAuditor: planTally.bySource.jsAuditor,
+        },
+        bySeverity: {
+          critical: planTally.bySeverity.critical,
+          serious: planTally.bySeverity.serious,
+          moderate: planTally.bySeverity.moderate,
+          minor: planTally.bySeverity.minor,
+        },
       },
+      auditTally,
+      planTally,
+      tallyValidation,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+
+    logger.info('\n========================================');
+    logger.info('Remediation Plan Summary');
+    logger.info('========================================');
+    logger.info(`Total Tasks: ${plan.stats.pending}`);
+    logger.info(`  Auto-Fixable: ${plan.stats.autoFixable}`);
+    logger.info(`  Quick Fix:    ${plan.stats.quickFixable}`);
+    logger.info(`  Manual:       ${plan.stats.manualRequired}`);
+    logger.info('========================================\n');
 
     await prisma.job.create({
       data: {
@@ -279,14 +446,32 @@ class RemediationService {
         }
       }
 
+      const updatedTally = createTally(plan.tasks as unknown as Record<string, unknown>[], 'in_progress');
       plan.stats = {
         pending: plan.tasks.filter(t => t.status === 'pending').length,
         inProgress: plan.tasks.filter(t => t.status === 'in_progress').length,
         completed: plan.tasks.filter(t => t.status === 'completed').length,
         skipped: plan.tasks.filter(t => t.status === 'skipped').length,
         failed: plan.tasks.filter(t => t.status === 'failed').length,
-        autoFixable: plan.tasks.filter(t => t.type === 'auto').length,
-        manualRequired: plan.tasks.filter(t => t.type === 'manual').length,
+        autoFixable: updatedTally.byClassification.autoFixable,
+        quickFixable: updatedTally.byClassification.quickFix,
+        manualRequired: updatedTally.byClassification.manual,
+        byFixType: {
+          auto: updatedTally.byClassification.autoFixable,
+          quickfix: updatedTally.byClassification.quickFix,
+          manual: updatedTally.byClassification.manual,
+        },
+        bySource: {
+          epubCheck: updatedTally.bySource.epubCheck,
+          ace: updatedTally.bySource.ace,
+          jsAuditor: updatedTally.bySource.jsAuditor,
+        },
+        bySeverity: {
+          critical: updatedTally.bySeverity.critical,
+          serious: updatedTally.bySeverity.serious,
+          moderate: updatedTally.bySeverity.moderate,
+          minor: updatedTally.bySeverity.minor,
+        },
       };
       plan.updatedAt = new Date();
 

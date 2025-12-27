@@ -1,0 +1,127 @@
+Step 6: Check ACE Results Parsing
+
+  The 2 missing issues are likely ACE issues. Check how ACE results are parsed:
+
+  // In src/services/ace.service.ts or wherever ACE results are processed
+
+  export function parseAceResults(aceReport: any): AceIssue[] {
+    console.log('\n📋 PARSING ACE REPORT:');
+    console.log(`  Raw assertions: ${aceReport.assertions?.length || 0}`);
+    console.log(`  Raw violations: ${aceReport.violations?.length || 0}`);
+
+    // ACE can return results in different formats
+    let rawIssues: any[] = [];
+
+    // Check different possible locations for issues
+    if (aceReport.assertions && Array.isArray(aceReport.assertions)) {
+      rawIssues = [...rawIssues, ...aceReport.assertions];
+      console.log(`  Added ${aceReport.assertions.length} from assertions`);
+    }
+
+    if (aceReport.violations && Array.isArray(aceReport.violations)) {
+      rawIssues = [...rawIssues, ...aceReport.violations];
+      console.log(`  Added ${aceReport.violations.length} from violations`);
+    }
+
+    // Some ACE versions nest issues differently
+    if (aceReport.data?.assertions) {
+      rawIssues = [...rawIssues, ...aceReport.data.assertions];
+      console.log(`  Added ${aceReport.data.assertions.length} from data.assertions`);
+    }
+
+    // Handle Earl format
+    if (aceReport['earl:result']) {
+      const earlResults = Array.isArray(aceReport['earl:result'])
+        ? aceReport['earl:result']
+        : [aceReport['earl:result']];
+      rawIssues = [...rawIssues, ...earlResults];
+      console.log(`  Added ${earlResults.length} from earl:result`);
+    }
+
+    console.log(`  Total raw issues: ${rawIssues.length}`);
+
+    // Normalize each issue
+    const normalizedIssues = rawIssues.map((issue, index) => {
+      const normalized = {
+        id: `ace-${index}`,
+        code: issue.code || issue.ruleId || issue['@type'] || issue.rule || `ACE-${index}`,
+        message: issue.message || issue.description || issue['dct:description'] || 'No description',
+        severity: mapSeverity(issue.impact || issue.severity || issue.level || 'moderate'),
+        location: issue.location || issue.file || issue.path || '',
+        source: 'ace',
+        // Keep original for debugging
+        _raw: issue,
+      };
+
+      return normalized;
+    });
+
+    console.log(`  Normalized issues: ${normalizedIssues.length}`);
+
+    // Log each issue code for debugging
+    const codeCounts: Record<string, number> = {};
+    normalizedIssues.forEach(issue => {
+      codeCounts[issue.code] = (codeCounts[issue.code] || 0) + 1;
+    });
+    console.log(`  Issues by code:`, codeCounts);
+
+    return normalizedIssues;
+  }
+
+  function mapSeverity(level: string): string {
+    const map: Record<string, string> = {
+      'critical': 'critical',
+      'serious': 'serious',
+      'moderate': 'moderate',
+      'minor': 'minor',
+      'high': 'critical',
+      'medium': 'moderate',
+      'low': 'minor',
+    };
+    return map[level?.toLowerCase()] || 'moderate';
+  }
+
+  ---
+  Expected Console Output After Fix
+
+  🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷
+  API: CREATE REMEDIATION PLAN
+  🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷🔷
+  Job ID: job-123
+
+  📥 AUDIT RESULTS RECEIVED:
+    EPUBCheck: 0
+    ACE: 9
+    JS Auditor: 5
+    All Issues: 14
+
+  ======================================================================
+  BUILDING REMEDIATION PLAN
+  ======================================================================
+
+  Combining from separate sources:
+    EPUBCheck: 0
+    ACE: 9
+    JS Auditor: 5
+    TOTAL: 14
+
+  ============================================================
+  📸 ISSUE SNAPSHOT: 8_PLAN_INPUT
+  ============================================================
+  Total: 14
+  By Source: { "epubcheck": 0, "ace": 9, "jsauditor": 5 }
+  By Code: { "METADATA-ACCESSMODE": 1, "METADATA-ACCESSMODESUFFICIENT": 1, ... }
+
+  ✅ All 14 issues converted to tasks
+
+  📊 REMEDIATION PLAN STATS:
+    Total Tasks: 14
+    By Source: EPUBCheck=0, ACE=9, JS Auditor=5
+    By Classification: Auto=1, QuickFix=8, Manual=5
+
+  📊 FINAL VALIDATION:
+    Expected total: 14
+    Plan total: 14
+  ✅ All 14 issues included in plan
+
+  ---
