@@ -191,7 +191,32 @@ export const epubController = {
 
       return res.json({
         success: true,
-        data: plan,
+        data: {
+          jobId: plan.jobId,
+          fileName: plan.fileName,
+          totalIssues: plan.totalIssues,
+          tasks: plan.tasks,
+          stats: plan.stats,
+          tally: {
+            audit: plan.auditTally ? {
+              total: plan.auditTally.grandTotal,
+              bySource: plan.auditTally.bySource,
+              bySeverity: plan.auditTally.bySeverity,
+            } : null,
+            plan: plan.planTally ? {
+              total: plan.planTally.grandTotal,
+              bySource: plan.planTally.bySource,
+              byClassification: plan.planTally.byClassification,
+            } : null,
+            validation: plan.tallyValidation ? {
+              isValid: plan.tallyValidation.isValid,
+              errors: plan.tallyValidation.errors,
+              discrepancies: plan.tallyValidation.discrepancies,
+            } : null,
+          },
+          createdAt: plan.createdAt,
+          updatedAt: plan.updatedAt,
+        },
       });
     } catch (error) {
       logger.error('Failed to create remediation plan', error instanceof Error ? error : undefined);
@@ -216,7 +241,32 @@ export const epubController = {
 
       return res.json({
         success: true,
-        data: plan,
+        data: {
+          jobId: plan.jobId,
+          fileName: plan.fileName,
+          totalIssues: plan.totalIssues,
+          tasks: plan.tasks,
+          stats: plan.stats,
+          tally: {
+            audit: plan.auditTally ? {
+              total: plan.auditTally.grandTotal,
+              bySource: plan.auditTally.bySource,
+              bySeverity: plan.auditTally.bySeverity,
+            } : null,
+            plan: plan.planTally ? {
+              total: plan.planTally.grandTotal,
+              bySource: plan.planTally.bySource,
+              byClassification: plan.planTally.byClassification,
+            } : null,
+            validation: plan.tallyValidation ? {
+              isValid: plan.tallyValidation.isValid,
+              errors: plan.tallyValidation.errors,
+              discrepancies: plan.tallyValidation.discrepancies,
+            } : null,
+          },
+          createdAt: plan.createdAt,
+          updatedAt: plan.updatedAt,
+        },
       });
     } catch (error) {
       logger.error('Failed to get remediation plan', error instanceof Error ? error : undefined);
