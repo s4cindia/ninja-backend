@@ -1327,6 +1327,16 @@ export const epubController = {
       }
 
       if (modifiedFiles.length === 0) {
+        if (epubTypesToFix.length > 0) {
+          return res.json({
+            success: true,
+            data: {
+              results: [],
+              message: 'No modifications needed - epub:type roles already present',
+              alreadyFixed: true,
+            },
+          });
+        }
         return res.status(400).json({
           success: false,
           error: 'No files were modified',
