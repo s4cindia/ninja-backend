@@ -181,26 +181,32 @@ class EpubAuditService {
 
       captureIssueSnapshot('1_AFTER_COMBINE_EPUBCHECK_ACE', combinedIssues, true);
 
-      logger.info('Running JS accessibility audit for auto-fixable issues');
+      logger.info('\nJS AUDITOR INTEGRATION:');
       try {
         const jsResult = await epubJSAuditor.audit(buffer);
+        
+        logger.info(`  JS Auditor found: ${jsResult.issues.length} issues`);
+        logger.info(`  Before merge, combined has: ${combinedIssues.length} issues`);
         
         const existingKeys = new Set(combinedIssues.map(i => 
           `${i.code}:${i.location || ''}:${i.source || ''}`
         ));
         
+        logger.info(`  Existing keys count: ${existingKeys.size}`);
+        
         let jsAddedCount = 0;
         let jsSkippedCount = 0;
+        const skippedJsIssues: Array<{code: string; location: string; matchedKey: string}> = [];
         
         for (const issue of jsResult.issues) {
           const key = `${issue.code}:${issue.location || ''}:js-auditor`;
           const keyWithoutSource = `${issue.code}:${issue.location || ''}`;
           
-          const isDuplicate = [...existingKeys].some(existingKey => 
+          const matchedKey = [...existingKeys].find(existingKey => 
             existingKey.startsWith(keyWithoutSource)
           );
           
-          if (!isDuplicate) {
+          if (!matchedKey) {
             combinedIssues.push({
               id: `js-${issue.id}`,
               source: 'js-auditor' as const,
@@ -215,12 +221,26 @@ class EpubAuditService {
             existingKeys.add(key);
             jsAddedCount++;
           } else {
-            logger.debug(`Skipping duplicate JS Auditor issue: ${issue.code} @ ${issue.location || 'N/A'}`);
+            skippedJsIssues.push({
+              code: issue.code,
+              location: issue.location || '',
+              matchedKey,
+            });
             jsSkippedCount++;
           }
         }
         
-        logger.info(`JS audit: ${jsResult.issues.length} total, ${jsAddedCount} added, ${jsSkippedCount} skipped (duplicates)`);
+        logger.info(`  JS issues added: ${jsAddedCount}`);
+        logger.info(`  JS issues skipped (duplicates): ${jsSkippedCount}`);
+        
+        if (skippedJsIssues.length > 0) {
+          logger.info(`  Skipped JS issues:`);
+          skippedJsIssues.forEach(item => {
+            logger.info(`    - ${item.code} @ ${item.location || 'N/A'} (matched: ${item.matchedKey})`);
+          });
+        }
+        
+        logger.info(`  After merge, combined has: ${combinedIssues.length} issues`);
         captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues, true);
       } catch (jsError) {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
