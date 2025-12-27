@@ -1340,26 +1340,45 @@ export const epubController = {
       const successCount = results.filter(r => r.success).length;
       const failCount = results.filter(r => !r.success).length;
 
-      let taskUpdated = false;
-      const taskToUpdate = taskId || issueId;
-      if (taskToUpdate && successCount > 0) {
+      let tasksUpdated = 0;
+      if (successCount > 0) {
         try {
           const plan = await remediationService.getRemediationPlan(jobId);
-          const task = plan?.tasks.find(t => t.id === taskToUpdate || t.issueId === taskToUpdate);
+          
+          if (epubTypesToFix.length > 0) {
+            const relatedTasks = plan?.tasks?.filter(
+              (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
+            ) || [];
 
-          if (task) {
-            await remediationService.updateTaskStatus(
-              jobId,
-              task.id,
-              'completed',
-              fixCode ? `Applied ${successCount} ARIA role fixes via Quick Fix Panel` : 'Quick fix applied',
-              req.user?.email || req.user?.id || 'user',
-              { completionMethod: 'auto' }
-            );
-            taskUpdated = true;
-            console.log(`Task ${task.id} marked as completed`);
+            for (const task of relatedTasks) {
+              await remediationService.updateTaskStatus(
+                jobId,
+                task.id,
+                'completed',
+                `Fixed via Quick Fix Panel (cross-file fix applied ${successCount} roles)`,
+                req.user?.email || req.user?.id || 'system',
+                { completionMethod: 'auto' }
+              );
+              tasksUpdated++;
+            }
+            console.log(`Marked ${tasksUpdated} EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete`);
           } else {
-            logger.warn(`Task ${taskToUpdate} not found in remediation plan for job ${jobId}`);
+            const taskToUpdate = taskId || issueId;
+            if (taskToUpdate) {
+              const task = plan?.tasks.find((t: any) => t.id === taskToUpdate || t.issueId === taskToUpdate);
+              if (task) {
+                await remediationService.updateTaskStatus(
+                  jobId,
+                  task.id,
+                  'completed',
+                  'Quick fix applied',
+                  req.user?.email || req.user?.id || 'user',
+                  { completionMethod: 'auto' }
+                );
+                tasksUpdated = 1;
+                console.log(`Task ${task.id} marked as completed`);
+              }
+            }
           }
         } catch (taskError) {
           console.error('Failed to update task status:', taskError);
@@ -1374,7 +1393,10 @@ export const epubController = {
           failCount,
           modifiedFiles,
           results,
-          taskUpdated,
+          tasksUpdated,
+          message: epubTypesToFix.length > 0 
+            ? `Fixed ${successCount} elements, marked ${tasksUpdated} tasks complete`
+            : undefined,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });

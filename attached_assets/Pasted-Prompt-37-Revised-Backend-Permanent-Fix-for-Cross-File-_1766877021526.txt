@@ -1,0 +1,105 @@
+Prompt 37 (Revised): Backend - Permanent Fix for Cross-File epub:type Roles
+
+  Root Cause
+
+  The first Quick Fix successfully adds roles to ALL epub:types across ALL files (including wasteland-nav.xhtml). When the second Quick Fix runs, all elements already have roles, so it reports "No files modified."
+
+  Solution
+
+  After applying fixes, mark ALL related tasks as complete (not just the one task).
+
+  ---
+  File: src/services/epub/epub-modifier.service.ts
+
+  async addAriaRolesToEpubTypes(
+    zip: JSZip,
+    epubTypesToFix: Array<{ epubType: string; role: string }>
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+
+    const xhtmlFiles = Object.keys(zip.files).filter(path =>
+      /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+    );
+
+    for (const filePath of xhtmlFiles) {
+      try {
+        const content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        const $ = cheerio.load(content, { xmlMode: true, decodeEntities: false });
+        let fileModified = false;
+
+        for (const { epubType, role } of epubTypesToFix) {
+          $(`[epub\\:type]`).filter((_, el) => {
+            const attr = $(el).attr('epub:type');
+            return attr ? attr.split(/\s+/).includes(epubType) : false;
+          }).each((_, elem) => {
+            if ($(elem).attr('role')) return; // Skip if already has role
+
+            $(elem).attr('role', role);
+            fileModified = true;
+
+            results.push({
+              success: true,
+              filePath,
+              modificationType: 'add_role',
+              description: `Added role="${role}" to epub:type="${epubType}"`,
+            });
+          });
+        }
+
+        if (fileModified) {
+          zip.file(filePath, $.xml());
+        }
+      } catch (err) {
+        console.error(`Error processing ${filePath}:`, err);
+      }
+    }
+
+    return results;
+  }
+
+  ---
+  File: src/controllers/epub.controller.ts
+
+  Update to mark ALL EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete after successful fix:
+
+  // After successful fix, mark ALL related tasks complete
+  let tasksUpdated = 0;
+  if (results.length > 0) {
+    try {
+      // Get all tasks with this issue code
+      const plan = await remediationService.getRemediationPlan(jobId);
+      const relatedTasks = plan?.tasks?.filter(
+        (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
+      ) || [];
+
+      for (const task of relatedTasks) {
+        await remediationService.updateTaskStatus(
+          jobId,
+          task.id,
+          'completed',
+          'Fixed via Quick Fix Panel (cross-file fix)',
+          req.user?.email || 'system'
+        );
+        tasksUpdated++;
+      }
+      console.log(`Marked ${tasksUpdated} EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete`);
+    } catch (err) {
+      console.error('Failed to update related tasks:', err);
+    }
+  }
+
+  return res.json({
+    success: true,
+    data: {
+      results,
+      tasksUpdated,
+      message: `Fixed ${results.length} elements, marked ${tasksUpdated} tasks complete`,
+    },
+  });
+
+  ---
+  This is a permanent fix that:
+  1. Adds ARIA roles to ALL files in one pass
+  2. Marks ALL EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete (both wasteland-content.xhtml and wasteland-nav.xhtml tasks)
