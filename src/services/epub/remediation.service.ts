@@ -15,6 +15,12 @@ import {
   normalizeSource,
 } from '../../types/issue-tally.types';
 import { captureIssueSnapshot, compareSnapshots } from '../../utils/issue-flow-logger';
+import {
+  trackIssuesAtStage,
+  printTrackingReport,
+  clearTracking,
+  findMissingIssues,
+} from '../../utils/issue-debugger';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -151,9 +157,11 @@ class RemediationService {
 
     const issues = (combinedIssues as Array<Record<string, unknown>>) || [];
 
-    logger.info('\n========================================');
-    logger.info('Building Remediation Plan');
-    logger.info('========================================');
+    logger.info('\n' + '='.repeat(80));
+    logger.info('BUILD REMEDIATION PLAN - DETAILED TRACKING');
+    logger.info('='.repeat(80));
+
+    clearTracking();
 
     const validatedIssues = issues.filter(issue => {
       if (!issue || typeof issue !== 'object') {
@@ -163,9 +171,18 @@ class RemediationService {
       return true;
     });
 
-    logger.info(`Total issues from audit: ${validatedIssues.length}`);
+    logger.info(`\nPLAN INPUT: ${validatedIssues.length} issues received`);
 
+    trackIssuesAtStage('PLAN_INPUT', validatedIssues);
     captureIssueSnapshot('8_PLAN_INPUT', validatedIssues, true);
+
+    logger.info('\nALL INPUT ISSUES:');
+    validatedIssues.forEach((issue, i) => {
+      const code = issue.code as string || 'UNKNOWN';
+      const source = issue.source as string || 'unknown';
+      const location = issue.location as string || 'N/A';
+      logger.info(`  ${i + 1}. [${source}] ${code} @ ${location}`);
+    });
 
     const auditTally = createTally(validatedIssues, 'audit');
     logger.info('\nAudit Tally:');
@@ -217,7 +234,15 @@ class RemediationService {
     const priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
     tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
+    trackIssuesAtStage('PLAN_TASKS', tasks.map(t => ({
+      code: t.issueCode,
+      source: t.source,
+      location: t.location,
+      message: t.issueMessage,
+    })));
     captureIssueSnapshot('9_TASKS_CREATED', tasks, true);
+
+    logger.info(`\nPLAN OUTPUT: ${tasks.length} tasks created`);
 
     if (tasks.length !== validatedIssues.length) {
       logger.error('TASK CREATION ERROR!');
@@ -228,6 +253,17 @@ class RemediationService {
       logger.info(`All ${validatedIssues.length} issues converted to tasks`);
     }
 
+    const missingInPlan = findMissingIssues('PLAN_INPUT', 'PLAN_TASKS');
+    if (missingInPlan.length > 0) {
+      logger.error('\nISSUES MISSING FROM PLAN:');
+      missingInPlan.forEach(issue => {
+        logger.error(`  - [${issue.source}] ${issue.code}`);
+        logger.error(`    Location: ${issue.location}`);
+        logger.error(`    Last seen at: ${issue.seenAt[issue.seenAt.length - 1]}`);
+      });
+    }
+
+    printTrackingReport();
     compareSnapshots('8_PLAN_INPUT', '9_TASKS_CREATED');
 
     const planTally = createTally(tasks, 'remediation_plan');
