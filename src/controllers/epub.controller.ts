@@ -1365,9 +1365,16 @@ export const epubController = {
         });
       }
 
-      const input = job.input as { fileName?: string };
-      const originalFileName = input?.fileName || 'upload.epub';
-      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      const input = job.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'document.epub';
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(
+        jobId,
+        fileName.replace(/\.epub$/i, '_remediated.epub')
+      );
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      }
 
       if (!epubBuffer) {
         return res.status(404).json({

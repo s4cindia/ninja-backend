@@ -1215,97 +1215,121 @@ class EPUBModifierService {
       file: string;
       count: number;
       suggestedRole: string;
+      elementType: string;
     }>;
     files: string[];
   }> {
-    const EPUB_TYPE_TO_ROLE: Record<string, string> = {
+    const roleMapping: Record<string, string> = {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
-      'appendix': 'doc-appendix',
-      'bibliography': 'doc-bibliography',
-      'glossary': 'doc-glossary',
-      'index': 'doc-index',
       'toc': 'doc-toc',
+      'nav': 'navigation',
+      'landmarks': 'navigation',
+      'frontmatter': 'doc-prologue',
+      'bodymatter': 'main',
+      'backmatter': 'doc-epilogue',
+      'titlepage': 'doc-cover',
+      'dedication': 'doc-dedication',
+      'epigraph': 'doc-epigraph',
       'foreword': 'doc-foreword',
       'preface': 'doc-preface',
       'introduction': 'doc-introduction',
+      'prologue': 'doc-prologue',
       'epilogue': 'doc-epilogue',
       'afterword': 'doc-afterword',
-      'conclusion': 'doc-conclusion',
-      'frontmatter': 'doc-frontmatter',
-      'bodymatter': 'doc-bodymatter',
-      'backmatter': 'doc-backmatter',
-      'titlepage': 'doc-titlepage',
-      'dedication': 'doc-dedication',
-      'epigraph': 'doc-epigraph',
-      'acknowledgments': 'doc-acknowledgments',
+      'appendix': 'doc-appendix',
+      'glossary': 'doc-glossary',
+      'bibliography': 'doc-bibliography',
+      'index': 'doc-index',
       'colophon': 'doc-colophon',
-      'cover': 'doc-cover',
+      'acknowledgments': 'doc-acknowledgments',
+      'noteref': 'doc-noteref',
       'footnote': 'doc-footnote',
       'endnote': 'doc-endnote',
-      'footnotes': 'doc-footnotes',
-      'endnotes': 'doc-endnotes',
-      'noteref': 'doc-noteref',
       'rearnote': 'doc-endnote',
       'rearnotes': 'doc-endnotes',
-      'landmarks': 'navigation',
+      'footnotes': 'doc-footnotes',
+      'endnotes': 'doc-endnotes',
+      'pagebreak': 'doc-pagebreak',
+      'page-list': 'doc-pagelist',
+      'cover': 'doc-cover',
+      'halftitlepage': 'doc-cover',
+      'imprint': 'doc-colophon',
+      'contributors': 'doc-credits',
+      'notice': 'doc-notice',
+      'errata': 'doc-errata',
       'loi': 'doc-loi',
       'lot': 'doc-lot',
-      'nav': 'navigation',
       'sidebar': 'complementary',
       'pullquote': 'doc-pullquote',
     };
 
-    const epubTypeMap = new Map<string, { files: Set<string>; count: number }>();
-    const xhtmlFiles: string[] = [];
+    const epubTypeMap = new Map<string, {
+      value: string;
+      files: Set<string>;
+      count: number;
+      elementType: string;
+    }>();
+    const scannedFiles: string[] = [];
 
-    for (const [filename, file] of Object.entries(zip.files)) {
-      if (file.dir) continue;
-      if (!filename.endsWith('.xhtml') && !filename.endsWith('.html')) continue;
+    const xhtmlFiles = Object.keys(zip.files).filter(path =>
+      /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+    );
 
-      if (targetFilePath && !filename.includes(targetFilePath.replace(/^EPUB\/|^OEBPS\//, ''))) {
+    for (const filePath of xhtmlFiles) {
+      if (targetFilePath && !filePath.includes(targetFilePath.replace(/^.*\//, ''))) {
         continue;
       }
 
-      xhtmlFiles.push(filename);
+      try {
+        const content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
 
-      const content = await file.async('string');
-      const regex = /epub:type\s*=\s*["']([^"']+)["']/gi;
-      let match;
+        scannedFiles.push(filePath);
+        const $ = cheerio.load(content, { xml: true });
 
-      while ((match = regex.exec(content)) !== null) {
-        const epubTypeValue = match[1];
-        const values = epubTypeValue.split(/\s+/);
+        $('[epub\\:type]').each((_, elem) => {
+          const epubTypeAttr = $(elem).attr('epub:type');
+          if (!epubTypeAttr) return;
 
-        for (const value of values) {
-          const trimmed = value.trim().toLowerCase();
-          if (!trimmed) continue;
+          const types = epubTypeAttr.trim().split(/\s+/);
+          const elementType = elem.tagName?.toLowerCase() || 'unknown';
 
-          if (!epubTypeMap.has(trimmed)) {
-            epubTypeMap.set(trimmed, { files: new Set(), count: 0 });
+          for (const type of types) {
+            const normalizedType = type.toLowerCase();
+            const existing = epubTypeMap.get(normalizedType);
+
+            if (existing) {
+              existing.files.add(filePath);
+              existing.count++;
+            } else {
+              epubTypeMap.set(normalizedType, {
+                value: type,
+                files: new Set([filePath]),
+                count: 1,
+                elementType,
+              });
+            }
           }
-
-          const entry = epubTypeMap.get(trimmed)!;
-          entry.files.add(filename);
-          entry.count++;
-        }
+        });
+      } catch (err) {
+        logger.warn(`Failed to parse ${filePath} for epub:type scanning: ${err}`);
       }
     }
 
-    const epubTypes = Array.from(epubTypeMap.entries()).map(([value, data]) => ({
-      value,
+    const epubTypes = Array.from(epubTypeMap.entries()).map(([key, data]) => ({
+      value: data.value,
       file: Array.from(data.files).join(', '),
       count: data.count,
-      suggestedRole: EPUB_TYPE_TO_ROLE[value] || `doc-${value}`,
+      suggestedRole: roleMapping[key] || 'region',
+      elementType: data.elementType,
     }));
 
-    epubTypes.sort((a, b) => b.count - a.count);
-
-    logger.info(`Found ${epubTypes.length} unique epub:type values in ${xhtmlFiles.length} files`);
+    logger.info(`Found ${epubTypes.length} unique epub:type values in ${scannedFiles.length} files`);
 
     return {
-      epubTypes,
-      files: xhtmlFiles,
+      epubTypes: epubTypes.sort((a, b) => b.count - a.count),
+      files: scannedFiles,
     };
   }
 }
