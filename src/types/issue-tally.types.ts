@@ -75,15 +75,21 @@ export function normalizeSource(source: string): string {
  */
 export function getFixTypeForCode(code: string): 'auto' | 'quickfix' | 'manual' {
   const QUICK_FIXABLE = new Set([
-    'METADATA-ACCESSMODE', 'METADATA-ACCESSIBILITYFEATURE',
-    'METADATA-ACCESSIBILITYHAZARD', 'METADATA-ACCESSIBILITYSUMMARY',
+    'METADATA-ACCESSMODE', 'METADATA-ACCESSMODESUFFICIENT',
+    'METADATA-ACCESSIBILITYFEATURE', 'METADATA-ACCESSIBILITYHAZARD', 
+    'METADATA-ACCESSIBILITYSUMMARY',
+    'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
     'EPUB-IMG-001', 'IMG-001', 'ACE-IMG-001',
     'EPUB-CONTRAST-001', 'COLOR-CONTRAST',
+    'EPUB-STRUCT-002', 'EPUB-SEM-003',
+    'LANDMARK-UNIQUE', 'EPUB-TYPE-HAS-MATCHING-ROLE',
   ]);
 
   const AUTO_FIXABLE = new Set([
-    'EPUB-META-001', 'EPUB-NAV-001', 'EPUB-SEM-002',
+    'EPUB-META-001', 'OPF-014', 'OPF-014B',
+    'EPUB-NAV-001', 'EPUB-SEM-002',
     'EPUB-STRUCT-003', 'EPUB-STRUCT-004',
+    'EPUB-FIG-001', 'EPUB-SEM-001',
   ]);
 
   const upperCode = code?.toUpperCase() || '';
@@ -120,8 +126,9 @@ export function createTally(
     else bySeverity.minor++;
     bySeverity.total++;
 
-    // By classification
-    const fixType = issue.fixType || getFixTypeForCode(issue.code);
+    // By classification - check both code and issueCode (for tasks)
+    const issueCode = issue.code || issue.issueCode || '';
+    const fixType = issue.fixType || issue.type || getFixTypeForCode(issueCode);
     if (fixType === 'auto') byClassification.autoFixable++;
     else if (fixType === 'quickfix') byClassification.quickFix++;
     else byClassification.manual++;

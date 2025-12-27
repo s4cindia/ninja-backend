@@ -37,7 +37,7 @@ export function captureIssueSnapshot(
 
   const issueDetails = issues.map(issue => {
     const source = normalizeSource(issue.source || issue.ruleSource || 'unknown');
-    const code = issue.code || issue.ruleId || 'UNKNOWN';
+    const code = issue.code || issue.issueCode || issue.ruleId || 'UNKNOWN';
 
     bySource[source] = (bySource[source] || 0) + 1;
     byCode[code] = (byCode[code] || 0) + 1;
