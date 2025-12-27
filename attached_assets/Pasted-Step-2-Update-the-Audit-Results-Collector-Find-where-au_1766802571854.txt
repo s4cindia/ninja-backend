@@ -1,0 +1,97 @@
+Step 2: Update the Audit Results Collector
+
+  Find where audit results are collected and add snapshots. Update the service that fetches/combines audit results:
+
+  // In src/services/audit.service.ts or wherever audit results are combined
+
+  import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
+
+  export async function getAuditResults(jobId: string): Promise<AuditResults> {
+    clearSnapshots(); // Start fresh for this job
+
+    // Fetch from different sources
+    const epubCheckResults = await getEpubCheckResults(jobId);
+    const aceResults = await getAceResults(jobId);
+    const jsAuditorResults = await getJsAuditorResults(jobId);
+
+    // Snapshot each source
+    captureIssueSnapshot('1_EPUBCHECK_RAW', epubCheckResults.violations || [], true);
+    captureIssueSnapshot('2_ACE_RAW', aceResults.violations || aceResults.assertions || [], true);
+    captureIssueSnapshot('3_JSAUDITOR_RAW', jsAuditorResults.issues || [], true);
+
+    // Normalize issues with source tags
+    const epubCheckIssues = (epubCheckResults.violations || []).map(issue => ({
+      ...issue,
+      source: 'epubcheck',
+      code: issue.code || issue.id || 'EPUBCHECK-UNKNOWN',
+    }));
+
+    const aceIssues = (aceResults.violations || aceResults.assertions || []).map(issue => ({
+      ...issue,
+      source: 'ace',
+      code: issue.code || issue.ruleId || issue['@type'] || 'ACE-UNKNOWN',
+      message: issue.message || issue.description,
+      severity: mapAceSeverity(issue.impact || issue.severity),
+      location: issue.location || issue.file,
+    }));
+
+    const jsAuditorIssues = (jsAuditorResults.issues || []).map(issue => ({
+      ...issue,
+      source: 'jsauditor',
+    }));
+
+    captureIssueSnapshot('4_EPUBCHECK_NORMALIZED', epubCheckIssues);
+    captureIssueSnapshot('5_ACE_NORMALIZED', aceIssues, true); // Verbose for ACE
+    captureIssueSnapshot('6_JSAUDITOR_NORMALIZED', jsAuditorIssues);
+
+    // Combine ALL issues - NO FILTERING HERE!
+    const allIssues = [
+      ...epubCheckIssues,
+      ...aceIssues,
+      ...jsAuditorIssues,
+    ];
+
+    captureIssueSnapshot('7_ALL_COMBINED', allIssues, true);
+
+    // Log comparison
+    console.log('\n📊 ISSUE FLOW SUMMARY:');
+    console.log(`  EPUBCheck: ${epubCheckIssues.length}`);
+    console.log(`  ACE: ${aceIssues.length}`);
+    console.log(`  JS Auditor: ${jsAuditorIssues.length}`);
+    console.log(`  Combined Total: ${allIssues.length}`);
+    console.log(`  Expected: ${epubCheckIssues.length + aceIssues.length + jsAuditorIssues.length}`);
+
+    if (allIssues.length !== epubCheckIssues.length + aceIssues.length + jsAuditorIssues.length) {
+      console.error('⚠️ ISSUE COUNT MISMATCH IN COMBINATION!');
+    }
+
+    return {
+      jobId,
+      epubCheckIssues,
+      aceIssues,
+      jsAuditorIssues,
+      allIssues,
+      summary: {
+        total: allIssues.length,
+        bySource: {
+          epubCheck: epubCheckIssues.length,
+          ace: aceIssues.length,
+          jsAuditor: jsAuditorIssues.length,
+        },
+      },
+    };
+  }
+
+  function mapAceSeverity(impact: string): string {
+    const mapping: Record<string, string> = {
+      'critical': 'critical',
+      'serious': 'serious',
+      'moderate': 'moderate',
+      'minor': 'minor',
+      // ACE sometimes uses different terms
+      'high': 'critical',
+      'medium': 'moderate',
+      'low': 'minor',
+    };
+    return mapping[impact?.toLowerCase()] || 'moderate';
+  }

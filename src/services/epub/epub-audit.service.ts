@@ -7,6 +7,7 @@ import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
+import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -154,6 +155,7 @@ class EpubAuditService {
 
   async runAudit(buffer: Buffer, jobId: string, fileName: string): Promise<EpubAuditResult> {
     this.issueCounter = 0;
+    clearSnapshots();
     
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'epub-audit-'));
     const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.epub';
@@ -176,6 +178,8 @@ class EpubAuditService {
       }
 
       const combinedIssues = this.combineResults(epubCheckResult, aceResult);
+
+      captureIssueSnapshot('1_AFTER_COMBINE_EPUBCHECK_ACE', combinedIssues, true);
 
       logger.info('Running JS accessibility audit for auto-fixable issues');
       try {
@@ -200,9 +204,12 @@ class EpubAuditService {
         }
         
         logger.info(`JS audit found ${jsResult.issues.length} additional accessibility issues`);
+        captureIssueSnapshot('2_AFTER_JS_AUDITOR', combinedIssues, true);
       } catch (jsError) {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
       }
+
+      captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues, true);
 
       const seen = new Set<string>();
       const deduplicatedIssues = combinedIssues.filter(issue => {
@@ -217,6 +224,16 @@ class EpubAuditService {
       if (deduplicatedIssues.length < combinedIssues.length) {
         logger.info(`[EPUB Audit] Deduplicated ${combinedIssues.length - deduplicatedIssues.length} duplicate issues`);
       }
+
+      captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues, true);
+
+      compareSnapshots('1_AFTER_COMBINE_EPUBCHECK_ACE', '4_AFTER_DEDUPLICATION');
+
+      logger.info('\n📊 AUDIT ISSUE FLOW SUMMARY:');
+      logger.info(`  EPUBCheck+ACE combined: ${combinedIssues.length - (deduplicatedIssues.filter(i => i.source === 'js-auditor').length)}`);
+      logger.info(`  JS Auditor added: ${deduplicatedIssues.filter(i => i.source === 'js-auditor').length}`);
+      logger.info(`  After deduplication: ${deduplicatedIssues.length}`);
+      logger.info(`  By Source: epubcheck=${deduplicatedIssues.filter(i => i.source === 'epubcheck').length}, ace=${deduplicatedIssues.filter(i => i.source === 'ace').length}, js-auditor=${deduplicatedIssues.filter(i => i.source === 'js-auditor').length}`);
 
       const scoreBreakdown = this.calculateScore(deduplicatedIssues);
       
