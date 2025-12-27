@@ -93,8 +93,8 @@ export function compareSnapshots(stage1: string, stage2: string): void {
   logger.info(`${'='.repeat(60)}`);
   logger.info(`Count: ${snap1.count} → ${snap2.count} (${snap2.count - snap1.count})`);
 
-  const snap2Codes = new Set(snap2.issues.map(i => `${i.code}:${i.location}`));
-  const missing = snap1.issues.filter(i => !snap2Codes.has(`${i.code}:${i.location}`));
+  const snap2Codes = new Set(snap2.issues.map(i => `${i.source}:${i.code}:${i.location}`));
+  const missing = snap1.issues.filter(i => !snap2Codes.has(`${i.source}:${i.code}:${i.location}`));
 
   if (missing.length > 0) {
     logger.warn(`\nMISSING ISSUES (${missing.length}):`);
@@ -105,8 +105,8 @@ export function compareSnapshots(stage1: string, stage2: string): void {
     logger.info(`\nNo issues lost`);
   }
 
-  const snap1Codes = new Set(snap1.issues.map(i => `${i.code}:${i.location}`));
-  const added = snap2.issues.filter(i => !snap1Codes.has(`${i.code}:${i.location}`));
+  const snap1Codes = new Set(snap1.issues.map(i => `${i.source}:${i.code}:${i.location}`));
+  const added = snap2.issues.filter(i => !snap1Codes.has(`${i.source}:${i.code}:${i.location}`));
 
   if (added.length > 0) {
     logger.info(`\nADDED ISSUES (${added.length}):`);

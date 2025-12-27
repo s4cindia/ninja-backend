@@ -125,8 +125,6 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   },
 };
 
-const _isAutoFixableCode = (code: string): boolean => getFixType(code) === 'auto';
-
 const SEVERITY_TO_PRIORITY: Record<string, RemediationPriority> = {
   critical: 'critical',
   serious: 'high',

@@ -3,6 +3,8 @@
  * Tracks issue counts through the pipeline to ensure no issues are lost
  */
 
+import { getFixType } from '../constants/fix-classification';
+
 export interface SourceTally {
   epubCheck: number;
   ace: number;
@@ -71,31 +73,10 @@ export function normalizeSource(source: string): string {
 }
 
 /**
- * Get fix type for an issue code
+ * Get fix type for an issue code (delegates to canonical source)
  */
 export function getFixTypeForCode(code: string): 'auto' | 'quickfix' | 'manual' {
-  const QUICK_FIXABLE = new Set([
-    'METADATA-ACCESSMODE', 'METADATA-ACCESSMODESUFFICIENT',
-    'METADATA-ACCESSIBILITYFEATURE', 'METADATA-ACCESSIBILITYHAZARD', 
-    'METADATA-ACCESSIBILITYSUMMARY',
-    'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
-    'EPUB-IMG-001', 'IMG-001', 'ACE-IMG-001',
-    'EPUB-CONTRAST-001', 'COLOR-CONTRAST',
-    'EPUB-STRUCT-002', 'EPUB-SEM-003',
-    'LANDMARK-UNIQUE', 'EPUB-TYPE-HAS-MATCHING-ROLE',
-  ]);
-
-  const AUTO_FIXABLE = new Set([
-    'EPUB-META-001', 'OPF-014', 'OPF-014B',
-    'EPUB-NAV-001', 'EPUB-SEM-002',
-    'EPUB-STRUCT-003', 'EPUB-STRUCT-004',
-    'EPUB-FIG-001', 'EPUB-SEM-001',
-  ]);
-
-  const upperCode = code?.toUpperCase() || '';
-  if (AUTO_FIXABLE.has(upperCode)) return 'auto';
-  if (QUICK_FIXABLE.has(upperCode)) return 'quickfix';
-  return 'manual';
+  return getFixType(code);
 }
 
 /**

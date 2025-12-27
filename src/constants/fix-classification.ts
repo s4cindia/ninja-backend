@@ -1,13 +1,11 @@
 export const AUTO_FIXABLE_CODES = new Set([
   'EPUB-META-001',
-  'OPF-014',
-  'OPF-014b',
   'EPUB-NAV-001',
+  'EPUB-SEM-001',
   'EPUB-SEM-002',
   'EPUB-STRUCT-003',
   'EPUB-STRUCT-004',
   'EPUB-FIG-001',
-  'EPUB-SEM-001',
 ]);
 
 export const QUICK_FIXABLE_CODES = new Set([

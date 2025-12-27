@@ -1,0 +1,111 @@
+> eslint src/ tests/ --max-warnings 60
+
+
+/home/runner/workspace/src/index.ts
+  65:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  66:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  67:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  68:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  74:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  77:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  82:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  85:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/lib/logger.ts
+  11:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  15:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/lib/redis.ts
+  47:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  55:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/middleware/async-handler.middleware.ts
+  7:14  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/runner/workspace/src/middleware/error-handler.middleware.ts
+  54:3   warning  'next' is defined but never used. Allowed unused args must match /^_/u  @typescript-eslint/no-unused-vars
+  85:21  warning  Unexpected any. Specify a different type                                @typescript-eslint/no-explicit-any
+  85:58  warning  Unexpected any. Specify a different type                                @typescript-eslint/no-explicit-any
+
+/home/runner/workspace/src/middleware/request-logger.middleware.ts
+  9:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/queues/index.ts
+  152:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/services/accessibility/pdf-structure-validator.service.ts
+  186:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  303:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  353:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  391:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/services/accessibility/validators/contrast-validator.ts
+  170:9  warning  'totalAnalyzed' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/services/ai/gemini.service.ts
+   71:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  107:11  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  154:14  warning  'parseError' is defined but never used                                             @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/services/ai/response-parser.service.ts
+   1:10  warning  'z' is defined but never used                                                      @typescript-eslint/no-unused-vars
+  85:9   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/services/ai/token-counter.service.ts
+  76:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/services/epub/remediation.service.ts
+  128:7  warning  '_isAutoFixableCode' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/services/pdf/image-extractor.service.ts
+  199:90  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+  225:19  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+  407:8   warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+  498:11  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
+  669:14  warning  'err' is defined but never used             @typescript-eslint/no-unused-vars
+  716:11  warning  'index' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/services/pdf/structure-analyzer.service.ts
+  1:62  warning  'PDFNumber' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/services/pdf/text-extractor.service.ts
+  240:11  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  243:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  277:82  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  278:35  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/home/runner/workspace/src/services/queue.service.ts
+   92:9  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  100:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/types/express.d.ts
+  1:10  warning  'User' is defined but never used  @typescript-eslint/no-unused-vars
+
+/home/runner/workspace/src/workers/base.worker.ts
+  34:9   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  45:11  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  66:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  74:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/workers/index.ts
+  11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  35:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  37:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  42:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  45:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/workers/processors/accessibility.processor.ts
+   11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  118:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/workers/processors/file.processor.ts
+   9:9  warning  'jobId' is assigned a value but never used                                         @typescript-eslint/no-unused-vars
+  11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  41:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  71:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+/home/runner/workspace/src/workers/processors/vpat.processor.ts
+  11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+  26:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
+
+✖ 61 problems (0 errors, 61 warnings)

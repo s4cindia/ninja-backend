@@ -257,10 +257,6 @@ class AutoRemediationService {
   getSupportedIssueCodes(): string[] {
     return Object.keys(this.remediationHandlers);
   }
-
-  isAutoFixable(issueCode: string): boolean {
-    return issueCode in this.remediationHandlers;
-  }
 }
 
 export const autoRemediationService = new AutoRemediationService();
