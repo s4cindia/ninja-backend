@@ -172,6 +172,30 @@ export const epubController = {
         });
       }
 
+      const output = job.output as Record<string, unknown> | null;
+      const combinedIssues = output?.combinedIssues as Array<Record<string, unknown>> | undefined;
+
+      logger.info('\nAPI RESPONSE - AUDIT RESULTS:');
+      logger.info(`  Job ID: ${job.id}`);
+      logger.info(`  Combined issues count: ${combinedIssues?.length || 0}`);
+
+      if (combinedIssues && combinedIssues.length > 0) {
+        const bySource: Record<string, number> = {};
+        combinedIssues.forEach(issue => {
+          const src = (issue.source as string) || 'unknown';
+          bySource[src] = (bySource[src] || 0) + 1;
+        });
+        logger.info(`  By Source: ${JSON.stringify(bySource)}`);
+
+        logger.info('  All issues being returned:');
+        combinedIssues.forEach((issue, i) => {
+          const code = issue.code as string || 'UNKNOWN';
+          const source = issue.source as string || 'unknown';
+          const location = issue.location as string || 'N/A';
+          logger.info(`    ${i + 1}. [${source}] ${code} @ ${location}`);
+        });
+      }
+
       return res.json({
         success: true,
         data: job.output,
