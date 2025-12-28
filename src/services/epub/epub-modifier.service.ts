@@ -1225,12 +1225,11 @@ class EPUBModifierService {
     console.log('=== addAriaRolesToEpubTypes START ===');
     const results: ModificationResult[] = [];
 
-    // Only map to VALID roles for specific elements
+    // Valid ARIA roles for epub:type values
     const validRoleMapping: Record<string, string> = {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
       'toc': 'doc-toc',
-      'landmarks': 'navigation',
       'dedication': 'doc-dedication',
       'epigraph': 'doc-epigraph',
       'foreword': 'doc-foreword',
@@ -1250,14 +1249,20 @@ class EPUBModifierService {
       'endnote': 'doc-endnote',
       'endnotes': 'doc-endnotes',
       'footnotes': 'doc-endnotes',
+      'rearnotes': 'doc-endnotes',
     };
 
-    // Elements that should NOT get role attributes added
-    const skipRoles = ['frontmatter', 'bodymatter', 'backmatter', 'titlepage', 'nav'];
+    // Types that should NOT get automatic roles (handled separately or problematic)
+    const skipTypes = new Set([
+      'frontmatter', 'bodymatter', 'backmatter', 'titlepage',
+      'nav', 'landmarks', 'cover', 'halftitlepage'
+    ]);
 
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
+
+    console.log(`Processing ${xhtmlFiles.length} files for ${epubTypesToFix.length} epub:types`);
 
     for (const filePath of xhtmlFiles) {
       try {
@@ -1268,58 +1273,77 @@ class EPUBModifierService {
         const fileChanges: string[] = [];
 
         for (const { epubType } of epubTypesToFix) {
+          const lowerType = epubType.toLowerCase();
+
           // Skip types that shouldn't get roles
-          if (skipRoles.includes(epubType.toLowerCase())) {
-            console.log(`Skipping epub:type="${epubType}" - not suitable for role`);
+          if (skipTypes.has(lowerType)) {
+            console.log(`Skipping ${epubType} - in skip list`);
             continue;
           }
 
-          const role = validRoleMapping[epubType.toLowerCase()];
+          const role = validRoleMapping[lowerType];
           if (!role) {
-            console.log(`Skipping epub:type="${epubType}" - no valid role mapping`);
+            console.log(`Skipping ${epubType} - no valid role mapping`);
             continue;
           }
 
-          // Find elements with this exact epub:type (simple single value)
-          // Pattern: <tag ... epub:type="value" ...> where tag has no role yet
-          const pattern = new RegExp(
-            `(<[a-zA-Z][a-zA-Z0-9]*)(\\s[^>]*?)(epub:type\\s*=\\s*["']${epubType}["'])([^>]*>)`,
-            'gi'
-          );
+          // Find opening tags that contain this epub:type
+          // Match: <tagname ...epub:type="value"... > or <tagname ...epub:type="... value ..."... >
+          const tagPattern = /<([a-zA-Z][a-zA-Z0-9]*)(\s+[^>]*?)>/g;
 
-          content = content.replace(pattern, (fullMatch, tagStart, beforeEpub, epubAttr, afterEpub) => {
-            // Check if already has role anywhere in the tag
+          content = content.replace(tagPattern, (fullMatch, tagName, attributes) => {
+            // Check if this tag has the epub:type we're looking for
+            const epubTypeAttrMatch = attributes.match(/epub:type\s*=\s*["']([^"']+)["']/i);
+            if (!epubTypeAttrMatch) {
+              return fullMatch; // No epub:type attribute
+            }
+
+            const epubTypeValue = epubTypeAttrMatch[1];
+            // Check if this epub:type contains our target value (could be space-separated)
+            const types = epubTypeValue.split(/\s+/);
+            if (!types.some(t => t.toLowerCase() === lowerType)) {
+              return fullMatch; // Not our epub:type
+            }
+
+            // Check if already has a role attribute
             if (/\brole\s*=\s*["']/i.test(fullMatch)) {
+              console.log(`Skipping ${tagName} - already has role`);
               return fullMatch;
             }
 
-            fileChanges.push(`Added role="${role}" to element with epub:type="${epubType}"`);
+            // Add role attribute after the tag name
+            fileChanges.push(`Added role="${role}" to <${tagName}> with epub:type containing "${epubType}"`);
             fileModified = true;
 
-            // Insert role right after the tag name
-            return `${tagStart} role="${role}"${beforeEpub}${epubAttr}${afterEpub}`;
+            return `<${tagName} role="${role}"${attributes}>`;
           });
         }
 
         if (fileModified) {
           zip.file(filePath, content);
-          console.log(`Modified: ${filePath}`);
+          console.log(`Modified: ${filePath} - ${fileChanges.length} changes`);
 
           for (const change of fileChanges) {
             results.push({
               success: true,
               filePath,
-              modificationType: 'add_role',
+              modificationType: 'add_epub_type_role',
               description: change,
             });
           }
         }
       } catch (err) {
         console.error(`Error processing ${filePath}:`, err);
+        results.push({
+          success: false,
+          filePath,
+          modificationType: 'add_epub_type_role',
+          description: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        });
       }
     }
 
-    console.log(`Completed: ${results.length} modifications`);
+    console.log(`Completed: ${results.filter(r => r.success).length} successful modifications`);
     return results;
   }
 

@@ -1,0 +1,132 @@
+Part 4: Replace addAriaRolesToEpubTypes method (complete rewrite)
+
+  This is the most critical fix - the previous version was corrupting XML:
+
+    async addAriaRolesToEpubTypes(
+      zip: JSZip,
+      epubTypesToFix: Array<{ epubType: string; role: string }>
+    ): Promise<ModificationResult[]> {
+      console.log('=== addAriaRolesToEpubTypes START ===');
+      const results: ModificationResult[] = [];
+
+      // Valid ARIA roles for epub:type values
+      const validRoleMapping: Record<string, string> = {
+        'chapter': 'doc-chapter',
+        'part': 'doc-part',
+        'toc': 'doc-toc',
+        'dedication': 'doc-dedication',
+        'epigraph': 'doc-epigraph',
+        'foreword': 'doc-foreword',
+        'preface': 'doc-preface',
+        'introduction': 'doc-introduction',
+        'prologue': 'doc-prologue',
+        'epilogue': 'doc-epilogue',
+        'afterword': 'doc-afterword',
+        'appendix': 'doc-appendix',
+        'glossary': 'doc-glossary',
+        'bibliography': 'doc-bibliography',
+        'index': 'doc-index',
+        'colophon': 'doc-colophon',
+        'acknowledgments': 'doc-acknowledgments',
+        'noteref': 'doc-noteref',
+        'footnote': 'doc-footnote',
+        'endnote': 'doc-endnote',
+        'endnotes': 'doc-endnotes',
+        'footnotes': 'doc-endnotes',
+        'rearnotes': 'doc-endnotes',
+      };
+
+      // Types that should NOT get automatic roles (handled separately or problematic)
+      const skipTypes = new Set([
+        'frontmatter', 'bodymatter', 'backmatter', 'titlepage',
+        'nav', 'landmarks', 'cover', 'halftitlepage'
+      ]);
+
+      const xhtmlFiles = Object.keys(zip.files).filter(path =>
+        /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+      );
+
+      console.log(`Processing ${xhtmlFiles.length} files for ${epubTypesToFix.length} epub:types`);
+
+      for (const filePath of xhtmlFiles) {
+        try {
+          let content = await zip.file(filePath)?.async('text');
+          if (!content) continue;
+
+          let fileModified = false;
+          const fileChanges: string[] = [];
+
+          for (const { epubType } of epubTypesToFix) {
+            const lowerType = epubType.toLowerCase();
+
+            // Skip types that shouldn't get roles
+            if (skipTypes.has(lowerType)) {
+              console.log(`Skipping ${epubType} - in skip list`);
+              continue;
+            }
+
+            const role = validRoleMapping[lowerType];
+            if (!role) {
+              console.log(`Skipping ${epubType} - no valid role mapping`);
+              continue;
+            }
+
+            // Find opening tags that contain this epub:type
+            // Match: <tagname ...epub:type="value"... > or <tagname ...epub:type="... value ..."... >
+            const tagPattern = /<([a-zA-Z][a-zA-Z0-9]*)(\s+[^>]*?)>/g;
+
+            content = content.replace(tagPattern, (fullMatch, tagName, attributes) => {
+              // Check if this tag has the epub:type we're looking for
+              const epubTypeAttrMatch = attributes.match(/epub:type\s*=\s*["']([^"']+)["']/i);
+              if (!epubTypeAttrMatch) {
+                return fullMatch; // No epub:type attribute
+              }
+
+              const epubTypeValue = epubTypeAttrMatch[1];
+              // Check if this epub:type contains our target value (could be space-separated)
+              const types = epubTypeValue.split(/\s+/);
+              if (!types.some(t => t.toLowerCase() === lowerType)) {
+                return fullMatch; // Not our epub:type
+              }
+
+              // Check if already has a role attribute
+              if (/\brole\s*=\s*["']/i.test(fullMatch)) {
+                console.log(`Skipping ${tagName} - already has role`);
+                return fullMatch;
+              }
+
+              // Add role attribute after the tag name
+              fileChanges.push(`Added role="${role}" to <${tagName}> with epub:type containing "${epubType}"`);
+              fileModified = true;
+
+              return `<${tagName} role="${role}"${attributes}>`;
+            });
+          }
+
+          if (fileModified) {
+            zip.file(filePath, content);
+            console.log(`Modified: ${filePath} - ${fileChanges.length} changes`);
+
+            for (const change of fileChanges) {
+              results.push({
+                success: true,
+                filePath,
+                modificationType: 'add_epub_type_role',
+                description: change,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`Error processing ${filePath}:`, err);
+          results.push({
+            success: false,
+            filePath,
+            modificationType: 'add_epub_type_role',
+            description: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          });
+        }
+      }
+
+      console.log(`Completed: ${results.filter(r => r.success).length} successful modifications`);
+      return results;
+    }
