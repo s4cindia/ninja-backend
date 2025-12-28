@@ -708,124 +708,52 @@ class EPUBModifierService {
 
   async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
     const results: ModificationResult[] = [];
-    const files = Object.keys(zip.files);
+    const files = Object.keys(zip.files).filter(f => /\.(html|xhtml|htm)$/i.test(f));
+
+    let mainLandmarkAdded = false;
 
     for (const filePath of files) {
-      if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
-
       let content = await zip.file(filePath)?.async('text');
       if (!content) continue;
 
       let modified = false;
       const changes: string[] = [];
 
-      // Helper function to add role to a tag if it doesn't already have one
-      const addRoleToTag = (
-        tagContent: string,
-        tagName: string,
-        roleName: string,
-      ): { content: string; changed: boolean } => {
-        const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
-        const match = tagContent.match(tagRegex);
-
-        if (!match) {
-          return { content: tagContent, changed: false };
-        }
-
-        const fullTag = match[0];
-
-        // Check if role attribute already exists anywhere in the tag
-        if (/\brole\s*=\s*["'][^"']*["']/i.test(fullTag)) {
-          return { content: tagContent, changed: false };
-        }
-
-        // Add role attribute after the tag name
-        const newTag = fullTag.replace(
-          new RegExp(`<${tagName}`, 'i'),
-          `<${tagName} role="${roleName}"`
-        );
-
-        return {
-          content: tagContent.replace(fullTag, newTag),
-          changed: true
-        };
-      };
-
-      // Check if role="main" already exists anywhere in the document
-      const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
-
-      if (!hasMainRole) {
-        // Try to add role="main" to <main> element first
-        if (/<main[\s>]/i.test(content)) {
-          const result = addRoleToTag(content, 'main', 'main');
-          if (result.changed) {
-            content = result.content;
-            changes.push('Added role="main" to <main>');
-            modified = true;
-          }
+      // Only add ONE main landmark across the entire EPUB
+      if (!mainLandmarkAdded) {
+        // Check if any file already has role="main"
+        if (/role\s*=\s*["']main["']/i.test(content)) {
+          mainLandmarkAdded = true; // Found existing, don't add more
         } else {
-          // No <main> element, try first section inside body
-          const bodyMatch = content.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-          if (bodyMatch) {
-            // Try section first, then div, then article
-            for (const tagName of ['section', 'div', 'article']) {
-              const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
-              if (tagRegex.test(content)) {
-                const result = addRoleToTag(content, tagName, 'main');
-                if (result.changed) {
-                  content = result.content;
-                  changes.push(`Added role="main" to first <${tagName}>`);
-                  modified = true;
-                  break;
-                }
+          // Try to find a suitable element for main landmark
+          // Look for <main>, <section>, or <article> WITHOUT existing role
+          const mainPatterns = [
+            { regex: /<main(?=\s|>)([^>]*)>/i, tag: 'main' },
+            { regex: /<section(?=\s|>)([^>]*)>/i, tag: 'section' },
+            { regex: /<article(?=\s|>)([^>]*)>/i, tag: 'article' },
+          ];
+
+          for (const { regex, tag } of mainPatterns) {
+            const match = content.match(regex);
+            if (match) {
+              const fullTag = match[0];
+              const attrs = match[1] || '';
+
+              // Skip if already has a role
+              if (/\brole\s*=/i.test(attrs)) {
+                continue;
               }
+
+              // Add role="main" after tag name
+              const newTag = `<${tag} role="main"${attrs}>`;
+              content = content.replace(fullTag, newTag);
+              changes.push(`Added role="main" to <${tag}>`);
+              modified = true;
+              mainLandmarkAdded = true;
+              break;
             }
           }
         }
-      }
-
-      // Add role="navigation" to <nav> elements without role
-      // Use replace with a callback function to handle all occurrences safely
-      if (/<nav[\s>]/i.test(content)) {
-        const navRegex = /<nav(\s[^>]*)?\s*>/gi;
-        content = content.replace(navRegex, (match) => {
-          // Check if this tag already has a role
-          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
-            return match; // Return unchanged
-          }
-          changes.push('Added role="navigation" to <nav>');
-          modified = true;
-          return match.replace(/<nav/i, '<nav role="navigation"');
-        });
-      }
-
-      // Add role="contentinfo" to <footer> elements without role
-      if (/<footer[\s>]/i.test(content)) {
-        const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
-        content = content.replace(footerRegex, (match) => {
-          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
-            return match;
-          }
-          changes.push('Added role="contentinfo" to <footer>');
-          modified = true;
-          return match.replace(/<footer/i, '<footer role="contentinfo"');
-        });
-      }
-
-      // Add role="banner" to first <header> element without role
-      if (/<header[\s>]/i.test(content)) {
-        let headerFixed = false;
-        const headerRegex = /<header(\s[^>]*)?\s*>/gi;
-        content = content.replace(headerRegex, (match) => {
-          if (headerFixed) return match; // Only fix first header
-          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
-            return match;
-          }
-          headerFixed = true;
-          changes.push('Added role="banner" to <header>');
-          modified = true;
-          return match.replace(/<header/i, '<header role="banner"');
-        });
       }
 
       if (modified) {
@@ -834,7 +762,7 @@ class EPUBModifierService {
           success: true,
           filePath,
           modificationType: 'add_aria_landmarks',
-          description: `Added ${changes.length} ARIA landmark(s)`,
+          description: changes.join(', '),
           after: changes.join('\n'),
         });
       }
@@ -1281,16 +1209,12 @@ class EPUBModifierService {
     console.log('=== addAriaRolesToEpubTypes START ===');
     const results: ModificationResult[] = [];
 
+    // Only map to VALID roles for specific elements
     const validRoleMapping: Record<string, string> = {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
       'toc': 'doc-toc',
-      'nav': 'navigation',
       'landmarks': 'navigation',
-      'frontmatter': 'doc-prologue',
-      'bodymatter': 'main',
-      'backmatter': 'doc-epilogue',
-      'titlepage': 'region',
       'dedication': 'doc-dedication',
       'epigraph': 'doc-epigraph',
       'foreword': 'doc-foreword',
@@ -1306,19 +1230,18 @@ class EPUBModifierService {
       'colophon': 'doc-colophon',
       'acknowledgments': 'doc-acknowledgments',
       'noteref': 'doc-noteref',
-      'footnote': 'note',
-      'endnote': 'note',
-      'rearnote': 'note',
-      'rearnotes': 'doc-endnotes',
-      'footnotes': 'doc-endnotes',
+      'footnote': 'doc-footnote',
+      'endnote': 'doc-endnote',
       'endnotes': 'doc-endnotes',
+      'footnotes': 'doc-endnotes',
     };
+
+    // Elements that should NOT get role attributes added
+    const skipRoles = ['frontmatter', 'bodymatter', 'backmatter', 'titlepage', 'nav'];
 
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
-
-    console.log(`Adding ARIA roles to ${epubTypesToFix.length} epub:types across ${xhtmlFiles.length} files`);
 
     for (const filePath of xhtmlFiles) {
       try {
@@ -1329,30 +1252,42 @@ class EPUBModifierService {
         const fileChanges: string[] = [];
 
         for (const { epubType } of epubTypesToFix) {
-          const role = validRoleMapping[epubType.toLowerCase()] || 'region';
+          // Skip types that shouldn't get roles
+          if (skipRoles.includes(epubType.toLowerCase())) {
+            console.log(`Skipping epub:type="${epubType}" - not suitable for role`);
+            continue;
+          }
 
-          // Match elements with this epub:type
-          // Use a safer approach: find all opening tags with epub:type containing our value
-          const tagRegex = new RegExp(`<([a-zA-Z][a-zA-Z0-9]*)\\s+([^>]*epub:type\\s*=\\s*["'][^"']*\\b${epubType}\\b[^"']*["'][^>]*)>`, 'gi');
+          const role = validRoleMapping[epubType.toLowerCase()];
+          if (!role) {
+            console.log(`Skipping epub:type="${epubType}" - no valid role mapping`);
+            continue;
+          }
 
-          content = content.replace(tagRegex, (fullMatch, tagName, attributes) => {
-            // Check if this tag ALREADY has a role attribute (anywhere in the tag)
-            if (/\brole\s*=\s*["'][^"']*["']/i.test(fullMatch)) {
-              console.log(`Skipping - already has role: ${fullMatch.substring(0, 60)}...`);
-              return fullMatch; // Return unchanged
+          // Find elements with this exact epub:type (simple single value)
+          // Pattern: <tag ... epub:type="value" ...> where tag has no role yet
+          const pattern = new RegExp(
+            `(<[a-zA-Z][a-zA-Z0-9]*)(\\s[^>]*?)(epub:type\\s*=\\s*["']${epubType}["'])([^>]*>)`,
+            'gi'
+          );
+
+          content = content.replace(pattern, (fullMatch, tagStart, beforeEpub, epubAttr, afterEpub) => {
+            // Check if already has role anywhere in the tag
+            if (/\brole\s*=\s*["']/i.test(fullMatch)) {
+              return fullMatch;
             }
 
-            // Add role after the tag name
-            const newTag = `<${tagName} role="${role}" ${attributes}>`;
-            fileChanges.push(`Added role="${role}" to <${tagName}> with epub:type="${epubType}"`);
+            fileChanges.push(`Added role="${role}" to element with epub:type="${epubType}"`);
             fileModified = true;
-            return newTag;
+
+            // Insert role right after the tag name
+            return `${tagStart} role="${role}"${beforeEpub}${epubAttr}${afterEpub}`;
           });
         }
 
         if (fileModified) {
           zip.file(filePath, content);
-          console.log(`Modified: ${filePath} - ${fileChanges.length} changes`);
+          console.log(`Modified: ${filePath}`);
 
           for (const change of fileChanges) {
             results.push({
@@ -1368,7 +1303,7 @@ class EPUBModifierService {
       }
     }
 
-    console.log(`Completed: ${results.filter(r => r.success).length} modifications`);
+    console.log(`Completed: ${results.length} modifications`);
     return results;
   }
 
