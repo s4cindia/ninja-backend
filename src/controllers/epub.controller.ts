@@ -1321,34 +1321,22 @@ export const epubController = {
           const plan = await remediationService.getRemediationPlan(jobId);
 
           if (plan?.tasks && Array.isArray(plan.tasks)) {
-            console.log('=== FIRST TASK FULL STRUCTURE ===');
-            if (plan.tasks[0]) {
-              console.log(JSON.stringify(plan.tasks[0], null, 2));
-            }
-
-            console.log('=== CHECKING COMMON FIELD NAMES ===');
-            plan.tasks.forEach((t: any, i: number) => {
-              if (i < 3) {
-                console.log(`Task ${t.id}:`);
-                console.log(`  code: ${t.code}`);
-                console.log(`  issueCode: ${t.issueCode}`);
-                console.log(`  type: ${t.type}`);
-                console.log(`  ruleId: ${t.ruleId}`);
-                console.log(`  issue?.code: ${t.issue?.code}`);
-                console.log(`  metadata?.code: ${t.metadata?.code}`);
-                console.log(`  description: ${t.description?.substring(0, 50)}...`);
-              }
-            });
-
             const relatedTasks = plan.tasks.filter((t: any) => {
               if (t.status === 'completed') return false;
 
-              const code = String(t.code || '').toUpperCase();
-              return code.includes('EPUB-TYPE') ||
-                     code.includes('EPUB_TYPE') ||
-                     code.includes('MATCHING-ROLE') ||
-                     code.includes('MATCHING_ROLE') ||
-                     code === 'EPUB-SEM-003';
+              const issueCode = String(t.issueCode || '').toUpperCase();
+              const isEpubTypeIssue =
+                issueCode.includes('EPUB-TYPE') ||
+                issueCode.includes('EPUB_TYPE') ||
+                issueCode.includes('MATCHING-ROLE') ||
+                issueCode.includes('MATCHING_ROLE') ||
+                issueCode === 'EPUB-SEM-003';
+
+              if (isEpubTypeIssue) {
+                console.log(`  ✓ Match: ${t.id} - issueCode="${t.issueCode}"`);
+              }
+
+              return isEpubTypeIssue;
             });
 
             console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
@@ -1359,19 +1347,21 @@ export const epubController = {
                   jobId,
                   task.id,
                   'completed',
-                  `Auto-completed: ARIA roles added to all epub:type elements (${results.length} total)`,
+                  `Auto-completed: ARIA roles added to all epub:type elements`,
                   req.user?.email || 'system'
                 );
                 tasksAutoCompleted++;
-                console.log(`✓ Auto-completed: ${task.id}`);
+                console.log(`✓ Auto-completed: ${task.id} (${task.issueCode})`);
               } catch (err) {
-                console.error(`✗ Failed to auto-complete ${task.id}:`, err);
+                console.error(`✗ Failed: ${task.id}:`, err);
               }
             }
           }
         } catch (err) {
           console.error('Auto-complete error:', err);
         }
+
+        console.log(`Total tasks auto-completed: ${tasksAutoCompleted}`);
 
         return res.json({
           success: true,

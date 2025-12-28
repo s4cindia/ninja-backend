@@ -1,0 +1,64 @@
+Prompt 47: Backend - Fix Auto-Complete to Use issueCode Field
+
+  File: src/controllers/epub.controller.ts
+
+  Update the auto-complete logic to use issueCode instead of code:
+
+  // Auto-complete ALL related epub:type tasks
+  let tasksAutoCompleted = 0;
+  try {
+    const plan = await remediationService.getRemediationPlan(jobId);
+
+    if (plan?.tasks && Array.isArray(plan.tasks)) {
+      // Find ALL epub:type related tasks using issueCode (not code)
+      const relatedTasks = plan.tasks.filter((t: any) => {
+        if (t.status === 'completed') return false;
+
+        // Use issueCode field (not code)
+        const issueCode = String(t.issueCode || '').toUpperCase();
+
+        const isEpubTypeIssue =
+          issueCode.includes('EPUB-TYPE') ||
+          issueCode.includes('EPUB_TYPE') ||
+          issueCode.includes('MATCHING-ROLE') ||
+          issueCode.includes('MATCHING_ROLE') ||
+          issueCode === 'EPUB-SEM-003';
+
+        if (isEpubTypeIssue) {
+          console.log(`  ✓ Match: ${t.id} - issueCode="${t.issueCode}"`);
+        }
+
+        return isEpubTypeIssue;
+      });
+
+      console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
+
+      for (const task of relatedTasks) {
+        try {
+          await remediationService.updateTaskStatus(
+            jobId,
+            task.id,
+            'completed',
+            `Auto-completed: ARIA roles added to all epub:type elements`,
+            req.user?.email || 'system'
+          );
+          tasksAutoCompleted++;
+          console.log(`✓ Auto-completed: ${task.id} (${task.issueCode})`);
+        } catch (err) {
+          console.error(`✗ Failed: ${task.id}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Auto-complete error:', err);
+  }
+
+  console.log(`Total tasks auto-completed: ${tasksAutoCompleted}`);
+
+  ---
+  Key change: t.code → t.issueCode
+
+  Now when you apply the epub:type Quick Fix:
+  1. Backend finds all tasks where issueCode contains EPUB-TYPE
+  2. Marks ALL of them as complete
+  3. UI refreshes showing all epub:type tasks done
