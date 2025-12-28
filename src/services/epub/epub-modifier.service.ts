@@ -318,7 +318,7 @@ class EPUBModifierService {
   ): Promise<ModificationResult[]> {
     const results: ModificationResult[] = [];
     const opf = await this.getOPF(zip);
-    
+
     if (!opf) {
       return [{
         success: false,
@@ -331,25 +331,35 @@ class EPUBModifierService {
     let modified = opf.content;
     const metadataToAdd: string[] = [];
 
+    // Helper to check if metadata already exists
+    const hasMetadata = (property: string, value?: string): boolean => {
+      if (value) {
+        const pattern = new RegExp(`<meta[^>]*property\\s*=\\s*["']${property}["'][^>]*>\\s*${value}\\s*</meta>`, 'i');
+        return pattern.test(modified);
+      }
+      const pattern = new RegExp(`<meta[^>]*property\\s*=\\s*["']${property}["']`, 'i');
+      return pattern.test(modified);
+    };
+
+    // Add accessibility features (only if not present)
     for (const feature of features) {
-      const escapedFeature = escapeRegExp(feature);
-      const featurePattern = new RegExp(`schema:accessibilityFeature[^>]*>${escapedFeature}<`, 'i');
-      if (!featurePattern.test(modified)) {
-        metadataToAdd.push(
-          `<meta property="schema:accessibilityFeature">${feature}</meta>`
-        );
+      if (!hasMetadata('schema:accessibilityFeature', feature)) {
+        metadataToAdd.push(`<meta property="schema:accessibilityFeature">${feature}</meta>`);
       }
     }
 
-    if (!/schema:accessMode/i.test(modified)) {
+    // Add access mode (only if not present)
+    if (!hasMetadata('schema:accessMode', 'textual')) {
       metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
     }
 
-    if (!/schema:accessModeSufficient/i.test(modified)) {
+    // Add access mode sufficient (only if not present)
+    if (!hasMetadata('schema:accessModeSufficient', 'textual')) {
       metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
     }
 
-    if (!/schema:accessibilityHazard/i.test(modified)) {
+    // Add accessibility hazard (only if not present)
+    if (!hasMetadata('schema:accessibilityHazard')) {
       metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
     }
 
