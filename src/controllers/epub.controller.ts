@@ -1321,9 +1321,23 @@ export const epubController = {
           const plan = await remediationService.getRemediationPlan(jobId);
 
           if (plan?.tasks && Array.isArray(plan.tasks)) {
-            console.log('=== ALL TASKS IN PLAN ===');
-            plan.tasks.forEach((t: any) => {
-              console.log(`  ${t.id}: code="${t.code}" status="${t.status}"`);
+            console.log('=== FIRST TASK FULL STRUCTURE ===');
+            if (plan.tasks[0]) {
+              console.log(JSON.stringify(plan.tasks[0], null, 2));
+            }
+
+            console.log('=== CHECKING COMMON FIELD NAMES ===');
+            plan.tasks.forEach((t: any, i: number) => {
+              if (i < 3) {
+                console.log(`Task ${t.id}:`);
+                console.log(`  code: ${t.code}`);
+                console.log(`  issueCode: ${t.issueCode}`);
+                console.log(`  type: ${t.type}`);
+                console.log(`  ruleId: ${t.ruleId}`);
+                console.log(`  issue?.code: ${t.issue?.code}`);
+                console.log(`  metadata?.code: ${t.metadata?.code}`);
+                console.log(`  description: ${t.description?.substring(0, 50)}...`);
+              }
             });
 
             const relatedTasks = plan.tasks.filter((t: any) => {
