@@ -234,6 +234,9 @@ class EPUBModifierService {
   }
 
   async saveEPUB(zip: JSZip): Promise<Buffer> {
+    const mimetypeContent = 'application/epub+zip';
+    zip.file('mimetype', mimetypeContent, { compression: 'STORE' });
+
     return zip.generateAsync({
       type: 'nodebuffer',
       compression: 'DEFLATE',
@@ -1215,6 +1218,39 @@ class EPUBModifierService {
   ): Promise<ModificationResult[]> {
     const results: ModificationResult[] = [];
 
+    const validRoleMapping: Record<string, string> = {
+      'chapter': 'doc-chapter',
+      'part': 'doc-part',
+      'toc': 'doc-toc',
+      'nav': 'navigation',
+      'landmarks': 'navigation',
+      'frontmatter': 'doc-prologue',
+      'bodymatter': 'main',
+      'backmatter': 'doc-epilogue',
+      'titlepage': 'region',
+      'dedication': 'doc-dedication',
+      'epigraph': 'doc-epigraph',
+      'foreword': 'doc-foreword',
+      'preface': 'doc-preface',
+      'introduction': 'doc-introduction',
+      'prologue': 'doc-prologue',
+      'epilogue': 'doc-epilogue',
+      'afterword': 'doc-afterword',
+      'appendix': 'doc-appendix',
+      'glossary': 'doc-glossary',
+      'bibliography': 'doc-bibliography',
+      'index': 'doc-index',
+      'colophon': 'doc-colophon',
+      'acknowledgments': 'doc-acknowledgments',
+      'noteref': 'doc-noteref',
+      'footnote': 'note',
+      'endnote': 'note',
+      'rearnote': 'note',
+      'rearnotes': 'doc-endnotes',
+      'footnotes': 'doc-endnotes',
+      'endnotes': 'doc-endnotes',
+    };
+
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
@@ -1229,49 +1265,42 @@ class EPUBModifierService {
         let fileModified = false;
         const originalContent = content;
 
-        for (const { epubType, role } of epubTypesToFix) {
-          // Use regex replacement instead of cheerio to preserve original format
-          // Match elements with epub:type containing the target type, that don't already have role=
-          const pattern = new RegExp(
-            `(<[^>]*epub:type=["'][^"']*\\b${epubType}\\b[^"']*["'])(?![^>]*\\brole=)([^>]*>)`,
-            'g'
-          );
+        for (const { epubType } of epubTypesToFix) {
+          const role = validRoleMapping[epubType.toLowerCase()] || 'region';
 
-          const matches = content.match(pattern);
-          if (matches) {
-            content = content.replace(pattern, `$1 role="${role}"$2`);
+          const patterns = [
+            new RegExp(`(epub:type=["'])${epubType}(["'])(?![^>]*\\brole=)`, 'g'),
+            new RegExp(`(epub:type=["'][^"']*\\b)${epubType}(\\b[^"']*["'])(?![^>]*\\brole=)`, 'g'),
+          ];
 
-            for (const match of matches) {
-              results.push({
-                success: true,
-                filePath,
-                modificationType: 'add_role',
-                description: `Added role="${role}" to element with epub:type="${epubType}"`,
-                before: match.substring(0, 100),
-                after: match.replace(pattern, `$1 role="${role}"$2`).substring(0, 100),
-              });
+          for (const pattern of patterns) {
+            const matches = content.match(pattern);
+            if (matches && matches.length > 0) {
+              content = content.replace(pattern, `$1${epubType}$2 role="${role}"`);
+
+              if (content !== originalContent) {
+                fileModified = true;
+                results.push({
+                  success: true,
+                  filePath,
+                  modificationType: 'add_role',
+                  description: `Added role="${role}" to epub:type="${epubType}"`,
+                });
+              }
             }
-
-            fileModified = true;
           }
         }
 
         if (fileModified) {
           zip.file(filePath, content);
-          console.log(`Modified ${filePath}`);
+          console.log(`Modified: ${filePath}`);
         }
       } catch (err) {
         console.error(`Error processing ${filePath}:`, err);
-        results.push({
-          success: false,
-          filePath,
-          modificationType: 'add_role',
-          description: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        });
       }
     }
 
-    console.log(`Completed: ${results.filter(r => r.success).length} successful, ${results.filter(r => !r.success).length} failed`);
+    console.log(`Completed: ${results.filter(r => r.success).length} modifications`);
     return results;
   }
 
@@ -1304,12 +1333,28 @@ class EPUBModifierService {
       'frontmatter': 'doc-prologue',
       'bodymatter': 'main',
       'backmatter': 'doc-epilogue',
-      'titlepage': 'doc-cover',
+      'titlepage': 'region',
       'dedication': 'doc-dedication',
       'epigraph': 'doc-epigraph',
+      'foreword': 'doc-foreword',
+      'preface': 'doc-preface',
+      'introduction': 'doc-introduction',
+      'prologue': 'doc-prologue',
+      'epilogue': 'doc-epilogue',
+      'afterword': 'doc-afterword',
+      'appendix': 'doc-appendix',
+      'glossary': 'doc-glossary',
+      'bibliography': 'doc-bibliography',
+      'index': 'doc-index',
+      'colophon': 'doc-colophon',
+      'acknowledgments': 'doc-acknowledgments',
       'noteref': 'doc-noteref',
-      'rearnote': 'doc-endnote',
+      'footnote': 'note',
+      'endnote': 'note',
+      'rearnote': 'note',
       'rearnotes': 'doc-endnotes',
+      'footnotes': 'doc-endnotes',
+      'endnotes': 'doc-endnotes',
     };
 
     const allFiles = Object.keys(zip.files);
