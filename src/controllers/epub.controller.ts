@@ -776,6 +776,21 @@ export const epubController = {
         case 'EPUB-FIG-001':
           results = await epubModifier.addFigureStructure(zip);
           break;
+        case 'EPUB-SEM-003':
+          // Add ARIA roles to epub:type elements (Quick Fix)
+          if (options?.changes && Array.isArray(options.changes)) {
+            const epubTypesToFix = options.changes.map((change: { epubType: string; role: string }) => ({
+              epubType: change.epubType,
+              role: change.role,
+            }));
+            results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: 'EPUB-SEM-003 requires options.changes array with epubType and role',
+            });
+          }
+          break;
         default:
           return res.status(400).json({
             success: false,
