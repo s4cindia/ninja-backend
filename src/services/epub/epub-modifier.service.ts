@@ -402,6 +402,7 @@ class EPUBModifierService {
       };
     }
 
+    // Check if summary already exists
     if (/schema:accessibilitySummary/i.test(opf.content)) {
       return {
         success: true,
@@ -411,8 +412,8 @@ class EPUBModifierService {
       };
     }
 
-    const defaultSummary = summary || 
-      'This publication includes structural navigation, a table of contents, and follows a logical reading order.';
+    const defaultSummary = summary ||
+      'This publication meets basic accessibility requirements. All images have alternative text descriptions. The content follows a logical reading order with proper heading structure for navigation.';
 
     const newElement = `<meta property="schema:accessibilitySummary">${defaultSummary}</meta>`;
     const modified = opf.content.replace(
