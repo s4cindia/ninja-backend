@@ -1309,30 +1309,32 @@ export const epubController = {
       if (epubTypesToFix.length > 0) {
         console.log('Using cross-file epub:type fix for:', epubTypesToFix);
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
-        console.log('Fix results:', results.length, 'modifications');
+        console.log(`Fix applied: ${results.length} modifications`);
+
+        if (results.length > 0) {
+          const modifiedBuffer = await epubModifier.saveEPUB(zip);
+          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        }
 
         let tasksAutoCompleted = 0;
         try {
           const plan = await remediationService.getRemediationPlan(jobId);
 
-          if (plan?.tasks) {
-            const allTaskCodes = plan.tasks.map((t: any) => ({ id: t.id, code: t.code, status: t.status }));
-            console.log('All tasks in plan:', JSON.stringify(allTaskCodes, null, 2));
+          if (plan?.tasks && Array.isArray(plan.tasks)) {
+            console.log('=== ALL TASKS IN PLAN ===');
+            plan.tasks.forEach((t: any) => {
+              console.log(`  ${t.id}: code="${t.code}" status="${t.status}"`);
+            });
 
             const relatedTasks = plan.tasks.filter((t: any) => {
-              const code = (t.code || '').toUpperCase();
-              const isEpubTypeIssue =
-                code === 'EPUB-TYPE-HAS-MATCHING-ROLE' ||
-                code.includes('EPUB-TYPE') ||
-                code.includes('MATCHING-ROLE') ||
-                code.includes('EPUB_TYPE') ||
-                code.includes('SEM-003');
+              if (t.status === 'completed') return false;
 
-              const notCompleted = t.status !== 'completed';
-
-              console.log(`Task ${t.id}: code="${t.code}", isEpubType=${isEpubTypeIssue}, status=${t.status}`);
-
-              return isEpubTypeIssue && notCompleted;
+              const code = String(t.code || '').toUpperCase();
+              return code.includes('EPUB-TYPE') ||
+                     code.includes('EPUB_TYPE') ||
+                     code.includes('MATCHING-ROLE') ||
+                     code.includes('MATCHING_ROLE') ||
+                     code === 'EPUB-SEM-003';
             });
 
             console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
@@ -1343,27 +1345,18 @@ export const epubController = {
                   jobId,
                   task.id,
                   'completed',
-                  `Auto-fixed: Added ARIA roles to ${results.length} epub:type elements`,
+                  `Auto-completed: ARIA roles added to all epub:type elements (${results.length} total)`,
                   req.user?.email || 'system'
                 );
                 tasksAutoCompleted++;
-                console.log(`✓ Auto-completed task: ${task.id} (${task.code})`);
-              } catch (taskErr) {
-                console.error(`✗ Failed to auto-complete task ${task.id}:`, taskErr);
+                console.log(`✓ Auto-completed: ${task.id}`);
+              } catch (err) {
+                console.error(`✗ Failed to auto-complete ${task.id}:`, err);
               }
             }
-          } else {
-            console.log('No tasks found in remediation plan');
           }
-        } catch (planErr) {
-          console.error('Failed to get remediation plan:', planErr);
-        }
-
-        console.log(`Total tasks auto-completed: ${tasksAutoCompleted}`);
-
-        if (results.length > 0) {
-          const modifiedBuffer = await epubModifier.saveEPUB(zip);
-          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        } catch (err) {
+          console.error('Auto-complete error:', err);
         }
 
         return res.json({
@@ -1372,9 +1365,7 @@ export const epubController = {
             results,
             modificationsCount: results.length,
             tasksAutoCompleted,
-            message: results.length > 0
-              ? `Applied ${results.length} role additions, auto-completed ${tasksAutoCompleted} tasks`
-              : `No new modifications (already fixed), auto-completed ${tasksAutoCompleted} tasks`,
+            message: `Applied ${results.length} fixes, auto-completed ${tasksAutoCompleted} tasks`,
             downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
           },
         });

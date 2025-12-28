@@ -1,0 +1,81 @@
+ Prompt 45: Backend - Auto-Complete ALL Related epub:type Tasks (Option A)
+
+  File: src/controllers/epub.controller.ts
+
+  In the epub:type case block, after successful fix, add this auto-complete logic:
+
+  case 'EPUB-SEM-003':
+  case 'EPUB-TYPE-HAS-MATCHING-ROLE': {
+    // ... existing fix logic ...
+
+    results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+    console.log(`Fix applied: ${results.length} modifications`);
+
+    // Save the modified EPUB first
+    const modifiedBuffer = await epubModifier.saveEPUB(zip);
+    await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+    // Auto-complete ALL related tasks
+    let tasksAutoCompleted = 0;
+    try {
+      const plan = await remediationService.getRemediationPlan(jobId);
+
+      if (plan?.tasks && Array.isArray(plan.tasks)) {
+        // Debug: Log all task codes
+        console.log('=== ALL TASKS IN PLAN ===');
+        plan.tasks.forEach((t: any) => {
+          console.log(`  ${t.id}: code="${t.code}" status="${t.status}"`);
+        });
+
+        // Find ALL epub:type related tasks (flexible matching)
+        const relatedTasks = plan.tasks.filter((t: any) => {
+          if (t.status === 'completed') return false;
+
+          const code = String(t.code || '').toUpperCase();
+          return code.includes('EPUB-TYPE') ||
+                 code.includes('EPUB_TYPE') ||
+                 code.includes('MATCHING-ROLE') ||
+                 code.includes('MATCHING_ROLE') ||
+                 code === 'EPUB-SEM-003';
+        });
+
+        console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
+
+        for (const task of relatedTasks) {
+          try {
+            await remediationService.updateTaskStatus(
+              jobId,
+              task.id,
+              'completed',
+              `Auto-completed: ARIA roles added to all epub:type elements (${results.length} total)`,
+              req.user?.email || 'system'
+            );
+            tasksAutoCompleted++;
+            console.log(`✓ Auto-completed: ${task.id}`);
+          } catch (err) {
+            console.error(`✗ Failed to auto-complete ${task.id}:`, err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Auto-complete error:', err);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        results,
+        modificationsCount: results.length,
+        tasksAutoCompleted,
+        message: `Applied ${results.length} fixes, auto-completed ${tasksAutoCompleted} tasks`,
+        downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+      },
+    });
+  }
+
+  ---
+  Key points:
+  1. Logs ALL task codes so we can see what they actually are
+  2. Uses flexible matching (includes instead of exact match)
+  3. Marks ALL matching tasks as complete in one request
+  4. Returns count of tasks auto-completed
