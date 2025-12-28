@@ -1,0 +1,105 @@
+ Replit Prompt: Fix addAriaRolesToEpubTypes Duplicate Role Bug
+
+  File: src/services/epub/epub-modifier.service.ts
+
+  Find the addAriaRolesToEpubTypes method (around line 770) and replace it with this fixed version that checks for role anywhere in the tag:
+
+    async addAriaRolesToEpubTypes(
+      zip: JSZip,
+      epubTypesToFix: Array<{ epubType: string; role: string }>
+    ): Promise<ModificationResult[]> {
+      console.log('=== addAriaRolesToEpubTypes START ===');
+      const results: ModificationResult[] = [];
+
+      const validRoleMapping: Record<string, string> = {
+        'chapter': 'doc-chapter',
+        'part': 'doc-part',
+        'toc': 'doc-toc',
+        'nav': 'navigation',
+        'landmarks': 'navigation',
+        'frontmatter': 'doc-prologue',
+        'bodymatter': 'main',
+        'backmatter': 'doc-epilogue',
+        'titlepage': 'region',
+        'dedication': 'doc-dedication',
+        'epigraph': 'doc-epigraph',
+        'foreword': 'doc-foreword',
+        'preface': 'doc-preface',
+        'introduction': 'doc-introduction',
+        'prologue': 'doc-prologue',
+        'epilogue': 'doc-epilogue',
+        'afterword': 'doc-afterword',
+        'appendix': 'doc-appendix',
+        'glossary': 'doc-glossary',
+        'bibliography': 'doc-bibliography',
+        'index': 'doc-index',
+        'colophon': 'doc-colophon',
+        'acknowledgments': 'doc-acknowledgments',
+        'noteref': 'doc-noteref',
+        'footnote': 'note',
+        'endnote': 'note',
+        'rearnote': 'note',
+        'rearnotes': 'doc-endnotes',
+        'footnotes': 'doc-endnotes',
+        'endnotes': 'doc-endnotes',
+      };
+
+      const xhtmlFiles = Object.keys(zip.files).filter(path =>
+        /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+      );
+
+      console.log(`Adding ARIA roles to ${epubTypesToFix.length} epub:types across ${xhtmlFiles.length} files`);
+
+      for (const filePath of xhtmlFiles) {
+        try {
+          let content = await zip.file(filePath)?.async('text');
+          if (!content) continue;
+
+          let fileModified = false;
+          const fileChanges: string[] = [];
+
+          for (const { epubType } of epubTypesToFix) {
+            const role = validRoleMapping[epubType.toLowerCase()] || 'region';
+
+            // Match elements with this epub:type
+            // Use a safer approach: find all opening tags with epub:type containing our value
+            const tagRegex = /<([a-zA-Z][a-zA-Z0-9]*)\s+([^>]*epub:type\s*=\s*["'][^"']*\b${epubType}\b[^"']*["'][^>]*)>/gi;
+
+            content = content.replace(tagRegex, (fullMatch, tagName, attributes) => {
+              // Check if this tag ALREADY has a role attribute (anywhere in the tag)
+              if (/\brole\s*=\s*["'][^"']*["']/i.test(fullMatch)) {
+                console.log(`Skipping - already has role: ${fullMatch.substring(0, 60)}...`);
+                return fullMatch; // Return unchanged
+              }
+
+              // Add role after the tag name
+              const newTag = `<${tagName} role="${role}" ${attributes}>`;
+              fileChanges.push(`Added role="${role}" to <${tagName}> with epub:type="${epubType}"`);
+              fileModified = true;
+              return newTag;
+            });
+          }
+
+          if (fileModified) {
+            zip.file(filePath, content);
+            console.log(`Modified: ${filePath} - ${fileChanges.length} changes`);
+
+            for (const change of fileChanges) {
+              results.push({
+                success: true,
+                filePath,
+                modificationType: 'add_role',
+                description: change,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`Error processing ${filePath}:`, err);
+        }
+      }
+
+      console.log(`Completed: ${results.filter(r => r.success).length} modifications`);
+      return results;
+    }
+
+  Key Fix: The check if (/\brole\s*=\s*["'][^"']*["']/i.test(fullMatch)) now tests the ENTIRE matched tag for an existing role attribute, not just what comes after epub:type.

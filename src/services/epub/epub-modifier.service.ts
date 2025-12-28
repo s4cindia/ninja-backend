@@ -1278,7 +1278,7 @@ class EPUBModifierService {
     zip: JSZip,
     epubTypesToFix: Array<{ epubType: string; role: string }>
   ): Promise<ModificationResult[]> {
-    console.log('=== addAriaRolesToEpubTypes START (using regex, NOT cheerio) ===');
+    console.log('=== addAriaRolesToEpubTypes START ===');
     const results: ModificationResult[] = [];
 
     const validRoleMapping: Record<string, string> = {
@@ -1326,37 +1326,42 @@ class EPUBModifierService {
         if (!content) continue;
 
         let fileModified = false;
-        const originalContent = content;
+        const fileChanges: string[] = [];
 
         for (const { epubType } of epubTypesToFix) {
           const role = validRoleMapping[epubType.toLowerCase()] || 'region';
 
-          const patterns = [
-            new RegExp(`(epub:type=["'])${epubType}(["'])(?![^>]*\\brole=)`, 'g'),
-            new RegExp(`(epub:type=["'][^"']*\\b)${epubType}(\\b[^"']*["'])(?![^>]*\\brole=)`, 'g'),
-          ];
+          // Match elements with this epub:type
+          // Use a safer approach: find all opening tags with epub:type containing our value
+          const tagRegex = new RegExp(`<([a-zA-Z][a-zA-Z0-9]*)\\s+([^>]*epub:type\\s*=\\s*["'][^"']*\\b${epubType}\\b[^"']*["'][^>]*)>`, 'gi');
 
-          for (const pattern of patterns) {
-            const matches = content.match(pattern);
-            if (matches && matches.length > 0) {
-              content = content.replace(pattern, `$1${epubType}$2 role="${role}"`);
-
-              if (content !== originalContent) {
-                fileModified = true;
-                results.push({
-                  success: true,
-                  filePath,
-                  modificationType: 'add_role',
-                  description: `Added role="${role}" to epub:type="${epubType}"`,
-                });
-              }
+          content = content.replace(tagRegex, (fullMatch, tagName, attributes) => {
+            // Check if this tag ALREADY has a role attribute (anywhere in the tag)
+            if (/\brole\s*=\s*["'][^"']*["']/i.test(fullMatch)) {
+              console.log(`Skipping - already has role: ${fullMatch.substring(0, 60)}...`);
+              return fullMatch; // Return unchanged
             }
-          }
+
+            // Add role after the tag name
+            const newTag = `<${tagName} role="${role}" ${attributes}>`;
+            fileChanges.push(`Added role="${role}" to <${tagName}> with epub:type="${epubType}"`);
+            fileModified = true;
+            return newTag;
+          });
         }
 
         if (fileModified) {
           zip.file(filePath, content);
-          console.log(`Modified: ${filePath}`);
+          console.log(`Modified: ${filePath} - ${fileChanges.length} changes`);
+
+          for (const change of fileChanges) {
+            results.push({
+              success: true,
+              filePath,
+              modificationType: 'add_role',
+              description: change,
+            });
+          }
         }
       } catch (err) {
         console.error(`Error processing ${filePath}:`, err);
