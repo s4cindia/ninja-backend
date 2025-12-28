@@ -1010,6 +1010,106 @@ class EPUBModifierService {
     return results;
   }
 
+  async addNavAriaLabels(
+    zip: JSZip,
+    labels: { toc?: string; landmarks?: string; pageList?: string }
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+
+    // Find nav files
+    const navFiles = Object.keys(zip.files).filter(path =>
+      /\.(xhtml|html|htm)$/i.test(path) &&
+      !zip.files[path].dir &&
+      (path.toLowerCase().includes('nav') || path.toLowerCase().endsWith('nav.xhtml') || path.toLowerCase().endsWith('nav.html'))
+    );
+
+    if (navFiles.length === 0) {
+      results.push({
+        success: true,
+        filePath: 'all',
+        modificationType: 'add_nav_aria_labels',
+        description: 'No navigation files found',
+      });
+      return results;
+    }
+
+    const escapeXml = (str: string): string => {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    };
+
+    for (const filePath of navFiles) {
+      try {
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        const changes: string[] = [];
+
+        // Process each nav type
+        const navTypes = [
+          { type: 'toc', label: labels.toc, displayName: 'Table of Contents' },
+          { type: 'landmarks', label: labels.landmarks, displayName: 'Landmarks' },
+          { type: 'page-list', label: labels.pageList, displayName: 'Page List' },
+        ];
+
+        for (const { type, label, displayName } of navTypes) {
+          if (!label) continue;
+
+          // Regex to match nav elements with epub:type containing this type
+          // Handles any attribute order and additional attributes
+          const pattern = new RegExp(
+            `(<nav\\s+)([^>]*epub:type\\s*=\\s*["'][^"']*\\b${type}\\b[^"']*["'][^>]*)(>)`,
+            'gi'
+          );
+
+          content = content.replace(pattern, (match, start, attrs, end) => {
+            // Skip if already has aria-label
+            if (/aria-label\s*=/i.test(attrs)) {
+              return match;
+            }
+
+            modified = true;
+            changes.push(`Added aria-label="${escapeXml(label)}" to ${displayName} nav`);
+            return `${start}${attrs} aria-label="${escapeXml(label)}"${end}`;
+          });
+        }
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_nav_aria_labels',
+            description: changes.join('; '),
+          });
+        }
+      } catch (err) {
+        results.push({
+          success: false,
+          filePath,
+          modificationType: 'add_nav_aria_labels',
+          description: `Error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        });
+      }
+    }
+
+    if (results.length === 0) {
+      results.push({
+        success: true,
+        filePath: 'all',
+        modificationType: 'add_nav_aria_labels',
+        description: 'No nav elements needed aria-label updates',
+      });
+    }
+
+    return results;
+  }
+
   async applyQuickFix(
     zip: JSZip,
     changes: FileChange[],
