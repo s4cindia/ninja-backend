@@ -1314,12 +1314,28 @@ export const epubController = {
         let tasksAutoCompleted = 0;
         try {
           const plan = await remediationService.getRemediationPlan(jobId);
-          if (plan?.tasks) {
-            const relatedTasks = plan.tasks.filter(
-              (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
-            );
 
-            console.log(`Auto-completing ${relatedTasks.length} EPUB-TYPE-HAS-MATCHING-ROLE tasks`);
+          if (plan?.tasks) {
+            const allTaskCodes = plan.tasks.map((t: any) => ({ id: t.id, code: t.code, status: t.status }));
+            console.log('All tasks in plan:', JSON.stringify(allTaskCodes, null, 2));
+
+            const relatedTasks = plan.tasks.filter((t: any) => {
+              const code = (t.code || '').toUpperCase();
+              const isEpubTypeIssue =
+                code === 'EPUB-TYPE-HAS-MATCHING-ROLE' ||
+                code.includes('EPUB-TYPE') ||
+                code.includes('MATCHING-ROLE') ||
+                code.includes('EPUB_TYPE') ||
+                code.includes('SEM-003');
+
+              const notCompleted = t.status !== 'completed';
+
+              console.log(`Task ${t.id}: code="${t.code}", isEpubType=${isEpubTypeIssue}, status=${t.status}`);
+
+              return isEpubTypeIssue && notCompleted;
+            });
+
+            console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
 
             for (const task of relatedTasks) {
               try {
@@ -1327,19 +1343,23 @@ export const epubController = {
                   jobId,
                   task.id,
                   'completed',
-                  `Auto-fixed: ARIA roles added to all epub:type elements`,
+                  `Auto-fixed: Added ARIA roles to ${results.length} epub:type elements`,
                   req.user?.email || 'system'
                 );
                 tasksAutoCompleted++;
-                console.log(`Auto-completed task: ${task.id}`);
+                console.log(`✓ Auto-completed task: ${task.id} (${task.code})`);
               } catch (taskErr) {
-                console.error(`Failed to auto-complete task ${task.id}:`, taskErr);
+                console.error(`✗ Failed to auto-complete task ${task.id}:`, taskErr);
               }
             }
+          } else {
+            console.log('No tasks found in remediation plan');
           }
         } catch (planErr) {
-          console.error('Failed to get remediation plan for auto-complete:', planErr);
+          console.error('Failed to get remediation plan:', planErr);
         }
+
+        console.log(`Total tasks auto-completed: ${tasksAutoCompleted}`);
 
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
