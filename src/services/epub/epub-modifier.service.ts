@@ -713,78 +713,76 @@ class EPUBModifierService {
     for (const filePath of files) {
       if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
 
-      const content = await zip.file(filePath)?.async('text');
+      let content = await zip.file(filePath)?.async('text');
       if (!content) continue;
 
-      const $ = cheerio.load(content, { xmlMode: true });
       let modified = false;
-      const changes: string[] = [];
+      const originalContent = content;
 
-      const $body = $('body');
-      if ($body.length && !$body.find('[role="main"]').length) {
-        const $main = $('main');
-        if ($main.length) {
-          if (!$main.attr('role')) {
-            $main.attr('role', 'main');
-            changes.push('Added role="main" to <main>');
-            modified = true;
-          }
-        } else {
-          const $firstSection = $body.children('div, section, article').first();
-          if ($firstSection.length && !$firstSection.attr('role')) {
-            $firstSection.attr('role', 'main');
-            changes.push('Added role="main" to first content section');
-            modified = true;
-          }
+      const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
+      const hasMainElement = /<main[\s>]/i.test(content);
+
+      if (!hasMainRole && !hasMainElement) {
+        const sectionPattern = /(<(?:section|article)(?=[^>]*>)(?![^>]*role=))([^>]*>)/i;
+
+        if (sectionPattern.test(content)) {
+          content = content.replace(sectionPattern, '$1 role="main"$2');
+          modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="main" to first section/article element',
+          });
         }
       }
 
-      $('nav').each((_, el) => {
-        const $el = $(el);
-        if (!$el.attr('role')) {
-          $el.attr('role', 'navigation');
-          changes.push('Added role="navigation" to <nav>');
+      const navPattern = /(<nav)(?![^>]*role=)([^>]*>)/gi;
+      if (navPattern.test(content)) {
+        content = content.replace(/(<nav)(?![^>]*role=)([^>]*>)/gi, '$1 role="navigation"$2');
+        if (content !== originalContent) {
           modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="navigation" to nav elements',
+          });
         }
-      });
+      }
 
-      $('footer').each((_, el) => {
-        const $el = $(el);
-        if (!$el.attr('role')) {
-          $el.attr('role', 'contentinfo');
-          changes.push('Added role="contentinfo" to <footer>');
+      const headerPattern = /(<header)(?![^>]*role=)([^>]*>)/i;
+      if (headerPattern.test(content) && !content.includes('role="banner"')) {
+        content = content.replace(headerPattern, '$1 role="banner"$2');
+        if (content !== originalContent) {
           modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="banner" to header element',
+          });
         }
-      });
+      }
 
-      $('header').first().each((_, el) => {
-        const $el = $(el);
-        if (!$el.attr('role')) {
-          $el.attr('role', 'banner');
-          changes.push('Added role="banner" to <header>');
+      const footerPattern = /(<footer)(?![^>]*role=)([^>]*>)/i;
+      if (footerPattern.test(content) && !content.includes('role="contentinfo"')) {
+        content = content.replace(footerPattern, '$1 role="contentinfo"$2');
+        if (content !== originalContent) {
           modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="contentinfo" to footer element',
+          });
         }
-      });
+      }
 
       if (modified) {
-        zip.file(filePath, $.html());
-        results.push({
-          success: true,
-          filePath,
-          modificationType: 'add_aria_landmarks',
-          description: `Added ${changes.length} ARIA landmark(s)`,
-          after: changes.join('\n'),
-        });
+        zip.file(filePath, content);
+        console.log(`addAriaLandmarks modified: ${filePath}`);
       }
-    }
-
-    if (results.length === 0) {
-      results.push({
-        success: true,
-        filePath: 'all',
-        modificationType: 'add_aria_landmarks',
-        description: 'ARIA landmarks already present or not applicable',
-      });
     }
 
     return results;

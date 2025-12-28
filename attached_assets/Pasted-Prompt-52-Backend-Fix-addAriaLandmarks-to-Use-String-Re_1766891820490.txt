@@ -1,0 +1,94 @@
+Prompt 52: Backend - Fix addAriaLandmarks to Use String Replacement
+
+  File: src/services/epub/epub-modifier.service.ts
+
+  Replace the addAriaLandmarks method with this version that uses regex instead of cheerio:
+
+  async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const files = Object.keys(zip.files);
+
+    for (const filePath of files) {
+      if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+      let content = await zip.file(filePath)?.async('text');
+      if (!content) continue;
+
+      let modified = false;
+      const originalContent = content;
+
+      // Add role="main" to <main> or first <body> > <section> or <article>
+      // Only if no main landmark exists
+      const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
+      const hasMainElement = /<main[\s>]/i.test(content);
+
+      if (!hasMainRole && !hasMainElement) {
+        // Try to add role="main" to the first section or article in body
+        // Pattern: Find <section or <article that doesn't have a role
+        const sectionPattern = /(<(?:section|article)(?=[^>]*>)(?![^>]*role=))([^>]*>)/i;
+
+        if (sectionPattern.test(content)) {
+          content = content.replace(sectionPattern, '$1 role="main"$2');
+          modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="main" to first section/article element',
+          });
+        }
+      }
+
+      // Add role="navigation" to <nav> elements that don't have it
+      const navPattern = /(<nav)(?![^>]*role=)([^>]*>)/gi;
+      if (navPattern.test(content)) {
+        content = content.replace(/(<nav)(?![^>]*role=)([^>]*>)/gi, '$1 role="navigation"$2');
+        if (content !== originalContent) {
+          modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="navigation" to nav elements',
+          });
+        }
+      }
+
+      // Add role="banner" to <header> if it's a direct child of body (simplified check)
+      const headerPattern = /(<header)(?![^>]*role=)([^>]*>)/i;
+      if (headerPattern.test(content) && !content.includes('role="banner"')) {
+        content = content.replace(headerPattern, '$1 role="banner"$2');
+        if (content !== originalContent) {
+          modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="banner" to header element',
+          });
+        }
+      }
+
+      // Add role="contentinfo" to <footer> if it's a direct child of body
+      const footerPattern = /(<footer)(?![^>]*role=)([^>]*>)/i;
+      if (footerPattern.test(content) && !content.includes('role="contentinfo"')) {
+        content = content.replace(footerPattern, '$1 role="contentinfo"$2');
+        if (content !== originalContent) {
+          modified = true;
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_landmark',
+            description: 'Added role="contentinfo" to footer element',
+          });
+        }
+      }
+
+      if (modified) {
+        zip.file(filePath, content);
+        console.log(`addAriaLandmarks modified: ${filePath}`);
+      }
+    }
+
+    return results;
+  }
