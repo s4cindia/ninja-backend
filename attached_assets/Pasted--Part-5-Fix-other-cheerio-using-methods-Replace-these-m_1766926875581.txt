@@ -1,0 +1,155 @@
+ Part 5: Fix other cheerio-using methods
+
+  Replace these methods to use regex instead of cheerio to prevent XHTML corruption:
+
+  addDecorativeAltAttributes (replace entire method):
+
+    async addDecorativeAltAttributes(zip: JSZip): Promise<ModificationResult[]> {
+      const results: ModificationResult[] = [];
+      const files = Object.keys(zip.files);
+
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        let count = 0;
+        const markedImages: string[] = [];
+
+        // Find img tags without alt attribute
+        const imgPattern = /<img(\s[^>]*)?\s*\/?>/gi;
+
+        content = content.replace(imgPattern, (fullMatch, attrs) => {
+          attrs = attrs || '';
+
+          // Check if already has alt attribute
+          if (/\balt\s*=/i.test(attrs)) {
+            return fullMatch; // Already has alt
+          }
+
+          // Extract src for logging
+          const srcMatch = attrs.match(/src\s*=\s*["']([^"']+)["']/i);
+          const src = srcMatch ? srcMatch[1] : 'unknown';
+          markedImages.push(src);
+
+          // Add alt="" and role="presentation"
+          modified = true;
+          count++;
+
+          // Insert attributes after <img
+          if (fullMatch.endsWith('/>')) {
+            return `<img alt="" role="presentation"${attrs} />`;
+          } else {
+            return `<img alt="" role="presentation"${attrs}>`;
+          }
+        });
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_decorative_alt',
+            description: `Marked ${count} image(s) as decorative with alt="" - REVIEW RECOMMENDED`,
+            after: `Images marked: ${markedImages.slice(0, 5).join(', ')}${markedImages.length > 5 ? '...' : ''}`,
+          });
+
+          logger.warn(`Marked ${count} images as decorative in ${filePath}. Manual review recommended.`);
+        }
+      }
+
+      if (results.length === 0) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'add_decorative_alt',
+          description: 'All images already have alt attributes',
+        });
+      }
+
+      return results;
+    }
+
+  fixEmptyLinks (replace entire method):
+
+    async fixEmptyLinks(zip: JSZip): Promise<ModificationResult[]> {
+      const results: ModificationResult[] = [];
+      const files = Object.keys(zip.files);
+
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        const changes: string[] = [];
+
+        // Find anchor tags
+        const linkPattern = /<a(\s[^>]*)>([^<]*)<\/a>/gi;
+
+        content = content.replace(linkPattern, (fullMatch, attrs, innerText) => {
+          attrs = attrs || '';
+          const text = innerText.trim();
+
+          // Check if link has text content
+          if (text.length > 0) {
+            return fullMatch; // Has text, skip
+          }
+
+          // Check if has aria-label already
+          if (/aria-label\s*=/i.test(attrs)) {
+            return fullMatch; // Already has label
+          }
+
+          // Check if contains an image with alt
+          // (This simple regex won't catch this - would need more complex parsing)
+
+          // Extract href for generating label
+          const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+          if (!hrefMatch) {
+            return fullMatch; // No href, skip
+          }
+
+          const href = hrefMatch[1];
+          let label = '';
+
+          if (href.startsWith('#')) {
+            label = `Jump to ${href.substring(1).replace(/[-_]/g, ' ')}`;
+          } else if (href.match(/\.(html|xhtml|htm)$/i)) {
+            label = href.split('/').pop()?.replace(/\.(html|xhtml|htm)$/i, '').replace(/[-_]/g, ' ') || 'Link';
+          } else {
+            label = 'Link';
+          }
+
+          changes.push(`Added aria-label="${label}" to empty link`);
+          modified = true;
+
+          return `<a${attrs} aria-label="${label}">${innerText}</a>`;
+        });
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'fix_empty_links',
+            description: `Fixed ${changes.length} empty link(s)`,
+            after: changes.join('\n'),
+          });
+        }
+      }
+
+      if (results.length === 0) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'fix_empty_links',
+          description: 'No empty links found',
+        });
+      }
+
+      return results;
+    }

@@ -484,29 +484,43 @@ class EPUBModifierService {
     for (const filePath of files) {
       if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
 
-      const content = await zip.file(filePath)?.async('text');
+      let content = await zip.file(filePath)?.async('text');
       if (!content) continue;
 
-      const $ = cheerio.load(content, { xmlMode: true });
       let modified = false;
       let count = 0;
       const markedImages: string[] = [];
 
-      $('img').each((_, el) => {
-        const $el = $(el);
-        const altAttr = $el.attr('alt');
-        if (altAttr === undefined) {
-          const src = $el.attr('src') || 'unknown';
-          markedImages.push(src);
-          $el.attr('alt', '');
-          $el.attr('role', 'presentation');
-          modified = true;
-          count++;
+      // Find img tags without alt attribute
+      const imgPattern = /<img(\s[^>]*)?\s*\/?>/gi;
+
+      content = content.replace(imgPattern, (fullMatch, attrs) => {
+        attrs = attrs || '';
+
+        // Check if already has alt attribute
+        if (/\balt\s*=/i.test(attrs)) {
+          return fullMatch; // Already has alt
+        }
+
+        // Extract src for logging
+        const srcMatch = attrs.match(/src\s*=\s*["']([^"']+)["']/i);
+        const src = srcMatch ? srcMatch[1] : 'unknown';
+        markedImages.push(src);
+
+        // Add alt="" and role="presentation"
+        modified = true;
+        count++;
+
+        // Insert attributes after <img
+        if (fullMatch.endsWith('/>')) {
+          return `<img alt="" role="presentation"${attrs} />`;
+        } else {
+          return `<img alt="" role="presentation"${attrs}>`;
         }
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, content);
         results.push({
           success: true,
           filePath,
@@ -515,7 +529,7 @@ class EPUBModifierService {
           after: `Images marked: ${markedImages.slice(0, 5).join(', ')}${markedImages.length > 5 ? '...' : ''}`,
         });
 
-        logger.warn(`Marked ${count} images as decorative in ${filePath}. Manual review recommended to ensure these are not informative images.`);
+        logger.warn(`Marked ${count} images as decorative in ${filePath}. Manual review recommended.`);
       }
     }
 
@@ -862,41 +876,54 @@ class EPUBModifierService {
     for (const filePath of files) {
       if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
 
-      const content = await zip.file(filePath)?.async('text');
+      let content = await zip.file(filePath)?.async('text');
       if (!content) continue;
 
-      const $ = cheerio.load(content, { xmlMode: true });
       let modified = false;
       const changes: string[] = [];
 
-      $('a').each((_, el) => {
-        const $el = $(el);
-        const text = $el.text().trim();
-        const hasImage = $el.find('img[alt]').length > 0;
-        const hasAriaLabel = $el.attr('aria-label');
-        
-        if (!text && !hasImage && !hasAriaLabel) {
-          const href = $el.attr('href') || '';
-          
-          if (href) {
-            let label = '';
-            if (href.startsWith('#')) {
-              label = `Jump to ${href.substring(1).replace(/[-_]/g, ' ')}`;
-            } else if (href.match(/\.(html|xhtml|htm)$/i)) {
-              label = href.split('/').pop()?.replace(/\.(html|xhtml|htm)$/i, '').replace(/[-_]/g, ' ') || 'Link';
-            } else {
-              label = 'Link';
-            }
-            
-            $el.attr('aria-label', label);
-            changes.push(`Added aria-label="${label}" to empty link`);
-            modified = true;
-          }
+      // Find anchor tags
+      const linkPattern = /<a(\s[^>]*)>([^<]*)<\/a>/gi;
+
+      content = content.replace(linkPattern, (fullMatch, attrs, innerText) => {
+        attrs = attrs || '';
+        const text = innerText.trim();
+
+        // Check if link has text content
+        if (text.length > 0) {
+          return fullMatch; // Has text, skip
         }
+
+        // Check if has aria-label already
+        if (/aria-label\s*=/i.test(attrs)) {
+          return fullMatch; // Already has label
+        }
+
+        // Extract href for generating label
+        const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
+        if (!hrefMatch) {
+          return fullMatch; // No href, skip
+        }
+
+        const href = hrefMatch[1];
+        let label = '';
+
+        if (href.startsWith('#')) {
+          label = `Jump to ${href.substring(1).replace(/[-_]/g, ' ')}`;
+        } else if (href.match(/\.(html|xhtml|htm)$/i)) {
+          label = href.split('/').pop()?.replace(/\.(html|xhtml|htm)$/i, '').replace(/[-_]/g, ' ') || 'Link';
+        } else {
+          label = 'Link';
+        }
+
+        changes.push(`Added aria-label="${label}" to empty link`);
+        modified = true;
+
+        return `<a${attrs} aria-label="${label}">${innerText}</a>`;
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, content);
         results.push({
           success: true,
           filePath,
