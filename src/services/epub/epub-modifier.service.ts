@@ -719,75 +719,113 @@ class EPUBModifierService {
       let modified = false;
       const changes: string[] = [];
 
+      // Helper function to add role to a tag if it doesn't already have one
+      const addRoleToTag = (
+        tagContent: string,
+        tagName: string,
+        roleName: string,
+      ): { content: string; changed: boolean } => {
+        const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
+        const match = tagContent.match(tagRegex);
+
+        if (!match) {
+          return { content: tagContent, changed: false };
+        }
+
+        const fullTag = match[0];
+
+        // Check if role attribute already exists anywhere in the tag
+        if (/\brole\s*=\s*["'][^"']*["']/i.test(fullTag)) {
+          return { content: tagContent, changed: false };
+        }
+
+        // Add role attribute after the tag name
+        const newTag = fullTag.replace(
+          new RegExp(`<${tagName}`, 'i'),
+          `<${tagName} role="${roleName}"`
+        );
+
+        return {
+          content: tagContent.replace(fullTag, newTag),
+          changed: true
+        };
+      };
+
+      // Check if role="main" already exists anywhere in the document
       const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
 
       if (!hasMainRole) {
-        const mainMatch = content.match(/<main(\s[^>]*)?\s*>/i);
-        if (mainMatch) {
-          const fullTag = mainMatch[0];
-          const attrs = mainMatch[1] || '';
-          if (!/\brole\s*=/i.test(attrs)) {
-            const newTag = fullTag.replace(/<main/i, '<main role="main"');
-            content = content.replace(fullTag, newTag);
+        // Try to add role="main" to <main> element first
+        if (/<main[\s>]/i.test(content)) {
+          const result = addRoleToTag(content, 'main', 'main');
+          if (result.changed) {
+            content = result.content;
             changes.push('Added role="main" to <main>');
             modified = true;
           }
         } else {
+          // No <main> element, try first section inside body
           const bodyMatch = content.match(/<body[^>]*>([\s\S]*)<\/body>/i);
           if (bodyMatch) {
-            const bodyContent = bodyMatch[1];
-            const sectionMatch = bodyContent.match(/<(section|div|article)(\s[^>]*)?\s*>/i);
-            if (sectionMatch) {
-              const fullTag = sectionMatch[0];
-              const tagName = sectionMatch[1];
-              const attrs = sectionMatch[2] || '';
-              if (!/\brole\s*=/i.test(attrs)) {
-                const newTag = fullTag.replace(new RegExp(`<${tagName}`, 'i'), `<${tagName} role="main"`);
-                content = content.replace(fullTag, newTag);
-                changes.push(`Added role="main" to first <${tagName}>`);
-                modified = true;
+            // Try section first, then div, then article
+            for (const tagName of ['section', 'div', 'article']) {
+              const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
+              if (tagRegex.test(content)) {
+                const result = addRoleToTag(content, tagName, 'main');
+                if (result.changed) {
+                  content = result.content;
+                  changes.push(`Added role="main" to first <${tagName}>`);
+                  modified = true;
+                  break;
+                }
               }
             }
           }
         }
       }
 
-      const navRegex = /<nav(\s[^>]*)?\s*>/gi;
-      let navMatch;
-      while ((navMatch = navRegex.exec(content)) !== null) {
-        const fullTag = navMatch[0];
-        const attrs = navMatch[1] || '';
-        if (!/\brole\s*=/i.test(attrs)) {
-          const newTag = fullTag.replace(/<nav/i, '<nav role="navigation"');
-          content = content.replace(fullTag, newTag);
+      // Add role="navigation" to <nav> elements without role
+      // Use replace with a callback function to handle all occurrences safely
+      if (/<nav[\s>]/i.test(content)) {
+        const navRegex = /<nav(\s[^>]*)?\s*>/gi;
+        content = content.replace(navRegex, (match) => {
+          // Check if this tag already has a role
+          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+            return match; // Return unchanged
+          }
           changes.push('Added role="navigation" to <nav>');
           modified = true;
-        }
+          return match.replace(/<nav/i, '<nav role="navigation"');
+        });
       }
 
-      const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
-      let footerMatch;
-      while ((footerMatch = footerRegex.exec(content)) !== null) {
-        const fullTag = footerMatch[0];
-        const attrs = footerMatch[1] || '';
-        if (!/\brole\s*=/i.test(attrs)) {
-          const newTag = fullTag.replace(/<footer/i, '<footer role="contentinfo"');
-          content = content.replace(fullTag, newTag);
+      // Add role="contentinfo" to <footer> elements without role
+      if (/<footer[\s>]/i.test(content)) {
+        const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
+        content = content.replace(footerRegex, (match) => {
+          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+            return match;
+          }
           changes.push('Added role="contentinfo" to <footer>');
           modified = true;
-        }
+          return match.replace(/<footer/i, '<footer role="contentinfo"');
+        });
       }
 
-      const headerMatch = content.match(/<header(\s[^>]*)?\s*>/i);
-      if (headerMatch) {
-        const fullTag = headerMatch[0];
-        const attrs = headerMatch[1] || '';
-        if (!/\brole\s*=/i.test(attrs)) {
-          const newTag = fullTag.replace(/<header/i, '<header role="banner"');
-          content = content.replace(fullTag, newTag);
+      // Add role="banner" to first <header> element without role
+      if (/<header[\s>]/i.test(content)) {
+        let headerFixed = false;
+        const headerRegex = /<header(\s[^>]*)?\s*>/gi;
+        content = content.replace(headerRegex, (match) => {
+          if (headerFixed) return match; // Only fix first header
+          if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+            return match;
+          }
+          headerFixed = true;
           changes.push('Added role="banner" to <header>');
           modified = true;
-        }
+          return match.replace(/<header/i, '<header role="banner"');
+        });
       }
 
       if (modified) {

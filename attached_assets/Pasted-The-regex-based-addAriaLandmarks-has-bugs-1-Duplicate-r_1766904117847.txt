@@ -1,0 +1,175 @@
+The regex-based addAriaLandmarks has bugs:
+
+  1. Duplicate role attribute - The regex is adding role to elements that already have one
+  2. Malformed nav tag - The while loop with exec() breaks when the string is modified mid-loop
+
+  Here's the corrected Replit prompt:
+
+  ---
+  Replit Prompt: Fix addAriaLandmarks Regex Bugs
+
+  Problem: The regex-based addAriaLandmarks is causing:
+  - Duplicate role attributes on sections
+  - Malformed <nav> tags
+
+  Fix: Replace the addAriaLandmarks method in src/services/epub/epub-modifier.service.ts
+
+  Replace the entire method (lines 493-608 approximately) with this corrected version:
+
+    async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+      const results: ModificationResult[] = [];
+      const files = Object.keys(zip.files);
+
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        const changes: string[] = [];
+
+        // Helper function to add role to a tag if it doesn't already have one
+        const addRoleToTag = (
+          tagContent: string,
+          tagName: string,
+          roleName: string,
+          description: string
+        ): { content: string; changed: boolean } => {
+          // Match the opening tag with optional attributes
+          const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
+          const match = tagContent.match(tagRegex);
+
+          if (!match) {
+            return { content: tagContent, changed: false };
+          }
+
+          const fullTag = match[0];
+          const attrs = match[1] || '';
+
+          // Check if role attribute already exists anywhere in the tag
+          if (/\brole\s*=\s*["'][^"']*["']/i.test(fullTag)) {
+            return { content: tagContent, changed: false };
+          }
+
+          // Add role attribute after the tag name
+          const newTag = fullTag.replace(
+            new RegExp(`<${tagName}`, 'i'),
+            `<${tagName} role="${roleName}"`
+          );
+
+          return {
+            content: tagContent.replace(fullTag, newTag),
+            changed: true
+          };
+        };
+
+        // Check if role="main" already exists anywhere in the document
+        const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
+
+        if (!hasMainRole) {
+          // Try to add role="main" to <main> element first
+          if (/<main[\s>]/i.test(content)) {
+            const result = addRoleToTag(content, 'main', 'main', 'Added role="main" to <main>');
+            if (result.changed) {
+              content = result.content;
+              changes.push('Added role="main" to <main>');
+              modified = true;
+            }
+          } else {
+            // No <main> element, try first section inside body
+            const bodyMatch = content.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+            if (bodyMatch) {
+              // Try section first, then div, then article
+              for (const tagName of ['section', 'div', 'article']) {
+                const tagRegex = new RegExp(`<${tagName}(\\s[^>]*)?>`, 'i');
+                if (tagRegex.test(content)) {
+                  const result = addRoleToTag(content, tagName, 'main', `Added role="main" to <${tagName}>`);
+                  if (result.changed) {
+                    content = result.content;
+                    changes.push(`Added role="main" to first <${tagName}>`);
+                    modified = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Add role="navigation" to <nav> elements without role
+        // Use replaceAll with a function to handle all occurrences safely
+        if (/<nav[\s>]/i.test(content)) {
+          const navRegex = /<nav(\s[^>]*)?\s*>/gi;
+          content = content.replace(navRegex, (match, attrs) => {
+            // Check if this tag already has a role
+            if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+              return match; // Return unchanged
+            }
+            changes.push('Added role="navigation" to <nav>');
+            modified = true;
+            return match.replace(/<nav/i, '<nav role="navigation"');
+          });
+        }
+
+        // Add role="contentinfo" to <footer> elements without role
+        if (/<footer[\s>]/i.test(content)) {
+          const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
+          content = content.replace(footerRegex, (match, attrs) => {
+            if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+              return match;
+            }
+            changes.push('Added role="contentinfo" to <footer>');
+            modified = true;
+            return match.replace(/<footer/i, '<footer role="contentinfo"');
+          });
+        }
+
+        // Add role="banner" to first <header> element without role
+        if (/<header[\s>]/i.test(content)) {
+          let headerFixed = false;
+          const headerRegex = /<header(\s[^>]*)?\s*>/gi;
+          content = content.replace(headerRegex, (match, attrs) => {
+            if (headerFixed) return match; // Only fix first header
+            if (/\brole\s*=\s*["'][^"']*["']/i.test(match)) {
+              return match;
+            }
+            headerFixed = true;
+            changes.push('Added role="banner" to <header>');
+            modified = true;
+            return match.replace(/<header/i, '<header role="banner"');
+          });
+        }
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_aria_landmarks',
+            description: `Added ${changes.length} ARIA landmark(s)`,
+            after: changes.join('\n'),
+          });
+        }
+      }
+
+      if (results.length === 0) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'add_aria_landmarks',
+          description: 'ARIA landmarks already present or not applicable',
+        });
+      }
+
+      return results;
+    }
+
+  Key Fixes:
+  1. Uses String.replace() with a callback function instead of while loop with exec() - this safely handles all occurrences without index corruption
+  2. Checks for existing role attribute in the entire matched tag (/\brole\s*=\s*["'][^"']*["']/i.test(match)) not just the attributes portion
+  3. Helper function addRoleToTag for cleaner single-tag replacements
+
+  Note: The other two errors are unrelated:
+  - RSC-012 (Fragment identifier not defined) - Pre-existing NCX issue
+  - METADATA-ACCESSIBILITYHAZARD-INVALID - Needs valid hazard value like none, noFlashingHazard, etc.
