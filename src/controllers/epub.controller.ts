@@ -617,8 +617,15 @@ export const epubController = {
             'EPUB-META-003': 'Add accessibility summary',
             'EPUB-META-004': 'Add access mode metadata',
             'EPUB-SEM-001': 'Add lang attribute to HTML elements',
+            'EPUB-SEM-002': 'Fix empty links with aria-label',
+            'EPUB-SEM-003': 'Add ARIA roles to epub:type elements',
             'EPUB-IMG-001': 'Mark images without alt as decorative',
             'EPUB-STRUCT-002': 'Add headers to simple tables',
+            'EPUB-STRUCT-003': 'Fix heading hierarchy',
+            'EPUB-STRUCT-004': 'Add ARIA landmarks',
+            'EPUB-NAV-001': 'Add skip navigation links',
+            'EPUB-NAV-002': 'Add unique aria-labels to navigation landmarks',
+            'EPUB-FIG-001': 'Add figure/figcaption structure',
           },
         },
       });
@@ -790,6 +797,14 @@ export const epubController = {
               error: 'EPUB-SEM-003 requires options.changes array with epubType and role',
             });
           }
+          break;
+        case 'EPUB-NAV-002':
+          // Add aria-labels to nav landmarks (Quick Fix)
+          results = await epubModifier.addNavAriaLabels(zip, {
+            toc: options?.tocLabel,
+            landmarks: options?.landmarksLabel,
+            pageList: options?.pageListLabel,
+          });
           break;
         default:
           return res.status(400).json({
