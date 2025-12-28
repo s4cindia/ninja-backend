@@ -1307,9 +1307,23 @@ export const epubController = {
       }
 
       if (epubTypesToFix.length > 0) {
-        console.log('Using cross-file epub:type fix for:', epubTypesToFix);
+        console.log('=== Using EPUB-TYPE case - should use regex method ===');
+        console.log('epubTypesToFix:', epubTypesToFix);
+
+        const xhtmlFiles = Object.keys(zip.files).filter(p => /\.(xhtml|html|htm)$/i.test(p));
+        if (xhtmlFiles.length > 0) {
+          const beforeContent = await zip.file(xhtmlFiles[0])?.async('text');
+          console.log(`BEFORE - ${xhtmlFiles[0]} last 200 chars:`, beforeContent?.slice(-200));
+        }
+
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+        console.log('=== addAriaRolesToEpubTypes completed ===');
         console.log(`Fix applied: ${results.length} modifications`);
+
+        if (xhtmlFiles.length > 0) {
+          const afterContent = await zip.file(xhtmlFiles[0])?.async('text');
+          console.log(`AFTER - ${xhtmlFiles[0]} last 200 chars:`, afterContent?.slice(-200));
+        }
 
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);

@@ -1216,6 +1216,7 @@ class EPUBModifierService {
     zip: JSZip,
     epubTypesToFix: Array<{ epubType: string; role: string }>
   ): Promise<ModificationResult[]> {
+    console.log('=== addAriaRolesToEpubTypes START (using regex, NOT cheerio) ===');
     const results: ModificationResult[] = [];
 
     const validRoleMapping: Record<string, string> = {
