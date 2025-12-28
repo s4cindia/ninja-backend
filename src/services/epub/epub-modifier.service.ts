@@ -1398,12 +1398,7 @@ class EPUBModifierService {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
       'toc': 'doc-toc',
-      'nav': 'navigation',
       'landmarks': 'navigation',
-      'frontmatter': 'doc-prologue',
-      'bodymatter': 'main',
-      'backmatter': 'doc-epilogue',
-      'titlepage': 'region',
       'dedication': 'doc-dedication',
       'epigraph': 'doc-epigraph',
       'foreword': 'doc-foreword',
@@ -1418,58 +1413,32 @@ class EPUBModifierService {
       'index': 'doc-index',
       'colophon': 'doc-colophon',
       'acknowledgments': 'doc-acknowledgments',
-      'noteref': 'doc-noteref',
-      'footnote': 'note',
-      'endnote': 'note',
-      'rearnote': 'note',
-      'rearnotes': 'doc-endnotes',
-      'footnotes': 'doc-endnotes',
+      'footnote': 'doc-footnote',
+      'endnote': 'doc-endnote',
       'endnotes': 'doc-endnotes',
     };
 
-    const allFiles = Object.keys(zip.files);
-    console.log('All files in EPUB:', allFiles);
-
-    const xhtmlFiles = allFiles.filter(path =>
+    const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
     );
-    console.log('XHTML files to scan:', xhtmlFiles);
 
     for (const filePath of xhtmlFiles) {
       try {
         const content = await zip.file(filePath)?.async('text');
-        if (!content) {
-          console.log(`No content for ${filePath}`);
-          continue;
-        }
-
-        console.log(`\n--- Scanning: ${filePath} ---`);
-        console.log(`Content length: ${content.length} chars`);
-
-        const rawMatches = content.match(/epub:type\s*=\s*["'][^"']+["']/g);
-        console.log(`Raw epub:type matches in ${filePath}:`, rawMatches);
+        if (!content) continue;
 
         scannedFiles.push(filePath);
 
-        const $ = cheerio.load(content, {
-          xmlMode: true,
-          decodeEntities: false
-        });
+        // Find all epub:type attributes using regex
+        const pattern = /<([a-zA-Z][a-zA-Z0-9]*)[^>]*epub:type\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        let match;
 
-        const selector1 = $('[epub\\:type]');
-        const selector2 = $('*').filter((_, el) => $(el).attr('epub:type') !== undefined);
+        while ((match = pattern.exec(content)) !== null) {
+          const elementType = match[1].toLowerCase();
+          const epubTypeValue = match[2];
 
-        console.log(`Selector [epub\\:type] found: ${selector1.length} elements`);
-        console.log(`Filter method found: ${selector2.length} elements`);
-
-        selector2.each((_, elem) => {
-          const epubTypeAttr = $(elem).attr('epub:type');
-          console.log(`Found element: <${elem.tagName}> with epub:type="${epubTypeAttr}"`);
-
-          if (!epubTypeAttr) return;
-
-          const types = epubTypeAttr.trim().split(/\s+/);
-          const elementType = elem.tagName?.toLowerCase() || 'unknown';
+          // Split space-separated values
+          const types = epubTypeValue.trim().split(/\s+/);
 
           for (const type of types) {
             const normalizedType = type.toLowerCase();
@@ -1487,7 +1456,7 @@ class EPUBModifierService {
               });
             }
           }
-        });
+        }
       } catch (err) {
         console.error(`Error parsing ${filePath}:`, err);
       }
@@ -1495,21 +1464,15 @@ class EPUBModifierService {
 
     const epubTypes = Array.from(epubTypeMap.entries()).map(([key, data]) => ({
       value: data.value,
-      file: Array.from(data.files).join(', '),
+      file: Array.from(data.files)[0],
       count: data.count,
       suggestedRole: roleMapping[key] || 'region',
       elementType: data.elementType,
     }));
 
-    console.log('\n=== scanEpubTypes RESULT ===');
-    console.log('Total unique epub:types found:', epubTypes.length);
-    console.log('epub:types:', epubTypes);
-    console.log('Files scanned:', scannedFiles);
+    console.log(`Found ${epubTypes.length} unique epub:types across ${scannedFiles.length} files`);
 
-    return {
-      epubTypes: epubTypes.sort((a, b) => b.count - a.count),
-      files: scannedFiles,
-    };
+    return { epubTypes, files: scannedFiles };
   }
 }
 

@@ -1,0 +1,104 @@
+ Part 6: Update scanEpubTypes to not use cheerio
+
+  Replace the cheerio-based scanning with regex:
+
+    async scanEpubTypes(zip: JSZip): Promise<{
+      epubTypes: Array<{
+        value: string;
+        file: string;
+        count: number;
+        suggestedRole: string;
+        elementType: string;
+      }>;
+      files: string[];
+    }> {
+      console.log('=== scanEpubTypes START ===');
+
+      const epubTypeMap = new Map<string, {
+        value: string;
+        files: Set<string>;
+        count: number;
+        elementType: string;
+      }>();
+      const scannedFiles: string[] = [];
+
+      const roleMapping: Record<string, string> = {
+        'chapter': 'doc-chapter',
+        'part': 'doc-part',
+        'toc': 'doc-toc',
+        'landmarks': 'navigation',
+        'dedication': 'doc-dedication',
+        'epigraph': 'doc-epigraph',
+        'foreword': 'doc-foreword',
+        'preface': 'doc-preface',
+        'introduction': 'doc-introduction',
+        'prologue': 'doc-prologue',
+        'epilogue': 'doc-epilogue',
+        'afterword': 'doc-afterword',
+        'appendix': 'doc-appendix',
+        'glossary': 'doc-glossary',
+        'bibliography': 'doc-bibliography',
+        'index': 'doc-index',
+        'colophon': 'doc-colophon',
+        'acknowledgments': 'doc-acknowledgments',
+        'footnote': 'doc-footnote',
+        'endnote': 'doc-endnote',
+        'endnotes': 'doc-endnotes',
+      };
+
+      const xhtmlFiles = Object.keys(zip.files).filter(path =>
+        /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+      );
+
+      for (const filePath of xhtmlFiles) {
+        try {
+          const content = await zip.file(filePath)?.async('text');
+          if (!content) continue;
+
+          scannedFiles.push(filePath);
+
+          // Find all epub:type attributes using regex
+          const pattern = /<([a-zA-Z][a-zA-Z0-9]*)[^>]*epub:type\s*=\s*["']([^"']+)["'][^>]*>/gi;
+          let match;
+
+          while ((match = pattern.exec(content)) !== null) {
+            const elementType = match[1].toLowerCase();
+            const epubTypeValue = match[2];
+
+            // Split space-separated values
+            const types = epubTypeValue.trim().split(/\s+/);
+
+            for (const type of types) {
+              const normalizedType = type.toLowerCase();
+              const existing = epubTypeMap.get(normalizedType);
+
+              if (existing) {
+                existing.files.add(filePath);
+                existing.count++;
+              } else {
+                epubTypeMap.set(normalizedType, {
+                  value: type,
+                  files: new Set([filePath]),
+                  count: 1,
+                  elementType,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Error parsing ${filePath}:`, err);
+        }
+      }
+
+      const epubTypes = Array.from(epubTypeMap.entries()).map(([key, data]) => ({
+        value: data.value,
+        file: Array.from(data.files)[0],
+        count: data.count,
+        suggestedRole: roleMapping[key] || 'region',
+        elementType: data.elementType,
+      }));
+
+      console.log(`Found ${epubTypes.length} unique epub:types across ${scannedFiles.length} files`);
+
+      return { epubTypes, files: scannedFiles };
+    }
