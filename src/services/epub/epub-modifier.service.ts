@@ -717,35 +717,98 @@ class EPUBModifierService {
       if (!content) continue;
 
       let modified = false;
+      const changes: string[] = [];
 
       const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
-      const hasMainElement = /<main[\s>]/i.test(content);
 
-      if (!hasMainRole && !hasMainElement) {
-        const match = content.match(/<section([^>]*)>/i);
-
-        if (match) {
-          const fullTag = match[0];
-          const attributes = match[1];
-
-          if (!/\brole\s*=/i.test(attributes)) {
-            const newTag = fullTag.replace(/<section/i, '<section role="main"');
+      if (!hasMainRole) {
+        const mainMatch = content.match(/<main(\s[^>]*)?\s*>/i);
+        if (mainMatch) {
+          const fullTag = mainMatch[0];
+          const attrs = mainMatch[1] || '';
+          if (!/\brole\s*=/i.test(attrs)) {
+            const newTag = fullTag.replace(/<main/i, '<main role="main"');
             content = content.replace(fullTag, newTag);
+            changes.push('Added role="main" to <main>');
             modified = true;
-            results.push({
-              success: true,
-              filePath,
-              modificationType: 'add_landmark',
-              description: 'Added role="main" to first section element',
-            });
           }
+        } else {
+          const bodyMatch = content.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+          if (bodyMatch) {
+            const bodyContent = bodyMatch[1];
+            const sectionMatch = bodyContent.match(/<(section|div|article)(\s[^>]*)?\s*>/i);
+            if (sectionMatch) {
+              const fullTag = sectionMatch[0];
+              const tagName = sectionMatch[1];
+              const attrs = sectionMatch[2] || '';
+              if (!/\brole\s*=/i.test(attrs)) {
+                const newTag = fullTag.replace(new RegExp(`<${tagName}`, 'i'), `<${tagName} role="main"`);
+                content = content.replace(fullTag, newTag);
+                changes.push(`Added role="main" to first <${tagName}>`);
+                modified = true;
+              }
+            }
+          }
+        }
+      }
+
+      const navRegex = /<nav(\s[^>]*)?\s*>/gi;
+      let navMatch;
+      while ((navMatch = navRegex.exec(content)) !== null) {
+        const fullTag = navMatch[0];
+        const attrs = navMatch[1] || '';
+        if (!/\brole\s*=/i.test(attrs)) {
+          const newTag = fullTag.replace(/<nav/i, '<nav role="navigation"');
+          content = content.replace(fullTag, newTag);
+          changes.push('Added role="navigation" to <nav>');
+          modified = true;
+        }
+      }
+
+      const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
+      let footerMatch;
+      while ((footerMatch = footerRegex.exec(content)) !== null) {
+        const fullTag = footerMatch[0];
+        const attrs = footerMatch[1] || '';
+        if (!/\brole\s*=/i.test(attrs)) {
+          const newTag = fullTag.replace(/<footer/i, '<footer role="contentinfo"');
+          content = content.replace(fullTag, newTag);
+          changes.push('Added role="contentinfo" to <footer>');
+          modified = true;
+        }
+      }
+
+      const headerMatch = content.match(/<header(\s[^>]*)?\s*>/i);
+      if (headerMatch) {
+        const fullTag = headerMatch[0];
+        const attrs = headerMatch[1] || '';
+        if (!/\brole\s*=/i.test(attrs)) {
+          const newTag = fullTag.replace(/<header/i, '<header role="banner"');
+          content = content.replace(fullTag, newTag);
+          changes.push('Added role="banner" to <header>');
+          modified = true;
         }
       }
 
       if (modified) {
         zip.file(filePath, content);
-        console.log(`addAriaLandmarks modified: ${filePath}`);
+        results.push({
+          success: true,
+          filePath,
+          modificationType: 'add_aria_landmarks',
+          description: `Added ${changes.length} ARIA landmark(s)`,
+          after: changes.join('\n'),
+        });
       }
+    }
+
+    if (results.length === 0) {
+      results.push({
+        success: true,
+        filePath: 'all',
+        modificationType: 'add_aria_landmarks',
+        description: 'ARIA landmarks already present or not applicable',
+      });
     }
 
     return results;

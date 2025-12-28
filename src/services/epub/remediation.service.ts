@@ -79,9 +79,9 @@ interface RemediationPlan {
   updatedAt: Date;
 }
 
-// Auto-fixable codes - must match handlers in auto-remediation.service.ts
+// AUTO_FIX_HANDLERS must stay in sync with remediationHandlers in auto-remediation.service.ts
+// These codes will be classified as type: 'auto' during plan creation
 const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
-  // Metadata issues
   'EPUB-META-001': {
     handler: () => ({ success: true, message: 'Would add <dc:language>en</dc:language> to package document' }),
   },
@@ -94,34 +94,35 @@ const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; mes
   'EPUB-META-004': {
     handler: () => ({ success: true, message: 'Would add schema:accessMode with "textual" value' }),
   },
-  // Semantic issues
   'EPUB-SEM-001': {
-    handler: () => ({ success: true, message: 'Would add lang attribute to HTML elements' }),
+    handler: () => ({ success: true, message: 'Would add lang attributes to html elements' }),
   },
   'EPUB-SEM-002': {
-    handler: () => ({ success: true, message: 'Would fix empty links with aria-label' }),
+    handler: () => ({ success: true, message: 'Would fix empty links with descriptive text' }),
   },
-  // Image issues
   'EPUB-IMG-001': {
-    handler: () => ({ success: true, message: 'Would add alt text to images' }),
+    handler: () => ({ success: true, message: 'Would add alt attributes to images' }),
   },
-  // Structure issues
   'EPUB-STRUCT-002': {
-    handler: () => ({ success: true, message: 'Would add table headers' }),
+    handler: () => ({ success: true, message: 'Would add table headers with scope attributes' }),
   },
   'EPUB-STRUCT-003': {
-    handler: () => ({ success: true, message: 'Would fix heading hierarchy' }),
+    handler: () => ({ success: true, message: 'Would fix heading hierarchy to be sequential' }),
   },
   'EPUB-STRUCT-004': {
-    handler: () => ({ success: true, message: 'Would add ARIA landmarks' }),
+    handler: () => ({ success: true, message: 'Would add ARIA landmarks (main, navigation, banner, contentinfo)' }),
   },
-  // Navigation issues
   'EPUB-NAV-001': {
     handler: () => ({ success: true, message: 'Would add skip navigation links' }),
   },
-  // Figure issues
+  'EPUB-NAV-002': {
+    handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
+  },
+  'EPUB-NAV-003': {
+    handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
+  },
   'EPUB-FIG-001': {
-    handler: () => ({ success: true, message: 'Would add figure/figcaption structure' }),
+    handler: () => ({ success: true, message: 'Would wrap images in figure elements with figcaption' }),
   },
 };
 

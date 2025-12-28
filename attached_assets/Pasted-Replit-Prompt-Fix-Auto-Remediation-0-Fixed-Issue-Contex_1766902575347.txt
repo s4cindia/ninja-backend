@@ -1,0 +1,182 @@
+Replit Prompt: Fix Auto-Remediation "0 Fixed" Issue
+
+  Context: Auto-remediation shows "1 auto-fixable tasks" but "0 fixed, 0 failed". Root cause is two issues:
+  1. AUTO_FIX_HANDLERS in remediation.service.ts is missing codes that have handlers in auto-remediation.service.ts
+  2. addAriaLandmarks in epub-modifier.service.ts uses cheerio which corrupts XHTML
+
+  Fix 1: Update src/services/epub/remediation.service.ts
+
+  Replace the AUTO_FIX_HANDLERS constant (lines 47-66) with this expanded version:
+
+  // AUTO_FIX_HANDLERS must stay in sync with remediationHandlers in auto-remediation.service.ts
+  // These codes will be classified as type: 'auto' during plan creation
+  const AUTO_FIX_HANDLERS: Record<string, { handler: () => { success: boolean; message: string } }> = {
+    'EPUB-META-001': {
+      handler: () => ({ success: true, message: 'Would add <dc:language>en</dc:language> to package document' }),
+    },
+    'EPUB-META-002': {
+      handler: () => ({ success: true, message: 'Would add schema:accessibilityFeature metadata with standard values' }),
+    },
+    'EPUB-META-003': {
+      handler: () => ({ success: true, message: 'Would add schema:accessibilitySummary with auto-generated description' }),
+    },
+    'EPUB-META-004': {
+      handler: () => ({ success: true, message: 'Would add schema:accessMode with "textual" value' }),
+    },
+    'EPUB-SEM-001': {
+      handler: () => ({ success: true, message: 'Would add lang attributes to html elements' }),
+    },
+    'EPUB-SEM-002': {
+      handler: () => ({ success: true, message: 'Would fix empty links with descriptive text' }),
+    },
+    'EPUB-IMG-001': {
+      handler: () => ({ success: true, message: 'Would add alt attributes to images' }),
+    },
+    'EPUB-STRUCT-002': {
+      handler: () => ({ success: true, message: 'Would add table headers with scope attributes' }),
+    },
+    'EPUB-STRUCT-003': {
+      handler: () => ({ success: true, message: 'Would fix heading hierarchy to be sequential' }),
+    },
+    'EPUB-STRUCT-004': {
+      handler: () => ({ success: true, message: 'Would add ARIA landmarks (main, navigation, banner, contentinfo)' }),
+    },
+    'EPUB-NAV-001': {
+      handler: () => ({ success: true, message: 'Would add skip navigation links' }),
+    },
+    'EPUB-NAV-002': {
+      handler: () => ({ success: true, message: 'Would generate page-list navigation from content structure' }),
+    },
+    'EPUB-NAV-003': {
+      handler: () => ({ success: true, message: 'Would generate landmarks navigation with bodymatter, toc entries' }),
+    },
+    'EPUB-FIG-001': {
+      handler: () => ({ success: true, message: 'Would wrap images in figure elements with figcaption' }),
+    },
+  };
+
+  Fix 2: Update src/services/epub/epub-modifier.service.ts
+
+  Replace the entire addAriaLandmarks method (lines 493-575) with this regex-based version that doesn't use cheerio:
+
+    async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+      const results: ModificationResult[] = [];
+      const files = Object.keys(zip.files);
+
+      for (const filePath of files) {
+        if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
+
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        const changes: string[] = [];
+
+        // Check if role="main" already exists anywhere in the document
+        const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
+
+        if (!hasMainRole) {
+          // Try to add role="main" to <main> element first
+          const mainMatch = content.match(/<main(\s[^>]*)?\s*>/i);
+          if (mainMatch) {
+            const fullTag = mainMatch[0];
+            const attrs = mainMatch[1] || '';
+            // Only add if no role attribute exists
+            if (!/\brole\s*=/i.test(attrs)) {
+              const newTag = fullTag.replace(/<main/i, '<main role="main"');
+              content = content.replace(fullTag, newTag);
+              changes.push('Added role="main" to <main>');
+              modified = true;
+            }
+          } else {
+            // No <main> element, try first section/div/article inside body
+            const bodyMatch = content.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+            if (bodyMatch) {
+              const bodyContent = bodyMatch[1];
+              // Find first section, div, or article
+              const sectionMatch = bodyContent.match(/<(section|div|article)(\s[^>]*)?\s*>/i);
+              if (sectionMatch) {
+                const fullTag = sectionMatch[0];
+                const tagName = sectionMatch[1];
+                const attrs = sectionMatch[2] || '';
+                // Only add if no role attribute exists
+                if (!/\brole\s*=/i.test(attrs)) {
+                  const newTag = fullTag.replace(new RegExp(`<${tagName}`, 'i'), `<${tagName} role="main"`);
+                  content = content.replace(fullTag, newTag);
+                  changes.push(`Added role="main" to first <${tagName}>`);
+                  modified = true;
+                }
+              }
+            }
+          }
+        }
+
+        // Add role="navigation" to <nav> elements without role
+        const navRegex = /<nav(\s[^>]*)?\s*>/gi;
+        let navMatch;
+        while ((navMatch = navRegex.exec(content)) !== null) {
+          const fullTag = navMatch[0];
+          const attrs = navMatch[1] || '';
+          if (!/\brole\s*=/i.test(attrs)) {
+            const newTag = fullTag.replace(/<nav/i, '<nav role="navigation"');
+            content = content.replace(fullTag, newTag);
+            changes.push('Added role="navigation" to <nav>');
+            modified = true;
+          }
+        }
+
+        // Add role="contentinfo" to <footer> elements without role
+        const footerRegex = /<footer(\s[^>]*)?\s*>/gi;
+        let footerMatch;
+        while ((footerMatch = footerRegex.exec(content)) !== null) {
+          const fullTag = footerMatch[0];
+          const attrs = footerMatch[1] || '';
+          if (!/\brole\s*=/i.test(attrs)) {
+            const newTag = fullTag.replace(/<footer/i, '<footer role="contentinfo"');
+            content = content.replace(fullTag, newTag);
+            changes.push('Added role="contentinfo" to <footer>');
+            modified = true;
+          }
+        }
+
+        // Add role="banner" to first <header> element without role
+        const headerMatch = content.match(/<header(\s[^>]*)?\s*>/i);
+        if (headerMatch) {
+          const fullTag = headerMatch[0];
+          const attrs = headerMatch[1] || '';
+          if (!/\brole\s*=/i.test(attrs)) {
+            const newTag = fullTag.replace(/<header/i, '<header role="banner"');
+            content = content.replace(fullTag, newTag);
+            changes.push('Added role="banner" to <header>');
+            modified = true;
+          }
+        }
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_aria_landmarks',
+            description: `Added ${changes.length} ARIA landmark(s)`,
+            after: changes.join('\n'),
+          });
+        }
+      }
+
+      if (results.length === 0) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'add_aria_landmarks',
+          description: 'ARIA landmarks already present or not applicable',
+        });
+      }
+
+      return results;
+    }
+
+  Expected Result:
+  - EPUB-STRUCT-004 (and other codes) will now be classified as type: 'auto'
+  - Auto-remediation will process the task and show "1 fixed" instead of "0 fixed"
+  - XHTML files will not be corrupted after remediation
