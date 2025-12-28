@@ -1223,38 +1223,41 @@ class EPUBModifierService {
 
     for (const filePath of xhtmlFiles) {
       try {
-        const content = await zip.file(filePath)?.async('text');
+        let content = await zip.file(filePath)?.async('text');
         if (!content) continue;
 
-        const $ = cheerio.load(content, { xmlMode: true, decodeEntities: false });
         let fileModified = false;
+        const originalContent = content;
 
         for (const { epubType, role } of epubTypesToFix) {
-          $('*').filter((_, el) => {
-            const attr = $(el).attr('epub:type');
-            if (!attr) return false;
-            const types = attr.split(/\s+/);
-            return types.includes(epubType) && !$(el).attr('role');
-          }).each((_, elem) => {
-            const tagName = elem.tagName || 'element';
-            const beforeSnippet = `<${tagName} epub:type="${$(elem).attr('epub:type')}">`;
+          // Use regex replacement instead of cheerio to preserve original format
+          // Match elements with epub:type containing the target type, that don't already have role=
+          const pattern = new RegExp(
+            `(<[^>]*epub:type=["'][^"']*\\b${epubType}\\b[^"']*["'])(?![^>]*\\brole=)([^>]*>)`,
+            'g'
+          );
 
-            $(elem).attr('role', role);
+          const matches = content.match(pattern);
+          if (matches) {
+            content = content.replace(pattern, `$1 role="${role}"$2`);
+
+            for (const match of matches) {
+              results.push({
+                success: true,
+                filePath,
+                modificationType: 'add_role',
+                description: `Added role="${role}" to element with epub:type="${epubType}"`,
+                before: match.substring(0, 100),
+                after: match.replace(pattern, `$1 role="${role}"$2`).substring(0, 100),
+              });
+            }
+
             fileModified = true;
-
-            results.push({
-              success: true,
-              filePath,
-              modificationType: 'add_role',
-              description: `Added role="${role}" to element with epub:type="${epubType}"`,
-              before: beforeSnippet,
-              after: `<${tagName} epub:type="${$(elem).attr('epub:type')}" role="${role}">`,
-            });
-          });
+          }
         }
 
         if (fileModified) {
-          zip.file(filePath, $.xml());
+          zip.file(filePath, content);
           console.log(`Modified ${filePath}`);
         }
       } catch (err) {
