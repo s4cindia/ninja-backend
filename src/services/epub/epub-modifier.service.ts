@@ -717,65 +717,28 @@ class EPUBModifierService {
       if (!content) continue;
 
       let modified = false;
-      const originalContent = content;
 
       const hasMainRole = /role\s*=\s*["']main["']/i.test(content);
       const hasMainElement = /<main[\s>]/i.test(content);
 
       if (!hasMainRole && !hasMainElement) {
-        const sectionPattern = /(<(?:section|article)(?=[^>]*>)(?![^>]*role=))([^>]*>)/i;
+        const match = content.match(/<section([^>]*)>/i);
 
-        if (sectionPattern.test(content)) {
-          content = content.replace(sectionPattern, '$1 role="main"$2');
-          modified = true;
-          results.push({
-            success: true,
-            filePath,
-            modificationType: 'add_landmark',
-            description: 'Added role="main" to first section/article element',
-          });
-        }
-      }
+        if (match) {
+          const fullTag = match[0];
+          const attributes = match[1];
 
-      const navPattern = /(<nav)(?![^>]*role=)([^>]*>)/gi;
-      if (navPattern.test(content)) {
-        content = content.replace(/(<nav)(?![^>]*role=)([^>]*>)/gi, '$1 role="navigation"$2');
-        if (content !== originalContent) {
-          modified = true;
-          results.push({
-            success: true,
-            filePath,
-            modificationType: 'add_landmark',
-            description: 'Added role="navigation" to nav elements',
-          });
-        }
-      }
-
-      const headerPattern = /(<header)(?![^>]*role=)([^>]*>)/i;
-      if (headerPattern.test(content) && !content.includes('role="banner"')) {
-        content = content.replace(headerPattern, '$1 role="banner"$2');
-        if (content !== originalContent) {
-          modified = true;
-          results.push({
-            success: true,
-            filePath,
-            modificationType: 'add_landmark',
-            description: 'Added role="banner" to header element',
-          });
-        }
-      }
-
-      const footerPattern = /(<footer)(?![^>]*role=)([^>]*>)/i;
-      if (footerPattern.test(content) && !content.includes('role="contentinfo"')) {
-        content = content.replace(footerPattern, '$1 role="contentinfo"$2');
-        if (content !== originalContent) {
-          modified = true;
-          results.push({
-            success: true,
-            filePath,
-            modificationType: 'add_landmark',
-            description: 'Added role="contentinfo" to footer element',
-          });
+          if (!/\brole\s*=/i.test(attributes)) {
+            const newTag = fullTag.replace(/<section/i, '<section role="main"');
+            content = content.replace(fullTag, newTag);
+            modified = true;
+            results.push({
+              success: true,
+              filePath,
+              modificationType: 'add_landmark',
+              description: 'Added role="main" to first section element',
+            });
+          }
         }
       }
 
