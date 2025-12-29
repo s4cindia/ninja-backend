@@ -11,6 +11,7 @@ import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
 import { isRedisConfigured } from './config/redis.config';
+import { sseService } from './sse/sse.service';
 
 const app: Express = express();
 
@@ -76,6 +77,10 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   } else {
     console.log('⚠️  Redis not configured - running in sync mode');
   }
+  
+  sseService.initialize().catch(err => {
+    console.error('Failed to initialize SSE service:', err);
+  });
   
   startWorkers();
 });

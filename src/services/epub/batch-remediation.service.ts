@@ -4,6 +4,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { Prisma, JobStatus } from '@prisma/client';
+import { sseService } from '../../sse/sse.service';
 
 type BatchStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
@@ -148,6 +149,14 @@ class BatchRemediationService {
         job.startedAt = new Date();
         await this.updateBatchStatus(batchId, result);
 
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_started',
+          batchId,
+          jobId: job.jobId,
+          jobIndex: i,
+          totalJobs: result.jobs.length,
+        }, tenantId);
+
         const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
         if (!jobRecord) {
           throw new Error(`Job record not found: ${job.jobId}`);
@@ -192,6 +201,14 @@ class BatchRemediationService {
           }
         }
 
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_completed',
+          batchId,
+          jobId: job.jobId,
+          issuesFixed: job.issuesFixed,
+          progress: Math.round(((i + 1) / result.jobs.length) * 100),
+        }, tenantId);
+
         logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
 
       } catch (error) {
@@ -199,6 +216,13 @@ class BatchRemediationService {
         job.error = error instanceof Error ? error.message : 'Unknown error';
         job.completedAt = new Date();
         result.failedJobs++;
+
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_failed',
+          batchId,
+          jobId: job.jobId,
+          error: job.error,
+        }, tenantId);
 
         logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
 
@@ -219,6 +243,13 @@ class BatchRemediationService {
 
     await this.updateBatchStatus(batchId, result);
     this.activeBatches.delete(batchId);
+
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'batch_completed',
+      batchId,
+      status: result.status,
+      summary: result.summary,
+    }, tenantId);
 
     logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
 

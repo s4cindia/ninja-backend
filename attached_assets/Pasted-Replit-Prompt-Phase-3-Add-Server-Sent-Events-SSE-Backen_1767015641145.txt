@@ -1,0 +1,215 @@
+Replit Prompt - Phase 3: Add Server-Sent Events (SSE) - Backend
+
+  Phase 3A: Add SSE Backend Infrastructure
+
+  1. Create src/sse/sse.service.ts:
+
+  import { Response } from 'express';
+  import { v4 as uuidv4 } from 'uuid';
+  import { getRedisClient, isRedisConfigured } from '../config/redis.config';
+  import { logger } from '../lib/logger';
+
+  interface SSEClient {
+    id: string;
+    response: Response;
+    tenantId: string;
+    channels: Set<string>;
+  }
+
+  class SSEService {
+    private clients: Map<string, SSEClient> = new Map();
+    private redisSubscriber: ReturnType<typeof getRedisClient> | null = null;
+    private initialized = false;
+
+    async initialize(): Promise<void> {
+      if (this.initialized) return;
+
+      if (isRedisConfigured()) {
+        try {
+          const redis = getRedisClient();
+          this.redisSubscriber = redis.duplicate();
+
+          this.redisSubscriber.on('message', (channel: string, message: string) => {
+            this.handleRedisMessage(channel, message);
+          });
+
+          await this.redisSubscriber.subscribe('batch-progress');
+          logger.info('SSE Service: Redis Pub/Sub initialized');
+        } catch (err) {
+          logger.error('SSE Service: Failed to initialize Redis Pub/Sub', err);
+        }
+      }
+
+      this.initialized = true;
+    }
+
+    addClient(response: Response, tenantId: string): string {
+      const clientId = uuidv4();
+
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const client: SSEClient = {
+        id: clientId,
+        response,
+        tenantId,
+        channels: new Set(),
+      };
+
+      this.clients.set(clientId, client);
+      this.sendToClient(clientId, { type: 'connected', clientId });
+
+      response.on('close', () => {
+        this.removeClient(clientId);
+      });
+
+      return clientId;
+    }
+
+    subscribeToChannel(clientId: string, channel: string): void {
+      const client = this.clients.get(clientId);
+      if (client) {
+        client.channels.add(channel);
+      }
+    }
+
+    sendToClient(clientId: string, data: unknown): void {
+      const client = this.clients.get(clientId);
+      if (client && !client.response.writableEnded) {
+        client.response.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    }
+
+    broadcastToChannel(channel: string, data: unknown, tenantId?: string): void {
+      if (isRedisConfigured() && this.redisSubscriber) {
+        getRedisClient().publish('batch-progress', JSON.stringify({
+          channel,
+          data,
+          tenantId,
+        }));
+      } else {
+        this.localBroadcast(channel, data, tenantId);
+      }
+    }
+
+    private localBroadcast(channel: string, data: unknown, tenantId?: string): void {
+      this.clients.forEach((client) => {
+        if (client.channels.has(channel)) {
+          if (!tenantId || client.tenantId === tenantId) {
+            this.sendToClient(client.id, data);
+          }
+        }
+      });
+    }
+
+    private handleRedisMessage(channel: string, message: string): void {
+      try {
+        const { channel: eventChannel, data, tenantId } = JSON.parse(message);
+        this.localBroadcast(eventChannel, data, tenantId);
+      } catch (err) {
+        logger.error('SSE: Failed to parse Redis message', err);
+      }
+    }
+
+    removeClient(clientId: string): void {
+      const client = this.clients.get(clientId);
+      if (client) {
+        if (!client.response.writableEnded) {
+          client.response.end();
+        }
+        this.clients.delete(clientId);
+      }
+    }
+
+    getClientCount(): number {
+      return this.clients.size;
+    }
+  }
+
+  export const sseService = new SSEService();
+
+
+  2. Create src/routes/sse.routes.ts:
+
+  import { Router, Response } from 'express';
+  import { authenticate } from '../middleware/auth.middleware';
+  import { sseService } from '../sse/sse.service';
+  import { AuthenticatedRequest } from '../types/authenticated-request';
+
+  const router = Router();
+
+  router.get('/batch/:batchId/progress', authenticate, (req: AuthenticatedRequest, res: Response) => {
+    const { batchId } = req.params;
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(401).json({ success: false, error: 'Authentication required' });
+    }
+
+    const clientId = sseService.addClient(res, tenantId);
+    sseService.subscribeToChannel(clientId, `batch:${batchId}`);
+  });
+
+  export default router;
+
+
+  3. Update src/routes/index.ts to register SSE routes:
+
+  import sseRoutes from './sse.routes';
+
+  // Add with other route registrations:
+  router.use('/sse', sseRoutes);
+
+
+  4. Initialize SSE service in src/index.ts after app setup:
+
+  import { sseService } from './sse/sse.service';
+
+  // After app.listen callback:
+  sseService.initialize().catch(err => {
+    console.error('Failed to initialize SSE service:', err);
+  });
+
+
+  5. Update src/services/epub/batch-remediation.service.ts to emit SSE events.
+
+  Add import at top:
+  import { sseService } from '../../sse/sse.service';
+
+  In processBatch method, after updating job status to 'processing':
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_started',
+    batchId,
+    jobId: job.jobId,
+    jobIndex: i,
+    totalJobs: result.jobs.length,
+  }, tenantId);
+
+  After job completion:
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_completed',
+    batchId,
+    jobId: job.jobId,
+    issuesFixed: job.issuesFixed,
+    progress: Math.round(((i + 1) / result.jobs.length) * 100),
+  }, tenantId);
+
+  After job failure:
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_failed',
+    batchId,
+    jobId: job.jobId,
+    error: job.error,
+  }, tenantId);
+
+  After batch completion:
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'batch_completed',
+    batchId,
+    status: result.status,
+    summary: result.summary,
+  }, tenantId);
