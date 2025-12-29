@@ -47,5 +47,5 @@ waitForPort = 5000
 [userenv]
 
 [userenv.shared]
-ENABLE_WORKERS = "false"
+ENABLE_WORKERS = "true"
 EPUBCHECK_PATH = "/home/runner/workspace/lib/epubcheck/epubcheck.jar"

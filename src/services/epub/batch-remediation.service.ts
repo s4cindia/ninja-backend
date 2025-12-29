@@ -4,6 +4,8 @@ import { fileStorageService } from '../storage/file-storage.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { Prisma, JobStatus } from '@prisma/client';
+import { sseService } from '../../sse/sse.service';
+import { getBatchQueue, areQueuesAvailable } from '../../queues';
 
 type BatchStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
@@ -114,26 +116,60 @@ class BatchRemediationService {
     tenantId: string,
     options: BatchOptions = {}
   ): Promise<BatchRemediationResult> {
-    const batchJob = await prisma.job.findFirst({
-      where: {
-        id: batchId,
-        tenantId,
-        type: 'BATCH_VALIDATION',
-      },
-    });
+    const batch = await this.getBatchStatus(batchId, tenantId);
+    if (!batch) throw new Error('Batch not found');
 
-    if (!batchJob) {
+    if (areQueuesAvailable()) {
+      const queue = getBatchQueue();
+      if (queue) {
+        try {
+          await queue.add(`batch-${batchId}`, {
+            batchId,
+            tenantId,
+            options,
+          }, {
+            jobId: batchId,
+          });
+
+          batch.status = 'processing';
+          batch.startedAt = new Date();
+          await this.updateBatchStatus(batchId, batch);
+
+          logger.info(`Batch ${batchId} queued for async processing`);
+          return batch;
+        } catch (err) {
+          logger.error(`Failed to enqueue batch ${batchId}: ${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
+      }
+    }
+
+    batch.status = 'processing';
+    batch.startedAt = new Date();
+    await this.updateBatchStatus(batchId, batch);
+
+    logger.info(`Batch ${batchId} processing synchronously (Redis not available)`);
+    return this.processBatchSync(batchId, tenantId, options);
+  }
+
+  async processBatchSync(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const rawOutput = await this.getBatchStatus(batchId, tenantId);
+    if (!rawOutput) {
       throw new Error('Batch not found');
     }
 
-    const rawOutput = batchJob.output as Record<string, unknown> | null;
-    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
-      throw new Error('Invalid batch data structure');
+    const result = rawOutput as unknown as BatchRemediationResult;
+
+    if (result.status === 'cancelled') {
+      logger.info(`Batch ${batchId} was cancelled, skipping processing`);
+      return result;
     }
 
-    const result = rawOutput as unknown as BatchRemediationResult;
     result.status = 'processing';
-
     await this.updateBatchStatus(batchId, result);
 
     for (let i = 0; i < result.jobs.length; i++) {
@@ -147,6 +183,15 @@ class BatchRemediationService {
         job.status = 'processing';
         job.startedAt = new Date();
         await this.updateBatchStatus(batchId, result);
+
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_started',
+          batchId,
+          jobId: job.jobId,
+          jobIndex: i,
+          totalJobs: result.jobs.length,
+        }, tenantId);
+        logger.info(`[SSE] Broadcasting job_started for: ${job.jobId}`);
 
         const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
         if (!jobRecord) {
@@ -192,6 +237,15 @@ class BatchRemediationService {
           }
         }
 
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_completed',
+          batchId,
+          jobId: job.jobId,
+          issuesFixed: job.issuesFixed,
+          progress: Math.round(((i + 1) / result.jobs.length) * 100),
+        }, tenantId);
+        logger.info(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
+
         logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
 
       } catch (error) {
@@ -199,6 +253,14 @@ class BatchRemediationService {
         job.error = error instanceof Error ? error.message : 'Unknown error';
         job.completedAt = new Date();
         result.failedJobs++;
+
+        sseService.broadcastToChannel(`batch:${batchId}`, {
+          type: 'job_failed',
+          batchId,
+          jobId: job.jobId,
+          error: job.error,
+        }, tenantId);
+        logger.info(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
 
         logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
 
@@ -219,6 +281,16 @@ class BatchRemediationService {
 
     await this.updateBatchStatus(batchId, result);
     this.activeBatches.delete(batchId);
+
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'batch_completed',
+      batchId,
+      status: result.status,
+      summary: result.summary,
+      completedJobs: result.completedJobs,
+      failedJobs: result.failedJobs,
+    }, tenantId);
+    logger.info(`[SSE] Broadcasting batch_completed for: ${batchId}`);
 
     logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
 
@@ -314,6 +386,95 @@ class BatchRemediationService {
       .map(j => j.output as unknown as BatchRemediationResult);
 
     return { batches, total };
+  }
+
+  async retryJob(
+    batchId: string,
+    jobId: string,
+    tenantId: string,
+    _options: BatchOptions = {}
+  ): Promise<BatchJob> {
+    const result = await this.getBatchStatus(batchId, tenantId);
+
+    if (!result) {
+      throw new Error('Batch not found');
+    }
+
+    const jobIndex = result.jobs.findIndex(j => j.jobId === jobId);
+    if (jobIndex === -1) {
+      throw new Error('Job not found in batch');
+    }
+
+    const job = result.jobs[jobIndex];
+    if (job.status !== 'failed') {
+      throw new Error('Only failed jobs can be retried');
+    }
+
+    job.status = 'processing';
+    job.error = undefined;
+    job.startedAt = new Date();
+    job.completedAt = undefined;
+
+    await this.updateBatchStatus(batchId, result);
+
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'job_retry_started',
+      batchId,
+      jobId: job.jobId,
+    }, tenantId);
+
+    try {
+      const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+      if (!jobRecord) throw new Error(`Job record not found: ${job.jobId}`);
+
+      const input = jobRecord.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'upload.epub';
+      job.fileName = fileName;
+
+      const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+      if (!epubBuffer) throw new Error(`EPUB file not found: ${fileName}`);
+
+      const remediationResult = await autoRemediationService.runAutoRemediation(
+        epubBuffer,
+        job.jobId,
+        fileName
+      );
+
+      job.status = 'completed';
+      job.issuesFixed = remediationResult.totalIssuesFixed;
+      job.issuesFailed = remediationResult.totalIssuesFailed;
+      job.completedAt = new Date();
+      result.failedJobs = Math.max(0, result.failedJobs - 1);
+      result.completedJobs++;
+      result.summary.totalIssuesFixed += remediationResult.totalIssuesFixed;
+
+      sseService.broadcastToChannel(`batch:${batchId}`, {
+        type: 'job_retry_completed',
+        batchId,
+        jobId: job.jobId,
+        issuesFixed: job.issuesFixed,
+      }, tenantId);
+
+    } catch (error) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : 'Unknown error';
+      job.completedAt = new Date();
+      result.failedJobs++;
+
+      sseService.broadcastToChannel(`batch:${batchId}`, {
+        type: 'job_retry_failed',
+        batchId,
+        jobId: job.jobId,
+        error: job.error,
+      }, tenantId);
+    }
+
+    result.summary.successRate = result.totalJobs > 0
+      ? Math.round((result.completedJobs / result.totalJobs) * 100)
+      : 0;
+
+    await this.updateBatchStatus(batchId, result);
+    return job;
   }
 
   private async updateBatchStatus(batchId: string, result: BatchRemediationResult): Promise<void> {

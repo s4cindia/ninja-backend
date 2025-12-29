@@ -10,21 +10,37 @@ import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
+import { isRedisConfigured } from './config/redis.config';
+import { sseService } from './sse/sse.service';
 
 const app: Express = express();
 
+const isAllowedOrigin = (origin: string): boolean => {
+  if (origin === 'http://localhost:3000' ||
+      origin === 'http://localhost:5000' ||
+      origin === 'http://localhost:5173' ||
+      origin === 'http://127.0.0.1:3000' ||
+      origin === 'http://127.0.0.1:5000' ||
+      origin === 'http://127.0.0.1:5173') {
+    return true;
+  }
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname;
+    return hostname.endsWith('.replit.dev') ||
+           hostname.endsWith('.replit.app') ||
+           hostname.endsWith('.repl.co');
+  } catch {
+    return false;
+  }
+};
+
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin) return callback(null, true);
-    const allowedPatterns = [
-      /\.replit\.dev$/,
-      /\.replit\.app$/,
-      /\.repl\.co$/,
-      /^https?:\/\/localhost(:\d+)?$/
-    ];
-    if (allowedPatterns.some(pattern => pattern.test(origin))) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
+    console.warn(`CORS blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -32,6 +48,7 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
 };
 
+app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 
 app.use(helmet({
@@ -48,11 +65,14 @@ app.use(compression());
 app.use(requestLogger);
 
 app.get('/health', (req, res) => {
+  const redisAvailable = isRedisConfigured();
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: config.nodeEnv,
     version: config.version,
+    redis: redisAvailable ? 'connected' : 'not_configured',
+    workers: redisAvailable ? 'enabled' : 'disabled',
   });
 });
 
@@ -66,6 +86,16 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`📍 Environment: ${config.nodeEnv}`);
   console.log(`❤️  Health check: http://localhost:${config.port}/health`);
   console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
+  
+  if (isRedisConfigured()) {
+    console.log('✅ Redis configured - BullMQ workers enabled');
+  } else {
+    console.log('⚠️  Redis not configured - running in sync mode');
+  }
+  
+  sseService.initialize().catch(err => {
+    console.error('Failed to initialize SSE service:', err);
+  });
   
   startWorkers();
 });

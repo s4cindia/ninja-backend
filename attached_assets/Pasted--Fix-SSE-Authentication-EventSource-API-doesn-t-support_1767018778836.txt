@@ -1,0 +1,88 @@
+ Fix SSE Authentication: EventSource API doesn't support custom headers, so we need to pass the JWT token as a query parameter.
+
+  BACKEND CHANGES:
+
+  1. Update src/routes/sse.routes.ts to accept token from query parameter:
+
+  import { Router, Response } from 'express';
+  import jwt from 'jsonwebtoken';
+  import { sseService } from '../sse/sse.service';
+  import { prisma } from '../lib/prisma';
+  import { logger } from '../lib/logger';
+
+  const router = Router();
+
+  router.get('/batch/:batchId/progress', async (req, res: Response) => {
+    const { batchId } = req.params;
+
+    // Accept token from query param (for EventSource) or header (for curl/testing)
+    const token = (req.query.token as string) || req.headers.authorization?.replace('Bearer ', '');
+
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    try {
+      // Verify JWT token
+      const jwtSecret = process.env.JWT_SECRET || process.env.AUTH_SECRET;
+      if (!jwtSecret) {
+        logger.error('JWT_SECRET not configured');
+        return res.status(500).json({ success: false, error: 'Server configuration error' });
+      }
+
+      const decoded = jwt.verify(token, jwtSecret) as {
+        userId: string;
+        tenantId: string;
+        sub?: string;
+      };
+
+      const userId = decoded.userId || decoded.sub;
+      const tenantId = decoded.tenantId;
+
+      if (!userId || !tenantId) {
+        return res.status(401).json({ success: false, error: 'Invalid token payload' });
+      }
+
+      // Verify user exists and is active
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, isActive: true, tenantId: true }
+      });
+
+      if (!user) {
+        return res.status(401).json({ success: false, error: 'User not found' });
+      }
+
+      if (!user.isActive) {
+        return res.status(401).json({ success: false, error: 'User deactivated' });
+      }
+
+      // Verify tenant matches
+      if (user.tenantId !== tenantId) {
+        return res.status(401).json({ success: false, error: 'Tenant mismatch' });
+      }
+
+      logger.info(`[SSE] Client connected for batch ${batchId}, user ${userId}`);
+
+      // Establish SSE connection
+      const clientId = sseService.addClient(res, tenantId);
+      sseService.subscribeToChannel(clientId, `batch:${batchId}`);
+
+      // Connection stays open until client disconnects
+    } catch (err) {
+      if (err instanceof jwt.JsonWebTokenError) {
+        return res.status(401).json({ success: false, error: 'Invalid token' });
+      }
+      if (err instanceof jwt.TokenExpiredError) {
+        return res.status(401).json({ success: false, error: 'Token expired' });
+      }
+      logger.error('[SSE] Authentication error:', err);
+      return res.status(401).json({ success: false, error: 'Authentication failed' });
+    }
+  });
+
+  export default router;
+
+
+  2. Make sure jwt is imported. Add to imports if not present:
+     import jwt from 'jsonwebtoken';
