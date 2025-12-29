@@ -50,7 +50,7 @@ class AutoRemediationService {
       return [result];
     },
     'EPUB-META-004': async (zip) => {
-      return epubModifier.addAccessibilityMetadata(zip);
+      return epubModifier.addAccessModes(zip, { textual: true });
     },
     'EPUB-SEM-001': async (zip) => {
       return epubModifier.addHtmlLangAttributes(zip);

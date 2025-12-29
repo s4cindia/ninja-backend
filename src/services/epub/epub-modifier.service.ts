@@ -358,16 +358,6 @@ class EPUBModifierService {
       }
     }
 
-    // Add accessMode only if not present
-    if (!hasMetaValue('schema:accessMode')) {
-      metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
-    }
-
-    // Add accessModeSufficient only if not present
-    if (!hasMetaValue('schema:accessModeSufficient')) {
-      metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
-    }
-
     // Add accessibilityHazard only if not present
     if (!hasMetaValue('schema:accessibilityHazard')) {
       metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
@@ -392,6 +382,80 @@ class EPUBModifierService {
       filePath: opf.path,
       modificationType: 'add_accessibility_metadata',
       description: `Added ${metadataToAdd.length} accessibility metadata elements`,
+      after: metadataToAdd.join('\n'),
+    });
+
+    return results;
+  }
+
+  async addAccessModes(
+    zip: JSZip,
+    modes: { textual?: boolean; visual?: boolean; auditory?: boolean } = { textual: true }
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const opf = await this.getOPF(zip);
+    if (!opf) {
+      return [{
+        success: false,
+        filePath: 'content.opf',
+        modificationType: 'add_access_modes',
+        description: 'Failed to locate OPF file',
+      }];
+    }
+
+    let modified = opf.content;
+    const metadataToAdd: string[] = [];
+
+    const hasAccessMode = (value: string): boolean => {
+      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `<meta[^>]*property\\s*=\\s*["']schema:accessMode["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+        'i'
+      );
+      return pattern.test(modified);
+    };
+
+    const hasAccessModeSufficient = (value: string): boolean => {
+      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `<meta[^>]*property\\s*=\\s*["']schema:accessModeSufficient["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+        'i'
+      );
+      return pattern.test(modified);
+    };
+
+    if (modes.textual && !hasAccessMode('textual')) {
+      metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
+    }
+    if (modes.visual && !hasAccessMode('visual')) {
+      metadataToAdd.push('<meta property="schema:accessMode">visual</meta>');
+    }
+    if (modes.auditory && !hasAccessMode('auditory')) {
+      metadataToAdd.push('<meta property="schema:accessMode">auditory</meta>');
+    }
+
+    if (modes.textual && !hasAccessModeSufficient('textual')) {
+      metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
+    }
+
+    if (metadataToAdd.length === 0) {
+      return [{
+        success: true,
+        filePath: opf.path,
+        modificationType: 'add_access_modes',
+        description: 'Access modes already present',
+      }];
+    }
+
+    const insertContent = '\n    ' + metadataToAdd.join('\n    ');
+    modified = modified.replace('</metadata>', insertContent + '\n</metadata>');
+    await this.updateOPF(zip, opf.path, modified);
+
+    results.push({
+      success: true,
+      filePath: opf.path,
+      modificationType: 'add_access_modes',
+      description: `Added ${metadataToAdd.length} access mode elements`,
       after: metadataToAdd.join('\n'),
     });
 
