@@ -1,0 +1,313 @@
+Fix three issues in ninja-backend/src/services/epub/epub-modifier.service.ts:
+
+  ## Issue 1: Fix addAccessibilityMetadata - Prevent Duplicate Metadata
+
+  Replace the `addAccessibilityMetadata` method with this improved version that has better duplicate detection:
+
+  ```typescript
+  async addAccessibilityMetadata(
+    zip: JSZip,
+    features: string[] = ['structuralNavigation', 'tableOfContents', 'readingOrder']
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const opf = await this.getOPF(zip);
+
+    if (!opf) {
+      return [{
+        success: false,
+        filePath: 'content.opf',
+        modificationType: 'add_accessibility_metadata',
+        description: 'Failed to locate OPF file',
+      }];
+    }
+
+    let modified = opf.content;
+    const metadataToAdd: string[] = [];
+
+    // Helper to check if a specific metadata value already exists
+    const hasMetaValue = (property: string, value?: string): boolean => {
+      if (value) {
+        // Check for exact property + value combination
+        const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = new RegExp(
+          `<meta[^>]*property\\s*=\\s*["']${escapedProp}["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+          'i'
+        );
+        return pattern.test(modified);
+      }
+      // Just check if property exists
+      const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`property\\s*=\\s*["']${escapedProp}["']`, 'i');
+      return pattern.test(modified);
+    };
+
+    // Add accessibility features (check each individually with exact value matching)
+    for (const feature of features) {
+      if (!hasMetaValue('schema:accessibilityFeature', feature)) {
+        metadataToAdd.push(
+          `<meta property="schema:accessibilityFeature">${feature}</meta>`
+        );
+      }
+    }
+
+    // Add accessMode only if not present
+    if (!hasMetaValue('schema:accessMode')) {
+      metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
+    }
+
+    // Add accessModeSufficient only if not present
+    if (!hasMetaValue('schema:accessModeSufficient')) {
+      metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
+    }
+
+    // Add accessibilityHazard only if not present
+    if (!hasMetaValue('schema:accessibilityHazard')) {
+      metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
+    }
+
+    if (metadataToAdd.length === 0) {
+      return [{
+        success: true,
+        filePath: opf.path,
+        modificationType: 'add_accessibility_metadata',
+        description: 'Accessibility metadata already present',
+      }];
+    }
+
+    const insertContent = '\n    ' + metadataToAdd.join('\n    ');
+    modified = modified.replace('</metadata>', insertContent + '\n</metadata>');
+
+    await this.updateOPF(zip, opf.path, modified);
+
+    results.push({
+      success: true,
+      filePath: opf.path,
+      modificationType: 'add_accessibility_metadata',
+      description: `Added ${metadataToAdd.length} accessibility metadata elements`,
+      after: metadataToAdd.join('\n'),
+    });
+
+    return results;
+  }
+
+  Issue 2: Add addNavAriaLabels Method - Preserve epub:type
+
+  Add this new method that properly adds aria-label WITHOUT removing epub:type:
+
+  async addNavAriaLabels(
+    zip: JSZip,
+    labels: { toc?: string; landmarks?: string; pageList?: string }
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const files = Object.keys(zip.files);
+
+    // Find nav files
+    const navFiles = files.filter(f =>
+      /nav\.(x?html?)$/i.test(f) ||
+      (f.includes('nav') && /\.(x?html?)$/i.test(f))
+    );
+
+    for (const filePath of navFiles) {
+      let content = await zip.file(filePath)?.async('text');
+      if (!content) continue;
+
+      let modified = false;
+      const changes: string[] = [];
+
+      // Add aria-label to toc nav (match nav with epub:type containing "toc")
+      if (labels.toc) {
+        const tocPattern = /(<nav\s+)([^>]*\bepub:type\s*=\s*["'][^"']*\btoc\b[^"']*["'][^>]*)(>)/gi;
+        content = content.replace(tocPattern, (match, start, attrs, end) => {
+          // Skip if already has aria-label
+          if (/aria-label\s*=/i.test(attrs)) return match;
+          // Skip if already has role (we'll add it separately if needed)
+          const needsRole = !/\brole\s*=/i.test(attrs);
+          const roleAttr = needsRole ? ' role="doc-toc"' : '';
+          changes.push(`Added aria-label="${labels.toc}" to toc nav`);
+          modified = true;
+          return `${start}${attrs}${roleAttr} aria-label="${labels.toc}"${end}`;
+        });
+      }
+
+      // Add aria-label to landmarks nav
+      if (labels.landmarks) {
+        const landmarksPattern = /(<nav\s+)([^>]*\bepub:type\s*=\s*["'][^"']*\blandmarks\b[^"']*["'][^>]*)(>)/gi;
+        content = content.replace(landmarksPattern, (match, start, attrs, end) => {
+          if (/aria-label\s*=/i.test(attrs)) return match;
+          const needsRole = !/\brole\s*=/i.test(attrs);
+          const roleAttr = needsRole ? ' role="navigation"' : '';
+          changes.push(`Added aria-label="${labels.landmarks}" to landmarks nav`);
+          modified = true;
+          return `${start}${attrs}${roleAttr} aria-label="${labels.landmarks}"${end}`;
+        });
+      }
+
+      // Add aria-label to page-list nav
+      if (labels.pageList) {
+        const pageListPattern = /(<nav\s+)([^>]*\bepub:type\s*=\s*["'][^"']*\bpage-list\b[^"']*["'][^>]*)(>)/gi;
+        content = content.replace(pageListPattern, (match, start, attrs, end) => {
+          if (/aria-label\s*=/i.test(attrs)) return match;
+          const needsRole = !/\brole\s*=/i.test(attrs);
+          const roleAttr = needsRole ? ' role="doc-pagelist"' : '';
+          changes.push(`Added aria-label="${labels.pageList}" to page-list nav`);
+          modified = true;
+          return `${start}${attrs}${roleAttr} aria-label="${labels.pageList}"${end}`;
+        });
+      }
+
+      if (modified) {
+        zip.file(filePath, content);
+        results.push({
+          success: true,
+          filePath,
+          modificationType: 'add_nav_aria_labels',
+          description: changes.join('; '),
+        });
+      }
+    }
+
+    if (results.length === 0) {
+      results.push({
+        success: true,
+        filePath: 'nav',
+        modificationType: 'add_nav_aria_labels',
+        description: 'No nav elements found or labels already present',
+      });
+    }
+
+    return results;
+  }
+
+  Issue 3: Add addAriaRolesToEpubTypes Method - Include rearnote
+
+  Add this method that adds ARIA roles to epub:type elements, including rearnote → doc-endnote:
+
+  async addAriaRolesToEpubTypes(
+    zip: JSZip,
+    epubTypesToFix: Array<{ epubType: string; role: string }>
+  ): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const files = Object.keys(zip.files);
+
+    // Types to skip (document divisions that don't need/shouldn't have explicit roles)
+    const skipTypes = new Set([
+      'frontmatter', 'bodymatter', 'backmatter', 'cover'
+    ]);
+
+    // EPUB type to ARIA role mapping (including rearnote!)
+    const EPUB_TYPE_TO_ROLE: Record<string, string> = {
+      'chapter': 'doc-chapter',
+      'part': 'doc-part',
+      'appendix': 'doc-appendix',
+      'bibliography': 'doc-bibliography',
+      'colophon': 'doc-colophon',
+      'conclusion': 'doc-conclusion',
+      'dedication': 'doc-dedication',
+      'endnotes': 'doc-endnotes',
+      'endnote': 'doc-endnote',
+      'epilogue': 'doc-epilogue',
+      'epigraph': 'doc-epigraph',
+      'errata': 'doc-errata',
+      'footnote': 'doc-footnote',
+      'footnotes': 'doc-footnotes',
+      'foreword': 'doc-foreword',
+      'glossary': 'doc-glossary',
+      'index': 'doc-index',
+      'introduction': 'doc-introduction',
+      'noteref': 'doc-noteref',
+      'notice': 'doc-notice',
+      'pagebreak': 'doc-pagebreak',
+      'pagelist': 'doc-pagelist',
+      'preface': 'doc-preface',
+      'prologue': 'doc-prologue',
+      'pullquote': 'doc-pullquote',
+      'qna': 'doc-qna',
+      'toc': 'doc-toc',
+      'abstract': 'doc-abstract',
+      'acknowledgments': 'doc-acknowledgments',
+      'afterword': 'doc-afterword',
+      'credits': 'doc-credits',
+      'subtitle': 'doc-subtitle',
+      'titlepage': 'doc-titlepage',
+      'landmarks': 'navigation',
+      'loi': 'doc-loi',
+      'lot': 'doc-lot',
+      'rearnote': 'doc-endnote',      // IMPORTANT: rearnote maps to doc-endnote
+      'rearnotes': 'doc-endnotes',    // IMPORTANT: rearnotes maps to doc-endnotes
+      'sidebar': 'complementary',
+      'tip': 'doc-tip',
+    };
+
+    const xhtmlFiles = files.filter(f => /\.(x?html?)$/i.test(f) && !zip.files[f].dir);
+
+    for (const filePath of xhtmlFiles) {
+      let content = await zip.file(filePath)?.async('text');
+      if (!content) continue;
+
+      let modified = false;
+      const changes: string[] = [];
+
+      // Process each epub:type to fix
+      for (const { epubType, role } of epubTypesToFix) {
+        // Skip types that shouldn't get roles
+        if (skipTypes.has(epubType.toLowerCase())) continue;
+
+        // Determine the role to use
+        const targetRole = role || EPUB_TYPE_TO_ROLE[epubType.toLowerCase()] || `doc-${epubType}`;
+
+        // Match any tag with epub:type containing this value
+        // This regex captures: <tagName ... epub:type="...value..." ...>
+        const tagPattern = new RegExp(
+          `(<[a-zA-Z][a-zA-Z0-9]*)(\\s+[^>]*?\\bepub:type\\s*=\\s*["'][^"']*\\b${epubType}\\b[^"']*["'][^>]*?)(>)`,
+          'gi'
+        );
+
+        content = content.replace(tagPattern, (fullMatch, tagStart, attrs, tagEnd) => {
+          // Skip if already has a role attribute
+          if (/\brole\s*=\s*["']/i.test(fullMatch)) {
+            return fullMatch;
+          }
+
+          changes.push(`Added role="${targetRole}" to epub:type="${epubType}"`);
+          modified = true;
+          return `${tagStart} role="${targetRole}"${attrs}${tagEnd}`;
+        });
+      }
+
+      if (modified) {
+        zip.file(filePath, content);
+        results.push({
+          success: true,
+          filePath,
+          modificationType: 'add_aria_roles_to_epub_types',
+          description: `${changes.length} role(s) added`,
+          after: changes.slice(0, 10).join('\n') + (changes.length > 10 ? `\n... and ${changes.length - 10} more` : ''),
+        });
+      }
+    }
+
+    if (results.length === 0) {
+      results.push({
+        success: true,
+        filePath: 'all',
+        modificationType: 'add_aria_roles_to_epub_types',
+        description: 'No epub:type elements needed roles or all already have roles',
+      });
+    }
+
+    return results;
+  }
+
+  Also add EPUB-NAV-002 case to epub.controller.ts
+
+  In the applySpecificFix method switch statement, add:
+
+  case 'EPUB-NAV-002':
+    // Add aria-labels to nav landmarks (Quick Fix)
+    results = await epubModifier.addNavAriaLabels(zip, {
+      toc: options?.tocLabel,
+      landmarks: options?.landmarksLabel,
+      pageList: options?.pageListLabel,
+    });
+    break;
