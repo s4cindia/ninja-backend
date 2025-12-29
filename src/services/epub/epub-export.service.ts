@@ -306,12 +306,38 @@ class EPUBExportService {
 
     const fileName = (job.input as { fileName?: string })?.fileName || 'document.epub';
     
-    const fixedCodes = new Set<string>();
+    const planJob = await prisma.job.findFirst({
+      where: {
+        type: 'BATCH_VALIDATION',
+        input: {
+          path: ['sourceJobId'],
+          equals: jobId,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    
+    const planOutput = planJob?.output as Record<string, unknown> | null;
+    const remediationTasks = (planOutput?.tasks as Array<Record<string, unknown>>) || [];
+    
+    const completedTasksByCode = new Map<string, Set<string>>();
+    const completedCodes = new Set<string>();
+    
+    for (const task of remediationTasks) {
+      if (task.status === 'completed') {
+        const issueCode = String(task.issueCode || '');
+        completedCodes.add(issueCode);
+        if (!completedTasksByCode.has(issueCode)) {
+          completedTasksByCode.set(issueCode, new Set());
+        }
+        completedTasksByCode.get(issueCode)!.add(String(task.location || ''));
+      }
+    }
+
     const modifications = (autoRemediation.modifications as Array<Record<string, unknown>> || [])
       .filter((m: Record<string, unknown>) => m.success)
       .map((m: Record<string, unknown>) => {
         const code = String(m.issueCode || '');
-        fixedCodes.add(`${code}:${m.location || ''}`);
         return {
           type: code,
           category: this.getCategory(code),
@@ -324,8 +350,10 @@ class EPUBExportService {
     const issues: IssueDetail[] = auditResult.map((issue: Record<string, unknown>) => {
       const code = String(issue.code || '');
       const location = String(issue.location || '');
-      const isFixed = fixedCodes.has(`${code}:${location}`);
       const isAutoFixable = this.isAutoFixable(code);
+      
+      const isFixed = completedCodes.has(code) || 
+        (completedTasksByCode.has(code) && completedTasksByCode.get(code)!.has(location));
       
       let wcagCriteria: string[] = [];
       if (Array.isArray(issue.wcagCriteria)) {
