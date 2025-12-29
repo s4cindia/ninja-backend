@@ -355,12 +355,12 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
           const attrName = keyAttrMatch[1];
           const attrValue = keyAttrMatch[2];
           
-          const tagPattern = new RegExp(`<${tagName}\\s+[\\s\\S]*?${escapeRegExp(attrName)}\\s*=\\s*["'][^"']*${escapeRegExp(attrValue)}[^"']*["'][\\s\\S]*?>`, 'gi');
+          const tagPattern = new RegExp(`<${tagName}(?=[^>]*\\b${escapeRegExp(attrName)}\\s*=\\s*["'][^"']*${escapeRegExp(attrValue)}[^"']*["'])[^>]*>`, 'gi');
           const specificMatch = content.match(tagPattern);
           
           if (specificMatch && specificMatch.length > 0) {
             const matchedTag = specificMatch[0];
-            const matchedAttrsMatch = matchedTag.match(/<\w+\s*([\s\S]*?)>/);
+            const matchedAttrsMatch = matchedTag.match(/<\w+\s*([^>]*)>/);
             const matchedAttrs = matchedAttrsMatch ? matchedAttrsMatch[1] : '';
             
             const mergedTag = mergeTagAttributes(tagName, matchedAttrs, newAttrs);
