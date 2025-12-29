@@ -94,7 +94,7 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
 
   const tagName = tagMatch[1];
   const oldAttrs = tagMatch[2].trim();
-  const tagRegex = new RegExp(`<${tagName}\\s+[^>]*>`, 'g');
+  const tagRegex = new RegExp(`<${tagName}\\s+[\\s\\S]*?>`, 'g');
 
   let match;
   while ((match = tagRegex.exec(content)) !== null) {
@@ -117,7 +117,7 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
           };
         }
 
-        const foundAttrsMatch = foundTag.match(/<\w+\s*(.*)>/);
+        const foundAttrsMatch = foundTag.match(/<\w+\s*([\s\S]*?)>/);
         const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
         const newAttrs = newTagMatch[2];
         const mergedTag = mergeTagAttributes(tagName, foundAttrs, newAttrs);
@@ -240,7 +240,7 @@ function mergeBlockReplacementTags(
   }
   
   const tagName = oldTagInfo.tagName;
-  const oldTagPattern = new RegExp(`<${tagName}\\s+[^>]*>`, 'gi');
+  const oldTagPattern = new RegExp(`<${tagName}\\s+[\\s\\S]*?>`, 'gi');
   
   const keyAttrMatch = oldTagInfo.tag.match(/([a-zA-Z][a-zA-Z0-9:_-]*)\s*=\s*["']([^"']+)["']/);
   if (!keyAttrMatch) {
@@ -263,9 +263,9 @@ function mergeBlockReplacementTags(
     return { result: content, matched: false };
   }
   
-  const foundAttrsMatch = foundTag.match(/<\w+\s*(.*)>/);
+  const foundAttrsMatch = foundTag.match(/<\w+\s*([\s\S]*?)>/);
   const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
-  const newTagAttrsMatch = newTagInfo.tag.match(/<\w+\s*(.*)>/);
+  const newTagAttrsMatch = newTagInfo.tag.match(/<\w+\s*([\s\S]*?)>/);
   const newTagAttrs = newTagAttrsMatch ? newTagAttrsMatch[1] : '';
   
   const mergedTag = mergeTagAttributes(tagName, foundAttrs, newTagAttrs);
