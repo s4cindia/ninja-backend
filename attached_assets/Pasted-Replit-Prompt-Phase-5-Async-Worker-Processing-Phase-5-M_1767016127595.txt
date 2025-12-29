@@ -1,0 +1,145 @@
+Replit Prompt - Phase 5: Async Worker Processing
+
+  Phase 5: Move Batch Processing to BullMQ Workers
+
+  1. Update src/queues/index.ts to add batch queue:
+
+  Add to QUEUE_NAMES:
+  export const QUEUE_NAMES = {
+    ACCESSIBILITY: 'accessibility-validation',
+    VPAT: 'vpat-generation',
+    FILE_PROCESSING: 'file-processing',
+    BATCH_REMEDIATION: 'batch-remediation',
+  } as const;
+
+  Add batch queue types:
+  export interface BatchJobData {
+    batchId: string;
+    tenantId: string;
+    options: {
+      fixCodes?: string[];
+      stopOnError?: boolean;
+      generateComparison?: boolean;
+    };
+  }
+
+  export interface BatchJobResult {
+    batchId: string;
+    completedJobs: number;
+    failedJobs: number;
+    totalIssuesFixed: number;
+  }
+
+  Add queue variables:
+  let _batchQueue: Queue<BatchJobData, BatchJobResult> | null = null;
+
+  Add to ensureQueuesInitialized():
+  _batchQueue = new Queue<BatchJobData, BatchJobResult>(
+    QUEUE_NAMES.BATCH_REMEDIATION,
+    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 } }
+  );
+
+  Add getter:
+  export function getBatchQueue(): Queue<BatchJobData, BatchJobResult> | null {
+    ensureQueuesInitialized();
+    return _batchQueue;
+  }
+
+
+  2. Create src/workers/processors/batch.processor.ts:
+
+  import { Job } from 'bullmq';
+  import { BatchJobData, BatchJobResult } from '../../queues';
+  import { batchRemediationService } from '../../services/epub/batch-remediation.service';
+  import { logger } from '../../lib/logger';
+
+  export async function processBatchJob(
+    job: Job<BatchJobData, BatchJobResult>
+  ): Promise<BatchJobResult> {
+    const { batchId, tenantId, options } = job.data;
+
+    logger.info(`[BatchWorker] Starting batch ${batchId}`);
+
+    try {
+      const result = await batchRemediationService.processBatchSync(
+        batchId,
+        tenantId,
+        options
+      );
+
+      return {
+        batchId,
+        completedJobs: result.completedJobs,
+        failedJobs: result.failedJobs,
+        totalIssuesFixed: result.summary.totalIssuesFixed,
+      };
+    } catch (error) {
+      logger.error(`[BatchWorker] Batch ${batchId} failed`, error);
+      throw error;
+    }
+  }
+
+
+  3. Update src/workers/index.ts to register batch worker:
+
+  import { processBatchJob } from './processors/batch.processor';
+  import { QUEUE_NAMES } from '../queues';
+
+  // In startWorkers() function, add:
+  const batchWorker = createWorker({
+    queueName: QUEUE_NAMES.BATCH_REMEDIATION,
+    processor: processBatchJob,
+    concurrency: 1,
+  });
+  if (batchWorker) workers.push(batchWorker);
+
+
+  4. Update src/services/epub/batch-remediation.service.ts:
+
+  Add import:
+  import { getBatchQueue, areQueuesAvailable } from '../../queues';
+
+  Rename existing processBatch to processBatchSync (keep all existing logic)
+
+  Add new processBatch that queues:
+  async processBatch(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batch = await this.getBatchStatus(batchId, tenantId);
+    if (!batch) throw new Error('Batch not found');
+
+    batch.status = 'processing';
+    batch.startedAt = new Date();
+    await this.updateBatchStatus(batchId, batch);
+
+    if (areQueuesAvailable()) {
+      const queue = getBatchQueue();
+      if (queue) {
+        await queue.add(`batch-${batchId}`, {
+          batchId,
+          tenantId,
+          options,
+        }, {
+          jobId: batchId,
+        });
+
+        logger.info(`Batch ${batchId} queued for async processing`);
+        return batch;
+      }
+    }
+
+    // Fallback to sync processing
+    logger.info(`Batch ${batchId} processing synchronously (Redis not available)`);
+    return this.processBatchSync(batchId, tenantId, options);
+  }
+
+  // Keep processBatchSync as the actual processing logic (renamed from old processBatch)
+  async processBatchSync(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    // ... existing processing logic ...
+  }

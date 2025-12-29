@@ -1,11 +1,13 @@
 import { Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, JobData, JobResult } from '../queues';
+import { QUEUE_NAMES, JobData, JobResult, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
+import { processBatchJob } from './processors/batch.processor';
+import { isRedisConfigured } from '../lib/redis';
 
-let workers: Worker<JobData, JobResult>[] = [];
+let workers: Worker[] = [];
 
 export function startWorkers(): void {
   console.log('🚀 Starting job workers...');
@@ -30,6 +32,24 @@ export function startWorkers(): void {
     concurrency: 2,
   });
   if (fileWorker) workers.push(fileWorker);
+
+  if (isRedisConfigured()) {
+    const connection = getBullMQConnection();
+    if (connection) {
+      const batchWorker = new Worker<BatchJobData, BatchJobResult>(
+        QUEUE_NAMES.BATCH_REMEDIATION,
+        processBatchJob,
+        { connection, concurrency: 1, autorun: true }
+      );
+      batchWorker.on('completed', (job) => {
+        console.log(`📗 Batch job ${job.id} completed`);
+      });
+      batchWorker.on('failed', (job, err) => {
+        console.error(`📕 Batch job ${job?.id} failed:`, err.message);
+      });
+      workers.push(batchWorker);
+    }
+  }
 
   if (workers.length > 0) {
     console.log(`✅ ${workers.length} workers started`);

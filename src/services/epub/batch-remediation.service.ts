@@ -5,6 +5,7 @@ import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { Prisma, JobStatus } from '@prisma/client';
 import { sseService } from '../../sse/sse.service';
+import { getBatchQueue, areQueuesAvailable } from '../../queues';
 
 type BatchStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
@@ -111,6 +112,38 @@ class BatchRemediationService {
   }
 
   async processBatch(
+    batchId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchRemediationResult> {
+    const batch = await this.getBatchStatus(batchId, tenantId);
+    if (!batch) throw new Error('Batch not found');
+
+    batch.status = 'processing';
+    batch.startedAt = new Date();
+    await this.updateBatchStatus(batchId, batch);
+
+    if (areQueuesAvailable()) {
+      const queue = getBatchQueue();
+      if (queue) {
+        await queue.add(`batch-${batchId}`, {
+          batchId,
+          tenantId,
+          options,
+        }, {
+          jobId: batchId,
+        });
+
+        logger.info(`Batch ${batchId} queued for async processing`);
+        return batch;
+      }
+    }
+
+    logger.info(`Batch ${batchId} processing synchronously (Redis not available)`);
+    return this.processBatchSync(batchId, tenantId, options);
+  }
+
+  async processBatchSync(
     batchId: string,
     tenantId: string,
     options: BatchOptions = {}
