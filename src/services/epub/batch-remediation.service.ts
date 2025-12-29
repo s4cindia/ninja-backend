@@ -189,6 +189,7 @@ class BatchRemediationService {
           jobIndex: i,
           totalJobs: result.jobs.length,
         }, tenantId);
+        console.log(`[SSE] Broadcasting job_started for: ${job.jobId}`);
 
         const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
         if (!jobRecord) {
@@ -241,6 +242,7 @@ class BatchRemediationService {
           issuesFixed: job.issuesFixed,
           progress: Math.round(((i + 1) / result.jobs.length) * 100),
         }, tenantId);
+        console.log(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
 
         logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
 
@@ -256,6 +258,7 @@ class BatchRemediationService {
           jobId: job.jobId,
           error: job.error,
         }, tenantId);
+        console.log(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
 
         logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
 
@@ -282,7 +285,10 @@ class BatchRemediationService {
       batchId,
       status: result.status,
       summary: result.summary,
+      completedJobs: result.completedJobs,
+      failedJobs: result.failedJobs,
     }, tenantId);
+    console.log(`[SSE] Broadcasting batch_completed for: ${batchId}`);
 
     logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
 

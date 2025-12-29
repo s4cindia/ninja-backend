@@ -75,7 +75,11 @@ class SSEService {
   sendToClient(clientId: string, data: unknown): void {
     const client = this.clients.get(clientId);
     if (client && !client.response.writableEnded) {
-      client.response.write(`data: ${JSON.stringify(data)}\n\n`);
+      const message = `data: ${JSON.stringify(data)}\n\n`;
+      client.response.write(message);
+      if (typeof (client.response as unknown as { flush?: () => void }).flush === 'function') {
+        (client.response as unknown as { flush: () => void }).flush();
+      }
     }
   }
 

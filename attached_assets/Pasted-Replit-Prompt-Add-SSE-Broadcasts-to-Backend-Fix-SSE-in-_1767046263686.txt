@@ -1,0 +1,76 @@
+Replit Prompt - Add SSE Broadcasts to Backend
+
+  Fix SSE in backend: Add broadcast calls to batch-remediation.service.ts
+
+  The SSE connection is established but no events are being sent. Need to call sseService.broadcastToChannel() at each processing step.
+
+  1. Add import at top of src/services/epub/batch-remediation.service.ts:
+
+  import { sseService } from '../../sse/sse.service';
+
+
+  2. In the processBatchSync method, add SSE broadcasts at these points:
+
+  AFTER job starts processing (when job.status = 'processing'):
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_started',
+    batchId,
+    jobId: job.jobId,
+    jobIndex: i,
+    totalJobs: result.jobs.length,
+  }, tenantId);
+  console.log('[SSE] Broadcasting job_started for:', job.jobId);
+
+
+  AFTER job completes successfully:
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_completed',
+    batchId,
+    jobId: job.jobId,
+    issuesFixed: job.issuesFixed,
+    progress: Math.round(((i + 1) / result.jobs.length) * 100),
+  }, tenantId);
+  console.log('[SSE] Broadcasting job_completed for:', job.jobId);
+
+
+  AFTER job fails (in catch block):
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'job_failed',
+    batchId,
+    jobId: job.jobId,
+    error: job.error,
+  }, tenantId);
+  console.log('[SSE] Broadcasting job_failed for:', job.jobId);
+
+
+  AFTER batch completes (at end of processBatchSync):
+  sseService.broadcastToChannel(`batch:${batchId}`, {
+    type: 'batch_completed',
+    batchId,
+    status: result.status,
+    summary: result.summary,
+    completedJobs: result.completedJobs,
+    failedJobs: result.failedJobs,
+  }, tenantId);
+  console.log('[SSE] Broadcasting batch_completed for:', batchId);
+
+
+  3. Also send an initial 'connected' event when SSE client connects. In src/routes/sse.routes.ts, after sseService.addClient():
+
+  // Send initial connection confirmation
+  sseService.sendToClient(clientId, { type: 'connected', clientId, batchId });
+
+
+  4. Make sure the sse.service.ts sendToClient method properly formats SSE data:
+
+  sendToClient(clientId: string, data: unknown): void {
+    const client = this.clients.get(clientId);
+    if (client && !client.response.writableEnded) {
+      const message = `data: ${JSON.stringify(data)}\n\n`;
+      client.response.write(message);
+      // Flush to ensure immediate delivery
+      if (typeof (client.response as any).flush === 'function') {
+        (client.response as any).flush();
+      }
+    }
+  }

@@ -63,6 +63,7 @@ router.get('/batch/:batchId/progress', async (req: Request, res: Response) => {
 
     const clientId = sseService.addClient(res, tenantId);
     sseService.subscribeToChannel(clientId, `batch:${batchId}`);
+    sseService.sendToClient(clientId, { type: 'subscribed', batchId, channel: `batch:${batchId}` });
   } catch (err) {
     if (err instanceof jwt.JsonWebTokenError) {
       res.status(401).json({ success: false, error: 'Invalid token' });
