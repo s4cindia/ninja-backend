@@ -79,6 +79,24 @@ class AutoRemediationService {
     'EPUB-FIG-001': async (zip) => {
       return epubModifier.addFigureStructure(zip);
     },
+    'COLOR-CONTRAST': async (zip, options) => {
+      const contrastIssues = options?.contrastIssues as Array<{
+        filePath: string;
+        foreground: string;
+        background: string;
+        selector?: string;
+      }> | undefined;
+      return epubModifier.fixColorContrast(zip, contrastIssues);
+    },
+    'EPUB-CONTRAST-001': async (zip, options) => {
+      const contrastIssues = options?.contrastIssues as Array<{
+        filePath: string;
+        foreground: string;
+        background: string;
+        selector?: string;
+      }> | undefined;
+      return epubModifier.fixColorContrast(zip, contrastIssues);
+    },
   };
 
   async runAutoRemediation(

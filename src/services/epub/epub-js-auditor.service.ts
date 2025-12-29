@@ -308,7 +308,10 @@ class EPUBJSAuditorService {
     }
 
     const hasMainLandmark = $('[role="main"], main').length > 0;
-    if (!hasMainLandmark) {
+    const isNavFile = filePath.toLowerCase().includes('nav') || 
+                      $('nav[epub\\:type="toc"], nav[epub\\:type="landmarks"]').length > 0 ||
+                      $('nav').length > 0 && $('body > nav').length === $('body').children().length;
+    if (!hasMainLandmark && !isNavFile) {
       issues.push(createIssue({
         code: 'EPUB-STRUCT-004',
         severity: 'minor',

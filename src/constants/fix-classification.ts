@@ -9,6 +9,8 @@ export const AUTO_FIXABLE_CODES = new Set([
   'EPUB-STRUCT-003',
   'EPUB-STRUCT-004',
   'EPUB-FIG-001',
+  'COLOR-CONTRAST',
+  'EPUB-CONTRAST-001',
 ]);
 
 export const QUICK_FIXABLE_CODES = new Set([
@@ -20,8 +22,6 @@ export const QUICK_FIXABLE_CODES = new Set([
   'EPUB-IMG-001',
   'IMG-001',
   'ACE-IMG-001',
-  'EPUB-CONTRAST-001',
-  'COLOR-CONTRAST',
   'EPUB-STRUCT-002',
   'EPUB-SEM-003',
   'LANDMARK-UNIQUE',
