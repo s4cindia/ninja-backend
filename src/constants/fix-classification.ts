@@ -1,4 +1,8 @@
-export const AUTO_FIXABLE_CODES = new Set([
+import { isColorContrastAutoFixEnabled } from '../config/remediation-config';
+
+const COLOR_CONTRAST_CODES = ['COLOR-CONTRAST', 'EPUB-CONTRAST-001'];
+
+const BASE_AUTO_FIXABLE_CODES = new Set([
   'EPUB-META-001',
   'EPUB-META-002',
   'EPUB-META-003',
@@ -9,9 +13,17 @@ export const AUTO_FIXABLE_CODES = new Set([
   'EPUB-STRUCT-003',
   'EPUB-STRUCT-004',
   'EPUB-FIG-001',
-  'COLOR-CONTRAST',
-  'EPUB-CONTRAST-001',
 ]);
+
+export function getAutoFixableCodes(): Set<string> {
+  const codes = new Set(BASE_AUTO_FIXABLE_CODES);
+  if (isColorContrastAutoFixEnabled()) {
+    COLOR_CONTRAST_CODES.forEach(code => codes.add(code));
+  }
+  return codes;
+}
+
+export const AUTO_FIXABLE_CODES = BASE_AUTO_FIXABLE_CODES;
 
 export const QUICK_FIXABLE_CODES = new Set([
   'METADATA-ACCESSMODE',
@@ -58,12 +70,18 @@ export function normalizeIssueCode(code: string): string {
 
 export function getFixType(issueCode: string): FixType {
   const normalized = normalizeIssueCode(issueCode);
+  const autoFixable = getAutoFixableCodes();
 
-  if (AUTO_FIXABLE_CODES.has(normalized) || AUTO_FIXABLE_CODES.has(issueCode)) {
+  if (autoFixable.has(normalized) || autoFixable.has(issueCode)) {
     return 'auto';
   }
 
   if (QUICK_FIXABLE_CODES.has(normalized) || QUICK_FIXABLE_CODES.has(issueCode)) {
+    return 'quickfix';
+  }
+
+  if (!isColorContrastAutoFixEnabled() && 
+      (COLOR_CONTRAST_CODES.includes(normalized) || COLOR_CONTRAST_CODES.includes(issueCode))) {
     return 'quickfix';
   }
 
