@@ -309,6 +309,20 @@ class EPUBModifierService {
     zip.file(opfPath, content);
   }
 
+  private cleanExistingMetadata(content: string, properties: string[]): string {
+    let cleaned = content;
+    for (const prop of properties) {
+      const escapedProp = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `\\s*<meta[^>]*property\\s*=\\s*["']${escapedProp}["'][^>]*>[^<]*</meta>`,
+        'gi'
+      );
+      cleaned = cleaned.replace(pattern, '');
+    }
+    cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
+    return cleaned;
+  }
+
   async addLanguage(
     zip: JSZip,
     language: string = 'en'
@@ -375,49 +389,20 @@ class EPUBModifierService {
       }];
     }
 
-    let modified = opf.content;
+    let modified = this.cleanExistingMetadata(opf.content, [
+      'schema:accessibilityFeature',
+      'schema:accessibilityHazard',
+    ]);
+
     const metadataToAdd: string[] = [];
 
-    // Helper to check if a specific metadata value already exists
-    const hasMetaValue = (property: string, value?: string): boolean => {
-      if (value) {
-        // Check for exact property + value combination
-        const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const pattern = new RegExp(
-          `<meta[^>]*property\\s*=\\s*["']${escapedProp}["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
-          'i'
-        );
-        return pattern.test(modified);
-      }
-      // Just check if property exists
-      const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`property\\s*=\\s*["']${escapedProp}["']`, 'i');
-      return pattern.test(modified);
-    };
-
-    // Add accessibility features (check each individually with exact value matching)
     for (const feature of features) {
-      if (!hasMetaValue('schema:accessibilityFeature', feature)) {
-        metadataToAdd.push(
-          `<meta property="schema:accessibilityFeature">${feature}</meta>`
-        );
-      }
+      metadataToAdd.push(
+        `<meta property="schema:accessibilityFeature">${feature}</meta>`
+      );
     }
 
-    // Add accessibilityHazard only if not present
-    if (!hasMetaValue('schema:accessibilityHazard')) {
-      metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
-    }
-
-    if (metadataToAdd.length === 0) {
-      return [{
-        success: true,
-        filePath: opf.path,
-        modificationType: 'add_accessibility_metadata',
-        description: 'Accessibility metadata already present',
-      }];
-    }
+    metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
 
     const insertContent = '\n    ' + metadataToAdd.join('\n    ');
     modified = modified.replace('</metadata>', insertContent + '\n</metadata>');
@@ -450,48 +435,25 @@ class EPUBModifierService {
       }];
     }
 
-    let modified = opf.content;
+    let modified = this.cleanExistingMetadata(opf.content, [
+      'schema:accessMode',
+      'schema:accessModeSufficient',
+    ]);
+
     const metadataToAdd: string[] = [];
 
-    const hasAccessMode = (value: string): boolean => {
-      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(
-        `<meta[^>]*property\\s*=\\s*["']schema:accessMode["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
-        'i'
-      );
-      return pattern.test(modified);
-    };
-
-    const hasAccessModeSufficient = (value: string): boolean => {
-      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(
-        `<meta[^>]*property\\s*=\\s*["']schema:accessModeSufficient["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
-        'i'
-      );
-      return pattern.test(modified);
-    };
-
-    if (modes.textual && !hasAccessMode('textual')) {
+    if (modes.textual) {
       metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
     }
-    if (modes.visual && !hasAccessMode('visual')) {
+    if (modes.visual) {
       metadataToAdd.push('<meta property="schema:accessMode">visual</meta>');
     }
-    if (modes.auditory && !hasAccessMode('auditory')) {
+    if (modes.auditory) {
       metadataToAdd.push('<meta property="schema:accessMode">auditory</meta>');
     }
 
-    if (modes.textual && !hasAccessModeSufficient('textual')) {
+    if (modes.textual) {
       metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
-    }
-
-    if (metadataToAdd.length === 0) {
-      return [{
-        success: true,
-        filePath: opf.path,
-        modificationType: 'add_access_modes',
-        description: 'Access modes already present',
-      }];
     }
 
     const insertContent = '\n    ' + metadataToAdd.join('\n    ');
