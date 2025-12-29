@@ -1,0 +1,84 @@
+Root cause confirmed: tryTagPatternMatch does a full replacement, dropping attributes not in newContent.
+
+  Recommendation: Option A - Modify tryTagPatternMatch to preserve existing attributes.
+
+  This is the better fix because:
+  1. It's robust - handles all cases automatically
+  2. Templates don't need to be updated
+  3. Prevents similar issues with other attributes in the future
+
+  Here's the fix for tryTagPatternMatch:
+
+  function tryTagPatternMatch(content: string, oldContent: string, newContent: string): FlexibleMatchResult {
+    const tagMatch = oldContent.match(/<(\w+)([^>]*)>/);
+    if (tagMatch) {
+      const tagName = tagMatch[1];
+      const oldAttrs = tagMatch[2];
+
+      // Find the tag in content
+      const tagPattern = new RegExp(`<${tagName}\\s+[^>]*>`, 'gi');
+      const foundMatch = content.match(tagPattern);
+      if (!foundMatch) {
+        return { matched: false };
+      }
+      const foundTag = foundMatch[0];
+
+      // Parse new content to get new attributes
+      const newTagMatch = newContent.match(/<(\w+)([^>]*)>/);
+      if (!newTagMatch) {
+        return { matched: false };
+      }
+
+      // Extract attributes from found tag (to preserve)
+      const foundAttrsMatch = foundTag.match(/<\w+(.*)>/);
+      const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
+
+      // Extract attributes from new content (to add)
+      const newAttrs = newTagMatch[2];
+
+      // Merge attributes: preserve existing, add new ones
+      const mergedTag = mergeTagAttributes(tagName, foundAttrs, newAttrs);
+
+      return {
+        matched: true,
+        matchedContent: foundTag,
+        newContent: content.replace(foundTag, mergedTag),
+      };
+    }
+    return { matched: false };
+  }
+
+  // Helper to merge attributes, preserving existing and adding new
+  function mergeTagAttributes(tagName: string, existingAttrs: string, newAttrs: string): string {
+    // Parse existing attributes
+    const existingMap = parseAttributes(existingAttrs);
+    // Parse new attributes
+    const newMap = parseAttributes(newAttrs);
+
+    // Merge: new attributes override existing, but preserve ones not in new
+    const merged = { ...existingMap, ...newMap };
+
+    // Rebuild tag
+    const attrString = Object.entries(merged)
+      .map(([key, value]) => `${key}="${value}"`)
+      .join(' ');
+
+    return `<${tagName} ${attrString}>`;
+  }
+
+  function parseAttributes(attrString: string): Record<string, string> {
+    const attrs: Record<string, string> = {};
+    const attrPattern = /(\S+)\s*=\s*["']([^"']*)["']/g;
+    let match;
+    while ((match = attrPattern.exec(attrString)) !== null) {
+      attrs[match[1]] = match[2];
+    }
+    return attrs;
+  }
+
+  This fix:
+  1. Preserves epub:type and any other existing attributes
+  2. Adds new attributes from the template (role, aria-label)
+  3. If an attribute exists in both, the new value wins
+
+  Would you like me to provide this as a complete replacement for the relevant section of epub-modifier.service.ts?

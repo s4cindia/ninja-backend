@@ -66,42 +66,69 @@ function tryEpubTypePatternMatch(content: string, oldContent: string, newContent
   return { matched: false };
 }
 
+function parseAttributes(attrString: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrPattern = /([a-zA-Z][a-zA-Z0-9:_-]*)\s*=\s*["']([^"']*)["']/g;
+  let match;
+  while ((match = attrPattern.exec(attrString)) !== null) {
+    attrs[match[1]] = match[2];
+  }
+  return attrs;
+}
+
+function mergeTagAttributes(tagName: string, existingAttrs: string, newAttrs: string): string {
+  const existingMap = parseAttributes(existingAttrs);
+  const newMap = parseAttributes(newAttrs);
+  const merged = { ...existingMap, ...newMap };
+  const attrString = Object.entries(merged)
+    .map(([key, value]) => `${key}="${value}"`)
+    .join(' ');
+  return `<${tagName}${attrString ? ' ' + attrString : ''}>`;
+}
+
 function tryTagPatternMatch(content: string, oldContent: string, newContent: string): FlexibleMatchResult {
   const tagMatch = oldContent.match(/<(\w+)([^>]*)>/);
-  if (tagMatch) {
-    const tagName = tagMatch[1];
-    const attrs = tagMatch[2].trim();
-    const tagRegex = new RegExp(`<${tagName}\\s+[^>]*>`, 'g');
-    let match;
+  if (!tagMatch) {
+    return { matched: false };
+  }
 
-    while ((match = tagRegex.exec(content)) !== null) {
-      const foundTag = match[0];
-      const keyAttrMatch = attrs.match(/(\w+)\s*=\s*["']([^"']+)["']/);
+  const tagName = tagMatch[1];
+  const oldAttrs = tagMatch[2].trim();
+  const tagRegex = new RegExp(`<${tagName}\\s+[^>]*>`, 'g');
 
-      if (keyAttrMatch) {
-        const attrName = keyAttrMatch[1];
-        const attrValue = keyAttrMatch[2];
+  let match;
+  while ((match = tagRegex.exec(content)) !== null) {
+    const foundTag = match[0];
+    const keyAttrMatch = oldAttrs.match(/([a-zA-Z][a-zA-Z0-9:_-]*)\s*=\s*["']([^"']+)["']/);
 
-        if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
-          logger.info(`Tag pattern matched: "${foundTag.substring(0, 80)}..."`);
+    if (keyAttrMatch) {
+      const attrName = keyAttrMatch[1];
+      const attrValue = keyAttrMatch[2];
 
-          const newAttrMatch = newContent.match(/(\w+)\s*=\s*["']([^"']+)["']\s*$/);
-          if (newAttrMatch && !foundTag.includes(newAttrMatch[1])) {
-            const updatedTag = foundTag.replace(/>$/, ` ${newAttrMatch[0]}>`);
+      if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
+        logger.info(`Tag pattern matched: "${foundTag.substring(0, 80)}..."`);
 
-            return {
-              matched: true,
-              matchedContent: foundTag,
-              newContent: content.replace(foundTag, updatedTag),
-            };
-          }
-          
+        const newTagMatch = newContent.match(/<(\w+)([^>]*)>/);
+        if (!newTagMatch) {
           return {
             matched: true,
             matchedContent: foundTag,
             newContent: content.replace(foundTag, newContent),
           };
         }
+
+        const foundAttrsMatch = foundTag.match(/<\w+\s*(.*)>/);
+        const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
+        const newAttrs = newTagMatch[2];
+        const mergedTag = mergeTagAttributes(tagName, foundAttrs, newAttrs);
+
+        logger.info(`Merged tag preserving attributes: "${mergedTag}"`);
+
+        return {
+          matched: true,
+          matchedContent: foundTag,
+          newContent: content.replace(foundTag, mergedTag),
+        };
       }
     }
   }
