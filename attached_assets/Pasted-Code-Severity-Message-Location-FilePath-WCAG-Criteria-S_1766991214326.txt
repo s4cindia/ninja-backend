@@ -1,0 +1,24 @@
+Code,Severity,Message,Location,FilePath,WCAG Criteria,Source,Type,Status
+RSC-001,serious,"File ""OEBPS/Images/cover.jpg"" could not be found.",OEBPS/Images/cover.jpg,,,epubcheck,Manual,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/00_Cover.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,2 table(s) missing header cells,OEBPS/Text/01_Fm.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/01_Fm.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/02_Contents.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/03_Chapter01.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/03_Chapter01.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-SEM-002,serious,52 empty link(s) found,OEBPS/Text/04_Chapter02.xhtml,,2.4.4,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/04_Chapter02.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/04_Chapter02.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-SEM-002,serious,21 empty link(s) found,OEBPS/Text/05_Chapter03.xhtml,,2.4.4,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/05_Chapter03.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/05_Chapter03.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-SEM-002,serious,38 empty link(s) found,OEBPS/Text/06_Chapter04.xhtml,,2.4.4,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/06_Chapter04.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/06_Chapter04.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-SEM-002,serious,34 empty link(s) found,OEBPS/Text/07_Chapter05.xhtml,,2.4.4,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/07_Chapter05.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/07_Chapter05.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-SEM-002,serious,61 empty link(s) found,OEBPS/Text/08_Chapter06.xhtml,,2.4.4,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-002,serious,1 table(s) missing header cells,OEBPS/Text/08_Chapter06.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/08_Chapter06.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
+EPUB-STRUCT-004,minor,Missing main landmark,OEBPS/Text/09_Alt.xhtml,,1.3.1,js-auditor,Auto-fixable,Pending
