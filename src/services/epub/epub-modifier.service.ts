@@ -1189,6 +1189,15 @@ class EPUBModifierService {
     const results: ModificationResult[] = [];
     const files = Object.keys(zip.files);
 
+    const stripTags = (html: string): string => {
+      return html.replace(/<[^>]*>/g, '').trim();
+    };
+
+    const hasImgWithAlt = (html: string): boolean => {
+      const imgMatch = html.match(/<img[^>]+alt\s*=\s*["']([^"']+)["'][^>]*>/i);
+      return imgMatch !== null && imgMatch[1].trim().length > 0;
+    };
+
     for (const filePath of files) {
       if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
 
@@ -1198,34 +1207,39 @@ class EPUBModifierService {
       let modified = false;
       const changes: string[] = [];
 
-      // Find anchor tags
-      const linkPattern = /<a(\s[^>]*)>([^<]*)<\/a>/gi;
+      const linkPattern = /<a(\s[^>]*)>([\s\S]*?)<\/a>/gi;
 
-      content = content.replace(linkPattern, (fullMatch, attrs, innerText) => {
+      content = content.replace(linkPattern, (fullMatch, attrs, innerContent) => {
         attrs = attrs || '';
-        const text = innerText.trim();
-
-        // Check if link has text content
-        if (text.length > 0) {
-          return fullMatch; // Has text, skip
+        
+        const textContent = stripTags(innerContent);
+        if (textContent.length > 0) {
+          return fullMatch;
         }
 
-        // Check if has aria-label already
+        if (hasImgWithAlt(innerContent)) {
+          return fullMatch;
+        }
+
         if (/aria-label\s*=/i.test(attrs)) {
-          return fullMatch; // Already has label
+          return fullMatch;
         }
 
-        // Extract href for generating label
+        if (/title\s*=/i.test(attrs)) {
+          return fullMatch;
+        }
+
         const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
         if (!hrefMatch) {
-          return fullMatch; // No href, skip
+          return fullMatch;
         }
 
         const href = hrefMatch[1];
         let label = '';
 
         if (href.startsWith('#')) {
-          label = `Jump to ${href.substring(1).replace(/[-_]/g, ' ')}`;
+          const anchor = href.substring(1).replace(/[-_]/g, ' ');
+          label = anchor ? `Jump to ${anchor}` : 'Internal link';
         } else if (href.match(/\.(html|xhtml|htm)$/i)) {
           label = href.split('/').pop()?.replace(/\.(html|xhtml|htm)$/i, '').replace(/[-_]/g, ' ') || 'Link';
         } else {
@@ -1235,7 +1249,7 @@ class EPUBModifierService {
         changes.push(`Added aria-label="${label}" to empty link`);
         modified = true;
 
-        return `<a${attrs} aria-label="${label}">${innerText}</a>`;
+        return `<a${attrs} aria-label="${label}">${innerContent}</a>`;
       });
 
       if (modified) {

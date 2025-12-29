@@ -128,28 +128,42 @@ class AutoRemediationService {
       logger.info(`  - ${quickFixTasks.length} quick-fix tasks (will be skipped)`);
       logger.info(`  - ${manualTasks.length} manual tasks (will be skipped)`);
 
+      const tasksByIssueCode = new Map<string, typeof autoTasks>();
       for (const task of autoTasks) {
-        if (!isAutoFixable(task.issueCode)) {
-          logger.warn(`Task ${task.id} (${task.issueCode}) is not auto-fixable, skipping`);
-          modifications.push({
-            issueCode: task.issueCode,
-            taskId: task.id,
-            success: false,
-            description: 'Requires user input via Quick Fix',
-            status: 'skipped',
-          });
+        const existing = tasksByIssueCode.get(task.issueCode) || [];
+        existing.push(task);
+        tasksByIssueCode.set(task.issueCode, existing);
+      }
+
+      logger.info(`Deduplicated to ${tasksByIssueCode.size} unique issue types`);
+
+      for (const [issueCode, tasks] of tasksByIssueCode.entries()) {
+        if (!isAutoFixable(issueCode)) {
+          logger.warn(`Issue ${issueCode} is not auto-fixable, skipping ${tasks.length} task(s)`);
+          for (const task of tasks) {
+            modifications.push({
+              issueCode: task.issueCode,
+              taskId: task.id,
+              success: false,
+              description: 'Requires user input via Quick Fix',
+              status: 'skipped',
+            });
+          }
           continue;
         }
-        const handler = this.remediationHandlers[task.issueCode];
+
+        const handler = this.remediationHandlers[issueCode];
         
         if (!handler) {
-          modifications.push({
-            issueCode: task.issueCode,
-            taskId: task.id,
-            success: false,
-            description: `No auto-fix handler for ${task.issueCode}`,
-          });
-          totalFailed++;
+          for (const task of tasks) {
+            modifications.push({
+              issueCode: task.issueCode,
+              taskId: task.id,
+              success: false,
+              description: `No auto-fix handler for ${issueCode}`,
+            });
+          }
+          totalFailed += tasks.length;
           continue;
         }
 
@@ -157,46 +171,72 @@ class AutoRemediationService {
           const results = await handler(zip);
           
           for (const result of results) {
-            if (result.success) {
-              totalFixed++;
-              
-              await remediationService.updateTaskStatus(
-                jobId,
-                task.id,
-                'completed',
-                result.description,
-                'auto-remediation'
-              );
-            } else {
-              totalFailed++;
-            }
-
             modifications.push({
-              issueCode: task.issueCode,
-              taskId: task.id,
+              issueCode,
+              taskId: tasks[0]?.id || 'handler-result',
               success: result.success,
               description: result.description,
               before: result.before,
               after: result.after,
             });
           }
+
+          const hasSuccess = results.some(r => r.success);
+          const isNoOpSuccess = results.length > 0 && results.every(r => 
+            r.description?.includes('already present') || 
+            r.description?.includes('not applicable') || 
+            r.description?.includes('No ') ||
+            r.description?.includes('correct')
+          );
+
+          if (hasSuccess || isNoOpSuccess) {
+            const description = results.map(r => r.description).filter(Boolean).join('; ') || `Fixed via ${issueCode}`;
+            
+            for (const task of tasks) {
+              totalFixed++;
+              await remediationService.updateTaskStatus(
+                jobId,
+                task.id,
+                'completed',
+                description,
+                'auto-remediation'
+              );
+            }
+            logger.info(`${issueCode}: Completed ${tasks.length} task(s) - ${description}`);
+          } else {
+            const description = results.map(r => r.description).filter(Boolean).join('; ') || 'Handler returned no results';
+            for (const task of tasks) {
+              totalFailed++;
+              await remediationService.updateTaskStatus(
+                jobId,
+                task.id,
+                'failed',
+                description,
+                'auto-remediation'
+              );
+            }
+            logger.warn(`${issueCode}: Failed ${tasks.length} task(s) - ${description}`);
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          modifications.push({
-            issueCode: task.issueCode,
-            taskId: task.id,
-            success: false,
-            description: `Fix failed: ${message}`,
-          });
-          totalFailed++;
+          
+          for (const task of tasks) {
+            modifications.push({
+              issueCode: task.issueCode,
+              taskId: task.id,
+              success: false,
+              description: `Fix failed: ${message}`,
+            });
 
-          await remediationService.updateTaskStatus(
-            jobId,
-            task.id,
-            'failed',
-            message,
-            'auto-remediation'
-          );
+            await remediationService.updateTaskStatus(
+              jobId,
+              task.id,
+              'failed',
+              message,
+              'auto-remediation'
+            );
+          }
+          totalFailed += tasks.length;
         }
       }
 

@@ -62,15 +62,37 @@ class EPUBJSAuditorService {
       }
 
       const files = Object.keys(zip.files);
+      const htmlFiles: { filePath: string; content: string }[] = [];
+      
       for (const filePath of files) {
         if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
         
         const content = await zip.file(filePath)?.async('text');
         if (!content) continue;
+        
+        htmlFiles.push({ filePath, content });
+      }
 
+      const hasMainLandmarkAnywhere = htmlFiles.some(({ content }) => {
+        return /role\s*=\s*["']main["']/i.test(content) || /<main[\s>]/i.test(content);
+      });
+
+      for (const { filePath, content } of htmlFiles) {
         stats.totalDocuments++;
-        const docIssues = this.auditContentDocument(content, filePath, stats, createIssue);
+        const docIssues = this.auditContentDocument(content, filePath, stats, createIssue, true);
         issues.push(...docIssues);
+      }
+
+      if (!hasMainLandmarkAnywhere && htmlFiles.length > 0) {
+        issues.push(createIssue({
+          code: 'EPUB-STRUCT-004',
+          severity: 'minor',
+          message: 'Missing main landmark in EPUB',
+          wcagCriteria: '1.3.1',
+          location: 'EPUB',
+          suggestion: 'Add role="main" or <main> element to identify main content in one of the content documents',
+          category: 'structure',
+        }));
       }
 
       return {
@@ -186,7 +208,8 @@ class EPUBJSAuditorService {
     content: string,
     filePath: string,
     stats: JSAuditResult['stats'],
-    createIssue: (data: Omit<AccessibilityIssue, 'id'>) => AccessibilityIssue
+    createIssue: (data: Omit<AccessibilityIssue, 'id'>) => AccessibilityIssue,
+    skipMainLandmarkCheck: boolean = false
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
     const $ = cheerio.load(content, { xmlMode: true });
@@ -305,22 +328,6 @@ class EPUBJSAuditorService {
         }));
         break;
       }
-    }
-
-    const hasMainLandmark = $('[role="main"], main').length > 0;
-    const isNavFile = filePath.toLowerCase().includes('nav') || 
-                      $('nav[epub\\:type="toc"], nav[epub\\:type="landmarks"]').length > 0 ||
-                      $('nav').length > 0 && $('body > nav').length === $('body').children().length;
-    if (!hasMainLandmark && !isNavFile) {
-      issues.push(createIssue({
-        code: 'EPUB-STRUCT-004',
-        severity: 'minor',
-        message: 'Missing main landmark',
-        wcagCriteria: '1.3.1',
-        location: filePath,
-        suggestion: 'Add role="main" or <main> element to identify main content',
-        category: 'structure',
-      }));
     }
 
     return issues;
