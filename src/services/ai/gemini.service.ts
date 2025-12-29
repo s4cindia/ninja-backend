@@ -4,6 +4,7 @@ import { aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
 import { tokenCounterService, UsageRecord } from './token-counter.service';
 import { responseParserService } from './response-parser.service';
+import { logger } from '../../lib/logger';
 
 export interface GeminiResponse {
   text: string;
@@ -151,8 +152,8 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
       const cleanedJson = responseParserService.cleanJsonResponse(jsonText);
       const data = JSON.parse(cleanedJson) as T;
       return { data, usage: response.usage };
-    } catch (parseError) {
-      console.error('Failed to parse Gemini response as JSON:', response.text);
+    } catch (_parseError) {
+      logger.error(`Failed to parse Gemini response as JSON: ${response.text.substring(0, 200)}`);
       throw AppError.internal('Failed to parse AI response as JSON');
     }
   }

@@ -10,15 +10,7 @@ import { epubExportService } from '../services/epub/epub-export.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-}
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
@@ -617,8 +609,15 @@ export const epubController = {
             'EPUB-META-003': 'Add accessibility summary',
             'EPUB-META-004': 'Add access mode metadata',
             'EPUB-SEM-001': 'Add lang attribute to HTML elements',
+            'EPUB-SEM-002': 'Fix empty links with aria-label',
+            'EPUB-SEM-003': 'Add ARIA roles to epub:type elements',
             'EPUB-IMG-001': 'Mark images without alt as decorative',
             'EPUB-STRUCT-002': 'Add headers to simple tables',
+            'EPUB-STRUCT-003': 'Fix heading hierarchy',
+            'EPUB-STRUCT-004': 'Add ARIA landmarks',
+            'EPUB-NAV-001': 'Add skip navigation links',
+            'EPUB-NAV-002': 'Add unique aria-labels to navigation landmarks',
+            'EPUB-FIG-001': 'Add figure/figcaption structure',
           },
         },
       });
@@ -718,7 +717,15 @@ export const epubController = {
 
       const input = job.input as { fileName?: string };
       const originalFileName = input?.fileName || 'upload.epub';
-      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+      
+      // Try to load from remediated file first (to preserve previous fixes)
+      // Fall back to original if no remediated file exists yet
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+      
       if (!epubBuffer) {
         return res.status(404).json({
           success: false,
@@ -776,6 +783,29 @@ export const epubController = {
         case 'EPUB-FIG-001':
           results = await epubModifier.addFigureStructure(zip);
           break;
+        case 'EPUB-SEM-003':
+          // Add ARIA roles to epub:type elements (Quick Fix)
+          if (options?.changes && Array.isArray(options.changes)) {
+            const epubTypesToFix = options.changes.map((change: { epubType: string; role: string }) => ({
+              epubType: change.epubType,
+              role: change.role,
+            }));
+            results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: 'EPUB-SEM-003 requires options.changes array with epubType and role',
+            });
+          }
+          break;
+        case 'EPUB-NAV-002':
+          // Add aria-labels to nav landmarks (Quick Fix)
+          results = await epubModifier.addNavAriaLabels(zip, {
+            toc: options?.tocLabel,
+            landmarks: options?.landmarksLabel,
+            pageList: options?.pageListLabel,
+          });
+          break;
         default:
           return res.status(400).json({
             success: false,
@@ -784,7 +814,6 @@ export const epubController = {
       }
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
       return res.json({
@@ -1231,6 +1260,290 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to generate report',
+      });
+    }
+  },
+
+  async applyQuickFix(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { issueId, changes, fixCode, taskId, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      logger.debug(`applyQuickFix called: jobId=${jobId}, fixCode=${fixCode}, taskId=${taskId}, issueId=${issueId}`);
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+
+      let results: ModificationResult[] = [];
+      let modifiedFiles: string[] = [];
+      let hasErrors = false;
+
+      const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+
+      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
+        if (options?.epubTypes && Array.isArray(options.epubTypes)) {
+          epubTypesToFix.push(...options.epubTypes);
+        } else if (options?.epubType && options?.role) {
+          epubTypesToFix.push({ epubType: options.epubType, role: options.role });
+        }
+      }
+
+      if (changes && Array.isArray(changes)) {
+        for (const change of changes) {
+          const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
+          const roleMatch = change.content?.match(/role="([^"]+)"/) || change.newContent?.match(/role="([^"]+)"/);
+
+          if (epubTypeMatch && roleMatch) {
+            const epubType = epubTypeMatch[1];
+            const role = roleMatch[1];
+
+            if (!epubTypesToFix.find(e => e.epubType === epubType)) {
+              epubTypesToFix.push({ epubType, role });
+            }
+          }
+        }
+      }
+
+      if (epubTypesToFix.length > 0) {
+        logger.debug(`Using EPUB-TYPE case with regex method: ${epubTypesToFix.length} types to fix`);
+
+        results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+        logger.debug(`addAriaRolesToEpubTypes completed: ${results.length} modifications`);
+
+        if (results.length > 0) {
+          const modifiedBuffer = await epubModifier.saveEPUB(zip);
+          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        }
+
+        let tasksAutoCompleted = 0;
+        try {
+          const plan = await remediationService.getRemediationPlan(jobId);
+
+          if (plan?.tasks && Array.isArray(plan.tasks)) {
+            const relatedTasks = plan.tasks.filter((t: { status?: string; issueCode?: string; id?: string }) => {
+              if (t.status === 'completed') return false;
+
+              const issueCode = String(t.issueCode || '').toUpperCase();
+              const isEpubTypeIssue =
+                issueCode.includes('EPUB-TYPE') ||
+                issueCode.includes('EPUB_TYPE') ||
+                issueCode.includes('MATCHING-ROLE') ||
+                issueCode.includes('MATCHING_ROLE') ||
+                issueCode === 'EPUB-SEM-003';
+
+              return isEpubTypeIssue;
+            });
+
+            logger.debug(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
+
+            for (const task of relatedTasks) {
+              try {
+                await remediationService.updateTaskStatus(
+                  jobId,
+                  task.id,
+                  'completed',
+                  `Auto-completed: ARIA roles added to all epub:type elements`,
+                  req.user?.email || 'system'
+                );
+                tasksAutoCompleted++;
+                logger.debug(`Auto-completed task: ${task.id} (${task.issueCode})`);
+              } catch (err) {
+                logger.error(`Failed to auto-complete task ${task.id}`, err instanceof Error ? err : undefined);
+              }
+            }
+          }
+        } catch (err) {
+          logger.error('Auto-complete error', err instanceof Error ? err : undefined);
+        }
+
+        logger.debug(`Total tasks auto-completed: ${tasksAutoCompleted}`);
+
+        return res.json({
+          success: true,
+          data: {
+            results,
+            modificationsCount: results.length,
+            tasksAutoCompleted,
+            message: `Applied ${results.length} fixes, auto-completed ${tasksAutoCompleted} tasks`,
+            downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+          },
+        });
+      }
+
+      if (changes && Array.isArray(changes) && changes.length > 0) {
+        logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
+        logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
+
+        const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
+        results = result.results;
+        modifiedFiles = result.modifiedFiles;
+        hasErrors = result.hasErrors;
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Either fixCode with options or changes array is required',
+        });
+      }
+
+      if (modifiedFiles.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No files were modified',
+          data: { results },
+        });
+      }
+
+      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
+      let tasksUpdated = 0;
+      if (successCount > 0) {
+        try {
+          const taskToUpdate = taskId || issueId;
+          if (taskToUpdate) {
+            const plan = await remediationService.getRemediationPlan(jobId);
+            const task = plan?.tasks.find((t: { id?: string; issueId?: string }) => t.id === taskToUpdate || t.issueId === taskToUpdate);
+            if (task) {
+              await remediationService.updateTaskStatus(
+                jobId,
+                task.id,
+                'completed',
+                'Quick fix applied',
+                req.user?.email || req.user?.id || 'user',
+                { completionMethod: 'auto' }
+              );
+              tasksUpdated = 1;
+              logger.debug(`Task ${task.id} marked as completed`);
+            }
+          }
+        } catch (taskError) {
+          logger.error('Failed to update task status', taskError instanceof Error ? taskError : undefined);
+        }
+      }
+
+      return res.json({
+        success: !hasErrors,
+        data: {
+          success: failCount === 0,
+          successCount,
+          failCount,
+          modifiedFiles,
+          results,
+          tasksUpdated,
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+        },
+      });
+    } catch (error) {
+      logger.error('applyQuickFix error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to apply fix',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
+  async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      logger.debug(`scanEpubTypes called: jobId=${jobId}, tenantId=${tenantId}`);
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'document.epub';
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(
+        jobId,
+        fileName.replace(/\.epub$/i, '_remediated.epub')
+      );
+
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+      const result = await epubModifier.scanEpubTypes(zip);
+
+      logger.debug(`scanEpubTypes result: ${result.epubTypes.length} epub:types found`);
+
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('scanEpubTypes error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to scan file',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
+  async markTaskFixed(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId, taskId } = req.params;
+      const { resolution } = req.body;
+
+      const task = await remediationService.updateTaskStatus(
+        jobId,
+        taskId,
+        'completed',
+        resolution || 'Marked as fixed via Quick Fix Panel',
+        req.user?.email || 'system'
+      );
+
+      return res.json({ success: true, data: task });
+    } catch (error) {
+      logger.error('markTaskFixed error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
       });
     }
   },

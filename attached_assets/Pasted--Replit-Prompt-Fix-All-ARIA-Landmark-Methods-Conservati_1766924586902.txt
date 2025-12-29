@@ -1,0 +1,197 @@
+ Replit Prompt: Fix All ARIA/Landmark Methods (Conservative Rewrite)
+
+  File: src/services/epub/epub-modifier.service.ts
+
+  Fix 1: Replace addAriaLandmarks method
+
+  This version only adds role="main" to ONE file (the first content file), and uses simpler, safer string operations:
+
+    async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+      const results: ModificationResult[] = [];
+      const files = Object.keys(zip.files).filter(f => /\.(html|xhtml|htm)$/i.test(f));
+
+      let mainLandmarkAdded = false;
+
+      for (const filePath of files) {
+        let content = await zip.file(filePath)?.async('text');
+        if (!content) continue;
+
+        let modified = false;
+        const changes: string[] = [];
+
+        // Only add ONE main landmark across the entire EPUB
+        if (!mainLandmarkAdded) {
+          // Check if any file already has role="main"
+          if (/role\s*=\s*["']main["']/i.test(content)) {
+            mainLandmarkAdded = true; // Found existing, don't add more
+          } else {
+            // Try to find a suitable element for main landmark
+            // Look for <main>, <section>, <div>, or <article> WITHOUT existing role
+            const mainPatterns = [
+              { regex: /<main(?=\s|>)([^>]*)>/i, tag: 'main' },
+              { regex: /<section(?=\s|>)([^>]*)>/i, tag: 'section' },
+              { regex: /<article(?=\s|>)([^>]*)>/i, tag: 'article' },
+            ];
+
+            for (const { regex, tag } of mainPatterns) {
+              const match = content.match(regex);
+              if (match) {
+                const fullTag = match[0];
+                const attrs = match[1] || '';
+
+                // Skip if already has a role
+                if (/\brole\s*=/i.test(attrs)) {
+                  continue;
+                }
+
+                // Add role="main" after tag name
+                const newTag = `<${tag} role="main"${attrs}>`;
+                content = content.replace(fullTag, newTag);
+                changes.push(`Added role="main" to <${tag}>`);
+                modified = true;
+                mainLandmarkAdded = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (modified) {
+          zip.file(filePath, content);
+          results.push({
+            success: true,
+            filePath,
+            modificationType: 'add_aria_landmarks',
+            description: changes.join(', '),
+            after: changes.join('\n'),
+          });
+        }
+      }
+
+      if (results.length === 0) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'add_aria_landmarks',
+          description: 'ARIA landmarks already present or not applicable',
+        });
+      }
+
+      return results;
+    }
+
+  Fix 2: Replace addAriaRolesToEpubTypes method
+
+  This version is much more conservative - it only adds roles to elements that definitely support them:
+
+    async addAriaRolesToEpubTypes(
+      zip: JSZip,
+      epubTypesToFix: Array<{ epubType: string; role: string }>
+    ): Promise<ModificationResult[]> {
+      console.log('=== addAriaRolesToEpubTypes START ===');
+      const results: ModificationResult[] = [];
+
+      // Only map to VALID roles for specific elements
+      const validRoleMapping: Record<string, string> = {
+        'chapter': 'doc-chapter',
+        'part': 'doc-part',
+        'toc': 'doc-toc',
+        'landmarks': 'navigation',
+        'dedication': 'doc-dedication',
+        'epigraph': 'doc-epigraph',
+        'foreword': 'doc-foreword',
+        'preface': 'doc-preface',
+        'introduction': 'doc-introduction',
+        'prologue': 'doc-prologue',
+        'epilogue': 'doc-epilogue',
+        'afterword': 'doc-afterword',
+        'appendix': 'doc-appendix',
+        'glossary': 'doc-glossary',
+        'bibliography': 'doc-bibliography',
+        'index': 'doc-index',
+        'colophon': 'doc-colophon',
+        'acknowledgments': 'doc-acknowledgments',
+        'noteref': 'doc-noteref',
+        'footnote': 'doc-footnote',
+        'endnote': 'doc-endnote',
+        'endnotes': 'doc-endnotes',
+        'footnotes': 'doc-endnotes',
+      };
+
+      // Elements that should NOT get role attributes added
+      const skipRoles = ['frontmatter', 'bodymatter', 'backmatter', 'titlepage', 'nav'];
+
+      const xhtmlFiles = Object.keys(zip.files).filter(path =>
+        /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
+      );
+
+      for (const filePath of xhtmlFiles) {
+        try {
+          let content = await zip.file(filePath)?.async('text');
+          if (!content) continue;
+
+          let fileModified = false;
+          const fileChanges: string[] = [];
+
+          for (const { epubType } of epubTypesToFix) {
+            // Skip types that shouldn't get roles
+            if (skipRoles.includes(epubType.toLowerCase())) {
+              console.log(`Skipping epub:type="${epubType}" - not suitable for role`);
+              continue;
+            }
+
+            const role = validRoleMapping[epubType.toLowerCase()];
+            if (!role) {
+              console.log(`Skipping epub:type="${epubType}" - no valid role mapping`);
+              continue;
+            }
+
+            // Find elements with this exact epub:type (simple single value)
+            // Pattern: <tag ... epub:type="value" ...> where tag has no role yet
+            const pattern = new RegExp(
+              `(<[a-zA-Z][a-zA-Z0-9]*)(\\s[^>]*?)(epub:type\\s*=\\s*["']${epubType}["'])([^>]*>)`,
+              'gi'
+            );
+
+            content = content.replace(pattern, (fullMatch, tagStart, beforeEpub, epubAttr, afterEpub) => {
+              // Check if already has role anywhere in the tag
+              if (/\brole\s*=\s*["']/i.test(fullMatch)) {
+                return fullMatch;
+              }
+
+              fileChanges.push(`Added role="${role}" to element with epub:type="${epubType}"`);
+              fileModified = true;
+
+              // Insert role right after the tag name
+              return `${tagStart} role="${role}"${beforeEpub}${epubAttr}${afterEpub}`;
+            });
+          }
+
+          if (fileModified) {
+            zip.file(filePath, content);
+            console.log(`Modified: ${filePath}`);
+
+            for (const change of fileChanges) {
+              results.push({
+                success: true,
+                filePath,
+                modificationType: 'add_role',
+                description: change,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`Error processing ${filePath}:`, err);
+        }
+      }
+
+      console.log(`Completed: ${results.length} modifications`);
+      return results;
+    }
+
+  Key Changes:
+  1. addAriaLandmarks now only adds ONE role="main" across the entire EPUB
+  2. Removed nav/footer/header role additions (they're redundant - HTML5 elements have implicit roles)
+  3. addAriaRolesToEpubTypes skips problematic types like frontmatter, bodymatter, titlepage
+  4. Uses doc-footnote/doc-endnote instead of invalid note
+  5. No fallback to region role (which isn't valid on many elements)

@@ -1,0 +1,368 @@
+ Prompt 25: Add Flexible Pattern Matching for Quick Fix Replace Operations
+
+  Problem
+
+  Quick Fix replace operations fail with "oldContent not found in file" because the template generates generic patterns that don't exactly match the actual file content (whitespace differences, quote variations, etc.).
+
+  Solution
+
+  Add flexible/regex-based matching when exact string matching fails.
+
+  ---
+  File: src/services/epub/epub.service.ts
+
+  Update the applyQuickFix method:
+
+  import JSZip from 'jszip';
+  import fs from 'fs/promises';
+  import { logger } from '../../lib/logger';
+
+  interface FileChange {
+    type: 'insert' | 'replace' | 'delete';
+    filePath: string;
+    content?: string;
+    oldContent?: string;
+    lineNumber?: number;
+    description?: string;
+  }
+
+  interface ChangeResult {
+    success: boolean;
+    filePath: string;
+    modificationType: string;
+    description: string;
+    matchedContent?: string;
+  }
+
+  export class EpubService {
+    // ... existing methods ...
+
+    async applyQuickFix(jobId: string, changes: FileChange[]): Promise<{
+      success: boolean;
+      modifiedFiles: string[];
+      results: ChangeResult[];
+    }> {
+      const epubPath = await this.getEpubPath(jobId);
+      const modifiedFiles: string[] = [];
+      const results: ChangeResult[] = [];
+
+      // Read the EPUB
+      const epubBuffer = await fs.readFile(epubPath);
+      const zip = await JSZip.loadAsync(epubBuffer);
+
+      for (const change of changes) {
+        const filePath = change.filePath;
+
+        // Try to find the file in common EPUB locations
+        const file = this.findFileInZip(zip, filePath);
+
+        if (!file && change.type !== 'insert') {
+          logger.warn(`File not found in EPUB: ${filePath}`);
+          results.push({
+            success: false,
+            filePath,
+            modificationType: change.type,
+            description: `File not found: ${filePath}`,
+          });
+          continue;
+        }
+
+        let content = file ? await file.async('string') : '';
+        let modified = false;
+        let matchedContent: string | undefined;
+
+        switch (change.type) {
+          case 'insert':
+            const insertResult = this.handleInsert(content, change, filePath);
+            content = insertResult.content;
+            modified = insertResult.modified;
+            break;
+
+          case 'replace':
+            const replaceResult = this.handleReplace(content, change);
+            content = replaceResult.content;
+            modified = replaceResult.modified;
+            matchedContent = replaceResult.matchedContent;
+            break;
+
+          case 'delete':
+            if (change.oldContent && content.includes(change.oldContent)) {
+              content = content.replace(change.oldContent, '');
+              modified = true;
+            }
+            break;
+        }
+
+        if (modified) {
+          const actualPath = file ? file.name : this.resolveFilePath(filePath);
+          zip.file(actualPath, content);
+          modifiedFiles.push(actualPath);
+
+          results.push({
+            success: true,
+            filePath: actualPath,
+            modificationType: change.type,
+            description: change.description || `${change.type} operation successful`,
+            matchedContent,
+          });
+
+          logger.info(`Modified file: ${actualPath}`);
+        } else {
+          results.push({
+            success: false,
+            filePath,
+            modificationType: change.type,
+            description: change.type === 'replace'
+              ? 'oldContent not found in file - no replacement made'
+              : `${change.type} operation failed`,
+          });
+        }
+      }
+
+      // Write the modified EPUB back if any changes were made
+      if (modifiedFiles.length > 0) {
+        const modifiedBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        await fs.writeFile(epubPath, modifiedBuffer);
+        logger.info(`Quick fix applied to ${modifiedFiles.length} files`);
+      }
+
+      return {
+        success: modifiedFiles.length > 0,
+        modifiedFiles,
+        results,
+      };
+    }
+
+    /**
+     * Handle replace operations with flexible pattern matching
+     */
+    private handleReplace(content: string, change: FileChange): {
+      content: string;
+      modified: boolean;
+      matchedContent?: string;
+    } {
+      if (!change.oldContent || !change.content) {
+        return { content, modified: false };
+      }
+
+      // Try exact match first
+      if (content.includes(change.oldContent)) {
+        logger.info(`Exact match found for: ${change.oldContent.substring(0, 50)}...`);
+        return {
+          content: content.replace(change.oldContent, change.content),
+          modified: true,
+          matchedContent: change.oldContent,
+        };
+      }
+
+      logger.info(`Exact match failed, trying flexible patterns...`);
+
+      // Try flexible pattern matching
+      const flexibleResult = this.tryFlexibleReplace(content, change.oldContent, change.content);
+      if (flexibleResult.modified) {
+        return flexibleResult;
+      }
+
+      // Try specific pattern handlers
+      const specificResult = this.trySpecificPatterns(content, change.oldContent, change.content);
+      if (specificResult.modified) {
+        return specificResult;
+      }
+
+      logger.warn(`No match found for: ${change.oldContent.substring(0, 100)}...`);
+      return { content, modified: false };
+    }
+
+    /**
+     * Try flexible regex-based matching with whitespace/quote tolerance
+     */
+    private tryFlexibleReplace(content: string, oldContent: string, newContent: string): {
+      content: string;
+      modified: boolean;
+      matchedContent?: string;
+    } {
+      // Create a flexible pattern:
+      // - Allow flexible whitespace
+      // - Allow either quote type (" or ')
+      const flexiblePattern = oldContent
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')  // Escape regex special chars
+        .replace(/\s+/g, '\\s+')  // Flexible whitespace (1 or more)
+        .replace(/\\s\+/g, '\\s*')  // Actually make it 0 or more
+        .replace(/"/g, '["\']')  // Either quote type
+        .replace(/'/g, '["\']');
+
+      try {
+        const regex = new RegExp(flexiblePattern, 'g');
+        const match = content.match(regex);
+
+        if (match && match.length > 0) {
+          logger.info(`Flexible match found: "${match[0]}"`);
+
+          // Replace only the first occurrence to be safe
+          const result = content.replace(match[0], newContent);
+
+          return {
+            content: result,
+            modified: true,
+            matchedContent: match[0],
+          };
+        }
+      } catch (e) {
+        logger.warn(`Flexible pattern failed: ${e}`);
+      }
+
+      return { content, modified: false };
+    }
+
+    /**
+     * Handle specific known patterns (epub:type, role attributes, etc.)
+     */
+    private trySpecificPatterns(content: string, oldContent: string, newContent: string): {
+      content: string;
+      modified: boolean;
+      matchedContent?: string;
+    } {
+      // Pattern 1: epub:type attribute replacement
+      const epubTypeMatch = oldContent.match(/epub:type\s*=\s*["']([^"']+)["']/);
+      if (epubTypeMatch) {
+        const epubTypeValue = epubTypeMatch[1];
+        // Match the attribute with flexible whitespace and quotes
+        const regex = new RegExp(`epub:type\\s*=\\s*["']${this.escapeRegex(epubTypeValue)}["']`, 'g');
+        const match = content.match(regex);
+
+        if (match && match.length > 0) {
+          logger.info(`epub:type pattern matched: "${match[0]}"`);
+
+          // Build the replacement - preserve the original quote style if possible
+          const quoteChar = match[0].includes('"') ? '"' : "'";
+          const replacement = newContent.replace(/["']/g, quoteChar);
+
+          return {
+            content: content.replace(match[0], replacement),
+            modified: true,
+            matchedContent: match[0],
+          };
+        }
+      }
+
+      // Pattern 2: XML/HTML tag with attributes
+      const tagMatch = oldContent.match(/<(\w+)([^>]*)>/);
+      if (tagMatch) {
+        const tagName = tagMatch[1];
+        const attrs = tagMatch[2].trim();
+
+        // Try to find tag with same name that contains similar attributes
+        const tagRegex = new RegExp(`<${tagName}\\s+[^>]*>`, 'g');
+        let match;
+
+        while ((match = tagRegex.exec(content)) !== null) {
+          // Check if this tag contains the key attributes we're looking for
+          const foundTag = match[0];
+          const keyAttrMatch = attrs.match(/(\w+)\s*=\s*["']([^"']+)["']/);
+
+          if (keyAttrMatch) {
+            const attrName = keyAttrMatch[1];
+            const attrValue = keyAttrMatch[2];
+
+            if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
+              logger.info(`Tag pattern matched: "${foundTag}"`);
+
+              // Construct the new tag based on what newContent is trying to add
+              const newAttrMatch = newContent.match(/(\w+)\s*=\s*["']([^"']+)["']\s*$/);
+              if (newAttrMatch && !foundTag.includes(newAttrMatch[1])) {
+                // Add the new attribute before the closing >
+                const updatedTag = foundTag.replace(/>$/, ` ${newAttrMatch[0]}>`);
+
+                return {
+                  content: content.replace(foundTag, updatedTag),
+                  modified: true,
+                  matchedContent: foundTag,
+                };
+              }
+            }
+          }
+        }
+      }
+
+      return { content, modified: false };
+    }
+
+    /**
+     * Handle insert operations
+     */
+    private handleInsert(content: string, change: FileChange, filePath: string): {
+      content: string;
+      modified: boolean;
+    } {
+      if (!change.content) {
+        return { content, modified: false };
+      }
+
+      // Insert in OPF metadata section
+      if (filePath.endsWith('.opf')) {
+        if (content.includes('</metadata>')) {
+          content = content.replace('</metadata>', `  ${change.content}\n  </metadata>`);
+          return { content, modified: true };
+        }
+      }
+
+      // Insert in XHTML head section
+      if (filePath.endsWith('.xhtml') || filePath.endsWith('.html')) {
+        if (content.includes('</head>')) {
+          content = content.replace('</head>', `  ${change.content}\n  </head>`);
+          return { content, modified: true };
+        }
+      }
+
+      // Fallback: append to end
+      content += '\n' + change.content;
+      return { content, modified: true };
+    }
+
+    /**
+     * Find file in ZIP with common EPUB path variations
+     */
+    private findFileInZip(zip: JSZip, filePath: string): JSZip.JSZipObject | null {
+      // Try exact path
+      let file = zip.file(filePath);
+      if (file) return file;
+
+      // Try with EPUB/ prefix
+      file = zip.file(`EPUB/${filePath}`);
+      if (file) return file;
+
+      // Try with OEBPS/ prefix
+      file = zip.file(`OEBPS/${filePath}`);
+      if (file) return file;
+
+      // Try removing any prefix
+      const baseName = filePath.replace(/^(EPUB|OEBPS)\//, '');
+      file = zip.file(baseName);
+      if (file) return file;
+
+      file = zip.file(`EPUB/${baseName}`);
+      if (file) return file;
+
+      file = zip.file(`OEBPS/${baseName}`);
+      if (file) return file;
+
+      return null;
+    }
+
+    /**
+     * Resolve file path for new files
+     */
+    private resolveFilePath(filePath: string): string {
+      if (filePath.startsWith('EPUB/') || filePath.startsWith('OEBPS/')) {
+        return filePath;
+      }
+      return `EPUB/${filePath}`;
+    }
+
+    /**
+     * Escape special regex characters
+     */
+    private escapeRegex(str: string): string {
+      return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }

@@ -1,0 +1,158 @@
+ Prompt 29 (Comprehensive): Dynamic epub:type Detection for Quick Fix Template
+
+  Problem
+
+  The "Add ARIA Roles to epub:type Elements" Quick Fix shows hardcoded generic epub:type values (chapter, part, toc, etc.) but the actual EPUB file has different values (frontmatter, bodymatter, dedication, etc.). This causes the fix to fail.
+
+  Solution
+
+  1. Fetch actual epub:type values from the file before showing the Quick Fix form
+  2. Only display epub:types that actually exist in the file
+  3. Add a backend endpoint to scan EPUB files for epub:type values
+
+  ---
+  Part 1: Backend - Add Endpoint to Scan EPUB for epub:types
+
+  File: src/routes/epub.routes.ts
+
+  Add new route:
+
+  // Get epub:type values from a file
+  router.get('/job/:jobId/scan-epub-types', asyncHandler(epubController.scanEpubTypes));
+
+  File: src/controllers/epub.controller.ts
+
+  Add controller method:
+
+  async scanEpubTypes(req: Request, res: Response) {
+    const { jobId } = req.params;
+    const { filePath } = req.query;
+
+    try {
+      const result = await epubService.scanEpubTypes(jobId, filePath as string);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error(`Failed to scan epub:types: ${error}`);
+      res.status(500).json({ success: false, error: 'Failed to scan file' });
+    }
+  }
+
+  File: src/services/epub/epub.service.ts (or epub-modifier.service.ts)
+
+  Add service method:
+
+  async scanEpubTypes(jobId: string, targetFilePath?: string): Promise<{
+    epubTypes: Array<{
+      value: string;
+      file: string;
+      count: number;
+      suggestedRole: string;
+    }>;
+    files: string[];
+  }> {
+    const epubPath = await this.getEpubPath(jobId);
+    const epubBuffer = await fs.readFile(epubPath);
+    const zip = await JSZip.loadAsync(epubBuffer);
+
+    const epubTypeMap = new Map<string, { files: Set<string>; count: number }>();
+    const xhtmlFiles: string[] = [];
+
+    // Scan all XHTML files (or just the target file)
+    for (const [filename, file] of Object.entries(zip.files)) {
+      if (file.dir) continue;
+      if (!filename.endsWith('.xhtml') && !filename.endsWith('.html')) continue;
+
+      // If targetFilePath specified, only scan that file
+      if (targetFilePath && !filename.includes(targetFilePath.replace(/^EPUB\/|^OEBPS\//, ''))) {
+        continue;
+      }
+
+      xhtmlFiles.push(filename);
+
+      const content = await file.async('string');
+
+      // Find all epub:type values
+      const regex = /epub:type\s*=\s*["']([^"']+)["']/gi;
+      let match;
+
+      while ((match = regex.exec(content)) !== null) {
+        const epubTypeValue = match[1];
+
+        // Handle space-separated multiple values like epub:type="chapter dedication"
+        const values = epubTypeValue.split(/\s+/);
+
+        for (const value of values) {
+          const trimmed = value.trim().toLowerCase();
+          if (!trimmed) continue;
+
+          if (!epubTypeMap.has(trimmed)) {
+            epubTypeMap.set(trimmed, { files: new Set(), count: 0 });
+          }
+
+          const entry = epubTypeMap.get(trimmed)!;
+          entry.files.add(filename);
+          entry.count++;
+        }
+      }
+    }
+
+    // Convert to array with suggested roles
+    const EPUB_TYPE_TO_ROLE: Record<string, string> = {
+      'chapter': 'doc-chapter',
+      'part': 'doc-part',
+      'appendix': 'doc-appendix',
+      'bibliography': 'doc-bibliography',
+      'glossary': 'doc-glossary',
+      'index': 'doc-index',
+      'toc': 'doc-toc',
+      'foreword': 'doc-foreword',
+      'preface': 'doc-preface',
+      'introduction': 'doc-introduction',
+      'epilogue': 'doc-epilogue',
+      'afterword': 'doc-afterword',
+      'conclusion': 'doc-conclusion',
+      'frontmatter': 'doc-frontmatter',
+      'bodymatter': 'doc-bodymatter',
+      'backmatter': 'doc-backmatter',
+      'titlepage': 'doc-titlepage',
+      'dedication': 'doc-dedication',
+      'epigraph': 'doc-epigraph',
+      'acknowledgments': 'doc-acknowledgments',
+      'colophon': 'doc-colophon',
+      'cover': 'doc-cover',
+      'footnote': 'doc-footnote',
+      'endnote': 'doc-endnote',
+      'footnotes': 'doc-footnotes',
+      'endnotes': 'doc-endnotes',
+      'noteref': 'doc-noteref',
+      'rearnote': 'doc-endnote',
+      'rearnotes': 'doc-endnotes',
+      'landmarks': 'navigation',
+      'loi': 'doc-loi',
+      'lot': 'doc-lot',
+      'nav': 'navigation',
+      'sidebar': 'complementary',
+      'pullquote': 'doc-pullquote',
+    };
+
+    const epubTypes = Array.from(epubTypeMap.entries()).map(([value, data]) => ({
+      value,
+      file: Array.from(data.files).join(', '),
+      count: data.count,
+      suggestedRole: EPUB_TYPE_TO_ROLE[value] || `doc-${value}`,
+    }));
+
+    // Sort by count (most common first)
+    epubTypes.sort((a, b) => b.count - a.count);
+
+    logger.info(`Found ${epubTypes.length} unique epub:type values in ${xhtmlFiles.length} files`);
+
+    return {
+      epubTypes,
+      files: xhtmlFiles,
+    };
+  }

@@ -1,0 +1,274 @@
+Selector [epub\:type] found: 5 elements
+Filter method found: 5 elements
+Found element: <nav> with epub:type="toc"
+Found element: <nav> with epub:type="landmarks"
+Found element: <a> with epub:type="frontmatter"
+Found element: <a> with epub:type="bodymatter"
+Found element: <a> with epub:type="backmatter"
+
+=== scanEpubTypes RESULT ===
+Total unique epub:types found: 11
+epub:types: [
+  {
+    value: 'frontmatter',
+    file: 'EPUB/wasteland-content.xhtml, EPUB/wasteland-nav.xhtml',
+    count: 2,
+    suggestedRole: 'doc-prologue',
+    elementType: 'section'
+  },
+  {
+    value: 'titlepage',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 1,
+    suggestedRole: 'doc-cover',
+    elementType: 'section'
+  },
+  {
+    value: 'epigraph',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 1,
+    suggestedRole: 'doc-epigraph',
+    elementType: 'div'
+  },
+  {
+    value: 'dedication',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 1,
+    suggestedRole: 'doc-dedication',
+    elementType: 'p'
+  },
+  {
+    value: 'bodymatter',
+    file: 'EPUB/wasteland-content.xhtml, EPUB/wasteland-nav.xhtml',
+    count: 2,
+    suggestedRole: 'main',
+    elementType: 'section'
+  },
+  {
+    value: 'noteref',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 50,
+    suggestedRole: 'doc-noteref',
+    elementType: 'a'
+  },
+  {
+    value: 'backmatter',
+    file: 'EPUB/wasteland-content.xhtml, EPUB/wasteland-nav.xhtml',
+    count: 2,
+    suggestedRole: 'doc-epilogue',
+    elementType: 'section'
+  },
+  {
+    value: 'rearnotes',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 1,
+    suggestedRole: 'doc-endnotes',
+    elementType: 'section'
+  },
+  {
+    value: 'rearnote',
+    file: 'EPUB/wasteland-content.xhtml',
+    count: 50,
+    suggestedRole: 'doc-endnote',
+    elementType: 'div'
+  },
+  {
+    value: 'toc',
+    file: 'EPUB/wasteland-nav.xhtml',
+    count: 1,
+    suggestedRole: 'doc-toc',
+    elementType: 'nav'
+  },
+  {
+    value: 'landmarks',
+    file: 'EPUB/wasteland-nav.xhtml',
+    count: 1,
+    suggestedRole: 'navigation',
+    elementType: 'nav'
+  }
+]
+Files scanned: [ 'EPUB/wasteland-content.xhtml', 'EPUB/wasteland-nav.xhtml' ]
+Returning result with 11 epub:types
+[INFO] GET /api/v1/epub/job/d629a795-d20e-4b0c-b3db-21d4f376dd72/scan-epub-types 304 - 741ms
+applyQuickFix called: {
+  jobId: 'd629a795-d20e-4b0c-b3db-21d4f376dd72',
+  fixCode: undefined,
+  taskId: undefined,
+  issueId: 'task-c2f87844',
+  options: undefined
+}
+[2025-12-27T22:46:07.678Z] [INFO] Applying quick fix for job d629a795-d20e-4b0c-b3db-21d4f376dd72, issue task-c2f87844
+[2025-12-27T22:46:07.678Z] [INFO] Changes: [
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"noteref\" role=\"doc-noteref\"",
+    "oldContent": "epub:type=\"noteref\"",
+    "description": "Add role=\"doc-noteref\" to epub:type=\"noteref\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"rearnote\" role=\"doc-endnote\"",
+    "oldContent": "epub:type=\"rearnote\"",
+    "description": "Add role=\"doc-endnote\" to epub:type=\"rearnote\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"frontmatter\" role=\"doc-frontmatter\"",
+    "oldContent": "epub:type=\"frontmatter\"",
+    "description": "Add role=\"doc-frontmatter\" to epub:type=\"frontmatter\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"bodymatter\" role=\"doc-bodymatter\"",
+    "oldContent": "epub:type=\"bodymatter\"",
+    "description": "Add role=\"doc-bodymatter\" to epub:type=\"bodymatter\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"backmatter\" role=\"doc-backmatter\"",
+    "oldContent": "epub:type=\"backmatter\"",
+    "description": "Add role=\"doc-backmatter\" to epub:type=\"backmatter\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"titlepage\" role=\"doc-titlepage\"",
+    "oldContent": "epub:type=\"titlepage\"",
+    "description": "Add role=\"doc-titlepage\" to epub:type=\"titlepage\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"epigraph\" role=\"doc-epigraph\"",
+    "oldContent": "epub:type=\"epigraph\"",
+    "description": "Add role=\"doc-epigraph\" to epub:type=\"epigraph\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"dedication\" role=\"doc-dedication\"",
+    "oldContent": "epub:type=\"dedication\"",
+    "description": "Add role=\"doc-dedication\" to epub:type=\"dedication\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"rearnotes\" role=\"doc-endnotes\"",
+    "oldContent": "epub:type=\"rearnotes\"",
+    "description": "Add role=\"doc-endnotes\" to epub:type=\"rearnotes\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"toc\" role=\"doc-toc\"",
+    "oldContent": "epub:type=\"toc\"",
+    "description": "Add role=\"doc-toc\" to epub:type=\"toc\""
+  },
+  {
+    "type": "replace",
+    "filePath": "wasteland-content.xhtml",
+    "content": "epub:type=\"landmarks\" role=\"navigation\"",
+    "oldContent": "epub:type=\"landmarks\"",
+    "description": "Add role=\"navigation\" to epub:type=\"landmarks\""
+  }
+]
+[2025-12-27T22:46:07.679Z] [INFO] ============================================================
+[2025-12-27T22:46:07.679Z] [INFO] APPLY QUICK FIX - DEBUG
+[2025-12-27T22:46:07.679Z] [INFO] ============================================================
+[2025-12-27T22:46:07.679Z] [INFO] Job ID: d629a795-d20e-4b0c-b3db-21d4f376dd72
+[2025-12-27T22:46:07.679Z] [INFO] Issue ID: task-c2f87844
+[2025-12-27T22:46:07.679Z] [INFO] Number of changes: 11
+[2025-12-27T22:46:07.679Z] [INFO] Change 1:
+[2025-12-27T22:46:07.679Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.679Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.679Z] [INFO]   Old: epub:type="noteref"...
+[2025-12-27T22:46:07.679Z] [INFO]   New: epub:type="noteref" role="doc-noteref"...
+[2025-12-27T22:46:07.679Z] [INFO] Change 2:
+[2025-12-27T22:46:07.679Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.679Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.679Z] [INFO]   Old: epub:type="rearnote"...
+[2025-12-27T22:46:07.679Z] [INFO]   New: epub:type="rearnote" role="doc-endnote"...
+[2025-12-27T22:46:07.679Z] [INFO] Change 3:
+[2025-12-27T22:46:07.679Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.679Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.679Z] [INFO]   Old: epub:type="frontmatter"...
+[2025-12-27T22:46:07.679Z] [INFO]   New: epub:type="frontmatter" role="doc-frontmatter"...
+[2025-12-27T22:46:07.679Z] [INFO] Change 4:
+[2025-12-27T22:46:07.679Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.679Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.679Z] [INFO]   Old: epub:type="bodymatter"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="bodymatter" role="doc-bodymatter"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 5:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="backmatter"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="backmatter" role="doc-backmatter"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 6:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="titlepage"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="titlepage" role="doc-titlepage"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 7:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="epigraph"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="epigraph" role="doc-epigraph"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 8:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="dedication"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="dedication" role="doc-dedication"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 9:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="rearnotes"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="rearnotes" role="doc-endnotes"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 10:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="toc"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="toc" role="doc-toc"...
+[2025-12-27T22:46:07.680Z] [INFO] Change 11:
+[2025-12-27T22:46:07.680Z] [INFO]   Type: replace
+[2025-12-27T22:46:07.680Z] [INFO]   File: wasteland-content.xhtml
+[2025-12-27T22:46:07.680Z] [INFO]   Old: epub:type="landmarks"...
+[2025-12-27T22:46:07.680Z] [INFO]   New: epub:type="landmarks" role="navigation"...
+[2025-12-27T22:46:07.681Z] [INFO] Exact match found for: epub:type="noteref"...
+[2025-12-27T22:46:07.682Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.682Z] [INFO] Exact match found for: epub:type="rearnote"...
+[2025-12-27T22:46:07.682Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.682Z] [INFO] Exact match found for: epub:type="frontmatter"...
+[2025-12-27T22:46:07.682Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.683Z] [INFO] Exact match found for: epub:type="bodymatter"...
+[2025-12-27T22:46:07.683Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.683Z] [INFO] Exact match found for: epub:type="backmatter"...
+[2025-12-27T22:46:07.683Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.683Z] [INFO] Exact match found for: epub:type="titlepage"...
+[2025-12-27T22:46:07.683Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.684Z] [INFO] Exact match found for: epub:type="epigraph"...
+[2025-12-27T22:46:07.685Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.685Z] [INFO] Exact match found for: epub:type="dedication"...
+[2025-12-27T22:46:07.685Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.685Z] [INFO] Exact match found for: epub:type="rearnotes"...
+[2025-12-27T22:46:07.685Z] [INFO] Quick fix modified file: EPUB/wasteland-content.xhtml
+[2025-12-27T22:46:07.685Z] [INFO] Exact match failed, trying flexible patterns...
+[2025-12-27T22:46:07.685Z] [INFO] Looking for epub:type="toc"
+[2025-12-27T22:46:07.686Z] [INFO] Will add role="doc-toc"
+[2025-12-27T22:46:07.686Z] [WARN] No elements found with epub:type="toc"
+[2025-12-27T22:46:07.686Z] [INFO] Existing epub:types in file: epub:type="frontmatter", epub:type="titlepage", epub:type="epigraph", epub:type="dedication", epub:type="bodymatter", epub:type="noteref", epub:type="backmatter", epub:type="rearnotes", epub:type="rearnote"
+[2025-12-27T22:46:07.686Z] [WARN] No match found for: epub:type="toc"...
+[2025-12-27T22:46:07.687Z] [INFO] Exact match failed, trying flexible patterns...
+[2025-12-27T22:46:07.687Z] [INFO] Looking for epub:type="landmarks"
+[2025-12-27T22:46:07.687Z] [INFO] Will add role="navigation"
+[2025-12-27T22:46:07.687Z] [WARN] No elements found with epub:type="landmarks"
+[2025-12-27T22:46:07.687Z] [INFO] Existing epub:types in file: epub:type="frontmatter", epub:type="titlepage", epub:type="epigraph", epub:type="dedication", epub:type="bodymatter", epub:type="noteref", epub:type="backmatter", epub:type="rearnotes", epub:type="rearnote"
+[2025-12-27T22:46:07.687Z] [WARN] No match found for: epub:type="landmarks"...
+[2025-12-27T22:46:07.687Z] [INFO] Quick fix applied to 9 files, errors: true
+[2025-12-27T22:46:07.711Z] [INFO] Saved remediated EPUB: /tmp/epub-storage/d629a795-d20e-4b0c-b3db-21d4f376dd72/remediated/wasteland-woff_remediated.epub
+Task task-c2f87844 marked as completed
+[INFO] POST /api/v1/epub/d629a795-d20e-4b0c-b3db-21d4f376dd72/apply-fix 200 - 2369ms

@@ -60,6 +60,7 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **File-Based Storage:** EPUB files stored at `/tmp/epub-storage/{jobId}/` with remediated files in subdirectory.
     -   **Remediation Workflow:** Upload → Audit → Create Remediation Plan → Auto-Remediate → Download remediated EPUB.
     -   **Manual Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-fix` allows applying specific fixes with custom options.
+    -   **Quick Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-quick-fix` allows applying arbitrary file changes (insert/replace/delete) to text-based EPUB files. Validates that target files are text-based (.opf, .xhtml, .html, .htm, .xml, .ncx, .css, .smil, .svg), ensures content anchors exist for replace/delete operations, and optionally updates remediation task status when complete.
 -   **Feedback Collection:**
     -   **Feedback Model:** Dedicated Prisma model with FeedbackType and FeedbackStatus enums for proper type safety.
     -   **Feedback Types:** ACCESSIBILITY_ISSUE, ALT_TEXT_QUALITY, AUDIT_ACCURACY, REMEDIATION_SUGGESTION, GENERAL, BUG_REPORT, FEATURE_REQUEST.

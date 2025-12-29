@@ -1,0 +1,85 @@
+ I see the issue now. Looking at the Network tab:
+
+  1. First apply-fix - 200 ✓ (fixed ALL epub:types across ALL files)
+  2. First mark-fixed - 200 ✓ (marked first task complete)
+  3. Second apply-fix - 400 ✗ (nothing left to fix - all already have roles)
+
+  The first fix successfully adds roles to ALL elements in ALL files (including toc and landmarks in wasteland-nav.xhtml). When the second task tries to apply the same fix, there's nothing left to fix.
+
+  The solution: After the first fix succeeds, automatically mark ALL EPUB-TYPE-HAS-MATCHING-ROLE tasks as complete.
+
+  ---
+  Prompt 39: Backend - Auto-complete ALL Related Tasks After First Fix
+
+  File: src/controllers/epub.controller.ts
+
+  In the applyQuickFix method, after successful epub:type fix, mark ALL related tasks complete:
+
+  case 'EPUB-SEM-003':
+  case 'EPUB-TYPE-HAS-MATCHING-ROLE': {
+    // ... existing fix logic ...
+
+    results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+
+    // After successful fix, mark ALL EPUB-TYPE-HAS-MATCHING-ROLE tasks complete
+    if (results.length > 0) {
+      try {
+        const plan = await remediationService.getRemediationPlan(jobId);
+        if (plan?.tasks) {
+          const relatedTasks = plan.tasks.filter(
+            (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
+          );
+
+          console.log(`Found ${relatedTasks.length} related EPUB-TYPE-HAS-MATCHING-ROLE tasks to mark complete`);
+
+          for (const task of relatedTasks) {
+            await remediationService.updateTaskStatus(
+              jobId,
+              task.id,
+              'completed',
+              'Auto-completed: epub:type roles fixed across all files',
+              req.user?.email || 'system'
+            );
+            console.log(`Marked task ${task.id} as complete`);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to auto-complete related tasks:', err);
+      }
+    }
+
+    break;
+  }
+
+  ---
+  Also update the response to skip the second fix attempt if nothing was modified:
+
+  At the end of applyQuickFix, before returning error for empty results:
+
+  // If no modifications but it's an epub:type fix, it might already be fixed
+  if (results.length === 0) {
+    // Check if this is a repeat fix attempt
+    if (fixCode === 'EPUB-SEM-003' || issueCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
+      // Return success - elements were likely fixed in a previous request
+      return res.json({
+        success: true,
+        data: {
+          results: [],
+          message: 'No modifications needed - epub:type roles already present',
+          alreadyFixed: true,
+        },
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      error: 'No files were modified',
+    });
+  }
+
+  ---
+  Expected behavior after fix:
+  1. User clicks "Apply Fix" on first EPUB-TYPE-HAS-MATCHING-ROLE task
+  2. Backend fixes ALL files, marks BOTH tasks as complete
+  3. UI refreshes showing both tasks complete
+  4. No need to click second task

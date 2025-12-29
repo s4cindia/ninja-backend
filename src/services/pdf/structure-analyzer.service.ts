@@ -1,4 +1,4 @@
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { textExtractorService, TextLine, TextBlock, DocumentText } from './text-extractor.service';
 

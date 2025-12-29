@@ -167,7 +167,6 @@ export function validateContrast(
     }
   }
 
-  const totalAnalyzed = passing + failing;
   const totalChecks = textElements.length;
 
   return {

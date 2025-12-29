@@ -1,0 +1,93 @@
+Prompt 40: Backend - Fix Auto-Complete to Run BEFORE Response
+
+  File: src/controllers/epub.controller.ts
+
+  The auto-complete logic needs to run and complete BEFORE returning the response. Update the epub:type case:
+
+  case 'EPUB-SEM-003':
+  case 'EPUB-TYPE-HAS-MATCHING-ROLE': {
+    const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+
+    // Build list from changes array
+    if (changes && Array.isArray(changes)) {
+      for (const change of changes) {
+        const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
+        const roleMatch = change.newContent?.match(/role="([^"]+)"/);
+        if (epubTypeMatch && roleMatch) {
+          const epubType = epubTypeMatch[1];
+          const role = roleMatch[1];
+          if (!epubTypesToFix.find(e => e.epubType === epubType)) {
+            epubTypesToFix.push({ epubType, role });
+          }
+        }
+      }
+    }
+
+    console.log('epub:types to fix:', epubTypesToFix);
+    results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+    console.log('Fix results:', results.length, 'modifications');
+
+    // IMPORTANT: Auto-complete ALL related tasks NOW
+    let tasksAutoCompleted = 0;
+    try {
+      const plan = await remediationService.getRemediationPlan(jobId);
+      if (plan?.tasks) {
+        const relatedTasks = plan.tasks.filter(
+          (t: any) => t.code === 'EPUB-TYPE-HAS-MATCHING-ROLE' && t.status !== 'completed'
+        );
+
+        console.log(`Auto-completing ${relatedTasks.length} EPUB-TYPE-HAS-MATCHING-ROLE tasks`);
+
+        for (const task of relatedTasks) {
+          try {
+            await remediationService.updateTaskStatus(
+              jobId,
+              task.id,
+              'completed',
+              `Auto-fixed: ARIA roles added to all epub:type elements`,
+              req.user?.email || 'system'
+            );
+            tasksAutoCompleted++;
+            console.log(`Auto-completed task: ${task.id}`);
+          } catch (taskErr) {
+            console.error(`Failed to auto-complete task ${task.id}:`, taskErr);
+          }
+        }
+      }
+    } catch (planErr) {
+      console.error('Failed to get remediation plan for auto-complete:', planErr);
+    }
+
+    // Save modified EPUB
+    const modifiedBuffer = await epubModifier.saveEPUB(zip);
+    await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+    // Return success with info about auto-completed tasks
+    return res.json({
+      success: true,
+      data: {
+        results,
+        modificationsCount: results.length,
+        tasksAutoCompleted,
+        message: results.length > 0
+          ? `Applied ${results.length} role additions, auto-completed ${tasksAutoCompleted} tasks`
+          : `No new modifications (already fixed), auto-completed ${tasksAutoCompleted} tasks`,
+        downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+      },
+    });
+  }
+
+  ---
+  Key changes:
+  1. Auto-complete runs INSIDE the case block, not after
+  2. Returns early with the response (no falling through to other code)
+  3. Always marks ALL EPUB-TYPE-HAS-MATCHING-ROLE tasks complete, even if no new modifications
+  4. Logs how many tasks were auto-completed
+
+  ---
+  Expected result:
+  1. User clicks Apply Fix on first task
+  2. Backend fixes all files AND marks BOTH tasks complete
+  3. Response shows: "tasksAutoCompleted": 2
+  4. UI refreshes showing both tasks complete
+  5. Second task doesn't need any action

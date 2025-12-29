@@ -17,6 +17,7 @@ import exportsRoutes from "./exports.routes";
 import altTextRoutes from "./alt-text.routes";
 import epubRoutes from "./epub.routes";
 import feedbackRoutes from "./feedback.routes";
+import configRoutes from "./config.routes";
 
 const router = Router();
 
@@ -87,5 +88,6 @@ router.use("/exports", exportsRoutes);
 router.use("/alt-text", altTextRoutes);
 router.use("/epub", epubRoutes);
 router.use("/feedback", feedbackRoutes);
+router.use("/config", configRoutes);
 
 export default router;
