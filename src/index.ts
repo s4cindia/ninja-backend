@@ -10,6 +10,7 @@ import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
+import { isRedisConfigured } from './config/redis.config';
 
 const app: Express = express();
 
@@ -48,11 +49,14 @@ app.use(compression());
 app.use(requestLogger);
 
 app.get('/health', (req, res) => {
+  const redisAvailable = isRedisConfigured();
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: config.nodeEnv,
     version: config.version,
+    redis: redisAvailable ? 'connected' : 'not_configured',
+    workers: redisAvailable ? 'enabled' : 'disabled',
   });
 });
 
@@ -66,6 +70,12 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log(`📍 Environment: ${config.nodeEnv}`);
   console.log(`❤️  Health check: http://localhost:${config.port}/health`);
   console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
+  
+  if (isRedisConfigured()) {
+    console.log('✅ Redis configured - BullMQ workers enabled');
+  } else {
+    console.log('⚠️  Redis not configured - running in sync mode');
+  }
   
   startWorkers();
 });
