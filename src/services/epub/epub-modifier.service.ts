@@ -47,6 +47,33 @@ function tryEpubTypePatternMatch(content: string, oldContent: string, newContent
   const epubTypeMatch = oldContent.match(/epub:type\s*=\s*["']([^"']+)["']/);
   if (epubTypeMatch) {
     const epubTypeValue = epubTypeMatch[1];
+    
+    const isAttributeOnly = /^[a-zA-Z][a-zA-Z0-9:_-]*\s*=\s*["'][^"']*["']$/.test(newContent.trim());
+    
+    if (isAttributeOnly) {
+      const tagPattern = new RegExp(`<(\\w+)([^>]*\\bepub:type\\s*=\\s*["'][^"']*${escapeRegExp(epubTypeValue)}[^"']*["'][^>]*)>`, 'gi');
+      const tagMatch = content.match(tagPattern);
+      
+      if (tagMatch && tagMatch.length > 0) {
+        const originalTag = tagMatch[0];
+        const tagNameMatch = originalTag.match(/<(\w+)/);
+        const tagName = tagNameMatch ? tagNameMatch[1] : 'nav';
+        
+        const existingAttrsMatch = originalTag.match(/<\w+\s*([^>]*)>/);
+        const existingAttrs = existingAttrsMatch ? existingAttrsMatch[1] : '';
+        
+        const mergedTag = mergeTagAttributes(tagName, existingAttrs, newContent.trim());
+        
+        logger.info(`epub:type ADD attribute: "${originalTag}" → "${mergedTag}"`);
+        
+        return {
+          matched: true,
+          matchedContent: originalTag,
+          newContent: content.replace(originalTag, mergedTag),
+        };
+      }
+    }
+    
     const regex = new RegExp(`epub:type\\s*=\\s*["']${escapeRegExp(epubTypeValue)}["']`, 'g');
     const match = content.match(regex);
 
