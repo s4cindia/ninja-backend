@@ -1278,7 +1278,7 @@ export const epubController = {
       const { issueId, changes, fixCode, taskId, options } = req.body;
       const tenantId = req.user?.tenantId;
 
-      logger.debug('applyQuickFix called', { jobId, fixCode, taskId, issueId, options });
+      logger.debug(`applyQuickFix called: jobId=${jobId}, fixCode=${fixCode}, taskId=${taskId}, issueId=${issueId}`);
 
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
@@ -1344,10 +1344,10 @@ export const epubController = {
       }
 
       if (epubTypesToFix.length > 0) {
-        logger.debug('Using EPUB-TYPE case with regex method', { epubTypesToFix });
+        logger.debug(`Using EPUB-TYPE case with regex method: ${epubTypesToFix.length} types to fix`);
 
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
-        logger.debug('addAriaRolesToEpubTypes completed', { modificationsCount: results.length });
+        logger.debug(`addAriaRolesToEpubTypes completed: ${results.length} modifications`);
 
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
@@ -1490,7 +1490,7 @@ export const epubController = {
       const { jobId } = req.params;
       const tenantId = req.user?.tenantId;
 
-      logger.debug('scanEpubTypes called', { jobId, tenantId });
+      logger.debug(`scanEpubTypes called: jobId=${jobId}, tenantId=${tenantId}`);
 
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
@@ -1520,7 +1520,7 @@ export const epubController = {
       const zip = await epubModifier.loadEPUB(epubBuffer);
       const result = await epubModifier.scanEpubTypes(zip);
 
-      logger.debug('scanEpubTypes result', { epubTypesCount: result.epubTypes.length });
+      logger.debug(`scanEpubTypes result: ${result.epubTypes.length} epub:types found`);
 
       return res.json({ success: true, data: result });
     } catch (error) {
