@@ -192,11 +192,37 @@ function handleEpubTypeRoleAddition(
   return { result: content, matched: false };
 }
 
+function isHtmlTagReplacement(oldContent: string, newContent: string): boolean {
+  return /^<\w+[^>]*>$/.test(oldContent.trim()) && /^<\w+[^>]*>$/.test(newContent.trim());
+}
+
 function performFlexibleReplace(content: string, oldContent: string, newContent: string): { 
   result: string; 
   matched: boolean; 
   matchedContent?: string;
 } {
+  // For HTML tag replacements, ALWAYS use attribute merging to preserve existing attributes
+  if (isHtmlTagReplacement(oldContent, newContent)) {
+    logger.info(`HTML tag replacement detected, using attribute merging...`);
+    const tagResult = tryTagPatternMatch(content, oldContent, newContent);
+    if (tagResult.matched) {
+      return {
+        result: tagResult.newContent!,
+        matched: true,
+        matchedContent: tagResult.matchedContent,
+      };
+    }
+  }
+
+  // For epub:type + role additions, use specialized handler that preserves epub:type
+  if (oldContent.includes('epub:type') && newContent.includes('role=')) {
+    const epubRoleResult = handleEpubTypeRoleAddition(content, oldContent, newContent);
+    if (epubRoleResult.matched) {
+      return epubRoleResult;
+    }
+  }
+
+  // Exact match for non-tag content (text, metadata, etc.)
   if (content.includes(oldContent)) {
     logger.info(`Exact match found for: ${oldContent.substring(0, 50)}...`);
     return {
@@ -207,13 +233,6 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
   }
 
   logger.info(`Exact match failed, trying flexible patterns...`);
-
-  if (oldContent.includes('epub:type') && newContent.includes('role=')) {
-    const epubRoleResult = handleEpubTypeRoleAddition(content, oldContent, newContent);
-    if (epubRoleResult.matched) {
-      return epubRoleResult;
-    }
-  }
 
   const flexResult = tryFlexibleMatch(content, oldContent, newContent);
   if (flexResult.matched) {
@@ -233,6 +252,7 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
     };
   }
 
+  // Fallback to tag pattern matching for partial matches
   const tagResult = tryTagPatternMatch(content, oldContent, newContent);
   if (tagResult.matched) {
     return {
@@ -1586,8 +1606,27 @@ class EPUBModifierService {
       'colophon': 'doc-colophon',
       'acknowledgments': 'doc-acknowledgments',
       'footnote': 'doc-footnote',
+      'footnotes': 'doc-footnotes',
       'endnote': 'doc-endnote',
       'endnotes': 'doc-endnotes',
+      'noteref': 'doc-noteref',
+      'rearnote': 'doc-endnote',
+      'rearnotes': 'doc-endnotes',
+      'sidebar': 'complementary',
+      'abstract': 'doc-abstract',
+      'conclusion': 'doc-conclusion',
+      'errata': 'doc-errata',
+      'notice': 'doc-notice',
+      'pagebreak': 'doc-pagebreak',
+      'pagelist': 'doc-pagelist',
+      'pullquote': 'doc-pullquote',
+      'qna': 'doc-qna',
+      'subtitle': 'doc-subtitle',
+      'titlepage': 'doc-titlepage',
+      'credits': 'doc-credits',
+      'loi': 'doc-loi',
+      'lot': 'doc-lot',
+      'tip': 'doc-tip',
     };
 
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
@@ -1638,7 +1677,7 @@ class EPUBModifierService {
       value: data.value,
       file: Array.from(data.files)[0],
       count: data.count,
-      suggestedRole: roleMapping[key] || 'region',
+      suggestedRole: roleMapping[key] || `doc-${key}`,
       elementType: data.elementType,
     }));
 
