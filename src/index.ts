@@ -18,15 +18,14 @@ const app: Express = express();
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     if (!origin) return callback(null, true);
-    const allowedPatterns = [
-      /\.replit\.dev$/,
-      /\.replit\.app$/,
-      /\.repl\.co$/,
-      /^https?:\/\/localhost(:\d+)?$/
-    ];
-    if (allowedPatterns.some(pattern => pattern.test(origin))) {
+    if (origin.includes('.replit.dev') ||
+        origin.includes('.replit.app') ||
+        origin.includes('.repl.co') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1')) {
       return callback(null, true);
     }
+    console.warn(`CORS blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -34,6 +33,7 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
 };
 
+app.options('*', cors(corsOptions));
 app.use(cors(corsOptions));
 
 app.use(helmet({
