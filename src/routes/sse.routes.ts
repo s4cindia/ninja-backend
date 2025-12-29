@@ -59,6 +59,33 @@ router.get('/batch/:batchId/progress', async (req: Request, res: Response) => {
       return;
     }
 
+    const batchJob = await prisma.job.findFirst({
+      where: {
+        id: batchId,
+        tenantId: tenantId,
+      },
+      select: { id: true }
+    });
+
+    if (!batchJob) {
+      const jobWithBatch = await prisma.job.findFirst({
+        where: {
+          tenantId: tenantId,
+          output: {
+            path: ['batchId'],
+            equals: batchId,
+          },
+        },
+        select: { id: true }
+      });
+
+      if (!jobWithBatch) {
+        logger.warn(`[SSE] Batch ${batchId} not found for tenant ${tenantId}`);
+        res.status(404).json({ success: false, error: 'Batch not found' });
+        return;
+      }
+    }
+
     logger.info(`[SSE] Client connected for batch ${batchId}, user ${userId}`);
 
     const clientId = sseService.addClient(res, tenantId);

@@ -1,0 +1,215 @@
+Replit Prompt - Fix Backend PR Lint & Code Review Issues
+
+  Fix backend PR lint failures and CodeRabbit review comments.
+
+  === LINT FIXES (Replace console.log with logger) ===
+
+  1. In src/services/epub/batch-remediation.service.ts, replace console.log with logger:
+
+     // Line 192 - change:
+     console.log(`[SSE] Broadcasting job_started for: ${job.jobId}`);
+     // to:
+     logger.info(`[SSE] Broadcasting job_started for: ${job.jobId}`);
+
+     // Line 245 - change:
+     console.log(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
+     // to:
+     logger.info(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
+
+     // Line 261 - change:
+     console.log(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
+     // to:
+     logger.info(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
+
+     // Line 291 - change:
+     console.log(`[SSE] Broadcasting batch_completed for: ${batchId}`);
+     // to:
+     logger.info(`[SSE] Broadcasting batch_completed for: ${batchId}`);
+
+
+  2. In src/workers/index.ts, remove unused imports (line 3):
+
+     // Change:
+     import { QUEUE_NAMES, JobData, JobResult, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
+     // To:
+     import { QUEUE_NAMES, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
+
+
+  3. In src/services/epub/batch-remediation.service.ts, fix unused options parameter (line 393):
+
+     // Change:
+     async retryJob(
+       batchId: string,
+       jobId: string,
+       tenantId: string,
+       options: BatchOptions = {}
+     ): Promise<BatchJob> {
+     // To:
+     async retryJob(
+       batchId: string,
+       jobId: string,
+       tenantId: string,
+       _options: BatchOptions = {}
+     ): Promise<BatchJob> {
+
+
+  === CODE REVIEW FIXES ===
+
+  4. **P1: Prevent worker from reviving cancelled batches**
+
+     In processBatchSync (around line 168), add cancelled check at the start:
+
+     async processBatchSync(
+       batchId: string,
+       tenantId: string,
+       options: BatchOptions = {}
+     ): Promise<BatchRemediationResult> {
+       const rawOutput = await this.getBatchStatus(batchId, tenantId);
+       if (!rawOutput) {
+         throw new Error('Batch not found');
+       }
+
+       const result = rawOutput as unknown as BatchRemediationResult;
+
+       // Check if batch was cancelled before worker started
+       if (result.status === 'cancelled') {
+         logger.info(`Batch ${batchId} was cancelled, skipping processing`);
+         return result;
+       }
+
+       result.status = 'processing';
+       // ... rest of method
+
+
+  5. **Atomicity: Update status only after successful queue enqueue**
+
+     In processBatch method (around line 113-136), reorder to enqueue first:
+
+     async processBatch(
+       batchId: string,
+       tenantId: string,
+       options: BatchOptions = {}
+     ): Promise<BatchRemediationResult> {
+       const batch = await this.getBatchStatus(batchId, tenantId);
+       if (!batch) throw new Error('Batch not found');
+
+       if (areQueuesAvailable()) {
+         const queue = getBatchQueue();
+         if (queue) {
+           try {
+             // Enqueue FIRST, before updating status
+             await queue.add(`batch-${batchId}`, {
+               batchId,
+               tenantId,
+               options,
+             }, {
+               jobId: batchId,
+             });
+
+             // Only update status after successful enqueue
+             batch.status = 'processing';
+             batch.startedAt = new Date();
+             await this.updateBatchStatus(batchId, batch);
+
+             logger.info(`Batch ${batchId} queued for async processing`);
+             return batch;
+           } catch (err) {
+             logger.error(`Failed to enqueue batch ${batchId}:`, err);
+             // Don't update status if enqueue failed
+             throw err;
+           }
+         }
+       }
+
+       // Fallback to sync processing
+       batch.status = 'processing';
+       batch.startedAt = new Date();
+       await this.updateBatchStatus(batchId, batch);
+
+       logger.info(`Batch ${batchId} processing synchronously (Redis not available)`);
+       return this.processBatchSync(batchId, tenantId, options);
+     }
+
+
+  6. **CORS security: Use proper suffix matching**
+
+     In src/index.ts (around line 21-27), replace includes() with proper checks:
+
+     const isAllowedOrigin = (origin: string): boolean => {
+       // Exact localhost matches
+       if (origin === 'http://localhost:3000' ||
+           origin === 'http://localhost:5173' ||
+           origin === 'http://127.0.0.1:3000' ||
+           origin === 'http://127.0.0.1:5173') {
+         return true;
+       }
+
+       // Proper suffix matching for Replit domains
+       try {
+         const url = new URL(origin);
+         const hostname = url.hostname;
+         return hostname.endsWith('.replit.dev') ||
+                hostname.endsWith('.replit.app') ||
+                hostname.endsWith('.repl.co');
+       } catch {
+         return false;
+       }
+     };
+
+     // Then in the CORS callback:
+     if (!origin || isAllowedOrigin(origin)) {
+       return callback(null, true);
+     }
+
+
+  7. **Missing batch ownership validation in SSE routes**
+
+     In src/routes/sse.routes.ts, after user validation (around line 60), add batch access check:
+
+     // After user validation, before creating SSE connection:
+
+     // Verify batch belongs to this tenant
+     const batchJob = await prisma.job.findFirst({
+       where: {
+         id: batchId,
+         tenantId: tenantId,
+       },
+       select: { id: true }
+     });
+
+     // If batchId doesn't match a job, check if it's a batch reference in job output
+     if (!batchJob) {
+       // Batches are stored in job output, so we need to check if any job in this tenant
+       // has this batchId in its output
+       const jobWithBatch = await prisma.job.findFirst({
+         where: {
+           tenantId: tenantId,
+           output: {
+             path: ['batchId'],
+             equals: batchId,
+           },
+         },
+         select: { id: true }
+       });
+
+       if (!jobWithBatch) {
+         logger.warn(`[SSE] Batch ${batchId} not found for tenant ${tenantId}`);
+         res.status(404).json({ success: false, error: 'Batch not found' });
+         return;
+       }
+     }
+
+     // Continue with SSE connection...
+
+
+  8. **Fix premature failedJobs decrement in retryJob**
+
+     In retryJob method (around line 411-461), move the decrement to after success:
+
+     // Remove this line from before the try block (around line 416):
+     // result.failedJobs = Math.max(0, result.failedJobs - 1);
+
+     // In the success block (after job.status = 'completed'), add:
+     result.failedJobs = Math.max(0, result.failedJobs - 1);
+     result.completedJobs++;
+

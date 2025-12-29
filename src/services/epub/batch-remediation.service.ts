@@ -119,25 +119,34 @@ class BatchRemediationService {
     const batch = await this.getBatchStatus(batchId, tenantId);
     if (!batch) throw new Error('Batch not found');
 
-    batch.status = 'processing';
-    batch.startedAt = new Date();
-    await this.updateBatchStatus(batchId, batch);
-
     if (areQueuesAvailable()) {
       const queue = getBatchQueue();
       if (queue) {
-        await queue.add(`batch-${batchId}`, {
-          batchId,
-          tenantId,
-          options,
-        }, {
-          jobId: batchId,
-        });
+        try {
+          await queue.add(`batch-${batchId}`, {
+            batchId,
+            tenantId,
+            options,
+          }, {
+            jobId: batchId,
+          });
 
-        logger.info(`Batch ${batchId} queued for async processing`);
-        return batch;
+          batch.status = 'processing';
+          batch.startedAt = new Date();
+          await this.updateBatchStatus(batchId, batch);
+
+          logger.info(`Batch ${batchId} queued for async processing`);
+          return batch;
+        } catch (err) {
+          logger.error(`Failed to enqueue batch ${batchId}: ${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
       }
     }
+
+    batch.status = 'processing';
+    batch.startedAt = new Date();
+    await this.updateBatchStatus(batchId, batch);
 
     logger.info(`Batch ${batchId} processing synchronously (Redis not available)`);
     return this.processBatchSync(batchId, tenantId, options);
@@ -148,26 +157,19 @@ class BatchRemediationService {
     tenantId: string,
     options: BatchOptions = {}
   ): Promise<BatchRemediationResult> {
-    const batchJob = await prisma.job.findFirst({
-      where: {
-        id: batchId,
-        tenantId,
-        type: 'BATCH_VALIDATION',
-      },
-    });
-
-    if (!batchJob) {
+    const rawOutput = await this.getBatchStatus(batchId, tenantId);
+    if (!rawOutput) {
       throw new Error('Batch not found');
     }
 
-    const rawOutput = batchJob.output as Record<string, unknown> | null;
-    if (!rawOutput || typeof rawOutput !== 'object' || !rawOutput.batchId || !rawOutput.jobs) {
-      throw new Error('Invalid batch data structure');
+    const result = rawOutput as unknown as BatchRemediationResult;
+
+    if (result.status === 'cancelled') {
+      logger.info(`Batch ${batchId} was cancelled, skipping processing`);
+      return result;
     }
 
-    const result = rawOutput as unknown as BatchRemediationResult;
     result.status = 'processing';
-
     await this.updateBatchStatus(batchId, result);
 
     for (let i = 0; i < result.jobs.length; i++) {
@@ -189,7 +191,7 @@ class BatchRemediationService {
           jobIndex: i,
           totalJobs: result.jobs.length,
         }, tenantId);
-        console.log(`[SSE] Broadcasting job_started for: ${job.jobId}`);
+        logger.info(`[SSE] Broadcasting job_started for: ${job.jobId}`);
 
         const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
         if (!jobRecord) {
@@ -242,7 +244,7 @@ class BatchRemediationService {
           issuesFixed: job.issuesFixed,
           progress: Math.round(((i + 1) / result.jobs.length) * 100),
         }, tenantId);
-        console.log(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
+        logger.info(`[SSE] Broadcasting job_completed for: ${job.jobId}`);
 
         logger.info(`Batch ${batchId}: Completed job ${job.jobId} (${i + 1}/${result.jobs.length})`);
 
@@ -258,7 +260,7 @@ class BatchRemediationService {
           jobId: job.jobId,
           error: job.error,
         }, tenantId);
-        console.log(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
+        logger.info(`[SSE] Broadcasting job_failed for: ${job.jobId}`);
 
         logger.error(`Batch ${batchId}: Failed job ${job.jobId}`, error instanceof Error ? error : undefined);
 
@@ -288,7 +290,7 @@ class BatchRemediationService {
       completedJobs: result.completedJobs,
       failedJobs: result.failedJobs,
     }, tenantId);
-    console.log(`[SSE] Broadcasting batch_completed for: ${batchId}`);
+    logger.info(`[SSE] Broadcasting batch_completed for: ${batchId}`);
 
     logger.info(`Batch ${batchId} completed: ${result.completedJobs}/${result.totalJobs} successful`);
 
@@ -390,7 +392,7 @@ class BatchRemediationService {
     batchId: string,
     jobId: string,
     tenantId: string,
-    options: BatchOptions = {}
+    _options: BatchOptions = {}
   ): Promise<BatchJob> {
     const result = await this.getBatchStatus(batchId, tenantId);
 
@@ -412,8 +414,6 @@ class BatchRemediationService {
     job.error = undefined;
     job.startedAt = new Date();
     job.completedAt = undefined;
-
-    result.failedJobs = Math.max(0, result.failedJobs - 1);
 
     await this.updateBatchStatus(batchId, result);
 
@@ -444,6 +444,7 @@ class BatchRemediationService {
       job.issuesFixed = remediationResult.totalIssuesFixed;
       job.issuesFailed = remediationResult.totalIssuesFailed;
       job.completedAt = new Date();
+      result.failedJobs = Math.max(0, result.failedJobs - 1);
       result.completedJobs++;
       result.summary.totalIssuesFixed += remediationResult.totalIssuesFixed;
 

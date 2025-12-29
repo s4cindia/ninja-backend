@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, JobData, JobResult, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
+import { QUEUE_NAMES, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';

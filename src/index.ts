@@ -15,14 +15,29 @@ import { sseService } from './sse/sse.service';
 
 const app: Express = express();
 
+const isAllowedOrigin = (origin: string): boolean => {
+  if (origin === 'http://localhost:3000' ||
+      origin === 'http://localhost:5000' ||
+      origin === 'http://localhost:5173' ||
+      origin === 'http://127.0.0.1:3000' ||
+      origin === 'http://127.0.0.1:5000' ||
+      origin === 'http://127.0.0.1:5173') {
+    return true;
+  }
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname;
+    return hostname.endsWith('.replit.dev') ||
+           hostname.endsWith('.replit.app') ||
+           hostname.endsWith('.repl.co');
+  } catch {
+    return false;
+  }
+};
+
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin) return callback(null, true);
-    if (origin.includes('.replit.dev') ||
-        origin.includes('.replit.app') ||
-        origin.includes('.repl.co') ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1')) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     console.warn(`CORS blocked origin: ${origin}`);
