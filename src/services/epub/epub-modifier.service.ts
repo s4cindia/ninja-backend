@@ -1056,10 +1056,10 @@ class EPUBModifierService {
     // Track if we've added a main landmark anywhere
     let mainLandmarkExists = false;
 
-    // First pass: check if any file already has role="main"
+    // First pass: check if any file already has role="main" OR <main> tag
     for (const filePath of files) {
       const content = await zip.file(filePath)?.async('text');
-      if (content && /role\s*=\s*["']main["']/i.test(content)) {
+      if (content && (/role\s*=\s*["']main["']/i.test(content) || /<main[\s>]/i.test(content))) {
         mainLandmarkExists = true;
         break;
       }
@@ -1115,12 +1115,21 @@ class EPUBModifierService {
     }
 
     if (results.length === 0) {
-      results.push({
-        success: true,
-        filePath: 'all',
-        modificationType: 'add_aria_landmarks',
-        description: 'ARIA landmarks already present or not applicable',
-      });
+      if (mainLandmarkExists) {
+        results.push({
+          success: true,
+          filePath: 'all',
+          modificationType: 'add_aria_landmarks',
+          description: 'Main landmark already present',
+        });
+      } else {
+        results.push({
+          success: false,
+          filePath: 'all',
+          modificationType: 'add_aria_landmarks',
+          description: 'Could not add main landmark - no suitable element found (main, section, or article)',
+        });
+      }
     }
 
     return results;
@@ -1189,54 +1198,31 @@ class EPUBModifierService {
     const results: ModificationResult[] = [];
     const files = Object.keys(zip.files);
 
-    const stripTags = (html: string): string => {
-      return html.replace(/<[^>]*>/g, '').trim();
-    };
-
-    const hasImgWithAlt = (html: string): boolean => {
-      const imgMatch = html.match(/<img[^>]+alt\s*=\s*["']([^"']+)["'][^>]*>/i);
-      return imgMatch !== null && imgMatch[1].trim().length > 0;
-    };
-
     for (const filePath of files) {
       if (!filePath.match(/\.(html|xhtml|htm)$/i)) continue;
 
       let content = await zip.file(filePath)?.async('text');
       if (!content) continue;
 
+      const $ = cheerio.load(content, { xmlMode: true });
       let modified = false;
       const changes: string[] = [];
 
-      const linkPattern = /<a(\s[^>]*)>([\s\S]*?)<\/a>/gi;
+      $('a').each((_, el) => {
+        const $el = $(el);
+        const text = $el.text().trim();
+        const hasImgWithAlt = $el.find('img[alt]:not([alt=""])').length > 0;
+        const hasAriaLabel = $el.attr('aria-label');
+        const hasTitle = $el.attr('title');
 
-      content = content.replace(linkPattern, (fullMatch, attrs, innerContent) => {
-        attrs = attrs || '';
-        
-        const textContent = stripTags(innerContent);
-        if (textContent.length > 0) {
-          return fullMatch;
+        if (text || hasImgWithAlt || hasAriaLabel || hasTitle) {
+          return;
         }
 
-        if (hasImgWithAlt(innerContent)) {
-          return fullMatch;
-        }
+        const href = $el.attr('href') || '';
+        if (!href) return;
 
-        if (/aria-label\s*=/i.test(attrs)) {
-          return fullMatch;
-        }
-
-        if (/title\s*=/i.test(attrs)) {
-          return fullMatch;
-        }
-
-        const hrefMatch = attrs.match(/href\s*=\s*["']([^"']+)["']/i);
-        if (!hrefMatch) {
-          return fullMatch;
-        }
-
-        const href = hrefMatch[1];
         let label = '';
-
         if (href.startsWith('#')) {
           const anchor = href.substring(1).replace(/[-_]/g, ' ');
           label = anchor ? `Jump to ${anchor}` : 'Internal link';
@@ -1246,30 +1232,29 @@ class EPUBModifierService {
           label = 'Link';
         }
 
-        changes.push(`Added aria-label="${label}" to empty link`);
+        $el.attr('aria-label', label);
+        changes.push(`Added aria-label="${label}" to empty link with href="${href}"`);
         modified = true;
-
-        return `<a${attrs} aria-label="${label}">${innerContent}</a>`;
       });
 
       if (modified) {
-        zip.file(filePath, content);
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,
           modificationType: 'fix_empty_links',
           description: `Fixed ${changes.length} empty link(s)`,
-          after: changes.join('\n'),
+          after: changes.slice(0, 5).join('\n') + (changes.length > 5 ? `\n... and ${changes.length - 5} more` : ''),
         });
       }
     }
 
     if (results.length === 0) {
       results.push({
-        success: true,
+        success: false,
         filePath: 'all',
         modificationType: 'fix_empty_links',
-        description: 'No empty links found',
+        description: 'No empty links found to fix',
       });
     }
 
