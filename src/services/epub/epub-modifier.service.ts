@@ -339,6 +339,52 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
   // Exact match for non-tag content (text, metadata, etc.)
   if (content.includes(oldContent)) {
     logger.info(`Exact match found for: ${oldContent.substring(0, 50)}...`);
+    
+    const isHtmlTag = /^<\w+[^>]*>$/.test(oldContent.trim());
+    if (isHtmlTag) {
+      const oldTagMatch = oldContent.match(/<(\w+)\s*([\s\S]*?)>/);
+      const newTagMatch = newContent.match(/<(\w+)\s*([\s\S]*?)>/);
+      
+      if (oldTagMatch && newTagMatch && oldTagMatch[1].toLowerCase() === newTagMatch[1].toLowerCase()) {
+        const tagName = oldTagMatch[1];
+        const oldAttrs = oldTagMatch[2] || '';
+        const newAttrs = newTagMatch[2] || '';
+        
+        const keyAttrMatch = oldAttrs.match(/([a-zA-Z][a-zA-Z0-9:_-]*)\s*=\s*["']([^"']+)["']/);
+        if (keyAttrMatch) {
+          const attrName = keyAttrMatch[1];
+          const attrValue = keyAttrMatch[2];
+          
+          const tagPattern = new RegExp(`<${tagName}\\s+[\\s\\S]*?${escapeRegExp(attrName)}\\s*=\\s*["'][^"']*${escapeRegExp(attrValue)}[^"']*["'][\\s\\S]*?>`, 'gi');
+          const specificMatch = content.match(tagPattern);
+          
+          if (specificMatch && specificMatch.length > 0) {
+            const matchedTag = specificMatch[0];
+            const matchedAttrsMatch = matchedTag.match(/<\w+\s*([\s\S]*?)>/);
+            const matchedAttrs = matchedAttrsMatch ? matchedAttrsMatch[1] : '';
+            
+            const mergedTag = mergeTagAttributes(tagName, matchedAttrs, newAttrs);
+            logger.info(`Exact match with targeted attribute merging: "${mergedTag}"`);
+            
+            return {
+              result: content.replace(matchedTag, mergedTag),
+              matched: true,
+              matchedContent: matchedTag,
+            };
+          }
+        }
+        
+        const mergedTag = mergeTagAttributes(tagName, oldAttrs, newAttrs);
+        logger.info(`Exact match with direct attribute merging: "${mergedTag}"`);
+        
+        return {
+          result: content.replace(oldContent, mergedTag),
+          matched: true,
+          matchedContent: oldContent,
+        };
+      }
+    }
+    
     return {
       result: content.replace(oldContent, newContent),
       matched: true,
