@@ -192,8 +192,112 @@ function handleEpubTypeRoleAddition(
   return { result: content, matched: false };
 }
 
+function extractOpeningTag(content: string): string | null {
+  const match = content.trim().match(/^<(\w+)[^>]*>/);
+  return match ? match[0] : null;
+}
+
 function isHtmlTagReplacement(oldContent: string, newContent: string): boolean {
-  return /^<\w+[^>]*>$/.test(oldContent.trim()) && /^<\w+[^>]*>$/.test(newContent.trim());
+  const oldTrimmed = oldContent.trim();
+  const newTrimmed = newContent.trim();
+  
+  if (/^<\w+[^>]*>$/.test(oldTrimmed) && /^<\w+[^>]*>$/.test(newTrimmed)) {
+    return true;
+  }
+  
+  const oldTag = extractOpeningTag(oldTrimmed);
+  const newTag = extractOpeningTag(newTrimmed);
+  
+  if (oldTag && newTag) {
+    const oldTagName = oldTag.match(/<(\w+)/)?.[1]?.toLowerCase();
+    const newTagName = newTag.match(/<(\w+)/)?.[1]?.toLowerCase();
+    return oldTagName === newTagName;
+  }
+  
+  return false;
+}
+
+function extractOpeningTagFromBlock(content: string): { tag: string; tagName: string } | null {
+  const match = content.trim().match(/^<(\w+)([^>]*)>/);
+  if (!match) return null;
+  return { tag: match[0], tagName: match[1] };
+}
+
+function mergeBlockReplacementTags(
+  content: string,
+  oldContent: string,
+  newContent: string
+): { result: string; matched: boolean; matchedContent?: string } {
+  const oldTagInfo = extractOpeningTagFromBlock(oldContent);
+  const newTagInfo = extractOpeningTagFromBlock(newContent);
+  
+  if (!oldTagInfo || !newTagInfo) {
+    return { result: content, matched: false };
+  }
+  
+  if (oldTagInfo.tagName.toLowerCase() !== newTagInfo.tagName.toLowerCase()) {
+    return { result: content, matched: false };
+  }
+  
+  const tagName = oldTagInfo.tagName;
+  const oldTagPattern = new RegExp(`<${tagName}\\s+[^>]*>`, 'gi');
+  
+  const keyAttrMatch = oldTagInfo.tag.match(/([a-zA-Z][a-zA-Z0-9:_-]*)\s*=\s*["']([^"']+)["']/);
+  if (!keyAttrMatch) {
+    return { result: content, matched: false };
+  }
+  
+  const keyAttrName = keyAttrMatch[1];
+  const keyAttrValue = keyAttrMatch[2];
+  
+  let foundTag: string | null = null;
+  let match;
+  while ((match = oldTagPattern.exec(content)) !== null) {
+    if (match[0].includes(`${keyAttrName}=`) && match[0].includes(keyAttrValue)) {
+      foundTag = match[0];
+      break;
+    }
+  }
+  
+  if (!foundTag) {
+    return { result: content, matched: false };
+  }
+  
+  const foundAttrsMatch = foundTag.match(/<\w+\s*(.*)>/);
+  const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
+  const newTagAttrsMatch = newTagInfo.tag.match(/<\w+\s*(.*)>/);
+  const newTagAttrs = newTagAttrsMatch ? newTagAttrsMatch[1] : '';
+  
+  const mergedTag = mergeTagAttributes(tagName, foundAttrs, newTagAttrs);
+  
+  const updatedNewContent = newContent.replace(newTagInfo.tag, mergedTag);
+  
+  logger.info(`Block replacement: merged opening tag "${mergedTag}"`);
+  
+  if (content.includes(oldContent)) {
+    return {
+      result: content.replace(oldContent, updatedNewContent),
+      matched: true,
+      matchedContent: oldContent,
+    };
+  }
+  
+  const oldContentNormalized = oldContent.replace(/\s+/g, '\\s*');
+  try {
+    const flexPattern = new RegExp(escapeRegExp(oldContent).replace(/\\s+/g, '\\s*'), 'g');
+    const flexMatch = content.match(flexPattern);
+    if (flexMatch && flexMatch.length > 0) {
+      return {
+        result: content.replace(flexMatch[0], updatedNewContent),
+        matched: true,
+        matchedContent: flexMatch[0],
+      };
+    }
+  } catch (e) {
+    logger.warn(`Block replacement flex pattern failed: ${e}`);
+  }
+  
+  return { result: content, matched: false };
 }
 
 function performFlexibleReplace(content: string, oldContent: string, newContent: string): { 
@@ -201,16 +305,26 @@ function performFlexibleReplace(content: string, oldContent: string, newContent:
   matched: boolean; 
   matchedContent?: string;
 } {
-  // For HTML tag replacements, ALWAYS use attribute merging to preserve existing attributes
+  // For block HTML tag replacements (multi-line), merge opening tag attributes and do full block replace
   if (isHtmlTagReplacement(oldContent, newContent)) {
-    logger.info(`HTML tag replacement detected, using attribute merging...`);
-    const tagResult = tryTagPatternMatch(content, oldContent, newContent);
-    if (tagResult.matched) {
-      return {
-        result: tagResult.newContent!,
-        matched: true,
-        matchedContent: tagResult.matchedContent,
-      };
+    const isSingleTag = /^<\w+[^>]*>$/.test(oldContent.trim()) && /^<\w+[^>]*>$/.test(newContent.trim());
+    
+    if (isSingleTag) {
+      logger.info(`Single tag replacement detected, using attribute merging...`);
+      const tagResult = tryTagPatternMatch(content, oldContent, newContent);
+      if (tagResult.matched) {
+        return {
+          result: tagResult.newContent!,
+          matched: true,
+          matchedContent: tagResult.matchedContent,
+        };
+      }
+    } else {
+      logger.info(`Block replacement detected, merging opening tag and replacing block...`);
+      const blockResult = mergeBlockReplacementTags(content, oldContent, newContent);
+      if (blockResult.matched) {
+        return blockResult;
+      }
     }
   }
 
@@ -389,20 +503,43 @@ class EPUBModifierService {
       }];
     }
 
-    let modified = this.cleanExistingMetadata(opf.content, [
-      'schema:accessibilityFeature',
-      'schema:accessibilityHazard',
-    ]);
-
+    let modified = opf.content;
     const metadataToAdd: string[] = [];
 
+    const hasMetaValue = (property: string, value?: string): boolean => {
+      const escapedProp = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (value) {
+        const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = new RegExp(
+          `<meta[^>]*property\\s*=\\s*["']${escapedProp}["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+          'i'
+        );
+        return pattern.test(modified);
+      }
+      const pattern = new RegExp(`property\\s*=\\s*["']${escapedProp}["']`, 'i');
+      return pattern.test(modified);
+    };
+
     for (const feature of features) {
-      metadataToAdd.push(
-        `<meta property="schema:accessibilityFeature">${feature}</meta>`
-      );
+      if (!hasMetaValue('schema:accessibilityFeature', feature)) {
+        metadataToAdd.push(
+          `<meta property="schema:accessibilityFeature">${feature}</meta>`
+        );
+      }
     }
 
-    metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
+    if (!hasMetaValue('schema:accessibilityHazard')) {
+      metadataToAdd.push('<meta property="schema:accessibilityHazard">none</meta>');
+    }
+
+    if (metadataToAdd.length === 0) {
+      return [{
+        success: true,
+        filePath: opf.path,
+        modificationType: 'add_accessibility_metadata',
+        description: 'Accessibility metadata already present',
+      }];
+    }
 
     const insertContent = '\n    ' + metadataToAdd.join('\n    ');
     modified = modified.replace('</metadata>', insertContent + '\n</metadata>');
@@ -435,25 +572,48 @@ class EPUBModifierService {
       }];
     }
 
-    let modified = this.cleanExistingMetadata(opf.content, [
-      'schema:accessMode',
-      'schema:accessModeSufficient',
-    ]);
-
+    let modified = opf.content;
     const metadataToAdd: string[] = [];
 
-    if (modes.textual) {
+    const hasAccessMode = (value: string): boolean => {
+      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `<meta[^>]*property\\s*=\\s*["']schema:accessMode["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+        'i'
+      );
+      return pattern.test(modified);
+    };
+
+    const hasAccessModeSufficient = (value: string): boolean => {
+      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `<meta[^>]*property\\s*=\\s*["']schema:accessModeSufficient["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+        'i'
+      );
+      return pattern.test(modified);
+    };
+
+    if (modes.textual && !hasAccessMode('textual')) {
       metadataToAdd.push('<meta property="schema:accessMode">textual</meta>');
     }
-    if (modes.visual) {
+    if (modes.visual && !hasAccessMode('visual')) {
       metadataToAdd.push('<meta property="schema:accessMode">visual</meta>');
     }
-    if (modes.auditory) {
+    if (modes.auditory && !hasAccessMode('auditory')) {
       metadataToAdd.push('<meta property="schema:accessMode">auditory</meta>');
     }
 
-    if (modes.textual) {
+    if (modes.textual && !hasAccessModeSufficient('textual')) {
       metadataToAdd.push('<meta property="schema:accessModeSufficient">textual</meta>');
+    }
+
+    if (metadataToAdd.length === 0) {
+      return [{
+        success: true,
+        filePath: opf.path,
+        modificationType: 'add_access_modes',
+        description: 'Access modes already present',
+      }];
     }
 
     const insertContent = '\n    ' + metadataToAdd.join('\n    ');
