@@ -252,6 +252,11 @@ class EPUBJSAuditorService {
     let localEmptyLinks = 0;
     $('a').each((_, el) => {
       const $el = $(el);
+      
+      // Skip named anchors (no href) - they're navigation targets, not links
+      // WCAG 2.4.4 only applies to navigational links with href
+      if (!$el.attr('href')) return;
+      
       const text = $el.text().trim();
       const hasImgWithAlt = $el.find('img[alt]:not([alt=""])').length > 0;
       const hasAriaLabel = $el.attr('aria-label');
