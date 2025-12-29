@@ -1109,6 +1109,32 @@ export const epubController = {
     }
   },
 
+  async retryBatchJob(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId, jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await batchRemediationService.retryJob(batchId, jobId, tenantId);
+
+      return res.json({
+        success: true,
+        data: job,
+        message: 'Job retry completed',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to retry job';
+      logger.error(`Failed to retry batch job: ${message}`);
+      return res.status(400).json({
+        success: false,
+        error: message,
+      });
+    }
+  },
+
   async listBatches(req: AuthenticatedRequest, res: Response) {
     try {
       const tenantId = req.user?.tenantId;

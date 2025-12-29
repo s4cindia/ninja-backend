@@ -45,6 +45,7 @@ router.post('/batch', authenticate, epubController.createBatch);
 router.post('/batch/:batchId/start', authenticate, epubController.startBatch);
 router.get('/batch/:batchId', authenticate, epubController.getBatchStatus);
 router.post('/batch/:batchId/cancel', authenticate, epubController.cancelBatch);
+router.post('/batch/:batchId/retry/:jobId', authenticate, epubController.retryBatchJob);
 router.get('/batches', authenticate, epubController.listBatches);
 
 router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);

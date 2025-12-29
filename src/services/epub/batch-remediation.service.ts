@@ -347,6 +347,96 @@ class BatchRemediationService {
     return { batches, total };
   }
 
+  async retryJob(
+    batchId: string,
+    jobId: string,
+    tenantId: string,
+    options: BatchOptions = {}
+  ): Promise<BatchJob> {
+    const result = await this.getBatchStatus(batchId, tenantId);
+
+    if (!result) {
+      throw new Error('Batch not found');
+    }
+
+    const jobIndex = result.jobs.findIndex(j => j.jobId === jobId);
+    if (jobIndex === -1) {
+      throw new Error('Job not found in batch');
+    }
+
+    const job = result.jobs[jobIndex];
+    if (job.status !== 'failed') {
+      throw new Error('Only failed jobs can be retried');
+    }
+
+    job.status = 'processing';
+    job.error = undefined;
+    job.startedAt = new Date();
+    job.completedAt = undefined;
+
+    result.failedJobs = Math.max(0, result.failedJobs - 1);
+
+    await this.updateBatchStatus(batchId, result);
+
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'job_retry_started',
+      batchId,
+      jobId: job.jobId,
+    }, tenantId);
+
+    try {
+      const jobRecord = await prisma.job.findUnique({ where: { id: job.jobId } });
+      if (!jobRecord) throw new Error(`Job record not found: ${job.jobId}`);
+
+      const input = jobRecord.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'upload.epub';
+      job.fileName = fileName;
+
+      const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+      if (!epubBuffer) throw new Error(`EPUB file not found: ${fileName}`);
+
+      const remediationResult = await autoRemediationService.runAutoRemediation(
+        epubBuffer,
+        job.jobId,
+        fileName
+      );
+
+      job.status = 'completed';
+      job.issuesFixed = remediationResult.totalIssuesFixed;
+      job.issuesFailed = remediationResult.totalIssuesFailed;
+      job.completedAt = new Date();
+      result.completedJobs++;
+      result.summary.totalIssuesFixed += remediationResult.totalIssuesFixed;
+
+      sseService.broadcastToChannel(`batch:${batchId}`, {
+        type: 'job_retry_completed',
+        batchId,
+        jobId: job.jobId,
+        issuesFixed: job.issuesFixed,
+      }, tenantId);
+
+    } catch (error) {
+      job.status = 'failed';
+      job.error = error instanceof Error ? error.message : 'Unknown error';
+      job.completedAt = new Date();
+      result.failedJobs++;
+
+      sseService.broadcastToChannel(`batch:${batchId}`, {
+        type: 'job_retry_failed',
+        batchId,
+        jobId: job.jobId,
+        error: job.error,
+      }, tenantId);
+    }
+
+    result.summary.successRate = result.totalJobs > 0
+      ? Math.round((result.completedJobs / result.totalJobs) * 100)
+      : 0;
+
+    await this.updateBatchStatus(batchId, result);
+    return job;
+  }
+
   private async updateBatchStatus(batchId: string, result: BatchRemediationResult): Promise<void> {
     const status = result.status === 'completed' ? JobStatus.COMPLETED
       : result.status === 'failed' ? JobStatus.FAILED
