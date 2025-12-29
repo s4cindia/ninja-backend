@@ -1,19 +1,11 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { FeedbackType, FeedbackStatus } from '@prisma/client';
 import { feedbackService, FeedbackService } from '../services/feedback/feedback.service';
 import { logger } from '../lib/logger';
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 const VALID_FEEDBACK_TYPES = Object.values(FeedbackType);
 const VALID_FEEDBACK_STATUSES = Object.values(FeedbackStatus);
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-}
 
 export const feedbackController = {
   async create(req: AuthenticatedRequest, res: Response) {

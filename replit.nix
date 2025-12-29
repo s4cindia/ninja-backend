@@ -1,5 +1,6 @@
 { pkgs }: {
   deps = [
+    pkgs.vips
     pkgs.libGL
     pkgs.xorg.libXrender
     pkgs.xorg.libXcursor

@@ -10,15 +10,7 @@ import { epubExportService } from '../services/epub/epub-export.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-}
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
