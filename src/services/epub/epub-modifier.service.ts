@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as cheerio from 'cheerio';
 import { logger } from '../../lib/logger';
+import { SKIP_AUTO_ROLE_TYPES, getAriaRoleForEpubType } from '../../config/epub-aria-mapping';
 
 const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
 
@@ -309,7 +310,6 @@ function mergeBlockReplacementTags(
     };
   }
   
-  const oldContentNormalized = oldContent.replace(/\s+/g, '\\s*');
   try {
     const flexPattern = new RegExp(escapeRegExp(oldContent).replace(/\\s+/g, '\\s*'), 'g');
     const flexMatch = content.match(flexPattern);
@@ -1693,53 +1693,6 @@ class EPUBModifierService {
     const results: ModificationResult[] = [];
     const files = Object.keys(zip.files);
 
-    // Types to skip (document divisions that don't need/shouldn't have explicit roles)
-    const skipTypes = new Set([
-      'frontmatter', 'bodymatter', 'backmatter', 'cover',
-      'titlepage', 'subtitle', 'pagebreak', 'loi', 'lot', 'tip',
-      'footnotes', 'page-list'
-    ]);
-
-    // EPUB type to ARIA role mapping - ONLY VALID DPUB-ARIA roles per EPUBCheck
-    // Invalid roles removed: doc-titlepage, doc-subtitle, doc-footnote, doc-footnotes,
-    // doc-pagebreak, doc-loi, doc-lot, doc-tip, doc-endnote (deprecated)
-    const EPUB_TYPE_TO_ROLE: Record<string, string> = {
-      'chapter': 'doc-chapter',
-      'part': 'doc-part',
-      'appendix': 'doc-appendix',
-      'bibliography': 'doc-bibliography',
-      'colophon': 'doc-colophon',
-      'conclusion': 'doc-conclusion',
-      'dedication': 'doc-dedication',
-      'endnotes': 'doc-endnotes',
-      'epilogue': 'doc-epilogue',
-      'epigraph': 'doc-epigraph',
-      'errata': 'doc-errata',
-      'example': 'doc-example',
-      'foreword': 'doc-foreword',
-      'glossary': 'doc-glossary',
-      'index': 'doc-index',
-      'introduction': 'doc-introduction',
-      'noteref': 'doc-noteref',
-      'notice': 'doc-notice',
-      'pagelist': 'doc-pagelist',
-      'preface': 'doc-preface',
-      'prologue': 'doc-prologue',
-      'pullquote': 'doc-pullquote',
-      'qna': 'doc-qna',
-      'toc': 'doc-toc',
-      'abstract': 'doc-abstract',
-      'acknowledgments': 'doc-acknowledgments',
-      'afterword': 'doc-afterword',
-      'credit': 'doc-credit',
-      'credits': 'doc-credits',
-      'landmarks': 'navigation',
-      'rearnotes': 'doc-endnotes',
-      'sidebar': 'complementary',
-      'footnote': 'note',
-      'endnote': 'note',
-      'rearnote': 'note',
-    };
 
     const xhtmlFiles = files.filter(f => /\.(x?html?)$/i.test(f) && !zip.files[f].dir);
 
@@ -1753,10 +1706,10 @@ class EPUBModifierService {
       // Process each epub:type to fix
       for (const { epubType, role } of epubTypesToFix) {
         // Skip types that shouldn't get roles
-        if (skipTypes.has(epubType.toLowerCase())) continue;
+        if (SKIP_AUTO_ROLE_TYPES.has(epubType.toLowerCase())) continue;
 
         // Determine the role to use
-        const targetRole = role || EPUB_TYPE_TO_ROLE[epubType.toLowerCase()] || `doc-${epubType}`;
+        const targetRole = role || getAriaRoleForEpubType(epubType);
 
         // Match any tag with epub:type containing this value
         // This regex captures: <tagName ... epub:type="...value..." ...>
@@ -1811,7 +1764,7 @@ class EPUBModifierService {
     }>;
     files: string[];
   }> {
-    console.log('=== scanEpubTypes START ===');
+    logger.debug('scanEpubTypes START');
 
     const epubTypeMap = new Map<string, {
       value: string;
@@ -1821,43 +1774,6 @@ class EPUBModifierService {
     }>();
     const scannedFiles: string[] = [];
 
-    const roleMapping: Record<string, string> = {
-      'chapter': 'doc-chapter',
-      'part': 'doc-part',
-      'toc': 'doc-toc',
-      'landmarks': 'navigation',
-      'dedication': 'doc-dedication',
-      'epigraph': 'doc-epigraph',
-      'foreword': 'doc-foreword',
-      'preface': 'doc-preface',
-      'introduction': 'doc-introduction',
-      'prologue': 'doc-prologue',
-      'epilogue': 'doc-epilogue',
-      'afterword': 'doc-afterword',
-      'appendix': 'doc-appendix',
-      'glossary': 'doc-glossary',
-      'bibliography': 'doc-bibliography',
-      'index': 'doc-index',
-      'colophon': 'doc-colophon',
-      'acknowledgments': 'doc-acknowledgments',
-      'endnotes': 'doc-endnotes',
-      'noteref': 'doc-noteref',
-      'rearnotes': 'doc-endnotes',
-      'sidebar': 'complementary',
-      'abstract': 'doc-abstract',
-      'conclusion': 'doc-conclusion',
-      'errata': 'doc-errata',
-      'example': 'doc-example',
-      'notice': 'doc-notice',
-      'pagelist': 'doc-pagelist',
-      'pullquote': 'doc-pullquote',
-      'qna': 'doc-qna',
-      'credit': 'doc-credit',
-      'credits': 'doc-credits',
-      'footnote': 'note',
-      'endnote': 'note',
-      'rearnote': 'note',
-    };
 
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
       /\.(xhtml|html|htm)$/i.test(path) && !zip.files[path].dir
@@ -1898,8 +1814,8 @@ class EPUBModifierService {
             }
           }
         }
-      } catch (err) {
-        console.error(`Error parsing ${filePath}:`, err);
+      } catch (_err) {
+        logger.error(`Error parsing ${filePath}`, _err instanceof Error ? _err : undefined);
       }
     }
 
@@ -1907,11 +1823,11 @@ class EPUBModifierService {
       value: data.value,
       file: Array.from(data.files)[0],
       count: data.count,
-      suggestedRole: roleMapping[key] || `doc-${key}`,
+      suggestedRole: getAriaRoleForEpubType(key),
       elementType: data.elementType,
     }));
 
-    console.log(`Found ${epubTypes.length} unique epub:types across ${scannedFiles.length} files`);
+    logger.debug(`Found ${epubTypes.length} unique epub:types across ${scannedFiles.length} files`);
 
     return { epubTypes, files: scannedFiles };
   }

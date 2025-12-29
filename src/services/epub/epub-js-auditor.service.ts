@@ -209,7 +209,7 @@ class EPUBJSAuditorService {
     filePath: string,
     stats: JSAuditResult['stats'],
     createIssue: (data: Omit<AccessibilityIssue, 'id'>) => AccessibilityIssue,
-    skipMainLandmarkCheck: boolean = false
+    _skipMainLandmarkCheck: boolean = false
   ): AccessibilityIssue[] {
     const issues: AccessibilityIssue[] = [];
     const $ = cheerio.load(content, { xmlMode: true });

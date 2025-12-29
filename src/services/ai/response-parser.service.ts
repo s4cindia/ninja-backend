@@ -82,7 +82,6 @@ class ResponseParserService {
         return { data, usage: totalUsage, attempts: attempt + 1 };
       } catch (error) {
         lastError = error as Error;
-        console.log(`Parse attempt ${attempt + 1} failed: ${lastError.message}`);
       }
     }
     

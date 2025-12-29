@@ -51,9 +51,8 @@ export const errorHandler = (
   err: ErrorWithStatus,
   req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ): void => {
-  console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err);
 
   let error: AppError;
 

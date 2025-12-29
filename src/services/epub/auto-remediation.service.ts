@@ -79,23 +79,39 @@ class AutoRemediationService {
     'EPUB-FIG-001': async (zip) => {
       return epubModifier.addFigureStructure(zip);
     },
-    'COLOR-CONTRAST': async (zip, options) => {
+    'COLOR-CONTRAST': async (_zip, options) => {
       const contrastIssues = options?.contrastIssues as Array<{
         filePath: string;
         foreground: string;
         background: string;
         selector?: string;
       }> | undefined;
-      return epubModifier.fixColorContrast(zip, contrastIssues);
+      if (!contrastIssues || contrastIssues.length === 0) {
+        return [{
+          success: false,
+          filePath: '',
+          modificationType: 'skip',
+          description: 'COLOR-CONTRAST requires specific issue data via Quick Fix',
+        }];
+      }
+      return epubModifier.fixColorContrast(_zip, contrastIssues);
     },
-    'EPUB-CONTRAST-001': async (zip, options) => {
+    'EPUB-CONTRAST-001': async (_zip, options) => {
       const contrastIssues = options?.contrastIssues as Array<{
         filePath: string;
         foreground: string;
         background: string;
         selector?: string;
       }> | undefined;
-      return epubModifier.fixColorContrast(zip, contrastIssues);
+      if (!contrastIssues || contrastIssues.length === 0) {
+        return [{
+          success: false,
+          filePath: '',
+          modificationType: 'skip',
+          description: 'EPUB-CONTRAST-001 requires specific issue data via Quick Fix',
+        }];
+      }
+      return epubModifier.fixColorContrast(_zip, contrastIssues);
     },
   };
 

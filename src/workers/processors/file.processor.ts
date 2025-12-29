@@ -5,10 +5,7 @@ import { queueService } from '../../services/queue.service';
 export async function processFileJob(
   job: Job<JobData, JobResult>
 ): Promise<JobResult> {
-  const { type, fileId } = job.data;
-  const jobId = job.id || job.name;
-
-  console.log(`📁 Starting file processing: ${type} for file: ${fileId}`);
+  const { type } = job.data;
 
   switch (type) {
     case JOB_TYPES.ALT_TEXT_GENERATION:
@@ -38,7 +35,6 @@ async function processAltTextGeneration(
     await new Promise((resolve) => setTimeout(resolve, 500));
     await job.updateProgress(stage.progress);
     await queueService.updateJobProgress(jobId, stage.progress);
-    console.log(`  📍 ${stage.message}`);
   }
 
   return {
@@ -68,7 +64,6 @@ async function processMetadataExtraction(
     await new Promise((resolve) => setTimeout(resolve, 400));
     await job.updateProgress(stage.progress);
     await queueService.updateJobProgress(jobId, stage.progress);
-    console.log(`  📍 ${stage.message}`);
   }
 
   return {

@@ -352,8 +352,8 @@ class EPUBExportService {
       const location = String(issue.location || '');
       const isAutoFixable = this.isAutoFixable(code);
       
-      const isFixed = completedCodes.has(code) || 
-        (completedTasksByCode.has(code) && completedTasksByCode.get(code)!.has(location));
+      const isFixed = completedTasksByCode.has(code) && 
+        completedTasksByCode.get(code)!.has(location);
       
       let wcagCriteria: string[] = [];
       if (Array.isArray(issue.wcagCriteria)) {

@@ -1278,7 +1278,7 @@ export const epubController = {
       const { issueId, changes, fixCode, taskId, options } = req.body;
       const tenantId = req.user?.tenantId;
 
-      console.log('applyQuickFix called:', { jobId, fixCode, taskId, issueId, options });
+      logger.debug('applyQuickFix called', { jobId, fixCode, taskId, issueId, options });
 
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
@@ -1344,23 +1344,10 @@ export const epubController = {
       }
 
       if (epubTypesToFix.length > 0) {
-        console.log('=== Using EPUB-TYPE case - should use regex method ===');
-        console.log('epubTypesToFix:', epubTypesToFix);
-
-        const xhtmlFiles = Object.keys(zip.files).filter(p => /\.(xhtml|html|htm)$/i.test(p));
-        if (xhtmlFiles.length > 0) {
-          const beforeContent = await zip.file(xhtmlFiles[0])?.async('text');
-          console.log(`BEFORE - ${xhtmlFiles[0]} last 200 chars:`, beforeContent?.slice(-200));
-        }
+        logger.debug('Using EPUB-TYPE case with regex method', { epubTypesToFix });
 
         results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
-        console.log('=== addAriaRolesToEpubTypes completed ===');
-        console.log(`Fix applied: ${results.length} modifications`);
-
-        if (xhtmlFiles.length > 0) {
-          const afterContent = await zip.file(xhtmlFiles[0])?.async('text');
-          console.log(`AFTER - ${xhtmlFiles[0]} last 200 chars:`, afterContent?.slice(-200));
-        }
+        logger.debug('addAriaRolesToEpubTypes completed', { modificationsCount: results.length });
 
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
@@ -1372,7 +1359,7 @@ export const epubController = {
           const plan = await remediationService.getRemediationPlan(jobId);
 
           if (plan?.tasks && Array.isArray(plan.tasks)) {
-            const relatedTasks = plan.tasks.filter((t: any) => {
+            const relatedTasks = plan.tasks.filter((t: { status?: string; issueCode?: string; id?: string }) => {
               if (t.status === 'completed') return false;
 
               const issueCode = String(t.issueCode || '').toUpperCase();
@@ -1383,14 +1370,10 @@ export const epubController = {
                 issueCode.includes('MATCHING_ROLE') ||
                 issueCode === 'EPUB-SEM-003';
 
-              if (isEpubTypeIssue) {
-                console.log(`  ✓ Match: ${t.id} - issueCode="${t.issueCode}"`);
-              }
-
               return isEpubTypeIssue;
             });
 
-            console.log(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
+            logger.debug(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
 
             for (const task of relatedTasks) {
               try {
@@ -1402,17 +1385,17 @@ export const epubController = {
                   req.user?.email || 'system'
                 );
                 tasksAutoCompleted++;
-                console.log(`✓ Auto-completed: ${task.id} (${task.issueCode})`);
+                logger.debug(`Auto-completed task: ${task.id} (${task.issueCode})`);
               } catch (err) {
-                console.error(`✗ Failed: ${task.id}:`, err);
+                logger.error(`Failed to auto-complete task ${task.id}`, err instanceof Error ? err : undefined);
               }
             }
           }
         } catch (err) {
-          console.error('Auto-complete error:', err);
+          logger.error('Auto-complete error', err instanceof Error ? err : undefined);
         }
 
-        console.log(`Total tasks auto-completed: ${tasksAutoCompleted}`);
+        logger.debug(`Total tasks auto-completed: ${tasksAutoCompleted}`);
 
         return res.json({
           success: true,
@@ -1461,7 +1444,7 @@ export const epubController = {
           const taskToUpdate = taskId || issueId;
           if (taskToUpdate) {
             const plan = await remediationService.getRemediationPlan(jobId);
-            const task = plan?.tasks.find((t: any) => t.id === taskToUpdate || t.issueId === taskToUpdate);
+            const task = plan?.tasks.find((t: { id?: string; issueId?: string }) => t.id === taskToUpdate || t.issueId === taskToUpdate);
             if (task) {
               await remediationService.updateTaskStatus(
                 jobId,
@@ -1472,11 +1455,11 @@ export const epubController = {
                 { completionMethod: 'auto' }
               );
               tasksUpdated = 1;
-              console.log(`Task ${task.id} marked as completed`);
+              logger.debug(`Task ${task.id} marked as completed`);
             }
           }
         } catch (taskError) {
-          console.error('Failed to update task status:', taskError);
+          logger.error('Failed to update task status', taskError instanceof Error ? taskError : undefined);
         }
       }
 
@@ -1493,7 +1476,7 @@ export const epubController = {
         },
       });
     } catch (error) {
-      console.error('applyQuickFix error:', error);
+      logger.error('applyQuickFix error', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: 'Failed to apply fix',
@@ -1503,13 +1486,11 @@ export const epubController = {
   },
 
   async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
-    console.log('=== scanEpubTypes endpoint called ===');
     try {
       const { jobId } = req.params;
       const tenantId = req.user?.tenantId;
 
-      console.log('jobId:', jobId);
-      console.log('tenantId:', tenantId);
+      logger.debug('scanEpubTypes called', { jobId, tenantId });
 
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
@@ -1517,39 +1498,33 @@ export const epubController = {
 
       const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
       if (!job) {
-        console.log('Job not found');
         return res.status(404).json({ success: false, error: 'Job not found' });
       }
 
       const input = job.input as { fileName?: string } | null;
       const fileName = input?.fileName || 'document.epub';
-      console.log('fileName:', fileName);
 
       let epubBuffer = await fileStorageService.getRemediatedFile(
         jobId,
         fileName.replace(/\.epub$/i, '_remediated.epub')
       );
-      console.log('Remediated file found:', !!epubBuffer);
 
       if (!epubBuffer) {
         epubBuffer = await fileStorageService.getFile(jobId, fileName);
-        console.log('Original file found:', !!epubBuffer);
       }
 
       if (!epubBuffer) {
         return res.status(404).json({ success: false, error: 'EPUB file not found' });
       }
 
-      console.log('EPUB buffer size:', epubBuffer.length);
-
       const zip = await epubModifier.loadEPUB(epubBuffer);
       const result = await epubModifier.scanEpubTypes(zip);
 
-      console.log('Returning result with', result.epubTypes.length, 'epub:types');
+      logger.debug('scanEpubTypes result', { epubTypesCount: result.epubTypes.length });
 
       return res.json({ success: true, data: result });
     } catch (error) {
-      console.error('scanEpubTypes error:', error);
+      logger.error('scanEpubTypes error', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: 'Failed to scan file',
@@ -1573,7 +1548,7 @@ export const epubController = {
 
       return res.json({ success: true, data: task });
     } catch (error) {
-      console.error('markTaskFixed error:', error);
+      logger.error('markTaskFixed error', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
