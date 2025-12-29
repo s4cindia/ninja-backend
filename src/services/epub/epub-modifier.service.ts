@@ -1520,8 +1520,50 @@ class EPUBModifierService {
               modified = content.replace(change.oldContent, change.oldContent + (change.content || ''));
               changeApplied = true;
             } else {
-              modified += '\n' + (change.content || '');
-              changeApplied = true;
+              // For XHTML files, try to insert before </head> or </body> instead of appending at end
+              const isXhtml = /\.(x?html?)$/i.test(actualPath);
+              const newContent = change.content || '';
+              
+              if (isXhtml && (newContent.includes('{') || newContent.trim().startsWith('<style'))) {
+                // This looks like CSS - insert before </head> or into existing <style>
+                if (content.includes('</head>')) {
+                  // Insert as inline style before </head>
+                  const cssContent = newContent.includes('<style') ? newContent : `<style type="text/css">\n${newContent}\n</style>`;
+                  modified = content.replace('</head>', `${cssContent}\n</head>`);
+                  changeApplied = true;
+                } else if (content.includes('</body>')) {
+                  // Fall back to before </body>
+                  modified = content.replace('</body>', `<style type="text/css">\n${newContent}\n</style>\n</body>`);
+                  changeApplied = true;
+                } else {
+                  results.push({
+                    success: false,
+                    filePath: actualPath,
+                    modificationType: change.type,
+                    description: 'Cannot insert CSS: no </head> or </body> tag found. Provide oldContent anchor.',
+                  });
+                  hasErrors = true;
+                  continue;
+                }
+              } else if (isXhtml) {
+                // For non-CSS content, insert before </body>
+                if (content.includes('</body>')) {
+                  modified = content.replace('</body>', `${newContent}\n</body>`);
+                  changeApplied = true;
+                } else {
+                  results.push({
+                    success: false,
+                    filePath: actualPath,
+                    modificationType: change.type,
+                    description: 'Cannot insert into XHTML: no </body> tag found. Provide oldContent anchor.',
+                  });
+                  hasErrors = true;
+                  continue;
+                }
+              } else {
+                modified += '\n' + newContent;
+                changeApplied = true;
+              }
             }
           }
           break;
@@ -1654,10 +1696,14 @@ class EPUBModifierService {
 
     // Types to skip (document divisions that don't need/shouldn't have explicit roles)
     const skipTypes = new Set([
-      'frontmatter', 'bodymatter', 'backmatter', 'cover'
+      'frontmatter', 'bodymatter', 'backmatter', 'cover',
+      'titlepage', 'subtitle', 'pagebreak', 'loi', 'lot', 'tip',
+      'footnotes', 'page-list'
     ]);
 
-    // EPUB type to ARIA role mapping (including rearnote!)
+    // EPUB type to ARIA role mapping - ONLY VALID DPUB-ARIA roles per EPUBCheck
+    // Invalid roles removed: doc-titlepage, doc-subtitle, doc-footnote, doc-footnotes,
+    // doc-pagebreak, doc-loi, doc-lot, doc-tip, doc-endnote (deprecated)
     const EPUB_TYPE_TO_ROLE: Record<string, string> = {
       'chapter': 'doc-chapter',
       'part': 'doc-part',
@@ -1667,19 +1713,16 @@ class EPUBModifierService {
       'conclusion': 'doc-conclusion',
       'dedication': 'doc-dedication',
       'endnotes': 'doc-endnotes',
-      'endnote': 'doc-endnote',
       'epilogue': 'doc-epilogue',
       'epigraph': 'doc-epigraph',
       'errata': 'doc-errata',
-      'footnote': 'doc-footnote',
-      'footnotes': 'doc-footnotes',
+      'example': 'doc-example',
       'foreword': 'doc-foreword',
       'glossary': 'doc-glossary',
       'index': 'doc-index',
       'introduction': 'doc-introduction',
       'noteref': 'doc-noteref',
       'notice': 'doc-notice',
-      'pagebreak': 'doc-pagebreak',
       'pagelist': 'doc-pagelist',
       'preface': 'doc-preface',
       'prologue': 'doc-prologue',
@@ -1689,16 +1732,14 @@ class EPUBModifierService {
       'abstract': 'doc-abstract',
       'acknowledgments': 'doc-acknowledgments',
       'afterword': 'doc-afterword',
+      'credit': 'doc-credit',
       'credits': 'doc-credits',
-      'subtitle': 'doc-subtitle',
-      'titlepage': 'doc-titlepage',
       'landmarks': 'navigation',
-      'loi': 'doc-loi',
-      'lot': 'doc-lot',
-      'rearnote': 'doc-endnote',
       'rearnotes': 'doc-endnotes',
       'sidebar': 'complementary',
-      'tip': 'doc-tip',
+      'footnote': 'note',
+      'endnote': 'note',
+      'rearnote': 'note',
     };
 
     const xhtmlFiles = files.filter(f => /\.(x?html?)$/i.test(f) && !zip.files[f].dir);
@@ -1800,28 +1841,23 @@ class EPUBModifierService {
       'index': 'doc-index',
       'colophon': 'doc-colophon',
       'acknowledgments': 'doc-acknowledgments',
-      'footnote': 'doc-footnote',
-      'footnotes': 'doc-footnotes',
-      'endnote': 'doc-endnote',
       'endnotes': 'doc-endnotes',
       'noteref': 'doc-noteref',
-      'rearnote': 'doc-endnote',
       'rearnotes': 'doc-endnotes',
       'sidebar': 'complementary',
       'abstract': 'doc-abstract',
       'conclusion': 'doc-conclusion',
       'errata': 'doc-errata',
+      'example': 'doc-example',
       'notice': 'doc-notice',
-      'pagebreak': 'doc-pagebreak',
       'pagelist': 'doc-pagelist',
       'pullquote': 'doc-pullquote',
       'qna': 'doc-qna',
-      'subtitle': 'doc-subtitle',
-      'titlepage': 'doc-titlepage',
+      'credit': 'doc-credit',
       'credits': 'doc-credits',
-      'loi': 'doc-loi',
-      'lot': 'doc-lot',
-      'tip': 'doc-tip',
+      'footnote': 'note',
+      'endnote': 'note',
+      'rearnote': 'note',
     };
 
     const xhtmlFiles = Object.keys(zip.files).filter(path =>
