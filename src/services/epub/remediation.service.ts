@@ -5,6 +5,7 @@ import { epubAuditService } from './epub-audit.service';
 import {
   getFixType,
   FixType,
+  DUPLICATE_CODE_MAP,
 } from '../../constants/fix-classification';
 import {
   createTally,
@@ -183,13 +184,37 @@ class RemediationService {
       logger.info(`  ${i + 1}. [${source}] ${code} @ ${location}`);
     });
 
-    const auditTally = createTally(validatedIssues, 'audit');
+    // Deduplicate issues: ACE metadata codes that duplicate JS Auditor codes
+    const jsAuditorCodes = new Set(
+      validatedIssues
+        .filter(i => (i.source as string) === 'js-auditor')
+        .map(i => i.code as string)
+    );
+    
+    const deduplicatedIssues = validatedIssues.filter(issue => {
+      const code = issue.code as string;
+      const source = issue.source as string;
+      
+      // If this is an ACE issue that maps to a JS Auditor code that's already present, skip it
+      const mappedCode = DUPLICATE_CODE_MAP[code];
+      if (mappedCode && source === 'ace' && jsAuditorCodes.has(mappedCode)) {
+        logger.info(`  Skipping duplicate ACE issue ${code} (covered by JS Auditor ${mappedCode})`);
+        return false;
+      }
+      return true;
+    });
+    
+    if (deduplicatedIssues.length < validatedIssues.length) {
+      logger.info(`\nDEDUPLICATION: ${validatedIssues.length} -> ${deduplicatedIssues.length} issues (removed ${validatedIssues.length - deduplicatedIssues.length} duplicates)`);
+    }
+
+    const auditTally = createTally(deduplicatedIssues, 'audit');
     logger.info('\nAudit Tally:');
     logger.info(`  By Source: EPUBCheck=${auditTally.bySource.epubCheck}, ACE=${auditTally.bySource.ace}, JS Auditor=${auditTally.bySource.jsAuditor}`);
     logger.info(`  By Severity: Critical=${auditTally.bySeverity.critical}, Serious=${auditTally.bySeverity.serious}, Moderate=${auditTally.bySeverity.moderate}, Minor=${auditTally.bySeverity.minor}`);
     logger.info(`  Grand Total: ${auditTally.grandTotal}`);
 
-    const tasks: RemediationTask[] = validatedIssues.map((issue) => {
+    const tasks: RemediationTask[] = deduplicatedIssues.map((issue) => {
       const issueCode = (issue.code as string) || '';
       const issueLocation = (issue.location as string) || '';
       const severity = (issue.severity as string) || 'moderate';

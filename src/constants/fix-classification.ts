@@ -1,5 +1,8 @@
 export const AUTO_FIXABLE_CODES = new Set([
   'EPUB-META-001',
+  'EPUB-META-002',
+  'EPUB-META-003',
+  'EPUB-META-004',
   'EPUB-NAV-001',
   'EPUB-SEM-001',
   'EPUB-SEM-002',
@@ -14,9 +17,6 @@ export const QUICK_FIXABLE_CODES = new Set([
   'METADATA-ACCESSIBILITYFEATURE',
   'METADATA-ACCESSIBILITYHAZARD',
   'METADATA-ACCESSIBILITYSUMMARY',
-  'EPUB-META-002',
-  'EPUB-META-003',
-  'EPUB-META-004',
   'EPUB-IMG-001',
   'IMG-001',
   'ACE-IMG-001',
@@ -27,6 +27,15 @@ export const QUICK_FIXABLE_CODES = new Set([
   'LANDMARK-UNIQUE',
   'EPUB-TYPE-HAS-MATCHING-ROLE',
 ]);
+
+// Map ACE codes to equivalent JS Auditor codes to prevent duplicate processing
+export const DUPLICATE_CODE_MAP: Record<string, string> = {
+  'METADATA-ACCESSIBILITYFEATURE': 'EPUB-META-002',
+  'METADATA-ACCESSIBILITYHAZARD': 'EPUB-META-002',
+  'METADATA-ACCESSMODE': 'EPUB-META-004',
+  'METADATA-ACCESSMODESUFFICIENT': 'EPUB-META-004',
+  'METADATA-ACCESSIBILITYSUMMARY': 'EPUB-META-003',
+};
 
 export const CODE_MAPPING: Record<string, string> = {
   'metadata-accessmode-missing': 'METADATA-ACCESSMODE',
