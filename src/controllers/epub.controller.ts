@@ -725,7 +725,15 @@ export const epubController = {
 
       const input = job.input as { fileName?: string };
       const originalFileName = input?.fileName || 'upload.epub';
-      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+      
+      // Try to load from remediated file first (to preserve previous fixes)
+      // Fall back to original if no remediated file exists yet
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+      
       if (!epubBuffer) {
         return res.status(404).json({
           success: false,
@@ -814,7 +822,6 @@ export const epubController = {
       }
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
       return res.json({
