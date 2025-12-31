@@ -15,31 +15,27 @@ import { sseService } from './sse/sse.service';
 
 const app: Express = express();
 
-const isAllowedOrigin = (origin: string): boolean => {
-  if (origin === 'http://localhost:3000' ||
-      origin === 'http://localhost:5000' ||
-      origin === 'http://localhost:5173' ||
-      origin === 'http://127.0.0.1:3000' ||
-      origin === 'http://127.0.0.1:5000' ||
-      origin === 'http://127.0.0.1:5173') {
-    return true;
-  }
-  try {
-    const url = new URL(origin);
-    const hostname = url.hostname;
-    return hostname.endsWith('.replit.dev') ||
-           hostname.endsWith('.replit.app') ||
-           hostname.endsWith('.repl.co');
-  } catch {
-    return false;
-  }
-};
-
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || isAllowedOrigin(origin)) {
+    if (!origin) return callback(null, true);
+
+    // Check against configured origins from CORS_ORIGINS env var
+    if (config.corsOrigins.includes(origin)) {
       return callback(null, true);
     }
+
+    // Also allow Replit development domains and localhost
+    const allowedPatterns = [
+      /\.replit\.dev$/,
+      /\.replit\.app$/,
+      /\.repl\.co$/,
+      /^https?:\/\/localhost(:\d+)?$/,
+      /^https?:\/\/127\.0\.0\.1(:\d+)?$/
+    ];
+    if (allowedPatterns.some(pattern => pattern.test(origin))) {
+      return callback(null, true);
+    }
+
     console.warn(`CORS blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
