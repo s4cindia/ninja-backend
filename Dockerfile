@@ -1,4 +1,4 @@
-# Build stage - compile TypeScript
+ # Build stage - compile TypeScript
   FROM node:20-alpine AS builder
   WORKDIR /app
   COPY package*.json ./
@@ -6,6 +6,7 @@
   RUN npm ci
   COPY src ./src
   COPY prisma ./prisma
+  RUN npx prisma generate
   RUN npm run build
 
   # Production stage - use Debian-based image for Prisma/OpenSSL compatibility
