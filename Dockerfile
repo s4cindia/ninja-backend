@@ -1,4 +1,4 @@
- # Build stage - compile TypeScript
+# Build stage - compile TypeScript
   FROM node:20-alpine AS builder
   WORKDIR /app
   COPY package*.json ./
@@ -13,7 +13,7 @@
   FROM node:20-slim
   WORKDIR /app
 
-  # Install system dependencies for EPUB processing
+  # Install system dependencies for EPUB processing and sharp
   RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       wget \
@@ -28,6 +28,8 @@
       postgresql-client \
       openssl \
       ca-certificates \
+      python3 \
+      build-essential \
       && rm -rf /var/lib/apt/lists/* \
       && groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nodejs
 
@@ -37,7 +39,8 @@
   COPY --from=builder /app/prisma ./prisma
   COPY --from=builder /app/package*.json ./
 
-  # Regenerate Prisma client for Debian (different binary target than Alpine)
+  # Rebuild native modules for Debian (sharp, prisma)
+  RUN npm rebuild sharp --platform=linux --arch=x64
   RUN npx prisma generate
 
   # Download EPUBCheck
