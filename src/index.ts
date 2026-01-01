@@ -17,10 +17,12 @@ const app: Express = express();
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    console.log('CORS check - Origin:', origin, 'Allowed origins:', config.corsOrigins);
     if (!origin) return callback(null, true);
 
     // Check against configured origins from CORS_ORIGINS env var
     if (config.corsOrigins.includes(origin)) {
+      console.log('CORS - Origin allowed via config.corsOrigins');
       return callback(null, true);
     }
 
