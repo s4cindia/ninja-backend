@@ -10,7 +10,7 @@ interface RegisterInput {
   password: string;
   firstName: string;
   lastName: string;
-  tenantId: string;
+  tenantId?: string;
 }
 
 interface LoginInput {
@@ -47,6 +47,16 @@ export class AuthService {
       throw AppError.conflict('Email already registered', ErrorCodes.USER_EMAIL_EXISTS);
     }
 
+    // Auto-assign default tenant if not provided
+    let tenantId = input.tenantId;
+    if (!tenantId) {
+      const defaultTenant = await prisma.tenant.findFirst();
+      if (!defaultTenant) {
+        throw AppError.badRequest('No tenant available. Please contact administrator.');
+      }
+      tenantId = defaultTenant.id;
+    }
+
     const hashedPassword = await bcrypt.hash(input.password, 12);
 
     const user = await prisma.user.create({
@@ -55,7 +65,7 @@ export class AuthService {
         password: hashedPassword,
         firstName: input.firstName,
         lastName: input.lastName,
-        tenantId: input.tenantId,
+        tenantId: tenantId,
         role: 'USER',
       },
       select: {
