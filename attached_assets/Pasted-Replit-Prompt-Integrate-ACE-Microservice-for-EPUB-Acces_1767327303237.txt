@@ -1,0 +1,209 @@
+Replit Prompt: Integrate ACE Microservice for EPUB Accessibility Auditing
+
+  Context
+
+  The ACE (Accessibility Checker for EPUB) microservice has been deployed to AWS ECS as a separate service. Currently, the backend tries to run ACE locally via npx @daisy/ace, which doesn't work in the production container. We need to modify the backend to call the ACE microservice via HTTP instead.
+
+  The ACE microservice is running in the same ECS cluster and is accessible via the internal ALB or service discovery.
+
+  Task
+
+  Modify the backend to support calling an external ACE microservice via HTTP when ACE_SERVICE_URL environment variable is set. Fall back to local execution when the URL is not configured (for local development).
+
+  Files to Modify
+
+  1. src/config/index.ts
+
+  Add ACE service URL configuration:
+
+  interface Config {
+    port: number;
+    nodeEnv: string;
+    version: string;
+    databaseUrl: string;
+    jwtSecret: string;
+    jwtRefreshSecret: string;
+    jwtExpiresIn: string;
+    corsOrigins: string[];
+    maxFileSize: number;
+    uploadDir: string;
+    aceServiceUrl: string | null;  // Add this
+  }
+
+  export const config: Config = {
+    port: parseInt(process.env.PORT || '5000', 10),
+    nodeEnv: process.env.NODE_ENV || 'development',
+    version: process.env.npm_package_version || '1.0.0',
+    databaseUrl: process.env.DATABASE_URL || '',
+    jwtSecret: process.env.JWT_SECRET || 'development-secret-change-in-production',
+    jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'development-refresh-secret-change-in-production',
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:5173', 'http://localhost:3000'],
+    maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '52428800', 10),
+    uploadDir: process.env.UPLOAD_DIR || './uploads',
+    aceServiceUrl: process.env.ACE_SERVICE_URL || null,  // Add this
+  };
+
+  2. src/services/epub/epub-audit.service.ts
+
+  Modify the runAce method to call the microservice when URL is configured:
+
+  // Add at the top with other imports
+  import { config } from '../../config';
+  import FormData from 'form-data';
+  import axios from 'axios';
+
+  // Replace the runAce method with this implementation:
+
+  private async runAce(epubPath: string, tempDir: string): Promise<AceResult> {
+    // If ACE_SERVICE_URL is configured, use the microservice
+    if (config.aceServiceUrl) {
+      return this.runAceViaService(epubPath);
+    }
+
+    // Fall back to local execution for development
+    return this.runAceLocally(epubPath, tempDir);
+  }
+
+  private async runAceViaService(epubPath: string): Promise<AceResult> {
+    try {
+      const fileBuffer = await fs.promises.readFile(epubPath);
+      const fileName = path.basename(epubPath);
+
+      const formData = new FormData();
+      formData.append('epub', fileBuffer, {
+        filename: fileName,
+        contentType: 'application/epub+zip'
+      });
+
+      logger.info(`Calling ACE microservice at ${config.aceServiceUrl}`);
+
+      const response = await axios.post(
+        `${config.aceServiceUrl}/check`,
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+          },
+          timeout: 120000, // 2 minute timeout
+          maxContentLength: 100 * 1024 * 1024, // 100MB max response
+        }
+      );
+
+      const report = response.data;
+
+      // Parse the ACE response into our AceResult format
+      const violations: AceViolation[] = [];
+      for (const assertion of report.assertions || []) {
+        for (const violation of assertion.assertions || []) {
+          violations.push({
+            rule: violation['@type'] || 'unknown',
+            impact: this.mapAceImpact(violation.earl?.result?.outcome),
+            description: violation.earl?.result?.description || violation.assertion || '',
+            wcag: violation['dcterms:references'],
+            location: assertion['earl:testSubject']?.url,
+            html: violation.earl?.result?.pointer?.css,
+          });
+        }
+      }
+
+      const metadata = {
+        conformsTo: report.data?.['dc:conformsTo'] || [],
+        accessMode: report.data?.accessMode || [],
+        accessibilityFeature: report.data?.accessibilityFeature || [],
+        accessibilityHazard: report.data?.accessibilityHazard || [],
+        accessibilitySummary: report.data?.accessibilitySummary,
+      };
+
+      return {
+        score: this.calculateAceScore(violations),
+        violations,
+        metadata,
+        outlines: {
+          toc: report.outlines?.toc || [],
+          headings: report.outlines?.headings || [],
+        },
+      };
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        logger.error(`ACE microservice error: ${error.message}`, {
+          status: error.response?.status,
+          data: error.response?.data
+        });
+      } else {
+        logger.error('ACE microservice failed', error instanceof Error ? error : undefined);
+      }
+      throw error;
+    }
+  }
+
+  private async runAceLocally(epubPath: string, tempDir: string): Promise<AceResult> {
+    const aceOutputDir = path.join(tempDir, 'ace-output');
+
+    try {
+      await execFileAsync(
+        'npx',
+        ['@daisy/ace', epubPath, '--outdir', aceOutputDir, '--force'],
+        {
+          timeout: 120000,
+          env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' }
+        }
+      );
+
+      const reportPath = path.join(aceOutputDir, 'report.json');
+      const reportContent = await fs.promises.readFile(reportPath, 'utf-8');
+      const report = JSON.parse(reportContent);
+
+      const violations: AceViolation[] = [];
+      for (const assertion of report.assertions || []) {
+        for (const violation of assertion.assertions || []) {
+          violations.push({
+            rule: violation['@type'] || 'unknown',
+            impact: this.mapAceImpact(violation.earl?.result?.outcome),
+            description: violation.earl?.result?.description || violation.assertion || '',
+            wcag: violation['dcterms:references'],
+            location: assertion['earl:testSubject']?.url,
+            html: violation.earl?.result?.pointer?.css,
+          });
+        }
+      }
+
+      const metadata = {
+        conformsTo: report.data?.['dc:conformsTo'] || [],
+        accessMode: report.data?.accessMode || [],
+        accessibilityFeature: report.data?.accessibilityFeature || [],
+        accessibilityHazard: report.data?.accessibilityHazard || [],
+        accessibilitySummary: report.data?.accessibilitySummary,
+      };
+
+      return {
+        score: this.calculateAceScore(violations),
+        violations,
+        metadata,
+        outlines: {
+          toc: report.outlines?.toc || [],
+          headings: report.outlines?.headings || [],
+        },
+      };
+    } catch (error) {
+      logger.error('Ace audit failed', error instanceof Error ? error : undefined);
+      throw error;
+    }
+  }
+
+  Dependencies
+
+  Make sure axios and form-data are installed:
+  npm install axios form-data
+  npm install -D @types/form-data
+
+  Testing
+
+  1. Set ACE_SERVICE_URL environment variable to test microservice integration
+  2. Without the env var, local npx @daisy/ace should still work
+
+  Notes
+
+  - The ACE microservice endpoint is typically POST /check which accepts a multipart form with the EPUB file
+  - Response format matches the standard ACE report.json structure
+  - Falls back to local execution when ACE_SERVICE_URL is not configured

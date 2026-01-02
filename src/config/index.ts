@@ -12,6 +12,7 @@ interface Config {
   corsOrigins: string[];
   maxFileSize: number;
   uploadDir: string;
+  aceServiceUrl: string | null;
 }
 
 export const config: Config = {
@@ -25,6 +26,7 @@ export const config: Config = {
   corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:5173', 'http://localhost:3000'],
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '52428800', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
+  aceServiceUrl: process.env.ACE_SERVICE_URL || null,
 };
 
 export default config;

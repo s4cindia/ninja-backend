@@ -1,5 +1,6 @@
 import FormData from 'form-data';
 import { logger } from '../../lib/logger';
+import { config } from '../../config';
 
 interface AceViolation {
   rule: string;
@@ -64,7 +65,7 @@ interface AceMicroserviceResponse {
 }
 
 export async function callAceMicroservice(epubBuffer: Buffer, fileName: string): Promise<AceResult | null> {
-  const aceServiceUrl = process.env.ACE_SERVICE_URL;
+  const aceServiceUrl = config.aceServiceUrl;
 
   if (!aceServiceUrl) {
     logger.info('[ACE Client] ACE_SERVICE_URL not configured, skipping');
