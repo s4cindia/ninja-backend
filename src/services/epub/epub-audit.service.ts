@@ -9,6 +9,7 @@ import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 import { getFixType } from '../../constants/fix-classification';
+import { s3Service } from '../s3.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -631,6 +632,12 @@ class EpubAuditService {
         completedAt: new Date(),
       },
     });
+  }
+
+  async runAuditFromS3(fileKey: string, jobId: string, fileName: string): Promise<EpubAuditResult> {
+    logger.info(`Fetching EPUB from S3: ${fileKey}`);
+    const buffer = await s3Service.getFileBuffer(fileKey);
+    return this.runAudit(buffer, jobId, fileName);
   }
 }
 

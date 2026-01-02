@@ -13,6 +13,10 @@ interface Config {
   maxFileSize: number;
   uploadDir: string;
   aceServiceUrl: string | null;
+  s3Bucket: string;
+  s3Region: string;
+  awsAccessKeyId: string | null;
+  awsSecretAccessKey: string | null;
 }
 
 export const config: Config = {
@@ -27,6 +31,10 @@ export const config: Config = {
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '52428800', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
   aceServiceUrl: process.env.ACE_SERVICE_URL || null,
+  s3Bucket: process.env.S3_BUCKET || 'ninja-epub-staging',
+  s3Region: process.env.S3_REGION || 'ap-south-1',
+  awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || null,
+  awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || null,
 };
 
 export default config;

@@ -19,6 +19,7 @@ import epubRoutes from "./epub.routes";
 import feedbackRoutes from "./feedback.routes";
 import configRoutes from "./config.routes";
 import sseRoutes from "./sse.routes";
+import uploadRoutes from "./upload.routes";
 
 const router = Router();
 
@@ -91,5 +92,6 @@ router.use("/epub", epubRoutes);
 router.use("/feedback", feedbackRoutes);
 router.use("/config", configRoutes);
 router.use("/sse", sseRoutes);
+router.use("/uploads", uploadRoutes);
 
 export default router;

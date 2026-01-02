@@ -190,17 +190,19 @@ enum VpatStatus {
 }
 
 model File {
-  id           String     @id @default(uuid())
+  id           String      @id @default(uuid())
   tenantId     String
   filename     String
   originalName String
   mimeType     String
   size         Int
   path         String
-  status       FileStatus @default(UPLOADED)
+  status       FileStatus  @default(UPLOADED)
+  storageType  StorageType @default(LOCAL)
+  storagePath  String?
   metadata     Json?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
 
   @@index([tenantId])
@@ -208,10 +210,16 @@ model File {
 }
 
 enum FileStatus {
+  PENDING_UPLOAD
   UPLOADED
   PROCESSING
   PROCESSED
   ERROR
+}
+
+enum StorageType {
+  LOCAL
+  S3
 }
 
 model GeneratedAltText {
