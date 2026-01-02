@@ -1,18 +1,18 @@
 name: Deploy Backend to Staging
 
-  on:
+on:
     push:
       branches:
         - main
 
-  env:
+env:
     AWS_REGION: ap-south-1
     ECR_REPOSITORY: ninja-backend
     ECS_CLUSTER: ninja-cluster
     ECS_SERVICE: ninja-backend-task-service
     TASK_DEFINITION_FAMILY: ninja-backend-task
 
-  jobs:
+jobs:
     build-and-deploy:
       name: Build and Deploy to Staging
       runs-on: ubuntu-latest
@@ -51,8 +51,10 @@ name: Deploy Backend to Staging
               --query taskDefinition > task-definition.json
 
         - name: Inject environment variables
+          env:
+            ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
           run: |
-            jq '(.containerDefinitions[0].environment) |= (map(select(.name != "ACE_SERVICE_URL")) + [{"name": "ACE_SERVICE_URL", "value": "${{ secrets.ACE_SERVICE_URL }}"}])' task-definition.json > task-definition-updated.json
+            jq --arg aceurl "$ACE_URL" '(.containerDefinitions[0].environment) |= (map(select(.name != "ACE_SERVICE_URL")) + [{"name": "ACE_SERVICE_URL", "value": $aceurl}])' task-definition.json > task-definition-updated.json
             mv task-definition-updated.json task-definition.json
 
         - name: Update task definition with new image
@@ -97,6 +99,3 @@ name: Deploy Backend to Staging
           if: always()
           run: |
             echo "Integration test outcome: ${{ steps.integration.outcome }}"
-            if [ "${{ steps.integration.outcome }}" != "success" ]; then
-              echo "Warning: Integration tests failed or were skipped"
-            fi
