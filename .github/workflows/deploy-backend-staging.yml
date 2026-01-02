@@ -1,8 +1,9 @@
- name: Deploy Backend to Staging
+name: Deploy Backend to Staging
 
   on:
     push:
-      branches: [main]
+      branches:
+        - main
 
   env:
     AWS_REGION: ap-south-1
@@ -51,7 +52,6 @@
 
         - name: Inject environment variables
           run: |
-            # Remove existing ACE_SERVICE_URL if present, then add the new value
             jq '(.containerDefinitions[0].environment) |= (map(select(.name != "ACE_SERVICE_URL")) + [{"name": "ACE_SERVICE_URL", "value": "${{ secrets.ACE_SERVICE_URL }}"}])' task-definition.json > task-definition-updated.json
             mv task-definition-updated.json task-definition.json
 
@@ -77,8 +77,8 @@
         - name: Setup Node.js for tests
           uses: actions/setup-node@v4
           with:
-            node-version: '20'
-            cache: 'npm'
+            node-version: "20"
+            cache: npm
 
         - name: Install dependencies
           run: npm ci
@@ -98,5 +98,5 @@
           run: |
             echo "Integration test outcome: ${{ steps.integration.outcome }}"
             if [ "${{ steps.integration.outcome }}" != "success" ]; then
-              echo "⚠️ Integration tests failed or were skipped"
+              echo "Warning: Integration tests failed or were skipped"
             fi
