@@ -1759,7 +1759,9 @@
       }).catch(() => {});
 
       await prisma.file.update({
-        where: { id: file.id },
-        data: { status: FileStatus.UPLOADED },
-      }).catch(() => {});
+          where: { id: file.id },
+          data: { status: FileStatus.UPLOADED },
+        }).catch(() => {});
+      }
     }
+  }
