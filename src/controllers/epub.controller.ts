@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import * as fs from 'fs';
+import { FileStatus } from '@prisma/client';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
@@ -7,6 +9,7 @@ import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import { batchRemediationService } from '../services/epub/batch-remediation.service';
 import { epubExportService } from '../services/epub/epub-export.service';
+import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
@@ -123,6 +126,161 @@ export const epubController = {
       });
     } catch (error) {
       logger.error('EPUB audit from buffer failed', error instanceof Error ? error : undefined);
+      
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { 
+            status: 'FAILED',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        }).catch(() => {});
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'EPUB audit failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
+  async auditFromFileId(req: AuthenticatedRequest, res: Response) {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    const { fileId } = req.body;
+    let jobId: string | undefined;
+    let previousFileStatus: FileStatus | null = null;
+
+    try {
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!fileId) {
+        return res.status(400).json({
+          success: false,
+          error: 'fileId is required',
+        });
+      }
+
+      const atomicUpdate = await prisma.file.updateMany({
+        where: {
+          id: fileId,
+          tenantId,
+          status: 'UPLOADED',
+        },
+        data: { status: 'PROCESSING' },
+      });
+
+      if (atomicUpdate.count === 0) {
+        const existingFile = await prisma.file.findFirst({
+          where: { id: fileId, tenantId },
+        });
+
+        if (!existingFile) {
+          return res.status(404).json({
+            success: false,
+            error: 'File not found',
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: `File not ready for processing. Status: ${existingFile.status}`,
+        });
+      }
+
+      previousFileStatus = FileStatus.UPLOADED;
+
+      const fileRecord = await prisma.file.findUnique({
+        where: { id: fileId },
+      });
+
+      if (!fileRecord) {
+        throw new Error('File record not found after update');
+      }
+
+      let fileBuffer: Buffer;
+      if (fileRecord.storageType === 'S3') {
+        if (!fileRecord.storagePath) {
+          throw new Error('S3 file is missing storagePath');
+        }
+        logger.info(`Fetching file from S3: ${fileRecord.storagePath}`);
+        fileBuffer = await s3Service.getFileBuffer(fileRecord.storagePath);
+      } else {
+        if (!fileRecord.path) {
+          throw new Error('Local file is missing path');
+        }
+        try {
+          await fs.promises.access(fileRecord.path);
+        } catch {
+          throw new Error(`Local file not found: ${fileRecord.path}`);
+        }
+        logger.info(`Reading file from local path: ${fileRecord.path}`);
+        fileBuffer = await fs.promises.readFile(fileRecord.path);
+      }
+
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileId: fileRecord.id,
+            fileName: fileRecord.originalName,
+            mimeType: fileRecord.mimeType,
+            size: fileRecord.size,
+            storageType: fileRecord.storageType,
+          },
+          startedAt: new Date(),
+        },
+      });
+      jobId = job.id;
+
+      await fileStorageService.saveFile(job.id, fileRecord.originalName, fileBuffer);
+
+      const result = await epubAuditService.runAudit(
+        fileBuffer,
+        job.id,
+        fileRecord.originalName
+      );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          output: JSON.parse(JSON.stringify(result)),
+          completedAt: new Date(),
+        },
+      });
+
+      await prisma.file.update({
+        where: { id: fileId },
+        data: { status: 'PROCESSED' },
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          jobId: job.id,
+          result,
+        },
+      });
+    } catch (error) {
+      logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      if (previousFileStatus) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: previousFileStatus },
+        }).catch(() => {});
+      }
       
       if (jobId) {
         await prisma.job.update({

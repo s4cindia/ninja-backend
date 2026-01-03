@@ -1,0 +1,177 @@
+Replit Prompt: Fix PR Review Comments for S3 Job Handling
+
+  Issues to Fix
+
+  1. P1 Critical: Save file to fileStorageService for downstream flows (remediation)
+  2. Race condition: Use atomic update for file status
+  3. Missing validation: Validate storage paths, handle missing files
+  4. Critical: Update job status and output after successful audit
+  5. Missing rollback: Rollback file status on error
+
+  Fix for src/controllers/epub.controller.ts
+
+  Replace the audit-file endpoint logic with this fixed version:
+
+  export const auditFromFileId = async (req: Request, res: Response) => {
+    const { fileId } = req.body;
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+
+    if (!tenantId || !userId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    if (!fileId) {
+      return res.status(400).json({ success: false, error: 'fileId is required' });
+    }
+
+    let jobId: string | null = null;
+    let previousFileStatus: string | null = null;
+
+    try {
+      // Use atomic update to prevent race conditions
+      const file = await prisma.file.updateMany({
+        where: {
+          id: fileId,
+          tenantId,
+          status: 'UPLOADED' // Only process if status is UPLOADED
+        },
+        data: { status: 'PROCESSING' },
+      });
+
+      if (file.count === 0) {
+        // Either file not found or already processing
+        const existingFile = await prisma.file.findFirst({
+          where: { id: fileId, tenantId }
+        });
+
+        if (!existingFile) {
+          return res.status(404).json({ success: false, error: 'File not found' });
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: `File not ready for processing. Status: ${existingFile.status}`,
+        });
+      }
+
+      previousFileStatus = 'UPLOADED';
+
+      // Fetch file details
+      const fileRecord = await prisma.file.findUnique({
+        where: { id: fileId }
+      });
+
+      if (!fileRecord) {
+        throw new Error('File record not found after update');
+      }
+
+      // Validate storage path and fetch file buffer
+      let fileBuffer: Buffer;
+      if (fileRecord.storageType === 'S3') {
+        if (!fileRecord.storagePath) {
+          throw new Error('S3 file is missing storagePath');
+        }
+        logger.info(`Fetching file from S3: ${fileRecord.storagePath}`);
+        fileBuffer = await s3Service.getFileBuffer(fileRecord.storagePath);
+      } else {
+        if (!fileRecord.path) {
+          throw new Error('Local file is missing path');
+        }
+        // Check if file exists
+        try {
+          await fs.promises.access(fileRecord.path);
+        } catch {
+          throw new Error(`Local file not found: ${fileRecord.path}`);
+        }
+        logger.info(`Reading file from local path: ${fileRecord.path}`);
+        fileBuffer = await fs.promises.readFile(fileRecord.path);
+      }
+
+      // Create job
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileId: fileRecord.id,
+            fileName: fileRecord.originalName,
+            mimeType: fileRecord.mimeType,
+            size: fileRecord.size,
+            storageType: fileRecord.storageType,
+          },
+          startedAt: new Date(),
+        },
+      });
+      jobId = job.id;
+
+      // Save file to fileStorageService for downstream flows (remediation)
+      await fileStorageService.saveFile(job.id, fileRecord.originalName, fileBuffer);
+
+      // Run audit
+      const result = await epubAuditService.runAudit(
+        fileBuffer,
+        job.id,
+        fileRecord.originalName
+      );
+
+      // Update job status and output on success
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          output: result as any,
+          completedAt: new Date(),
+        },
+      });
+
+      // Update file status
+      await prisma.file.update({
+        where: { id: fileId },
+        data: { status: 'PROCESSED' },
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          result,
+        },
+      });
+
+    } catch (error) {
+      logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      // Rollback file status
+      if (previousFileStatus) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: previousFileStatus },
+        }).catch(() => {});
+      }
+
+      // Update job status on failure
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        }).catch(() => {});
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: 'EPUB audit failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  };
+
+  Make sure to import fileStorageService at the top:
+
+  import { fileStorageService } from '../services/file-storage.service';

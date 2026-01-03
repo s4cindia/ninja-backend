@@ -20,6 +20,7 @@ const upload = multer({
 
 router.post('/audit/:jobId', authenticate, authorizeJob, epubController.auditEPUB);
 router.post('/audit-upload', authenticate, upload.single('file'), epubController.auditFromBuffer);
+router.post('/audit-file', authenticate, epubController.auditFromFileId);
 router.get('/audit/:jobId/result', authenticate, authorizeJob, epubController.getAuditResult);
 router.get('/job/:jobId/audit/result', authenticate, authorizeJob, epubController.getAuditResult);
 
