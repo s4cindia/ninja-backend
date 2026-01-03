@@ -1,0 +1,115 @@
+API Gateway HTTP APIs have a hard limit of 30 seconds. We need to make the audit asynchronous:
+
+  1. Backend returns immediately with a job ID
+  2. Audit runs in background
+  3. Frontend polls for job status
+
+  Replit Prompt: Make EPUB Audit Asynchronous
+
+  Update the /api/v1/epub/audit-file endpoint to be asynchronous:
+
+  1. Create the job immediately with status 'QUEUED'
+  2. Return the jobId to the frontend right away
+  3. Process the audit in the background (don't await)
+  4. Frontend will poll GET /api/v1/jobs/:jobId for status
+
+  In src/controllers/epub.controller.ts, update auditFromFileId:
+
+  ```typescript
+  export const auditFromFileId = async (req: Request, res: Response) => {
+    // ... existing validation code ...
+
+    try {
+      // ... existing file fetch and validation ...
+
+      // Create job with QUEUED status
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'QUEUED',
+          input: {
+            fileId: file.id,
+            fileName: file.originalName,
+            storageType: file.storageType,
+            storagePath: file.storagePath,
+          },
+        },
+      });
+
+      // Return immediately with job ID
+      res.status(202).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          status: 'QUEUED',
+          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+        },
+      });
+
+      // Process audit in background (don't await)
+      processAuditInBackground(job.id, fileRecord, tenantId).catch((error) => {
+        logger.error(`Background audit failed for job ${job.id}: ${error.message}`);
+      });
+
+    } catch (error) {
+      // ... error handling ...
+    }
+  };
+
+  // New background processing function
+  async function processAuditInBackground(
+    jobId: string,
+    file: any,
+    tenantId: string
+  ) {
+    try {
+      // Update job to PROCESSING
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { status: 'PROCESSING', startedAt: new Date() },
+      });
+
+      // Fetch file buffer
+      let fileBuffer: Buffer;
+      if (file.storageType === 'S3' && file.storagePath) {
+        fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+      } else {
+        fileBuffer = await fs.promises.readFile(file.path);
+      }
+
+      // Save to file storage for remediation
+      await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
+      // Run audit
+      const result = await epubAuditService.runAudit(fileBuffer, jobId, file.originalName);
+
+      // Update job with results
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          output: result as any,
+          completedAt: new Date(),
+        },
+      });
+
+      // Update file status
+      await prisma.file.update({
+        where: { id: file.id },
+        data: { status: 'PROCESSED' },
+      });
+
+    } catch (error) {
+      logger.error(`Audit processing failed: ${error}`);
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      }).catch(() => {});
+    }
+  }
