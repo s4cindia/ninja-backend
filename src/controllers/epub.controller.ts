@@ -124,7 +124,7 @@ export const epubController = {
         await remediationService.createRemediationPlan(job.id);
         logger.info(`Auto-created remediation plan for job ${job.id}`);
       } catch (remediationError) {
-        logger.warn(`Failed to auto-create remediation plan for job ${job.id}`, remediationError instanceof Error ? remediationError : undefined);
+        logger.warn(`Failed to auto-create remediation plan for job ${job.id}: ${remediationError instanceof Error ? remediationError.message : 'Unknown error'}`);
       }
 
       return res.json({
@@ -1752,7 +1752,7 @@ async function processAuditInBackground(
       await remediationService.createRemediationPlan(jobId);
       logger.info(`Auto-created remediation plan for job ${jobId}`);
     } catch (remediationError) {
-      logger.warn(`Failed to auto-create remediation plan for job ${jobId}`, remediationError instanceof Error ? remediationError : undefined);
+      logger.warn(`Failed to auto-create remediation plan for job ${jobId}: ${remediationError instanceof Error ? remediationError.message : 'Unknown error'}`);
     }
 
     await prisma.file.update({
