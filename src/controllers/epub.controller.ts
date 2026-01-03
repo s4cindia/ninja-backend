@@ -120,6 +120,13 @@ export const epubController = {
         },
       });
 
+      try {
+        await remediationService.createRemediationPlan(job.id);
+        logger.info(`Auto-created remediation plan for job ${job.id}`);
+      } catch (remediationError) {
+        logger.warn(`Failed to auto-create remediation plan for job ${job.id}`, remediationError instanceof Error ? remediationError : undefined);
+      }
+
       return res.json({
         success: true,
         data: result,
@@ -1740,6 +1747,13 @@ async function processAuditInBackground(
         completedAt: new Date(),
       },
     });
+
+    try {
+      await remediationService.createRemediationPlan(jobId);
+      logger.info(`Auto-created remediation plan for job ${jobId}`);
+    } catch (remediationError) {
+      logger.warn(`Failed to auto-create remediation plan for job ${jobId}`, remediationError instanceof Error ? remediationError : undefined);
+    }
 
     await prisma.file.update({
       where: { id: file.id },
