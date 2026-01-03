@@ -1,0 +1,189 @@
+ Here's the Replit Prompt to resolve all conflicts:
+
+  Resolve all merge conflicts in src/controllers/epub.controller.ts by combining both approaches:
+
+  Replace the entire `auditFromFileId` method (starting around line 148) with this merged version:
+
+  ```typescript
+    async auditFromFileId(req: AuthenticatedRequest, res: Response) {
+      const tenantId = req.user?.tenantId;
+      const userId = req.user?.id;
+      const { fileId } = req.body;
+      let previousFileStatus: FileStatus | null = null;
+
+      try {
+        if (!tenantId || !userId) {
+          return res.status(401).json({
+            success: false,
+            error: 'Authentication required',
+          });
+        }
+
+        if (!fileId) {
+          return res.status(400).json({
+            success: false,
+            error: 'fileId is required',
+          });
+        }
+
+        const atomicUpdate = await prisma.file.updateMany({
+          where: {
+            id: fileId,
+            tenantId,
+            status: 'UPLOADED',
+          },
+          data: { status: 'PROCESSING' },
+        });
+
+        if (atomicUpdate.count === 0) {
+          const existingFile = await prisma.file.findFirst({
+            where: { id: fileId, tenantId },
+          });
+
+          if (!existingFile) {
+            return res.status(404).json({
+              success: false,
+              error: 'File not found',
+            });
+          }
+
+          return res.status(400).json({
+            success: false,
+            error: `File not ready for processing. Status: ${existingFile.status}`,
+          });
+        }
+
+        previousFileStatus = FileStatus.UPLOADED;
+
+        const fileRecord = await prisma.file.findUnique({
+          where: { id: fileId },
+        });
+
+        if (!fileRecord) {
+          await prisma.file.update({
+            where: { id: fileId },
+            data: { status: FileStatus.UPLOADED },
+          }).catch(() => {});
+          return res.status(500).json({
+            success: false,
+            error: 'File record not found after update',
+          });
+        }
+
+        // Create job with QUEUED status
+        const job = await prisma.job.create({
+          data: {
+            tenantId,
+            userId,
+            type: 'EPUB_ACCESSIBILITY',
+            status: 'QUEUED',
+            input: {
+              fileId: fileRecord.id,
+              fileName: fileRecord.originalName,
+              mimeType: fileRecord.mimeType,
+              size: fileRecord.size,
+              storageType: fileRecord.storageType,
+              storagePath: fileRecord.storagePath,
+            },
+          },
+        });
+
+        // Return immediately with job ID (async pattern to avoid API Gateway timeout)
+        res.status(202).json({
+          success: true,
+          data: {
+            jobId: job.id,
+            status: 'QUEUED',
+            message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+          },
+        });
+
+        // Process audit in background (don't await)
+        processAuditInBackground(job.id, fileRecord as FileRecord).catch((error) => {
+          logger.error(`Background audit failed for job ${job.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        });
+
+      } catch (error) {
+        logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+        // Rollback file status on error
+        if (previousFileStatus) {
+          await prisma.file.update({
+            where: { id: fileId },
+            data: { status: previousFileStatus },
+          }).catch(() => {});
+        }
+
+        return res.status(500).json({
+          success: false,
+          error: 'EPUB audit failed',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    },
+
+  Also ensure the processAuditInBackground function at the bottom of the file is complete (add the missing closing brace and file status update):
+
+  async function processAuditInBackground(
+    jobId: string,
+    file: FileRecord
+  ): Promise<void> {
+    try {
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { status: 'PROCESSING', startedAt: new Date() },
+      });
+
+      let fileBuffer: Buffer;
+      if (file.storageType === 'S3' && file.storagePath) {
+        logger.info(`Background: Fetching file from S3: ${file.storagePath}`);
+        fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+      } else {
+        logger.info(`Background: Reading file from local path: ${file.path}`);
+        fileBuffer = await fs.promises.readFile(file.path);
+      }
+
+      await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
+      const result = await epubAuditService.runAudit(
+        fileBuffer,
+        jobId,
+        file.originalName
+      );
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          output: JSON.parse(JSON.stringify(result)),
+          completedAt: new Date(),
+        },
+      });
+
+      await prisma.file.update({
+        where: { id: file.id },
+        data: { status: 'PROCESSED' },
+      });
+
+      logger.info(`Background audit completed for job ${jobId}`);
+
+    } catch (error) {
+      logger.error(`Background audit failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      }).catch(() => {});
+
+      await prisma.file.update({
+        where: { id: file.id },
+        data: { status: 'UPLOADED' },
+      }).catch(() => {});
+    }
+  }
+
+  Remove ALL conflict markers (<<<<<<, =======, >>>>>>>) from the file.

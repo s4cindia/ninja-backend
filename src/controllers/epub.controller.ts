@@ -150,6 +150,7 @@ export const epubController = {
     const tenantId = req.user?.tenantId;
     const userId = req.user?.id;
     const { fileId } = req.body;
+    let previousFileStatus: FileStatus | null = null;
 
     try {
       if (!tenantId || !userId) {
@@ -192,6 +193,8 @@ export const epubController = {
           error: `File not ready for processing. Status: ${existingFile.status}`,
         });
       }
+
+      previousFileStatus = FileStatus.UPLOADED;
 
       const fileRecord = await prisma.file.findUnique({
         where: { id: fileId },
@@ -240,6 +243,13 @@ export const epubController = {
 
     } catch (error) {
       logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      if (previousFileStatus) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: previousFileStatus },
+        }).catch(() => {});
+      }
       
       return res.status(500).json({
         success: false,
