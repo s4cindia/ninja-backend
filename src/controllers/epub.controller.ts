@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as fs from 'fs';
+import { FileStatus } from '@prisma/client';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
@@ -150,7 +151,7 @@ export const epubController = {
     const userId = req.user?.id;
     const { fileId } = req.body;
     let jobId: string | undefined;
-    let previousFileStatus: string | null = null;
+    let previousFileStatus: FileStatus | null = null;
 
     try {
       if (!tenantId || !userId) {
@@ -194,7 +195,7 @@ export const epubController = {
         });
       }
 
-      previousFileStatus = 'UPLOADED';
+      previousFileStatus = FileStatus.UPLOADED;
 
       const fileRecord = await prisma.file.findUnique({
         where: { id: fileId },
