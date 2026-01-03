@@ -150,6 +150,7 @@ export const epubController = {
     const userId = req.user?.id;
     const { fileId } = req.body;
     let jobId: string | undefined;
+    let previousFileStatus: string | null = null;
 
     try {
       if (!tenantId || !userId) {
@@ -166,31 +167,61 @@ export const epubController = {
         });
       }
 
-      const file = await prisma.file.findFirst({
-        where: { id: fileId, tenantId },
+      const atomicUpdate = await prisma.file.updateMany({
+        where: {
+          id: fileId,
+          tenantId,
+          status: 'UPLOADED',
+        },
+        data: { status: 'PROCESSING' },
       });
 
-      if (!file) {
-        return res.status(404).json({
+      if (atomicUpdate.count === 0) {
+        const existingFile = await prisma.file.findFirst({
+          where: { id: fileId, tenantId },
+        });
+
+        if (!existingFile) {
+          return res.status(404).json({
+            success: false,
+            error: 'File not found',
+          });
+        }
+
+        return res.status(400).json({
           success: false,
-          error: 'File not found',
+          error: `File not ready for processing. Status: ${existingFile.status}`,
         });
       }
 
-      if (file.status !== 'UPLOADED') {
-        return res.status(400).json({
-          success: false,
-          error: `File not ready for processing. Status: ${file.status}`,
-        });
+      previousFileStatus = 'UPLOADED';
+
+      const fileRecord = await prisma.file.findUnique({
+        where: { id: fileId },
+      });
+
+      if (!fileRecord) {
+        throw new Error('File record not found after update');
       }
 
       let fileBuffer: Buffer;
-      if (file.storageType === 'S3' && file.storagePath) {
-        logger.info(`Fetching file from S3: ${file.storagePath}`);
-        fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+      if (fileRecord.storageType === 'S3') {
+        if (!fileRecord.storagePath) {
+          throw new Error('S3 file is missing storagePath');
+        }
+        logger.info(`Fetching file from S3: ${fileRecord.storagePath}`);
+        fileBuffer = await s3Service.getFileBuffer(fileRecord.storagePath);
       } else {
-        logger.info(`Reading file from local path: ${file.path}`);
-        fileBuffer = await fs.promises.readFile(file.path);
+        if (!fileRecord.path) {
+          throw new Error('Local file is missing path');
+        }
+        try {
+          await fs.promises.access(fileRecord.path);
+        } catch {
+          throw new Error(`Local file not found: ${fileRecord.path}`);
+        }
+        logger.info(`Reading file from local path: ${fileRecord.path}`);
+        fileBuffer = await fs.promises.readFile(fileRecord.path);
       }
 
       const job = await prisma.job.create({
@@ -200,27 +231,33 @@ export const epubController = {
           type: 'EPUB_ACCESSIBILITY',
           status: 'PROCESSING',
           input: {
-            fileId: file.id,
-            fileName: file.originalName,
-            mimeType: file.mimeType,
-            size: file.size,
-            storageType: file.storageType,
+            fileId: fileRecord.id,
+            fileName: fileRecord.originalName,
+            mimeType: fileRecord.mimeType,
+            size: fileRecord.size,
+            storageType: fileRecord.storageType,
           },
           startedAt: new Date(),
         },
       });
       jobId = job.id;
 
-      await prisma.file.update({
-        where: { id: fileId },
-        data: { status: 'PROCESSING' },
-      });
+      await fileStorageService.saveFile(job.id, fileRecord.originalName, fileBuffer);
 
       const result = await epubAuditService.runAudit(
         fileBuffer,
         job.id,
-        file.originalName
+        fileRecord.originalName
       );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          output: JSON.parse(JSON.stringify(result)),
+          completedAt: new Date(),
+        },
+      });
 
       await prisma.file.update({
         where: { id: fileId },
@@ -229,10 +266,20 @@ export const epubController = {
 
       return res.json({
         success: true,
-        data: result,
+        data: {
+          jobId: job.id,
+          result,
+        },
       });
     } catch (error) {
       logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      if (previousFileStatus) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: previousFileStatus },
+        }).catch(() => {});
+      }
       
       if (jobId) {
         await prisma.job.update({
