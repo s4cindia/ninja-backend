@@ -1,4 +1,3 @@
-
   import { Request, Response } from 'express';
   import * as fs from 'fs';
   import { FileStatus } from '@prisma/client';
@@ -245,6 +244,7 @@
       } catch (error) {
         logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
+        // FIX 1: Roll back file status when request handler fails
         if (previousFileStatus) {
           await prisma.file.update({
             where: { id: fileId },
@@ -1692,12 +1692,13 @@
     },
   };
 
+  // FIX 2: Make path nullable since S3-stored files won't have a local path
   interface FileRecord {
     id: string;
     originalName: string;
     storageType: string;
     storagePath: string | null;
-    path: string;
+    path: string | null;
   }
 
   async function processAuditInBackground(
@@ -1710,13 +1711,16 @@
         data: { status: 'PROCESSING', startedAt: new Date() },
       });
 
+      // FIX 3: Add null check for local file path
       let fileBuffer: Buffer;
       if (file.storageType === 'S3' && file.storagePath) {
         logger.info(`Background: Fetching file from S3: ${file.storagePath}`);
         fileBuffer = await s3Service.getFileBuffer(file.storagePath);
-      } else {
+      } else if (file.path) {
         logger.info(`Background: Reading file from local path: ${file.path}`);
         fileBuffer = await fs.promises.readFile(file.path);
+      } else {
+        throw new Error('No valid file path available (neither S3 nor local)');
       }
 
       await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
@@ -1759,4 +1763,3 @@
         data: { status: FileStatus.UPLOADED },
       }).catch(() => {});
     }
-  }
