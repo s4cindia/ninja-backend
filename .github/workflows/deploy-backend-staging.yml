@@ -1,8 +1,9 @@
 name: Deploy Backend to Staging
 
-on:
+"on":
   push:
-    branches: [main]
+    branches:
+      - main
 
 env:
   AWS_REGION: ap-south-1
@@ -49,6 +50,22 @@ jobs:
             --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
             --query taskDefinition > task-definition.json
 
+      - name: Inject environment variables
+        env:
+          ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
+        run: |
+          jq --arg aceurl "$ACE_URL" '
+            (.containerDefinitions[0].environment) |= (
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION")) +
+              [
+                {"name": "ACE_SERVICE_URL", "value": $aceurl},
+                {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
+                {"name": "S3_REGION", "value": "ap-south-1"}
+              ]
+            )
+          ' task-definition.json > task-definition-updated.json
+          mv task-definition-updated.json task-definition.json
+
       - name: Update task definition with new image
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -71,8 +88,8 @@ jobs:
       - name: Setup Node.js for tests
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -91,14 +108,3 @@ jobs:
         if: always()
         run: |
           echo "Integration test outcome: ${{ steps.integration.outcome }}"
-          if [ "${{ steps.integration.outcome }}" != "success" ]; then
-            echo "⚠️ Integration tests failed (soft-fail mode - deployment continues)"
-          fi
-
-      - name: Notify deployment success
-        if: success()
-        run: echo "✅ Staging deployment completed successfully"
-
-      - name: Notify deployment failure
-        if: failure()
-        run: echo "❌ Staging deployment failed"
