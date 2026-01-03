@@ -113,13 +113,14 @@ export const epubController = {
 
       await prisma.job.update({
         where: { id: job.id },
-        data: { 
+        data: {
           status: 'COMPLETED',
           completedAt: new Date(),
           output: JSON.parse(JSON.stringify(result)),
         },
       });
 
+      // Auto-create remediation plan for immediate availability
       try {
         await remediationService.createRemediationPlan(job.id);
         logger.info(`Auto-created remediation plan for job ${job.id}`);
@@ -133,18 +134,18 @@ export const epubController = {
       });
     } catch (error) {
       logger.error('EPUB audit from buffer failed', error instanceof Error ? error : undefined);
-      
+
       if (jobId) {
         await prisma.job.update({
           where: { id: jobId },
-          data: { 
+          data: {
             status: 'FAILED',
             completedAt: new Date(),
             error: error instanceof Error ? error.message : 'Unknown error',
           },
         }).catch(() => {});
       }
-      
+
       return res.status(500).json({
         success: false,
         error: 'EPUB audit failed',
@@ -218,6 +219,7 @@ export const epubController = {
         });
       }
 
+      // Create job with QUEUED status
       const job = await prisma.job.create({
         data: {
           tenantId,
@@ -235,6 +237,7 @@ export const epubController = {
         },
       });
 
+      // Return immediately with job ID (async pattern to avoid API Gateway timeout)
       res.status(202).json({
         success: true,
         data: {
@@ -244,20 +247,22 @@ export const epubController = {
         },
       });
 
-      processAuditInBackground(job.id, fileRecord).catch((error) => {
+      // Process audit in background (don't await)
+      processAuditInBackground(job.id, fileRecord as FileRecord).catch((error) => {
         logger.error(`Background audit failed for job ${job.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       });
 
     } catch (error) {
       logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
+      // Roll back file status when request handler fails
       if (previousFileStatus) {
         await prisma.file.update({
           where: { id: fileId },
           data: { status: previousFileStatus },
         }).catch(() => {});
       }
-      
+
       return res.status(500).json({
         success: false,
         error: 'EPUB audit failed',
@@ -341,7 +346,7 @@ export const epubController = {
       logger.info(`  Plan total tasks: ${plan.stats.pending}`);
       logger.info(`  By Source: EPUBCheck=${plan.stats.bySource?.epubCheck || 0}, ACE=${plan.stats.bySource?.ace || 0}, JS Auditor=${plan.stats.bySource?.jsAuditor || 0}`);
       logger.info(`  By Classification: Auto=${plan.stats.autoFixable}, QuickFix=${plan.stats.quickFixable}, Manual=${plan.stats.manualRequired}`);
-      
+
       logger.info('\nTASK TYPES IN RESPONSE:');
       plan.tasks.forEach((task, i) => {
         logger.info(`  ${i + 1}. [${task.type}] ${task.issueCode} @ ${task.location || 'N/A'}`);
@@ -841,14 +846,14 @@ export const epubController = {
       const input = job.input as { fileName?: string };
       const originalFileName = input?.fileName || 'upload.epub';
       const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
-      
+
       // Try to load from remediated file first (to preserve previous fixes)
       // Fall back to original if no remediated file exists yet
       let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
       if (!epubBuffer) {
         epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
       }
-      
+
       if (!epubBuffer) {
         return res.status(404).json({
           success: false,
@@ -1210,566 +1215,3 @@ export const epubController = {
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
-
-      const batch = await batchRemediationService.cancelBatch(batchId, tenantId);
-
-      return res.json({
-        success: true,
-        data: batch,
-        message: 'Batch cancelled',
-      });
-    } catch (error) {
-      logger.error('Failed to cancel batch', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to cancel batch',
-      });
-    }
-  },
-
-  async retryBatchJob(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { batchId, jobId } = req.params;
-      const tenantId = req.user?.tenantId;
-
-      if (!tenantId) {
-        return res.status(401).json({ success: false, error: 'Authentication required' });
-      }
-
-      const job = await batchRemediationService.retryJob(batchId, jobId, tenantId);
-
-      return res.json({
-        success: true,
-        data: job,
-        message: 'Job retry completed',
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to retry job';
-      logger.error(`Failed to retry batch job: ${message}`);
-      return res.status(400).json({
-        success: false,
-        error: message,
-      });
-    }
-  },
-
-  async listBatches(req: AuthenticatedRequest, res: Response) {
-    try {
-      const tenantId = req.user?.tenantId;
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 20;
-
-      if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
-
-      if (limit < 1 || limit > 100) {
-        return res.status(400).json({
-          success: false,
-          error: 'Limit must be between 1 and 100',
-        });
-      }
-
-      const { batches, total } = await batchRemediationService.listBatches(
-        tenantId,
-        page,
-        limit
-      );
-
-      return res.json({
-        success: true,
-        data: {
-          batches,
-          total,
-          page,
-          totalPages: Math.ceil(total / limit),
-        },
-      });
-    } catch (error) {
-      logger.error('Failed to list batches', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to list batches',
-      });
-    }
-  },
-
-  async exportRemediated(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobId } = req.params;
-      const tenantId = req.user?.tenantId;
-      const includeOriginal = req.query.includeOriginal === 'true';
-      const includeComparison = req.query.includeComparison === 'true';
-      const includeReport = req.query.includeReport === 'true';
-
-      if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
-
-      const result = await epubExportService.exportRemediated(jobId, tenantId, {
-        includeOriginal,
-        includeComparison,
-        includeReport,
-      });
-
-      res.setHeader('Content-Type', result.mimeType);
-      res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
-      res.setHeader('Content-Length', result.size);
-
-      return res.send(result.buffer);
-    } catch (error) {
-      logger.error('Failed to export remediated EPUB', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to export',
-      });
-    }
-  },
-
-  async exportBatch(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobIds, options } = req.body;
-      const tenantId = req.user?.tenantId;
-
-      if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
-
-      if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'jobIds array is required',
-        });
-      }
-
-      if (jobIds.length > 100) {
-        return res.status(400).json({
-          success: false,
-          error: 'Maximum 100 jobs per export',
-        });
-      }
-
-      const result = await epubExportService.exportBatch(jobIds, tenantId, options || {});
-
-      res.setHeader('Content-Type', result.mimeType);
-      res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
-      res.setHeader('Content-Length', result.size);
-
-      return res.send(result.buffer);
-    } catch (error) {
-      logger.error('Failed to export batch', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to export batch',
-      });
-    }
-  },
-
-  async getAccessibilityReport(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobId } = req.params;
-      const tenantId = req.user?.tenantId;
-      const format = req.query.format as string || 'json';
-
-      if (!tenantId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
-
-      const report = await epubExportService.generateAccessibilityReport(jobId, tenantId);
-
-      if (format === 'md' || format === 'markdown') {
-        const md = epubExportService.generateReportMarkdown(report);
-        res.setHeader('Content-Type', 'text/markdown');
-        return res.send(md);
-      }
-
-      return res.json({
-        success: true,
-        data: report,
-      });
-    } catch (error) {
-      logger.error('Failed to generate report', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to generate report',
-      });
-    }
-  },
-
-  async applyQuickFix(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobId } = req.params;
-      const { issueId, changes, fixCode, taskId, options } = req.body;
-      const tenantId = req.user?.tenantId;
-
-      logger.debug(`applyQuickFix called: jobId=${jobId}, fixCode=${fixCode}, taskId=${taskId}, issueId=${issueId}`);
-
-      if (!tenantId) {
-        return res.status(401).json({ success: false, error: 'Authentication required' });
-      }
-
-      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
-      if (!job) {
-        return res.status(404).json({ success: false, error: 'Job not found' });
-      }
-
-      const input = job.input as { fileName?: string };
-      const originalFileName = input?.fileName || 'upload.epub';
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
-
-      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
-      if (!epubBuffer) {
-        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
-      }
-
-      if (!epubBuffer) {
-        return res.status(404).json({ success: false, error: 'EPUB file not found' });
-      }
-
-      const zip = await epubModifier.loadEPUB(epubBuffer);
-
-      type ModificationResult = {
-        success: boolean;
-        filePath: string;
-        modificationType: string;
-        description: string;
-        before?: string;
-        after?: string;
-      };
-
-      let results: ModificationResult[] = [];
-      let modifiedFiles: string[] = [];
-      let hasErrors = false;
-
-      const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
-
-      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
-        if (options?.epubTypes && Array.isArray(options.epubTypes)) {
-          epubTypesToFix.push(...options.epubTypes);
-        } else if (options?.epubType && options?.role) {
-          epubTypesToFix.push({ epubType: options.epubType, role: options.role });
-        }
-      }
-
-      if (changes && Array.isArray(changes)) {
-        for (const change of changes) {
-          const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
-          const roleMatch = change.content?.match(/role="([^"]+)"/) || change.newContent?.match(/role="([^"]+)"/);
-
-          if (epubTypeMatch && roleMatch) {
-            const epubType = epubTypeMatch[1];
-            const role = roleMatch[1];
-
-            if (!epubTypesToFix.find(e => e.epubType === epubType)) {
-              epubTypesToFix.push({ epubType, role });
-            }
-          }
-        }
-      }
-
-      if (epubTypesToFix.length > 0) {
-        logger.debug(`Using EPUB-TYPE case with regex method: ${epubTypesToFix.length} types to fix`);
-
-        results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
-        logger.debug(`addAriaRolesToEpubTypes completed: ${results.length} modifications`);
-
-        if (results.length > 0) {
-          const modifiedBuffer = await epubModifier.saveEPUB(zip);
-          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
-        }
-
-        let tasksAutoCompleted = 0;
-        try {
-          const plan = await remediationService.getRemediationPlan(jobId);
-
-          if (plan?.tasks && Array.isArray(plan.tasks)) {
-            const relatedTasks = plan.tasks.filter((t: { status?: string; issueCode?: string; id?: string }) => {
-              if (t.status === 'completed') return false;
-
-              const issueCode = String(t.issueCode || '').toUpperCase();
-              const isEpubTypeIssue =
-                issueCode.includes('EPUB-TYPE') ||
-                issueCode.includes('EPUB_TYPE') ||
-                issueCode.includes('MATCHING-ROLE') ||
-                issueCode.includes('MATCHING_ROLE') ||
-                issueCode === 'EPUB-SEM-003';
-
-              return isEpubTypeIssue;
-            });
-
-            logger.debug(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
-
-            for (const task of relatedTasks) {
-              try {
-                await remediationService.updateTaskStatus(
-                  jobId,
-                  task.id,
-                  'completed',
-                  `Auto-completed: ARIA roles added to all epub:type elements`,
-                  req.user?.email || 'system'
-                );
-                tasksAutoCompleted++;
-                logger.debug(`Auto-completed task: ${task.id} (${task.issueCode})`);
-              } catch (err) {
-                logger.error(`Failed to auto-complete task ${task.id}`, err instanceof Error ? err : undefined);
-              }
-            }
-          }
-        } catch (err) {
-          logger.error('Auto-complete error', err instanceof Error ? err : undefined);
-        }
-
-        logger.debug(`Total tasks auto-completed: ${tasksAutoCompleted}`);
-
-        return res.json({
-          success: true,
-          data: {
-            results,
-            modificationsCount: results.length,
-            tasksAutoCompleted,
-            message: `Applied ${results.length} fixes, auto-completed ${tasksAutoCompleted} tasks`,
-            downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
-          },
-        });
-      }
-
-      if (changes && Array.isArray(changes) && changes.length > 0) {
-        logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
-        logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
-
-        const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
-        results = result.results;
-        modifiedFiles = result.modifiedFiles;
-        hasErrors = result.hasErrors;
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: 'Either fixCode with options or changes array is required',
-        });
-      }
-
-      if (modifiedFiles.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'No files were modified',
-          data: { results },
-        });
-      }
-
-      const modifiedBuffer = await epubModifier.saveEPUB(zip);
-      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
-
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.filter(r => !r.success).length;
-
-      let tasksUpdated = 0;
-      if (successCount > 0) {
-        try {
-          const taskToUpdate = taskId || issueId;
-          if (taskToUpdate) {
-            const plan = await remediationService.getRemediationPlan(jobId);
-            const task = plan?.tasks.find((t: { id?: string; issueId?: string }) => t.id === taskToUpdate || t.issueId === taskToUpdate);
-            if (task) {
-              await remediationService.updateTaskStatus(
-                jobId,
-                task.id,
-                'completed',
-                'Quick fix applied',
-                req.user?.email || req.user?.id || 'user',
-                { completionMethod: 'auto' }
-              );
-              tasksUpdated = 1;
-              logger.debug(`Task ${task.id} marked as completed`);
-            }
-          }
-        } catch (taskError) {
-          logger.error('Failed to update task status', taskError instanceof Error ? taskError : undefined);
-        }
-      }
-
-      return res.json({
-        success: !hasErrors,
-        data: {
-          success: failCount === 0,
-          successCount,
-          failCount,
-          modifiedFiles,
-          results,
-          tasksUpdated,
-          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
-        },
-      });
-    } catch (error) {
-      logger.error('applyQuickFix error', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to apply fix',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  },
-
-  async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobId } = req.params;
-      const tenantId = req.user?.tenantId;
-
-      logger.debug(`scanEpubTypes called: jobId=${jobId}, tenantId=${tenantId}`);
-
-      if (!tenantId) {
-        return res.status(401).json({ success: false, error: 'Authentication required' });
-      }
-
-      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
-      if (!job) {
-        return res.status(404).json({ success: false, error: 'Job not found' });
-      }
-
-      const input = job.input as { fileName?: string } | null;
-      const fileName = input?.fileName || 'document.epub';
-
-      let epubBuffer = await fileStorageService.getRemediatedFile(
-        jobId,
-        fileName.replace(/\.epub$/i, '_remediated.epub')
-      );
-
-      if (!epubBuffer) {
-        epubBuffer = await fileStorageService.getFile(jobId, fileName);
-      }
-
-      if (!epubBuffer) {
-        return res.status(404).json({ success: false, error: 'EPUB file not found' });
-      }
-
-      const zip = await epubModifier.loadEPUB(epubBuffer);
-      const result = await epubModifier.scanEpubTypes(zip);
-
-      logger.debug(`scanEpubTypes result: ${result.epubTypes.length} epub:types found`);
-
-      return res.json({ success: true, data: result });
-    } catch (error) {
-      logger.error('scanEpubTypes error', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to scan file',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  },
-
-  async markTaskFixed(req: AuthenticatedRequest, res: Response) {
-    try {
-      const { jobId, taskId } = req.params;
-      const { resolution } = req.body;
-
-      const task = await remediationService.updateTaskStatus(
-        jobId,
-        taskId,
-        'completed',
-        resolution || 'Marked as fixed via Quick Fix Panel',
-        req.user?.email || 'system'
-      );
-
-      return res.json({ success: true, data: task });
-    } catch (error) {
-      logger.error('markTaskFixed error', error instanceof Error ? error : undefined);
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
-      });
-    }
-  },
-};
-
-interface FileRecord {
-  id: string;
-  originalName: string;
-  storageType: string;
-  storagePath: string | null;
-  path: string;
-}
-
-async function processAuditInBackground(
-  jobId: string,
-  file: FileRecord
-): Promise<void> {
-  try {
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { status: 'PROCESSING', startedAt: new Date() },
-    });
-
-    let fileBuffer: Buffer;
-    if (file.storageType === 'S3' && file.storagePath) {
-      logger.info(`Background: Fetching file from S3: ${file.storagePath}`);
-      fileBuffer = await s3Service.getFileBuffer(file.storagePath);
-    } else {
-      logger.info(`Background: Reading file from local path: ${file.path}`);
-      fileBuffer = await fs.promises.readFile(file.path);
-    }
-
-    await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
-
-    const result = await epubAuditService.runAudit(
-      fileBuffer,
-      jobId,
-      file.originalName
-    );
-
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'COMPLETED',
-        output: JSON.parse(JSON.stringify(result)),
-        completedAt: new Date(),
-      },
-    });
-
-    try {
-      await remediationService.createRemediationPlan(jobId);
-      logger.info(`Auto-created remediation plan for job ${jobId}`);
-    } catch (remediationError) {
-      logger.warn(`Failed to auto-create remediation plan for job ${jobId}`, remediationError instanceof Error ? remediationError : undefined);
-    }
-
-    await prisma.file.update({
-      where: { id: file.id },
-      data: { status: FileStatus.PROCESSED },
-    });
-
-    logger.info(`Background audit completed for job ${jobId}`);
-  } catch (error) {
-    logger.error(`Audit processing failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'FAILED',
-        completedAt: new Date(),
-        error: error instanceof Error ? error.message : 'Unknown error',
-      },
-    }).catch(() => {});
-
-    await prisma.file.update({
-      where: { id: file.id },
-      data: { status: FileStatus.UPLOADED },
-    }).catch(() => {});
-  }
-}
