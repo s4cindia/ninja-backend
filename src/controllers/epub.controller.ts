@@ -1,26 +1,19 @@
 import { Request, Response } from 'express';
 import * as fs from 'fs';
+import { FileStatus } from '@prisma/client';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
-import { s3Service } from '../services/storage/s3.service';
 import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import { batchRemediationService } from '../services/epub/batch-remediation.service';
 import { epubExportService } from '../services/epub/epub-export.service';
+import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { FileStatus } from '@prisma/client';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    tenantId: string;
-    role: string;
-  };
-}
+import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
@@ -174,23 +167,18 @@ export const epubController = {
         });
       }
 
-      // Atomically update file status to PROCESSING only if currently UPLOADED
-      const updateResult = await prisma.file.updateMany({
+      const atomicUpdate = await prisma.file.updateMany({
         where: {
           id: fileId,
           tenantId,
-          status: FileStatus.UPLOADED,
-          deletedAt: null,
+          status: 'UPLOADED',
         },
-        data: {
-          status: FileStatus.PROCESSING,
-        },
+        data: { status: 'PROCESSING' },
       });
 
-      if (updateResult.count === 0) {
-        // Check why update failed
+      if (atomicUpdate.count === 0) {
         const existingFile = await prisma.file.findFirst({
-          where: { id: fileId, tenantId, deletedAt: null },
+          where: { id: fileId, tenantId },
         });
 
         if (!existingFile) {
@@ -200,32 +188,29 @@ export const epubController = {
           });
         }
 
-        return res.status(409).json({
+        return res.status(400).json({
           success: false,
-          error: `File is already ${existingFile.status.toLowerCase()}`,
+          error: `File not ready for processing. Status: ${existingFile.status}`,
         });
       }
 
-      // Track previous status for rollback
       previousFileStatus = FileStatus.UPLOADED;
 
-      // Get file record for background processing
       const fileRecord = await prisma.file.findUnique({
         where: { id: fileId },
-        select: {
-          id: true,
-          originalName: true,
-          storageType: true,
-          storagePath: true,
-          path: true,
-        },
       });
 
       if (!fileRecord) {
-        throw new Error('File record not found after status update');
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: FileStatus.UPLOADED },
+        }).catch(() => {});
+        return res.status(500).json({
+          success: false,
+          error: 'File record not found after update',
+        });
       }
 
-      // Create job in QUEUED status
       const job = await prisma.job.create({
         data: {
           tenantId,
@@ -233,13 +218,16 @@ export const epubController = {
           type: 'EPUB_ACCESSIBILITY',
           status: 'QUEUED',
           input: {
-            fileId,
+            fileId: fileRecord.id,
             fileName: fileRecord.originalName,
+            mimeType: fileRecord.mimeType,
+            size: fileRecord.size,
+            storageType: fileRecord.storageType,
+            storagePath: fileRecord.storagePath,
           },
         },
       });
 
-      // Return 202 immediately with job ID
       res.status(202).json({
         success: true,
         data: {
@@ -249,8 +237,7 @@ export const epubController = {
         },
       });
 
-      // Process in background (after response sent)
-      processAuditInBackground(job.id, fileRecord as FileRecord).catch((error) => {
+      processAuditInBackground(job.id, fileRecord).catch((error) => {
         logger.error(`Background audit failed for job ${job.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       });
 
@@ -294,6 +281,30 @@ export const epubController = {
         });
       }
 
+      const output = job.output as Record<string, unknown> | null;
+      const combinedIssues = output?.combinedIssues as Array<Record<string, unknown>> | undefined;
+
+      logger.info('\nAPI RESPONSE - AUDIT RESULTS:');
+      logger.info(`  Job ID: ${job.id}`);
+      logger.info(`  Combined issues count: ${combinedIssues?.length || 0}`);
+
+      if (combinedIssues && combinedIssues.length > 0) {
+        const bySource: Record<string, number> = {};
+        combinedIssues.forEach(issue => {
+          const src = (issue.source as string) || 'unknown';
+          bySource[src] = (bySource[src] || 0) + 1;
+        });
+        logger.info(`  By Source: ${JSON.stringify(bySource)}`);
+
+        logger.info('  All issues being returned:');
+        combinedIssues.forEach((issue, i) => {
+          const code = issue.code as string || 'UNKNOWN';
+          const source = issue.source as string || 'unknown';
+          const location = issue.location as string || 'N/A';
+          logger.info(`    ${i + 1}. [${source}] ${code} @ ${location}`);
+        });
+      }
+
       return res.json({
         success: true,
         data: job.output,
@@ -308,13 +319,71 @@ export const epubController = {
   },
 
   async createRemediationPlan(req: Request, res: Response) {
+    const { jobId } = req.params;
+
+    logger.info('\n' + '='.repeat(70));
+    logger.info('API: CREATE REMEDIATION PLAN');
+    logger.info('='.repeat(70));
+    logger.info(`Job ID: ${jobId}`);
+
+    clearSnapshots();
+
     try {
-      const { jobId } = req.params;
       const plan = await remediationService.createRemediationPlan(jobId);
+
+      logger.info('\nFINAL VALIDATION:');
+      logger.info(`  Plan total tasks: ${plan.stats.pending}`);
+      logger.info(`  By Source: EPUBCheck=${plan.stats.bySource?.epubCheck || 0}, ACE=${plan.stats.bySource?.ace || 0}, JS Auditor=${plan.stats.bySource?.jsAuditor || 0}`);
+      logger.info(`  By Classification: Auto=${plan.stats.autoFixable}, QuickFix=${plan.stats.quickFixable}, Manual=${plan.stats.manualRequired}`);
+
+      logger.info('\nTASK TYPES IN RESPONSE:');
+      plan.tasks.forEach((task, i) => {
+        logger.info(`  ${i + 1}. [${task.type}] ${task.issueCode} @ ${task.location || 'N/A'}`);
+      });
+
+      if (plan.tallyValidation && !plan.tallyValidation.isValid) {
+        logger.error('TALLY VALIDATION FAILED - Issues may be missing');
+        logger.info('\nALL SNAPSHOTS:');
+        getAllSnapshots().forEach(snap => {
+          logger.info(`  ${snap.stage}: ${snap.count} issues`);
+        });
+      } else {
+        logger.info(`All issues included in plan`);
+      }
+
+      const responseData = {
+        jobId: plan.jobId,
+        fileName: plan.fileName,
+        totalIssues: plan.totalIssues,
+        tasks: plan.tasks,
+        stats: plan.stats,
+        tally: {
+          audit: plan.auditTally ? {
+            total: plan.auditTally.grandTotal,
+            bySource: plan.auditTally.bySource,
+            bySeverity: plan.auditTally.bySeverity,
+          } : null,
+          plan: plan.planTally ? {
+            total: plan.planTally.grandTotal,
+            bySource: plan.planTally.bySource,
+            byClassification: plan.planTally.byClassification,
+          } : null,
+          validation: plan.tallyValidation ? {
+            isValid: plan.tallyValidation.isValid,
+            errors: plan.tallyValidation.errors,
+            discrepancies: plan.tallyValidation.discrepancies,
+          } : null,
+        },
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+        _debug: process.env.NODE_ENV === 'development' ? {
+          snapshots: getAllSnapshots(),
+        } : undefined,
+      };
 
       return res.json({
         success: true,
-        data: plan,
+        data: responseData,
       });
     } catch (error) {
       logger.error('Failed to create remediation plan', error instanceof Error ? error : undefined);
@@ -339,7 +408,32 @@ export const epubController = {
 
       return res.json({
         success: true,
-        data: plan,
+        data: {
+          jobId: plan.jobId,
+          fileName: plan.fileName,
+          totalIssues: plan.totalIssues,
+          tasks: plan.tasks,
+          stats: plan.stats,
+          tally: {
+            audit: plan.auditTally ? {
+              total: plan.auditTally.grandTotal,
+              bySource: plan.auditTally.bySource,
+              bySeverity: plan.auditTally.bySeverity,
+            } : null,
+            plan: plan.planTally ? {
+              total: plan.planTally.grandTotal,
+              bySource: plan.planTally.bySource,
+              byClassification: plan.planTally.byClassification,
+            } : null,
+            validation: plan.tallyValidation ? {
+              isValid: plan.tallyValidation.isValid,
+              errors: plan.tallyValidation.errors,
+              discrepancies: plan.tallyValidation.discrepancies,
+            } : null,
+          },
+          createdAt: plan.createdAt,
+          updatedAt: plan.updatedAt,
+        },
       });
     } catch (error) {
       logger.error('Failed to get remediation plan', error instanceof Error ? error : undefined);
@@ -371,7 +465,7 @@ export const epubController = {
   async updateTaskStatus(req: Request, res: Response) {
     try {
       const { jobId, taskId } = req.params;
-      const { status, resolution, resolvedBy } = req.body;
+      const { status, resolution, resolvedBy, notes, completionMethod } = req.body;
 
       if (!status) {
         return res.status(400).json({
@@ -385,7 +479,8 @@ export const epubController = {
         taskId,
         status,
         resolution,
-        resolvedBy
+        resolvedBy,
+        { notes, completionMethod }
       );
 
       return res.json({
@@ -397,6 +492,153 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to update task',
+      });
+    }
+  },
+
+  async markManualTaskFixed(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId, taskId } = req.params;
+      const { notes, resolution } = req.body;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      const task = await remediationService.markManualTaskFixed(
+        jobId,
+        taskId,
+        { notes, verifiedBy, resolution }
+      );
+
+      logger.info(`Manual task ${taskId} marked as fixed by ${verifiedBy}`);
+
+      return res.json({
+        success: true,
+        data: task,
+        message: 'Task marked as manually fixed',
+      });
+    } catch (error) {
+      logger.error('Failed to mark task as fixed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
+      });
+    }
+  },
+
+  async reauditEpub(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No EPUB file uploaded. Please upload the remediated EPUB file.',
+        });
+      }
+
+      logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${req.file.originalname}`);
+
+      const result = await remediationService.reauditEpub(jobId, {
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+      });
+
+      logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Re-audit complete: ${result.resolved} issues verified as fixed`,
+      });
+    } catch (error) {
+      logger.error('Re-audit failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Re-audit failed',
+      });
+    }
+  },
+
+  async transferToAcr(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const result = await remediationService.transferToAcr(jobId);
+
+      logger.info(`[ACR Transfer] Job ${jobId}: ${result.transferredTasks} tasks transferred`);
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('ACR transfer failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to transfer to ACR workflow',
+      });
+    }
+  },
+
+  async getAcrWorkflow(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      const workflow = await remediationService.getAcrWorkflow(acrWorkflowId, tenantId);
+
+      if (!workflow) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR workflow not found',
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: workflow,
+      });
+    } catch (error) {
+      logger.error('Failed to get ACR workflow', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get ACR workflow',
+      });
+    }
+  },
+
+  async updateAcrCriteria(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { acrWorkflowId, criteriaId } = req.params;
+      const { status, notes } = req.body;
+      const tenantId = req.user?.tenantId;
+      const verifiedBy = req.user?.email || req.user?.id || 'user';
+
+      if (!status || !['verified', 'failed', 'not_applicable'].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Status must be one of: verified, failed, not_applicable',
+        });
+      }
+
+      const result = await remediationService.updateAcrCriteriaStatus(
+        acrWorkflowId,
+        criteriaId,
+        status,
+        verifiedBy,
+        notes,
+        tenantId
+      );
+
+      return res.json({
+        success: true,
+        data: result,
+        message: `Criteria ${criteriaId} updated to ${status}`,
+      });
+    } catch (error) {
+      logger.error('Failed to update ACR criteria', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to update ACR criteria',
       });
     }
   },
@@ -484,8 +726,15 @@ export const epubController = {
             'EPUB-META-003': 'Add accessibility summary',
             'EPUB-META-004': 'Add access mode metadata',
             'EPUB-SEM-001': 'Add lang attribute to HTML elements',
+            'EPUB-SEM-002': 'Fix empty links with aria-label',
+            'EPUB-SEM-003': 'Add ARIA roles to epub:type elements',
             'EPUB-IMG-001': 'Mark images without alt as decorative',
             'EPUB-STRUCT-002': 'Add headers to simple tables',
+            'EPUB-STRUCT-003': 'Fix heading hierarchy',
+            'EPUB-STRUCT-004': 'Add ARIA landmarks',
+            'EPUB-NAV-001': 'Add skip navigation links',
+            'EPUB-NAV-002': 'Add unique aria-labels to navigation landmarks',
+            'EPUB-FIG-001': 'Add figure/figcaption structure',
           },
         },
       });
@@ -585,7 +834,15 @@ export const epubController = {
 
       const input = job.input as { fileName?: string };
       const originalFileName = input?.fileName || 'upload.epub';
-      const epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      // Try to load from remediated file first (to preserve previous fixes)
+      // Fall back to original if no remediated file exists yet
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
       if (!epubBuffer) {
         return res.status(404).json({
           success: false,
@@ -643,6 +900,29 @@ export const epubController = {
         case 'EPUB-FIG-001':
           results = await epubModifier.addFigureStructure(zip);
           break;
+        case 'EPUB-SEM-003':
+          // Add ARIA roles to epub:type elements (Quick Fix)
+          if (options?.changes && Array.isArray(options.changes)) {
+            const epubTypesToFix = options.changes.map((change: { epubType: string; role: string }) => ({
+              epubType: change.epubType,
+              role: change.role,
+            }));
+            results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: 'EPUB-SEM-003 requires options.changes array with epubType and role',
+            });
+          }
+          break;
+        case 'EPUB-NAV-002':
+          // Add aria-labels to nav landmarks (Quick Fix)
+          results = await epubModifier.addNavAriaLabels(zip, {
+            toc: options?.tocLabel,
+            landmarks: options?.landmarksLabel,
+            pageList: options?.pageListLabel,
+          });
+          break;
         default:
           return res.status(400).json({
             success: false,
@@ -651,7 +931,6 @@ export const epubController = {
       }
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
       return res.json({
@@ -947,6 +1226,32 @@ export const epubController = {
     }
   },
 
+  async retryBatchJob(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId, jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await batchRemediationService.retryJob(batchId, jobId, tenantId);
+
+      return res.json({
+        success: true,
+        data: job,
+        message: 'Job retry completed',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to retry job';
+      logger.error(`Failed to retry batch job: ${message}`);
+      return res.status(400).json({
+        success: false,
+        error: message,
+      });
+    }
+  },
+
   async listBatches(req: AuthenticatedRequest, res: Response) {
     try {
       const tenantId = req.user?.tenantId;
@@ -1102,34 +1407,283 @@ export const epubController = {
     }
   },
 
+  async applyQuickFix(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { issueId, changes, fixCode, taskId, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      logger.debug(`applyQuickFix called: jobId=${jobId}, fixCode=${fixCode}, taskId=${taskId}, issueId=${issueId}`);
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+
+      let results: ModificationResult[] = [];
+      let modifiedFiles: string[] = [];
+      let hasErrors = false;
+
+      const epubTypesToFix: Array<{ epubType: string; role: string }> = [];
+
+      if (fixCode === 'EPUB-SEM-003' || fixCode === 'EPUB-TYPE-HAS-MATCHING-ROLE') {
+        if (options?.epubTypes && Array.isArray(options.epubTypes)) {
+          epubTypesToFix.push(...options.epubTypes);
+        } else if (options?.epubType && options?.role) {
+          epubTypesToFix.push({ epubType: options.epubType, role: options.role });
+        }
+      }
+
+      if (changes && Array.isArray(changes)) {
+        for (const change of changes) {
+          const epubTypeMatch = change.oldContent?.match(/epub:type="([^"]+)"/);
+          const roleMatch = change.content?.match(/role="([^"]+)"/) || change.newContent?.match(/role="([^"]+)"/);
+
+          if (epubTypeMatch && roleMatch) {
+            const epubType = epubTypeMatch[1];
+            const role = roleMatch[1];
+
+            if (!epubTypesToFix.find(e => e.epubType === epubType)) {
+              epubTypesToFix.push({ epubType, role });
+            }
+          }
+        }
+      }
+
+      if (epubTypesToFix.length > 0) {
+        logger.debug(`Using EPUB-TYPE case with regex method: ${epubTypesToFix.length} types to fix`);
+
+        results = await epubModifier.addAriaRolesToEpubTypes(zip, epubTypesToFix);
+        logger.debug(`addAriaRolesToEpubTypes completed: ${results.length} modifications`);
+
+        if (results.length > 0) {
+          const modifiedBuffer = await epubModifier.saveEPUB(zip);
+          await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        }
+
+        let tasksAutoCompleted = 0;
+        try {
+          const plan = await remediationService.getRemediationPlan(jobId);
+
+          if (plan?.tasks && Array.isArray(plan.tasks)) {
+            const relatedTasks = plan.tasks.filter((t: { status?: string; issueCode?: string; id?: string }) => {
+              if (t.status === 'completed') return false;
+
+              const issueCode = String(t.issueCode || '').toUpperCase();
+              const isEpubTypeIssue =
+                issueCode.includes('EPUB-TYPE') ||
+                issueCode.includes('EPUB_TYPE') ||
+                issueCode.includes('MATCHING-ROLE') ||
+                issueCode.includes('MATCHING_ROLE') ||
+                issueCode === 'EPUB-SEM-003';
+
+              return isEpubTypeIssue;
+            });
+
+            logger.debug(`Found ${relatedTasks.length} epub:type tasks to auto-complete`);
+
+            for (const task of relatedTasks) {
+              try {
+                await remediationService.updateTaskStatus(
+                  jobId,
+                  task.id,
+                  'completed',
+                  `Auto-completed: ARIA roles added to all epub:type elements`,
+                  req.user?.email || 'system'
+                );
+                tasksAutoCompleted++;
+                logger.debug(`Auto-completed task: ${task.id} (${task.issueCode})`);
+              } catch (err) {
+                logger.error(`Failed to auto-complete task ${task.id}`, err instanceof Error ? err : undefined);
+              }
+            }
+          }
+        } catch (err) {
+          logger.error('Auto-complete error', err instanceof Error ? err : undefined);
+        }
+
+        logger.debug(`Total tasks auto-completed: ${tasksAutoCompleted}`);
+
+        return res.json({
+          success: true,
+          data: {
+            results,
+            modificationsCount: results.length,
+            tasksAutoCompleted,
+            message: `Applied ${results.length} fixes, auto-completed ${tasksAutoCompleted} tasks`,
+            downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+          },
+        });
+      }
+
+      if (changes && Array.isArray(changes) && changes.length > 0) {
+        logger.info(`Applying quick fix for job ${jobId}, issue ${issueId}`);
+        logger.info(`Changes: ${JSON.stringify(changes, null, 2)}`);
+
+        const result = await epubModifier.applyQuickFix(zip, changes, jobId, issueId);
+        results = result.results;
+        modifiedFiles = result.modifiedFiles;
+        hasErrors = result.hasErrors;
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Either fixCode with options or changes array is required',
+        });
+      }
+
+      if (modifiedFiles.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No files were modified',
+          data: { results },
+        });
+      }
+
+      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+      const successCount = results.filter(r => r.success).length;
+      const failCount = results.filter(r => !r.success).length;
+
+      let tasksUpdated = 0;
+      if (successCount > 0) {
+        try {
+          const taskToUpdate = taskId || issueId;
+          if (taskToUpdate) {
+            const plan = await remediationService.getRemediationPlan(jobId);
+            const task = plan?.tasks.find((t: { id?: string; issueId?: string }) => t.id === taskToUpdate || t.issueId === taskToUpdate);
+            if (task) {
+              await remediationService.updateTaskStatus(
+                jobId,
+                task.id,
+                'completed',
+                'Quick fix applied',
+                req.user?.email || req.user?.id || 'user',
+                { completionMethod: 'auto' }
+              );
+              tasksUpdated = 1;
+              logger.debug(`Task ${task.id} marked as completed`);
+            }
+          }
+        } catch (taskError) {
+          logger.error('Failed to update task status', taskError instanceof Error ? taskError : undefined);
+        }
+      }
+
+      return res.json({
+        success: !hasErrors,
+        data: {
+          success: failCount === 0,
+          successCount,
+          failCount,
+          modifiedFiles,
+          results,
+          tasksUpdated,
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+        },
+      });
+    } catch (error) {
+      logger.error('applyQuickFix error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to apply fix',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
+  async scanEpubTypes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      logger.debug(`scanEpubTypes called: jobId=${jobId}, tenantId=${tenantId}`);
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string } | null;
+      const fileName = input?.fileName || 'document.epub';
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(
+        jobId,
+        fileName.replace(/\.epub$/i, '_remediated.epub')
+      );
+
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+      const result = await epubModifier.scanEpubTypes(zip);
+
+      logger.debug(`scanEpubTypes result: ${result.epubTypes.length} epub:types found`);
+
+      return res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('scanEpubTypes error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to scan file',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
   async markTaskFixed(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId, taskId } = req.params;
       const { resolution } = req.body;
-      const tenantId = req.user?.tenantId;
-      const userId = req.user?.id;
-
-      if (!tenantId || !userId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Authentication required',
-        });
-      }
 
       const task = await remediationService.updateTaskStatus(
         jobId,
         taskId,
-        'FIXED',
-        resolution || 'Manually marked as fixed',
-        userId
+        'completed',
+        resolution || 'Marked as fixed via Quick Fix Panel',
+        req.user?.email || 'system'
       );
 
-      return res.json({
-        success: true,
-        data: task,
-      });
+      return res.json({ success: true, data: task });
     } catch (error) {
-      logger.error('Failed to mark task as fixed', error instanceof Error ? error : undefined);
+      logger.error('markTaskFixed error', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
@@ -1144,7 +1698,7 @@ interface FileRecord {
   originalName: string;
   storageType: string;
   storagePath: string | null;
-  path: string | null;
+  path: string | null;  // Changed from 'path: string' to allow null
 }
 
 // Background processing function (at module level, outside epubController)
@@ -1153,7 +1707,6 @@ async function processAuditInBackground(
   file: FileRecord
 ): Promise<void> {
   try {
-    // Update job to PROCESSING
     await prisma.job.update({
       where: { id: jobId },
       data: { status: 'PROCESSING', startedAt: new Date() },
@@ -1171,24 +1724,23 @@ async function processAuditInBackground(
       throw new Error('No valid file path available (neither S3 nor local)');
     }
 
-    // Run the audit
+    await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
     const result = await epubAuditService.runAudit(
       fileBuffer,
       jobId,
       file.originalName
     );
 
-    // Update job with results
     await prisma.job.update({
       where: { id: jobId },
       data: {
         status: 'COMPLETED',
-        completedAt: new Date(),
         output: JSON.parse(JSON.stringify(result)),
+        completedAt: new Date(),
       },
     });
 
-    // Update file status to PROCESSED
     await prisma.file.update({
       where: { id: file.id },
       data: { status: FileStatus.PROCESSED },
@@ -1196,15 +1748,14 @@ async function processAuditInBackground(
 
     logger.info(`Background audit completed for job ${jobId}`);
   } catch (error) {
-    logger.error(`Background audit error for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    logger.error(`Audit processing failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
 
-    // Update job to FAILED
     await prisma.job.update({
       where: { id: jobId },
       data: {
         status: 'FAILED',
-        completedAt: new Date(),
         error: error instanceof Error ? error.message : 'Unknown error',
+        completedAt: new Date(),
       },
     }).catch(() => {});
 
