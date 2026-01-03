@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import * as fs from 'fs';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
 import { autoRemediationService } from '../services/epub/auto-remediation.service';
@@ -7,6 +8,7 @@ import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import { batchRemediationService } from '../services/epub/batch-remediation.service';
 import { epubExportService } from '../services/epub/epub-export.service';
+import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
@@ -123,6 +125,114 @@ export const epubController = {
       });
     } catch (error) {
       logger.error('EPUB audit from buffer failed', error instanceof Error ? error : undefined);
+      
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { 
+            status: 'FAILED',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        }).catch(() => {});
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'EPUB audit failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  },
+
+  async auditFromFileId(req: AuthenticatedRequest, res: Response) {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    const { fileId } = req.body;
+    let jobId: string | undefined;
+
+    try {
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!fileId) {
+        return res.status(400).json({
+          success: false,
+          error: 'fileId is required',
+        });
+      }
+
+      const file = await prisma.file.findFirst({
+        where: { id: fileId, tenantId },
+      });
+
+      if (!file) {
+        return res.status(404).json({
+          success: false,
+          error: 'File not found',
+        });
+      }
+
+      if (file.status !== 'UPLOADED') {
+        return res.status(400).json({
+          success: false,
+          error: `File not ready for processing. Status: ${file.status}`,
+        });
+      }
+
+      let fileBuffer: Buffer;
+      if (file.storageType === 'S3' && file.storagePath) {
+        logger.info(`Fetching file from S3: ${file.storagePath}`);
+        fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+      } else {
+        logger.info(`Reading file from local path: ${file.path}`);
+        fileBuffer = await fs.promises.readFile(file.path);
+      }
+
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileId: file.id,
+            fileName: file.originalName,
+            mimeType: file.mimeType,
+            size: file.size,
+            storageType: file.storageType,
+          },
+          startedAt: new Date(),
+        },
+      });
+      jobId = job.id;
+
+      await prisma.file.update({
+        where: { id: fileId },
+        data: { status: 'PROCESSING' },
+      });
+
+      const result = await epubAuditService.runAudit(
+        fileBuffer,
+        job.id,
+        file.originalName
+      );
+
+      await prisma.file.update({
+        where: { id: fileId },
+        data: { status: 'PROCESSED' },
+      });
+
+      return res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error(`EPUB audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       
       if (jobId) {
         await prisma.job.update({
