@@ -1025,31 +1025,32 @@ class EPUBModifierService {
             modified = true;
           }
         }
-      } else {
-        // Case 2: Document starts with h1 but may have skipped levels (h1→h3)
-        // Normalize each heading to at most one level deeper than expected
-        let expectedMaxLevel = 1;
+      }
 
-        for (const el of headings) {
-          const oldLevel = parseInt(el.tagName.charAt(1));
+      // Case 2: Fix any remaining skipped levels (h1→h3 becomes h1→h2)
+      // Re-read headings after Case 1 modifications
+      const updatedHeadings = $('h1, h2, h3, h4, h5, h6').toArray();
+      let expectedMaxLevel = 1;
 
-          if (oldLevel > expectedMaxLevel + 1) {
-            const newLevel = expectedMaxLevel + 1;
-            const $el = $(el);
-            const headingContent = $el.html();
-            const attrs = el.attribs || {};
-            const attrString = Object.entries(attrs)
-              .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
-              .join(' ');
+      for (const el of updatedHeadings) {
+        const oldLevel = parseInt(el.tagName.charAt(1));
 
-            const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
-            $el.replaceWith($newHeading);
-            changes.push(`h${oldLevel} → h${newLevel}`);
-            modified = true;
-            expectedMaxLevel = newLevel;
-          } else {
-            expectedMaxLevel = Math.max(expectedMaxLevel, oldLevel);
-          }
+        if (oldLevel > expectedMaxLevel + 1) {
+          const newLevel = expectedMaxLevel + 1;
+          const $el = $(el);
+          const headingContent = $el.html();
+          const attrs = el.attribs || {};
+          const attrString = Object.entries(attrs)
+            .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
+            .join(' ');
+
+          const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+          $el.replaceWith($newHeading);
+          changes.push(`h${oldLevel} → h${newLevel}`);
+          modified = true;
+          expectedMaxLevel = newLevel;
+        } else {
+          expectedMaxLevel = Math.max(expectedMaxLevel, oldLevel);
         }
       }
 
