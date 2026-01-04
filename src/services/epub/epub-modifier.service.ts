@@ -992,11 +992,16 @@ class EPUBModifierService {
       const headings = $('h1, h2, h3, h4, h5, h6').toArray();
       if (headings.length === 0) continue;
 
+      // Helper to escape attribute values
+      const escapeAttr = (str: string): string => {
+        return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      };
+
       // Find the minimum heading level in the document
       const levels = headings.map(el => parseInt(el.tagName.charAt(1)));
       const minLevel = Math.min(...levels);
 
-      // If document doesn't start with h1, shift all headings up
+      // Case 1: Document doesn't start with h1 - shift all headings up
       if (minLevel > 1) {
         const shift = minLevel - 1;
 
@@ -1011,12 +1016,37 @@ class EPUBModifierService {
             const headingContent = $el.html();
             const attrs = el.attribs || {};
             const attrString = Object.entries(attrs)
-              .map(([k, v]) => `${k}="${v}"`)
+              .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
               .join(' ');
 
             $el.replaceWith(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
             changes.push(`h${oldLevel} → h${newLevel}`);
             modified = true;
+          }
+        }
+      } else {
+        // Case 2: Document starts with h1 but may have skipped levels (h1→h3)
+        // Normalize each heading to at most one level deeper than expected
+        let expectedMaxLevel = 1;
+
+        for (const el of headings) {
+          const oldLevel = parseInt(el.tagName.charAt(1));
+
+          if (oldLevel > expectedMaxLevel + 1) {
+            const newLevel = expectedMaxLevel + 1;
+            const $el = $(el);
+            const headingContent = $el.html();
+            const attrs = el.attribs || {};
+            const attrString = Object.entries(attrs)
+              .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
+              .join(' ');
+
+            $el.replaceWith(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            changes.push(`h${oldLevel} → h${newLevel}`);
+            modified = true;
+            expectedMaxLevel = newLevel;
+          } else {
+            expectedMaxLevel = Math.max(expectedMaxLevel, oldLevel);
           }
         }
       }
@@ -1027,7 +1057,7 @@ class EPUBModifierService {
           success: true,
           filePath,
           modificationType: 'fix_heading_hierarchy',
-          description: `Fixed heading hierarchy: shifted ${changes.length} heading(s)`,
+          description: `Fixed heading hierarchy: ${changes.length} heading(s) adjusted`,
           after: changes.join(', '),
         });
       }
