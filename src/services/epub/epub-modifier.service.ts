@@ -989,38 +989,36 @@ class EPUBModifierService {
       let modified = false;
       const changes: string[] = [];
 
-      const headings: { el: Parameters<typeof $>[0]; level: number }[] = [];
-      $('h1, h2, h3, h4, h5, h6').each((_, el) => {
-        const tagName = ((el as { tagName?: string }).tagName || '').toLowerCase();
-        const level = parseInt(tagName.charAt(1));
-        if (!isNaN(level)) headings.push({ el: el as Parameters<typeof $>[0], level });
-      });
+      const headings = $('h1, h2, h3, h4, h5, h6').toArray();
+      if (headings.length === 0) continue;
 
-      let expectedMaxLevel = 1;
-      for (const heading of headings) {
-        if (heading.level > expectedMaxLevel + 1) {
-          const newLevel = expectedMaxLevel + 1;
-          const $el = $(heading.el);
-          const headingContent = $el.html();
-          const attrs: Record<string, string> = {};
-          
-          const elAttrs = ((heading.el as { attribs?: Record<string, string> }).attribs) || {};
-          Object.keys(elAttrs).forEach(key => {
-            attrs[key] = elAttrs[key];
-          });
-          
-          const attrString = Object.entries(attrs)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(' ');
-          
-          const newTag = `<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`;
-          $el.replaceWith(newTag);
-          
-          changes.push(`h${heading.level} → h${newLevel}`);
-          modified = true;
-          heading.level = newLevel;
+      // Find the minimum heading level in the document
+      const levels = headings.map(el => parseInt(el.tagName.charAt(1)));
+      const minLevel = Math.min(...levels);
+
+      // If document doesn't start with h1, shift all headings up
+      if (minLevel > 1) {
+        const shift = minLevel - 1;
+
+        // Process in reverse order to avoid conflicts
+        for (let i = headings.length - 1; i >= 0; i--) {
+          const el = headings[i];
+          const oldLevel = parseInt(el.tagName.charAt(1));
+          const newLevel = Math.max(1, oldLevel - shift);
+
+          if (oldLevel !== newLevel) {
+            const $el = $(el);
+            const headingContent = $el.html();
+            const attrs = el.attribs || {};
+            const attrString = Object.entries(attrs)
+              .map(([k, v]) => `${k}="${v}"`)
+              .join(' ');
+
+            $el.replaceWith(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            changes.push(`h${oldLevel} → h${newLevel}`);
+            modified = true;
+          }
         }
-        expectedMaxLevel = Math.max(expectedMaxLevel, heading.level);
       }
 
       if (modified) {
@@ -1029,7 +1027,7 @@ class EPUBModifierService {
           success: true,
           filePath,
           modificationType: 'fix_heading_hierarchy',
-          description: `Fixed ${changes.length} heading level(s)`,
+          description: `Fixed heading hierarchy: shifted ${changes.length} heading(s)`,
           after: changes.join(', '),
         });
       }
