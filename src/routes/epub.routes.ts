@@ -10,7 +10,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'application/epub+zip' || file.originalname.endsWith('.epub')) {
+    // Accept epub+zip mimetype OR octet-stream (browsers often use this) OR filename ending in .epub
+    const validMimetypes = ['application/epub+zip', 'application/octet-stream'];
+    if (validMimetypes.includes(file.mimetype) || file.originalname.toLowerCase().endsWith('.epub')) {
       cb(null, true);
     } else {
       cb(new Error('Only EPUB files are allowed'));
