@@ -1019,7 +1019,8 @@ class EPUBModifierService {
               .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
               .join(' ');
 
-            $el.replaceWith(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            $el.replaceWith($newHeading);
             changes.push(`h${oldLevel} → h${newLevel}`);
             modified = true;
           }
@@ -1041,7 +1042,8 @@ class EPUBModifierService {
               .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
               .join(' ');
 
-            $el.replaceWith(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+            $el.replaceWith($newHeading);
             changes.push(`h${oldLevel} → h${newLevel}`);
             modified = true;
             expectedMaxLevel = newLevel;
