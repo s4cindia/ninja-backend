@@ -1006,13 +1006,12 @@ class EPUBModifierService {
         return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       };
 
-      // Find the minimum heading level in the document
-      const levels = headings.map(el => parseInt((el.name || '').toLowerCase().charAt(1)));
-      const minLevel = Math.min(...levels);
+      // Find the first heading level in the document
+      const firstHeadingLevel = headings.length > 0 ? parseInt((headings[0].name || '').toLowerCase().charAt(1)) : 1;
 
       // Case 1: Document doesn't start with h1 - shift all headings up
-      if (minLevel > 1) {
-        const shift = minLevel - 1;
+      if (firstHeadingLevel > 1) {
+        const shift = firstHeadingLevel - 1;
 
         // Process in reverse order to avoid conflicts
         for (let i = headings.length - 1; i >= 0; i--) {
