@@ -25,4 +25,6 @@ router.patch('/:id/status', authenticate, validate(updateFileStatusSchema), file
 
 router.delete('/:id', authenticate, validate(fileIdParamSchema), fileController.deleteFile.bind(fileController));
 
+router.post('/:id/audit', authenticate, validate(fileIdParamSchema), fileController.triggerAudit.bind(fileController));
+
 export default router;

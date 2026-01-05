@@ -5,6 +5,7 @@ import { fileService } from '../services/file.service';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
 import { ListFilesQuery } from '../schemas/file.schemas';
+import prisma from '../lib/prisma';
 
 class FileController {
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -170,6 +171,72 @@ class FileController {
       res.status(200).json({
         success: true,
         data: file,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async triggerAudit(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const tenantId = req.user?.tenantId;
+      const userId = req.user?.id;
+
+      if (!tenantId || !userId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const file = await prisma.file.findFirst({
+        where: { id, tenantId, deletedAt: null }
+      });
+
+      if (!file) {
+        res.status(404).json({ success: false, error: 'File not found' });
+        return;
+      }
+
+      if (!file.mimeType.includes('epub')) {
+        res.status(400).json({ success: false, error: 'Only EPUB files can be audited' });
+        return;
+      }
+
+      if (file.status === 'PROCESSING') {
+        res.status(400).json({ success: false, error: 'File is already being processed' });
+        return;
+      }
+
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'QUEUED',
+          input: {
+            fileId: file.id,
+            fileName: file.originalName,
+            mimeType: file.mimeType,
+            size: file.size,
+            storageType: file.storageType,
+            storagePath: file.storagePath || file.path,
+          },
+        },
+      });
+
+      await prisma.file.update({
+        where: { id },
+        data: { status: 'PROCESSING' }
+      });
+
+      res.status(202).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          fileId: file.id,
+          status: 'QUEUED',
+          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+        },
       });
     } catch (error) {
       next(error);

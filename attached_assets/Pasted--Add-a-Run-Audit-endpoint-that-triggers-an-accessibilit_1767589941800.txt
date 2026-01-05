@@ -1,0 +1,82 @@
+ Add a "Run Audit" endpoint that triggers an accessibility audit on an existing file.
+
+  1. In src/routes/files.routes.ts, add a new route:
+     router.post('/:id/audit', authenticate, validate(fileIdParamSchema), fileController.triggerAudit.bind(fileController));
+
+  2. In src/controllers/file.controller.ts, add the triggerAudit method:
+
+  async triggerAudit(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const tenantId = req.user?.tenantId;
+      const userId = req.user?.id;
+
+      if (!tenantId || !userId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      // Find the file
+      const file = await prisma.file.findFirst({
+        where: { id, tenantId, deletedAt: null }
+      });
+
+      if (!file) {
+        return res.status(404).json({ success: false, error: 'File not found' });
+      }
+
+      // Check if file is an EPUB
+      if (!file.mimeType.includes('epub')) {
+        return res.status(400).json({ success: false, error: 'Only EPUB files can be audited' });
+      }
+
+      // Check if already processing
+      if (file.status === 'PROCESSING') {
+        return res.status(400).json({ success: false, error: 'File is already being processed' });
+      }
+
+      // Create audit job
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'QUEUED',
+          input: {
+            fileId: file.id,
+            fileName: file.originalName,
+            mimeType: file.mimeType,
+            size: file.size,
+            storageType: file.storageType,
+            storagePath: file.storagePath || file.path,
+          },
+        },
+      });
+
+      // Update file status
+      await prisma.file.update({
+        where: { id },
+        data: { status: 'PROCESSING' }
+      });
+
+      // Trigger background audit (import processAuditInBackground from epub.controller or create similar)
+      // For now, return the job ID and let the existing job polling handle it
+
+      return res.status(202).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          fileId: file.id,
+          status: 'QUEUED',
+          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+        },
+      });
+    } catch (error) {
+      console.error('Failed to trigger audit:', error);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to trigger audit',
+      });
+    }
+  }
+
+  Make sure to import AuthenticatedRequest and prisma at the top of the controller if not already imported.
