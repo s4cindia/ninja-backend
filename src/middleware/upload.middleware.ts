@@ -32,6 +32,12 @@ const fileFilter = (
   file: Express.Multer.File,
   cb: multer.FileFilterCallback
 ) => {
+  console.log('[Upload] Received file:', {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size
+  });
+
   const allowedMimeTypes = uploadConfig.allowedMimeTypes || [
     'application/epub+zip',
     'application/pdf',
