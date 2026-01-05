@@ -1,11 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import { FileStatus } from '@prisma/client';
 import { fileService } from '../services/file.service';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
 import { ListFilesQuery } from '../schemas/file.schemas';
 import prisma from '../lib/prisma';
+import { epubAuditService } from '../services/epub/epub-audit.service';
+import { fileStorageService } from '../services/storage/file-storage.service';
+import { logger } from '../lib/logger';
 
 class FileController {
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -179,54 +183,44 @@ class FileController {
 
   async triggerAudit(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { id } = req.params;
-      const tenantId = req.user?.tenantId;
-      const userId = req.user?.id;
-
-      if (!tenantId || !userId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
-        return;
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
       }
 
-      const file = await prisma.file.findFirst({
-        where: { id, tenantId, deletedAt: null }
-      });
+      const file = await fileService.getFileById(req.params.id, req.user.tenantId);
 
-      if (!file) {
-        res.status(404).json({ success: false, error: 'File not found' });
-        return;
+      // Check if file is EPUB
+      if (!file.mimeType.includes('epub') && !file.originalName.toLowerCase().endsWith('.epub')) {
+        throw AppError.badRequest('Only EPUB files can be audited', ErrorCodes.FILE_UPLOAD_FAILED);
       }
 
-      if (!file.mimeType.includes('epub')) {
-        res.status(400).json({ success: false, error: 'Only EPUB files can be audited' });
-        return;
-      }
-
+      // Check if already processing
       if (file.status === 'PROCESSING') {
-        res.status(400).json({ success: false, error: 'File is already being processed' });
-        return;
+        throw AppError.badRequest('File is already being processed', ErrorCodes.VALIDATION_ERROR);
       }
 
+      // Update file status to PROCESSING
+      await fileService.updateFileStatus(file.id, req.user.tenantId, 'PROCESSING' as FileStatus);
+
+      // Create audit job
       const job = await prisma.job.create({
         data: {
-          tenantId,
-          userId,
+          tenantId: req.user.tenantId,
+          userId: req.user.id,
           type: 'EPUB_ACCESSIBILITY',
-          status: 'QUEUED',
+          status: 'PROCESSING',
           input: {
             fileId: file.id,
             fileName: file.originalName,
-            mimeType: file.mimeType,
-            size: file.size,
-            storageType: file.storageType,
-            storagePath: file.storagePath || file.path,
+            filePath: file.path,
           },
+          startedAt: new Date(),
         },
       });
 
-      await prisma.file.update({
-        where: { id },
-        data: { status: 'PROCESSING' }
+      // Run audit asynchronously
+      this.runAuditAsync(file, job.id, req.user.tenantId).catch(err => {
+        logger.error(`Async audit failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       });
 
       res.status(202).json({
@@ -234,12 +228,62 @@ class FileController {
         data: {
           jobId: job.id,
           fileId: file.id,
-          status: 'QUEUED',
-          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+          status: 'PROCESSING'
         },
       });
     } catch (error) {
       next(error);
+    }
+  }
+
+  private async runAuditAsync(
+    file: { id: string; path: string; originalName: string },
+    jobId: string,
+    tenantId: string
+  ): Promise<void> {
+    try {
+      // Read file from disk
+      const fileBuffer = await fsPromises.readFile(file.path);
+
+      // Save to job storage for later remediation
+      await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
+      // Run the EPUB audit
+      const result = await epubAuditService.runAudit(
+        fileBuffer,
+        jobId,
+        file.originalName
+      );
+
+      // Update job to COMPLETED
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: JSON.parse(JSON.stringify(result)),
+        },
+      });
+
+      // Update file status to PROCESSED
+      await fileService.updateFileStatus(file.id, tenantId, 'PROCESSED' as FileStatus);
+
+      logger.info(`Audit completed for file ${file.id}, job ${jobId}`);
+    } catch (error) {
+      logger.error(`Audit failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      // Update job to FAILED
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      }).catch(() => {});
+
+      // Update file status to ERROR
+      await fileService.updateFileStatus(file.id, tenantId, 'ERROR' as FileStatus).catch(() => {});
     }
   }
 }
