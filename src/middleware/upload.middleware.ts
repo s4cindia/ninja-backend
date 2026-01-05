@@ -9,8 +9,14 @@ import { ErrorCodes } from '../utils/error-codes';
 
 const storage = multer.diskStorage({
   destination: (req: Request, file, cb) => {
+    console.log('[Upload] Storage destination called:', {
+      hasUser: !!req.user,
+      tenantId: req.user?.tenantId,
+      originalname: file.originalname
+    });
     const tenantId = req.user?.tenantId;
     if (!tenantId) {
+      console.log('[Upload] No tenantId - rejecting');
       return cb(AppError.unauthorized('Authentication required'), '');
     }
     
