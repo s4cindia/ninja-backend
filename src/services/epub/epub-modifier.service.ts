@@ -990,6 +990,15 @@ class EPUBModifierService {
       const changes: string[] = [];
 
       const headings = $('h1, h2, h3, h4, h5, h6').toArray();
+      
+      logger.info(`[HeadingFix] File: ${filePath}`);
+      logger.info(`[HeadingFix] Found ${headings.length} headings`);
+      if (headings.length > 0) {
+        const tagNames = headings.map(el => (el.name || '').toLowerCase());
+        logger.info(`[HeadingFix] Heading tags: ${tagNames.slice(0, 5).join(', ')}${tagNames.length > 5 ? '...' : ''}`);
+        logger.info(`[HeadingFix] Min level: ${Math.min(...tagNames.map(t => parseInt(t.charAt(1))))}`);
+      }
+      
       if (headings.length === 0) continue;
 
       // Helper to escape attribute values
