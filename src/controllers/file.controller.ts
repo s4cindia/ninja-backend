@@ -9,6 +9,7 @@ import { ListFilesQuery } from '../schemas/file.schemas';
 import prisma from '../lib/prisma';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { s3Service } from '../services/s3.service';
 import { logger } from '../lib/logger';
 
 class FileController {
@@ -199,27 +200,37 @@ class FileController {
         throw AppError.badRequest('File is already being processed', ErrorCodes.VALIDATION_ERROR);
       }
 
-      // Update file status to PROCESSING
-      await fileService.updateFileStatus(file.id, req.user.tenantId, 'PROCESSING' as FileStatus);
+      // Use transaction to ensure atomicity
+      const job = await prisma.$transaction(async (tx) => {
+        // Update file status to PROCESSING
+        await tx.file.update({
+          where: { id: file.id },
+          data: { status: 'PROCESSING' },
+        });
 
-      // Create audit job
-      const job = await prisma.job.create({
-        data: {
-          tenantId: req.user.tenantId,
-          userId: req.user.id,
-          type: 'EPUB_ACCESSIBILITY',
-          status: 'PROCESSING',
-          input: {
-            fileId: file.id,
-            fileName: file.originalName,
-            filePath: file.path,
+        // Create audit job
+        return tx.job.create({
+          data: {
+            tenantId: req.user!.tenantId,
+            userId: req.user!.id,
+            type: 'EPUB_ACCESSIBILITY',
+            status: 'PROCESSING',
+            input: {
+              fileId: file.id,
+              fileName: file.originalName,
+              filePath: file.path,
+            },
+            startedAt: new Date(),
           },
-          startedAt: new Date(),
-        },
+        });
       });
 
       // Run audit asynchronously
-      this.runAuditAsync(file, job.id, req.user.tenantId).catch(err => {
+      this.runAuditAsync(
+        { id: file.id, path: file.path, originalName: file.originalName, storageType: file.storageType },
+        job.id,
+        req.user.tenantId
+      ).catch(err => {
         logger.error(`Async audit failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       });
 
@@ -237,13 +248,19 @@ class FileController {
   }
 
   private async runAuditAsync(
-    file: { id: string; path: string; originalName: string },
+    file: { id: string; path: string; originalName: string; storageType?: string },
     jobId: string,
     tenantId: string
   ): Promise<void> {
     try {
-      // Read file from disk
-      const fileBuffer = await fsPromises.readFile(file.path);
+      let fileBuffer: Buffer;
+
+      // Handle S3 vs local storage
+      if (file.storageType === 'S3') {
+        fileBuffer = await s3Service.getFileBuffer(file.path);
+      } else {
+        fileBuffer = await fsPromises.readFile(file.path);
+      }
 
       // Save to job storage for later remediation
       await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
