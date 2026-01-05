@@ -27,7 +27,7 @@ export const config: Config = {
   jwtSecret: process.env.JWT_SECRET || 'development-secret-change-in-production',
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'development-refresh-secret-change-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:5173', 'http://localhost:3000'],
+  corsOrigins: (process.env.CORS_ORIGINS || process.env.CORS_ORIGIN)?.split(',') || ['http://localhost:5173', 'http://localhost:3000'],
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '52428800', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
   aceServiceUrl: process.env.ACE_SERVICE_URL || null,
