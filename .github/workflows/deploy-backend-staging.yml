@@ -49,16 +49,17 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Run a one-off ECS task to execute migrations
+          # Run a one-off ECS task to execute migrations with the NEW image
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-03e459cac90b9742f,subnet-00a17d8c172f3935d],securityGroups=[sg-0a63cb6753472167f],assignPublicIp=ENABLED}" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=ENABLED}" \
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
-                "command": ["npx", "prisma", "migrate", "deploy"]
+                "command": ["npx", "prisma", "migrate", "deploy"],
+                "image": "'"$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"'"
               }]
             }' \
             --query 'tasks[0].taskArn' \
