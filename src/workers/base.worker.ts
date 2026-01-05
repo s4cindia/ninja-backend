@@ -2,6 +2,7 @@ import { Job, Worker } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
 import { getBullMQConnection, JobData, JobResult } from '../queues';
 import { queueService } from '../services/queue.service';
+import prisma from '../lib/prisma';
 
 export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
 
@@ -42,6 +43,19 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
             output: result.data,
           });
 
+          // Update file status to PROCESSED if job has a fileId
+          if (job.data.fileId) {
+            try {
+              await prisma.file.update({
+                where: { id: job.data.fileId },
+                data: { status: 'PROCESSED' }
+              });
+              console.log(`📁 File ${job.data.fileId} status updated to PROCESSED`);
+            } catch (fileError) {
+              console.error(`⚠️ Could not update file status:`, fileError);
+            }
+          }
+
           console.log(`✅ Job ${jobId} completed successfully`);
           return result;
         } catch (error) {
@@ -51,6 +65,19 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
           await queueService.updateJobStatus(jobId, 'FAILED', {
             error: errorMessage,
           });
+
+          // Update file status to ERROR if job has a fileId
+          if (job.data.fileId) {
+            try {
+              await prisma.file.update({
+                where: { id: job.data.fileId },
+                data: { status: 'ERROR' }
+              });
+              console.log(`📁 File ${job.data.fileId} status updated to ERROR`);
+            } catch (fileError) {
+              console.error(`⚠️ Could not update file status:`, fileError);
+            }
+          }
 
           throw error;
         }
