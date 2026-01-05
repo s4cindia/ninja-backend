@@ -10,6 +10,7 @@ import prisma from '../lib/prisma';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { s3Service } from '../services/s3.service';
+import { artifactService } from '../services/artifact.service';
 import { logger } from '../lib/logger';
 
 class FileController {
@@ -301,6 +302,170 @@ class FileController {
 
       // Update file status to ERROR
       await fileService.updateFileStatus(file.id, tenantId, 'ERROR' as FileStatus).catch(() => {});
+    }
+  }
+
+  async bulkDelete(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const { fileIds } = req.body;
+
+      if (!Array.isArray(fileIds) || fileIds.length === 0) {
+        throw AppError.badRequest('fileIds array is required');
+      }
+
+      if (fileIds.length > 100) {
+        throw AppError.badRequest('Maximum 100 files per bulk operation');
+      }
+
+      let deleted = 0;
+      let failed = 0;
+      const errors: Array<{ fileId: string; error: string }> = [];
+
+      for (const fileId of fileIds) {
+        try {
+          await fileService.deleteFile(fileId, req.user.tenantId);
+          deleted++;
+        } catch (error) {
+          failed++;
+          errors.push({
+            fileId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        data: { deleted, failed, errors: errors.length > 0 ? errors : undefined },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async bulkAudit(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const { fileIds } = req.body;
+
+      if (!Array.isArray(fileIds) || fileIds.length === 0) {
+        throw AppError.badRequest('fileIds array is required');
+      }
+
+      if (fileIds.length > 20) {
+        throw AppError.badRequest('Maximum 20 files per bulk audit');
+      }
+
+      const results: Array<{ fileId: string; jobId?: string; error?: string }> = [];
+
+      for (const fileId of fileIds) {
+        try {
+          const file = await fileService.getFileById(fileId, req.user.tenantId);
+
+          if (!file.mimeType.includes('epub') && !file.originalName.toLowerCase().endsWith('.epub')) {
+            results.push({ fileId, error: 'Not an EPUB file' });
+            continue;
+          }
+
+          if (file.status === 'PROCESSING') {
+            results.push({ fileId, error: 'File is already being processed' });
+            continue;
+          }
+
+          const job = await prisma.$transaction(async (tx) => {
+            await tx.file.update({
+              where: { id: file.id },
+              data: { status: 'PROCESSING' },
+            });
+
+            return tx.job.create({
+              data: {
+                tenantId: req.user!.tenantId,
+                userId: req.user!.id,
+                type: 'EPUB_ACCESSIBILITY',
+                status: 'PROCESSING',
+                input: {
+                  fileId: file.id,
+                  fileName: file.originalName,
+                  filePath: file.path,
+                },
+                startedAt: new Date(),
+              },
+            });
+          });
+
+          this.runAuditAsync(
+            { id: file.id, path: file.path, originalName: file.originalName, storageType: file.storageType },
+            job.id,
+            req.user.tenantId
+          ).catch(err => logger.error(`Bulk audit failed for file ${fileId}: ${err instanceof Error ? err.message : 'Unknown'}`));
+
+          results.push({ fileId, jobId: job.id });
+        } catch (error) {
+          results.push({
+            fileId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+
+      const successful = results.filter(r => r.jobId).length;
+      const failed = results.filter(r => r.error).length;
+
+      res.status(202).json({
+        success: true,
+        data: {
+          total: fileIds.length,
+          successful,
+          failed,
+          results
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getFileArtifacts(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const file = await fileService.getFileById(req.params.id, req.user.tenantId);
+
+      const directArtifacts = await artifactService.getArtifactsByFile(file.id);
+
+      const jobs = await prisma.job.findMany({
+        where: {
+          tenantId: req.user.tenantId,
+          input: { path: ['fileId'], equals: file.id }
+        },
+        select: { id: true }
+      });
+
+      const jobArtifacts = await Promise.all(
+        jobs.map(job => artifactService.getArtifactsByJob(job.id))
+      );
+
+      const allArtifacts = [...directArtifacts, ...jobArtifacts.flat()];
+      const uniqueArtifacts = allArtifacts.filter((artifact, index, self) =>
+        index === self.findIndex(a => a.id === artifact.id)
+      );
+
+      res.status(200).json({
+        success: true,
+        data: uniqueArtifacts,
+      });
+    } catch (error) {
+      next(error);
     }
   }
 }

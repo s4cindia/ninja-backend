@@ -36,4 +36,10 @@ router.delete('/:id', authenticate, validate(fileIdParamSchema), fileController.
 
 router.post('/:id/audit', authenticate, validate(fileIdParamSchema), fileController.triggerAudit.bind(fileController));
 
+router.get('/:id/artifacts', authenticate, validate(fileIdParamSchema), fileController.getFileArtifacts.bind(fileController));
+
+router.post('/bulk/delete', authenticate, fileController.bulkDelete.bind(fileController));
+
+router.post('/bulk/audit', authenticate, fileController.bulkAudit.bind(fileController));
+
 export default router;
