@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { uploadSingle } from '../middleware/upload.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -11,7 +11,16 @@ import {
 
 const router = Router();
 
-router.post('/upload', authenticate, uploadSingle, fileController.upload.bind(fileController));
+const debugUpload = (req: Request, res: Response, next: NextFunction) => {
+  console.log('[Upload Route] Before uploadSingle:', {
+    hasUser: !!req.user,
+    contentType: req.headers['content-type'],
+    contentLength: req.headers['content-length']
+  });
+  next();
+};
+
+router.post('/upload', authenticate, debugUpload, uploadSingle, fileController.upload.bind(fileController));
 
 router.get('/', authenticate, validate(listFilesSchema), fileController.listAdvanced.bind(fileController));
 
