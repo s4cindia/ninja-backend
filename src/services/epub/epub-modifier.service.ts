@@ -998,7 +998,7 @@ class EPUBModifierService {
       };
 
       // Find the minimum heading level in the document
-      const levels = headings.map(el => parseInt(el.tagName.charAt(1)));
+      const levels = headings.map(el => parseInt(el.tagName.toLowerCase().charAt(1)));
       const minLevel = Math.min(...levels);
 
       // Case 1: Document doesn't start with h1 - shift all headings up
@@ -1008,7 +1008,7 @@ class EPUBModifierService {
         // Process in reverse order to avoid conflicts
         for (let i = headings.length - 1; i >= 0; i--) {
           const el = headings[i];
-          const oldLevel = parseInt(el.tagName.charAt(1));
+          const oldLevel = parseInt(el.tagName.toLowerCase().charAt(1));
           const newLevel = Math.max(1, oldLevel - shift);
 
           if (oldLevel !== newLevel) {
@@ -1031,7 +1031,7 @@ class EPUBModifierService {
         let expectedMaxLevel = 1;
 
         for (const el of headings) {
-          const oldLevel = parseInt(el.tagName.charAt(1));
+          const oldLevel = parseInt(el.tagName.toLowerCase().charAt(1));
 
           if (oldLevel > expectedMaxLevel + 1) {
             const newLevel = expectedMaxLevel + 1;
