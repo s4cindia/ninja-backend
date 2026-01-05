@@ -49,17 +49,35 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # Run a one-off ECS task to execute migrations with the NEW image
+          # Download current task definition
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
+            --query taskDefinition > migration-task-def.json
+
+          # Update image in task definition and remove incompatible fields
+          jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" '
+            .containerDefinitions[0].image = $IMAGE |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+          ' migration-task-def.json > migration-task-def-updated.json
+
+          # Register new task definition with updated image
+          MIGRATION_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://migration-task-def-updated.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "Registered migration task definition: $MIGRATION_TASK_DEF_ARN"
+
+          # Run migration task with new image
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
-            --task-definition ${{ env.TASK_DEFINITION_FAMILY }} \
+            --task-definition $MIGRATION_TASK_DEF_ARN \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=ENABLED}" \
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
-                "command": ["npx", "prisma", "migrate", "deploy"],
-                "image": "'"$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"'"
+                "command": ["npx", "prisma", "migrate", "deploy"]
               }]
             }' \
             --query 'tasks[0].taskArn' \
