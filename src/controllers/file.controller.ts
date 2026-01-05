@@ -203,14 +203,8 @@ class FileController {
 
       // Use transaction to ensure atomicity
       const job = await prisma.$transaction(async (tx) => {
-        // Update file status to PROCESSING
-        await tx.file.update({
-          where: { id: file.id },
-          data: { status: 'PROCESSING' },
-        });
-
         // Create audit job
-        return tx.job.create({
+        const createdJob = await tx.job.create({
           data: {
             tenantId: req.user!.tenantId,
             userId: req.user!.id,
@@ -224,6 +218,17 @@ class FileController {
             startedAt: new Date(),
           },
         });
+
+        // Update file status to PROCESSING and set latestJobId
+        await tx.file.update({
+          where: { id: file.id },
+          data: { 
+            status: 'PROCESSING',
+            latestJobId: createdJob.id,
+          },
+        });
+
+        return createdJob;
       });
 
       // Run audit asynchronously
@@ -380,12 +385,7 @@ class FileController {
           }
 
           const job = await prisma.$transaction(async (tx) => {
-            await tx.file.update({
-              where: { id: file.id },
-              data: { status: 'PROCESSING' },
-            });
-
-            return tx.job.create({
+            const createdJob = await tx.job.create({
               data: {
                 tenantId: req.user!.tenantId,
                 userId: req.user!.id,
@@ -399,6 +399,16 @@ class FileController {
                 startedAt: new Date(),
               },
             });
+
+            await tx.file.update({
+              where: { id: file.id },
+              data: { 
+                status: 'PROCESSING',
+                latestJobId: createdJob.id,
+              },
+            });
+
+            return createdJob;
           });
 
           this.runAuditAsync(
