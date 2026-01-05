@@ -9,8 +9,14 @@ import { ErrorCodes } from '../utils/error-codes';
 
 const storage = multer.diskStorage({
   destination: (req: Request, file, cb) => {
+    console.log('[Upload] Storage destination called:', {
+      hasUser: !!req.user,
+      tenantId: req.user?.tenantId,
+      originalname: file.originalname
+    });
     const tenantId = req.user?.tenantId;
     if (!tenantId) {
+      console.log('[Upload] No tenantId - rejecting');
       return cb(AppError.unauthorized('Authentication required'), '');
     }
     
@@ -32,12 +38,30 @@ const fileFilter = (
   file: Express.Multer.File,
   cb: multer.FileFilterCallback
 ) => {
-  if (uploadConfig.allowedMimeTypes.includes(file.mimetype)) {
+  console.log('[Upload] Received file:', {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size
+  });
+
+  const allowedMimeTypes = uploadConfig.allowedMimeTypes || [
+    'application/epub+zip',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ];
+
+  const extension = path.extname(file.originalname).toLowerCase();
+  const allowedExtensions = ['.epub', '.pdf', '.docx'];
+
+  const isMimeTypeAllowed = allowedMimeTypes.includes(file.mimetype) || file.mimetype === 'application/octet-stream';
+  const isExtensionAllowed = allowedExtensions.includes(extension);
+
+  if (isMimeTypeAllowed && isExtensionAllowed) {
     cb(null, true);
   } else {
     cb(
       AppError.badRequest(
-        `Invalid file type. Allowed types: ${uploadConfig.allowedMimeTypes.join(', ')}`,
+        `Invalid file type. Allowed types: ${allowedMimeTypes.join(', ')}`,
         ErrorCodes.FILE_INVALID_TYPE
       )
     );

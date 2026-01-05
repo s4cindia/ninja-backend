@@ -1,0 +1,133 @@
+  1. Fix S3 Storage Support (P1)
+
+  Update runAuditAsync in file.controller.ts to handle both local and S3 storage:
+
+  private async runAuditAsync(
+    file: { id: string; path: string; originalName: string; storageType?: string },
+    jobId: string,
+    tenantId: string
+  ): Promise<void> {
+    try {
+      let fileBuffer: Buffer;
+
+      // Handle S3 vs local storage
+      if (file.storageType === 'S3') {
+        // Use file storage service which handles S3
+        const buffer = await fileStorageService.getFileByKey(file.path);
+        if (!buffer) {
+          throw new Error('File not found in S3 storage');
+        }
+        fileBuffer = buffer;
+      } else {
+        // Local filesystem
+        fileBuffer = await fsPromises.readFile(file.path);
+      }
+
+      // Save to job storage for later remediation
+      await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
+      // ... rest of the method
+
+  Also update triggerAudit to pass storageType:
+
+  this.runAuditAsync(
+    {
+      id: file.id,
+      path: file.path,
+      originalName: file.originalName,
+      storageType: file.storageType  // Add this
+    },
+    job.id,
+    req.user.tenantId
+  ).catch(err => {
+    logger.error('Async audit failed', err);
+  });
+
+  ---
+  2. Fix Race Condition with Transaction
+
+  Wrap file status update and job creation in a transaction:
+
+  async triggerAudit(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('User not authenticated');
+      }
+
+      const file = await fileService.getFileById(req.params.id, req.user.tenantId);
+
+      // Check if file is EPUB
+      if (!file.mimeType.includes('epub') && !file.originalName.toLowerCase().endsWith('.epub')) {
+        throw AppError.badRequest('Only EPUB files can be audited', ErrorCodes.FILE_UPLOAD_FAILED);
+      }
+
+      // Use transaction to ensure atomicity
+      const job = await prisma.$transaction(async (tx) => {
+        // Update file status to PROCESSING
+        await tx.file.update({
+          where: { id: file.id },
+          data: { status: 'PROCESSING' },
+        });
+
+        // Create audit job
+        return tx.job.create({
+          data: {
+            tenantId: req.user!.tenantId,
+            userId: req.user!.id,
+            type: 'EPUB_ACCESSIBILITY',
+            status: 'PROCESSING',
+            input: {
+              fileId: file.id,
+              fileName: file.originalName,
+              filePath: file.path,
+            },
+            startedAt: new Date(),
+          },
+        });
+      });
+
+      // Run audit asynchronously
+      this.runAuditAsync(
+        { id: file.id, path: file.path, originalName: file.originalName, storageType: file.storageType },
+        job.id,
+        req.user.tenantId
+      ).catch(err => {
+        logger.error('Async audit failed', err);
+      });
+
+      res.status(202).json({
+        success: true,
+        data: { jobId: job.id, fileId: file.id, status: 'PROCESSING' },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  ---
+  3. Remove Duplicate Status Updates from Worker
+
+  In src/workers/base.worker.ts, remove the file status update logic since the controller handles it:
+
+  // REMOVE these blocks from base.worker.ts:
+
+  // In onCompleted handler - REMOVE:
+  // if (job.data.fileId) { ... update to PROCESSED ... }
+
+  // In onFailed handler - REMOVE:
+  // if (job.data.fileId) { ... update to ERROR ... }
+
+  The controller's runAuditAsync already handles updating file status to PROCESSED/ERROR, so the worker shouldn't duplicate this.
+
+  ---
+  4. Replace console.log with logger
+
+  Replace all console.log with structured logger:
+
+  // Instead of:
+  console.log('[Upload] Storage destination called:', { ... });
+
+  // Use:
+  logger.debug('Upload storage destination called', { ... });
+
+  Or remove debug logging entirely if not needed in production.

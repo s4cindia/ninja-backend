@@ -2,6 +2,7 @@ import { Job, Worker } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
 import { getBullMQConnection, JobData, JobResult } from '../queues';
 import { queueService } from '../services/queue.service';
+import { logger } from '../lib/logger';
 
 export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
 
@@ -15,7 +16,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
   const { queueName, processor, concurrency = 1 } = options;
 
   if (!isRedisConfigured()) {
-    console.warn(`⚠️  Cannot create worker for ${queueName} - Redis not configured`);
+    logger.warn(`Cannot create worker for ${queueName} - Redis not configured`);
     return null;
   }
 
@@ -23,7 +24,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
     const connection = getBullMQConnection();
     
     if (!connection) {
-      console.warn(`⚠️  Cannot create worker for ${queueName} - Redis connection not available`);
+      logger.warn(`Cannot create worker for ${queueName} - Redis connection not available`);
       return null;
     }
 
@@ -31,7 +32,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
       queueName,
       async (job: Job<JobData, JobResult>) => {
         const jobId = job.id || job.name;
-        console.log(`🔧 Processing job ${jobId}: ${job.data.type}`);
+        logger.info(`Processing job ${jobId}: ${job.data.type}`);
 
         try {
           await queueService.updateJobStatus(jobId, 'PROCESSING');
@@ -42,11 +43,11 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
             output: result.data,
           });
 
-          console.log(`✅ Job ${jobId} completed successfully`);
+          logger.info(`Job ${jobId} completed successfully`);
           return result;
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.error(`❌ Job ${jobId} failed:`, errorMessage);
+          logger.error(`Job ${jobId} failed: ${errorMessage}`);
 
           await queueService.updateJobStatus(jobId, 'FAILED', {
             error: errorMessage,
@@ -63,24 +64,24 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
     );
 
     worker.on('completed', (job) => {
-      console.log(`📗 Job ${job.id} completed`);
+      logger.info(`Job ${job.id} completed`);
     });
 
     worker.on('failed', (job, err) => {
-      console.error(`📕 Job ${job?.id} failed:`, err.message);
+      logger.error(`Job ${job?.id} failed: ${err.message}`);
     });
 
     worker.on('progress', (job, progress) => {
-      console.log(`📊 Job ${job.id} progress: ${progress}%`);
+      logger.debug(`Job ${job.id} progress: ${progress}%`);
     });
 
     worker.on('error', (err) => {
-      console.error('Worker error:', err);
+      logger.error(`Worker error: ${err.message}`);
     });
 
     return worker;
   } catch (error) {
-    console.warn(`⚠️  Could not create worker for ${queueName}:`, error);
+    logger.warn(`Could not create worker for ${queueName}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     return null;
   }
 }
