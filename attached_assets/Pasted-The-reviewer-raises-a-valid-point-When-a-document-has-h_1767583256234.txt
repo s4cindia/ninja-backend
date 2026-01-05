@@ -1,0 +1,46 @@
+The reviewer raises a valid point. When a document has h2, h1, h2, h3, shifting everything by 1 creates h1, h1, h1, h2 (flattened).
+
+  Better approach: Only shift headings BEFORE the first h1 (if one exists).
+
+  Replit prompt for backend:
+
+  In src/services/epub/epub-modifier.service.ts, in the fixHeadingHierarchy method, update Case 1 to only shift headings when there's no h1, OR only shift headings before the first h1.
+
+  Replace the Case 1 block with:
+
+        // Case 1: Document doesn't start with h1
+        if (firstHeadingLevel > 1) {
+          const shift = firstHeadingLevel - 1;
+
+          // Find if there's an existing h1 somewhere in the document
+          const firstH1Index = headings.findIndex(el => (el.name || '').toLowerCase() === 'h1');
+
+          // Determine how many headings to shift
+          // If no h1 exists, shift all; otherwise only shift headings before the first h1
+          const shiftUntilIndex = firstH1Index === -1 ? headings.length : firstH1Index;
+
+          // Process in reverse order to avoid conflicts
+          for (let i = shiftUntilIndex - 1; i >= 0; i--) {
+            const el = headings[i];
+            const oldLevel = parseInt((el.name || '').toLowerCase().charAt(1));
+            const newLevel = Math.max(1, oldLevel - shift);
+
+            if (oldLevel !== newLevel) {
+              const $el = $(el);
+              const headingContent = $el.html();
+              const attrs = el.attribs || {};
+              const attrString = Object.entries(attrs)
+                .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
+                .join(' ');
+
+              const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+              $el.replaceWith($newHeading);
+              changes.push(`h${oldLevel} → h${newLevel}`);
+              modified = true;
+            }
+          }
+        }
+
+  This ensures:
+  - h2, h1, h2, h3 → h1, h1, h2, h3 (only first h2 shifted, h1 and after preserved)
+  - h2, h2, h3 → h1, h1, h2 (no h1 exists, all shifted)

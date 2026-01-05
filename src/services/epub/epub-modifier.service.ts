@@ -990,6 +990,15 @@ class EPUBModifierService {
       const changes: string[] = [];
 
       const headings = $('h1, h2, h3, h4, h5, h6').toArray();
+      
+      logger.info(`[HeadingFix] File: ${filePath}`);
+      logger.info(`[HeadingFix] Found ${headings.length} headings`);
+      if (headings.length > 0) {
+        const tagNames = headings.map(el => (el.name || '').toLowerCase());
+        logger.info(`[HeadingFix] Heading tags: ${tagNames.slice(0, 5).join(', ')}${tagNames.length > 5 ? '...' : ''}`);
+        logger.info(`[HeadingFix] Min level: ${Math.min(...tagNames.map(t => parseInt(t.charAt(1))))}`);
+      }
+      
       if (headings.length === 0) continue;
 
       // Helper to escape attribute values
@@ -997,18 +1006,24 @@ class EPUBModifierService {
         return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       };
 
-      // Find the minimum heading level in the document
-      const levels = headings.map(el => parseInt(el.tagName.charAt(1)));
-      const minLevel = Math.min(...levels);
+      // Find the first heading level in the document
+      const firstHeadingLevel = headings.length > 0 ? parseInt((headings[0].name || '').toLowerCase().charAt(1)) : 1;
 
-      // Case 1: Document doesn't start with h1 - shift all headings up
-      if (minLevel > 1) {
-        const shift = minLevel - 1;
+      // Case 1: Document doesn't start with h1
+      if (firstHeadingLevel > 1) {
+        const shift = firstHeadingLevel - 1;
+
+        // Find if there's an existing h1 somewhere in the document
+        const firstH1Index = headings.findIndex(el => (el.name || '').toLowerCase() === 'h1');
+
+        // Determine how many headings to shift
+        // If no h1 exists, shift all; otherwise only shift headings before the first h1
+        const shiftUntilIndex = firstH1Index === -1 ? headings.length : firstH1Index;
 
         // Process in reverse order to avoid conflicts
-        for (let i = headings.length - 1; i >= 0; i--) {
+        for (let i = shiftUntilIndex - 1; i >= 0; i--) {
           const el = headings[i];
-          const oldLevel = parseInt(el.tagName.charAt(1));
+          const oldLevel = parseInt((el.name || '').toLowerCase().charAt(1));
           const newLevel = Math.max(1, oldLevel - shift);
 
           if (oldLevel !== newLevel) {
@@ -1025,31 +1040,32 @@ class EPUBModifierService {
             modified = true;
           }
         }
-      } else {
-        // Case 2: Document starts with h1 but may have skipped levels (h1→h3)
-        // Normalize each heading to at most one level deeper than expected
-        let expectedMaxLevel = 1;
+      }
 
-        for (const el of headings) {
-          const oldLevel = parseInt(el.tagName.charAt(1));
+      // Case 2: Fix any skipped levels (h1→h3 becomes h1→h2)
+      // Re-read headings after Case 1 modifications
+      const updatedHeadings = $('h1, h2, h3, h4, h5, h6').toArray();
+      let expectedMaxLevel = 1;
 
-          if (oldLevel > expectedMaxLevel + 1) {
-            const newLevel = expectedMaxLevel + 1;
-            const $el = $(el);
-            const headingContent = $el.html();
-            const attrs = el.attribs || {};
-            const attrString = Object.entries(attrs)
-              .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
-              .join(' ');
+      for (const el of updatedHeadings) {
+        const oldLevel = parseInt((el.name || '').toLowerCase().charAt(1));
 
-            const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
-            $el.replaceWith($newHeading);
-            changes.push(`h${oldLevel} → h${newLevel}`);
-            modified = true;
-            expectedMaxLevel = newLevel;
-          } else {
-            expectedMaxLevel = Math.max(expectedMaxLevel, oldLevel);
-          }
+        if (oldLevel > expectedMaxLevel + 1) {
+          const newLevel = expectedMaxLevel + 1;
+          const $el = $(el);
+          const headingContent = $el.html();
+          const attrs = el.attribs || {};
+          const attrString = Object.entries(attrs)
+            .map(([k, v]) => `${k}="${escapeAttr(v)}"`)
+            .join(' ');
+
+          const $newHeading = $(`<h${newLevel}${attrString ? ' ' + attrString : ''}>${headingContent}</h${newLevel}>`);
+          $el.replaceWith($newHeading);
+          changes.push(`h${oldLevel} → h${newLevel}`);
+          modified = true;
+          expectedMaxLevel = newLevel;
+        } else {
+          expectedMaxLevel = Math.max(expectedMaxLevel, oldLevel);
         }
       }
 
