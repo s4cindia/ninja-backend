@@ -372,12 +372,13 @@ class EpubAuditService {
         });
         const fileId = (job?.input as Record<string, unknown>)?.fileId as string | undefined;
         
+        const serializedResult = JSON.stringify(result);
         await artifactService.saveArtifact({
           jobId,
           fileId,
           type: 'audit_result',
-          data: result as unknown as Record<string, unknown>,
-          size: JSON.stringify(result).length,
+          data: JSON.parse(serializedResult),
+          size: serializedResult.length,
         });
         logger.info(`Saved audit artifact for job ${jobId}`);
       } catch (artifactError) {
