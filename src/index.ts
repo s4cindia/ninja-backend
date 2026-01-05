@@ -26,11 +26,12 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    // Also allow Replit development domains and localhost
+    // Also allow Replit development domains, localhost, and CloudFront
     const allowedPatterns = [
-      /\.replit\.dev$/,
-      /\.replit\.app$/,
-      /\.repl\.co$/,
+      /\.replit\.dev\/?$/,
+      /\.replit\.app\/?$/,
+      /\.repl\.co\/?$/,
+      /\.cloudfront\.net\/?$/,
       /^https?:\/\/localhost(:\d+)?$/,
       /^https?:\/\/127\.0\.0\.1(:\d+)?$/
     ];
