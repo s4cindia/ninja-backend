@@ -10,6 +10,7 @@ import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 import { getFixType } from '../../constants/fix-classification';
 import { s3Service } from '../s3.service';
+import { artifactService } from '../artifact.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -362,6 +363,27 @@ class EpubAuditService {
       };
 
       await this.storeResult(result);
+
+      // Save audit result as artifact
+      try {
+        const job = await prisma.job.findUnique({
+          where: { id: jobId },
+          select: { input: true }
+        });
+        const fileId = (job?.input as Record<string, unknown>)?.fileId as string | undefined;
+        
+        const serializedResult = JSON.stringify(result);
+        await artifactService.saveArtifact({
+          jobId,
+          fileId,
+          type: 'audit_result',
+          data: JSON.parse(serializedResult),
+          size: serializedResult.length,
+        });
+        logger.info(`Saved audit artifact for job ${jobId}`);
+      } catch (artifactError) {
+        logger.warn(`Failed to save audit artifact: ${artifactError instanceof Error ? artifactError.message : 'Unknown'}`);
+      }
 
       return result;
     } finally {

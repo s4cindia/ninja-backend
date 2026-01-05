@@ -106,6 +106,14 @@ class FileService {
     return this.getFileById(id, tenantId);
   }
 
+  async updateLatestJobId(fileId: string, tenantId: string, jobId: string) {
+    const file = await this.getFileById(fileId, tenantId);
+    return prisma.file.update({
+      where: { id: file.id },
+      data: { latestJobId: jobId },
+    });
+  }
+
   async updateFileMetadata(
     id: string,
     tenantId: string,

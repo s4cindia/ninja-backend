@@ -202,6 +202,7 @@ model File {
   storageType  StorageType @default(LOCAL)
   storagePath  String?
   metadata     Json?
+  latestJobId  String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
