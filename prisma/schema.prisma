@@ -101,6 +101,7 @@ model Job {
   updatedAt   DateTime  @updatedAt
 
   validationResults ValidationResult[]
+  artifacts         Artifact[]
 
   @@index([tenantId])
   @@index([status])
@@ -205,6 +206,8 @@ model File {
   updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
 
+  artifacts    Artifact[]
+
   @@index([tenantId])
   @@index([status])
 }
@@ -306,4 +309,23 @@ model Feedback {
   @@index([type])
   @@index([status])
   @@index([createdAt])
+}
+
+model Artifact {
+  id        String   @id @default(cuid())
+  jobId     String
+  fileId    String?
+  type      String
+  name      String?
+  data      Json
+  size      Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  file      File?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@index([fileId])
+  @@index([jobId, type])
 }
