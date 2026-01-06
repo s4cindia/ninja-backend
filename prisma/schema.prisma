@@ -293,7 +293,7 @@ model Feedback {
   id          String         @id @default(uuid())
   tenantId    String
   userId      String?
-  user        User?          @relation(fields: [userId], references: [id])
+  user        User?          @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   userEmail   String?
   type        FeedbackType
   rating      Int?
