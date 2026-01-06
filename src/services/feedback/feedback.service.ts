@@ -151,6 +151,15 @@ class FeedbackService {
     const [items, total] = await Promise.all([
       prisma.feedback.findMany({
         where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
