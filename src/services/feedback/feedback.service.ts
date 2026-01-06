@@ -2,6 +2,15 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { FeedbackType, FeedbackStatus, Feedback as PrismaFeedback } from '@prisma/client';
 
+type FeedbackWithUser = PrismaFeedback & {
+  user: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+  } | null;
+};
+
 interface FeedbackContext {
   jobId?: string;
   imageId?: string;
@@ -103,9 +112,19 @@ class FeedbackService {
     return feedback;
   }
 
-  async getFeedback(id: string, tenantId?: string): Promise<PrismaFeedback | null> {
+  async getFeedback(id: string, tenantId?: string): Promise<FeedbackWithUser | null> {
     const feedback = await prisma.feedback.findUnique({
       where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        },
+      },
     });
     
     if (feedback && tenantId && feedback.tenantId !== tenantId) {
@@ -119,7 +138,7 @@ class FeedbackService {
     filters: FeedbackFilters = {},
     page: number = 1,
     limit: number = 20
-  ): Promise<PaginatedResult<PrismaFeedback>> {
+  ): Promise<PaginatedResult<FeedbackWithUser>> {
     page = Math.max(1, Math.floor(page));
     limit = Math.max(1, Math.min(Math.floor(limit), 100));
 
@@ -151,6 +170,16 @@ class FeedbackService {
     const [items, total] = await Promise.all([
       prisma.feedback.findMany({
         where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
