@@ -100,7 +100,7 @@ export const getDashboardStats = async (req: AuthenticatedRequest, res: Response
 
 interface ActivityItem {
   id: string;
-  type: 'upload' | 'validation' | 'compliance' | 'remediation' | 'processing' | 'error';
+  type: 'upload' | 'validation' | 'compliance' | 'remediation' | 'processing' | 'error' | 'alt-text' | 'metadata' | 'batch';
   description: string;
   timestamp: string;
   fileName?: string;
@@ -123,7 +123,9 @@ function formatJobType(type: string): string {
 
 function mapJobTypeToActivityType(type: string, status: string): ActivityItem['type'] {
   if (status === 'FAILED') return 'error';
-  if (type === 'BATCH_VALIDATION') return 'remediation';
+  if (type === 'ALT_TEXT_GENERATION') return 'alt-text';
+  if (type === 'METADATA_EXTRACTION') return 'metadata';
+  if (type === 'BATCH_VALIDATION') return 'batch';
   if (type.includes('ACCESSIBILITY')) return 'validation';
   if (type === 'VPAT_GENERATION' || type === 'ACR_WORKFLOW') return 'compliance';
   return 'processing';
