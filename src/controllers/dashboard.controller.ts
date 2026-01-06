@@ -4,6 +4,22 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { FileStatus, JobStatus, Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
 
+/**
+ * Extract file name from job input/output
+ */
+function extractFileName(job: { input: any; output: any }): string {
+  if (job.output && typeof job.output === 'object') {
+    if (job.output.fileName) return job.output.fileName;
+    if (job.output.originalName) return job.output.originalName;
+  }
+  if (job.input && typeof job.input === 'object') {
+    if (job.input.originalName) return job.input.originalName;
+    if (job.input.fileName) return job.input.fileName;
+    if (job.input.filename) return job.input.filename;
+  }
+  return 'Unknown file';
+}
+
 export const getDashboardStats = async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user?.tenantId;
 
@@ -141,17 +157,8 @@ export const getDashboardActivity = async (req: AuthenticatedRequest, res: Respo
     });
 
     const activities: ActivityItem[] = recentJobs.map(job => {
-      const input = job.input as Record<string, unknown> || {};
       const output = job.output as Record<string, unknown> || {};
-
-      let fileName = 'Unknown file';
-      if (input.fileName) {
-        fileName = String(input.fileName);
-      } else if (input.originalName) {
-        fileName = String(input.originalName);
-      } else if (output.jobs && Array.isArray(output.jobs) && output.jobs[0]?.fileName) {
-        fileName = String(output.jobs[0].fileName);
-      }
+      const fileName = extractFileName(job);
 
       const typeLabel = formatJobType(job.type);
       const statusLabel = job.status.toLowerCase();
