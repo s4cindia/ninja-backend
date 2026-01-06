@@ -56,7 +56,7 @@ jobs:
 
           # Update image in task definition and remove incompatible fields
           jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" '
-            .containerDefinitions[0].image = $IMAGE |
+            .containerDefinitions |= map(if .name == "ninja-backend" then .image = $IMAGE else . end) |
             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
           ' migration-task-def.json > migration-task-def-updated.json
 
