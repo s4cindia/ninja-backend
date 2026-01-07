@@ -100,33 +100,20 @@ export class FeedbackAttachmentService {
   }
 
   private async deleteFromStorage(filename: string): Promise<void> {
-    let s3Deleted = false;
-    let localDeleted = false;
-
     try {
       await this.s3.send(new DeleteObjectCommand({
         Bucket: this.bucketName,
         Key: filename,
       }));
-      s3Deleted = true;
       logger.info(`Deleted from S3: ${filename}`);
     } catch (s3Error) {
-      logger.warn(`S3 delete failed for ${filename}: ${(s3Error as Error).message}`);
-    }
-
-    const localPath = path.join(LOCAL_STORAGE_PATH, filename);
-    try {
-      await fs.unlink(localPath);
-      localDeleted = true;
-      logger.info(`Deleted from local storage: ${localPath}`);
-    } catch (localError) {
-      if ((localError as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn(`Local delete failed for ${filename}: ${(localError as Error).message}`);
+      const localPath = path.join(LOCAL_STORAGE_PATH, filename);
+      try {
+        await fs.unlink(localPath);
+        logger.info(`Deleted from local storage: ${localPath}`);
+      } catch (localError) {
+        logger.warn(`Could not delete file from storage: ${filename}`);
       }
-    }
-
-    if (!s3Deleted && !localDeleted) {
-      logger.warn(`File not found in any storage location: ${filename}`);
     }
   }
 
