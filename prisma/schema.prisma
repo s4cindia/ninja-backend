@@ -34,8 +34,9 @@ model User {
   updatedAt   DateTime @updatedAt
   deletedAt   DateTime?
 
-  jobs        Job[]
-  feedbacks   Feedback[]
+  jobs                 Job[]
+  feedbacks            Feedback[]
+  feedbackAttachments  FeedbackAttachment[] @relation("AttachmentUploader")
 
   @@index([tenantId])
   @@index([email])
@@ -307,11 +308,28 @@ model Feedback {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
+  attachments FeedbackAttachment[]
+
   @@index([tenantId])
   @@index([userId])
   @@index([type])
   @@index([status])
   @@index([createdAt])
+}
+
+model FeedbackAttachment {
+  id           String   @id @default(uuid())
+  feedbackId   String
+  feedback     Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  uploadedById String?
+  uploadedBy   User?    @relation("AttachmentUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([feedbackId])
 }
 
 model Artifact {
