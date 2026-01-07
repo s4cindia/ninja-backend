@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { FeedbackAttachmentService } from '../services/feedback/attachment.service';
+import { logger } from '../lib/logger';
 
 interface MulterFile {
   fieldname: string;
@@ -19,10 +20,13 @@ export class FeedbackAttachmentController {
       const userId = req.user?.id;
       const files = req.files as MulterFile[];
 
+      logger.info(`Attachment upload request - feedbackId: ${feedbackId}, files count: ${files?.length || 0}, content-type: ${req.headers['content-type']}`);
+
       if (!files || files.length === 0) {
+        logger.warn(`No files in upload request. req.file: ${JSON.stringify(req.file)}, body keys: ${Object.keys(req.body || {}).join(', ')}`);
         return res.status(400).json({
           success: false,
-          error: { code: 'NO_FILES', message: 'No files provided' },
+          error: { code: 'NO_FILES', message: 'No files provided. Send files with field name "files"' },
         });
       }
 
