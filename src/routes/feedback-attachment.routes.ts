@@ -21,9 +21,10 @@ router.get('/attachments/:id/download', authenticate, controller.download);
 router.get('/attachments/:id/file', authenticate, controller.serveLocalFile);
 router.delete('/attachments/:id', authenticate, controller.delete);
 
-router.post('/:feedbackId/attachments', authenticate, upload.array('files', 5), controller.upload);
-router.get('/:feedbackId/attachments', authenticate, controller.list);
 router.post('/:feedbackId/attachments/presign', authenticate, controller.getPresignedUrl);
 router.post('/:feedbackId/attachments/confirm', authenticate, controller.confirmUpload);
+
+router.post('/:feedbackId/attachments', authenticate, upload.array('files', 5), controller.upload);
+router.get('/:feedbackId/attachments', authenticate, controller.list);
 
 export default router;
