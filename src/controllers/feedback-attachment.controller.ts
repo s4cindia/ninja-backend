@@ -119,7 +119,7 @@ export class FeedbackAttachmentController {
       if (!filename || !contentType || !size) {
         return res.status(400).json({
           success: false,
-          error: { code: 'MISSING_FIELDS', message: 'filename, contentType, and size are required' },
+          error: 'Missing required fields: filename, contentType, size',
         });
       }
 
@@ -146,7 +146,7 @@ export class FeedbackAttachmentController {
       if (!s3Key || !originalName || !mimeType || !size) {
         return res.status(400).json({
           success: false,
-          error: { code: 'MISSING_FIELDS', message: 's3Key, originalName, mimeType, and size are required' },
+          error: 'Missing required fields: s3Key, originalName, mimeType, size',
         });
       }
 
