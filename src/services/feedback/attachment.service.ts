@@ -216,6 +216,20 @@ export class FeedbackAttachmentService {
 
     const safeFilename = sanitizeFilename(attachment.originalName).replace(/"/g, '\\"');
 
+    const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
+    
+    try {
+      await fs.access(localPath);
+      logger.info(`Serving local file: ${localPath}`);
+      return {
+        url: `/api/v1/feedback/attachments/${attachmentId}/file`,
+        attachment,
+        isLocal: true
+      };
+    } catch {
+      logger.info(`Local file not found, trying S3: ${attachment.filename}`);
+    }
+
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
@@ -225,17 +239,8 @@ export class FeedbackAttachmentService {
       const url = await getSignedUrl(this.s3, command, { expiresIn: 3600 });
       return { url, attachment };
     } catch (s3Error) {
-      const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
-      try {
-        await fs.access(localPath);
-        return {
-          url: `/api/v1/feedback/attachments/${attachmentId}/file`,
-          attachment,
-          isLocal: true
-        };
-      } catch {
-        throw new Error('File not found in storage');
-      }
+      logger.error(`File not found in any storage: ${attachment.filename}`);
+      throw new Error('File not found in storage. The file may have been uploaded before storage was configured.');
     }
   }
 
