@@ -2,11 +2,41 @@ import { PrismaClient } from '@prisma/client';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuid } from 'uuid';
-import { logger } from '../../lib/logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { logger } from '../../lib/logger';
 
-const LOCAL_STORAGE_PATH = '/tmp/feedback-attachments';
+const ALLOWED_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'application/epub+zip',
+  'application/octet-stream',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/markdown',
+  'text/plain',
+];
+
+const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'epub', 'docx', 'md', 'txt'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const LOCAL_STORAGE_PATH = process.env.LOCAL_STORAGE_PATH || '/tmp/feedback-attachments';
+
+function sanitizeFilename(filename: string): string {
+  const sanitized = filename
+    .replace(/[/\\]/g, '_')
+    .replace(/\0/g, '')
+    .replace(/[^\w\s.-]/g, '_');
+  return sanitized || 'unnamed';
+}
+
+function getSafeExtension(filename: string): string {
+  const parts = filename.split('.');
+  if (parts.length < 2) return 'bin';
+  const ext = parts.pop()?.toLowerCase() || 'bin';
+  return ALLOWED_EXTENSIONS.includes(ext) ? ext : 'bin';
+}
 
 interface MulterFile {
   fieldname: string;
@@ -17,20 +47,6 @@ interface MulterFile {
   buffer: Buffer;
 }
 
-const ALLOWED_MIME_TYPES = [
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'application/pdf',
-  'application/epub+zip',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/markdown',
-  'text/plain',
-];
-
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
 export class FeedbackAttachmentService {
   constructor(
     private prisma: PrismaClient,
@@ -38,16 +54,72 @@ export class FeedbackAttachmentService {
     private bucketName: string
   ) {}
 
-  async upload(
-    feedbackId: string,
-    file: MulterFile,
-    userId?: string
-  ) {
+  private async canAccessFeedback(feedbackId: string, userId?: string): Promise<boolean> {
     const feedback = await this.prisma.feedback.findUnique({
       where: { id: feedbackId },
+      select: { userId: true, tenantId: true },
     });
-    if (!feedback) {
-      throw new Error('Feedback not found');
+
+    if (!feedback) return false;
+
+    if (feedback.userId === userId) return true;
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { tenantId: true, role: true },
+      });
+      if (user?.tenantId === feedback.tenantId) return true;
+    }
+
+    return false;
+  }
+
+  private async canDeleteAttachment(attachmentId: string, userId: string): Promise<{ allowed: boolean; attachment?: any }> {
+    const attachment = await this.prisma.feedbackAttachment.findUnique({
+      where: { id: attachmentId },
+      include: { feedback: { select: { userId: true, tenantId: true } } },
+    });
+
+    if (!attachment) return { allowed: false };
+
+    if (attachment.uploadedById === userId) return { allowed: true, attachment };
+
+    if (attachment.feedback.userId === userId) return { allowed: true, attachment };
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { tenantId: true, role: true },
+    });
+    if (user?.role === 'ADMIN' && user.tenantId === attachment.feedback.tenantId) {
+      return { allowed: true, attachment };
+    }
+
+    return { allowed: false };
+  }
+
+  private async deleteFromStorage(filename: string): Promise<void> {
+    try {
+      await this.s3.send(new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: filename,
+      }));
+      logger.info(`Deleted from S3: ${filename}`);
+    } catch (s3Error) {
+      const localPath = path.join(LOCAL_STORAGE_PATH, filename);
+      try {
+        await fs.unlink(localPath);
+        logger.info(`Deleted from local storage: ${localPath}`);
+      } catch (localError) {
+        logger.warn(`Could not delete file from storage: ${filename}`);
+      }
+    }
+  }
+
+  async upload(feedbackId: string, file: MulterFile, userId?: string) {
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to add attachments to this feedback');
     }
 
     if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
@@ -55,11 +127,12 @@ export class FeedbackAttachmentService {
     }
 
     if (file.size > MAX_FILE_SIZE) {
-      throw new Error(`File too large. Maximum size is 10MB`);
+      throw new Error('File too large. Maximum size is 10MB');
     }
 
-    const ext = file.originalname.split('.').pop();
+    const ext = getSafeExtension(file.originalname);
     const filename = `feedback-attachments/${feedbackId}/${uuid()}.${ext}`;
+    const sanitizedOriginalName = sanitizeFilename(file.originalname);
 
     logger.info(`Uploading file: key=${filename}, size=${file.size}`);
 
@@ -73,7 +146,7 @@ export class FeedbackAttachmentService {
       logger.info(`S3 upload successful: ${filename}`);
     } catch (s3Error) {
       const errorMessage = (s3Error as Error).message;
-      if (errorMessage.includes('credentials') || errorMessage.includes('Could not load')) {
+      if (errorMessage.includes('credentials') || errorMessage.includes('Could not load') || errorMessage.includes('config')) {
         logger.warn(`S3 not available, falling back to local storage: ${errorMessage}`);
         const localPath = path.join(LOCAL_STORAGE_PATH, filename);
         await fs.mkdir(path.dirname(localPath), { recursive: true });
@@ -85,26 +158,36 @@ export class FeedbackAttachmentService {
       }
     }
 
-    const attachment = await this.prisma.feedbackAttachment.create({
-      data: {
-        feedbackId,
-        filename,
-        originalName: file.originalname,
-        mimeType: file.mimetype,
-        size: file.size,
-        uploadedById: userId,
-      },
-      include: {
-        uploadedBy: {
-          select: { id: true, email: true, firstName: true, lastName: true },
+    try {
+      const attachment = await this.prisma.feedbackAttachment.create({
+        data: {
+          feedbackId,
+          filename,
+          originalName: sanitizedOriginalName,
+          mimeType: file.mimetype,
+          size: file.size,
+          uploadedById: userId,
         },
-      },
-    });
-
-    return attachment;
+        include: {
+          uploadedBy: {
+            select: { id: true, email: true, firstName: true, lastName: true },
+          },
+        },
+      });
+      return attachment;
+    } catch (dbError) {
+      logger.error(`Database insert failed, cleaning up uploaded file: ${filename}`);
+      await this.deleteFromStorage(filename);
+      throw dbError;
+    }
   }
 
-  async list(feedbackId: string) {
+  async list(feedbackId: string, userId?: string) {
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to view attachments for this feedback');
+    }
+
     return this.prisma.feedbackAttachment.findMany({
       where: { feedbackId },
       include: {
@@ -116,19 +199,28 @@ export class FeedbackAttachmentService {
     });
   }
 
-  async getDownloadUrl(attachmentId: string) {
+  async getDownloadUrl(attachmentId: string, userId?: string) {
     const attachment = await this.prisma.feedbackAttachment.findUnique({
       where: { id: attachmentId },
+      include: { feedback: { select: { userId: true, tenantId: true } } },
     });
+
     if (!attachment) {
       throw new Error('Attachment not found');
     }
+
+    const canAccess = await this.canAccessFeedback(attachment.feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to download this attachment');
+    }
+
+    const safeFilename = sanitizeFilename(attachment.originalName).replace(/"/g, '\\"');
 
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
         Key: attachment.filename,
-        ResponseContentDisposition: `attachment; filename="${attachment.originalName}"`,
+        ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
       });
       const url = await getSignedUrl(this.s3, command, { expiresIn: 3600 });
       return { url, attachment };
@@ -136,56 +228,49 @@ export class FeedbackAttachmentService {
       const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
       try {
         await fs.access(localPath);
-        return { url: `/api/v1/feedback/attachments/${attachmentId}/file`, attachment, isLocal: true };
+        return {
+          url: `/api/v1/feedback/attachments/${attachmentId}/file`,
+          attachment,
+          isLocal: true
+        };
       } catch {
         throw new Error('File not found in storage');
       }
     }
   }
 
-  async delete(attachmentId: string, userId: string) {
+  async getLocalFile(attachmentId: string, userId?: string) {
     const attachment = await this.prisma.feedbackAttachment.findUnique({
       where: { id: attachmentId },
     });
+
     if (!attachment) {
       throw new Error('Attachment not found');
     }
 
-    if (attachment.uploadedById !== userId) {
+    const canAccess = await this.canAccessFeedback(attachment.feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to download this attachment');
+    }
+
+    const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
+    const fileBuffer = await fs.readFile(localPath);
+    return { buffer: fileBuffer, attachment };
+  }
+
+  async delete(attachmentId: string, userId: string) {
+    const { allowed, attachment } = await this.canDeleteAttachment(attachmentId, userId);
+
+    if (!allowed || !attachment) {
       throw new Error('Not authorized to delete this attachment');
     }
 
-    try {
-      await this.s3.send(new DeleteObjectCommand({
-        Bucket: this.bucketName,
-        Key: attachment.filename,
-      }));
-    } catch (s3Error) {
-      const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
-      try {
-        await fs.unlink(localPath);
-      } catch {
-        logger.warn(`File not found in storage: ${attachment.filename}`);
-      }
-    }
+    await this.deleteFromStorage(attachment.filename);
 
     await this.prisma.feedbackAttachment.delete({
       where: { id: attachmentId },
     });
 
     return { success: true };
-  }
-
-  async getLocalFile(attachmentId: string): Promise<{ buffer: Buffer; attachment: { originalName: string; mimeType: string } }> {
-    const attachment = await this.prisma.feedbackAttachment.findUnique({
-      where: { id: attachmentId },
-    });
-    if (!attachment) {
-      throw new Error('Attachment not found');
-    }
-
-    const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
-    const buffer = await fs.readFile(localPath);
-    return { buffer, attachment: { originalName: attachment.originalName, mimeType: attachment.mimeType } };
   }
 }

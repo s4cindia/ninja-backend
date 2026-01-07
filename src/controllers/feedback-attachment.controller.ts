@@ -2,14 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { FeedbackAttachmentService } from '../services/feedback/attachment.service';
 import { logger } from '../lib/logger';
 
-interface MulterFile {
-  fieldname: string;
-  originalname: string;
-  encoding: string;
-  mimetype: string;
-  size: number;
-  buffer: Buffer;
-}
+type MulterFile = Express.Multer.File;
 
 export class FeedbackAttachmentController {
   constructor(private service: FeedbackAttachmentService) {}
@@ -20,19 +13,33 @@ export class FeedbackAttachmentController {
       const userId = req.user?.id;
       const files = req.files as MulterFile[];
 
-      logger.info(`Attachment upload request - feedbackId: ${feedbackId}, files count: ${files?.length || 0}, content-type: ${req.headers['content-type']}`);
+      logger.info(`Attachment upload request - feedbackId: ${feedbackId}, userId: ${userId}, files: ${files?.length || 0}`);
 
       if (!files || files.length === 0) {
-        logger.warn(`No files in upload request. req.file: ${JSON.stringify(req.file)}, body keys: ${Object.keys(req.body || {}).join(', ')}`);
         return res.status(400).json({
           success: false,
-          error: { code: 'NO_FILES', message: 'No files provided. Send files with field name "files"' },
+          error: { code: 'NO_FILES', message: 'No files provided' },
         });
       }
 
-      const attachments = await Promise.all(
-        files.map(file => this.service.upload(feedbackId, file, userId))
-      );
+      const attachments = [];
+
+      try {
+        for (const file of files) {
+          const attachment = await this.service.upload(feedbackId, file, userId);
+          attachments.push(attachment);
+        }
+      } catch (uploadError) {
+        logger.warn(`Partial upload failure after ${attachments.length} files: ${(uploadError as Error).message}`);
+        if (attachments.length === 0) {
+          throw uploadError;
+        }
+        return res.status(207).json({
+          success: true,
+          data: attachments,
+          warning: `Only ${attachments.length} of ${files.length} files uploaded successfully`
+        });
+      }
 
       res.status(201).json({ success: true, data: attachments });
     } catch (error) {
@@ -43,7 +50,9 @@ export class FeedbackAttachmentController {
   list = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { feedbackId } = req.params;
-      const attachments = await this.service.list(feedbackId);
+      const userId = req.user?.id;
+
+      const attachments = await this.service.list(feedbackId, userId);
       res.json({ success: true, data: attachments });
     } catch (error) {
       next(error);
@@ -53,8 +62,30 @@ export class FeedbackAttachmentController {
   download = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const result = await this.service.getDownloadUrl(id);
+      const userId = req.user?.id;
+
+      const result = await this.service.getDownloadUrl(id, userId);
       res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  serveLocalFile = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const userId = req.user?.id;
+
+      const { buffer, attachment } = await this.service.getLocalFile(id, userId);
+
+      const safeFilename = attachment.originalName
+        .replace(/[^\w\s.-]/g, '_')
+        .replace(/"/g, '\\"');
+
+      res.setHeader('Content-Type', attachment.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
     } catch (error) {
       next(error);
     }
@@ -74,18 +105,6 @@ export class FeedbackAttachmentController {
 
       await this.service.delete(id, userId);
       res.json({ success: true, data: { deleted: true } });
-    } catch (error) {
-      next(error);
-    }
-  };
-
-  serveLocalFile = async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { id } = req.params;
-      const { buffer, attachment } = await this.service.getLocalFile(id);
-      res.setHeader('Content-Type', attachment.mimeType);
-      res.setHeader('Content-Disposition', `attachment; filename="${attachment.originalName}"`);
-      res.send(buffer);
     } catch (error) {
       next(error);
     }
