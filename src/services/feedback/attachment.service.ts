@@ -310,6 +310,11 @@ export class FeedbackAttachmentService {
       throw new Error('Feedback not found');
     }
 
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to upload attachments to this feedback');
+    }
+
     if (size > MAX_FILE_SIZE) {
       throw new Error(`File size exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit`);
     }
@@ -358,6 +363,16 @@ export class FeedbackAttachmentService {
     });
     if (!feedback) {
       throw new Error('Feedback not found');
+    }
+
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to confirm uploads for this feedback');
+    }
+
+    const expectedPrefix = `feedback-attachments/${feedbackId}/`;
+    if (!s3Key.startsWith(expectedPrefix)) {
+      throw new Error('Invalid S3 key for this feedback');
     }
 
     const headCommand = new HeadObjectCommand({
