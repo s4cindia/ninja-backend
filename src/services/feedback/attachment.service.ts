@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuid } from 'uuid';
+import { logger } from '../../lib/logger';
 
 interface MulterFile {
   fieldname: string;
@@ -56,12 +57,20 @@ export class FeedbackAttachmentService {
     const ext = file.originalname.split('.').pop();
     const filename = `feedback-attachments/${feedbackId}/${uuid()}.${ext}`;
 
-    await this.s3.send(new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: filename,
-      Body: file.buffer,
-      ContentType: file.mimetype,
-    }));
+    logger.info(`Uploading to S3: bucket=${this.bucketName}, key=${filename}, size=${file.size}`);
+
+    try {
+      await this.s3.send(new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: filename,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      }));
+      logger.info(`S3 upload successful: ${filename}`);
+    } catch (s3Error) {
+      logger.error(`S3 upload failed: ${(s3Error as Error).message}`);
+      throw new Error(`Failed to upload file to storage: ${(s3Error as Error).message}`);
+    }
 
     const attachment = await this.prisma.feedbackAttachment.create({
       data: {
