@@ -20,7 +20,7 @@ const ALLOWED_MIME_TYPES = [
 
 const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'epub', 'docx', 'md', 'txt'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const LOCAL_STORAGE_PATH = process.env.LOCAL_STORAGE_PATH || './data/feedback-attachments';
+const LOCAL_STORAGE_PATH = process.env.LOCAL_STORAGE_PATH || path.resolve(process.cwd(), 'data', 'feedback-attachments');
 
 function sanitizeFilename(filename: string): string {
   const sanitized = filename
