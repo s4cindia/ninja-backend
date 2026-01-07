@@ -236,6 +236,8 @@ export class FeedbackAttachmentService {
       const url = await getSignedUrl(this.s3, command, { expiresIn: 3600 });
       return { url, attachment };
     } catch (s3Error) {
+      const errorMsg = s3Error instanceof Error ? s3Error.message : String(s3Error);
+      logger.info(`S3 unavailable for attachment ${attachmentId} (${attachment.filename}), falling back to local storage: ${errorMsg}`);
       return {
         url: `/api/v1/feedback/attachments/${attachmentId}/file`,
         attachment,
@@ -287,7 +289,8 @@ export class FeedbackAttachmentService {
     try {
       await this.deleteFromStorage(filename);
     } catch (storageError) {
-      logger.warn(`Failed to delete file from storage after DB deletion: ${filename}`);
+      const errorMsg = storageError instanceof Error ? storageError.message : String(storageError);
+      logger.warn(`Failed to delete file from storage after DB deletion: ${filename} - ${errorMsg}`);
     }
 
     return { success: true };
