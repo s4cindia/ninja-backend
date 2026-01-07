@@ -9,6 +9,22 @@ type FeedbackWithUser = PrismaFeedback & {
     lastName: string;
     email: string;
   } | null;
+  attachments?: Array<{
+    id: string;
+    feedbackId: string;
+    filename: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+    uploadedById: string | null;
+    createdAt: Date;
+    uploadedBy: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      email: string;
+    } | null;
+  }>;
 };
 
 interface FeedbackContext {
@@ -124,6 +140,19 @@ class FeedbackService {
             email: true,
           },
         },
+        attachments: {
+          include: {
+            uploadedBy: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        },
       },
     });
     
@@ -178,6 +207,19 @@ class FeedbackService {
               lastName: true,
               email: true,
             },
+          },
+          attachments: {
+            include: {
+              uploadedBy: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
           },
         },
         orderBy: { createdAt: 'desc' },

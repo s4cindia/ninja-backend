@@ -3,7 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 
-const s3Client = new S3Client({
+export const s3Client = new S3Client({
   region: config.s3Region,
   ...(config.awsAccessKeyId && config.awsSecretAccessKey ? {
     credentials: {
