@@ -13,7 +13,6 @@ const ALLOWED_MIME_TYPES = [
   'image/webp',
   'application/pdf',
   'application/epub+zip',
-  'application/octet-stream',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'text/markdown',
   'text/plain',
@@ -21,7 +20,7 @@ const ALLOWED_MIME_TYPES = [
 
 const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'epub', 'docx', 'md', 'txt'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const LOCAL_STORAGE_PATH = process.env.LOCAL_STORAGE_PATH || '/tmp/feedback-attachments';
+const LOCAL_STORAGE_PATH = process.env.LOCAL_STORAGE_PATH || './data/feedback-attachments';
 
 function sanitizeFilename(filename: string): string {
   const sanitized = filename
@@ -69,7 +68,9 @@ export class FeedbackAttachmentService {
         where: { id: userId },
         select: { tenantId: true, role: true },
       });
-      if (user?.tenantId === feedback.tenantId) return true;
+      if (user?.role === 'ADMIN' && user.tenantId === feedback.tenantId) {
+        return true;
+      }
     }
 
     return false;
@@ -145,16 +146,26 @@ export class FeedbackAttachmentService {
       }));
       logger.info(`S3 upload successful: ${filename}`);
     } catch (s3Error) {
-      const errorMessage = (s3Error as Error).message;
-      if (errorMessage.includes('credentials') || errorMessage.includes('Could not load') || errorMessage.includes('config')) {
-        logger.warn(`S3 not available, falling back to local storage: ${errorMessage}`);
+      const isConfigError =
+        s3Error instanceof Error && (
+          s3Error.name === 'CredentialsProviderError' ||
+          s3Error.name === 'InvalidAccessKeyId' ||
+          s3Error.name === 'SignatureDoesNotMatch' ||
+          s3Error.message.includes('credentials') ||
+          s3Error.message.includes('Could not load') ||
+          s3Error.message.includes('config') ||
+          s3Error.message.includes('region')
+        );
+
+      if (isConfigError) {
+        logger.warn(`S3 not configured, falling back to local storage: ${(s3Error as Error).name}`);
         const localPath = path.join(LOCAL_STORAGE_PATH, filename);
         await fs.mkdir(path.dirname(localPath), { recursive: true });
         await fs.writeFile(localPath, file.buffer);
         logger.info(`Local storage upload successful: ${localPath}`);
       } else {
-        logger.error(`S3 upload failed: ${errorMessage}`);
-        throw new Error(`Failed to upload file to storage: ${errorMessage}`);
+        logger.error(`S3 upload failed: ${(s3Error as Error).message}`);
+        throw new Error(`Failed to upload file to storage: ${(s3Error as Error).message}`);
       }
     }
 

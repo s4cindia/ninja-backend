@@ -79,8 +79,8 @@ export class FeedbackAttachmentController {
       const { buffer, attachment } = await this.service.getLocalFile(id, userId);
 
       const safeFilename = attachment.originalName
-        .replace(/[^\w\s.-]/g, '_')
-        .replace(/"/g, '\\"');
+        .replace(/[\r\n]/g, '')
+        .replace(/[^\w\s.-]/g, '_');
 
       res.setHeader('Content-Type', attachment.mimeType);
       res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);

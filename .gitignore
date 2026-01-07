@@ -118,3 +118,4 @@ data/uploads/*
 
 # EPUBCheck JAR (downloaded separately)
 lib/epubcheck/
+data/
