@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuid } from 'uuid';
 import * as fs from 'fs/promises';
@@ -294,5 +294,122 @@ export class FeedbackAttachmentService {
     }
 
     return { success: true };
+  }
+
+  async getPresignedUploadUrl(
+    feedbackId: string,
+    filename: string,
+    contentType: string,
+    size: number,
+    userId?: string
+  ): Promise<{ presignedUrl: string | null; s3Key: string; useDirectUpload: boolean }> {
+    const feedback = await this.prisma.feedback.findUnique({
+      where: { id: feedbackId },
+    });
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to upload attachments to this feedback');
+    }
+
+    if (size > MAX_FILE_SIZE) {
+      throw new Error(`File size exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit`);
+    }
+
+    if (!ALLOWED_MIME_TYPES.includes(contentType)) {
+      throw new Error('File type not allowed');
+    }
+
+    if (!this.bucketName || this.bucketName === 'feedback-attachments-local') {
+      return {
+        presignedUrl: null,
+        s3Key: '',
+        useDirectUpload: true,
+      };
+    }
+
+    const timestamp = Date.now();
+    const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const s3Key = `feedback-attachments/${feedbackId}/${timestamp}-${sanitizedFilename}`;
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+      ContentType: contentType,
+    });
+
+    const presignedUrl = await getSignedUrl(this.s3, command, { expiresIn: 300 });
+
+    return {
+      presignedUrl,
+      s3Key,
+      useDirectUpload: false,
+    };
+  }
+
+  async confirmUpload(
+    feedbackId: string,
+    s3Key: string,
+    originalName: string,
+    mimeType: string,
+    clientReportedSize: number,
+    userId?: string
+  ) {
+    const feedback = await this.prisma.feedback.findUnique({
+      where: { id: feedbackId },
+    });
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    const canAccess = await this.canAccessFeedback(feedbackId, userId);
+    if (!canAccess) {
+      throw new Error('Not authorized to confirm uploads for this feedback');
+    }
+
+    const expectedPrefix = `feedback-attachments/${feedbackId}/`;
+    if (!s3Key.startsWith(expectedPrefix)) {
+      throw new Error('Invalid S3 key for this feedback');
+    }
+
+    const headCommand = new HeadObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+    });
+
+    let actualSize: number;
+    try {
+      const headResult = await this.s3.send(headCommand);
+      actualSize = headResult.ContentLength || clientReportedSize;
+      
+      if (actualSize > MAX_FILE_SIZE) {
+        throw new Error(`Uploaded file exceeds maximum allowed size of ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('exceeds maximum')) {
+        throw error;
+      }
+      throw new Error('File not found in S3. Upload may have failed.');
+    }
+
+    if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+      throw new Error('File type not allowed');
+    }
+
+    const attachment = await this.prisma.feedbackAttachment.create({
+      data: {
+        feedbackId,
+        filename: s3Key,
+        originalName,
+        mimeType,
+        size: actualSize,
+        uploadedById: userId || null,
+      },
+    });
+
+    return attachment;
   }
 }
