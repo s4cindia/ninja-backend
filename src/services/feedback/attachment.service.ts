@@ -227,20 +227,6 @@ export class FeedbackAttachmentService {
 
     const safeFilename = sanitizeFilename(attachment.originalName).replace(/"/g, '\\"');
 
-    const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
-    
-    try {
-      await fs.access(localPath);
-      logger.info(`Serving local file: ${localPath}`);
-      return {
-        url: `/api/v1/feedback/attachments/${attachmentId}/file`,
-        attachment,
-        isLocal: true
-      };
-    } catch {
-      logger.info(`Local file not found, trying S3: ${attachment.filename}`);
-    }
-
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
@@ -250,8 +236,13 @@ export class FeedbackAttachmentService {
       const url = await getSignedUrl(this.s3, command, { expiresIn: 3600 });
       return { url, attachment };
     } catch (s3Error) {
-      logger.error(`File not found in any storage: ${attachment.filename}`);
-      throw new Error('File not found in storage. The file may have been uploaded before storage was configured.');
+      const errorMsg = s3Error instanceof Error ? s3Error.message : String(s3Error);
+      logger.info(`S3 unavailable for attachment ${attachmentId} (${attachment.filename}), falling back to local storage: ${errorMsg}`);
+      return {
+        url: `/api/v1/feedback/attachments/${attachmentId}/file`,
+        attachment,
+        isLocal: true
+      };
     }
   }
 
@@ -270,8 +261,16 @@ export class FeedbackAttachmentService {
     }
 
     const localPath = path.join(LOCAL_STORAGE_PATH, attachment.filename);
-    const fileBuffer = await fs.readFile(localPath);
-    return { buffer: fileBuffer, attachment };
+    try {
+      const fileBuffer = await fs.readFile(localPath);
+      return { buffer: fileBuffer, attachment };
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code === 'ENOENT') {
+        logger.warn(`Local file not found: ${localPath}`);
+        throw new Error('File not available locally. It may exist in S3 storage.');
+      }
+      throw readError;
+    }
   }
 
   async delete(attachmentId: string, userId: string) {
@@ -281,11 +280,18 @@ export class FeedbackAttachmentService {
       throw new Error('Not authorized to delete this attachment');
     }
 
-    await this.deleteFromStorage(attachment.filename);
+    const filename = attachment.filename;
 
     await this.prisma.feedbackAttachment.delete({
       where: { id: attachmentId },
     });
+
+    try {
+      await this.deleteFromStorage(filename);
+    } catch (storageError) {
+      const errorMsg = storageError instanceof Error ? storageError.message : String(storageError);
+      logger.warn(`Failed to delete file from storage after DB deletion: ${filename} - ${errorMsg}`);
+    }
 
     return { success: true };
   }
