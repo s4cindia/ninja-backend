@@ -109,4 +109,59 @@ export class FeedbackAttachmentController {
       next(error);
     }
   };
+
+  getPresignedUrl = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { feedbackId } = req.params;
+      const { filename, contentType, size } = req.body;
+      const userId = req.user?.id;
+
+      if (!filename || !contentType || !size) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_FIELDS', message: 'filename, contentType, and size are required' },
+        });
+      }
+
+      const result = await this.service.getPresignedUploadUrl(
+        feedbackId,
+        filename,
+        contentType,
+        size,
+        userId
+      );
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  confirmUpload = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { feedbackId } = req.params;
+      const { s3Key, originalName, mimeType, size } = req.body;
+      const userId = req.user?.id;
+
+      if (!s3Key || !originalName || !mimeType || !size) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_FIELDS', message: 's3Key, originalName, mimeType, and size are required' },
+        });
+      }
+
+      const attachment = await this.service.confirmUpload(
+        feedbackId,
+        s3Key,
+        originalName,
+        mimeType,
+        size,
+        userId
+      );
+
+      res.status(201).json({ success: true, data: attachment });
+    } catch (error) {
+      next(error);
+    }
+  };
 }

@@ -1,0 +1,117 @@
+ Implement presigned S3 URL uploads for feedback attachments to bypass CloudFront/WAF.
+
+  ## Problem
+  CloudFront WAF blocks multipart/form-data uploads. Solution: upload directly to S3 using presigned URLs.
+
+  ## Changes Required
+
+  ### 1. Update `src/services/feedback/attachment.service.ts`
+
+  Add these imports:
+  ```typescript
+  import { PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+  import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+  Add these new methods to FeedbackAttachmentService class:
+
+  async getPresignedUploadUrl(
+    feedbackId: string,
+    filename: string,
+    contentType: string,
+    size: number,
+    userId?: string
+  ): Promise<{ presignedUrl: string | null; s3Key: string; useDirectUpload: boolean }> {
+    // Validate feedback exists
+    const feedback = await this.prisma.feedback.findUnique({
+      where: { id: feedbackId },
+    });
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    // Validate file size (10MB limit)
+    const maxSize = 10 * 1024 * 1024;
+    if (size > maxSize) {
+      throw new Error(`File size exceeds ${maxSize / 1024 / 1024}MB limit`);
+    }
+
+    // Validate content type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'text/plain'];
+    if (!allowedTypes.includes(contentType)) {
+      throw new Error('File type not allowed');
+    }
+
+    // If S3 not configured (local dev), signal direct upload
+    if (!this.bucketName || this.bucketName === 'feedback-attachments-local') {
+      return {
+        presignedUrl: null,
+        s3Key: '',
+        useDirectUpload: true,
+      };
+    }
+
+    // Generate S3 key
+    const timestamp = Date.now();
+    const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const s3Key = `feedback-attachments/${feedbackId}/${timestamp}-${sanitizedFilename}`;
+
+    // Generate presigned URL (5 min expiry)
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+      ContentType: contentType,
+    });
+
+    const presignedUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 300 });
+
+    return {
+      presignedUrl,
+      s3Key,
+      useDirectUpload: false,
+    };
+  }
+
+  async confirmUpload(
+    feedbackId: string,
+    s3Key: string,
+    originalName: string,
+    mimeType: string,
+    clientReportedSize: number,
+    userId?: string
+  ): Promise<FeedbackAttachment> {
+    // Validate feedback exists
+    const feedback = await this.prisma.feedback.findUnique({
+      where: { id: feedbackId },
+    });
+    if (!feedback) {
+      throw new Error('Feedback not found');
+    }
+
+    // Verify file exists in S3 and get actual size
+    const headCommand = new HeadObjectCommand({
+      Bucket: this.bucketName,
+      Key: s3Key,
+    });
+
+    let actualSize: number;
+    try {
+      const headResult = await this.s3Client.send(headCommand);
+      actualSize = headResult.ContentLength || clientReportedSize;
+    } catch (error) {
+      throw new Error('File not found in S3. Upload may have failed.');
+    }
+
+    // Create database record with actual size from S3
+    const attachment = await this.prisma.feedbackAttachment.create({
+      data: {
+        feedbackId,
+        filename: s3Key,
+        originalName,
+        mimeType,
+        size: actualSize,
+        uploadedById: userId || null,
+      },
+    });
+
+    return attachment;
+  }
