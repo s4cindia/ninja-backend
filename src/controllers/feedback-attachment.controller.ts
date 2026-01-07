@@ -78,4 +78,16 @@ export class FeedbackAttachmentController {
       next(error);
     }
   };
+
+  serveLocalFile = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { buffer, attachment } = await this.service.getLocalFile(id);
+      res.setHeader('Content-Type', attachment.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${attachment.originalName}"`);
+      res.send(buffer);
+    } catch (error) {
+      next(error);
+    }
+  };
 }

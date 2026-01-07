@@ -18,6 +18,7 @@ const controller = new FeedbackAttachmentController(service);
 const router = Router();
 
 router.get('/attachments/:id/download', authenticate, controller.download);
+router.get('/attachments/:id/file', authenticate, controller.serveLocalFile);
 router.delete('/attachments/:id', authenticate, controller.delete);
 
 router.post('/:feedbackId/attachments', authenticate, upload.array('files', 5), controller.upload);
