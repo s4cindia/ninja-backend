@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { FeedbackAttachmentController } from '../controllers/feedback-attachment.controller';
 import { FeedbackAttachmentService } from '../services/feedback/attachment.service';
-import { authenticate } from '../middleware/auth';
+import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { s3Client } from '../services/s3.service';
 import { config } from '../config';
