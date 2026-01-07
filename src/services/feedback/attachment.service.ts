@@ -384,8 +384,19 @@ export class FeedbackAttachmentService {
     try {
       const headResult = await this.s3.send(headCommand);
       actualSize = headResult.ContentLength || clientReportedSize;
+      
+      if (actualSize > MAX_FILE_SIZE) {
+        throw new Error(`Uploaded file exceeds maximum allowed size of ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+      }
     } catch (error) {
+      if (error instanceof Error && error.message.includes('exceeds maximum')) {
+        throw error;
+      }
       throw new Error('File not found in S3. Upload may have failed.');
+    }
+
+    if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+      throw new Error('File type not allowed');
     }
 
     const attachment = await this.prisma.feedbackAttachment.create({
