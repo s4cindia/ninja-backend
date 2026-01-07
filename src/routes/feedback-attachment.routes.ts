@@ -6,13 +6,19 @@ import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { s3Client } from '../services/s3.service';
 import { config } from '../config';
+import { logger } from '../lib/logger';
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-const service = new FeedbackAttachmentService(prisma, s3Client, config.s3Bucket);
+const bucketName = config.s3Bucket || 'feedback-attachments-local';
+if (!config.s3Bucket) {
+  logger.warn('S3_BUCKET not configured, using local storage fallback');
+}
+
+const service = new FeedbackAttachmentService(prisma, s3Client, bucketName);
 const controller = new FeedbackAttachmentController(service);
 
 const router = Router();
