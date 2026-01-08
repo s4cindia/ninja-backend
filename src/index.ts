@@ -94,7 +94,7 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   }
   
   sseService.initialize().catch(err => {
-    logger.error('Failed to initialize SSE service:', err);
+    logger.error('Failed to initialize SSE service', err as Error);
   });
   
   startWorkers();
