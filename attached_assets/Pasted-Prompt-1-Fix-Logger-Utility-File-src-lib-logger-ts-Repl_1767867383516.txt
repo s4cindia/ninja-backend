@@ -1,0 +1,484 @@
+Prompt 1: Fix Logger Utility
+File: src/lib/logger.ts
+
+Replace the console.info and console.debug calls with console.warn to comply with ESLint rules.
+
+In src/lib/logger.ts, update the logger object:
+
+1. In the debug method, replace:
+   console.debug(formatMessage('debug', message));
+
+   With:
+   console.warn(formatMessage('debug', message));
+
+2. In the info method, replace:
+   console.info(formatMessage('info', message));
+
+   With:
+   console.warn(formatMessage('info', message));
+
+This ensures all log levels use only console.warn or console.error as allowed by ESLint.
+Prompt 2: Fix Main Entry Point (src/index.ts)
+File: src/index.ts
+
+Replace all console.log statements with appropriate logger calls or console.warn/console.error.
+
+In src/index.ts:
+
+1. Import the logger utility at the top:
+   import { logger } from './lib/logger';
+
+2. Replace line 20:
+   console.log('CORS check - Origin:', origin, 'Allowed origins:', config.corsOrigins);
+
+   With:
+   // Debug CORS check - can be removed or kept as console.warn for debugging
+   // console.warn('CORS check - Origin:', origin, 'Allowed origins:', config.corsOrigins);
+
+   (Comment it out or remove it as it's debug logging)
+
+3. Replace line 25:
+   console.log('CORS - Origin allowed via config.corsOrigins');
+
+   With:
+   // console.warn('CORS - Origin allowed via config.corsOrigins');
+
+   (Comment it out as it's debug logging)
+
+4. Replace lines 84-87 (server startup logs):
+   console.log(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
+   console.log(`📍 Environment: ${config.nodeEnv}`);
+   console.log(`❤️  Health check: http://localhost:${config.port}/health`);
+   console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
+
+   With:
+   logger.info(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
+   logger.info(`📍 Environment: ${config.nodeEnv}`);
+   logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
+   logger.info(`📚 API Base: http://localhost:${config.port}/api/v1`);
+
+5. Replace line 90:
+   console.log('✅ Redis configured - BullMQ workers enabled');
+
+   With:
+   logger.info('✅ Redis configured - BullMQ workers enabled');
+
+6. Replace line 92:
+   console.log('⚠️  Redis not configured - running in sync mode');
+
+   With:
+   logger.warn('⚠️  Redis not configured - running in sync mode');
+
+7. Replace line 103:
+   console.log('Shutting down gracefully...');
+
+   With:
+   logger.info('Shutting down gracefully...');
+
+8. Replace line 106:
+   console.log('HTTP server closed');
+
+   With:
+   logger.info('HTTP server closed');
+
+9. Replace line 111:
+   console.log('Queues closed');
+
+   With:
+   logger.info('Queues closed');
+
+10. Replace line 114:
+    console.log('Redis connection closed');
+
+    With:
+    logger.info('Redis connection closed');
+Prompt 3: Fix Request Logger Middleware
+File: src/middleware/request-logger.middleware.ts
+
+Replace console.log with logger.info in the request logger middleware.
+
+In src/middleware/request-logger.middleware.ts:
+
+1. Import logger at the top if not already imported:
+   import { logger } from '../lib/logger';
+
+2. Find the console.log statement (around line 9) and replace:
+   console.log(`${method} ${url} - ${statusCode} ${responseTime}ms`);
+
+   With:
+   logger.info(`${method} ${url} - ${statusCode} ${responseTime}ms`);
+Prompt 4: Fix Upload Middleware
+File: src/middleware/upload.middleware.ts
+
+Replace console.log statements with logger.warn in the upload middleware.
+
+In src/middleware/upload.middleware.ts:
+
+1. Import logger at the top:
+   import { logger } from '../lib/logger';
+
+2. Find and replace all console.log statements:
+
+   Replace (around line 12):
+   console.log('No S3_BUCKET env var - using local uploads');
+
+   With:
+   logger.warn('No S3_BUCKET env var - using local uploads');
+
+   Replace (around line 19):
+   console.log(`Using S3 bucket: ${process.env.S3_BUCKET}`);
+
+   With:
+   logger.info(`Using S3 bucket: ${process.env.S3_BUCKET}`);
+
+   But since logger.info uses console.warn now, actually use:
+   logger.warn(`Using S3 bucket: ${process.env.S3_BUCKET}`);
+
+   Replace (around line 41):
+   console.log(`File ${file.originalname} uploaded successfully to S3: ${file.location}`);
+
+   With:
+   logger.warn(`File ${file.originalname} uploaded successfully to S3: ${file.location}`);
+Prompt 5: Fix Redis Library
+File: src/lib/redis.ts
+
+Replace console.log statements with logger calls in the Redis library.
+
+In src/lib/redis.ts:
+
+1. Import logger at the top:
+   import { logger } from './logger';
+
+2. Find and replace console.log statements:
+
+   Replace (around line 47):
+   console.log('Redis connection successful');
+
+   With:
+   logger.warn('Redis connection successful');
+
+   Replace (around line 55):
+   console.log('Redis connection closed');
+
+   With:
+   logger.warn('Redis connection closed');
+Prompt 6: Fix Queue Service
+File: src/services/queue.service.ts
+
+Replace console.log statements with logger calls in the queue service.
+
+In src/services/queue.service.ts:
+
+1. Import logger at the top if not already imported:
+   import { logger } from '../lib/logger';
+
+2. Find and replace console.log statements (around lines 92, 100):
+
+   Replace:
+   console.log(`Job ${job.id} completed successfully`);
+
+   With:
+   logger.warn(`Job ${job.id} completed successfully`);
+
+   Replace:
+   console.log(`Job ${job.id} failed:`, err);
+
+   With:
+   logger.error(`Job ${job.id} failed:`, err as Error);
+Prompt 7: Fix Queues Index
+File: src/queues/index.ts
+
+Replace console.log with logger call in the queues index file.
+
+In src/queues/index.ts:
+
+1. Import logger at the top:
+   import { logger } from '../lib/logger';
+
+2. Find and replace the console.log statement (around line 176):
+
+   Replace:
+   console.log('All queues closed successfully');
+
+   With:
+   logger.warn('All queues closed successfully');
+Prompt 8: Fix Files Routes
+File: src/routes/files.routes.ts
+
+Replace console.log with logger call in the files routes.
+
+In src/routes/files.routes.ts:
+
+1. Import logger at the top:
+   import { logger } from '../lib/logger';
+
+2. Find and replace the console.log statement (around line 15):
+
+   Replace:
+   console.log('Files routes initialized');
+
+   With:
+   logger.warn('Files routes initialized');
+
+   Or simply remove this line as it's debug logging.
+Prompt 9: Fix Workers Index
+File: src/workers/index.ts
+
+Replace console.log statements with logger calls in the workers index file.
+
+In src/workers/index.ts:
+
+1. Import logger at the top:
+   import { logger } from '../lib/logger';
+
+2. Find and replace all console.log statements:
+
+   Replace (around line 13):
+   console.log('Starting workers...');
+
+   With:
+   logger.warn('Starting workers...');
+
+   Replace (around line 45):
+   console.log('Worker started successfully');
+
+   With:
+   logger.warn('Worker started successfully');
+
+   Replace (around line 55):
+   console.log('Stopping workers...');
+
+   With:
+   logger.warn('Stopping workers...');
+
+   Replace (around line 57):
+   console.log('Workers stopped successfully');
+
+   With:
+   logger.warn('Workers stopped successfully');
+
+   Replace (around line 62):
+   console.log('All workers stopped');
+
+   With:
+   logger.warn('All workers stopped');
+
+   Replace (around line 65):
+   console.log('No workers to stop');
+
+   With:
+   logger.warn('No workers to stop');
+Prompt 10: Fix PDF Structure Validator Service
+File: src/services/accessibility/pdf-structure-validator.service.ts
+
+Replace console.log statements with logger calls in the PDF structure validator service.
+
+In src/services/accessibility/pdf-structure-validator.service.ts:
+
+1. Import logger at the top:
+   import { logger } from '../../lib/logger';
+
+2. Find and replace all console.log statements (around lines 186, 303, 353, 391):
+
+   Replace all occurrences of console.log with logger.warn:
+
+   console.log(...) → logger.warn(...)
+
+   Make sure to convert the message to a string if it's not already.
+Prompt 11: Fix Gemini Service
+File: src/services/ai/gemini.service.ts
+
+Fix console.log statements and remove unused variable in Gemini service.
+
+In src/services/ai/gemini.service.ts:
+
+1. Import logger at the top:
+   import { logger } from '../../lib/logger';
+
+2. Replace console.log statements (around lines 72, 108):
+
+   Replace:
+   console.log('Response from Gemini:', ...);
+
+   With:
+   logger.warn('Response from Gemini:', ...);
+
+   (Convert to string format as logger expects string)
+
+3. Remove unused _parseError variable (around line 155):
+
+   Find:
+   const _parseError = ...
+
+   Either remove the line or prefix with underscore if it's intentionally unused:
+   const _parseError = ...  (if keeping for future use)
+
+   Or just delete it entirely if not needed.
+Prompt 12: Fix Response Parser Service
+File: src/services/ai/response-parser.service.ts
+
+Remove unused import in the response parser service.
+
+In src/services/ai/response-parser.service.ts:
+
+Find the line:
+import { z } from 'zod';
+
+If 'z' is not used anywhere in the file, remove this import entirely.
+
+Or if you need to keep zod imported for type checking, use it like:
+import type { z } from 'zod';
+Prompt 13: Fix Token Counter Service
+File: src/services/ai/token-counter.service.ts
+
+Replace console.log with logger call in the token counter service.
+
+In src/services/ai/token-counter.service.ts:
+
+1. Import logger at the top:
+   import { logger } from '../../lib/logger';
+
+2. Find and replace the console.log statement (around line 76):
+
+   Replace:
+   console.log(...);
+
+   With:
+   logger.warn(...);
+Prompt 14: Fix Feedback Attachment Service
+File: src/services/feedback/attachment.service.ts
+
+Fix TypeScript any types and remove unused variables in feedback attachment service.
+
+In src/services/feedback/attachment.service.ts:
+
+1. Fix any type on line 79:
+
+   Find:
+   (file: any)
+
+   Replace with:
+   (file: Express.Multer.File)
+
+2. Remove unused s3Error variable (around line 109):
+
+   Find:
+   const s3Error = ...
+
+   Either remove it or prefix with underscore:
+   const _s3Error = ...
+
+   Or use it in error logging.
+
+3. Remove unused localError variable (around line 114):
+
+   Find:
+   const localError = ...
+
+   Either remove it or prefix with underscore:
+   const _localError = ...
+
+   Or use it in error logging.
+Prompt 15: Fix PDF Image Extractor Service
+File: src/services/pdf/image-extractor.service.ts
+
+Fix TypeScript any types and remove unused variables in PDF image extractor service.
+
+In src/services/pdf/image-extractor.service.ts:
+
+1. Fix any types on lines 199, 225, 407, 498:
+
+   Add proper type annotations. For example:
+   - Line 199: Replace (obj: any) with (obj: PDFDict) or appropriate type
+   - Line 225: Replace (stream: any) with (stream: PDFRawStream) or appropriate type
+   - Line 407: Replace return type any with specific type
+   - Line 498: Replace (something: any) with proper type
+
+2. Remove unused err variable (around line 669):
+
+   Find:
+   catch (err) {
+
+   Replace with:
+   catch (_err) {
+
+   Or remove the variable if not used:
+   catch {
+
+3. Remove unused index variable (around line 716):
+
+   Find:
+   const index = ...
+
+   Either use it or remove the assignment.
+Prompt 16: Fix PDF Text Extractor Service
+File: src/services/pdf/text-extractor.service.ts
+
+Fix TypeScript any types in PDF text extractor service.
+
+In src/services/pdf/text-extractor.service.ts:
+
+Replace any types with proper type annotations (around lines 240, 243, 277, 278):
+
+For example:
+- (item: any) → (item: TextItem | TextMarkedContent)
+- (font: any) → (font: PDFFont)
+- etc.
+
+Use appropriate types from the pdf-lib or pdf-parse libraries you're using.
+Prompt 17: Fix Dashboard Controller
+File: src/controllers/dashboard.controller.ts
+
+Fix TypeScript any types in dashboard controller.
+
+In src/controllers/dashboard.controller.ts (around line 10):
+
+Find:
+req: Request<any, any, ...>
+
+Replace with:
+req: Request<Record<string, never>, unknown, ...>
+
+Or use proper types from Express:
+req: Request
+Prompt 18: Fix Async Handler Middleware
+File: src/middleware/async-handler.middleware.ts
+
+Fix TypeScript any type in async handler middleware.
+
+In src/middleware/async-handler.middleware.ts (around line 7):
+
+Find the function signature with any type and replace with proper Express types:
+
+Instead of:
+fn: (req: any, res: any, next: any) => Promise<any>
+
+Use:
+fn: (req: Request, res: Response, next: NextFunction) => Promise<void>
+
+Make sure to import these types:
+import { Request, Response, NextFunction } from 'express';
+Prompt 19: Fix Error Handler Middleware
+File: src/middleware/error-handler.middleware.ts
+
+Fix TypeScript any types in error handler middleware.
+
+In src/middleware/error-handler.middleware.ts (around line 84):
+
+Find function parameters with any type and replace with proper types:
+
+Instead of:
+(err: any, req: any, res: any, next: any)
+
+Use:
+(err: Error, req: Request, res: Response, next: NextFunction)
+
+Make sure to import:
+import { Request, Response, NextFunction } from 'express';
+Testing the Fixes
+After applying all prompts, run:
+
+npm run lint
+Expected result: Warnings should be significantly reduced (ideally < 30 warnings).
+
+If there are still warnings > 60, check the output and apply additional fixes as needed.

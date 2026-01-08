@@ -82,6 +82,8 @@ export class JobController {
             progress: true,
             priority: true,
             input: true,
+            output: true,
+            error: true,
             createdAt: true,
             startedAt: true,
             completedAt: true,

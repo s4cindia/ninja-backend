@@ -8,15 +8,12 @@ import {
   fileIdParamSchema,
   updateFileStatusSchema,
 } from '../schemas/file.schemas';
+import { logger } from '../lib/logger';
 
 const router = Router();
 
 const debugUpload = (req: Request, res: Response, next: NextFunction) => {
-  console.log('[Upload Route] Before uploadSingle:', {
-    hasUser: !!req.user,
-    contentType: req.headers['content-type'],
-    contentLength: req.headers['content-length']
-  });
+  logger.debug(`[Upload Route] Before uploadSingle: hasUser=${!!req.user}, contentType=${req.headers['content-type']}, contentLength=${req.headers['content-length']}`);
   next();
 };
 
