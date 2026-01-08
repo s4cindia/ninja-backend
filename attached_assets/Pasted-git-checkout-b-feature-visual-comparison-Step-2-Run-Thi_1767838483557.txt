@@ -1,0 +1,69 @@
+git checkout -b feature/visual-comparison
+```
+
+## Step 2: Run This Prompt in Replit AI
+
+Copy and paste this prompt into your Replit AI Agent:
+
+---
+```
+Add the following models to prisma/schema.prisma for the Visual Comparison feature:
+
+1. RemediationChange model:
+   - id: String (UUID primary key, @id @default(uuid()))
+   - jobId: String (foreign key to Job)
+   - taskId: String? (optional)
+   - changeNumber: Int (sequential number within job)
+   - issueId: String? (original audit issue ID)
+   - ruleId: String? (e.g., "WCAG2AA.Principle1.Guideline1_1.1_1_1")
+   - filePath: String (e.g., "OEBPS/chapter1.xhtml")
+   - elementXPath: String? (XPath to modified element)
+   - lineNumber: Int?
+   - changeType: String (e.g., "add-alt-text", "fix-heading")
+   - description: String
+   - beforeContent: String? @db.Text
+   - afterContent: String? @db.Text
+   - contextBefore: String? @db.Text
+   - contextAfter: String? @db.Text
+   - severity: String? (CRITICAL, MAJOR, MINOR, INFO)
+   - wcagCriteria: String?
+   - wcagLevel: String?
+   - status: ChangeStatus @default(APPLIED)
+   - appliedAt: DateTime @default(now())
+   - appliedBy: String?
+   - Add relation to Job: job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+   - Add indexes: @@index([jobId]), @@index([status])
+
+2. Add ChangeStatus enum before the model:
+   enum ChangeStatus {
+     APPLIED
+     REJECTED
+     REVERTED
+     FAILED
+     SKIPPED
+   }
+
+3. ComparisonReport model:
+   - id: String (UUID primary key)
+   - jobId: String @unique
+   - job: Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+   - totalChanges: Int
+   - appliedCount: Int
+   - rejectedCount: Int
+   - skippedCount: Int
+   - failedCount: Int
+   - reportData: Json?
+   - pdfUrl: String?
+   - generatedAt: DateTime @default(now())
+   - generatedBy: String?
+   - Add index: @@index([jobId])
+
+4. Update the existing Job model to add these relations:
+   remediationChanges RemediationChange[]
+   comparisonReport   ComparisonReport?
+
+After adding to schema.prisma:
+1. Run: npx prisma generate
+2. Run: npx prisma migrate dev --name add_visual_comparison_models
+
+Make sure there are no syntax errors before running migrations.
