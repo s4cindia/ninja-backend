@@ -1,0 +1,70 @@
+ Create Attachment Controller - src/controllers/feedback-attachment.controller.ts
+
+  import { Request, Response, NextFunction } from 'express';
+  import { FeedbackAttachmentService } from '../services/feedback/attachment.service';
+
+  export class FeedbackAttachmentController {
+    constructor(private service: FeedbackAttachmentService) {}
+
+    upload = async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { feedbackId } = req.params;
+        const userId = req.user?.id;
+        const files = req.files as Express.Multer.File[];
+
+        if (!files || files.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'NO_FILES', message: 'No files provided' },
+          });
+        }
+
+        const attachments = await Promise.all(
+          files.map(file => this.service.upload(feedbackId, file, userId))
+        );
+
+        res.status(201).json({ success: true, data: attachments });
+      } catch (error) {
+        next(error);
+      }
+    };
+
+    list = async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { feedbackId } = req.params;
+        const attachments = await this.service.list(feedbackId);
+        res.json({ success: true, data: attachments });
+      } catch (error) {
+        next(error);
+      }
+    };
+
+    download = async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { id } = req.params;
+        const result = await this.service.getDownloadUrl(id);
+        res.json({ success: true, data: result });
+      } catch (error) {
+        next(error);
+      }
+    };
+
+    delete = async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { id } = req.params;
+        const userId = req.user?.id;
+
+        if (!userId) {
+          return res.status(401).json({
+            success: false,
+            error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+          });
+        }
+
+        await this.service.delete(id, userId);
+        res.json({ success: true, data: { deleted: true } });
+      } catch (error) {
+        next(error);
+      }
+    };
+  }

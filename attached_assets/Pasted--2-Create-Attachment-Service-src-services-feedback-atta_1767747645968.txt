@@ -1,0 +1,140 @@
+  2. Create Attachment Service - src/services/feedback/attachment.service.ts
+
+  import { PrismaClient } from '@prisma/client';
+  import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+  import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+  import { v4 as uuid } from 'uuid';
+
+  const ALLOWED_MIME_TYPES = [
+    'image/png',
+    'image/jpeg',
+    'image/gif',
+    'image/webp',
+    'application/pdf',
+    'application/epub+zip',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/markdown',
+    'text/plain',
+  ];
+
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+  export class FeedbackAttachmentService {
+    constructor(
+      private prisma: PrismaClient,
+      private s3: S3Client,
+      private bucketName: string
+    ) {}
+
+    async upload(
+      feedbackId: string,
+      file: Express.Multer.File,
+      userId?: string
+    ) {
+      // Validate feedback exists
+      const feedback = await this.prisma.feedback.findUnique({
+        where: { id: feedbackId },
+      });
+      if (!feedback) {
+        throw new Error('Feedback not found');
+      }
+
+      // Validate file type
+      if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+        throw new Error(`File type not allowed: ${file.mimetype}`);
+      }
+
+      // Validate file size
+      if (file.size > MAX_FILE_SIZE) {
+        throw new Error(`File too large. Maximum size is 10MB`);
+      }
+
+      // Generate S3 key
+      const ext = file.originalname.split('.').pop();
+      const filename = `feedback-attachments/${feedbackId}/${uuid()}.${ext}`;
+
+      // Upload to S3
+      await this.s3.send(new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: filename,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      }));
+
+      // Create database record
+      const attachment = await this.prisma.feedbackAttachment.create({
+        data: {
+          feedbackId,
+          filename,
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          uploadedById: userId,
+        },
+        include: {
+          uploadedBy: {
+            select: { id: true, email: true, firstName: true, lastName: true },
+          },
+        },
+      });
+
+      return attachment;
+    }
+
+    async list(feedbackId: string) {
+      return this.prisma.feedbackAttachment.findMany({
+        where: { feedbackId },
+        include: {
+          uploadedBy: {
+            select: { id: true, email: true, firstName: true, lastName: true },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    async getDownloadUrl(attachmentId: string) {
+      const attachment = await this.prisma.feedbackAttachment.findUnique({
+        where: { id: attachmentId },
+      });
+      if (!attachment) {
+        throw new Error('Attachment not found');
+      }
+
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: attachment.filename,
+        ResponseContentDisposition: `attachment; filename="${attachment.originalName}"`,
+      });
+
+      const url = await getSignedUrl(this.s3, command, { expiresIn: 3600 });
+      return { url, attachment };
+    }
+
+    async delete(attachmentId: string, userId: string) {
+      const attachment = await this.prisma.feedbackAttachment.findUnique({
+        where: { id: attachmentId },
+      });
+      if (!attachment) {
+        throw new Error('Attachment not found');
+      }
+
+      // Only owner can delete (or add admin check)
+      if (attachment.uploadedById !== userId) {
+        throw new Error('Not authorized to delete this attachment');
+      }
+
+      // Delete from S3
+      await this.s3.send(new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: attachment.filename,
+      }));
+
+      // Delete from database
+      await this.prisma.feedbackAttachment.delete({
+        where: { id: attachmentId },
+      });
+
+      return { success: true };
+    }
+  }
