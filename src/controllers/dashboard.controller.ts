@@ -7,15 +7,17 @@ import { logger } from '../lib/logger';
 /**
  * Extract file name from job input/output
  */
-function extractFileName(job: { input: any; output: any }): string {
-  if (job.output && typeof job.output === 'object') {
-    if (job.output.fileName) return job.output.fileName;
-    if (job.output.originalName) return job.output.originalName;
+function extractFileName(job: { input: Prisma.JsonValue; output: Prisma.JsonValue }): string {
+  if (job.output && typeof job.output === 'object' && !Array.isArray(job.output)) {
+    const output = job.output as Record<string, unknown>;
+    if (typeof output.fileName === 'string') return output.fileName;
+    if (typeof output.originalName === 'string') return output.originalName;
   }
-  if (job.input && typeof job.input === 'object') {
-    if (job.input.originalName) return job.input.originalName;
-    if (job.input.fileName) return job.input.fileName;
-    if (job.input.filename) return job.input.filename;
+  if (job.input && typeof job.input === 'object' && !Array.isArray(job.input)) {
+    const input = job.input as Record<string, unknown>;
+    if (typeof input.originalName === 'string') return input.originalName;
+    if (typeof input.fileName === 'string') return input.fileName;
+    if (typeof input.filename === 'string') return input.filename;
   }
   return 'Unknown file';
 }
