@@ -5,7 +5,10 @@ import { FileStatus, JobStatus, Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
 
 /**
- * Extract file name from job input/output
+ * Extract file name from job input/output JSON data.
+ * Checks output first (fileName, originalName), then input (originalName, fileName, filename).
+ * @param job - The job object containing input and output JSON values
+ * @returns The extracted file name or 'Unknown file' if not found
  */
 function extractFileName(job: { input: Prisma.JsonValue; output: Prisma.JsonValue }): string {
   if (job.output && typeof job.output === 'object' && !Array.isArray(job.output)) {
@@ -22,6 +25,13 @@ function extractFileName(job: { input: Prisma.JsonValue; output: Prisma.JsonValu
   return 'Unknown file';
 }
 
+/**
+ * Get dashboard statistics for the authenticated user's tenant.
+ * Returns file counts by status and average compliance score.
+ * @param req - The authenticated request containing user and tenant information
+ * @param res - The Express response object
+ * @returns JSON response with dashboard statistics including totalFiles, filesProcessed, filesPending, filesFailed, and averageComplianceScore
+ */
 export const getDashboardStats = async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user?.tenantId;
 
@@ -110,6 +120,11 @@ interface ActivityItem {
   score?: number;
 }
 
+/**
+ * Format a job type enum value into a human-readable label.
+ * @param type - The job type enum value (e.g., 'PDF_ACCESSIBILITY', 'EPUB_ACCESSIBILITY')
+ * @returns A human-readable label for the job type
+ */
 function formatJobType(type: string): string {
   const labels: Record<string, string> = {
     'PDF_ACCESSIBILITY': 'PDF accessibility check',
@@ -123,6 +138,12 @@ function formatJobType(type: string): string {
   return labels[type] || type.replace(/_/g, ' ').toLowerCase();
 }
 
+/**
+ * Map a job type and status to an activity type for dashboard display.
+ * @param type - The job type enum value
+ * @param status - The job status (e.g., 'COMPLETED', 'FAILED')
+ * @returns The corresponding activity type for UI categorization
+ */
 function mapJobTypeToActivityType(type: string, status: string): ActivityItem['type'] {
   if (status === 'FAILED') return 'error';
   if (type === 'ALT_TEXT_GENERATION') return 'alt-text';
@@ -133,6 +154,13 @@ function mapJobTypeToActivityType(type: string, status: string): ActivityItem['t
   return 'processing';
 }
 
+/**
+ * Get recent activity feed for the authenticated user's tenant.
+ * Returns a list of recent jobs with their type, status, file name, and optional score.
+ * @param req - The authenticated request containing user and tenant information. Supports optional 'limit' query parameter (1-50, default 10)
+ * @param res - The Express response object
+ * @returns JSON response with array of activity items including id, type, description, timestamp, fileName, status, and score
+ */
 export const getDashboardActivity = async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user?.tenantId;
 
