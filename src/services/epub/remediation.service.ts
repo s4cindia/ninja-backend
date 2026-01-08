@@ -185,21 +185,26 @@ class RemediationService {
     });
 
     // Deduplicate issues: ACE metadata codes that duplicate JS Auditor codes
-    const jsAuditorCodes = new Set(
+    // Only skip if JS Auditor has the SAME mapped code at the SAME location
+    const jsAuditorIssueKeys = new Set(
       validatedIssues
         .filter(i => (i.source as string) === 'js-auditor')
-        .map(i => i.code as string)
+        .map(i => `${i.code as string}:${(i.location as string) || ''}`)
     );
     
     const deduplicatedIssues = validatedIssues.filter(issue => {
       const code = issue.code as string;
       const source = issue.source as string;
+      const location = (issue.location as string) || '';
       
-      // If this is an ACE issue that maps to a JS Auditor code that's already present, skip it
+      // If this is an ACE issue that maps to a JS Auditor code at the same location, skip it
       const mappedCode = DUPLICATE_CODE_MAP[code];
-      if (mappedCode && source === 'ace' && jsAuditorCodes.has(mappedCode)) {
-        logger.info(`  Skipping duplicate ACE issue ${code} (covered by JS Auditor ${mappedCode})`);
-        return false;
+      if (mappedCode && source === 'ace') {
+        const jsKey = `${mappedCode}:${location}`;
+        if (jsAuditorIssueKeys.has(jsKey)) {
+          logger.info(`  Skipping duplicate ACE issue ${code} at ${location} (covered by JS Auditor ${mappedCode})`);
+          return false;
+        }
       }
       return true;
     });
