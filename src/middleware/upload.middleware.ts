@@ -6,17 +6,14 @@ import { Request } from 'express';
 import { uploadConfig } from '../config/upload.config';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
+import { logger } from '../lib/logger';
 
 const storage = multer.diskStorage({
   destination: (req: Request, file, cb) => {
-    console.log('[Upload] Storage destination called:', {
-      hasUser: !!req.user,
-      tenantId: req.user?.tenantId,
-      originalname: file.originalname
-    });
+    logger.debug(`[Upload] Storage destination called: hasUser=${!!req.user}, tenantId=${req.user?.tenantId}, originalname=${file.originalname}`);
     const tenantId = req.user?.tenantId;
     if (!tenantId) {
-      console.log('[Upload] No tenantId - rejecting');
+      logger.warn('[Upload] No tenantId - rejecting');
       return cb(AppError.unauthorized('Authentication required'), '');
     }
     
@@ -38,11 +35,7 @@ const fileFilter = (
   file: Express.Multer.File,
   cb: multer.FileFilterCallback
 ) => {
-  console.log('[Upload] Received file:', {
-    originalname: file.originalname,
-    mimetype: file.mimetype,
-    size: file.size
-  });
+  logger.debug(`[Upload] Received file: originalname=${file.originalname}, mimetype=${file.mimetype}, size=${file.size}`);
 
   const allowedMimeTypes = uploadConfig.allowedMimeTypes || [
     'application/epub+zip',

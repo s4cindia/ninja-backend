@@ -6,11 +6,12 @@ import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { isRedisConfigured } from '../lib/redis';
+import { logger } from '../lib/logger';
 
 let workers: Worker[] = [];
 
 export function startWorkers(): void {
-  console.log('🚀 Starting job workers...');
+  logger.info('🚀 Starting job workers...');
 
   const accessibilityWorker = createWorker({
     queueName: QUEUE_NAMES.ACCESSIBILITY,
@@ -42,27 +43,27 @@ export function startWorkers(): void {
         { connection, concurrency: 1, autorun: true }
       );
       batchWorker.on('completed', (job) => {
-        console.log(`📗 Batch job ${job.id} completed`);
+        logger.info(`📗 Batch job ${job.id} completed`);
       });
       batchWorker.on('failed', (job, err) => {
-        console.error(`📕 Batch job ${job?.id} failed:`, err.message);
+        logger.error(`📕 Batch job ${job?.id} failed: ${err.message}`);
       });
       workers.push(batchWorker);
     }
   }
 
   if (workers.length > 0) {
-    console.log(`✅ ${workers.length} workers started`);
+    logger.info(`✅ ${workers.length} workers started`);
   } else {
-    console.log('⚠️  No workers started (Redis may not be configured)');
+    logger.warn('⚠️  No workers started (Redis may not be configured)');
   }
 }
 
 export async function stopWorkers(): Promise<void> {
-  console.log('🛑 Stopping workers...');
+  logger.info('🛑 Stopping workers...');
   await Promise.all(workers.map((worker) => worker.close()));
   workers = [];
-  console.log('✅ All workers stopped');
+  logger.info('✅ All workers stopped');
 }
 
 export function getActiveWorkers(): number {
