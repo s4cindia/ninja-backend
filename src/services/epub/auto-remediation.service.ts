@@ -4,6 +4,9 @@ import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import JSZip from 'jszip';
 import { isAutoFixable } from '../../constants/fix-classification';
+import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../comparison';
+
+const comparisonService = new ComparisonService(prisma);
 
 interface ModificationEntry {
   issueCode: string;
@@ -195,6 +198,27 @@ class AutoRemediationService {
               before: result.before,
               after: result.after,
             });
+
+            if (result.success) {
+              try {
+                await comparisonService.logChange({
+                  jobId,
+                  taskId: tasks[0]?.id,
+                  ruleId: issueCode,
+                  filePath: 'OEBPS/content.opf',
+                  changeType: mapFixTypeToChangeType(issueCode),
+                  description: result.description,
+                  beforeContent: result.before,
+                  afterContent: result.after,
+                  severity: 'MAJOR',
+                  wcagCriteria: extractWcagCriteria(issueCode),
+                  wcagLevel: extractWcagLevel(issueCode),
+                  appliedBy: 'auto-remediation',
+                });
+              } catch (logError) {
+                logger.warn('Failed to log remediation change', { error: logError, jobId });
+              }
+            }
           }
 
           const hasSuccess = results.some(r => r.success);

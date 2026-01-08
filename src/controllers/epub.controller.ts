@@ -14,6 +14,9 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
+import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../services/comparison';
+
+const comparisonService = new ComparisonService(prisma);
 
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
@@ -1494,6 +1497,28 @@ export const epubController = {
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
           await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+          for (const result of results.filter(r => r.success)) {
+            try {
+              await comparisonService.logChange({
+                jobId,
+                taskId: taskId || undefined,
+                issueId: issueId || undefined,
+                ruleId: fixCode || 'EPUB-SEM-003',
+                filePath: result.filePath,
+                changeType: 'add-aria-role',
+                description: result.description,
+                beforeContent: result.before,
+                afterContent: result.after,
+                severity: 'MAJOR',
+                wcagCriteria: '4.1.2',
+                wcagLevel: 'A',
+                appliedBy: req.user?.email || 'user',
+              });
+            } catch (logError) {
+              logger.warn('Failed to log remediation change', { error: logError, jobId });
+            }
+          }
         }
 
         let tasksAutoCompleted = 0;
@@ -1576,6 +1601,28 @@ export const epubController = {
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+      for (const result of results.filter(r => r.success)) {
+        try {
+          await comparisonService.logChange({
+            jobId,
+            taskId: taskId || undefined,
+            issueId: issueId || undefined,
+            ruleId: fixCode || undefined,
+            filePath: result.filePath,
+            changeType: mapFixTypeToChangeType(fixCode || 'quick-fix'),
+            description: result.description,
+            beforeContent: result.before,
+            afterContent: result.after,
+            severity: 'MAJOR',
+            wcagCriteria: extractWcagCriteria(fixCode || ''),
+            wcagLevel: extractWcagLevel(fixCode || ''),
+            appliedBy: req.user?.email || 'user',
+          });
+        } catch (logError) {
+          logger.warn('Failed to log remediation change', { error: logError, jobId });
+        }
+      }
 
       const successCount = results.filter(r => r.success).length;
       const failCount = results.filter(r => !r.success).length;
