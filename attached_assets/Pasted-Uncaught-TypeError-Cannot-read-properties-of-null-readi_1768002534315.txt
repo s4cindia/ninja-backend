@@ -1,0 +1,45 @@
+Uncaught TypeError: Cannot read properties of null (reading 'html')
+    at VisualComparisonPanel (VisualComparisonPanel.tsx:100:44)
+    at renderWithHooks (react-dom.development.js:15486:18)
+    at updateFunctionComponent (react-dom.development.js:19617:20)
+    at beginWork (react-dom.development.js:21640:16)
+    at HTMLUnknownElement.callCallback2 (react-dom.development.js:4164:14)
+    at Object.invokeGuardedCallbackDev (react-dom.development.js:4213:16)
+    at invokeGuardedCallback (react-dom.development.js:4277:31)
+    at beginWork$1 (react-dom.development.js:27490:7)
+    at performUnitOfWork (react-dom.development.js:26596:12)
+    at workLoopSync (react-dom.development.js:26505:5)
+react-dom.development.js:18704  The above error occurred in the <VisualComparisonPanel> component:
+
+    at VisualComparisonPanel (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/components/comparison/VisualComparisonPanel.tsx:23:41)
+    at div
+    at ComparisonPage (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/pages/ComparisonPage.tsx:35:21)
+    at RenderedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:4108:5)
+    at Outlet (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:4514:26)
+    at main
+    at div
+    at div
+    at MainLayout (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/components/layout/MainLayout.tsx:37:28)
+    at ProtectedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/src/components/ProtectedRoute.tsx:20:34)
+    at RenderedRoute (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:4108:5)
+    at Routes (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:4578:5)
+    at AppRoutes
+    at Router (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:4521:15)
+    at BrowserRouter (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/react-router-dom.js?v=ae51bac2:5267:5)
+    at QueryClientProvider (https://9aa9be52-07db-402d-8f6e-203b91ccebe3-00-2do17f7jjp82u.pike.replit.dev/node_modules/.vite/deps/@tanstack_react-query.js?v=ae51bac2:3096:3)
+    at App
+
+Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://reactjs.org/link/error-boundaries to learn more about error boundaries.
+logCapturedError @ react-dom.development.js:18704
+react-dom.development.js:12056  Uncaught TypeError: Cannot read properties of null (reading 'html')
+    at VisualComparisonPanel (VisualComparisonPanel.tsx:100:44)
+    at renderWithHooks (react-dom.development.js:15486:18)
+    at updateFunctionComponent (react-dom.development.js:19617:20)
+    at beginWork (react-dom.development.js:21640:16)
+    at beginWork$1 (react-dom.development.js:27465:14)
+    at performUnitOfWork (react-dom.development.js:26596:12)
+    at workLoopSync (react-dom.development.js:26505:5)
+    at renderRootSync (react-dom.development.js:26473:7)
+    at recoverFromConcurrentError (react-dom.development.js:25889:20)
+    at performSyncWorkOnRoot (react-dom.development.js:26135:20)
