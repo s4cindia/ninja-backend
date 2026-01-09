@@ -174,7 +174,16 @@ class EPUBSpineService {
   }
 
   async getSpineItems(jobId: string): Promise<SpineItem[]> {
-    throw new Error('Not implemented');
+    const zip = await this.loadEPUB(jobId, 'remediated');
+    const opfPath = await this.findOPFPath(zip);
+    const opfFile = zip.file(opfPath);
+
+    if (!opfFile) {
+      throw new Error('OPF file not found');
+    }
+
+    const opfContent = await opfFile.async('text');
+    return this.extractSpineFromOPF(opfContent, opfPath);
   }
 
   async getSpineItemContent(
@@ -182,14 +191,83 @@ class EPUBSpineService {
     spineItemId: string,
     version: 'original' | 'remediated'
   ): Promise<SpineItemContent> {
-    throw new Error('Not implemented');
+    const zip = await this.loadEPUB(jobId, version);
+    const opfPath = await this.findOPFPath(zip);
+    const opfFile = zip.file(opfPath);
+
+    if (!opfFile) {
+      throw new Error('OPF file not found');
+    }
+
+    const opfContent = await opfFile.async('text');
+    const spineItems = this.extractSpineFromOPF(opfContent, opfPath);
+
+    const spineItem = spineItems.find(item => item.id === spineItemId);
+    if (!spineItem) {
+      throw new Error(`Spine item ${spineItemId} not found`);
+    }
+
+    const htmlFile = zip.file(spineItem.href);
+    if (!htmlFile) {
+      throw new Error(`HTML file not found: ${spineItem.href}`);
+    }
+
+    const html = await htmlFile.async('text');
+    const css = await this.extractStyles(zip, spineItem.href, html);
+
+    return {
+      spineItem,
+      html,
+      css,
+      baseHref: path.posix.dirname(spineItem.href)
+    };
   }
 
   async getSpineItemForChange(
     jobId: string,
     changeId: string
   ): Promise<SpineItemWithChange> {
-    throw new Error('Not implemented');
+    const change = await prisma.remediationChange.findUnique({
+      where: { id: changeId }
+    });
+
+    if (!change || change.jobId !== jobId) {
+      throw new Error('Change not found');
+    }
+
+    const spineItems = await this.getSpineItems(jobId);
+
+    const spineItem = spineItems.find(item =>
+      item.href === change.filePath ||
+      item.href.endsWith(change.filePath)
+    );
+
+    if (!spineItem) {
+      throw new Error(`Spine item not found for file: ${change.filePath}`);
+    }
+
+    const beforeContent = await this.getSpineItemContent(jobId, spineItem.id, 'original');
+    const afterContent = await this.getSpineItemContent(jobId, spineItem.id, 'remediated');
+
+    const highlightData: ChangeHighlight = {
+      xpath: change.elementXPath || '',
+      cssSelector: change.elementXPath ? this.xpathToCssSelector(change.elementXPath) : undefined,
+      description: change.description
+    };
+
+    return {
+      spineItem,
+      beforeContent,
+      afterContent,
+      change: {
+        id: change.id,
+        changeNumber: change.changeNumber,
+        description: change.description,
+        changeType: change.changeType,
+        severity: change.severity
+      },
+      highlightData
+    };
   }
 }
 
