@@ -1,0 +1,112 @@
+Create EPUB Spine Service - Part 1 (Interfaces & Basic Structure)
+
+  Copy and paste this into your Backend Replit AI:
+
+  Create a new file src/services/epub/epub-spine.service.ts with the following TypeScript interfaces and class structure:
+
+  ```typescript
+  import JSZip from 'jszip';
+  import * as cheerio from 'cheerio';
+  import path from 'path';
+  import prisma from '../../lib/prisma';
+  import { fileService } from '../file.service';
+
+  // ============= INTERFACES =============
+
+  export interface SpineItem {
+    id: string;              // spine item id from OPF
+    href: string;            // path in EPUB
+    mediaType: string;       // usually application/xhtml+xml
+    order: number;           // reading order
+    title?: string;          // from nav/ncx if available
+  }
+
+  export interface SpineItemContent {
+    spineItem: SpineItem;
+    html: string;            // extracted XHTML content
+    css: string[];           // array of CSS file contents
+    baseHref: string;        // base path for resolving resources
+  }
+
+  export interface ChangeHighlight {
+    xpath: string;
+    cssSelector?: string;    // converted from XPath for easier DOM targeting
+    description?: string;
+  }
+
+  export interface SpineItemWithChange {
+    spineItem: SpineItem;
+    beforeContent: SpineItemContent;
+    afterContent: SpineItemContent;
+    change: {
+      id: string;
+      changeNumber: number;
+      description: string;
+      changeType: string;
+      severity: string | null;
+    };
+    highlightData: ChangeHighlight;
+  }
+
+  // ============= SERVICE CLASS =============
+
+  class EPUBSpineService {
+    // Helper: Load EPUB from storage
+    private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
+      // Implementation in next prompt
+    }
+
+    // Helper: Find OPF file path
+    private async findOPFPath(zip: JSZip): Promise<string> {
+      // Implementation in next prompt
+    }
+
+    // Helper: Extract spine items from OPF
+    private extractSpineFromOPF(opfContent: string, opfPath: string): SpineItem[] {
+      // Implementation in next prompt
+    }
+
+    // Helper: Extract CSS files
+    private async extractStyles(zip: JSZip, htmlPath: string, html: string): Promise<string[]> {
+      // Implementation in next prompt
+    }
+
+    // Helper: Resolve relative paths
+    private resolvePath(from: string, to: string): string {
+      const dir = path.dirname(from);
+      return path.posix.normalize(path.posix.join(dir, to));
+    }
+
+    // Helper: Convert XPath to CSS selector (basic)
+    private xpathToCssSelector(xpath: string): string | undefined {
+      // Implementation in next prompt
+    }
+
+    // ============= PUBLIC METHODS =============
+
+    // Get all spine items for a job
+    async getSpineItems(jobId: string): Promise<SpineItem[]> {
+      // Implementation in next prompt
+    }
+
+    // Get spine item content (before or after)
+    async getSpineItemContent(
+      jobId: string,
+      spineItemId: string,
+      version: 'original' | 'remediated'
+    ): Promise<SpineItemContent> {
+      // Implementation in next prompt
+    }
+
+    // Get spine item for a specific change
+    async getSpineItemForChange(
+      jobId: string,
+      changeId: string
+    ): Promise<SpineItemWithChange> {
+      // Implementation in next prompt
+    }
+  }
+
+  export const epubSpineService = new EPUBSpineService();
+
+  This creates the foundation. Save the file and confirm it compiles without errors.
