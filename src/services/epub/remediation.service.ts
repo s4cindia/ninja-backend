@@ -188,14 +188,18 @@ class RemediationService {
     // Only skip if JS Auditor has the SAME mapped code at the SAME location
     const jsAuditorIssueKeys = new Set(
       validatedIssues
-        .filter(i => (i.source as string) === 'js-auditor')
-        .map(i => `${i.code as string}:${(i.location as string) || ''}`)
+        .filter(i => String(i.source || '').toLowerCase().trim() === 'js-auditor')
+        .map(i => {
+          const code = String(i.code || '');
+          const location = typeof i.location === 'string' ? i.location.trim() : '';
+          return `${code}:${location}`;
+        })
     );
-    
+
     const deduplicatedIssues = validatedIssues.filter(issue => {
-      const code = issue.code as string;
-      const source = issue.source as string;
-      const location = (issue.location as string) || '';
+      const code = String(issue.code || '');
+      const source = String(issue.source || '').toLowerCase().trim();
+      const location = typeof issue.location === 'string' ? issue.location.trim() : '';
       
       // If this is an ACE issue that maps to a JS Auditor code at the same location, skip it
       const mappedCode = DUPLICATE_CODE_MAP[code];
