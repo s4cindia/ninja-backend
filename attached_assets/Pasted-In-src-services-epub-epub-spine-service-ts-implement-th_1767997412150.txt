@@ -1,0 +1,139 @@
+In src/services/epub/epub-spine.service.ts, implement the helper methods. Replace the empty method bodies with the following implementations:
+
+  1. Implement loadEPUB method:
+  ```typescript
+  private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { originalFile: true, remediatedFile: true }
+    });
+
+    if (!job) {
+      throw new Error('Job not found');
+    }
+
+    const file = version === 'original' ? job.originalFile : job.remediatedFile;
+    if (!file) {
+      throw new Error(`${version} file not found`);
+    }
+
+    const buffer = await fileService.getFileBuffer(file.storageKey);
+    return await JSZip.loadAsync(buffer);
+  }
+
+  2. Implement findOPFPath method:
+  private async findOPFPath(zip: JSZip): Promise<string> {
+    const containerFile = zip.file('META-INF/container.xml');
+    if (!containerFile) {
+      throw new Error('container.xml not found in EPUB');
+    }
+
+    const containerContent = await containerFile.async('text');
+    const $ = cheerio.load(containerContent, { xmlMode: true });
+    const opfPath = $('rootfile').attr('full-path');
+
+    if (!opfPath) {
+      throw new Error('OPF path not found in container.xml');
+    }
+
+    return opfPath;
+  }
+
+  3. Implement extractSpineFromOPF method:
+  private extractSpineFromOPF(opfContent: string, opfPath: string): SpineItem[] {
+    const $ = cheerio.load(opfContent, { xmlMode: true });
+    const spineItems: SpineItem[] = [];
+
+    // Build manifest lookup
+    const manifest: Record<string, { href: string; mediaType: string }> = {};
+    $('manifest item').each((_, elem) => {
+      const id = $(elem).attr('id');
+      const href = $(elem).attr('href');
+      const mediaType = $(elem).attr('media-type');
+      if (id && href) {
+        manifest[id] = { href, mediaType: mediaType || '' };
+      }
+    });
+
+    // Extract spine items in order
+    $('spine itemref').each((index, elem) => {
+      const idref = $(elem).attr('idref');
+      if (idref && manifest[idref]) {
+        const manifestItem = manifest[idref];
+        spineItems.push({
+          id: idref,
+          href: this.resolvePath(opfPath, manifestItem.href),
+          mediaType: manifestItem.mediaType,
+          order: index
+        });
+      }
+    });
+
+    return spineItems;
+  }
+
+  4. Implement extractStyles method:
+  private async extractStyles(zip: JSZip, htmlPath: string, html: string): Promise<string[]> {
+    const $ = cheerio.load(html);
+    const cssFiles: string[] = [];
+
+    // Find all <link rel="stylesheet">
+    const linkPromises: Promise<void>[] = [];
+    $('link[rel="stylesheet"]').each((_, elem) => {
+      const href = $(elem).attr('href');
+      if (href) {
+        const cssPath = this.resolvePath(htmlPath, href);
+        const promise = (async () => {
+          const cssFile = zip.file(cssPath);
+          if (cssFile) {
+            const cssContent = await cssFile.async('text');
+            cssFiles.push(cssContent);
+          }
+        })();
+        linkPromises.push(promise);
+      }
+    });
+
+    await Promise.all(linkPromises);
+
+    // Also check for inline <style> tags
+    $('style').each((_, elem) => {
+      const styleContent = $(elem).html();
+      if (styleContent) {
+        cssFiles.push(styleContent);
+      }
+    });
+
+    return cssFiles;
+  }
+
+  5. Implement xpathToCssSelector method (basic conversion):
+  private xpathToCssSelector(xpath: string): string | undefined {
+    // Basic XPath to CSS conversion
+    // This handles simple cases like /html/body/div[1]/p[2]
+
+    if (!xpath.startsWith('/')) return undefined;
+
+    try {
+      const parts = xpath.split('/').filter(p => p);
+      const cssPath = parts.map(part => {
+        // Extract element name and index
+        const match = part.match(/^(\w+)(?:\[(\d+)\])?$/);
+        if (!match) return null;
+
+        const [, element, index] = match;
+        if (index) {
+          // CSS uses nth-of-type (1-based like XPath)
+          return `${element}:nth-of-type(${index})`;
+        }
+        return element;
+      }).filter(Boolean);
+
+      if (cssPath.length === 0) return undefined;
+      return cssPath.join(' > ');
+    } catch {
+      return undefined;
+    }
+  }
+
+  Save the file and verify no compilation errors.
