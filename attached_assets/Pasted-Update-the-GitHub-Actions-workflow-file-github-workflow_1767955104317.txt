@@ -1,0 +1,65 @@
+Update the GitHub Actions workflow file `.github/workflows/deploy-backend-staging.yml` to persist REDIS_URL in the task definition.
+
+  Current Issue:
+  The workflow currently injects ACE_SERVICE_URL, S3_BUCKET, and S3_REGION into the environment variables, but it doesn't handle REDIS_URL which is stored in AWS Secrets Manager. When the workflow updates the task definition, it loses the REDIS_URL secret reference.
+
+  Required Changes:
+
+  1. Add a new GitHub secret in the repository:
+     - Secret name: STAGING_REDIS_SECRET_ARN
+     - Secret value: arn:aws:secretsmanager:ap-south-1:223643972423:secret:ninja/staging/redis-url-QgcCxI
+
+  2. Update the "Inject environment variables" step (lines 113-128) to also inject REDIS_URL into the secrets section:
+
+  OLD CODE (lines 113-128):
+  ```yaml
+        - name: Inject environment variables
+          env:
+            ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
+          run: |
+            jq --arg aceurl "$ACE_URL" '
+              (.containerDefinitions[0].environment) |= (
+                map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION")) +
+                [
+                  {"name": "ACE_SERVICE_URL", "value": $aceurl},
+                  {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
+                  {"name": "S3_REGION", "value": "ap-south-1"}
+                ]
+              )
+            ' task-definition.json > task-definition-updated.json
+            mv task-definition-updated.json task-definition.json
+
+  NEW CODE:
+        - name: Inject environment variables and secrets
+          env:
+            ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
+            REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
+          run: |
+            jq --arg aceurl "$ACE_URL" \
+               --arg redisarn "$REDIS_ARN" '
+              # Update environment variables
+              (.containerDefinitions[0].environment) |= (
+                map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION")) +
+                [
+                  {"name": "ACE_SERVICE_URL", "value": $aceurl},
+                  {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
+                  {"name": "S3_REGION", "value": "ap-south-1"}
+                ]
+              ) |
+              # Add REDIS_URL to secrets section
+              (.containerDefinitions[0].secrets) |= (
+                (. // []) | map(select(.name != "REDIS_URL")) +
+                [{"name": "REDIS_URL", "valueFrom": $redisarn}]
+              )
+            ' task-definition.json > task-definition-updated.json
+            mv task-definition-updated.json task-definition.json
+
+  The change adds:
+  1. REDIS_ARN environment variable from GitHub secrets
+  2. A second jq operation that updates the secrets array
+  3. Adds REDIS_URL secret reference while preserving existing secrets (DATABASE_URL, JWT_SECRET)
+
+  After making this change:
+  - Future deployments will maintain the REDIS_URL secret reference
+  - The workflow will continue to work even after manual task definition updates
+  - Background workers will remain enabled across all deployments
