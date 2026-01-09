@@ -75,7 +75,7 @@ jobs:
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition $MIGRATION_TASK_DEF_ARN \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=ENABLED}" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
