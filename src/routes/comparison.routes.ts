@@ -46,6 +46,8 @@ router.get(
     const { jobId, changeId } = req.params;
     const userId = ((req as unknown) as { user?: { id: string } }).user?.id;
 
+    console.log(`[visual-comparison] Request for job ${jobId}, change ${changeId}`);
+
     const job = await prisma.job.findFirst({
       where: {
         id: jobId,
@@ -54,11 +56,21 @@ router.get(
     });
 
     if (!job) {
+      console.error(`[visual-comparison] Job not found: ${jobId}`);
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    const visualData = await epubSpineService.getSpineItemForChange(jobId, changeId);
-    res.json(visualData);
+    console.log(`[visual-comparison] Job found, calling getSpineItemForChange`);
+
+    try {
+      const visualData = await epubSpineService.getSpineItemForChange(jobId, changeId);
+      console.log(`[visual-comparison] Visual data retrieved successfully`);
+      res.json(visualData);
+    } catch (error) {
+      console.error(`[visual-comparison] Error getting visual data:`, error);
+      console.error(`[visual-comparison] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+      throw error;
+    }
   })
 );
 

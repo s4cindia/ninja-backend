@@ -1,0 +1,67 @@
+In src/routes/comparison.routes.ts, update the visual comparison route to add detailed error logging.
+
+  Find the route:
+  ```typescript
+  router.get(
+    '/jobs/:jobId/comparison/changes/:changeId/visual',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId, changeId } = req.params;
+      const userId = (req as any).user?.id;
+
+      // Verify job belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const visualData = await epubSpineService.getSpineItemForChange(jobId, changeId);
+      res.json(visualData);
+    })
+  );
+
+  And replace it with this version that has better error handling:
+
+  router.get(
+    '/jobs/:jobId/comparison/changes/:changeId/visual',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId, changeId } = req.params;
+      const userId = (req as any).user?.id;
+
+      console.log(`[visual-comparison] Request for job ${jobId}, change ${changeId}`);
+
+      // Verify job belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        console.error(`[visual-comparison] Job not found: ${jobId}`);
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      console.log(`[visual-comparison] Job found, calling getSpineItemForChange`);
+
+      try {
+        const visualData = await epubSpineService.getSpineItemForChange(jobId, changeId);
+        console.log(`[visual-comparison] Visual data retrieved successfully`);
+        res.json(visualData);
+      } catch (error) {
+        console.error(`[visual-comparison] Error getting visual data:`, error);
+        console.error(`[visual-comparison] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+        throw error; // Re-throw for asyncHandler
+      }
+    })
+  );
+
+  Save and try the visual comparison again. This will show us the actual error message and stack trace.
