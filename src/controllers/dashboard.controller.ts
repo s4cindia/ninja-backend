@@ -4,6 +4,34 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { FileStatus, JobStatus, Prisma } from '@prisma/client';
 import { logger } from '../lib/logger';
 
+/**
+ * Extract file name from job input/output JSON data.
+ * Checks output first (fileName, originalName), then input (originalName, fileName, filename).
+ * @param job - The job object containing input and output JSON values
+ * @returns The extracted file name or 'Unknown file' if not found
+ */
+function extractFileName(job: { input: Prisma.JsonValue; output: Prisma.JsonValue }): string {
+  if (job.output && typeof job.output === 'object' && !Array.isArray(job.output)) {
+    const output = job.output as Record<string, unknown>;
+    if (typeof output.fileName === 'string') return output.fileName;
+    if (typeof output.originalName === 'string') return output.originalName;
+  }
+  if (job.input && typeof job.input === 'object' && !Array.isArray(job.input)) {
+    const input = job.input as Record<string, unknown>;
+    if (typeof input.originalName === 'string') return input.originalName;
+    if (typeof input.fileName === 'string') return input.fileName;
+    if (typeof input.filename === 'string') return input.filename;
+  }
+  return 'Unknown file';
+}
+
+/**
+ * Get dashboard statistics for the authenticated user's tenant.
+ * Returns file counts by status and average compliance score.
+ * @param req - The authenticated request containing user and tenant information
+ * @param res - The Express response object
+ * @returns JSON response with dashboard statistics including totalFiles, filesProcessed, filesPending, filesFailed, and averageComplianceScore
+ */
 export const getDashboardStats = async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user?.tenantId;
 
@@ -84,7 +112,7 @@ export const getDashboardStats = async (req: AuthenticatedRequest, res: Response
 
 interface ActivityItem {
   id: string;
-  type: 'upload' | 'validation' | 'compliance' | 'remediation' | 'processing' | 'error';
+  type: 'upload' | 'validation' | 'compliance' | 'remediation' | 'processing' | 'error' | 'alt-text' | 'metadata' | 'batch';
   description: string;
   timestamp: string;
   fileName?: string;
@@ -92,6 +120,11 @@ interface ActivityItem {
   score?: number;
 }
 
+/**
+ * Format a job type enum value into a human-readable label.
+ * @param type - The job type enum value (e.g., 'PDF_ACCESSIBILITY', 'EPUB_ACCESSIBILITY')
+ * @returns A human-readable label for the job type
+ */
 function formatJobType(type: string): string {
   const labels: Record<string, string> = {
     'PDF_ACCESSIBILITY': 'PDF accessibility check',
@@ -105,14 +138,29 @@ function formatJobType(type: string): string {
   return labels[type] || type.replace(/_/g, ' ').toLowerCase();
 }
 
+/**
+ * Map a job type and status to an activity type for dashboard display.
+ * @param type - The job type enum value
+ * @param status - The job status (e.g., 'COMPLETED', 'FAILED')
+ * @returns The corresponding activity type for UI categorization
+ */
 function mapJobTypeToActivityType(type: string, status: string): ActivityItem['type'] {
   if (status === 'FAILED') return 'error';
-  if (type === 'BATCH_VALIDATION') return 'remediation';
+  if (type === 'ALT_TEXT_GENERATION') return 'alt-text';
+  if (type === 'METADATA_EXTRACTION') return 'metadata';
+  if (type === 'BATCH_VALIDATION') return 'batch';
   if (type.includes('ACCESSIBILITY')) return 'validation';
   if (type === 'VPAT_GENERATION' || type === 'ACR_WORKFLOW') return 'compliance';
   return 'processing';
 }
 
+/**
+ * Get recent activity feed for the authenticated user's tenant.
+ * Returns a list of recent jobs with their type, status, file name, and optional score.
+ * @param req - The authenticated request containing user and tenant information. Supports optional 'limit' query parameter (1-50, default 10)
+ * @param res - The Express response object
+ * @returns JSON response with array of activity items including id, type, description, timestamp, fileName, status, and score
+ */
 export const getDashboardActivity = async (req: AuthenticatedRequest, res: Response) => {
   const tenantId = req.user?.tenantId;
 
@@ -141,17 +189,8 @@ export const getDashboardActivity = async (req: AuthenticatedRequest, res: Respo
     });
 
     const activities: ActivityItem[] = recentJobs.map(job => {
-      const input = job.input as Record<string, unknown> || {};
       const output = job.output as Record<string, unknown> || {};
-
-      let fileName = 'Unknown file';
-      if (input.fileName) {
-        fileName = String(input.fileName);
-      } else if (input.originalName) {
-        fileName = String(input.originalName);
-      } else if (output.jobs && Array.isArray(output.jobs) && output.jobs[0]?.fileName) {
-        fileName = String(output.jobs[0].fileName);
-      }
+      const fileName = extractFileName(job);
 
       const typeLabel = formatJobType(job.type);
       const statusLabel = job.status.toLowerCase();

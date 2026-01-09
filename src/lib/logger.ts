@@ -8,11 +8,11 @@ const formatMessage = (level: LogLevel, message: string): string => {
 export const logger = {
   debug: (message: string): void => {
     if (process.env.LOG_LEVEL === 'debug') {
-      console.debug(formatMessage('debug', message));
+      console.warn(formatMessage('debug', message));
     }
   },
   info: (message: string): void => {
-    console.info(formatMessage('info', message));
+    console.warn(formatMessage('info', message));
   },
   warn: (message: string): void => {
     console.warn(formatMessage('warn', message));

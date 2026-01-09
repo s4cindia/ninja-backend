@@ -12,17 +12,18 @@ import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
+import { logger } from './lib/logger';
 
 const app: Express = express();
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    console.log('CORS check - Origin:', origin, 'Allowed origins:', config.corsOrigins);
+    logger.debug(`CORS check - Origin: ${origin}, Allowed origins: ${config.corsOrigins.join(', ')}`);
     if (!origin) return callback(null, true);
 
     // Check against configured origins from CORS_ORIGINS env var
     if (config.corsOrigins.includes(origin)) {
-      console.log('CORS - Origin allowed via config.corsOrigins');
+      logger.debug('CORS - Origin allowed via config.corsOrigins');
       return callback(null, true);
     }
 
@@ -39,7 +40,7 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    console.warn(`CORS blocked origin: ${origin}`);
+    logger.warn(`CORS blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -81,37 +82,37 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const server = app.listen(config.port, '0.0.0.0', () => {
-  console.log(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
-  console.log(`📍 Environment: ${config.nodeEnv}`);
-  console.log(`❤️  Health check: http://localhost:${config.port}/health`);
-  console.log(`📚 API Base: http://localhost:${config.port}/api/v1`);
+  logger.info(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
+  logger.info(`📍 Environment: ${config.nodeEnv}`);
+  logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
+  logger.info(`📚 API Base: http://localhost:${config.port}/api/v1`);
   
   if (isRedisConfigured()) {
-    console.log('✅ Redis configured - BullMQ workers enabled');
+    logger.info('✅ Redis configured - BullMQ workers enabled');
   } else {
-    console.log('⚠️  Redis not configured - running in sync mode');
+    logger.warn('⚠️  Redis not configured - running in sync mode');
   }
   
   sseService.initialize().catch(err => {
-    console.error('Failed to initialize SSE service:', err);
+    logger.error('Failed to initialize SSE service', err as Error);
   });
   
   startWorkers();
 });
 
 const gracefulShutdown = async () => {
-  console.log('Shutting down gracefully...');
+  logger.info('Shutting down gracefully...');
   
   server.close(async () => {
-    console.log('HTTP server closed');
+    logger.info('HTTP server closed');
     
     await stopWorkers();
     
     await closeQueues();
-    console.log('Queues closed');
+    logger.info('Queues closed');
     
     await closeRedisConnection();
-    console.log('Redis connection closed');
+    logger.info('Redis connection closed');
     
     process.exit(0);
   });

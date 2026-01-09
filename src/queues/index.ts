@@ -1,6 +1,7 @@
 import { Queue, QueueEvents } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
 import { getRedisUrl } from '../config/redis.config';
+import { logger } from '../lib/logger';
 
 export const QUEUE_NAMES = {
   ACCESSIBILITY: 'accessibility-validation',
@@ -130,13 +131,13 @@ function ensureQueuesInitialized(): void {
   if (_initialized) return;
   
   if (!isRedisConfigured()) {
-    console.warn('⚠️  Redis not configured - queues will not be available');
+    logger.warn('⚠️  Redis not configured - queues will not be available');
     return;
   }
 
   const connection = getBullMQConnection();
   if (!connection) {
-    console.warn('⚠️  Could not create Redis connection - queues will not be available');
+    logger.warn('⚠️  Could not create Redis connection - queues will not be available');
     return;
   }
 
@@ -173,7 +174,7 @@ function ensureQueuesInitialized(): void {
   });
 
   _initialized = true;
-  console.log('📦 BullMQ queues initialized with TLS support');
+  logger.info('📦 BullMQ queues initialized with TLS support');
 }
 
 export function getAccessibilityQueue(): Queue<JobData, JobResult> {

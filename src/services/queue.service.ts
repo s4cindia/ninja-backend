@@ -13,6 +13,7 @@ import {
 } from '../queues';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
+import { logger } from '../lib/logger';
 
 export interface CreateJobInput {
   type: JobType;
@@ -89,7 +90,7 @@ export class QueueService {
     try {
       const queue = getQueueForJobType(type);
       if (!queue) {
-        console.log(`📋 Job ${dbJob.id} created (processed synchronously): ${type}`);
+        logger.info(`📋 Job ${dbJob.id} created (processed synchronously): ${type}`);
         return dbJob.id;
       }
       await queue.add(type, jobData, {
@@ -97,7 +98,7 @@ export class QueueService {
         priority,
       });
 
-      console.log(`📋 Job ${dbJob.id} added to queue: ${type}`);
+      logger.info(`📋 Job ${dbJob.id} added to queue: ${type}`);
       return dbJob.id;
     } catch (queueError) {
       await prisma.job.update({
@@ -159,7 +160,7 @@ export class QueueService {
           }
         }
       } catch (err) {
-        console.error('Failed to remove job from queue:', err);
+        logger.error('Failed to remove job from queue:', err as Error);
       }
     }
   }

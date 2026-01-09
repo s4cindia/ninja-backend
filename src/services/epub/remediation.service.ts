@@ -185,21 +185,30 @@ class RemediationService {
     });
 
     // Deduplicate issues: ACE metadata codes that duplicate JS Auditor codes
-    const jsAuditorCodes = new Set(
+    // Only skip if JS Auditor has the SAME mapped code at the SAME location
+    const jsAuditorIssueKeys = new Set(
       validatedIssues
-        .filter(i => (i.source as string) === 'js-auditor')
-        .map(i => i.code as string)
+        .filter(i => String(i.source || '').toLowerCase().trim() === 'js-auditor')
+        .map(i => {
+          const code = String(i.code || '');
+          const location = typeof i.location === 'string' ? i.location.trim() : '';
+          return `${code}:${location}`;
+        })
     );
-    
+
     const deduplicatedIssues = validatedIssues.filter(issue => {
-      const code = issue.code as string;
-      const source = issue.source as string;
+      const code = String(issue.code || '');
+      const source = String(issue.source || '').toLowerCase().trim();
+      const location = typeof issue.location === 'string' ? issue.location.trim() : '';
       
-      // If this is an ACE issue that maps to a JS Auditor code that's already present, skip it
+      // If this is an ACE issue that maps to a JS Auditor code at the same location, skip it
       const mappedCode = DUPLICATE_CODE_MAP[code];
-      if (mappedCode && source === 'ace' && jsAuditorCodes.has(mappedCode)) {
-        logger.info(`  Skipping duplicate ACE issue ${code} (covered by JS Auditor ${mappedCode})`);
-        return false;
+      if (mappedCode && source === 'ace') {
+        const jsKey = `${mappedCode}:${location}`;
+        if (jsAuditorIssueKeys.has(jsKey)) {
+          logger.info(`  Skipping duplicate ACE issue ${code} at ${location} (covered by JS Auditor ${mappedCode})`);
+          return false;
+        }
       }
       return true;
     });
@@ -727,17 +736,66 @@ class RemediationService {
       'EPUB-META-004': 'Add schema:accessMode metadata specifying how content can be consumed (e.g., "textual", "visual").',
       'EPUB-SEM-001': 'Add lang attribute to HTML elements to specify the document language for screen readers.',
       'EPUB-SEM-002': 'Add descriptive aria-label or visible text content to empty links.',
+      'EPUB-SEM-003': 'Add role attribute matching epub:type semantic (e.g., epub:type="chapter" should have role="doc-chapter").',
       'EPUB-IMG-001': 'Add meaningful alt text describing the image content, or alt="" for decorative images.',
+      'EPUB-STRUCT-001': 'Ensure document structure uses semantic HTML5 elements (article, section, nav, aside, header, footer).',
       'EPUB-STRUCT-002': 'Add <th> elements with scope attributes to data tables for proper header associations.',
       'EPUB-STRUCT-003': 'Fix heading hierarchy to avoid skipped levels (e.g., h1 → h2 → h3, not h1 → h3).',
       'EPUB-STRUCT-004': 'Add ARIA landmark roles (main, navigation, banner, contentinfo) to major page regions.',
       'EPUB-NAV-001': 'Add skip navigation link at the top of content pages to bypass repetitive navigation.',
+      'EPUB-NAV-002': 'Add page-list navigation element linking to page break markers in the content.',
+      'EPUB-NAV-003': 'Add landmarks navigation with entries for major document sections.',
       'EPUB-FIG-001': 'Wrap images in <figure> elements with <figcaption> for proper figure structure.',
       'COLOR-CONTRAST': 'Adjust text/background colors to meet WCAG contrast ratio requirements (4.5:1 for normal text, 3:1 for large text).',
+      'EPUB-CONTRAST-001': 'Adjust text/background colors to meet WCAG contrast ratio requirements (4.5:1 for normal text, 3:1 for large text).',
       'LINK-TEXT': 'Replace generic link text like "click here" with descriptive text indicating the link destination.',
+      'LINK-NAME': 'Ensure all links have accessible names via visible text, aria-label, or aria-labelledby.',
       'FORM-LABEL': 'Associate form inputs with visible <label> elements using for/id attributes.',
+      'BUTTON-NAME': 'Ensure all buttons have accessible names via visible text, aria-label, or aria-labelledby.',
+      'IMAGE-ALT': 'Add alt attribute to images. Use descriptive text for meaningful images, empty alt="" for decorative ones.',
+      'LANDMARK-UNIQUE': 'Ensure landmark roles are unique or have unique accessible names to distinguish them.',
+      'DUPLICATE-ID': 'Remove or rename duplicate id attributes - each id must be unique within the document.',
+      'ARIA-VALID-ATTR': 'Ensure ARIA attributes are valid and properly spelled (e.g., aria-label, aria-describedby).',
+      'ARIA-VALID-ATTR-VALUE': 'Ensure ARIA attribute values are valid for the attribute type.',
+      'ARIA-ROLES': 'Use valid ARIA roles and ensure they are applied to appropriate elements.',
+      'TABINDEX': 'Avoid positive tabindex values. Use tabindex="0" to add to tab order or tabindex="-1" for programmatic focus.',
+      'FOCUS-VISIBLE': 'Ensure interactive elements have visible focus indicators for keyboard navigation.',
+      'LIST-STRUCTURE': 'Use proper list markup (<ul>, <ol>, <li>) for list content instead of styled paragraphs.',
+      'TABLE-STRUCTURE': 'Use proper table markup with <thead>, <tbody>, <th>, and <td> for data tables.',
+      'EPUB-TYPE-HAS-MATCHING-ROLE': 'Add ARIA role attribute to elements with epub:type to ensure accessibility tree mapping.',
+      'METADATA-ACCESSMODE': 'Add schema:accessMode metadata (textual, visual, auditory) to package document.',
+      'METADATA-ACCESSMODESUFFICIENT': 'Add schema:accessModeSufficient metadata to package document.',
+      'METADATA-ACCESSIBILITYFEATURE': 'Add schema:accessibilityFeature metadata listing accessibility features.',
+      'METADATA-ACCESSIBILITYHAZARD': 'Add schema:accessibilityHazard metadata (none, flashing, motion, sound).',
+      'METADATA-ACCESSIBILITYSUMMARY': 'Add schema:accessibilitySummary with human-readable accessibility description.',
+      'PKG-001': 'Fix package document structure according to EPUB specification requirements.',
+      'OPF-014': 'Ensure package document metadata is complete and valid.',
+      'RSC-005': 'Fix resource file reference - ensure file exists and path is correct.',
+      'HTM-004': 'Fix HTML markup errors - ensure valid, well-formed HTML5.',
+      'CSS-001': 'Fix CSS syntax errors or invalid property values.',
+      'NAV-001': 'Ensure navigation document (toc.xhtml) is present and valid.',
+      'NCX-001': 'Ensure NCX navigation (for EPUB 2 compatibility) is valid if present.',
+      'REGION-LABEL': 'Add aria-label or aria-labelledby to regions to provide accessible names.',
+      'FRAME-TITLE': 'Add title attribute to iframe elements to describe their content.',
+      'VIDEO-CAPTION': 'Provide captions for video content using <track kind="captions">.',
+      'AUDIO-DESCRIPTION': 'Provide audio descriptions for video content with important visual information.',
     };
-    return guidance[code] || 'Review and manually remediate this accessibility issue according to WCAG guidelines.';
+    
+    const upperCode = code.toUpperCase();
+    if (guidance[code]) {
+      return guidance[code];
+    }
+    if (guidance[upperCode]) {
+      return guidance[upperCode];
+    }
+    
+    for (const [key, value] of Object.entries(guidance)) {
+      if (upperCode.includes(key) || key.includes(upperCode)) {
+        return value;
+      }
+    }
+    
+    return 'Review and manually remediate this accessibility issue according to WCAG guidelines. Check the issue message and location for specific details.';
   }
 
   private findResolvedIssues(

@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import { getRedisUrl, isRedisConfigured as checkRedisConfigured } from '../config/redis.config';
+import { logger } from './logger';
 
 let redisClient: Redis | null = null;
 
@@ -44,15 +45,15 @@ export function getRedisClient(): Redis {
     redisClient = new Redis(connectionUrl, options);
 
     redisClient.on('connect', () => {
-      console.log('📦 Redis connected');
+      logger.info('📦 Redis connected');
     });
 
     redisClient.on('error', (err) => {
-      console.error('Redis error:', err.message);
+      logger.error('Redis error:', err);
     });
 
     redisClient.on('close', () => {
-      console.log('Redis connection closed');
+      logger.info('Redis connection closed');
     });
   }
 
