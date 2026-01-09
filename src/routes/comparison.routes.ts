@@ -16,6 +16,52 @@ const asyncHandler = (fn: (req: Request, res: Response) => Promise<void | Respon
   };
 };
 
+import fs from 'fs';
+import path from 'path';
+
+router.get(
+  '/debug',
+  authenticate,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { jobId } = req.params;
+
+    const job = await prisma.job.findUnique({
+      where: { id: jobId }
+    });
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const input = job.input as Record<string, unknown> | null;
+    const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+    const jobStoragePath = path.join(storagePath, jobId);
+    const remediatedPath = path.join(jobStoragePath, 'remediated');
+
+    let filesOnDisk: string[] = [];
+    let remediatedFilesOnDisk: string[] = [];
+
+    try {
+      filesOnDisk = fs.existsSync(jobStoragePath) ? fs.readdirSync(jobStoragePath) : [];
+    } catch { filesOnDisk = []; }
+
+    try {
+      remediatedFilesOnDisk = fs.existsSync(remediatedPath) ? fs.readdirSync(remediatedPath) : [];
+    } catch { remediatedFilesOnDisk = []; }
+
+    res.json({
+      jobId: job.id,
+      status: job.status,
+      type: job.type,
+      input: input,
+      storagePath: jobStoragePath,
+      filesOnDisk,
+      remediatedPath,
+      remediatedFilesOnDisk
+    });
+  })
+);
+
 router.get(
   '/spine',
   authenticate,

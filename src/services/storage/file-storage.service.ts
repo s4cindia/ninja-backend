@@ -78,7 +78,11 @@ class FileStorageService {
   async getRemediatedFile(jobId: string, fileName: string): Promise<Buffer | null> {
     try {
       const sanitizedFileName = path.basename(fileName);
-      const filePath = path.join(STORAGE_BASE, jobId, 'remediated', sanitizedFileName);
+      const ext = path.extname(sanitizedFileName);
+      const baseName = sanitizedFileName.slice(0, -ext.length);
+      const remediatedFileName = `${baseName}_remediated${ext}`;
+      
+      const filePath = path.join(STORAGE_BASE, jobId, 'remediated', remediatedFileName);
       return await fs.readFile(filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
