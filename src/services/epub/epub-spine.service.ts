@@ -26,17 +26,24 @@ export interface ChangeHighlight {
 }
 
 export interface SpineItemWithChange {
-  spineItem: SpineItem;
-  beforeContent: SpineItemContent;
-  afterContent: SpineItemContent;
+  spineItem: SpineItem | null;
+  beforeContent: SpineItemContent | null;
+  afterContent: SpineItemContent | null;
   change: {
     id: string;
     changeNumber: number;
     description: string;
     changeType: string;
     severity: string | null;
+    filePath: string;
   };
   highlightData: ChangeHighlight;
+  isMetadataChange: boolean;
+  rawContent?: {
+    before: string;
+    after: string;
+    fileType: string;
+  };
 }
 
 class EPUBSpineService {
@@ -235,38 +242,102 @@ class EPUBSpineService {
       throw new Error('Change not found');
     }
 
-    const spineItems = await this.getSpineItems(jobId);
-
-    const spineItem = spineItems.find(item =>
-      item.href === change.filePath ||
-      item.href.endsWith(change.filePath)
-    );
-
-    if (!spineItem) {
-      throw new Error(`Spine item not found for file: ${change.filePath}`);
-    }
-
-    const beforeContent = await this.getSpineItemContent(jobId, spineItem.id, 'original');
-    const afterContent = await this.getSpineItemContent(jobId, spineItem.id, 'remediated');
-
     const highlightData: ChangeHighlight = {
       xpath: change.elementXPath || '',
       cssSelector: change.elementXPath ? this.xpathToCssSelector(change.elementXPath) : undefined,
       description: change.description
     };
 
+    const changeInfo = {
+      id: change.id,
+      changeNumber: change.changeNumber,
+      description: change.description,
+      changeType: change.changeType,
+      severity: change.severity,
+      filePath: change.filePath
+    };
+
+    const isMetadataFile = change.filePath.endsWith('.opf') || 
+                           change.filePath.endsWith('.ncx') ||
+                           change.filePath.includes('META-INF/');
+
+    if (isMetadataFile) {
+      const originalZip = await this.loadEPUB(jobId, 'original');
+      const remediatedZip = await this.loadEPUB(jobId, 'remediated');
+      
+      let beforeRaw = '';
+      let afterRaw = '';
+      
+      if (change.filePath.endsWith('.opf')) {
+        const origOpfPath = await this.findOPFPath(originalZip);
+        const remOpfPath = await this.findOPFPath(remediatedZip);
+        
+        const origFile = originalZip.file(origOpfPath);
+        const remFile = remediatedZip.file(remOpfPath);
+        if (origFile) beforeRaw = await origFile.async('text');
+        if (remFile) afterRaw = await remFile.async('text');
+      } else {
+        const normalizedPath = change.filePath.replace(/^OEBPS\//, 'EPUB/').replace(/^EPUB\//, '');
+        const possiblePaths = [
+          change.filePath,
+          `EPUB/${normalizedPath}`,
+          `OEBPS/${normalizedPath}`,
+          normalizedPath
+        ];
+        
+        for (const tryPath of possiblePaths) {
+          const origFile = originalZip.file(tryPath);
+          const remFile = remediatedZip.file(tryPath);
+          if (origFile) beforeRaw = await origFile.async('text');
+          if (remFile) afterRaw = await remFile.async('text');
+          if (beforeRaw || afterRaw) break;
+        }
+      }
+
+      return {
+        spineItem: null,
+        beforeContent: null,
+        afterContent: null,
+        change: changeInfo,
+        highlightData,
+        isMetadataChange: true,
+        rawContent: {
+          before: beforeRaw,
+          after: afterRaw,
+          fileType: change.filePath.endsWith('.opf') ? 'opf' : 'xml'
+        }
+      };
+    }
+
+    const spineItems = await this.getSpineItems(jobId);
+
+    const spineItem = spineItems.find(item =>
+      item.href === change.filePath ||
+      item.href.endsWith(change.filePath) ||
+      change.filePath.endsWith(item.href.split('/').pop() || '')
+    );
+
+    if (!spineItem) {
+      return {
+        spineItem: null,
+        beforeContent: null,
+        afterContent: null,
+        change: changeInfo,
+        highlightData,
+        isMetadataChange: false
+      };
+    }
+
+    const beforeContent = await this.getSpineItemContent(jobId, spineItem.id, 'original');
+    const afterContent = await this.getSpineItemContent(jobId, spineItem.id, 'remediated');
+
     return {
       spineItem,
       beforeContent,
       afterContent,
-      change: {
-        id: change.id,
-        changeNumber: change.changeNumber,
-        description: change.description,
-        changeType: change.changeType,
-        severity: change.severity
-      },
-      highlightData
+      change: changeInfo,
+      highlightData,
+      isMetadataChange: false
     };
   }
 }
