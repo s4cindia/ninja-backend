@@ -943,11 +943,40 @@ export const epubController = {
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
+      const successfulResults = results.filter(r => r.success);
+      logger.info(`[SPECIFIC-FIX] Logging ${successfulResults.length} changes for fixCode: ${fixCode}`);
+      
+      for (const result of successfulResults) {
+        try {
+          await comparisonService.logChange({
+            jobId,
+            ruleId: fixCode,
+            filePath: result.filePath,
+            changeType: fixCode.toLowerCase().replace(/-/g, '_'),
+            description: result.description,
+            beforeContent: result.before,
+            afterContent: result.after,
+            severity: 'MAJOR',
+            wcagCriteria: extractWcagCriteria(fixCode),
+            wcagLevel: extractWcagLevel(fixCode),
+            appliedBy: req.user?.email || 'user',
+          });
+          logger.info(`[SPECIFIC-FIX] Logged change for ${result.filePath}`);
+        } catch (logError) {
+          logger.error('[SPECIFIC-FIX] Failed to log change', { 
+            error: logError instanceof Error ? logError.message : logError,
+            jobId,
+            filePath: result.filePath
+          });
+        }
+      }
+
       return res.json({
         success: true,
         data: {
           fixCode,
           results,
+          changesLogged: successfulResults.length,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });
