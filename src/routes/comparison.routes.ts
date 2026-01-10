@@ -86,6 +86,16 @@ router.get(
 );
 
 router.get(
+  '/changes/:changeId/debug',
+  authenticate,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { jobId, changeId } = req.params;
+    const debugInfo = await epubSpineService.debugChangeToSpineMapping(jobId, changeId);
+    res.json(debugInfo);
+  })
+);
+
+router.get(
   '/changes/:changeId/visual',
   authenticate,
   asyncHandler(async (req: Request, res: Response) => {

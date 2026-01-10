@@ -340,6 +340,39 @@ class EPUBSpineService {
       isMetadataChange: false
     };
   }
+
+  async debugChangeToSpineMapping(jobId: string, changeId: string) {
+    const change = await prisma.remediationChange.findUnique({
+      where: { id: changeId }
+    });
+
+    if (!change) {
+      return { error: 'Change not found' };
+    }
+
+    const spineItems = await this.getSpineItems(jobId);
+
+    console.log('[DEBUG] Change file path:', change.filePath);
+    console.log('[DEBUG] Available spine items:');
+    spineItems.forEach(item => {
+      console.log(`  - ${item.id}: ${item.href}`);
+      console.log(`    Exact match: ${item.href === change.filePath}`);
+      console.log(`    Ends with: ${item.href.endsWith(change.filePath)}`);
+    });
+
+    const matchedItem = spineItems.find(item =>
+      item.href === change.filePath ||
+      item.href.endsWith(change.filePath)
+    );
+
+    return {
+      changeFilePath: change.filePath,
+      changeType: change.changeType,
+      changeDescription: change.description,
+      spineItems: spineItems.map(i => ({ id: i.id, href: i.href })),
+      matchedSpineItem: matchedItem ? { id: matchedItem.id, href: matchedItem.href } : null
+    };
+  }
 }
 
 export const epubSpineService = new EPUBSpineService();
