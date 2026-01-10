@@ -1602,9 +1602,17 @@ export const epubController = {
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
-      for (const result of results.filter(r => r.success)) {
+      const successfulResults = results.filter(r => r.success);
+      logger.info(`[QUICKFIX-LOG] Total results: ${results.length}, Successful: ${successfulResults.length}`);
+      
+      for (const result of successfulResults) {
+        logger.info(`[QUICKFIX-LOG] Logging change for file: ${result.filePath}`);
+        logger.info(`[QUICKFIX-LOG] changeType: ${mapFixTypeToChangeType(fixCode || 'quick-fix')}`);
+        logger.info(`[QUICKFIX-LOG] description: ${result.description}`);
+        logger.info(`[QUICKFIX-LOG] before length: ${result.before?.length || 0}, after length: ${result.after?.length || 0}`);
+        
         try {
-          await comparisonService.logChange({
+          const changeData = {
             jobId,
             taskId: taskId || undefined,
             issueId: issueId || undefined,
@@ -1614,13 +1622,21 @@ export const epubController = {
             description: result.description,
             beforeContent: result.before,
             afterContent: result.after,
-            severity: 'MAJOR',
+            severity: 'MAJOR' as const,
             wcagCriteria: extractWcagCriteria(fixCode || ''),
             wcagLevel: extractWcagLevel(fixCode || ''),
             appliedBy: req.user?.email || 'user',
-          });
+          };
+          logger.info(`[QUICKFIX-LOG] Calling comparisonService.logChange with: ${JSON.stringify(changeData, null, 2)}`);
+          
+          const logResult = await comparisonService.logChange(changeData);
+          logger.info(`[QUICKFIX-LOG] logChange result: ${JSON.stringify(logResult)}`);
         } catch (logError) {
-          logger.warn('Failed to log remediation change', { error: logError, jobId });
+          logger.error('[QUICKFIX-LOG] Failed to log remediation change', { 
+            error: logError instanceof Error ? logError.message : logError, 
+            stack: logError instanceof Error ? logError.stack : undefined,
+            jobId 
+          });
         }
       }
 
