@@ -96,6 +96,43 @@ router.get(
 );
 
 router.get(
+  '/all-changes',
+  authenticate,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { jobId } = req.params;
+
+    const changes = await prisma.remediationChange.findMany({
+      where: { jobId },
+      select: {
+        id: true,
+        changeNumber: true,
+        changeType: true,
+        description: true,
+        filePath: true,
+        status: true,
+        appliedAt: true,
+        severity: true,
+        elementXPath: true
+      },
+      orderBy: { changeNumber: 'asc' }
+    });
+
+    res.json({
+      totalChanges: changes.length,
+      changesByType: changes.reduce((acc, c) => {
+        acc[c.changeType] = (acc[c.changeType] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+      changesByStatus: changes.reduce((acc, c) => {
+        acc[c.status] = (acc[c.status] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>),
+      changes
+    });
+  })
+);
+
+router.get(
   '/changes/:changeId/visual',
   authenticate,
   asyncHandler(async (req: Request, res: Response) => {
