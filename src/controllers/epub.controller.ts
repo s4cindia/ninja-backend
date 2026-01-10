@@ -943,10 +943,35 @@ export const epubController = {
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
-      const successfulResults = results.filter(r => r.success);
-      logger.info(`[SPECIFIC-FIX] Logging ${successfulResults.length} changes for fixCode: ${fixCode}`);
+      // Filter results to only the target file if specified (prevents logging duplicate changes)
+      const targetFile = options?.targetFile;
+      let resultsToLog = results.filter(r => r.success);
       
-      for (const result of successfulResults) {
+      if (targetFile) {
+        // Normalize paths for comparison (remove leading slashes, handle OEBPS prefix)
+        const normalizeFilePath = (path: string) => {
+          return path.replace(/^\/+/, '').replace(/^OEBPS\//, '');
+        };
+        const normalizedTarget = normalizeFilePath(targetFile);
+        resultsToLog = resultsToLog.filter(r => normalizeFilePath(r.filePath) === normalizedTarget || r.filePath.includes(normalizedTarget) || normalizedTarget.includes(r.filePath.replace('OEBPS/', '')));
+        logger.info(`[SPECIFIC-FIX] Filtering to target file: ${targetFile}, matched ${resultsToLog.length} of ${results.filter(r => r.success).length} results`);
+      }
+      
+      // Check for existing changes to prevent duplicates
+      const existingChanges = await prisma.remediationChange.findMany({
+        where: { jobId, ruleId: fixCode },
+        select: { filePath: true }
+      });
+      const existingFilePaths = new Set(existingChanges.map(c => c.filePath));
+      const newResultsToLog = resultsToLog.filter(r => !existingFilePaths.has(r.filePath));
+      
+      if (newResultsToLog.length < resultsToLog.length) {
+        logger.info(`[SPECIFIC-FIX] Skipping ${resultsToLog.length - newResultsToLog.length} already logged changes`);
+      }
+      
+      logger.info(`[SPECIFIC-FIX] Logging ${newResultsToLog.length} new changes for fixCode: ${fixCode}`);
+      
+      for (const result of newResultsToLog) {
         try {
           await comparisonService.logChange({
             jobId,
