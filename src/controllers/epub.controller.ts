@@ -1001,7 +1001,7 @@ export const epubController = {
         data: {
           fixCode,
           results,
-          changesLogged: successfulResults.length,
+          changesLogged: newResultsToLog.length,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });
