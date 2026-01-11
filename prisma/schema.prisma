@@ -163,11 +163,22 @@ model Issue {
   fixType             String?
   code                String?
   filePath            String?
+  status              IssueStatus      @default(PENDING)
+  fixedAt             DateTime?
+  fixedBy             String?
   createdAt           DateTime         @default(now())
 
   @@index([validationResultId])
   @@index([severity])
   @@index([confidence])
+  @@index([status])
+}
+
+enum IssueStatus {
+  PENDING
+  FIXED
+  SKIPPED
+  FAILED
 }
 
 enum IssueSeverity {

@@ -2001,6 +2001,27 @@ export const epubController = {
               req.user?.email || 'system'
             );
 
+            // Update Issue record if it exists (issueId may be stored in task)
+            const issueId = task.issueId || taskId;
+            try {
+              await prisma.issue.updateMany({
+                where: {
+                  OR: [
+                    { id: issueId },
+                    { code: task.issueCode, filePath: taskFilePath }
+                  ]
+                },
+                data: {
+                  status: 'FIXED',
+                  fixedAt: new Date(),
+                  fixedBy: req.user?.email || 'system'
+                }
+              });
+              logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${issueId}`);
+            } catch (issueUpdateError) {
+              logger.warn(`[Batch Quick Fix] Could not update Issue record: ${issueId}`);
+            }
+
             results.successful.push({
               taskId,
               filePath: taskFilePath,
