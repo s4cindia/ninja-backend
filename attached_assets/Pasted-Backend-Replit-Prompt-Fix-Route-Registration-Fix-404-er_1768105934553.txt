@@ -1,0 +1,110 @@
+Backend Replit Prompt: Fix Route Registration
+
+  **Fix 404 errors for batch quick fix endpoints**
+
+  The routes were created but not properly registered with Express. Here's how to fix it:
+
+  **STEP 1: Verify routes file location**
+
+  The routes should be in: `src/routes/remediation.routes.ts`
+
+  If you created them elsewhere, move them to this file.
+
+  **STEP 2: Ensure routes are registered in the main app**
+
+  In your main server file (`src/index.ts` or `src/app.ts`), ensure remediation routes are mounted:
+
+  ```typescript
+  import remediationRoutes from './routes/remediation.routes';
+
+  // ... other code ...
+
+  // Mount remediation routes
+  app.use('/api/v1/jobs', remediationRoutes);
+
+  // OR if you have nested routing:
+  app.use('/api/v1', remediationRoutes);
+
+  STEP 3: Check the exact route paths
+
+  In src/routes/remediation.routes.ts, the routes should be:
+
+  import { Router } from 'express';
+
+  const router = Router();
+
+  // Similar issues endpoint
+  router.get(
+    '/:jobId/remediation/similar-issues',
+    authenticate,
+    async (req, res) => {
+      // ... existing code
+    }
+  );
+
+  // Batch quick fix endpoint
+  router.post(
+    '/:jobId/remediation/quick-fix/batch',
+    authenticate,
+    async (req, res) => {
+      // ... existing code
+    }
+  );
+
+  export default router;
+
+  STEP 4: Restart the backend server
+
+  If using nodemon:
+  # It should auto-restart, but if not:
+  npm run dev
+
+  If using PM2:
+  pm2 restart all
+
+  STEP 5: Test the endpoints directly
+
+  Open terminal and test:
+
+  # Test similar-issues endpoint
+  curl -X GET \
+    -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/jobs/bbcc85ee-f0c5-4cda-95b8-064a203f65fe/remediation/similar-issues
+
+  # Should return:
+  # {"totalIssues": 7, "hasBatchableIssues": true, ...}
+
+  STEP 6: Check for middleware blocking
+
+  Ensure the authenticate middleware is imported:
+
+  import { authenticate } from '../middleware/auth';
+  // or wherever your auth middleware is
+
+  If you get auth errors, the middleware might not be allowing the request through.
+
+  STEP 7: Add debug logging
+
+  Add console.log at the start of each route:
+
+  router.get('/:jobId/remediation/similar-issues', authenticate, async (req, res) => {
+    console.log('[API] GET /remediation/similar-issues called for job:', req.params.jobId);
+    // ... rest of code
+  });
+
+  router.post('/:jobId/remediation/quick-fix/batch', authenticate, async (req, res) => {
+    console.log('[API] POST /remediation/quick-fix/batch called for job:', req.params.jobId);
+    console.log('[API] Body:', req.body);
+    // ... rest of code
+  });
+
+  Common Issues:
+
+  1. Wrong base path: If routes are at /jobs/:jobId/... but app.use is at /api/v1, you need:
+  app.use('/api/v1/jobs', remediationRoutes);
+  2. Router not exported: Ensure export default router; at end of file
+  3. Import path wrong: Check the import in main app file matches actual file location
+  4. Server not restarted: Always restart after adding routes
+
+  After fixing, check browser console:
+  You should see the API calls succeed instead of 404.
