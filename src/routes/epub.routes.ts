@@ -30,6 +30,7 @@ router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubControlle
 router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
 router.get('/job/:jobId/remediation/summary', authenticate, authorizeJob, epubController.getRemediationSummary);
 router.get('/job/:jobId/remediation/similar-issues', authenticate, authorizeJob, epubController.getSimilarIssuesGrouping);
+router.post('/job/:jobId/remediation/start', authenticate, authorizeJob, epubController.startRemediation);
 router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
 router.patch('/job/:jobId/remediation/task/:taskId/fix', authenticate, authorizeJob, epubController.markManualTaskFixed);
 router.post('/job/:jobId/reaudit', authenticate, authorizeJob, upload.single('file'), epubController.reauditEpub);

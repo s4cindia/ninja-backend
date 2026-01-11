@@ -1181,6 +1181,162 @@ class RemediationService {
 
     return names[fixType] || fixType;
   }
+
+  /**
+   * Automatically apply high-confidence fixes
+   */
+  async autoApplyHighConfidenceFixes(jobId: string) {
+    logger.info(`[AutoFix] Starting automatic fix application for job ${jobId}`);
+
+    const plan = await prisma.remediationPlan.findFirst({
+      where: { jobId },
+      include: { tasks: true }
+    });
+
+    if (!plan) {
+      logger.warn(`[AutoFix] No remediation plan found for job ${jobId}`);
+      return { applied: 0, failed: 0, skipped: 0, details: [] };
+    }
+
+    const autofixTasks = plan.tasks.filter(t => 
+      t.status === 'pending' && 
+      t.autoFixable === true
+    );
+
+    if (autofixTasks.length === 0) {
+      logger.info('[AutoFix] No high-confidence issues to auto-apply');
+      return { applied: 0, failed: 0, skipped: 0, details: [] };
+    }
+
+    logger.info(`[AutoFix] Found ${autofixTasks.length} high-confidence issues to auto-apply`);
+
+    const results: {
+      applied: number;
+      failed: number;
+      skipped: number;
+      details: Array<{ taskId: string; code: string; status: string; description?: string; error?: string }>;
+    } = {
+      applied: 0,
+      failed: 0,
+      skipped: 0,
+      details: []
+    };
+
+    const { fileStorageService } = await import('../storage/file-storage.service');
+    const { epubModifier } = await import('./epub-modifier.service');
+
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) {
+      logger.error(`[AutoFix] Job ${jobId} not found`);
+      return results;
+    }
+
+    const input = job.input as { fileName?: string };
+    const originalFileName = input?.fileName || 'upload.epub';
+    const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+    let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+    if (!epubBuffer) {
+      epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+    }
+
+    if (!epubBuffer) {
+      logger.error(`[AutoFix] EPUB file not found for job ${jobId}`);
+      return results;
+    }
+
+    const zip = await epubModifier.loadEPUB(epubBuffer);
+
+    const codeGroups = new Map<string, typeof autofixTasks>();
+    for (const task of autofixTasks) {
+      const code = task.issueCode;
+      if (!codeGroups.has(code)) {
+        codeGroups.set(code, []);
+      }
+      codeGroups.get(code)!.push(task);
+    }
+
+    for (const [code, tasks] of codeGroups) {
+      try {
+        let fixResults: Array<{ success: boolean; filePath: string; description: string }> = [];
+
+        switch (code) {
+          case 'EPUB-META-001':
+            fixResults = [await epubModifier.addLanguage(zip)];
+            break;
+          case 'EPUB-META-002':
+            fixResults = await epubModifier.addAccessibilityMetadata(zip);
+            break;
+          case 'EPUB-META-003':
+            fixResults = [await epubModifier.addAccessibilitySummary(zip)];
+            break;
+          case 'EPUB-META-004':
+            fixResults = await epubModifier.addAccessibilityMetadata(zip, ['accessMode']);
+            break;
+          case 'EPUB-SEM-001':
+            fixResults = await epubModifier.addHtmlLangAttributes(zip);
+            break;
+          case 'EPUB-NAV-001':
+            fixResults = await epubModifier.addSkipNavigation(zip);
+            break;
+          default:
+            logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
+            for (const task of tasks) {
+              results.skipped++;
+              results.details.push({ taskId: task.id, code, status: 'skipped' });
+            }
+            continue;
+        }
+
+        const successCount = fixResults.filter(r => r.success).length;
+        if (successCount > 0) {
+          for (const task of tasks) {
+            await this.updateTaskStatus(
+              jobId,
+              task.id,
+              'completed',
+              `Auto-applied high-confidence fix`,
+              'system'
+            );
+            results.applied++;
+            results.details.push({
+              taskId: task.id,
+              code,
+              status: 'success',
+              description: fixResults[0]?.description || `Applied ${code}`
+            });
+          }
+          logger.info(`[AutoFix] Successfully applied ${code} fix for ${tasks.length} tasks`);
+        } else {
+          for (const task of tasks) {
+            results.failed++;
+            results.details.push({ taskId: task.id, code, status: 'failed', error: 'Fix returned no success' });
+          }
+        }
+      } catch (error) {
+        logger.error(`[AutoFix] Error applying fix for ${code}`, error instanceof Error ? error : undefined);
+        for (const task of tasks) {
+          results.failed++;
+          results.details.push({
+            taskId: task.id,
+            code,
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+    }
+
+    if (results.applied > 0) {
+      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes`);
+    }
+
+    logger.info(`[AutoFix] Results: ${results.applied} applied, ${results.failed} failed, ${results.skipped} skipped`);
+
+    return results;
+  }
 }
 
 export const remediationService = new RemediationService();

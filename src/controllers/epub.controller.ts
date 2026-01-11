@@ -472,6 +472,31 @@ export const epubController = {
     }
   },
 
+  async startRemediation(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const autoFixResults = await remediationService.autoApplyHighConfidenceFixes(jobId);
+
+      const plan = await remediationService.getRemediationPlan(jobId);
+
+      return res.json({
+        success: true,
+        data: {
+          plan,
+          autoFixResults,
+          message: `${autoFixResults.applied} issues were automatically fixed`,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to start remediation', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to start remediation',
+      });
+    }
+  },
+
   async getRemediationSummary(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
