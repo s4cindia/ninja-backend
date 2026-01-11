@@ -1,0 +1,129 @@
+ Backend Replit Prompt 1: Add Batch Apply Endpoint
+
+  Create a batch quick fix application endpoint in src/routes/remediation.routes.ts
+
+  Add this new route that allows applying multiple similar quick fixes in one request:
+
+  ```typescript
+  /**
+   * POST /api/v1/jobs/:jobId/remediation/quick-fix/batch
+   * Apply multiple similar quick fixes in batch
+   */
+  router.post(
+    '/:jobId/remediation/quick-fix/batch',
+    authenticate,
+    async (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const { issueIds, fixType } = req.body;
+
+        if (!Array.isArray(issueIds) || issueIds.length === 0) {
+          return res.status(400).json({
+            error: 'issueIds array is required and must not be empty'
+          });
+        }
+
+        console.log(`[Batch Quick Fix] Applying ${fixType} to ${issueIds.length} issues in job ${jobId}`);
+
+        const results = {
+          successful: [],
+          failed: [],
+          totalAttempted: issueIds.length
+        };
+
+        // Load EPUB once for all fixes
+        const remediationService = new RemediationService();
+        const zip = await remediationService.loadEPUB(jobId);
+
+        // Apply each fix
+        for (const issueId of issueIds) {
+          try {
+            // Find the issue
+            const issue = await prisma.issue.findUnique({
+              where: { id: issueId }
+            });
+
+            if (!issue) {
+              results.failed.push({ issueId, error: 'Issue not found' });
+              continue;
+            }
+
+            // Apply the quick fix based on type
+            let fixResult;
+            switch (fixType) {
+              case 'addTableHeaders':
+                fixResult = await quickFixTemplates.addTableHeaders(zip, issue);
+                break;
+              case 'addImageAltText':
+                fixResult = await quickFixTemplates.addImageAltText(zip, issue);
+                break;
+              case 'addLandmarkRoles':
+                fixResult = await quickFixTemplates.addLandmarkRoles(zip, issue);
+                break;
+              // Add other fix types as needed
+              default:
+                results.failed.push({ issueId, error: `Unknown fix type: ${fixType}` });
+                continue;
+            }
+
+            if (fixResult.success) {
+              results.successful.push({
+                issueId,
+                description: fixResult.description
+              });
+
+              // Update issue status
+              await prisma.issue.update({
+                where: { id: issueId },
+                data: { status: 'fixed' }
+              });
+            } else {
+              results.failed.push({
+                issueId,
+                error: fixResult.error || 'Fix failed'
+              });
+            }
+          } catch (error) {
+            console.error(`[Batch Quick Fix] Error fixing issue ${issueId}:`, error);
+            results.failed.push({
+              issueId,
+              error: error.message
+            });
+          }
+        }
+
+        // Save the modified EPUB
+        if (results.successful.length > 0) {
+          await remediationService.saveEPUB(jobId, zip);
+        }
+
+        console.log(`[Batch Quick Fix] Results: ${results.successful.length} successful, ${results.failed.length} failed`);
+
+        res.json({
+          success: true,
+          results,
+          message: `Applied fixes to ${results.successful.length} of ${results.totalAttempted} issues`
+        });
+
+      } catch (error) {
+        console.error('[Batch Quick Fix] Error:', error);
+        res.status(500).json({
+          error: 'Failed to apply batch fixes',
+          details: error.message
+        });
+      }
+    }
+  );
+
+  This endpoint:
+  - Accepts array of issue IDs and fix type
+  - Loads EPUB once (performance optimization)
+  - Applies all fixes sequentially
+  - Returns success/failure for each issue
+  - Saves EPUB only once at the end
+
+  Save and test with a POST request containing:
+  {
+    "issueIds": ["issue-id-1", "issue-id-2"],
+    "fixType": "addTableHeaders"
+  }

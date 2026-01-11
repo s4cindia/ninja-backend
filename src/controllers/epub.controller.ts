@@ -1814,6 +1814,211 @@ export const epubController = {
       });
     }
   },
+
+  async applyBatchQuickFix(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { taskIds, fixCode, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      if (!Array.isArray(taskIds) || taskIds.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'taskIds array is required and must not be empty' 
+        });
+      }
+
+      if (!fixCode) {
+        return res.status(400).json({ success: false, error: 'fixCode is required' });
+      }
+
+      logger.info(`[Batch Quick Fix] Applying ${fixCode} to ${taskIds.length} tasks in job ${jobId}`);
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+
+      const results: { 
+        successful: Array<{ taskId: string; filePath: string; description: string }>;
+        failed: Array<{ taskId: string; error: string }>;
+        totalAttempted: number;
+      } = {
+        successful: [],
+        failed: [],
+        totalAttempted: taskIds.length
+      };
+
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+      let allResults: ModificationResult[] = [];
+
+      switch (fixCode) {
+        case 'EPUB-META-001':
+          allResults = [await epubModifier.addLanguage(zip, options?.language)];
+          break;
+        case 'EPUB-META-002':
+          allResults = await epubModifier.addAccessibilityMetadata(zip, options?.features);
+          break;
+        case 'EPUB-META-003':
+          allResults = [await epubModifier.addAccessibilitySummary(zip, options?.summary)];
+          break;
+        case 'EPUB-SEM-001':
+          allResults = await epubModifier.addHtmlLangAttributes(zip, options?.language);
+          break;
+        case 'EPUB-SEM-002':
+          allResults = await epubModifier.fixEmptyLinks(zip);
+          break;
+        case 'EPUB-IMG-001':
+          if (options?.imageAlts) {
+            allResults = await epubModifier.addAltText(zip, options.imageAlts);
+          } else {
+            allResults = await epubModifier.addDecorativeAltAttributes(zip);
+          }
+          break;
+        case 'EPUB-STRUCT-002':
+          allResults = await epubModifier.addTableHeaders(zip);
+          break;
+        case 'EPUB-STRUCT-003':
+          allResults = await epubModifier.fixHeadingHierarchy(zip);
+          break;
+        case 'EPUB-STRUCT-004':
+          allResults = await epubModifier.addAriaLandmarks(zip);
+          break;
+        case 'EPUB-NAV-001':
+          allResults = await epubModifier.addSkipNavigation(zip);
+          break;
+        case 'EPUB-FIG-001':
+          allResults = await epubModifier.addFigureStructure(zip);
+          break;
+        default:
+          return res.status(400).json({ success: false, error: `Unknown fix code: ${fixCode}` });
+      }
+
+      const successfulResults = allResults.filter(r => r.success);
+      const successfulFilePaths = new Set(successfulResults.map(r => r.filePath));
+
+      for (const taskId of taskIds) {
+        try {
+          const plan = await prisma.remediationPlan.findFirst({
+            where: { jobId },
+            include: { tasks: { where: { id: taskId } } }
+          });
+
+          const task = plan?.tasks[0];
+          if (!task) {
+            results.failed.push({ taskId, error: 'Task not found' });
+            continue;
+          }
+
+          const normalizeFilePath = (p: string) => p.replace(/^\/+/, '').replace(/^OEBPS\//, '');
+          const taskFilePath = task.filePath || '';
+          const taskFileNormalized = normalizeFilePath(taskFilePath);
+
+          const matchingResult = successfulResults.find(r => 
+            normalizeFilePath(r.filePath) === taskFileNormalized ||
+            r.filePath.includes(taskFileNormalized) ||
+            taskFilePath.includes(r.filePath.replace('OEBPS/', ''))
+          );
+
+          if (matchingResult || successfulFilePaths.size > 0) {
+            await remediationService.updateTaskStatus(
+              jobId,
+              taskId,
+              'completed',
+              `Applied via batch quick fix: ${fixCode}`,
+              req.user?.email || 'system'
+            );
+
+            results.successful.push({
+              taskId,
+              filePath: taskFilePath,
+              description: matchingResult?.description || `Applied ${fixCode}`
+            });
+          } else {
+            results.failed.push({ taskId, error: 'No matching fix result' });
+          }
+        } catch (taskError) {
+          logger.error(`[Batch Quick Fix] Error processing task ${taskId}`, taskError instanceof Error ? taskError : undefined);
+          results.failed.push({ 
+            taskId, 
+            error: taskError instanceof Error ? taskError.message : 'Unknown error' 
+          });
+        }
+      }
+
+      if (results.successful.length > 0) {
+        const modifiedBuffer = await epubModifier.saveEPUB(zip);
+        await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        logger.info(`[Batch Quick Fix] Saved remediated EPUB after ${results.successful.length} fixes`);
+
+        for (const result of successfulResults) {
+          try {
+            await comparisonService.logChange({
+              jobId,
+              ruleId: fixCode,
+              filePath: result.filePath,
+              changeType: fixCode.toLowerCase().replace(/-/g, '_'),
+              description: result.description,
+              beforeContent: result.before,
+              afterContent: result.after,
+              severity: 'MAJOR',
+              wcagCriteria: extractWcagCriteria(fixCode),
+              wcagLevel: extractWcagLevel(fixCode),
+              appliedBy: req.user?.email || 'user',
+            });
+          } catch (logError) {
+            logger.warn(`[Batch Quick Fix] Failed to log change for ${result.filePath}`);
+          }
+        }
+      }
+
+      logger.info(`[Batch Quick Fix] Results: ${results.successful.length} successful, ${results.failed.length} failed`);
+
+      return res.json({
+        success: true,
+        data: {
+          results,
+          message: `Applied fixes to ${results.successful.length} of ${results.totalAttempted} tasks`,
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+        },
+      });
+    } catch (error) {
+      logger.error('[Batch Quick Fix] Error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to apply batch fixes',
+      });
+    }
+  },
 };
 
 // FIX 2: Interface with nullable path field (at module level)
