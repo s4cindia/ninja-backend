@@ -1020,7 +1020,7 @@ export const epubController = {
             jobId,
             ruleId: fixCode,
             filePath: result.filePath,
-            changeType: fixCode.toLowerCase().replace(/-/g, '_'),
+            changeType: mapFixTypeToChangeType(fixCode),
             description: result.description,
             beforeContent: result.before,
             afterContent: result.after,
@@ -1964,9 +1964,11 @@ export const epubController = {
       const successfulResults = allResults.filter(r => r.success);
       const successfulFilePaths = new Set(successfulResults.map(r => r.filePath));
 
+      // Fetch plan once outside the loop to avoid redundant DB queries
+      const plan = await remediationService.getRemediationPlan(jobId);
+
       for (const taskId of ids) {
         try {
-          const plan = await remediationService.getRemediationPlan(jobId);
           const task = plan?.tasks.find((t: { id: string }) => t.id === taskId);
 
           if (!task) {
@@ -2011,7 +2013,7 @@ export const epubController = {
               });
               logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${issueId}`);
             } catch (issueUpdateError) {
-              logger.warn(`[Batch Quick Fix] Could not update Issue record: ${issueId}`);
+              logger.warn(`[Batch Quick Fix] Could not update Issue record: ${issueId}: ${issueUpdateError instanceof Error ? issueUpdateError.message : String(issueUpdateError)}`);
             }
 
             results.successful.push({
@@ -2042,7 +2044,7 @@ export const epubController = {
               jobId,
               ruleId: code,
               filePath: result.filePath,
-              changeType: code.toLowerCase().replace(/-/g, '_'),
+              changeType: mapFixTypeToChangeType(code),
               description: result.description,
               beforeContent: result.before,
               afterContent: result.after,
@@ -2052,7 +2054,7 @@ export const epubController = {
               appliedBy: req.user?.email || 'user',
             });
           } catch (logError) {
-            logger.warn(`[Batch Quick Fix] Failed to log change for ${result.filePath}`);
+            logger.warn(`[Batch Quick Fix] Failed to log change for ${result.filePath}: ${logError instanceof Error ? logError.message : String(logError)}`);
           }
         }
       }

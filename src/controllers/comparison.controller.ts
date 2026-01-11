@@ -1,15 +1,8 @@
-import { Request, Response, NextFunction } from 'express';
+import { Response, NextFunction } from 'express';
 import { ComparisonService } from '../services/comparison';
 import { ComparisonFilters } from '../types/comparison.types';
 import prisma from '../lib/prisma';
-
-interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    tenantId?: string;
-    email?: string;
-  };
-}
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 export class ComparisonController {
   constructor(private comparisonService: ComparisonService) {}
@@ -39,8 +32,10 @@ export class ComparisonController {
         return;
       }
 
-      const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+      const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const page = parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : undefined;
+      const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
 
       const data = await this.comparisonService.getComparison(jobId, { page, limit });
 

@@ -203,7 +203,6 @@ class AutoRemediationService {
               try {
                 const filePath = (result as { filePath?: string; targetPath?: string }).filePath 
                   || (result as { targetPath?: string }).targetPath 
-                  || tasks[0]?.path 
                   || tasks[0]?.filePath 
                   || 'OEBPS/content.opf';
                 await comparisonService.logChange({
