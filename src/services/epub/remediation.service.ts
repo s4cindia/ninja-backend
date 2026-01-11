@@ -1335,6 +1335,27 @@ class RemediationService {
 
         const successCount = fixResults.filter(r => r.success).length;
         if (successCount > 0) {
+          // Log changes for Visual Comparison feature
+          const { comparisonService } = await import('../comparison/comparison.service');
+          for (const result of fixResults.filter(r => r.success)) {
+            try {
+              await comparisonService.logChange({
+                jobId,
+                taskId: tasks[0]?.id,
+                ruleId: code,
+                filePath: result.filePath,
+                changeType: code.toLowerCase().replace(/-/g, '_'),
+                description: result.description,
+                beforeContent: (result as { before?: string }).before,
+                afterContent: (result as { after?: string }).after,
+                severity: 'MAJOR',
+                appliedBy: 'system',
+              });
+            } catch (logError) {
+              logger.warn(`[AutoFix] Failed to log change for ${result.filePath}: ${logError instanceof Error ? logError.message : String(logError)}`);
+            }
+          }
+
           for (const task of tasks) {
             await this.updateTaskStatus(
               jobId,
