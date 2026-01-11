@@ -1,17 +1,44 @@
 import { Request, Response, NextFunction } from 'express';
 import { ComparisonService } from '../services/comparison';
 import { ComparisonFilters } from '../types/comparison.types';
+import prisma from '../lib/prisma';
+
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    tenantId?: string;
+    email?: string;
+  };
+}
 
 export class ComparisonController {
   constructor(private comparisonService: ComparisonService) {}
 
+  private async verifyTenantAccess(jobId: string, tenantId?: string): Promise<boolean> {
+    if (!tenantId) return false;
+    
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { tenantId: true }
+    });
+    
+    return job?.tenantId === tenantId;
+  }
+
   getComparison = async (
-    req: Request,
+    req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
   ): Promise<void> => {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!await this.verifyTenantAccess(jobId, tenantId)) {
+        res.status(403).json({ success: false, error: 'Access denied: job belongs to another tenant' });
+        return;
+      }
+
       const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
 
@@ -24,12 +51,18 @@ export class ComparisonController {
   };
 
   getChangeById = async (
-    req: Request,
+    req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
   ): Promise<void> => {
     try {
       const { jobId, changeId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!await this.verifyTenantAccess(jobId, tenantId)) {
+        res.status(403).json({ success: false, error: 'Access denied: job belongs to another tenant' });
+        return;
+      }
 
       const data = await this.comparisonService.getChangeById(jobId, changeId);
 
@@ -40,12 +73,19 @@ export class ComparisonController {
   };
 
   getChangesByFilter = async (
-    req: Request,
+    req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
   ): Promise<void> => {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!await this.verifyTenantAccess(jobId, tenantId)) {
+        res.status(403).json({ success: false, error: 'Access denied: job belongs to another tenant' });
+        return;
+      }
+
       const filters: ComparisonFilters = {
         changeType: req.query.changeType as string | undefined,
         severity: req.query.severity as string | undefined,

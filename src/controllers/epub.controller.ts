@@ -1031,11 +1031,7 @@ export const epubController = {
           });
           logger.info(`[SPECIFIC-FIX] Logged change for ${result.filePath}`);
         } catch (logError) {
-          logger.error('[SPECIFIC-FIX] Failed to log change', { 
-            error: logError instanceof Error ? logError.message : logError,
-            jobId,
-            filePath: result.filePath
-          });
+          logger.error(`[SPECIFIC-FIX] Failed to log change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId}, filePath=${result.filePath})`);
         }
       }
 
@@ -1613,7 +1609,7 @@ export const epubController = {
                 appliedBy: req.user?.email || 'user',
               });
             } catch (logError) {
-              logger.warn('Failed to log remediation change', { error: logError, jobId });
+              logger.warn(`Failed to log remediation change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId})`);
             }
           }
         }
@@ -1729,11 +1725,7 @@ export const epubController = {
           const logResult = await comparisonService.logChange(changeData);
           logger.info(`[QUICKFIX-LOG] logChange result: ${JSON.stringify(logResult)}`);
         } catch (logError) {
-          logger.error('[QUICKFIX-LOG] Failed to log remediation change', { 
-            error: logError instanceof Error ? logError.message : logError, 
-            stack: logError instanceof Error ? logError.stack : undefined,
-            jobId 
-          });
+          logger.error(`[QUICKFIX-LOG] Failed to log remediation change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId})`);
         }
       }
 

@@ -201,11 +201,16 @@ class AutoRemediationService {
 
             if (result.success) {
               try {
+                const filePath = (result as { filePath?: string; targetPath?: string }).filePath 
+                  || (result as { targetPath?: string }).targetPath 
+                  || tasks[0]?.path 
+                  || tasks[0]?.filePath 
+                  || 'OEBPS/content.opf';
                 await comparisonService.logChange({
                   jobId,
                   taskId: tasks[0]?.id,
                   ruleId: issueCode,
-                  filePath: 'OEBPS/content.opf',
+                  filePath,
                   changeType: mapFixTypeToChangeType(issueCode),
                   description: result.description,
                   beforeContent: result.before,
@@ -216,7 +221,7 @@ class AutoRemediationService {
                   appliedBy: 'auto-remediation',
                 });
               } catch (logError) {
-                logger.warn('Failed to log remediation change', { error: logError, jobId });
+                logger.warn(`Failed to log remediation change: ${logError instanceof Error ? logError.stack : String(logError)} (jobId=${jobId})`);
               }
             }
           }

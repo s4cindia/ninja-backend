@@ -402,6 +402,7 @@ model RemediationChange {
   appliedAt     DateTime     @default(now())
   appliedBy     String?
 
+  @@unique([jobId, changeNumber])
   @@index([jobId])
   @@index([status])
 }

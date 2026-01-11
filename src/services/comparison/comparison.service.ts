@@ -169,40 +169,56 @@ export class ComparisonService {
     };
   }
 
-  async logChange(data: CreateChangeData): Promise<RemediationChange> {
-    const maxChange = await this.prisma.remediationChange.findFirst({
-      where: { jobId: data.jobId },
-      orderBy: { changeNumber: 'desc' },
-      select: { changeNumber: true },
-    });
+  async logChange(data: CreateChangeData, retries = 3): Promise<RemediationChange> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const change = await this.prisma.$transaction(async (tx) => {
+          const maxChange = await tx.remediationChange.findFirst({
+            where: { jobId: data.jobId },
+            orderBy: { changeNumber: 'desc' },
+            select: { changeNumber: true },
+          });
 
-    const changeNumber = (maxChange?.changeNumber || 0) + 1;
+          const changeNumber = (maxChange?.changeNumber || 0) + 1;
 
-    const change = await this.prisma.remediationChange.create({
-      data: {
-        jobId: data.jobId,
-        taskId: data.taskId,
-        changeNumber,
-        issueId: data.issueId,
-        ruleId: data.ruleId,
-        filePath: data.filePath,
-        elementXPath: data.elementXPath,
-        lineNumber: data.lineNumber,
-        changeType: data.changeType,
-        description: data.description,
-        beforeContent: data.beforeContent,
-        afterContent: data.afterContent,
-        contextBefore: data.contextBefore,
-        contextAfter: data.contextAfter,
-        severity: data.severity,
-        wcagCriteria: data.wcagCriteria,
-        wcagLevel: data.wcagLevel,
-        appliedBy: data.appliedBy,
-        status: 'APPLIED',
-      },
-    });
+          return await tx.remediationChange.create({
+            data: {
+              jobId: data.jobId,
+              taskId: data.taskId,
+              changeNumber,
+              issueId: data.issueId,
+              ruleId: data.ruleId,
+              filePath: data.filePath,
+              elementXPath: data.elementXPath,
+              lineNumber: data.lineNumber,
+              changeType: data.changeType,
+              description: data.description,
+              beforeContent: data.beforeContent,
+              afterContent: data.afterContent,
+              contextBefore: data.contextBefore,
+              contextAfter: data.contextAfter,
+              severity: data.severity,
+              wcagCriteria: data.wcagCriteria,
+              wcagLevel: data.wcagLevel,
+              appliedBy: data.appliedBy,
+              status: 'APPLIED',
+            },
+          });
+        });
 
-    return change;
+        return change;
+      } catch (error) {
+        const isUniqueConstraintViolation = 
+          error instanceof Error && 
+          (error.message.includes('Unique constraint') || error.message.includes('P2002'));
+        
+        if (isUniqueConstraintViolation && attempt < retries) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('Failed to log change after maximum retries');
   }
 
   async updateChangeStatus(
