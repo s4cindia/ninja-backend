@@ -454,9 +454,30 @@ export const epubController = {
     }
   },
 
-  async getSimilarIssuesGrouping(req: Request, res: Response) {
+  async getSimilarIssuesGrouping(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      // Verify tenant access to the job
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
+
       const grouping = await remediationService.getSimilarIssuesGrouping(jobId);
 
       return res.json({
@@ -1986,7 +2007,10 @@ export const epubController = {
             taskFilePath.includes(r.filePath.replace('OEBPS/', ''))
           );
 
-          if (matchingResult || successfulFilePaths.size > 0) {
+          // Only mark completed if this specific task's file was fixed
+          const taskFileWasFixed = matchingResult || successfulFilePaths.has(taskFilePath);
+          
+          if (taskFileWasFixed) {
             await remediationService.updateTaskStatus(
               jobId,
               taskId,
@@ -1995,25 +2019,22 @@ export const epubController = {
               req.user?.email || 'system'
             );
 
-            // Update Issue record if it exists (issueId may be stored in task)
-            const issueId = task.issueId || taskId;
-            try {
-              await prisma.issue.updateMany({
-                where: {
-                  OR: [
-                    { id: issueId },
-                    { code: task.issueCode, filePath: taskFilePath }
-                  ]
-                },
-                data: {
-                  status: 'FIXED',
-                  fixedAt: new Date(),
-                  fixedBy: req.user?.email || 'system'
-                }
-              });
-              logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${issueId}`);
-            } catch (issueUpdateError) {
-              logger.warn(`[Batch Quick Fix] Could not update Issue record: ${issueId}: ${issueUpdateError instanceof Error ? issueUpdateError.message : String(issueUpdateError)}`);
+            // Update Issue record only if task has a valid issueId
+            if (task.issueId) {
+              try {
+                await prisma.issue.update({
+                  where: { id: task.issueId },
+                  data: {
+                    status: 'FIXED',
+                    fixedAt: new Date(),
+                    fixedBy: req.user?.email || 'system'
+                  }
+                });
+                logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${task.issueId}`);
+              } catch (issueUpdateError) {
+                // Issue may not exist, log but don't fail
+                logger.warn(`[Batch Quick Fix] Could not update Issue record: ${task.issueId}: ${issueUpdateError instanceof Error ? issueUpdateError.message : String(issueUpdateError)}`);
+              }
             }
 
             results.successful.push({
@@ -2022,7 +2043,7 @@ export const epubController = {
               description: matchingResult?.description || `Applied ${code}`
             });
           } else {
-            results.failed.push({ taskId, error: 'No matching fix result' });
+            results.failed.push({ taskId, error: 'No matching fix result for this task\'s file' });
           }
         } catch (taskError) {
           logger.error(`[Batch Quick Fix] Error processing task ${taskId}`, taskError instanceof Error ? taskError : undefined);
