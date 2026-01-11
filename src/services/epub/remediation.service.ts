@@ -1113,8 +1113,8 @@ class RemediationService {
         id: task.id,
         code: task.issueCode,
         message: task.issueMessage,
-        filePath: task.filePath,
-        location: task.location,
+        filePath: task.filePath ?? null,
+        location: task.location ?? null,
         severity: task.severity
       });
       group.count++;
@@ -1236,17 +1236,14 @@ class RemediationService {
   async autoApplyHighConfidenceFixes(jobId: string) {
     logger.info(`[AutoFix] Starting automatic fix application for job ${jobId}`);
 
-    const plan = await prisma.remediationPlan.findFirst({
-      where: { jobId },
-      include: { tasks: true }
-    });
+    const plan = await this.getRemediationPlan(jobId);
 
     if (!plan) {
       logger.warn(`[AutoFix] No remediation plan found for job ${jobId}`);
       return { applied: 0, failed: 0, skipped: 0, details: [] };
     }
 
-    const autofixTasks = plan.tasks.filter(t => 
+    const autofixTasks = (plan.tasks || []).filter((t: { status?: string; autoFixable?: boolean }) => 
       t.status === 'pending' && 
       t.autoFixable === true
     );

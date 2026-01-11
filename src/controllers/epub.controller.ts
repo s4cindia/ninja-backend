@@ -2042,19 +2042,21 @@ export const epubController = {
             // Update Issue record only if task has a valid issueId and verify job ownership
             if (task.issueId) {
               try {
-                // Use updateMany with jobId to ensure we only update issues belonging to this job
-                const updateResult = await prisma.issue.updateMany({
-                  where: { 
-                    id: task.issueId,
-                    jobId: jobId  // Verify the issue belongs to this job
-                  },
-                  data: {
-                    status: 'FIXED',
-                    fixedAt: new Date(),
-                    fixedBy: req.user?.email || 'system'
-                  }
+                // Verify issue belongs to this job via validationResult chain before updating
+                const issue = await prisma.issue.findFirst({
+                  where: { id: task.issueId },
+                  include: { validationResult: { select: { jobId: true } } }
                 });
-                if (updateResult.count > 0) {
+                
+                if (issue && issue.validationResult.jobId === jobId) {
+                  await prisma.issue.update({
+                    where: { id: task.issueId },
+                    data: {
+                      status: 'FIXED',
+                      fixedAt: new Date(),
+                      fixedBy: req.user?.email || 'system'
+                    }
+                  });
                   logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${task.issueId}`);
                 } else {
                   logger.warn(`[Batch Quick Fix] Issue not found or does not belong to job: ${task.issueId}`);
