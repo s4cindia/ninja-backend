@@ -1336,7 +1336,8 @@ class RemediationService {
         const successCount = fixResults.filter(r => r.success).length;
         if (successCount > 0) {
           // Log changes for Visual Comparison feature
-          const { comparisonService } = await import('../comparison/comparison.service');
+          const { ComparisonService } = await import('../comparison/comparison.service');
+          const comparisonService = new ComparisonService(prisma);
           for (const result of fixResults.filter(r => r.success)) {
             try {
               await comparisonService.logChange({
