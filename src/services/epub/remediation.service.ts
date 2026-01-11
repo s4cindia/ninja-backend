@@ -1061,6 +1061,126 @@ class RemediationService {
       return { success: true, criteria };
     });
   }
+
+  /**
+   * Group issues by quick fix type for batch application
+   */
+  async getSimilarIssuesGrouping(jobId: string) {
+    const plan = await prisma.remediationPlan.findFirst({
+      where: { jobId },
+      include: { tasks: true }
+    });
+
+    if (!plan) {
+      return {
+        totalIssues: 0,
+        groups: [],
+        batchableGroups: [],
+        hasBatchableIssues: false
+      };
+    }
+
+    const pendingTasks = plan.tasks.filter(t => t.status === 'pending' && t.quickFixable);
+
+    const grouped = new Map<string, {
+      fixType: string;
+      fixName: string;
+      issues: Array<{
+        id: string;
+        code: string;
+        message: string;
+        filePath: string | null;
+        location: string | null;
+      }>;
+      count: number;
+      canBatchApply: boolean;
+    }>();
+
+    for (const task of pendingTasks) {
+      const fixType = this.getQuickFixType(task.issueCode);
+      if (!fixType) continue;
+
+      if (!grouped.has(fixType)) {
+        grouped.set(fixType, {
+          fixType,
+          fixName: this.getFixName(fixType),
+          issues: [],
+          count: 0,
+          canBatchApply: true
+        });
+      }
+
+      const group = grouped.get(fixType)!;
+      group.issues.push({
+        id: task.id,
+        code: task.issueCode,
+        message: task.issueMessage,
+        filePath: task.filePath,
+        location: task.location
+      });
+      group.count++;
+    }
+
+    const groupsArray = Array.from(grouped.values());
+
+    return {
+      totalIssues: pendingTasks.length,
+      groups: groupsArray,
+      batchableGroups: groupsArray.filter(g => g.count >= 3),
+      hasBatchableIssues: groupsArray.some(g => g.count >= 3)
+    };
+  }
+
+  /**
+   * Map issue code to quick fix type
+   */
+  private getQuickFixType(issueCode: string): string | null {
+    const mapping: Record<string, string> = {
+      'EPUB-STRUCT-002': 'addTableHeaders',
+      'epub_struct_002': 'addTableHeaders',
+      'epub_struct_table_headers': 'addTableHeaders',
+      'EPUB-IMG-001': 'addImageAltText',
+      'epub_a11y_001': 'addImageAltText',
+      'epub_images_alt': 'addImageAltText',
+      'EPUB-STRUCT-004': 'addLandmarkRoles',
+      'epub_semantics_001': 'addLandmarkRoles',
+      'epub_landmarks': 'addLandmarkRoles',
+      'EPUB-SEM-001': 'addLanguageAttribute',
+      'epub_lang_001': 'addLanguageAttribute',
+      'EPUB-META-001': 'addDcLanguage',
+      'EPUB-META-002': 'addAccessibilityFeatures',
+      'EPUB-META-003': 'addAccessibilitySummary',
+      'EPUB-META-004': 'addAccessModes',
+      'EPUB-SEM-002': 'fixEmptyLinks',
+      'EPUB-STRUCT-003': 'fixHeadingHierarchy',
+      'EPUB-NAV-001': 'addSkipNavigation',
+      'EPUB-FIG-001': 'addFigureStructure',
+    };
+
+    return mapping[issueCode] || null;
+  }
+
+  /**
+   * Get human-readable fix name
+   */
+  private getFixName(fixType: string): string {
+    const names: Record<string, string> = {
+      'addTableHeaders': 'Add Table Headers',
+      'addImageAltText': 'Add Alt Text to Images',
+      'addLandmarkRoles': 'Add Landmark Roles',
+      'addLanguageAttribute': 'Add Language Attributes',
+      'addDcLanguage': 'Add Document Language',
+      'addAccessibilityFeatures': 'Add Accessibility Features Metadata',
+      'addAccessibilitySummary': 'Add Accessibility Summary',
+      'addAccessModes': 'Add Access Modes',
+      'fixEmptyLinks': 'Fix Empty Links',
+      'fixHeadingHierarchy': 'Fix Heading Hierarchy',
+      'addSkipNavigation': 'Add Skip Navigation',
+      'addFigureStructure': 'Add Figure Structure',
+    };
+
+    return names[fixType] || fixType;
+  }
 }
 
 export const remediationService = new RemediationService();

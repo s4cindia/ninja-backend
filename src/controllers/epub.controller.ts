@@ -454,6 +454,24 @@ export const epubController = {
     }
   },
 
+  async getSimilarIssuesGrouping(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const grouping = await remediationService.getSimilarIssuesGrouping(jobId);
+
+      return res.json({
+        success: true,
+        data: grouping,
+      });
+    } catch (error) {
+      logger.error('Failed to group similar issues', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to group similar issues',
+      });
+    }
+  },
+
   async getRemediationSummary(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
