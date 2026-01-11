@@ -493,9 +493,29 @@ export const epubController = {
     }
   },
 
-  async startRemediation(req: Request, res: Response) {
+  async startRemediation(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      // Verify tenant access to the job
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
 
       const autoFixResults = await remediationService.autoApplyHighConfidenceFixes(jobId);
 
@@ -1017,7 +1037,8 @@ export const epubController = {
           return path.replace(/^\/+/, '').replace(/^OEBPS\//, '');
         };
         const normalizedTarget = normalizeFilePath(targetFile);
-        resultsToLog = resultsToLog.filter(r => normalizeFilePath(r.filePath) === normalizedTarget || r.filePath.includes(normalizedTarget) || normalizedTarget.includes(r.filePath.replace('OEBPS/', '')));
+        // Use exact normalized path comparison to prevent false positives (e.g., chapter1.xhtml matching chapter10.xhtml)
+        resultsToLog = resultsToLog.filter(r => normalizeFilePath(r.filePath) === normalizedTarget);
         logger.info(`[SPECIFIC-FIX] Filtering to target file: ${targetFile}, matched ${resultsToLog.length} of ${results.filter(r => r.success).length} results`);
       }
       
@@ -1625,8 +1646,8 @@ export const epubController = {
                 beforeContent: result.before,
                 afterContent: result.after,
                 severity: 'MAJOR',
-                wcagCriteria: '4.1.2',
-                wcagLevel: 'A',
+                wcagCriteria: extractWcagCriteria(fixCode || 'EPUB-SEM-003'),
+                wcagLevel: extractWcagLevel(fixCode || 'EPUB-SEM-003'),
                 appliedBy: req.user?.email || 'user',
               });
             } catch (logError) {
@@ -2001,10 +2022,9 @@ export const epubController = {
           const taskFilePath = task.filePath || '';
           const taskFileNormalized = normalizeFilePath(taskFilePath);
 
+          // Use exact normalized path comparison to prevent false positives
           const matchingResult = successfulResults.find(r => 
-            normalizeFilePath(r.filePath) === taskFileNormalized ||
-            r.filePath.includes(taskFileNormalized) ||
-            taskFilePath.includes(r.filePath.replace('OEBPS/', ''))
+            normalizeFilePath(r.filePath) === taskFileNormalized
           );
 
           // Only mark completed if this specific task's file was fixed
@@ -2019,18 +2039,26 @@ export const epubController = {
               req.user?.email || 'system'
             );
 
-            // Update Issue record only if task has a valid issueId
+            // Update Issue record only if task has a valid issueId and verify job ownership
             if (task.issueId) {
               try {
-                await prisma.issue.update({
-                  where: { id: task.issueId },
+                // Use updateMany with jobId to ensure we only update issues belonging to this job
+                const updateResult = await prisma.issue.updateMany({
+                  where: { 
+                    id: task.issueId,
+                    jobId: jobId  // Verify the issue belongs to this job
+                  },
                   data: {
                     status: 'FIXED',
                     fixedAt: new Date(),
                     fixedBy: req.user?.email || 'system'
                   }
                 });
-                logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${task.issueId}`);
+                if (updateResult.count > 0) {
+                  logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${task.issueId}`);
+                } else {
+                  logger.warn(`[Batch Quick Fix] Issue not found or does not belong to job: ${task.issueId}`);
+                }
               } catch (issueUpdateError) {
                 // Issue may not exist, log but don't fail
                 logger.warn(`[Batch Quick Fix] Could not update Issue record: ${task.issueId}: ${issueUpdateError instanceof Error ? issueUpdateError.message : String(issueUpdateError)}`);

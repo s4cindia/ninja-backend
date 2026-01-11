@@ -1,0 +1,50 @@
+In @src/controllers/epub.controller.ts:
+- Around line 2000-2008: Path matching is too permissive because it uses
+includes() and can yield false positives; instead normalize both sides and
+perform exact comparisons: compute normalizeFilePath for each result (e.g.,
+rNormalized = normalizeFilePath(r.filePath)), then match by strict equality
+against taskFileNormalized (and optionally also check rNormalized ===
+normalizeFilePath(taskFilePath || '')) rather than using
+r.filePath.includes(...) or taskFilePath.includes(...); update the
+matchingResult predicate to compare normalized paths exactly using the existing
+normalizeFilePath function and the variables taskFilePath, taskFileNormalized,
+and successfulResults/matchingResult.
+- Around line 1615-1635: The logChange call in the remediation loop uses
+hardcoded WCAG values ('4.1.2' and 'A'); replace those literals with the
+existing helper functions extractWcagCriteria(ruleIdOrFixCode) and
+extractWcagLevel(ruleIdOrFixCode) (or whatever signatures are used elsewhere) so
+the call to comparisonService.logChange uses extractWcagCriteria(fixCode ||
+'EPUB-SEM-003') and extractWcagLevel(fixCode || 'EPUB-SEM-003') instead of the
+hardcoded strings; update the import/usages if needed and keep the same fallback
+for ruleId (fixCode || 'EPUB-SEM-003') to ensure consistent WCAG mappings with
+other logging paths.
+- Around line 1010-1023: The current filtering in normalizeFilePath/resultsToLog
+uses includes() which causes false positives (e.g., "chapter1.xhtml" matching
+"chapter10.xhtml"); update the filter in the block that computes
+normalizedTarget and resultsToLog so it only matches exact normalized paths:
+compute normalized versions of both targetFile and each result.filePath using
+normalizeFilePath and compare for strict equality (and optionally also compare
+basenames if you intend to allow directory-agnostic matches), removing the
+r.filePath.includes(...) and normalizedTarget.includes(...) checks to prevent
+substring matches while preserving the leading-slash/OEBPS normalization logic.
+- Around line 2023-2038: The issue update is using prisma.issue.update by id
+without verifying the issue belongs to the same job/tenant; change the logic to
+verify ownership before updating (e.g., fetch or update with a compound where
+that includes id plus jobId or tenantId tied to the current task/job) so you
+only mark issues for the same job/tenant as FIXED; locate the block referencing
+task.issueId and replace the prisma.issue.update call with either a
+prisma.issue.updateMany({ where: { id: task.issueId, jobId: task.jobId /* or
+tenantId: req.user?.tenantId */ }, data: { status: 'FIXED', fixedAt: new Date(),
+fixedBy: req.user?.email || 'system' } }) or first prisma.issue.findFirst to
+validate ownership then prisma.issue.update, and adjust the
+logger.debug/logger.warn messages to include whether the update was skipped due
+to tenant/job mismatch.
+- Around line 496-519: The startRemediation handler lacks authentication and
+tenant isolation: ensure the caller is authenticated and the job belongs to
+their tenant before calling remediationService.autoApplyHighConfidenceFixes and
+remediationService.getRemediationPlan. Retrieve the authenticated user/tenant
+(e.g., from req.user or the same auth helper used by getSimilarIssuesGrouping),
+fetch the job by jobId scoped to that tenant (reuse the job lookup/query logic
+from getSimilarIssuesGrouping), return 403/404 if not found or not owned, and
+only then invoke startRemediation’s calls; keep error handling consistent with
+existing patterns.
