@@ -1974,12 +1974,9 @@ export const epubController = {
 
       for (const taskId of ids) {
         try {
-          const plan = await prisma.remediationPlan.findFirst({
-            where: { jobId },
-            include: { tasks: { where: { id: taskId } } }
-          });
+          const plan = await remediationService.getRemediationPlan(jobId);
+          const task = plan?.tasks.find((t: { id: string }) => t.id === taskId);
 
-          const task = plan?.tasks[0];
           if (!task) {
             results.failed.push({ taskId, error: 'Task not found' });
             continue;

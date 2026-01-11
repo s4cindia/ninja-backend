@@ -1066,10 +1066,7 @@ class RemediationService {
    * Group issues by quick fix type for batch application
    */
   async getSimilarIssuesGrouping(jobId: string) {
-    const plan = await prisma.remediationPlan.findFirst({
-      where: { jobId },
-      include: { tasks: true }
-    });
+    const plan = await this.getRemediationPlan(jobId);
 
     if (!plan) {
       return {
@@ -1080,7 +1077,7 @@ class RemediationService {
       };
     }
 
-    const pendingTasks = plan.tasks.filter(t => t.status === 'pending' && t.quickFixable);
+    const pendingTasks = plan.tasks.filter((t: RemediationTask) => t.status === 'pending' && t.quickFixable);
 
     const grouped = new Map<string, {
       fixType: string;
