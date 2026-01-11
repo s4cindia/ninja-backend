@@ -1,0 +1,148 @@
+ Backend Replit Prompt 1: Add Similar Issues Grouping Endpoint
+
+  Create the backend endpoint to group similar quick-fixable issues for batch application.
+
+  **File:** src/routes/remediation.routes.ts (or wherever your remediation routes are)
+
+  **Add this new route:**
+
+  ```typescript
+  /**
+   * GET /api/v1/jobs/:jobId/remediation/similar-issues
+   * Group similar quick-fixable issues for batch application
+   */
+  router.get(
+    '/:jobId/remediation/similar-issues',
+    authenticate,
+    async (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const tenantId = req.user.tenantId;
+
+        // Verify job belongs to tenant
+        const job = await prisma.job.findFirst({
+          where: { id: jobId, tenantId }
+        });
+
+        if (!job) {
+          return res.status(404).json({ error: 'Job not found' });
+        }
+
+        // Get all pending quick-fixable issues
+        const issues = await prisma.issue.findMany({
+          where: {
+            jobId,
+            status: 'pending',
+            isQuickFixable: true
+          },
+          orderBy: [
+            { code: 'asc' },
+            { filePath: 'asc' }
+          ]
+        });
+
+        // Group issues by code/type
+        const groupsMap = new Map();
+
+        for (const issue of issues) {
+          const fixType = issue.code;
+
+          if (!groupsMap.has(fixType)) {
+            groupsMap.set(fixType, {
+              fixType,
+              fixName: getFixName(fixType, issue.message),
+              issues: [],
+              count: 0,
+              canBatchApply: true
+            });
+          }
+
+          const group = groupsMap.get(fixType);
+          group.issues.push({
+            id: issue.id,
+            code: issue.code,
+            message: issue.message,
+            filePath: issue.filePath,
+            location: issue.location,
+            severity: issue.severity
+          });
+          group.count++;
+        }
+
+        // Convert to array
+        const groups = Array.from(groupsMap.values());
+
+        // Filter batchable groups (3+ issues)
+        const batchableGroups = groups.filter(g => g.count >= 3);
+
+        console.log(`[Similar Issues] Found ${groups.length} issue types, ${batchableGroups.length} batchable`);
+
+        res.json({
+          totalIssues: issues.length,
+          groups,
+          batchableGroups,
+          hasBatchableIssues: batchableGroups.length > 0
+        });
+
+      } catch (error) {
+        console.error('[Similar Issues] Error:', error);
+        res.status(500).json({
+          error: 'Failed to group similar issues',
+          details: error.message
+        });
+      }
+    }
+  );
+
+  /**
+   * Helper: Get friendly fix name from issue code
+   */
+  function getFixName(code: string, message: string): string {
+    const codeToName: Record<string, string> = {
+      'EPUB-STRUCT-002': 'Add Table Headers',
+      'epub_struct_002': 'Add Table Headers',
+      'EPUB-A11Y-001': 'Add Image Alt Text',
+      'epub_a11y_001': 'Add Image Alt Text',
+      'EPUB-SEMANTICS-001': 'Add Landmark Roles',
+      'epub_semantics_001': 'Add Landmark Roles',
+      'EPUB-LANG-001': 'Add Language Attributes',
+      'epub_lang_001': 'Add Language Attributes',
+    };
+
+    if (codeToName[code]) {
+      return codeToName[code];
+    }
+
+    // Extract from message
+    if (message.toLowerCase().includes('table') && message.toLowerCase().includes('header')) {
+      return 'Add Table Headers';
+    }
+    if (message.toLowerCase().includes('alt')) {
+      return 'Add Image Alt Text';
+    }
+
+    return `Fix ${code}`;
+  }
+
+  Test the endpoint:
+
+  curl -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/jobs/YOUR_JOB_ID/remediation/similar-issues
+
+  Expected response:
+  {
+    "totalIssues": 4,
+    "groups": [
+      {
+        "fixType": "EPUB-STRUCT-002",
+        "fixName": "Add Table Headers",
+        "count": 4,
+        "canBatchApply": true,
+        "issues": [...]
+      }
+    ],
+    "batchableGroups": [...],
+    "hasBatchableIssues": true
+  }
+
+  Save and test.

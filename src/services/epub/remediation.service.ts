@@ -1091,19 +1091,20 @@ class RemediationService {
         message: string;
         filePath: string | null;
         location: string | null;
+        severity: string;
       }>;
       count: number;
       canBatchApply: boolean;
     }>();
 
     for (const task of pendingTasks) {
-      const fixType = this.getQuickFixType(task.issueCode);
-      if (!fixType) continue;
+      const fixType = this.getQuickFixType(task.issueCode) || task.issueCode;
+      const fixName = this.getFixNameFromCodeAndMessage(task.issueCode, task.issueMessage);
 
       if (!grouped.has(fixType)) {
         grouped.set(fixType, {
           fixType,
-          fixName: this.getFixName(fixType),
+          fixName,
           issues: [],
           count: 0,
           canBatchApply: true
@@ -1116,12 +1117,15 @@ class RemediationService {
         code: task.issueCode,
         message: task.issueMessage,
         filePath: task.filePath,
-        location: task.location
+        location: task.location,
+        severity: task.severity
       });
       group.count++;
     }
 
     const groupsArray = Array.from(grouped.values());
+
+    logger.info(`[Similar Issues] Found ${groupsArray.length} issue types, ${groupsArray.filter(g => g.count >= 3).length} batchable`);
 
     return {
       totalIssues: pendingTasks.length,
@@ -1129,6 +1133,53 @@ class RemediationService {
       batchableGroups: groupsArray.filter(g => g.count >= 3),
       hasBatchableIssues: groupsArray.some(g => g.count >= 3)
     };
+  }
+
+  /**
+   * Get friendly fix name from issue code and message
+   */
+  private getFixNameFromCodeAndMessage(code: string, message: string): string {
+    const codeToName: Record<string, string> = {
+      'EPUB-STRUCT-002': 'Add Table Headers',
+      'epub_struct_002': 'Add Table Headers',
+      'EPUB-A11Y-001': 'Add Image Alt Text',
+      'EPUB-IMG-001': 'Add Image Alt Text',
+      'epub_a11y_001': 'Add Image Alt Text',
+      'EPUB-SEMANTICS-001': 'Add Landmark Roles',
+      'EPUB-STRUCT-004': 'Add Landmark Roles',
+      'epub_semantics_001': 'Add Landmark Roles',
+      'EPUB-LANG-001': 'Add Language Attributes',
+      'EPUB-SEM-001': 'Add Language Attributes',
+      'epub_lang_001': 'Add Language Attributes',
+      'EPUB-META-001': 'Add Document Language',
+      'EPUB-META-002': 'Add Accessibility Features',
+      'EPUB-META-003': 'Add Accessibility Summary',
+      'EPUB-META-004': 'Add Access Modes',
+      'EPUB-SEM-002': 'Fix Empty Links',
+      'EPUB-STRUCT-003': 'Fix Heading Hierarchy',
+      'EPUB-NAV-001': 'Add Skip Navigation',
+      'EPUB-FIG-001': 'Add Figure Structure',
+    };
+
+    if (codeToName[code]) {
+      return codeToName[code];
+    }
+
+    const lowerMessage = message.toLowerCase();
+    if (lowerMessage.includes('table') && lowerMessage.includes('header')) {
+      return 'Add Table Headers';
+    }
+    if (lowerMessage.includes('alt')) {
+      return 'Add Image Alt Text';
+    }
+    if (lowerMessage.includes('landmark')) {
+      return 'Add Landmark Roles';
+    }
+    if (lowerMessage.includes('language') || lowerMessage.includes('lang')) {
+      return 'Add Language Attributes';
+    }
+
+    return `Fix ${code}`;
   }
 
   /**
