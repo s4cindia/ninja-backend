@@ -47,7 +47,38 @@ export interface SpineItemWithChange {
 }
 
 class EPUBSpineService {
+  private cache = new Map<string, {
+    zip: JSZip;
+    opfPath: string;
+    fileName: string;
+    timestamp: number;
+  }>();
+
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+  constructor() {
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, value] of this.cache.entries()) {
+        if (now - value.timestamp > this.CACHE_TTL) {
+          console.log(`[EPUBSpineService] Evicting expired cache entry: ${key}`);
+          this.cache.delete(key);
+        }
+      }
+    }, 60000);
+  }
+
   private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
+    const cacheKey = `${jobId}-${version}`;
+
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      console.log(`[EPUBSpineService] Using cached EPUB for ${cacheKey}`);
+      return cached.zip;
+    }
+
+    console.log(`[EPUBSpineService] Loading EPUB from file system for ${cacheKey}`);
+    
     const job = await prisma.job.findUnique({
       where: { id: jobId }
     });
@@ -70,7 +101,36 @@ class EPUBSpineService {
       throw new Error(`${version} file not found`);
     }
 
-    return await JSZip.loadAsync(buffer);
+    const zip = await JSZip.loadAsync(buffer);
+    const opfPath = await this.findOPFPath(zip);
+
+    this.cache.set(cacheKey, {
+      zip,
+      opfPath,
+      fileName,
+      timestamp: Date.now()
+    });
+
+    return zip;
+  }
+
+  private async loadEPUBWithMetadata(jobId: string, version: 'original' | 'remediated'): Promise<{ zip: JSZip; opfPath: string; fileName: string }> {
+    const cacheKey = `${jobId}-${version}`;
+
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      console.log(`[EPUBSpineService] Using cached EPUB metadata for ${cacheKey}`);
+      return { zip: cached.zip, opfPath: cached.opfPath, fileName: cached.fileName };
+    }
+
+    const zip = await this.loadEPUB(jobId, version);
+    const entry = this.cache.get(cacheKey);
+    
+    if (!entry) {
+      throw new Error('Cache entry not found after loading EPUB');
+    }
+
+    return { zip, opfPath: entry.opfPath, fileName: entry.fileName };
   }
 
   private async findOPFPath(zip: JSZip): Promise<string> {
