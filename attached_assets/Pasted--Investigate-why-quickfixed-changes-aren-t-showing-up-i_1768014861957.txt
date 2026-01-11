@@ -1,0 +1,105 @@
+ Investigate why quickfixed changes aren't showing up in the comparison view.
+
+  First, let's check if quickfixes are being logged to the RemediationChange table.
+
+  Add a temporary diagnostic endpoint in src/routes/comparison.routes.ts:
+
+  ```typescript
+  // Diagnostic endpoint to check all changes for a job
+  router.get(
+    '/jobs/:jobId/comparison/all-changes',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId } = req.params;
+
+      const changes = await prisma.remediationChange.findMany({
+        where: { jobId },
+        select: {
+          id: true,
+          changeNumber: true,
+          changeType: true,
+          description: true,
+          filePath: true,
+          status: true,
+          appliedAt: true,
+          // Add any fields that might indicate source (autofix vs quickfix)
+        },
+        orderBy: { changeNumber: 'asc' }
+      });
+
+      res.json({
+        totalChanges: changes.length,
+        changesByType: changes.reduce((acc, c) => {
+          acc[c.changeType] = (acc[c.changeType] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>),
+        changesByStatus: changes.reduce((acc, c) => {
+          acc[c.status] = (acc[c.status] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>),
+        changes
+      });
+    })
+  );
+
+  Call this endpoint to see all changes for a job where you performed both autofixes and quickfixes.
+
+  Then search your codebase for where quickfix changes are applied. Look for:
+  1. Files related to quickfix functionality
+  2. Where quickfix updates are made to the EPUB
+  3. Whether RemediationChange records are created for quickfixes
+
+  The issue is likely one of:
+  - Quickfixes aren't logging to RemediationChange at all
+  - Quickfixes are logged with a different status that's filtered out
+  - Quickfixes update the EPUB but don't create comparison records
+
+  ---
+
+  ## Expected Issues and Fixes
+
+  ### Issue 1: Quickfixes Not Logged
+  **If quickfixes don't create RemediationChange records:**
+
+  You need to find the quickfix implementation and add logging:
+  ```typescript
+  // When a quickfix is applied, log it:
+  await prisma.remediationChange.create({
+    data: {
+      jobId,
+      changeNumber: nextChangeNumber,
+      filePath: affectedFile,
+      changeType: 'QUICKFIX_' + issueType, // e.g., QUICKFIX_ALT_TEXT
+      description: `Quick fix: ${description}`,
+      beforeContent: originalContent,
+      afterContent: fixedContent,
+      status: 'APPLIED',
+      severity: 'MEDIUM',
+      elementXPath: xpath
+    }
+  });
+
+  Issue 2: Different Status Filtering
+
+  If quickfixes use a different status:
+
+  Check the comparison query - it might be filtering by status:
+  // In comparison.service.ts, ensure all statuses are included:
+  const changes = await prisma.remediationChange.findMany({
+    where: {
+      jobId,
+      // Don't filter by status - include all changes
+    }
+  });
+
+  ---
+  Next Steps
+
+  1. Call the diagnostic endpoint to see what changes exist in the database
+  2. Search for quickfix code in your backend (grep -r "quickfix" src/ or grep -r "quick fix" src/)
+  3. Share the findings - tell me:
+    - How many changes show up in the diagnostic endpoint?
+    - Do you see any quickfix-related changes?
+    - Where is the quickfix functionality implemented?
+
+  Then we can fix the logging to ensure quickfixes are tracked just like autofixes! 

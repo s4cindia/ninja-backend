@@ -1,0 +1,234 @@
+## Backend Replit Prompt 3: Add Confidence-Based Auto/Quick Fix Classification
+
+  Implement confidence scoring and automatic classification of issues as autofix/quickfix/manual.
+
+  File: schema.prisma
+
+  Update the Issue model:
+
+  model Issue {
+    id              String    @id @default(cuid())
+    jobId           String
+    code            String
+    severity        String
+    message         String
+    filePath        String?
+    location        String?
+    isQuickFixable  Boolean   @default(false)
+    isAutoFixable   Boolean   @default(false)  // NEW
+    confidence      Float?    @default(0.5)     // NEW: 0.0 to 1.0
+    fixType         String?   // NEW: 'autofix' | 'quickfix' | 'manual'
+    status          String    @default("pending")
+    fixedAt         DateTime?
+
+    // ... rest of fields
+
+    @@index([jobId, status])
+    @@index([code, status])
+  }
+
+  Run migration:
+
+  npx prisma migrate dev --name add_confidence_and_classification
+
+  ---
+  File: src/services/issue-classification.service.ts (NEW FILE)
+
+  /**
+   * Service for classifying issues and calculating confidence scores
+   */
+
+  interface IssueContext {
+    tableStructure?: 'simple' | 'complex' | 'nested';
+    imageType?: 'decorative' | 'content' | 'complex';
+    hasExistingHeader?: boolean;
+    fileType?: string;
+  }
+
+  export class IssueClassificationService {
+
+    /**
+     * Calculate confidence score for an issue (0.0 to 1.0)
+     */
+    calculateConfidence(issueCode: string, context: IssueContext): number {
+      let confidence = 0.5; // Base confidence
+
+      switch (issueCode) {
+        case 'EPUB-STRUCT-002':
+        case 'epub_struct_002':
+          // Table headers
+          if (context.tableStructure === 'simple') {
+            confidence = 0.95; // Very confident for simple tables
+          } else if (context.tableStructure === 'complex') {
+            confidence = 0.70; // Less confident for complex tables
+          } else if (context.tableStructure === 'nested') {
+            confidence = 0.50; // Requires review for nested tables
+          } else {
+            confidence = 0.80; // Default for tables
+          }
+          break;
+
+        case 'EPUB-A11Y-001':
+        case 'epub_a11y_001':
+          // Image alt text
+          if (context.imageType === 'decorative') {
+            confidence = 0.98; // Very safe to add alt=""
+          } else if (context.imageType === 'content') {
+            confidence = 0.60; // Needs human description
+          } else {
+            confidence = 0.75;
+          }
+          break;
+
+        case 'EPUB-LANG-001':
+        case 'epub_lang_001':
+          // Language attributes
+          confidence = 0.90; // Usually safe to add
+          break;
+
+        case 'EPUB-SEMANTICS-001':
+        case 'epub_semantics_001':
+          // Landmark roles
+          confidence = 0.85;
+          break;
+
+        default:
+          confidence = 0.60;
+      }
+
+      return Math.min(1.0, Math.max(0.0, confidence));
+    }
+
+    /**
+     * Classify issue as autofix, quickfix, or manual based on confidence
+     */
+    classifyIssue(confidence: number, riskLevel: string = 'medium'): {
+      fixType: 'autofix' | 'quickfix' | 'manual';
+      isAutoFixable: boolean;
+      isQuickFixable: boolean;
+    } {
+      // Risk adjustment
+      const riskScore = riskLevel === 'low' ? 0.1 : riskLevel === 'medium' ? 0.5 : 0.9;
+
+      if (confidence >= 0.95 && riskScore <= 0.1) {
+        return {
+          fixType: 'autofix',
+          isAutoFixable: true,
+          isQuickFixable: false
+        };
+      } else if (confidence >= 0.70) {
+        return {
+          fixType: 'quickfix',
+          isAutoFixable: false,
+          isQuickFixable: true
+        };
+      } else {
+        return {
+          fixType: 'manual',
+          isAutoFixable: false,
+          isQuickFixable: false
+        };
+      }
+    }
+
+    /**
+     * Analyze issue context from EPUB content
+     */
+    async analyzeIssueContext(issueCode: string, filePath: string, location: string, zip: any): Promise<IssueContext> {
+      const context: IssueContext = {};
+
+      try {
+        if (issueCode.includes('STRUCT-002') || issueCode.includes('struct_002')) {
+          // Analyze table structure
+          context.tableStructure = await this.analyzeTableStructure(zip, filePath, location);
+        } else if (issueCode.includes('A11Y-001') || issueCode.includes('a11y_001')) {
+          // Analyze image type
+          context.imageType = await this.analyzeImageType(zip, filePath, location);
+        }
+      } catch (error) {
+        console.warn('[Issue Classification] Context analysis failed:', error);
+      }
+
+      return context;
+    }
+
+    /**
+     * Analyze table structure complexity
+     */
+    private async analyzeTableStructure(zip: any, filePath: string, location: string): Promise<'simple' | 'complex' | 'nested'> {
+      // TODO: Parse XHTML and analyze table
+      // For now, return 'simple' as default
+      return 'simple';
+    }
+
+    /**
+     * Analyze image type
+     */
+    private async analyzeImageType(zip: any, filePath: string, location: string): Promise<'decorative' | 'content' | 'complex'> {
+      // TODO: Analyze image context (filename, surrounding text, etc.)
+      return 'content';
+    }
+  }
+
+  ---
+  Update your audit service to use classification when creating issues:
+
+  import { IssueClassificationService } from './issue-classification.service';
+
+  const classificationService = new IssueClassificationService();
+
+  // When creating an issue:
+  async function createIssue(jobId: string, aceAssertion: any, zip: any) {
+    // Analyze context
+    const context = await classificationService.analyzeIssueContext(
+      aceAssertion.code,
+      aceAssertion.filePath,
+      aceAssertion.location,
+      zip
+    );
+
+    // Calculate confidence
+    const confidence = classificationService.calculateConfidence(
+      aceAssertion.code,
+      context
+    );
+
+    // Classify
+    const classification = classificationService.classifyIssue(
+      confidence,
+      aceAssertion.severity === 'critical' ? 'high' : 'medium'
+    );
+
+    // Create issue with classification
+    const issue = await prisma.issue.create({
+      data: {
+        jobId,
+        code: aceAssertion.code,
+        severity: aceAssertion.severity,
+        message: aceAssertion.message,
+        filePath: aceAssertion.filePath,
+        location: aceAssertion.location,
+        confidence,
+        fixType: classification.fixType,
+        isAutoFixable: classification.isAutoFixable,
+        isQuickFixable: classification.isQuickFixable,
+        status: 'pending'
+      }
+    });
+
+    console.log(`[Issue] Created ${issue.code} with ${confidence.toFixed(2)} confidence, classified as ${classification.fixType}`);
+
+    return issue;
+  }
+
+  This implements the full backend for confidence-based classification!
+
+  ---
+
+  ## Summary
+
+  Apply these prompts in order:
+
+  1. ✅ **Prompt 1**: Similar issues grouping endpoint (IMMEDIATE VALUE)
+  2. ✅ **Prompt 2**: Batch quick fix endpoint (IMMEDIATE VALUE)
+  3. ⏸️ **Prompt 3**: Confidence classification (ENHANCEMENT - can do later)

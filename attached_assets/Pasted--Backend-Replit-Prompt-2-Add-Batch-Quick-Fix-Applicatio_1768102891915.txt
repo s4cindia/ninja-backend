@@ -1,0 +1,248 @@
+## Backend Replit Prompt 2: Add Batch Quick Fix Application Endpoint
+
+  Create the backend endpoint to apply multiple quick fixes in a single batch operation.
+
+  File: src/routes/remediation.routes.ts
+
+  Add this new route:
+
+  /**
+   * POST /api/v1/jobs/:jobId/remediation/quick-fix/batch
+   * Apply multiple quick fixes in batch
+   */
+  router.post(
+    '/:jobId/remediation/quick-fix/batch',
+    authenticate,
+    async (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const { issueIds, fixType } = req.body;
+        const tenantId = req.user.tenantId;
+
+        // Validate input
+        if (!Array.isArray(issueIds) || issueIds.length === 0) {
+          return res.status(400).json({
+            error: 'issueIds array is required and must not be empty'
+          });
+        }
+
+        // Verify job belongs to tenant
+        const job = await prisma.job.findFirst({
+          where: { id: jobId, tenantId }
+        });
+
+        if (!job) {
+          return res.status(404).json({ error: 'Job not found' });
+        }
+
+        console.log(`[Batch Quick Fix] Applying ${fixType} to ${issueIds.length} issues`);
+
+        const results = {
+          successful: [],
+          failed: [],
+          totalAttempted: issueIds.length
+        };
+
+        // Load EPUB once for efficiency
+        const fileService = new FileStorageService();
+        const remediatedBuffer = await fileService.getRemediatedFile(jobId);
+        const JSZip = require('jszip');
+        const zip = await JSZip.loadAsync(remediatedBuffer);
+
+        // Apply each fix
+        for (const issueId of issueIds) {
+          try {
+            const issue = await prisma.issue.findUnique({
+              where: { id: issueId }
+            });
+
+            if (!issue) {
+              results.failed.push({
+                issueId,
+                error: 'Issue not found'
+              });
+              continue;
+            }
+
+            // Apply the quick fix based on issue code
+            let fixResult;
+
+            switch (issue.code) {
+              case 'EPUB-STRUCT-002':
+              case 'epub_struct_002':
+                fixResult = await applyTableHeaderFix(zip, issue);
+                break;
+
+              case 'EPUB-A11Y-001':
+              case 'epub_a11y_001':
+                fixResult = await applyAltTextFix(zip, issue);
+                break;
+
+              case 'EPUB-LANG-001':
+              case 'epub_lang_001':
+                fixResult = await applyLanguageFix(zip, issue);
+                break;
+
+              default:
+                results.failed.push({
+                  issueId,
+                  error: `No fix handler for ${issue.code}`
+                });
+                continue;
+            }
+
+            if (fixResult.success) {
+              // Update issue status
+              await prisma.issue.update({
+                where: { id: issueId },
+                data: {
+                  status: 'fixed',
+                  fixedAt: new Date()
+                }
+              });
+
+              // Log remediation change
+              await prisma.remediationChange.create({
+                data: {
+                  jobId,
+                  changeNumber: 0, // Will be set properly
+                  ruleId: issue.code,
+                  filePath: issue.filePath,
+                  description: fixResult.description || `Fixed ${issue.code}`,
+                  changeType: 'quick_fix',
+                  elementXPath: issue.location,
+                  status: 'APPLIED',
+                  severity: issue.severity
+                }
+              });
+
+              results.successful.push({
+                issueId,
+                description: fixResult.description
+              });
+
+              console.log(`[Batch Quick Fix] ✓ Fixed issue ${issueId}`);
+            } else {
+              results.failed.push({
+                issueId,
+                error: fixResult.error || 'Fix failed'
+              });
+            }
+
+          } catch (error) {
+            console.error(`[Batch Quick Fix] Error fixing ${issueId}:`, error);
+            results.failed.push({
+              issueId,
+              error: error.message
+            });
+          }
+        }
+
+        // Save modified EPUB if any fixes succeeded
+        if (results.successful.length > 0) {
+          const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+          await fileService.saveRemediatedFile(jobId, buffer);
+          console.log(`[Batch Quick Fix] Saved EPUB with ${results.successful.length} fixes`);
+        }
+
+        res.json({
+          success: true,
+          results,
+          message: `Applied ${results.successful.length} of ${results.totalAttempted} fixes`
+        });
+
+      } catch (error) {
+        console.error('[Batch Quick Fix] Error:', error);
+        res.status(500).json({
+          error: 'Failed to apply batch fixes',
+          details: error.message
+        });
+      }
+    }
+  );
+
+  /**
+   * Apply table header fix
+   */
+  async function applyTableHeaderFix(zip: any, issue: any) {
+    try {
+      // Import your existing table header fix logic
+      const quickFixTemplates = require('../services/quickFixTemplates');
+      const result = await quickFixTemplates.addTableHeaders(zip, issue);
+
+      return {
+        success: true,
+        description: `Added headers to table in ${issue.filePath}`
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Apply alt text fix
+   */
+  async function applyAltTextFix(zip: any, issue: any) {
+    try {
+      const quickFixTemplates = require('../services/quickFixTemplates');
+      const result = await quickFixTemplates.addImageAltText(zip, issue);
+
+      return {
+        success: true,
+        description: `Added alt text to image in ${issue.filePath}`
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Apply language attribute fix
+   */
+  async function applyLanguageFix(zip: any, issue: any) {
+    try {
+      const quickFixTemplates = require('../services/quickFixTemplates');
+      const result = await quickFixTemplates.addLanguageAttribute(zip, issue);
+
+      return {
+        success: true,
+        description: `Added language attribute in ${issue.filePath}`
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  Test the endpoint:
+
+  curl -X POST \
+    -H "Authorization: Bearer YOUR_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"issueIds": ["issue-id-1", "issue-id-2"], "fixType": "EPUB-STRUCT-002"}' \
+    http://localhost:3000/api/v1/jobs/YOUR_JOB_ID/remediation/quick-fix/batch
+
+  Expected response:
+  {
+    "success": true,
+    "results": {
+      "successful": [
+        {"issueId": "...", "description": "Added headers to table..."}
+      ],
+      "failed": [],
+      "totalAttempted": 2
+    },
+    "message": "Applied 2 of 2 fixes"
+  }
+
+  Save and test.
+
+  ---

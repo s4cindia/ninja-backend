@@ -1061,6 +1061,349 @@ class RemediationService {
       return { success: true, criteria };
     });
   }
+
+  /**
+   * Group issues by quick fix type for batch application
+   */
+  async getSimilarIssuesGrouping(jobId: string) {
+    const plan = await this.getRemediationPlan(jobId);
+
+    if (!plan) {
+      return {
+        totalIssues: 0,
+        groups: [],
+        batchableGroups: [],
+        hasBatchableIssues: false
+      };
+    }
+
+    const pendingTasks = plan.tasks.filter((t: RemediationTask) => t.status === 'pending' && t.quickFixable);
+
+    const grouped = new Map<string, {
+      fixType: string;
+      fixName: string;
+      issues: Array<{
+        id: string;
+        code: string;
+        message: string;
+        filePath: string | null;
+        location: string | null;
+        severity: string;
+      }>;
+      count: number;
+      canBatchApply: boolean;
+    }>();
+
+    for (const task of pendingTasks) {
+      const fixType = this.getQuickFixType(task.issueCode) || task.issueCode;
+      const fixName = this.getFixNameFromCodeAndMessage(task.issueCode, task.issueMessage);
+
+      if (!grouped.has(fixType)) {
+        grouped.set(fixType, {
+          fixType,
+          fixName,
+          issues: [],
+          count: 0,
+          canBatchApply: true
+        });
+      }
+
+      const group = grouped.get(fixType)!;
+      group.issues.push({
+        id: task.id,
+        code: task.issueCode,
+        message: task.issueMessage,
+        filePath: task.filePath ?? null,
+        location: task.location ?? null,
+        severity: task.severity
+      });
+      group.count++;
+    }
+
+    const groupsArray = Array.from(grouped.values());
+
+    logger.info(`[Similar Issues] Found ${groupsArray.length} issue types, ${groupsArray.filter(g => g.count >= 3).length} batchable`);
+
+    return {
+      totalIssues: pendingTasks.length,
+      groups: groupsArray,
+      batchableGroups: groupsArray.filter(g => g.count >= 3),
+      hasBatchableIssues: groupsArray.some(g => g.count >= 3)
+    };
+  }
+
+  /**
+   * Get friendly fix name from issue code and message
+   */
+  private getFixNameFromCodeAndMessage(code: string, message: string): string {
+    const codeToName: Record<string, string> = {
+      'EPUB-STRUCT-002': 'Add Table Headers',
+      'epub_struct_002': 'Add Table Headers',
+      'EPUB-A11Y-001': 'Add Image Alt Text',
+      'EPUB-IMG-001': 'Add Image Alt Text',
+      'epub_a11y_001': 'Add Image Alt Text',
+      'EPUB-SEMANTICS-001': 'Add Landmark Roles',
+      'EPUB-STRUCT-004': 'Add Landmark Roles',
+      'epub_semantics_001': 'Add Landmark Roles',
+      'EPUB-LANG-001': 'Add Language Attributes',
+      'EPUB-SEM-001': 'Add Language Attributes',
+      'epub_lang_001': 'Add Language Attributes',
+      'EPUB-META-001': 'Add Document Language',
+      'EPUB-META-002': 'Add Accessibility Features',
+      'EPUB-META-003': 'Add Accessibility Summary',
+      'EPUB-META-004': 'Add Access Modes',
+      'EPUB-SEM-002': 'Fix Empty Links',
+      'EPUB-STRUCT-003': 'Fix Heading Hierarchy',
+      'EPUB-NAV-001': 'Add Skip Navigation',
+      'EPUB-FIG-001': 'Add Figure Structure',
+    };
+
+    if (codeToName[code]) {
+      return codeToName[code];
+    }
+
+    const lowerMessage = message.toLowerCase();
+    if (lowerMessage.includes('table') && lowerMessage.includes('header')) {
+      return 'Add Table Headers';
+    }
+    if (lowerMessage.includes('alt')) {
+      return 'Add Image Alt Text';
+    }
+    if (lowerMessage.includes('landmark')) {
+      return 'Add Landmark Roles';
+    }
+    if (lowerMessage.includes('language') || lowerMessage.includes('lang')) {
+      return 'Add Language Attributes';
+    }
+
+    return `Fix ${code}`;
+  }
+
+  /**
+   * Map issue code to quick fix type
+   */
+  private getQuickFixType(issueCode: string): string | null {
+    const mapping: Record<string, string> = {
+      'EPUB-STRUCT-002': 'addTableHeaders',
+      'epub_struct_002': 'addTableHeaders',
+      'epub_struct_table_headers': 'addTableHeaders',
+      'EPUB-IMG-001': 'addImageAltText',
+      'epub_a11y_001': 'addImageAltText',
+      'epub_images_alt': 'addImageAltText',
+      'EPUB-STRUCT-004': 'addLandmarkRoles',
+      'epub_semantics_001': 'addLandmarkRoles',
+      'epub_landmarks': 'addLandmarkRoles',
+      'EPUB-SEM-001': 'addLanguageAttribute',
+      'epub_lang_001': 'addLanguageAttribute',
+      'EPUB-META-001': 'addDcLanguage',
+      'EPUB-META-002': 'addAccessibilityFeatures',
+      'EPUB-META-003': 'addAccessibilitySummary',
+      'EPUB-META-004': 'addAccessModes',
+      'EPUB-SEM-002': 'fixEmptyLinks',
+      'EPUB-STRUCT-003': 'fixHeadingHierarchy',
+      'EPUB-NAV-001': 'addSkipNavigation',
+      'EPUB-FIG-001': 'addFigureStructure',
+    };
+
+    return mapping[issueCode] || null;
+  }
+
+  /**
+   * Get human-readable fix name
+   */
+  private getFixName(fixType: string): string {
+    const names: Record<string, string> = {
+      'addTableHeaders': 'Add Table Headers',
+      'addImageAltText': 'Add Alt Text to Images',
+      'addLandmarkRoles': 'Add Landmark Roles',
+      'addLanguageAttribute': 'Add Language Attributes',
+      'addDcLanguage': 'Add Document Language',
+      'addAccessibilityFeatures': 'Add Accessibility Features Metadata',
+      'addAccessibilitySummary': 'Add Accessibility Summary',
+      'addAccessModes': 'Add Access Modes',
+      'fixEmptyLinks': 'Fix Empty Links',
+      'fixHeadingHierarchy': 'Fix Heading Hierarchy',
+      'addSkipNavigation': 'Add Skip Navigation',
+      'addFigureStructure': 'Add Figure Structure',
+    };
+
+    return names[fixType] || fixType;
+  }
+
+  /**
+   * Automatically apply high-confidence fixes
+   */
+  async autoApplyHighConfidenceFixes(jobId: string) {
+    logger.info(`[AutoFix] Starting automatic fix application for job ${jobId}`);
+
+    const plan = await this.getRemediationPlan(jobId);
+
+    if (!plan) {
+      logger.warn(`[AutoFix] No remediation plan found for job ${jobId}`);
+      return { applied: 0, failed: 0, skipped: 0, details: [] };
+    }
+
+    const autofixTasks = (plan.tasks || []).filter((t: { status?: string; autoFixable?: boolean }) => 
+      t.status === 'pending' && 
+      t.autoFixable === true
+    );
+
+    if (autofixTasks.length === 0) {
+      logger.info('[AutoFix] No high-confidence issues to auto-apply');
+      return { applied: 0, failed: 0, skipped: 0, details: [] };
+    }
+
+    logger.info(`[AutoFix] Found ${autofixTasks.length} high-confidence issues to auto-apply`);
+
+    const results: {
+      applied: number;
+      failed: number;
+      skipped: number;
+      details: Array<{ taskId: string; code: string; status: string; description?: string; error?: string }>;
+    } = {
+      applied: 0,
+      failed: 0,
+      skipped: 0,
+      details: []
+    };
+
+    const { fileStorageService } = await import('../storage/file-storage.service');
+    const { epubModifier } = await import('./epub-modifier.service');
+
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) {
+      logger.error(`[AutoFix] Job ${jobId} not found`);
+      return results;
+    }
+
+    const input = job.input as { fileName?: string };
+    const originalFileName = input?.fileName || 'upload.epub';
+    const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+    let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+    if (!epubBuffer) {
+      epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+    }
+
+    if (!epubBuffer) {
+      logger.error(`[AutoFix] EPUB file not found for job ${jobId}`);
+      return results;
+    }
+
+    const zip = await epubModifier.loadEPUB(epubBuffer);
+
+    const codeGroups = new Map<string, typeof autofixTasks>();
+    for (const task of autofixTasks) {
+      const code = task.issueCode;
+      if (!codeGroups.has(code)) {
+        codeGroups.set(code, []);
+      }
+      codeGroups.get(code)!.push(task);
+    }
+
+    for (const [code, tasks] of codeGroups) {
+      try {
+        let fixResults: Array<{ success: boolean; filePath: string; description: string }> = [];
+
+        switch (code) {
+          case 'EPUB-META-001':
+            fixResults = [await epubModifier.addLanguage(zip)];
+            break;
+          case 'EPUB-META-002':
+            fixResults = await epubModifier.addAccessibilityMetadata(zip);
+            break;
+          case 'EPUB-META-003':
+            fixResults = [await epubModifier.addAccessibilitySummary(zip)];
+            break;
+          case 'EPUB-META-004':
+            fixResults = await epubModifier.addAccessibilityMetadata(zip, ['accessMode']);
+            break;
+          case 'EPUB-SEM-001':
+            fixResults = await epubModifier.addHtmlLangAttributes(zip);
+            break;
+          case 'EPUB-NAV-001':
+            fixResults = await epubModifier.addSkipNavigation(zip);
+            break;
+          default:
+            logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
+            for (const task of tasks) {
+              results.skipped++;
+              results.details.push({ taskId: task.id, code, status: 'skipped' });
+            }
+            continue;
+        }
+
+        const successCount = fixResults.filter(r => r.success).length;
+        if (successCount > 0) {
+          // Log changes for Visual Comparison feature
+          const { ComparisonService } = await import('../comparison/comparison.service');
+          const comparisonService = new ComparisonService(prisma);
+          for (const result of fixResults.filter(r => r.success)) {
+            try {
+              await comparisonService.logChange({
+                jobId,
+                taskId: tasks[0]?.id,
+                ruleId: code,
+                filePath: result.filePath,
+                changeType: code.toLowerCase().replace(/-/g, '_'),
+                description: result.description,
+                beforeContent: (result as { before?: string }).before,
+                afterContent: (result as { after?: string }).after,
+                severity: 'MAJOR',
+                appliedBy: 'system',
+              });
+            } catch (logError) {
+              logger.warn(`[AutoFix] Failed to log change for ${result.filePath}: ${logError instanceof Error ? logError.message : String(logError)}`);
+            }
+          }
+
+          for (const task of tasks) {
+            await this.updateTaskStatus(
+              jobId,
+              task.id,
+              'completed',
+              `Auto-applied high-confidence fix`,
+              'system'
+            );
+            results.applied++;
+            results.details.push({
+              taskId: task.id,
+              code,
+              status: 'success',
+              description: fixResults[0]?.description || `Applied ${code}`
+            });
+          }
+          logger.info(`[AutoFix] Successfully applied ${code} fix for ${tasks.length} tasks`);
+        } else {
+          for (const task of tasks) {
+            results.failed++;
+            results.details.push({ taskId: task.id, code, status: 'failed', error: 'Fix returned no success' });
+          }
+        }
+      } catch (error) {
+        logger.error(`[AutoFix] Error applying fix for ${code}`, error instanceof Error ? error : undefined);
+        for (const task of tasks) {
+          results.failed++;
+          results.details.push({
+            taskId: task.id,
+            code,
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+    }
+
+    if (results.applied > 0) {
+      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes`);
+    }
+
+    logger.info(`[AutoFix] Results: ${results.applied} applied, ${results.failed} failed, ${results.skipped} skipped`);
+
+    return results;
+  }
 }
 
 export const remediationService = new RemediationService();

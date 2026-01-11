@@ -1,0 +1,125 @@
+## Backend Replit Prompt 2: Add Similar Issues Grouping Logic
+
+  Add logic to group similar issues in src/services/remediation.service.ts
+
+  Add this method to identify and group similar quick-fixable issues:
+
+  /**
+   * Group issues by quick fix type for batch application
+   */
+  async getSimilarIssuesGrouping(jobId: string) {
+    const issues = await prisma.issue.findMany({
+      where: {
+        jobId,
+        status: 'pending',
+        isQuickFixable: true
+      },
+      orderBy: { filePath: 'asc' }
+    });
+
+    // Group by fix type
+    const grouped = new Map<string, {
+      fixType: string;
+      fixName: string;
+      issues: any[];
+      count: number;
+      canBatchApply: boolean;
+    }>();
+
+    for (const issue of issues) {
+      // Determine fix type from issue code or rule
+      let fixType = this.getQuickFixType(issue.code);
+
+      if (!fixType) continue;
+
+      if (!grouped.has(fixType)) {
+        grouped.set(fixType, {
+          fixType,
+          fixName: this.getFixName(fixType),
+          issues: [],
+          count: 0,
+          canBatchApply: true
+        });
+      }
+
+      const group = grouped.get(fixType);
+      group.issues.push({
+        id: issue.id,
+        code: issue.code,
+        message: issue.message,
+        filePath: issue.filePath,
+        location: issue.location
+      });
+      group.count++;
+    }
+
+    // Convert Map to array and filter groups with 3+ issues
+    const groupsArray = Array.from(grouped.values());
+
+    return {
+      totalIssues: issues.length,
+      groups: groupsArray,
+      batchableGroups: groupsArray.filter(g => g.count >= 3),
+      hasBatchableIssues: groupsArray.some(g => g.count >= 3)
+    };
+  }
+
+  /**
+   * Map issue code to quick fix type
+   */
+  private getQuickFixType(issueCode: string): string | null {
+    const mapping = {
+      'epub_struct_002': 'addTableHeaders',
+      'epub_struct_table_headers': 'addTableHeaders',
+      'epub_a11y_001': 'addImageAltText',
+      'epub_images_alt': 'addImageAltText',
+      'epub_semantics_001': 'addLandmarkRoles',
+      'epub_landmarks': 'addLandmarkRoles',
+      'epub_lang_001': 'addLanguageAttribute',
+      // Add more mappings as needed
+    };
+
+    return mapping[issueCode] || null;
+  }
+
+  /**
+   * Get human-readable fix name
+   */
+  private getFixName(fixType: string): string {
+    const names = {
+      'addTableHeaders': 'Add Table Headers',
+      'addImageAltText': 'Add Alt Text to Images',
+      'addLandmarkRoles': 'Add Landmark Roles',
+      'addLanguageAttribute': 'Add Language Attributes',
+    };
+
+    return names[fixType] || fixType;
+  }
+
+  Add corresponding route to expose this:
+
+  /**
+   * GET /api/v1/jobs/:jobId/remediation/similar-issues
+   * Get grouped similar issues for batch application
+   */
+  router.get(
+    '/:jobId/remediation/similar-issues',
+    authenticate,
+    async (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const remediationService = new RemediationService();
+
+        const grouping = await remediationService.getSimilarIssuesGrouping(jobId);
+
+        res.json(grouping);
+      } catch (error) {
+        console.error('[Similar Issues] Error:', error);
+        res.status(500).json({ error: 'Failed to group similar issues' });
+      }
+    }
+  );
+
+  This provides the frontend with information about which issues can be batch-applied.
+
+  ---

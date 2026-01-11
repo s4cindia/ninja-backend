@@ -21,6 +21,7 @@ import feedbackAttachmentRoutes from "./feedback-attachment.routes";
 import configRoutes from "./config.routes";
 import sseRoutes from "./sse.routes";
 import uploadRoutes from "./upload.routes";
+import comparisonRoutes from "./comparison.routes";
 
 const router = Router();
 
@@ -95,5 +96,6 @@ router.use("/feedback", feedbackAttachmentRoutes);
 router.use("/config", configRoutes);
 router.use("/sse", sseRoutes);
 router.use("/uploads", uploadRoutes);
+router.use("/jobs/:jobId/comparison", comparisonRoutes);
 
 export default router;

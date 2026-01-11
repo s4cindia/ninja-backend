@@ -1,0 +1,122 @@
+# Check the commit
+git log --oneline -3
+```
+
+Then proceed directly to **Session B2**. Paste this prompt into Replit AI:
+
+---
+```
+Create the comparison service layer for Visual Comparison feature.
+
+1. Create src/types/comparison.types.ts with these TypeScript interfaces:
+
+   export interface ComparisonSummary {
+     totalChanges: number;
+     applied: number;
+     rejected: number;
+     skipped: number;
+     failed: number;
+     issuesBefore?: number;
+     issuesAfter?: number;
+     resolutionRate?: number;
+   }
+
+   export interface ChangeSummaryByCategory {
+     count: number;
+     applied: number;
+     rejected: number;
+     skipped?: number;
+     failed?: number;
+   }
+
+   export interface PaginationInfo {
+     page: number;
+     limit: number;
+     total: number;
+     pages: number;
+   }
+
+   export interface ComparisonData {
+     jobId: string;
+     fileName: string;
+     originalFileId?: string;
+     remediatedFileId?: string;
+     auditedAt?: Date;
+     remediatedAt?: Date;
+     summary: ComparisonSummary;
+     byType: Record<string, ChangeSummaryByCategory>;
+     bySeverity: Record<string, ChangeSummaryByCategory>;
+     byWcag: Record<string, ChangeSummaryByCategory>;
+     pagination?: PaginationInfo;
+     changes: any[];
+   }
+
+   export interface ComparisonFilters {
+     changeType?: string;
+     severity?: string;
+     status?: string;
+     wcagCriteria?: string;
+     filePath?: string;
+     search?: string;
+     page?: number;
+     limit?: number;
+   }
+
+   export interface CreateChangeData {
+     jobId: string;
+     taskId?: string;
+     issueId?: string;
+     ruleId?: string;
+     filePath: string;
+     elementXPath?: string;
+     lineNumber?: number;
+     changeType: string;
+     description: string;
+     beforeContent?: string;
+     afterContent?: string;
+     contextBefore?: string;
+     contextAfter?: string;
+     severity?: string;
+     wcagCriteria?: string;
+     wcagLevel?: string;
+     appliedBy?: string;
+   }
+
+2. Create src/services/comparison/comparison.service.ts:
+
+   Import PrismaClient and types. Create a ComparisonService class with:
+
+   a. constructor(private prisma: PrismaClient)
+
+   b. async getComparison(jobId: string, pagination?: { page?: number; limit?: number }): Promise<ComparisonData>
+      - Fetch job with file info
+      - Fetch all RemediationChange records for jobId
+      - Calculate summary: count by status (applied, rejected, skipped, failed)
+      - Group by changeType, severity, wcagCriteria
+      - Support pagination (default: page 1, limit 50)
+      - Throw error if job not found
+
+   c. async getChangeById(jobId: string, changeId: string): Promise<RemediationChange>
+      - Fetch single change by id
+      - Verify it belongs to jobId
+      - Throw error if not found
+
+   d. async getChangesByFilter(jobId: string, filters: ComparisonFilters): Promise<ComparisonData>
+      - Build Prisma where clause from filters
+      - Support filtering by: changeType, severity, status, wcagCriteria
+      - Support search in filePath and description
+      - Return paginated results
+
+   e. async logChange(data: CreateChangeData): Promise<RemediationChange>
+      - Get max changeNumber for jobId, increment by 1
+      - Create new RemediationChange record
+      - Return created change
+
+   f. async updateChangeStatus(changeId: string, status: ChangeStatus): Promise<RemediationChange>
+      - Update change status
+      - Return updated change
+
+   Use try-catch for error handling. Follow patterns from existing services.
+   Export the service class.
+
+3. Create src/services/comparison/index.ts to export the service.

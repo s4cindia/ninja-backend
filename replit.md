@@ -43,6 +43,13 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **JS Accessibility Auditor:** Lightweight JavaScript-based auditor that detects auto-fixable accessibility issues without requiring Java. Checks for missing language, accessibility metadata, alt text, table headers, heading hierarchy, and ARIA landmarks.
     -   **Combined Audit Results:** Merges EPUBCheck structural errors (manual fixes) with JS Auditor accessibility issues (auto-fixable) for comprehensive analysis.
     -   **Issue Codes:** EPUB-META-001 (language), EPUB-META-002 (accessibility features), EPUB-META-003 (accessibility summary), EPUB-META-004 (access modes), EPUB-IMG-001 (missing alt), EPUB-STRUCT-002 (table headers), EPUB-SEM-001 (HTML lang attribute).
+-   **Issue Classification & Confidence Scoring:**
+    -   **IssueClassificationService:** Analyzes EPUB content to determine issue complexity and calculate confidence scores.
+    -   **Confidence Calculation:** Returns 0.0-1.0 based on issue type and context (e.g., simple tables: 0.95, complex tables: 0.70, decorative images: 0.98).
+    -   **Context Analysis:** Analyzes table structure (simple/complex based on colspan, rowspan, nesting) and image type (decorative/content/chart/diagram).
+    -   **Fix Classification:** Classifies issues as `autofix` (confidence ≥0.95, low risk), `quickfix` (confidence ≥0.70), or `manual`.
+    -   **Similar Issues Grouping:** Groups quick-fixable tasks by fix type for batch operations.
+    -   **Auto-Apply High-Confidence:** Automatically applies fixes for tasks with confidence ≥0.95 during remediation start.
 -   **EPUB Auto-Remediation Engine:**
     -   **Supported Auto-Fixes:** 12 handlers for accessibility issues:
         -   EPUB-META-001: Add dc:language declaration

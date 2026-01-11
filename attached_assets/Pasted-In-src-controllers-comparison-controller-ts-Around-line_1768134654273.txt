@@ -1,0 +1,54 @@
+In @src/controllers/comparison.controller.ts:
+- Around line 42-43: The parsed pagination params page and limit can become NaN
+for invalid query strings; after parsing req.query.page and req.query.limit (the
+const page and const limit assignments), check the parsed values with
+Number.isFinite (or !Number.isNaN) and ensure they are positive integers, and if
+invalid set them to undefined (or a safe default) before passing to the service;
+update the const assignments that produce page and limit to perform this
+validation and normalization so NaN never propagates to the service layer.
+- Around line 6-12: Remove the locally redeclared "interface
+AuthenticatedRequest extends Request { ... }" in the comparison controller and
+instead import and use the project's existing AuthenticatedRequest type (do not
+redeclare it), updating any function/method signatures that referenced the local
+interface to use the imported AuthenticatedRequest; delete the redundant
+interface to avoid the TypeScript conflict with Express's Request and ensure the
+controller's imports include the shared AuthenticatedRequest type.
+
+In @src/controllers/epub.controller.ts:
+- Around line 2054-2056: The catch block currently declares logError but doesn't
+use it; either remove the logError identifier (use catch { ... }) or include the
+error in the warning call — e.g., change catch (logError) { logger.warn(`[Batch
+Quick Fix] Failed to log change for ${result.filePath}: ${logError}`); } or pass
+logError as metadata to logger.warn so the error is not unused.
+- Around line 2013-2015: The catch block that currently reads catch
+(issueUpdateError) { logger.warn(`[Batch Quick Fix] Could not update Issue
+record: ${issueId}`); } declares issueUpdateError but never uses it; either
+include the error details in the warning (e.g., pass issueUpdateError to
+logger.warn along with the message) or rename the parameter to an
+underscore-prefixed name to indicate intentional discard (e.g., catch
+(_issueUpdateError)) and keep the existing log; refer to the logger.warn call,
+the issueId variable and the catch parameter issueUpdateError when making the
+change.
+- Line 1023: The changeType is derived manually using
+fixCode.toLowerCase().replace(/-/g, '_') which is inconsistent with
+applyQuickFix; replace that manual transformation with a call to
+mapFixTypeToChangeType(fixCode) where changeType is assigned (the current
+statement setting changeType) and make the identical change in
+applyBatchQuickFix (the assignment around line 2045) so both endpoints use
+mapFixTypeToChangeType() for consistent values.
+- Around line 1967-1975: The code calls
+remediationService.getRemediationPlan(jobId) inside the for-loop for each
+taskId, causing redundant DB queries; move the call out of the loop so the plan
+is fetched once (e.g., const plan = await
+remediationService.getRemediationPlan(jobId)) before iterating over ids, then
+inside the loop use plan.tasks.find(...) to locate each task and keep the
+existing error handling that pushes to results.failed when no task is found.
+
+In @src/services/epub/auto-remediation.service.ts:
+- Around line 204-208: The code computes filePath using a fallback chain that
+incorrectly references a non-existent RemediationTask property tasks[0]?.path;
+replace that reference with tasks[0]?.filePath and remove the duplicated
+tasks[0]?.filePath fallback so the final expression reads: (result as {
+filePath?: string; targetPath?: string }).filePath || (result as { targetPath?:
+string }).targetPath || tasks[0]?.filePath || 'OEBPS/content.opf', ensuring the
+RemediationTask type is respected and no unreachable duplicate fallback remains.

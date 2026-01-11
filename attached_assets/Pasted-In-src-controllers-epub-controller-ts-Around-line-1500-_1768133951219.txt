@@ -1,0 +1,46 @@
+In @src/controllers/epub.controller.ts:
+- Around line 1500-1521: The logger.warn call inside the catch block for the
+loop that calls comparisonService.logChange passes an object but the logger only
+accepts a string; change the catch to build a single string message (e.g.
+`Failed to log remediation change: ${String(logError)} (jobId=${jobId})`) and
+pass that string to logger.warn instead of the object, ensuring any useful error
+details and jobId are included; update the catch in the same block that
+surrounds comparisonService.logChange where ruleId/fixCode and appliedBy are
+set.
+
+In @src/routes/comparison.routes.ts:
+- Around line 1-16: Add a tenant isolation check so users cannot access
+comparisons for jobs belonging to other tenants: in the flow handling job-scoped
+endpoints (either inside ComparisonController methods getComparison,
+getChangesByFilter, getChangeById or at the start of ComparisonService methods
+they call), read jobId from req.params (or the service call argument), load the
+Job record (via prisma.job.findUnique / equivalent) and compare its tenantId to
+req.user.tenantId; if they differ, throw an authorization error (HTTP 403) and
+do not proceed to call ComparisonService logic. Ensure all three endpoints
+enforce this check before returning any comparison/change data.
+
+In @src/services/comparison/comparison.service.ts:
+- Around line 172-206: The current logChange implementation reads max
+changeNumber via remediationChange.findFirst then creates a row, which allows a
+race where two callers compute the same changeNumber; fix by enforcing DB-level
+atomicity: add a unique constraint @@unique([jobId, changeNumber]) to the Prisma
+schema and change logChange to perform the read-and-insert inside a transaction
+(use prisma.$transaction) or perform an atomic increment/insert via a single raw
+SQL statement (prisma.$executeRaw/$queryRaw) so the database assigns a unique
+incremented changeNumber; additionally catch unique-constraint violations on
+remediationChange.create and retry the transaction/insert (incrementing the
+value) to handle concurrent conflicts.
+
+In @src/services/epub/auto-remediation.service.ts:
+- Around line 201-221: The code hardcodes filePath to 'OEBPS/content.opf' when
+calling comparisonService.logChange even though many remediation results modify
+HTML content; update the call to use a real path from the remediation result or
+context (e.g., use result.filePath || result.targetPath || tasks[0]?.path ||
+tasks[0]?.filePath) and keep the existing fallback if none exists. Also fix the
+logger.warn usage in the catch block to pass a single string (since logger.warn
+only accepts a string) by including the error details in the message (e.g.,
+logger.warn(`Failed to log remediation change: ${logError?.stack ||
+String(logError)}`) or JSON.stringify(logError) as appropriate). Ensure the
+changes are applied around the comparisonService.logChange invocation and the
+catch handling that references result, tasks, mapFixTypeToChangeType, and
+logger.warn.

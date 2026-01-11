@@ -1,0 +1,140 @@
+## Backend Replit Prompt 6: Auto-Apply High-Confidence Fixes
+
+  Add automatic application of high-confidence fixes during remediation.
+
+  Create a new service method in src/services/remediation.service.ts:
+
+  /**
+   * Automatically apply high-confidence fixes
+   */
+  async autoApplyHighConfidenceFixes(jobId: string) {
+    console.log('[AutoFix] Starting automatic fix application for job', jobId);
+
+    // Find all autofix issues
+    const autofixIssues = await prisma.issue.findMany({
+      where: {
+        jobId,
+        fixType: 'autofix',
+        status: 'pending',
+        confidence: { gte: 0.95 }
+      }
+    });
+
+    if (autofixIssues.length === 0) {
+      console.log('[AutoFix] No high-confidence issues to auto-apply');
+      return {
+        applied: 0,
+        failed: 0,
+        skipped: 0
+      };
+    }
+
+    console.log(`[AutoFix] Found ${autofixIssues.length} high-confidence issues to auto-apply`);
+
+    const results = {
+      applied: 0,
+      failed: 0,
+      skipped: 0,
+      details: []
+    };
+
+    const zip = await this.loadEPUB(jobId);
+
+    for (const issue of autofixIssues) {
+      try {
+        // Determine fix method based on issue code
+        let fixResult;
+
+        switch (issue.code) {
+          case 'epub_struct_002':
+            if (issue.confidence >= 0.95) {
+              fixResult = await quickFixTemplates.addTableHeaders(zip, issue);
+            }
+            break;
+          case 'epub_a11y_001':
+            if (issue.context?.imageType === 'decorative') {
+              fixResult = await quickFixTemplates.addImageAltText(zip, issue, { alt: '' });
+            }
+            break;
+          case 'epub_lang_001':
+            fixResult = await quickFixTemplates.addLanguageAttribute(zip, issue);
+            break;
+          default:
+            console.log(`[AutoFix] No auto-fix handler for ${issue.code}, skipping`);
+            results.skipped++;
+            continue;
+        }
+
+        if (fixResult?.success) {
+          await prisma.issue.update({
+            where: { id: issue.id },
+            data: { status: 'fixed' }
+          });
+
+          results.applied++;
+          results.details.push({
+            issueId: issue.id,
+            code: issue.code,
+            status: 'success',
+            description: fixResult.description
+          });
+
+          console.log(`[AutoFix] Successfully applied fix for ${issue.code}`);
+        } else {
+          results.failed++;
+          results.details.push({
+            issueId: issue.id,
+            code: issue.code,
+            status: 'failed',
+            error: fixResult?.error || 'Unknown error'
+          });
+        }
+      } catch (error) {
+        console.error(`[AutoFix] Error applying fix for issue ${issue.id}:`, error);
+        results.failed++;
+        results.details.push({
+          issueId: issue.id,
+          code: issue.code,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+
+    // Save modified EPUB if any fixes applied
+    if (results.applied > 0) {
+      await this.saveEPUB(jobId, zip);
+    }
+
+    console.log(`[AutoFix] Results: ${results.applied} applied, ${results.failed} failed, ${results.skipped} skipped`);
+
+    return results;
+  }
+
+  Call this automatically when remediation starts:
+
+  /**
+   * POST /api/v1/jobs/:jobId/remediation/start
+   */
+  router.post('/:jobId/remediation/start', authenticate, async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const remediationService = new RemediationService();
+
+      // First, auto-apply high-confidence fixes
+      const autoFixResults = await remediationService.autoApplyHighConfidenceFixes(jobId);
+
+      // Then return the remaining issues
+      const plan = await remediationService.getRemediationPlan(jobId);
+
+      res.json({
+        plan,
+        autoFixResults,
+        message: `${autoFixResults.applied} issues were automatically fixed`
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to start remediation' });
+    }
+  });
+
+  This automatically applies high-confidence fixes without user intervention.

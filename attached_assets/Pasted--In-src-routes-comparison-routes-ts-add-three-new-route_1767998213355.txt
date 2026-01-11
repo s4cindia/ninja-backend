@@ -1,0 +1,99 @@
+ In src/routes/comparison.routes.ts, add three new routes for visual comparison. Add these routes BEFORE the existing routes (or in a logical position):
+
+  Import the spine service at the top:
+  ```typescript
+  import { epubSpineService } from '../services/epub/epub-spine.service';
+
+  Add these three new route handlers:
+
+  // Get spine items for a job
+  router.get(
+    '/jobs/:jobId/comparison/spine',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId } = req.params;
+      const userId = (req as any).user?.id;
+
+      // Verify job belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const spineItems = await epubSpineService.getSpineItems(jobId);
+      res.json(spineItems);
+    })
+  );
+
+  // Get visual comparison for a specific change
+  router.get(
+    '/jobs/:jobId/comparison/changes/:changeId/visual',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId, changeId } = req.params;
+      const userId = (req as any).user?.id;
+
+      // Verify job belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const visualData = await epubSpineService.getSpineItemForChange(jobId, changeId);
+      res.json(visualData);
+    })
+  );
+
+  // Get spine item content (before or after)
+  router.get(
+    '/jobs/:jobId/comparison/spine/:spineItemId',
+    authenticateToken,
+    asyncHandler(async (req: Request, res: Response) => {
+      const { jobId, spineItemId } = req.params;
+      const { version } = req.query;
+      const userId = (req as any).user?.id;
+
+      if (version !== 'original' && version !== 'remediated') {
+        return res.status(400).json({ error: 'version must be "original" or "remediated"' });
+      }
+
+      // Verify job belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+      }
+
+      const content = await epubSpineService.getSpineItemContent(
+        jobId,
+        spineItemId,
+        version as 'original' | 'remediated'
+      );
+      res.json(content);
+    })
+  );
+
+  Also add these imports at the top if not present:
+  import { Request, Response } from 'express';
+  import prisma from '../lib/prisma';
+
+  Save the file and test the backend routes are accessible.
+
+  ---

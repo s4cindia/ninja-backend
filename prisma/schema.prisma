@@ -102,8 +102,10 @@ model Job {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  validationResults ValidationResult[]
-  artifacts         Artifact[]
+  validationResults  ValidationResult[]
+  artifacts          Artifact[]
+  remediationChanges RemediationChange[]
+  comparisonReport   ComparisonReport?
 
   @@index([tenantId])
   @@index([status])
@@ -156,10 +158,27 @@ model Issue {
   location            String?
   suggestion          String?
   autoFixable         Boolean          @default(false)
+  quickFixable        Boolean          @default(false)
+  confidence          Float?           @default(0.5)
+  fixType             String?
+  code                String?
+  filePath            String?
+  status              IssueStatus      @default(PENDING)
+  fixedAt             DateTime?
+  fixedBy             String?
   createdAt           DateTime         @default(now())
 
   @@index([validationResultId])
   @@index([severity])
+  @@index([confidence])
+  @@index([status])
+}
+
+enum IssueStatus {
+  PENDING
+  FIXED
+  SKIPPED
+  FAILED
 }
 
 enum IssueSeverity {
@@ -349,4 +368,58 @@ model Artifact {
   @@index([jobId])
   @@index([fileId])
   @@index([jobId, type])
+}
+
+enum ChangeStatus {
+  APPLIED
+  REJECTED
+  REVERTED
+  FAILED
+  SKIPPED
+}
+
+model RemediationChange {
+  id            String       @id @default(uuid())
+  jobId         String
+  job           Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  taskId        String?
+  changeNumber  Int
+  issueId       String?
+  ruleId        String?
+  filePath      String
+  elementXPath  String?
+  lineNumber    Int?
+  changeType    String
+  description   String
+  beforeContent String?      @db.Text
+  afterContent  String?      @db.Text
+  contextBefore String?      @db.Text
+  contextAfter  String?      @db.Text
+  severity      String?
+  wcagCriteria  String?
+  wcagLevel     String?
+  status        ChangeStatus @default(APPLIED)
+  appliedAt     DateTime     @default(now())
+  appliedBy     String?
+
+  @@unique([jobId, changeNumber])
+  @@index([jobId])
+  @@index([status])
+}
+
+model ComparisonReport {
+  id            String   @id @default(uuid())
+  jobId         String   @unique
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  totalChanges  Int
+  appliedCount  Int
+  rejectedCount Int
+  skippedCount  Int
+  failedCount   Int
+  reportData    Json?
+  pdfUrl        String?
+  generatedAt   DateTime @default(now())
+  generatedBy   String?
+
+  @@index([jobId])
 }

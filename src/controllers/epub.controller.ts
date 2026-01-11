@@ -14,6 +14,9 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
+import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../services/comparison';
+
+const comparisonService = new ComparisonService(prisma);
 
 export const epubController = {
   async auditEPUB(req: Request, res: Response) {
@@ -447,6 +450,90 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: 'Failed to get remediation plan',
+      });
+    }
+  },
+
+  async getSimilarIssuesGrouping(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      // Verify tenant access to the job
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
+
+      const grouping = await remediationService.getSimilarIssuesGrouping(jobId);
+
+      return res.json({
+        success: true,
+        data: grouping,
+      });
+    } catch (error) {
+      logger.error('Failed to group similar issues', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to group similar issues',
+      });
+    }
+  },
+
+  async startRemediation(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      // Verify tenant access to the job
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
+
+      const autoFixResults = await remediationService.autoApplyHighConfidenceFixes(jobId);
+
+      const plan = await remediationService.getRemediationPlan(jobId);
+
+      return res.json({
+        success: true,
+        data: {
+          plan,
+          autoFixResults,
+          message: `${autoFixResults.applied} issues were automatically fixed`,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to start remediation', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to start remediation',
       });
     }
   },
@@ -940,11 +1027,62 @@ export const epubController = {
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
 
+      // Filter results to only the target file if specified (prevents logging duplicate changes)
+      const targetFile = options?.targetFile;
+      let resultsToLog = results.filter(r => r.success);
+      
+      if (targetFile) {
+        // Normalize paths for comparison (remove leading slashes, handle OEBPS prefix)
+        const normalizeFilePath = (path: string) => {
+          return path.replace(/^\/+/, '').replace(/^OEBPS\//, '');
+        };
+        const normalizedTarget = normalizeFilePath(targetFile);
+        // Use exact normalized path comparison to prevent false positives (e.g., chapter1.xhtml matching chapter10.xhtml)
+        resultsToLog = resultsToLog.filter(r => normalizeFilePath(r.filePath) === normalizedTarget);
+        logger.info(`[SPECIFIC-FIX] Filtering to target file: ${targetFile}, matched ${resultsToLog.length} of ${results.filter(r => r.success).length} results`);
+      }
+      
+      // Check for existing changes to prevent duplicates
+      const existingChanges = await prisma.remediationChange.findMany({
+        where: { jobId, ruleId: fixCode },
+        select: { filePath: true }
+      });
+      const existingFilePaths = new Set(existingChanges.map(c => c.filePath));
+      const newResultsToLog = resultsToLog.filter(r => !existingFilePaths.has(r.filePath));
+      
+      if (newResultsToLog.length < resultsToLog.length) {
+        logger.info(`[SPECIFIC-FIX] Skipping ${resultsToLog.length - newResultsToLog.length} already logged changes`);
+      }
+      
+      logger.info(`[SPECIFIC-FIX] Logging ${newResultsToLog.length} new changes for fixCode: ${fixCode}`);
+      
+      for (const result of newResultsToLog) {
+        try {
+          await comparisonService.logChange({
+            jobId,
+            ruleId: fixCode,
+            filePath: result.filePath,
+            changeType: mapFixTypeToChangeType(fixCode),
+            description: result.description,
+            beforeContent: result.before,
+            afterContent: result.after,
+            severity: 'MAJOR',
+            wcagCriteria: extractWcagCriteria(fixCode),
+            wcagLevel: extractWcagLevel(fixCode),
+            appliedBy: req.user?.email || 'user',
+          });
+          logger.info(`[SPECIFIC-FIX] Logged change for ${result.filePath}`);
+        } catch (logError) {
+          logger.error(`[SPECIFIC-FIX] Failed to log change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId}, filePath=${result.filePath})`);
+        }
+      }
+
       return res.json({
         success: true,
         data: {
           fixCode,
           results,
+          changesLogged: newResultsToLog.length,
           downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
         },
       });
@@ -1494,6 +1632,28 @@ export const epubController = {
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
           await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+          for (const result of results.filter(r => r.success)) {
+            try {
+              await comparisonService.logChange({
+                jobId,
+                taskId: taskId || undefined,
+                issueId: issueId || undefined,
+                ruleId: fixCode || 'EPUB-SEM-003',
+                filePath: result.filePath,
+                changeType: 'add-aria-role',
+                description: result.description,
+                beforeContent: result.before,
+                afterContent: result.after,
+                severity: 'MAJOR',
+                wcagCriteria: extractWcagCriteria(fixCode || 'EPUB-SEM-003'),
+                wcagLevel: extractWcagLevel(fixCode || 'EPUB-SEM-003'),
+                appliedBy: req.user?.email || 'user',
+              });
+            } catch (logError) {
+              logger.warn(`Failed to log remediation change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId})`);
+            }
+          }
         }
 
         let tasksAutoCompleted = 0;
@@ -1576,6 +1736,40 @@ export const epubController = {
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+
+      const successfulResults = results.filter(r => r.success);
+      logger.info(`[QUICKFIX-LOG] Total results: ${results.length}, Successful: ${successfulResults.length}`);
+      
+      for (const result of successfulResults) {
+        logger.info(`[QUICKFIX-LOG] Logging change for file: ${result.filePath}`);
+        logger.info(`[QUICKFIX-LOG] changeType: ${mapFixTypeToChangeType(fixCode || 'quick-fix')}`);
+        logger.info(`[QUICKFIX-LOG] description: ${result.description}`);
+        logger.info(`[QUICKFIX-LOG] before length: ${result.before?.length || 0}, after length: ${result.after?.length || 0}`);
+        
+        try {
+          const changeData = {
+            jobId,
+            taskId: taskId || undefined,
+            issueId: issueId || undefined,
+            ruleId: fixCode || undefined,
+            filePath: result.filePath,
+            changeType: mapFixTypeToChangeType(fixCode || 'quick-fix'),
+            description: result.description,
+            beforeContent: result.before,
+            afterContent: result.after,
+            severity: 'MAJOR' as const,
+            wcagCriteria: extractWcagCriteria(fixCode || ''),
+            wcagLevel: extractWcagLevel(fixCode || ''),
+            appliedBy: req.user?.email || 'user',
+          };
+          logger.info(`[QUICKFIX-LOG] Calling comparisonService.logChange with: ${JSON.stringify(changeData, null, 2)}`);
+          
+          const logResult = await comparisonService.logChange(changeData);
+          logger.info(`[QUICKFIX-LOG] logChange result: ${JSON.stringify(logResult)}`);
+        } catch (logError) {
+          logger.error(`[QUICKFIX-LOG] Failed to log remediation change: ${logError instanceof Error ? logError.message : String(logError)} (jobId=${jobId})`);
+        }
+      }
 
       const successCount = results.filter(r => r.success).length;
       const failCount = results.filter(r => !r.success).length;
@@ -1694,6 +1888,243 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to mark task as fixed',
+      });
+    }
+  },
+
+  async applyBatchQuickFix(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { taskIds, issueIds, fixCode, fixType, options } = req.body;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+
+      const ids = taskIds || issueIds;
+      const code = fixCode || fixType;
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'taskIds/issueIds array is required and must not be empty' 
+        });
+      }
+
+      if (!code) {
+        return res.status(400).json({ success: false, error: 'fixCode/fixType is required' });
+      }
+
+      logger.info(`[Batch Quick Fix] Applying ${code} to ${ids.length} tasks in job ${jobId}`);
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+      });
+
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const input = job.input as { fileName?: string };
+      const originalFileName = input?.fileName || 'upload.epub';
+      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      if (!epubBuffer) {
+        return res.status(404).json({ success: false, error: 'EPUB file not found' });
+      }
+
+      const zip = await epubModifier.loadEPUB(epubBuffer);
+
+      const results: { 
+        successful: Array<{ taskId: string; filePath: string; description: string }>;
+        failed: Array<{ taskId: string; error: string }>;
+        totalAttempted: number;
+      } = {
+        successful: [],
+        failed: [],
+        totalAttempted: ids.length
+      };
+
+      type ModificationResult = {
+        success: boolean;
+        filePath: string;
+        modificationType: string;
+        description: string;
+        before?: string;
+        after?: string;
+      };
+      let allResults: ModificationResult[] = [];
+
+      switch (code) {
+        case 'EPUB-META-001':
+          allResults = [await epubModifier.addLanguage(zip, options?.language)];
+          break;
+        case 'EPUB-META-002':
+          allResults = await epubModifier.addAccessibilityMetadata(zip, options?.features);
+          break;
+        case 'EPUB-META-003':
+          allResults = [await epubModifier.addAccessibilitySummary(zip, options?.summary)];
+          break;
+        case 'EPUB-SEM-001':
+          allResults = await epubModifier.addHtmlLangAttributes(zip, options?.language);
+          break;
+        case 'EPUB-SEM-002':
+          allResults = await epubModifier.fixEmptyLinks(zip);
+          break;
+        case 'EPUB-IMG-001':
+          if (options?.imageAlts) {
+            allResults = await epubModifier.addAltText(zip, options.imageAlts);
+          } else {
+            allResults = await epubModifier.addDecorativeAltAttributes(zip);
+          }
+          break;
+        case 'EPUB-STRUCT-002':
+          allResults = await epubModifier.addTableHeaders(zip);
+          break;
+        case 'EPUB-STRUCT-003':
+          allResults = await epubModifier.fixHeadingHierarchy(zip);
+          break;
+        case 'EPUB-STRUCT-004':
+          allResults = await epubModifier.addAriaLandmarks(zip);
+          break;
+        case 'EPUB-NAV-001':
+          allResults = await epubModifier.addSkipNavigation(zip);
+          break;
+        case 'EPUB-FIG-001':
+          allResults = await epubModifier.addFigureStructure(zip);
+          break;
+        default:
+          return res.status(400).json({ success: false, error: `Unknown fix code: ${code}` });
+      }
+
+      const successfulResults = allResults.filter(r => r.success);
+      const successfulFilePaths = new Set(successfulResults.map(r => r.filePath));
+
+      // Fetch plan once outside the loop to avoid redundant DB queries
+      const plan = await remediationService.getRemediationPlan(jobId);
+
+      for (const taskId of ids) {
+        try {
+          const task = plan?.tasks.find((t: { id: string }) => t.id === taskId);
+
+          if (!task) {
+            results.failed.push({ taskId, error: 'Task not found' });
+            continue;
+          }
+
+          const normalizeFilePath = (p: string) => p.replace(/^\/+/, '').replace(/^OEBPS\//, '');
+          const taskFilePath = task.filePath || '';
+          const taskFileNormalized = normalizeFilePath(taskFilePath);
+
+          // Use exact normalized path comparison to prevent false positives
+          const matchingResult = successfulResults.find(r => 
+            normalizeFilePath(r.filePath) === taskFileNormalized
+          );
+
+          // Only mark completed if this specific task's file was fixed
+          const taskFileWasFixed = matchingResult || successfulFilePaths.has(taskFilePath);
+          
+          if (taskFileWasFixed) {
+            await remediationService.updateTaskStatus(
+              jobId,
+              taskId,
+              'completed',
+              `Applied via batch quick fix: ${code}`,
+              req.user?.email || 'system'
+            );
+
+            // Update Issue record only if task has a valid issueId and verify job ownership
+            if (task.issueId) {
+              try {
+                // Verify issue belongs to this job via validationResult chain before updating
+                const issue = await prisma.issue.findFirst({
+                  where: { id: task.issueId },
+                  include: { validationResult: { select: { jobId: true } } }
+                });
+                
+                if (issue && issue.validationResult.jobId === jobId) {
+                  await prisma.issue.update({
+                    where: { id: task.issueId },
+                    data: {
+                      status: 'FIXED',
+                      fixedAt: new Date(),
+                      fixedBy: req.user?.email || 'system'
+                    }
+                  });
+                  logger.debug(`[Batch Quick Fix] Updated issue status to FIXED: ${task.issueId}`);
+                } else {
+                  logger.warn(`[Batch Quick Fix] Issue not found or does not belong to job: ${task.issueId}`);
+                }
+              } catch (issueUpdateError) {
+                // Issue may not exist, log but don't fail
+                logger.warn(`[Batch Quick Fix] Could not update Issue record: ${task.issueId}: ${issueUpdateError instanceof Error ? issueUpdateError.message : String(issueUpdateError)}`);
+              }
+            }
+
+            results.successful.push({
+              taskId,
+              filePath: taskFilePath,
+              description: matchingResult?.description || `Applied ${code}`
+            });
+          } else {
+            results.failed.push({ taskId, error: 'No matching fix result for this task\'s file' });
+          }
+        } catch (taskError) {
+          logger.error(`[Batch Quick Fix] Error processing task ${taskId}`, taskError instanceof Error ? taskError : undefined);
+          results.failed.push({ 
+            taskId, 
+            error: taskError instanceof Error ? taskError.message : 'Unknown error' 
+          });
+        }
+      }
+
+      if (results.successful.length > 0) {
+        const modifiedBuffer = await epubModifier.saveEPUB(zip);
+        await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        logger.info(`[Batch Quick Fix] Saved remediated EPUB after ${results.successful.length} fixes`);
+
+        for (const result of successfulResults) {
+          try {
+            await comparisonService.logChange({
+              jobId,
+              ruleId: code,
+              filePath: result.filePath,
+              changeType: mapFixTypeToChangeType(code),
+              description: result.description,
+              beforeContent: result.before,
+              afterContent: result.after,
+              severity: 'MAJOR',
+              wcagCriteria: extractWcagCriteria(code),
+              wcagLevel: extractWcagLevel(code),
+              appliedBy: req.user?.email || 'user',
+            });
+          } catch (logError) {
+            logger.warn(`[Batch Quick Fix] Failed to log change for ${result.filePath}: ${logError instanceof Error ? logError.message : String(logError)}`);
+          }
+        }
+      }
+
+      logger.info(`[Batch Quick Fix] Results: ${results.successful.length} successful, ${results.failed.length} failed`);
+
+      return res.json({
+        success: true,
+        data: {
+          results,
+          message: `Applied fixes to ${results.successful.length} of ${results.totalAttempted} tasks`,
+          downloadUrl: `/api/v1/epub/job/${jobId}/download-remediated`,
+        },
+      });
+    } catch (error) {
+      logger.error('[Batch Quick Fix] Error', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to apply batch fixes',
       });
     }
   },
