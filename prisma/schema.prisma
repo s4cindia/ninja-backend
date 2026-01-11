@@ -158,10 +158,16 @@ model Issue {
   location            String?
   suggestion          String?
   autoFixable         Boolean          @default(false)
+  quickFixable        Boolean          @default(false)
+  confidence          Float?           @default(0.5)
+  fixType             String?
+  code                String?
+  filePath            String?
   createdAt           DateTime         @default(now())
 
   @@index([validationResultId])
   @@index([severity])
+  @@index([confidence])
 }
 
 enum IssueSeverity {

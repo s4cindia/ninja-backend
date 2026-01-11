@@ -1,0 +1,102 @@
+ ## Backend Replit Prompt 5: Add Confidence Scoring to Issues
+
+  Add confidence scoring to issue detection in your audit service.
+
+  Update the Issue model in schema.prisma to include confidence:
+
+  model Issue {
+    id          String   @id @default(cuid())
+    jobId       String
+    code        String
+    severity    String
+    message     String
+    filePath    String?
+    location    String?
+    isQuickFixable Boolean @default(false)
+    confidence  Float?   @default(0.5)  // NEW: 0.0 to 1.0
+    fixType     String?  // NEW: Type of fix (for grouping)
+
+    // ... rest of fields
+  }
+
+  Run migration:
+  npx prisma migrate dev --name add_confidence_to_issues
+
+  Update issue creation to include confidence scoring:
+
+  /**
+   * Calculate confidence score for an issue
+   */
+  function calculateConfidence(issue: any): number {
+    let confidence = 0.5; // Base confidence
+
+    // High confidence scenarios
+    if (issue.code === 'epub_struct_002' && issue.context?.tableStructure === 'simple') {
+      // Simple table with clear header row
+      confidence = 0.95;
+    } else if (issue.code === 'epub_struct_002' && issue.context?.tableStructure === 'complex') {
+      // Complex/nested table
+      confidence = 0.70;
+    } else if (issue.code === 'epub_a11y_001' && issue.context?.imageType === 'decorative') {
+      // Decorative image (can safely use alt="")
+      confidence = 0.98;
+    } else if (issue.code === 'epub_a11y_001' && issue.context?.imageType === 'content') {
+      // Content image (needs descriptive alt text)
+      confidence = 0.60; // Lower - might need human judgment
+    } else if (issue.code === 'epub_lang_001') {
+      // Language attributes
+      confidence = 0.90; // Usually safe to add
+    }
+
+    return Math.min(1.0, Math.max(0.0, confidence));
+  }
+
+  /**
+   * Classify issue as autofix, quickfix, or manual
+   */
+  function classifyIssue(confidence: number, riskLevel: string): 'autofix' | 'quickfix' | 'manual' {
+    const risk = riskLevel === 'low' ? 0.1 : riskLevel === 'medium' ? 0.5 : 0.9;
+
+    if (confidence >= 0.95 && risk <= 0.1) {
+      return 'autofix'; // High confidence, low risk
+    } else if (confidence >= 0.70) {
+      return 'quickfix'; // Medium confidence
+    } else {
+      return 'manual'; // Low confidence or high risk
+    }
+  }
+
+  /**
+   * When creating issues, add confidence and classification
+   */
+  async function createIssueWithConfidence(jobId: string, aceAssertion: any) {
+    const confidence = calculateConfidence(aceAssertion);
+    const classification = classifyIssue(confidence, aceAssertion.riskLevel || 'medium');
+
+    const issue = await prisma.issue.create({
+      data: {
+        jobId,
+        code: aceAssertion.code,
+        severity: aceAssertion.severity,
+        message: aceAssertion.message,
+        filePath: aceAssertion.filePath,
+        location: aceAssertion.location,
+        confidence,
+        fixType: classification,
+        isQuickFixable: classification === 'quickfix',
+        isAutoFixable: classification === 'autofix',
+        // ... other fields
+      }
+    });
+
+    console.log(`[Issue] Created ${issue.code} with confidence ${confidence} classified as ${classification}`);
+
+    return issue;
+  }
+
+  This adds:
+  - Confidence scores (0.0 to 1.0) for each issue
+  - Automatic classification based on confidence + risk
+  - Contextual confidence calculation based on issue type
+
+  ---
