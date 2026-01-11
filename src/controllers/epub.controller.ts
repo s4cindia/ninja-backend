@@ -1861,25 +1861,28 @@ export const epubController = {
   async applyBatchQuickFix(req: AuthenticatedRequest, res: Response) {
     try {
       const { jobId } = req.params;
-      const { taskIds, fixCode, options } = req.body;
+      const { taskIds, issueIds, fixCode, fixType, options } = req.body;
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
         return res.status(401).json({ success: false, error: 'Authentication required' });
       }
 
-      if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      const ids = taskIds || issueIds;
+      const code = fixCode || fixType;
+
+      if (!Array.isArray(ids) || ids.length === 0) {
         return res.status(400).json({ 
           success: false, 
-          error: 'taskIds array is required and must not be empty' 
+          error: 'taskIds/issueIds array is required and must not be empty' 
         });
       }
 
-      if (!fixCode) {
-        return res.status(400).json({ success: false, error: 'fixCode is required' });
+      if (!code) {
+        return res.status(400).json({ success: false, error: 'fixCode/fixType is required' });
       }
 
-      logger.info(`[Batch Quick Fix] Applying ${fixCode} to ${taskIds.length} tasks in job ${jobId}`);
+      logger.info(`[Batch Quick Fix] Applying ${code} to ${ids.length} tasks in job ${jobId}`);
 
       const job = await prisma.job.findFirst({
         where: { id: jobId, tenantId },
@@ -1911,7 +1914,7 @@ export const epubController = {
       } = {
         successful: [],
         failed: [],
-        totalAttempted: taskIds.length
+        totalAttempted: ids.length
       };
 
       type ModificationResult = {
@@ -1924,7 +1927,7 @@ export const epubController = {
       };
       let allResults: ModificationResult[] = [];
 
-      switch (fixCode) {
+      switch (code) {
         case 'EPUB-META-001':
           allResults = [await epubModifier.addLanguage(zip, options?.language)];
           break;
@@ -1963,13 +1966,13 @@ export const epubController = {
           allResults = await epubModifier.addFigureStructure(zip);
           break;
         default:
-          return res.status(400).json({ success: false, error: `Unknown fix code: ${fixCode}` });
+          return res.status(400).json({ success: false, error: `Unknown fix code: ${code}` });
       }
 
       const successfulResults = allResults.filter(r => r.success);
       const successfulFilePaths = new Set(successfulResults.map(r => r.filePath));
 
-      for (const taskId of taskIds) {
+      for (const taskId of ids) {
         try {
           const plan = await prisma.remediationPlan.findFirst({
             where: { jobId },
@@ -1997,14 +2000,14 @@ export const epubController = {
               jobId,
               taskId,
               'completed',
-              `Applied via batch quick fix: ${fixCode}`,
+              `Applied via batch quick fix: ${code}`,
               req.user?.email || 'system'
             );
 
             results.successful.push({
               taskId,
               filePath: taskFilePath,
-              description: matchingResult?.description || `Applied ${fixCode}`
+              description: matchingResult?.description || `Applied ${code}`
             });
           } else {
             results.failed.push({ taskId, error: 'No matching fix result' });
@@ -2027,15 +2030,15 @@ export const epubController = {
           try {
             await comparisonService.logChange({
               jobId,
-              ruleId: fixCode,
+              ruleId: code,
               filePath: result.filePath,
-              changeType: fixCode.toLowerCase().replace(/-/g, '_'),
+              changeType: code.toLowerCase().replace(/-/g, '_'),
               description: result.description,
               beforeContent: result.before,
               afterContent: result.after,
               severity: 'MAJOR',
-              wcagCriteria: extractWcagCriteria(fixCode),
-              wcagLevel: extractWcagLevel(fixCode),
+              wcagCriteria: extractWcagCriteria(code),
+              wcagLevel: extractWcagLevel(code),
               appliedBy: req.user?.email || 'user',
             });
           } catch (logError) {
