@@ -665,6 +665,13 @@ export class AcrController {
         data: result,
       });
     } catch (error) {
+      if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found or access denied', code: 'JOB_NOT_FOUND' }
+        });
+        return;
+      }
       next(error);
     }
   }
@@ -833,12 +840,21 @@ export class AcrController {
         data: result,
       });
     } catch (error) {
-      if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
-        res.status(404).json({
-          success: false,
-          error: { message: error.message }
-        });
-        return;
+      if (error instanceof Error) {
+        if (error.message.includes('not found') || error.message.includes('access denied')) {
+          res.status(404).json({
+            success: false,
+            error: { message: error.message }
+          });
+          return;
+        }
+        if (error.message.includes('Invalid conformance levels')) {
+          res.status(400).json({
+            success: false,
+            error: { message: error.message, code: 'INVALID_CONFORMANCE_LEVEL' }
+          });
+          return;
+        }
       }
       next(error);
     }

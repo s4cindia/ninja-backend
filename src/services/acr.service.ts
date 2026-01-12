@@ -105,7 +105,19 @@ export class AcrService {
     edition: string,
     documentTitle?: string
   ) {
-    const auditResults = await this.fetchEpubAuditResults(jobId);
+    const job = await prisma.job.findFirst({
+      where: {
+        id: jobId,
+        tenantId,
+        userId,
+      },
+    });
+
+    if (!job) {
+      throw new Error('Job not found or access denied');
+    }
+
+    const auditResults = await this.fetchEpubAuditResults(jobId, tenantId, userId);
 
     const editionData = this.editionsData.editions.find(e => e.code === edition);
     if (!editionData) {
@@ -356,6 +368,13 @@ export class AcrService {
       remarks?: string;
     }>
   ) {
+    const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
+    const invalidReviews = reviews.filter(r => !validLevels.includes(r.conformanceLevel));
+    if (invalidReviews.length > 0) {
+      const invalidLevels = [...new Set(invalidReviews.map(r => r.conformanceLevel))];
+      throw new Error(`Invalid conformance levels: ${invalidLevels.join(', ')}. Must be one of: ${validLevels.join(', ')}`);
+    }
+
     const acrJob = await prisma.acrJob.findFirst({
       where: { id: acrJobId, userId, tenantId },
     });
@@ -563,9 +582,13 @@ export class AcrService {
     return false;
   }
 
-  private async fetchEpubAuditResults(jobId: string): Promise<AuditResults> {
-    const job = await prisma.job.findUnique({
-      where: { id: jobId },
+  private async fetchEpubAuditResults(jobId: string, tenantId: string, userId: string): Promise<AuditResults> {
+    const job = await prisma.job.findFirst({
+      where: {
+        id: jobId,
+        tenantId,
+        userId,
+      },
       include: {
         validationResults: {
           include: {
