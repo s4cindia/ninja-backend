@@ -13,6 +13,7 @@ import { remarksGeneratorService, RemarksGenerationRequest } from '../services/a
 import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr/acr-exporter.service';
 import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
+import { acrService } from '../services/acr.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -547,6 +548,69 @@ export class AcrController {
         return;
       }
       next(error);
+    }
+  }
+
+  async getAllEditions(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const editions = acrService.getAllEditions();
+
+      res.json({
+        success: true,
+        data: editions,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getEditionCriteria(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { editionCode } = req.params;
+
+      const data = acrService.getEditionCriteria(editionCode);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: 'EDITION_NOT_FOUND',
+          },
+        });
+      } else {
+        next(error);
+      }
+    }
+  }
+
+  async getCriterion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { criterionId } = req.params;
+
+      const criterion = acrService.getCriterionById(criterionId);
+
+      res.json({
+        success: true,
+        data: criterion,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: 'CRITERION_NOT_FOUND',
+          },
+        });
+      } else {
+        next(error);
+      }
     }
   }
 }
