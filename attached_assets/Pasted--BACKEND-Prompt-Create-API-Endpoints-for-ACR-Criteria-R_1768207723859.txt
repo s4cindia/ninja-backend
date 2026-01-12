@@ -1,0 +1,938 @@
+ BACKEND Prompt: Create API Endpoints for ACR Criteria Review
+
+  Repository: ninja-backend
+  Branch: feature/acr-workflow-improvements
+
+  TASK: Create backend API endpoints to support ACR analysis results and criterion review tracking
+
+  OVERVIEW:
+  The frontend needs to:
+  1. Fetch ACR analysis results (37 criteria with evidence from EPUB audit)
+  2. Save user's review for each criterion (conformance level, notes)
+  3. Track review progress
+  4. Generate final ACR report with all reviews
+
+  FILES TO CREATE/MODIFY:
+  1. Database schema/models (Prisma or TypeORM)
+  2. src/services/acr.service.ts (business logic)
+  3. src/controllers/acr.controller.ts (API handlers)
+  4. src/routes/acr.routes.ts (route definitions)
+
+  ---
+
+  PART 1: DATABASE SCHEMA
+  ---
+
+  FILE: prisma/schema.prisma (or equivalent for your ORM)
+
+  Add these models:
+
+  ```prisma
+  model AcrJob {
+    id            String   @id @default(uuid())
+    jobId         String   @unique // Reference to EPUB audit job
+    userId        String
+    edition       String   // 'section508', 'wcag', 'eu', 'international'
+    status        String   @default("in_progress") // 'in_progress', 'completed'
+    documentTitle String?
+
+    // Metadata
+    createdAt     DateTime @default(now())
+    updatedAt     DateTime @updatedAt
+
+    // Relations
+    user          User     @relation(fields: [userId], references: [id])
+    criteria      AcrCriterionReview[]
+
+    @@index([jobId])
+    @@index([userId])
+  }
+
+  model AcrCriterionReview {
+    id                String   @id @default(uuid())
+    acrJobId          String
+    criterionId       String   // e.g., '1.3.1-A'
+    criterionNumber   String   // e.g., '1.3.1'
+    criterionName     String   // e.g., 'Info and Relationships'
+    level             String   // 'A', 'AA', 'AAA'
+
+    // AI Analysis Results
+    confidence        Int      @default(0) // 0-100
+    aiStatus          String   // 'fail', 'needs_verification', 'likely_na', 'pass'
+    evidence          Json?    // Store evidence data (audit issues, files, etc.)
+
+    // Human Review
+    conformanceLevel  String?  // 'supports', 'partially_supports', 'does_not_support', 'not_applicable'
+    reviewerNotes     String?  @db.Text
+    reviewedAt        DateTime?
+    reviewedBy        String?
+
+    // Metadata
+    createdAt         DateTime @default(now())
+    updatedAt         DateTime @updatedAt
+
+    // Relations
+    acrJob            AcrJob   @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
+    reviewer          User?    @relation(fields: [reviewedBy], references: [id])
+
+    @@unique([acrJobId, criterionId])
+    @@index([acrJobId])
+  }
+
+  Run migration:
+  npx prisma migrate dev --name add_acr_review_models
+
+  ---
+  PART 2: SERVICE LAYER
+
+  FILE: src/services/acr.service.ts
+
+  Add these new methods to the existing AcrService class:
+
+  import { PrismaClient } from '@prisma/client';
+  import { editionCriteriaMap } from '../data/acrCriteria'; // From previous prompt
+
+  const prisma = new PrismaClient();
+
+  export class AcrService {
+    // ... existing methods from previous prompts ...
+
+    /**
+     * Create ACR job and analyze criteria based on EPUB audit results
+     */
+    async createAcrAnalysis(userId: string, jobId: string, edition: string, documentTitle?: string) {
+      // 1. Fetch EPUB audit results
+      const auditResults = await this.fetchEpubAuditResults(jobId);
+
+      // 2. Get criteria for selected edition
+      const editionData = editionCriteriaMap[edition];
+      if (!editionData) {
+        throw new Error(`Invalid edition: ${edition}`);
+      }
+
+      // 3. Create ACR job
+      const acrJob = await prisma.acrJob.create({
+        data: {
+          jobId,
+          userId,
+          edition,
+          documentTitle: documentTitle || auditResults.fileName || 'Untitled Document',
+          status: 'in_progress',
+        },
+      });
+
+      // 4. Analyze each criterion and create review records
+      const criteriaReviews = [];
+
+      for (const criterionId of editionData.criteriaIds) {
+        const criterion = this.editionsData.criteria.find(c => c.id === criterionId);
+        if (!criterion) continue;
+
+        // Analyze criterion against audit results
+        const analysis = this.analyzeCriterion(criterion, auditResults);
+
+        const review = await prisma.acrCriterionReview.create({
+          data: {
+            acrJobId: acrJob.id,
+            criterionId: criterion.id,
+            criterionNumber: criterion.number,
+            criterionName: criterion.name,
+            level: criterion.level,
+            confidence: analysis.confidence,
+            aiStatus: analysis.status,
+            evidence: analysis.evidence || null,
+          },
+        });
+
+        criteriaReviews.push(review);
+      }
+
+      return {
+        acrJob,
+        criteriaCount: criteriaReviews.length,
+      };
+    }
+
+    /**
+     * Get ACR analysis results with all criteria
+     */
+    async getAcrAnalysis(acrJobId: string, userId: string) {
+      const acrJob = await prisma.acrJob.findFirst({
+        where: {
+          id: acrJobId,
+          userId, // Ensure user owns this ACR job
+        },
+        include: {
+          criteria: {
+            orderBy: {
+              criterionNumber: 'asc',
+            },
+          },
+        },
+      });
+
+      if (!acrJob) {
+        throw new Error('ACR job not found');
+      }
+
+      // Transform criteria for frontend
+      const criteria = acrJob.criteria.map(c => ({
+        id: c.id,
+        criterionId: c.criterionId,
+        number: c.criterionNumber,
+        name: c.criterionName,
+        level: c.level,
+        confidence: c.confidence,
+        status: c.aiStatus,
+        evidence: c.evidence as any,
+        conformanceLevel: c.conformanceLevel,
+        remarks: c.reviewerNotes,
+        reviewedAt: c.reviewedAt,
+      }));
+
+      // Calculate statistics
+      const stats = {
+        total: criteria.length,
+        reviewed: criteria.filter(c => c.conformanceLevel).length,
+        byStatus: {
+          fail: criteria.filter(c => c.status === 'fail').length,
+          needs_verification: criteria.filter(c => c.status === 'needs_verification').length,
+          likely_na: criteria.filter(c => c.status === 'likely_na').length,
+          pass: criteria.filter(c => c.status === 'pass').length,
+        },
+        byConformance: {
+          supports: criteria.filter(c => c.conformanceLevel === 'supports').length,
+          partially_supports: criteria.filter(c => c.conformanceLevel === 'partially_supports').length,
+          does_not_support: criteria.filter(c => c.conformanceLevel === 'does_not_support').length,
+          not_applicable: criteria.filter(c => c.conformanceLevel === 'not_applicable').length,
+        },
+      };
+
+      return {
+        acrJob: {
+          id: acrJob.id,
+          jobId: acrJob.jobId,
+          edition: acrJob.edition,
+          status: acrJob.status,
+          documentTitle: acrJob.documentTitle,
+          createdAt: acrJob.createdAt,
+        },
+        criteria,
+        stats,
+      };
+    }
+
+    /**
+     * Save criterion review (conformance level and notes)
+     */
+    async saveCriterionReview(
+      acrJobId: string,
+      criterionId: string,
+      userId: string,
+      reviewData: {
+        conformanceLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+        remarks?: string;
+      }
+    ) {
+      // Verify ACR job belongs to user
+      const acrJob = await prisma.acrJob.findFirst({
+        where: { id: acrJobId, userId },
+      });
+
+      if (!acrJob) {
+        throw new Error('ACR job not found or access denied');
+      }
+
+      // Update criterion review
+      const updated = await prisma.acrCriterionReview.updateMany({
+        where: {
+          acrJobId,
+          criterionId,
+        },
+        data: {
+          conformanceLevel: reviewData.conformanceLevel,
+          reviewerNotes: reviewData.remarks || null,
+          reviewedAt: new Date(),
+          reviewedBy: userId,
+        },
+      });
+
+      if (updated.count === 0) {
+        throw new Error('Criterion not found in ACR job');
+      }
+
+      // Check if all criteria are reviewed
+      const totalCriteria = await prisma.acrCriterionReview.count({
+        where: { acrJobId },
+      });
+
+      const reviewedCriteria = await prisma.acrCriterionReview.count({
+        where: {
+          acrJobId,
+          conformanceLevel: { not: null },
+        },
+      });
+
+      // Update ACR job status if all criteria reviewed
+      if (totalCriteria === reviewedCriteria) {
+        await prisma.acrJob.update({
+          where: { id: acrJobId },
+          data: { status: 'completed' },
+        });
+      }
+
+      return {
+        success: true,
+        progress: {
+          reviewed: reviewedCriteria,
+          total: totalCriteria,
+          percentage: Math.round((reviewedCriteria / totalCriteria) * 100),
+        },
+      };
+    }
+
+    /**
+     * Bulk save multiple criterion reviews
+     */
+    async saveBulkReviews(
+      acrJobId: string,
+      userId: string,
+      reviews: Array<{
+        criterionId: string;
+        conformanceLevel: string;
+        remarks?: string;
+      }>
+    ) {
+      // Verify ACR job belongs to user
+      const acrJob = await prisma.acrJob.findFirst({
+        where: { id: acrJobId, userId },
+      });
+
+      if (!acrJob) {
+        throw new Error('ACR job not found or access denied');
+      }
+
+      // Update all reviews in transaction
+      const results = await prisma.$transaction(
+        reviews.map(review =>
+          prisma.acrCriterionReview.updateMany({
+            where: {
+              acrJobId,
+              criterionId: review.criterionId,
+            },
+            data: {
+              conformanceLevel: review.conformanceLevel,
+              reviewerNotes: review.remarks || null,
+              reviewedAt: new Date(),
+              reviewedBy: userId,
+            },
+          })
+        )
+      );
+
+      return {
+        success: true,
+        updated: results.reduce((sum, r) => sum + r.count, 0),
+      };
+    }
+
+    /**
+     * Analyze a criterion against audit results
+     */
+    private analyzeCriterion(criterion: any, auditResults: any) {
+      // Map audit issues to criteria
+      const relatedIssues = this.findRelatedAuditIssues(criterion, auditResults.issues);
+
+      if (relatedIssues.length > 0) {
+        // Has evidence from audit - criterion fails
+        return {
+          confidence: 0,
+          status: 'fail',
+          evidence: {
+            source: 'epub_audit',
+            description: this.generateEvidenceDescription(relatedIssues),
+            auditIssues: relatedIssues.map(issue => ({
+              code: issue.code,
+              severity: issue.severity,
+              message: issue.message,
+              affectedFiles: issue.filePath ? [issue.filePath] : [],
+              issueCount: 1,
+            })),
+            affectedFiles: relatedIssues.map(i => i.filePath).filter(Boolean),
+            issueCount: relatedIssues.length,
+          },
+        };
+      }
+
+      // No evidence - determine if likely N/A or needs verification
+      const isLikelyNA = this.isLikelyNotApplicable(criterion, auditResults);
+
+      return {
+        confidence: 0,
+        status: isLikelyNA ? 'likely_na' : 'needs_verification',
+        evidence: null,
+      };
+    }
+
+    /**
+     * Find audit issues related to a criterion
+     */
+    private findRelatedAuditIssues(criterion: any, auditIssues: any[]) {
+      const related = [];
+
+      for (const issue of auditIssues) {
+        // Map based on issue code and criterion
+        if (this.isIssueRelatedToCriterion(issue, criterion)) {
+          related.push(issue);
+        }
+      }
+
+      return related;
+    }
+
+    /**
+     * Check if an audit issue is related to a criterion
+     */
+    private isIssueRelatedToCriterion(issue: any, criterion: any) {
+      const issueCode = issue.code?.toUpperCase() || '';
+      const criterionNumber = criterion.number;
+
+      // Hardcoded mapping based on known patterns
+      const mappings: Record<string, string[]> = {
+        'EPUB-STRUCT-002': ['1.3.1', '4.1.2'], // Table headers
+        'RSC-001': ['4.1.1'], // Missing file (parsing)
+        'EPUB-META': ['1.3.1', '4.1.2'], // Metadata issues
+        'IMAGE-ALT': ['1.1.1'], // Image alt text
+        'HEADING': ['1.3.1', '2.4.6'], // Heading issues
+        'TABLE': ['1.3.1'], // Table structure
+        'LANGUAGE': ['3.1.1', '3.1.2'], // Language attributes
+        'CONTRAST': ['1.4.3'], // Color contrast
+        'LANDMARK': ['2.4.1'], // Landmarks
+      };
+
+      // Check if issue code matches any mapping
+      for (const [pattern, criteria] of Object.entries(mappings)) {
+        if (issueCode.includes(pattern)) {
+          return criteria.includes(criterionNumber);
+        }
+      }
+
+      return false;
+    }
+
+    /**
+     * Generate evidence description from audit issues
+     */
+    private generateEvidenceDescription(issues: any[]): string {
+      if (issues.length === 1) {
+        return issues[0].message;
+      }
+
+      const issuesByCode = issues.reduce((acc, issue) => {
+        acc[issue.code] = (acc[issue.code] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const parts = Object.entries(issuesByCode).map(
+        ([code, count]) => `${count} ${code} issue${count > 1 ? 's' : ''}`
+      );
+
+      return parts.join(', ');
+    }
+
+    /**
+     * Determine if criterion is likely not applicable
+     */
+    private isLikelyNotApplicable(criterion: any, auditResults: any): boolean {
+      const criterionNumber = criterion.number;
+
+      // Media-related criteria
+      if (['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.2.6', '1.2.7'].includes(criterionNumber)) {
+        // Check if EPUB has any media files
+        const hasMedia = auditResults.manifest?.some((item: any) =>
+          item.mediaType?.includes('audio') || item.mediaType?.includes('video')
+        );
+        return !hasMedia;
+      }
+
+      // Form-related criteria
+      if (['3.3.1', '3.3.2', '3.3.3', '3.3.4', '3.3.5', '3.3.6'].includes(criterionNumber)) {
+        // EPUBs rarely have forms
+        return true;
+      }
+
+      // Time-based criteria
+      if (['2.2.1', '2.2.2', '2.2.3', '2.2.4'].includes(criterionNumber)) {
+        // EPUBs rarely have time limits
+        return true;
+      }
+
+      return false;
+    }
+
+    /**
+     * Fetch EPUB audit results
+     */
+    private async fetchEpubAuditResults(jobId: string) {
+      // This should call your existing EPUB audit service
+      // For now, returning mock structure
+      return {
+        fileName: 'document.epub',
+        issues: [],
+        manifest: [],
+      };
+    }
+
+    /**
+     * Get single criterion details
+     */
+    async getCriterionDetails(acrJobId: string, criterionId: string, userId: string) {
+      const criterion = await prisma.acrCriterionReview.findFirst({
+        where: {
+          acrJobId,
+          criterionId,
+          acrJob: {
+            userId,
+          },
+        },
+        include: {
+          acrJob: true,
+        },
+      });
+
+      if (!criterion) {
+        throw new Error('Criterion not found');
+      }
+
+      // Get full criterion details from static data
+      const criterionData = this.editionsData.criteria.find(c => c.id === criterionId);
+
+      return {
+        ...criterion,
+        description: criterionData?.description,
+        wcagUrl: criterionData?.wcagUrl,
+        section: criterionData?.section,
+        // Add testing guidance and remediation from static data
+      };
+    }
+  }
+
+  export const acrService = new AcrService();
+
+  ---
+  PART 3: CONTROLLER
+
+  FILE: src/controllers/acr.controller.ts
+
+  Add these methods to existing AcrController:
+
+  import { Request, Response, NextFunction } from 'express';
+  import { acrService } from '../services/acr.service';
+
+  export class AcrController {
+    // ... existing methods ...
+
+    /**
+     * POST /acr/analysis
+     * Create ACR analysis from EPUB audit job
+     */
+    async createAnalysis(req: Request, res: Response, next: NextFunction) {
+      try {
+        const userId = req.user.id; // From auth middleware
+        const { jobId, edition, documentTitle } = req.body;
+
+        if (!jobId || !edition) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: 'jobId and edition are required',
+              code: 'INVALID_REQUEST',
+            },
+          });
+        }
+
+        const result = await acrService.createAcrAnalysis(
+          userId,
+          jobId,
+          edition,
+          documentTitle
+        );
+
+        res.status(201).json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+
+    /**
+     * GET /acr/:acrJobId/analysis
+     * Get ACR analysis results with all criteria
+     */
+    async getAnalysis(req: Request, res: Response, next: NextFunction) {
+      try {
+        const userId = req.user.id;
+        const { acrJobId } = req.params;
+
+        const result = await acrService.getAcrAnalysis(acrJobId, userId);
+
+        res.json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+
+    /**
+     * POST /acr/:acrJobId/criteria/:criterionId/review
+     * Save criterion review
+     */
+    async saveCriterionReview(req: Request, res: Response, next: NextFunction) {
+      try {
+        const userId = req.user.id;
+        const { acrJobId, criterionId } = req.params;
+        const { conformanceLevel, remarks } = req.body;
+
+        if (!conformanceLevel) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: 'conformanceLevel is required',
+              code: 'INVALID_REQUEST',
+            },
+          });
+        }
+
+        const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
+        if (!validLevels.includes(conformanceLevel)) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
+              code: 'INVALID_CONFORMANCE_LEVEL',
+            },
+          });
+        }
+
+        const result = await acrService.saveCriterionReview(
+          acrJobId,
+          criterionId,
+          userId,
+          { conformanceLevel, remarks }
+        );
+
+        res.json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+
+    /**
+     * POST /acr/:acrJobId/reviews/bulk
+     * Save multiple criterion reviews at once
+     */
+    async saveBulkReviews(req: Request, res: Response, next: NextFunction) {
+      try {
+        const userId = req.user.id;
+        const { acrJobId } = req.params;
+        const { reviews } = req.body;
+
+        if (!Array.isArray(reviews) || reviews.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: 'reviews array is required and must not be empty',
+              code: 'INVALID_REQUEST',
+            },
+          });
+        }
+
+        const result = await acrService.saveBulkReviews(acrJobId, userId, reviews);
+
+        res.json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+
+    /**
+     * GET /acr/:acrJobId/criteria/:criterionId
+     * Get detailed information about a single criterion
+     */
+    async getCriterionDetails(req: Request, res: Response, next: NextFunction) {
+      try {
+        const userId = req.user.id;
+        const { acrJobId, criterionId } = req.params;
+
+        const result = await acrService.getCriterionDetails(acrJobId, criterionId, userId);
+
+        res.json({
+          success: true,
+          data: result,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  }
+
+  export const acrController = new AcrController();
+
+  ---
+  PART 4: ROUTES
+
+  FILE: src/routes/acr.routes.ts
+
+  Update with new routes:
+
+  import { Router } from 'express';
+  import { acrController } from '../controllers/acr.controller';
+  import { authenticate } from '../middleware/auth';
+
+  const router = Router();
+
+  // ... existing routes ...
+
+  // ACR Analysis Routes
+  router.post('/analysis', authenticate, acrController.createAnalysis.bind(acrController));
+  router.get('/:acrJobId/analysis', authenticate, acrController.getAnalysis.bind(acrController));
+
+  // Criterion Review Routes
+  router.post(
+    '/:acrJobId/criteria/:criterionId/review',
+    authenticate,
+    acrController.saveCriterionReview.bind(acrController)
+  );
+
+  router.get(
+    '/:acrJobId/criteria/:criterionId',
+    authenticate,
+    acrController.getCriterionDetails.bind(acrController)
+  );
+
+  // Bulk Operations
+  router.post(
+    '/:acrJobId/reviews/bulk',
+    authenticate,
+    acrController.saveBulkReviews.bind(acrController)
+  );
+
+  export default router;
+
+  ---
+  PART 5: API USAGE EXAMPLES
+
+  1. CREATE ACR ANALYSIS:
+  POST /api/v1/acr/analysis
+  Authorization: Bearer <token>
+  Content-Type: application/json
+
+  {
+    "jobId": "49f235ca-c6a7-4d02-a29f-251add895582",
+    "edition": "international",
+    "documentTitle": "MATH_211_Differential_Equations.epub"
+  }
+
+  Response:
+  {
+    "success": true,
+    "data": {
+      "acrJob": {
+        "id": "acr-job-uuid",
+        "jobId": "49f235ca-c6a7-4d02-a29f-251add895582",
+        "edition": "international",
+        "status": "in_progress"
+      },
+      "criteriaCount": 78
+    }
+  }
+
+  2. GET ACR ANALYSIS RESULTS:
+  GET /api/v1/acr/{acrJobId}/analysis
+  Authorization: Bearer <token>
+
+  Response:
+  {
+    "success": true,
+    "data": {
+      "acrJob": {
+        "id": "acr-job-uuid",
+        "edition": "international",
+        "documentTitle": "MATH_211_Differential_Equations.epub",
+        "status": "in_progress"
+      },
+      "criteria": [
+        {
+          "id": "criterion-review-uuid",
+          "criterionId": "1.3.1-A",
+          "number": "1.3.1",
+          "name": "Info and Relationships",
+          "level": "A",
+          "confidence": 0,
+          "status": "fail",
+          "evidence": {
+            "source": "epub_audit",
+            "description": "9 tables missing header cells",
+            "auditIssues": [
+              {
+                "code": "EPUB-STRUCT-002",
+                "severity": "serious",
+                "message": "Tables missing header cells",
+                "affectedFiles": ["OEBPS/Text/01_Fm.xhtml"],
+                "issueCount": 9
+              }
+            ],
+            "affectedFiles": ["OEBPS/Text/01_Fm.xhtml", "..."],
+            "issueCount": 9
+          },
+          "conformanceLevel": null,
+          "remarks": null,
+          "reviewedAt": null
+        },
+        // ... 77 more criteria
+      ],
+      "stats": {
+        "total": 78,
+        "reviewed": 0,
+        "byStatus": {
+          "fail": 2,
+          "needs_verification": 63,
+          "likely_na": 13,
+          "pass": 0
+        },
+        "byConformance": {
+          "supports": 0,
+          "partially_supports": 0,
+          "does_not_support": 0,
+          "not_applicable": 0
+        }
+      }
+    }
+  }
+
+  3. SAVE CRITERION REVIEW:
+  POST /api/v1/acr/{acrJobId}/criteria/1.3.1-A/review
+  Authorization: Bearer <token>
+  Content-Type: application/json
+
+  {
+    "conformanceLevel": "does_not_support",
+    "remarks": "Tables missing header cells across 8 files. Will fix in remediation phase."
+  }
+
+  Response:
+  {
+    "success": true,
+    "data": {
+      "progress": {
+        "reviewed": 1,
+        "total": 78,
+        "percentage": 1
+      }
+    }
+  }
+
+  4. BULK SAVE REVIEWS:
+  POST /api/v1/acr/{acrJobId}/reviews/bulk
+  Authorization: Bearer <token>
+  Content-Type: application/json
+
+  {
+    "reviews": [
+      {
+        "criterionId": "1.2.1-A",
+        "conformanceLevel": "not_applicable",
+        "remarks": "No audio/video content in EPUB"
+      },
+      {
+        "criterionId": "1.2.2-A",
+        "conformanceLevel": "not_applicable",
+        "remarks": "No video content in EPUB"
+      }
+    ]
+  }
+
+  Response:
+  {
+    "success": true,
+    "data": {
+      "updated": 2
+    }
+  }
+
+  ---
+  TESTING CHECKLIST:
+
+  1. ✅ Database migrations run successfully
+  2. ✅ POST /acr/analysis creates ACR job and criteria records
+  3. ✅ GET /acr/:id/analysis returns all 78 criteria with evidence
+  4. ✅ Criteria with audit issues have status 'fail' and evidence populated
+  5. ✅ Criteria without audit issues have status 'needs_verification' or 'likely_na'
+  6. ✅ POST /acr/:id/criteria/:id/review saves conformance level and notes
+  7. ✅ Review timestamp and reviewer ID are recorded
+  8. ✅ ACR job status updates to 'completed' when all criteria reviewed
+  9. ✅ Bulk save endpoint works for multiple reviews
+  10. ✅ Authorization ensures users can only access their own ACR jobs
+  11. ✅ Invalid conformance levels are rejected (400 error)
+  12. ✅ Statistics are calculated correctly (reviewed count, by status, etc.)
+
+  ---
+  ERROR HANDLING:
+
+  Add proper error handling for:
+  - ACR job not found (404)
+  - Access denied (403)
+  - Invalid conformance level (400)
+  - Missing required fields (400)
+  - Database errors (500)
+
+  Example error response:
+  {
+    "success": false,
+    "error": {
+      "message": "ACR job not found or access denied",
+      "code": "ACR_JOB_NOT_FOUND"
+    }
+  }
+
+  ---
+  NOTES:
+
+  1. The analyzeCriterion method maps audit issues to criteria using hardcoded patterns. You should expand this mapping based on your actual audit issue codes.
+  2. The isLikelyNotApplicable method uses heuristics to determine if a criterion likely doesn't apply. Adjust based on your EPUB content analysis.
+  3. Consider adding webhooks or events when ACR job status changes to 'completed' for notifications.
+  4. Add pagination to GET /acr/:id/analysis if criteria count can be very large.
+  5. Consider caching the analysis results since criteria don't change once created.
+  6. Add audit logging for review changes for compliance tracking.
+
+
+  ---
+
+  ## Summary
+
+  This backend implementation provides:
+
+  1. ✅ **Database schema** for storing ACR jobs and criterion reviews
+  2. ✅ **Service layer** with business logic for analysis and review
+  3. ✅ **API endpoints** for creating analysis, getting results, and saving reviews
+  4. ✅ **Audit issue mapping** that links EPUB audit issues to ACR criteria
+  5. ✅ **Progress tracking** that shows how many criteria have been reviewed
+  6. ✅ **Bulk operations** for efficient review saving
+  7. ✅ **Authorization** ensuring users can only access their own ACR jobs
+  8. ✅ **Statistics** providing overview of analysis and review status
+
+  **Integration with Frontend:**
+  - Frontend calls `POST /acr/analysis` when user clicks "Generate ACR" from EPUB audit results
+  - Frontend fetches `GET /acr/:id/analysis` to display criteria table in AI Analysis and Human Verification steps
+  - Frontend calls `POST /acr/:id/criteria/:id/review` when user marks a criterion as reviewed
+  - Frontend uses stats to show progress bars and completion status
