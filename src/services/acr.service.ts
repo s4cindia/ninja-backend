@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import prisma from '../lib/prisma';
 
 interface Criterion {
   id: string;
@@ -23,6 +24,12 @@ interface Edition {
 interface AcrEditionsData {
   editions: Edition[];
   criteria: Criterion[];
+}
+
+interface AuditResults {
+  fileName?: string;
+  issues: any[];
+  manifest?: any[];
 }
 
 export class AcrService {
@@ -89,6 +96,511 @@ export class AcrService {
     }
 
     return criterion;
+  }
+
+  async createAcrAnalysis(
+    userId: string,
+    tenantId: string,
+    jobId: string,
+    edition: string,
+    documentTitle?: string
+  ) {
+    const auditResults = await this.fetchEpubAuditResults(jobId);
+
+    const editionData = this.editionsData.editions.find(e => e.code === edition);
+    if (!editionData) {
+      throw new Error(`Invalid edition: ${edition}`);
+    }
+
+    const acrJob = await prisma.acrJob.create({
+      data: {
+        jobId,
+        tenantId,
+        userId,
+        edition,
+        documentTitle: documentTitle || auditResults.fileName || 'Untitled Document',
+        status: 'in_progress',
+      },
+    });
+
+    const criteriaReviews = [];
+
+    for (const criterionId of editionData.criteriaIds) {
+      const criterion = this.editionsData.criteria.find(c => c.id === criterionId);
+      if (!criterion) continue;
+
+      const analysis = this.analyzeCriterion(criterion, auditResults);
+
+      const review = await prisma.acrCriterionReview.create({
+        data: {
+          acrJobId: acrJob.id,
+          criterionId: criterion.id,
+          criterionNumber: criterion.number,
+          criterionName: criterion.name,
+          level: criterion.level,
+          confidence: analysis.confidence,
+          aiStatus: analysis.status,
+          evidence: analysis.evidence || null,
+        },
+      });
+
+      criteriaReviews.push(review);
+    }
+
+    return {
+      acrJob,
+      criteriaCount: criteriaReviews.length,
+    };
+  }
+
+  async getAcrAnalysis(acrJobId: string, userId: string, tenantId: string) {
+    const acrJob = await prisma.acrJob.findFirst({
+      where: {
+        id: acrJobId,
+        userId,
+        tenantId,
+      },
+      include: {
+        criteria: {
+          orderBy: {
+            criterionNumber: 'asc',
+          },
+        },
+      },
+    });
+
+    if (!acrJob) {
+      throw new Error('ACR job not found');
+    }
+
+    const criteria = acrJob.criteria.map(c => ({
+      id: c.id,
+      criterionId: c.criterionId,
+      number: c.criterionNumber,
+      name: c.criterionName,
+      level: c.level,
+      confidence: c.confidence,
+      status: c.aiStatus,
+      evidence: c.evidence as any,
+      conformanceLevel: c.conformanceLevel,
+      remarks: c.reviewerNotes,
+      reviewedAt: c.reviewedAt,
+    }));
+
+    const stats = {
+      total: criteria.length,
+      reviewed: criteria.filter(c => c.conformanceLevel).length,
+      byStatus: {
+        fail: criteria.filter(c => c.status === 'fail').length,
+        needs_verification: criteria.filter(c => c.status === 'needs_verification').length,
+        likely_na: criteria.filter(c => c.status === 'likely_na').length,
+        pass: criteria.filter(c => c.status === 'pass').length,
+      },
+      byConformance: {
+        supports: criteria.filter(c => c.conformanceLevel === 'supports').length,
+        partially_supports: criteria.filter(c => c.conformanceLevel === 'partially_supports').length,
+        does_not_support: criteria.filter(c => c.conformanceLevel === 'does_not_support').length,
+        not_applicable: criteria.filter(c => c.conformanceLevel === 'not_applicable').length,
+      },
+    };
+
+    return {
+      acrJob: {
+        id: acrJob.id,
+        jobId: acrJob.jobId,
+        edition: acrJob.edition,
+        status: acrJob.status,
+        documentTitle: acrJob.documentTitle,
+        createdAt: acrJob.createdAt,
+      },
+      criteria,
+      stats,
+    };
+  }
+
+  async getAcrAnalysisByJobId(jobId: string, userId: string, tenantId: string) {
+    const acrJob = await prisma.acrJob.findFirst({
+      where: {
+        jobId,
+        userId,
+        tenantId,
+      },
+      include: {
+        criteria: {
+          orderBy: {
+            criterionNumber: 'asc',
+          },
+        },
+      },
+    });
+
+    if (!acrJob) {
+      return null;
+    }
+
+    const criteria = acrJob.criteria.map(c => ({
+      id: c.id,
+      criterionId: c.criterionId,
+      number: c.criterionNumber,
+      name: c.criterionName,
+      level: c.level,
+      confidence: c.confidence,
+      status: c.aiStatus,
+      evidence: c.evidence as any,
+      conformanceLevel: c.conformanceLevel,
+      remarks: c.reviewerNotes,
+      reviewedAt: c.reviewedAt,
+    }));
+
+    const stats = {
+      total: criteria.length,
+      reviewed: criteria.filter(c => c.conformanceLevel).length,
+      byStatus: {
+        fail: criteria.filter(c => c.status === 'fail').length,
+        needs_verification: criteria.filter(c => c.status === 'needs_verification').length,
+        likely_na: criteria.filter(c => c.status === 'likely_na').length,
+        pass: criteria.filter(c => c.status === 'pass').length,
+      },
+      byConformance: {
+        supports: criteria.filter(c => c.conformanceLevel === 'supports').length,
+        partially_supports: criteria.filter(c => c.conformanceLevel === 'partially_supports').length,
+        does_not_support: criteria.filter(c => c.conformanceLevel === 'does_not_support').length,
+        not_applicable: criteria.filter(c => c.conformanceLevel === 'not_applicable').length,
+      },
+    };
+
+    return {
+      acrJob: {
+        id: acrJob.id,
+        jobId: acrJob.jobId,
+        edition: acrJob.edition,
+        status: acrJob.status,
+        documentTitle: acrJob.documentTitle,
+        createdAt: acrJob.createdAt,
+      },
+      criteria,
+      stats,
+    };
+  }
+
+  async saveCriterionReview(
+    acrJobId: string,
+    criterionId: string,
+    userId: string,
+    tenantId: string,
+    reviewData: {
+      conformanceLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+      remarks?: string;
+    }
+  ) {
+    const acrJob = await prisma.acrJob.findFirst({
+      where: { id: acrJobId, userId, tenantId },
+    });
+
+    if (!acrJob) {
+      throw new Error('ACR job not found or access denied');
+    }
+
+    const updated = await prisma.acrCriterionReview.updateMany({
+      where: {
+        acrJobId,
+        criterionId,
+      },
+      data: {
+        conformanceLevel: reviewData.conformanceLevel,
+        reviewerNotes: reviewData.remarks || null,
+        reviewedAt: new Date(),
+        reviewedBy: userId,
+      },
+    });
+
+    if (updated.count === 0) {
+      throw new Error('Criterion not found in ACR job');
+    }
+
+    const totalCriteria = await prisma.acrCriterionReview.count({
+      where: { acrJobId },
+    });
+
+    const reviewedCriteria = await prisma.acrCriterionReview.count({
+      where: {
+        acrJobId,
+        conformanceLevel: { not: null },
+      },
+    });
+
+    if (totalCriteria === reviewedCriteria) {
+      await prisma.acrJob.update({
+        where: { id: acrJobId },
+        data: { status: 'completed' },
+      });
+    }
+
+    return {
+      success: true,
+      progress: {
+        reviewed: reviewedCriteria,
+        total: totalCriteria,
+        percentage: Math.round((reviewedCriteria / totalCriteria) * 100),
+      },
+    };
+  }
+
+  async saveBulkReviews(
+    acrJobId: string,
+    userId: string,
+    tenantId: string,
+    reviews: Array<{
+      criterionId: string;
+      conformanceLevel: string;
+      remarks?: string;
+    }>
+  ) {
+    const acrJob = await prisma.acrJob.findFirst({
+      where: { id: acrJobId, userId, tenantId },
+    });
+
+    if (!acrJob) {
+      throw new Error('ACR job not found or access denied');
+    }
+
+    const results = await prisma.$transaction(
+      reviews.map(review =>
+        prisma.acrCriterionReview.updateMany({
+          where: {
+            acrJobId,
+            criterionId: review.criterionId,
+          },
+          data: {
+            conformanceLevel: review.conformanceLevel,
+            reviewerNotes: review.remarks || null,
+            reviewedAt: new Date(),
+            reviewedBy: userId,
+          },
+        })
+      )
+    );
+
+    const totalCriteria = await prisma.acrCriterionReview.count({
+      where: { acrJobId },
+    });
+
+    const reviewedCriteria = await prisma.acrCriterionReview.count({
+      where: {
+        acrJobId,
+        conformanceLevel: { not: null },
+      },
+    });
+
+    if (totalCriteria === reviewedCriteria) {
+      await prisma.acrJob.update({
+        where: { id: acrJobId },
+        data: { status: 'completed' },
+      });
+    }
+
+    return {
+      success: true,
+      updated: results.reduce((sum, r) => sum + r.count, 0),
+      progress: {
+        reviewed: reviewedCriteria,
+        total: totalCriteria,
+        percentage: Math.round((reviewedCriteria / totalCriteria) * 100),
+      },
+    };
+  }
+
+  async getCriterionDetails(acrJobId: string, criterionId: string, userId: string, tenantId: string) {
+    const criterion = await prisma.acrCriterionReview.findFirst({
+      where: {
+        acrJobId,
+        criterionId,
+        acrJob: {
+          userId,
+          tenantId,
+        },
+      },
+      include: {
+        acrJob: true,
+      },
+    });
+
+    if (!criterion) {
+      throw new Error('Criterion not found');
+    }
+
+    const criterionData = this.editionsData.criteria.find(c => c.id === criterionId);
+
+    return {
+      id: criterion.id,
+      criterionId: criterion.criterionId,
+      number: criterion.criterionNumber,
+      name: criterion.criterionName,
+      level: criterion.level,
+      confidence: criterion.confidence,
+      status: criterion.aiStatus,
+      evidence: criterion.evidence,
+      conformanceLevel: criterion.conformanceLevel,
+      remarks: criterion.reviewerNotes,
+      reviewedAt: criterion.reviewedAt,
+      reviewedBy: criterion.reviewedBy,
+      description: criterionData?.description,
+      wcagUrl: criterionData?.wcagUrl,
+      section: criterionData?.section,
+    };
+  }
+
+  private analyzeCriterion(criterion: Criterion, auditResults: AuditResults) {
+    const relatedIssues = this.findRelatedAuditIssues(criterion, auditResults.issues || []);
+
+    if (relatedIssues.length > 0) {
+      return {
+        confidence: 0,
+        status: 'fail',
+        evidence: {
+          source: 'epub_audit',
+          description: this.generateEvidenceDescription(relatedIssues),
+          auditIssues: relatedIssues.map(issue => ({
+            code: issue.code,
+            severity: issue.severity,
+            message: issue.message,
+            affectedFiles: issue.filePath ? [issue.filePath] : [],
+            issueCount: 1,
+          })),
+          affectedFiles: relatedIssues.map((i: any) => i.filePath).filter(Boolean),
+          issueCount: relatedIssues.length,
+        },
+      };
+    }
+
+    const isLikelyNA = this.isLikelyNotApplicable(criterion, auditResults);
+
+    return {
+      confidence: 0,
+      status: isLikelyNA ? 'likely_na' : 'needs_verification',
+      evidence: null,
+    };
+  }
+
+  private findRelatedAuditIssues(criterion: Criterion, auditIssues: any[]) {
+    const related = [];
+
+    for (const issue of auditIssues) {
+      if (this.isIssueRelatedToCriterion(issue, criterion)) {
+        related.push(issue);
+      }
+    }
+
+    return related;
+  }
+
+  private isIssueRelatedToCriterion(issue: any, criterion: Criterion) {
+    const issueCode = issue.code?.toUpperCase() || '';
+    const criterionNumber = criterion.number;
+
+    const mappings: Record<string, string[]> = {
+      'EPUB-STRUCT-002': ['1.3.1', '4.1.2'],
+      'RSC-001': ['4.1.1'],
+      'EPUB-META': ['1.3.1', '4.1.2'],
+      'IMAGE-ALT': ['1.1.1'],
+      'EPUB-IMG-001': ['1.1.1'],
+      'HEADING': ['1.3.1', '2.4.6'],
+      'EPUB-STRUCT-003': ['1.3.1', '2.4.6'],
+      'TABLE': ['1.3.1'],
+      'LANGUAGE': ['3.1.1', '3.1.2'],
+      'EPUB-SEM-001': ['3.1.1'],
+      'EPUB-META-001': ['3.1.1'],
+      'CONTRAST': ['1.4.3'],
+      'LANDMARK': ['2.4.1'],
+      'EPUB-STRUCT-004': ['2.4.1'],
+      'EPUB-NAV-001': ['2.4.1'],
+    };
+
+    for (const [pattern, criteria] of Object.entries(mappings)) {
+      if (issueCode.includes(pattern)) {
+        return criteria.includes(criterionNumber);
+      }
+    }
+
+    return false;
+  }
+
+  private generateEvidenceDescription(issues: any[]): string {
+    if (issues.length === 1) {
+      return issues[0].message;
+    }
+
+    const issuesByCode = issues.reduce((acc, issue) => {
+      acc[issue.code] = (acc[issue.code] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const parts = Object.entries(issuesByCode).map(
+      ([code, count]) => `${count} ${code} issue${count > 1 ? 's' : ''}`
+    );
+
+    return parts.join(', ');
+  }
+
+  private isLikelyNotApplicable(criterion: Criterion, auditResults: AuditResults): boolean {
+    const criterionNumber = criterion.number;
+
+    if (['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.2.6', '1.2.7', '1.2.8', '1.2.9'].includes(criterionNumber)) {
+      const hasMedia = auditResults.manifest?.some((item: any) =>
+        item.mediaType?.includes('audio') || item.mediaType?.includes('video')
+      );
+      return !hasMedia;
+    }
+
+    if (['3.3.1', '3.3.2', '3.3.3', '3.3.4', '3.3.5', '3.3.6'].includes(criterionNumber)) {
+      return true;
+    }
+
+    if (['2.2.1', '2.2.2', '2.2.3', '2.2.4', '2.2.5', '2.2.6'].includes(criterionNumber)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async fetchEpubAuditResults(jobId: string): Promise<AuditResults> {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: {
+        validationResults: {
+          include: {
+            issues: true,
+          },
+        },
+      },
+    });
+
+    if (!job) {
+      return {
+        fileName: 'Unknown Document',
+        issues: [],
+        manifest: [],
+      };
+    }
+
+    const allIssues = job.validationResults.flatMap(vr =>
+      vr.issues.map(issue => ({
+        code: issue.code,
+        severity: issue.severity,
+        message: issue.description,
+        filePath: issue.filePath,
+        wcagCriteria: issue.wcagCriteria,
+      }))
+    );
+
+    const input = job.input as any;
+    const fileName = input?.originalName || input?.fileName || 'Unknown Document';
+
+    return {
+      fileName,
+      issues: allIssues,
+      manifest: [],
+    };
   }
 }
 
