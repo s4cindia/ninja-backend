@@ -536,8 +536,14 @@ class AcrGeneratorService {
     edition: AcrEdition,
     auditIssues: AuditIssueInput[]
   ): Promise<CriterionConfidenceWithIssues[]> {
+    console.log('[ACR Generator] Starting analysis with', auditIssues.length, 'issues');
+    console.log('[ACR Generator] Issue rule IDs:', auditIssues.map(i => i.ruleId));
+
     const criteria = await this.getCriteriaForEdition(edition);
     const issueMapping = wcagIssueMapperService.mapIssuesToCriteria(auditIssues);
+
+    console.log('[ACR Generator] Issue mapping size:', issueMapping.size);
+    console.log('[ACR Generator] Mapped criteria:', Array.from(issueMapping.keys()));
 
     const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
       const relatedIssues = issueMapping.get(criterion.id) || [];

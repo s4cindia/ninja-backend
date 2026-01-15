@@ -22,6 +22,7 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   // Structure issues (js-auditor)
   'EPUB-STRUCT-001': ['1.3.1'],
   'EPUB-STRUCT-002': ['1.3.1'],
+  'EPUB-STRUCT-004': ['1.3.1'],
   'EPUB-IMG-001': ['1.1.1'],
   'EPUB-PAGE-001': ['2.4.5'],
   'EPUB-LANG-001': ['3.1.1'],
