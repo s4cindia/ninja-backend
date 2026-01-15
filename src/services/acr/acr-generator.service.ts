@@ -70,40 +70,63 @@ export interface AcrGenerationOptions {
 
 export interface EditionInfo {
   id: AcrEdition;
+  code: AcrEdition;  // Added for frontend compatibility
   name: string;
   description: string;
   standards: string[];
   recommended: boolean;
+  criteriaCount?: number;
+  criteria?: AcrCriterion[];
+  isRecommended?: boolean;  // Alias for 'recommended'
+}
+
+export interface EditionSection {
+  id: string;
+  name: string;
+  criteriaCount: number;
+}
+
+export interface EditionDetails extends EditionInfo {
+  sections: EditionSection[];
+  applicableStandards: string[];
 }
 
 const EDITION_INFO: Record<AcrEdition, EditionInfo> = {
   'VPAT2.5-508': {
     id: 'VPAT2.5-508',
+    code: 'VPAT2.5-508',
     name: 'Section 508 Edition',
     description: 'U.S. Federal procurement requirements only',
     standards: ['Section 508'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-WCAG': {
     id: 'VPAT2.5-WCAG',
+    code: 'VPAT2.5-WCAG',
     name: 'WCAG Edition',
     description: 'General web accessibility (WCAG 2.1)',
     standards: ['WCAG 2.1'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-EU': {
     id: 'VPAT2.5-EU',
+    code: 'VPAT2.5-EU',
     name: 'EU Edition',
     description: 'European Accessibility Act (EN 301 549)',
     standards: ['EN 301 549'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-INT': {
     id: 'VPAT2.5-INT',
+    code: 'VPAT2.5-INT',
     name: 'International Edition',
     description: 'Satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document',
     standards: ['Section 508', 'EN 301 549', 'WCAG 2.1'],
-    recommended: true
+    recommended: true,
+    isRecommended: true
   }
 };
 
