@@ -199,19 +199,34 @@ export class ConfidenceController {
         return;
       }
 
-      const auditIssues: AuditIssueInput[] = [];
+      console.log('[Confidence] Job found:', !!job);
+      console.log('[Confidence] validationResults count:', job?.validationResults?.length || 0);
+
+      if (job?.validationResults) {
+        job.validationResults.forEach((result, idx) => {
+          console.log(`[Confidence] ValidationResult ${idx}:`, {
+            id: result.id,
+            issuesCount: result.issues?.length || 0
+          });
+        });
+      }
+
       let totalIssueCount = 0;
+      const auditIssues: AuditIssueInput[] = [];
 
       if (job.validationResults) {
+        console.log('[Confidence] Processing validation results...');
         for (const result of job.validationResults) {
+          console.log('[Confidence] Result has issues:', result.issues?.length || 0);
           if (result.issues) {
             totalIssueCount += result.issues.length;
             for (const issue of result.issues) {
+              console.log('[Confidence] Adding issue:', issue.code, issue.description?.substring(0, 50));
               auditIssues.push({
                 id: issue.id,
                 ruleId: issue.code || 'unknown',
                 message: issue.description || '',
-                impact: issue.severity || 'moderate',
+                impact: (issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
                 filePath: issue.location || ''
               });
             }
@@ -219,7 +234,7 @@ export class ConfidenceController {
         }
       }
 
-      console.log('[Confidence] Job found, audit issues count:', totalIssueCount);
+      console.log('[Confidence] Total issues extracted:', auditIssues.length);
       console.log('[Confidence] Rule IDs:', auditIssues.map(i => i.ruleId));
 
       const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
