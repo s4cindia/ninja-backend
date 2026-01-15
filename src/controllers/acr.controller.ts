@@ -102,13 +102,28 @@ export class AcrController {
 
   async getEditionInfo(req: Request, res: Response, next: NextFunction) {
     try {
-      const edition = req.params.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT';
+      const editionParam = req.params.edition;
 
-      const validEditions = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
-      if (!validEditions.includes(edition)) {
+      // Map friendly names to full edition codes
+      const editionMap: Record<string, 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT'> = {
+        'VPAT2.5-508': 'VPAT2.5-508',
+        'VPAT2.5-WCAG': 'VPAT2.5-WCAG',
+        'VPAT2.5-EU': 'VPAT2.5-EU',
+        'VPAT2.5-INT': 'VPAT2.5-INT',
+        'section508': 'VPAT2.5-508',
+        '508': 'VPAT2.5-508',
+        'wcag': 'VPAT2.5-WCAG',
+        'eu': 'VPAT2.5-EU',
+        'international': 'VPAT2.5-INT',
+        'int': 'VPAT2.5-INT'
+      };
+
+      const edition = editionMap[editionParam] || editionMap[editionParam.toLowerCase()];
+
+      if (!edition) {
         res.status(400).json({
           success: false,
-          error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT' }
+          error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT, section508, wcag, eu, international' }
         });
         return;
       }
