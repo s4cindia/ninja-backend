@@ -180,13 +180,6 @@ export class ConfidenceController {
         where: {
           id: jobId,
           tenant: { users: { some: { id: userId } } }
-        },
-        include: {
-          validationResults: {
-            include: {
-              issues: true
-            }
-          }
         }
       });
 
@@ -200,39 +193,35 @@ export class ConfidenceController {
       }
 
       console.log('[Confidence] Job found:', !!job);
-      console.log('[Confidence] validationResults count:', job?.validationResults?.length || 0);
 
-      if (job?.validationResults) {
-        job.validationResults.forEach((result, idx) => {
-          console.log(`[Confidence] ValidationResult ${idx}:`, {
-            id: result.id,
-            issuesCount: result.issues?.length || 0
-          });
-        });
+      interface OutputIssue {
+        id?: string;
+        ruleId?: string;
+        code?: string;
+        message?: string;
+        description?: string;
+        impact?: string;
+        severity?: string;
+        filePath?: string;
+        location?: string;
       }
 
-      let totalIssueCount = 0;
-      const auditIssues: AuditIssueInput[] = [];
+      const auditOutput = job.output as Record<string, unknown> | null;
+      const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
-      if (job.validationResults) {
-        console.log('[Confidence] Processing validation results...');
-        for (const result of job.validationResults) {
-          console.log('[Confidence] Result has issues:', result.issues?.length || 0);
-          if (result.issues) {
-            totalIssueCount += result.issues.length;
-            for (const issue of result.issues) {
-              console.log('[Confidence] Adding issue:', issue.code, issue.description?.substring(0, 50));
-              auditIssues.push({
-                id: issue.id,
-                ruleId: issue.code || 'unknown',
-                message: issue.description || '',
-                impact: (issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
-                filePath: issue.location || ''
-              });
-            }
-          }
-        }
-      }
+      console.log('[Confidence] Issues from job.output:', outputIssues.length);
+
+      const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
+        const ruleId = issue.ruleId || issue.code || 'unknown';
+        console.log(`[Confidence] Issue ${idx}:`, ruleId, (issue.message || issue.description || '')?.substring(0, 50));
+        return {
+          id: issue.id || `issue-${idx}`,
+          ruleId,
+          message: issue.message || issue.description || '',
+          impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          filePath: issue.filePath || issue.location || ''
+        };
+      });
 
       console.log('[Confidence] Total issues extracted:', auditIssues.length);
       console.log('[Confidence] Rule IDs:', auditIssues.map(i => i.ruleId));
