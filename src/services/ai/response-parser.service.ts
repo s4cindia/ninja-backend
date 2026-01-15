@@ -1,4 +1,4 @@
-import { z, ZodSchema, ZodError } from 'zod';
+import { ZodSchema, ZodError } from 'zod';
 import { geminiService, GeminiOptions, GeminiResponse } from './gemini.service';
 import { AppError } from '../../utils/app-error';
 
