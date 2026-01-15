@@ -4,24 +4,53 @@
  */
 
 export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
+  // ============= CUSTOM PLATFORM RULES =============
+  // Resource errors (epubcheck)
+  'RSC-001': [],
+  'RSC-002': [],
+  'RSC-005': [],
+  'RSC-006': [],
+  'RSC-007': [],
+  'RSC-008': [],
+  'RSC-010': [],
+  'RSC-011': [],
+  'RSC-012': [],
+  'RSC-015': [],
+  'RSC-016': [],
+  'RSC-017': [],
+
+  // Structure issues (js-auditor)
+  'EPUB-STRUCT-001': ['1.3.1'],
+  'EPUB-STRUCT-002': ['1.3.1'],
+  'EPUB-IMG-001': ['1.1.1'],
+  'EPUB-PAGE-001': ['2.4.5'],
+  'EPUB-LANG-001': ['3.1.1'],
+  'EPUB-TITLE-001': ['2.4.2'],
+
+  // ============= STANDARD ACE RULES =============
+  // Images and Non-text Content
   'img-alt': ['1.1.1'],
   'area-alt': ['1.1.1'],
   'input-image-alt': ['1.1.1'],
   'object-alt': ['1.1.1'],
   'svg-img-alt': ['1.1.1'],
 
+  // Document Structure
   'html-has-lang': ['3.1.1'],
   'html-lang-valid': ['3.1.1'],
   'valid-lang': ['3.1.2'],
 
+  // Heading Structure
   'heading-order': ['1.3.1', '2.4.6'],
   'empty-heading': ['1.3.1', '2.4.6'],
   'p-as-heading': ['1.3.1'],
 
+  // Lists
   'list': ['1.3.1'],
   'listitem': ['1.3.1'],
   'definition-list': ['1.3.1'],
 
+  // Tables
   'table-duplicate-name': ['1.3.1'],
   'td-headers-attr': ['1.3.1', '4.1.1'],
   'th-has-data-cells': ['1.3.1'],
@@ -29,13 +58,16 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'scope-attr-valid': ['1.3.1'],
   'td-has-header': ['1.3.1'],
 
+  // Links
   'link-name': ['2.4.4', '4.1.2'],
   'link-in-text-block': ['1.4.1'],
 
+  // Color and Contrast
   'color-contrast': ['1.4.3'],
   'color-contrast-enhanced': ['1.4.6'],
   'use-of-color': ['1.4.1'],
 
+  // Forms
   'label': ['1.3.1', '3.3.2', '4.1.2'],
   'label-title-only': ['3.3.2'],
   'button-name': ['4.1.2'],
@@ -43,6 +75,7 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'select-name': ['4.1.2'],
   'textarea-label': ['4.1.2'],
 
+  // ARIA
   'aria-allowed-attr': ['4.1.2'],
   'aria-required-attr': ['4.1.2'],
   'aria-required-children': ['1.3.1', '4.1.2'],
@@ -52,32 +85,41 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'aria-valid-attr': ['4.1.2'],
   'aria-hidden-focus': ['4.1.2'],
 
+  // Page Title
   'document-title': ['2.4.2'],
 
+  // Landmarks
   'landmark-one-main': ['1.3.1'],
   'landmark-no-duplicate-banner': ['1.3.1'],
   'landmark-no-duplicate-contentinfo': ['1.3.1'],
   'region': ['1.3.1'],
 
+  // Keyboard
   'accesskeys': ['2.4.1'],
   'tabindex': ['2.4.3'],
 
+  // Parsing
   'duplicate-id': ['4.1.1'],
   'duplicate-id-active': ['4.1.1'],
   'duplicate-id-aria': ['4.1.1'],
 
+  // Bypass Blocks
   'bypass': ['2.4.1'],
   'skip-link': ['2.4.1'],
 
+  // Page Language
   'meta-refresh': ['2.2.1', '2.2.4', '3.2.5'],
   'meta-viewport': ['1.4.4'],
 
+  // Sensory Characteristics
   'audio-caption': ['1.2.2'],
   'video-caption': ['1.2.2'],
   'video-description': ['1.2.3', '1.2.5'],
 
+  // Focus
   'focus-order-semantics': ['2.4.3'],
 
+  // Consistent Navigation
   'identical-links-same-purpose': ['2.4.4'],
 };
 
