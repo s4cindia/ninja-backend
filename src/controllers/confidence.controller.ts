@@ -3,6 +3,7 @@ import { confidenceAnalyzerService, ValidationResultInput } from '../services/ac
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
 import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
 
 export class ConfidenceController {
   async getConfidenceSummary(req: Request, res: Response, next: NextFunction) {
@@ -155,7 +156,7 @@ export class ConfidenceController {
       const { edition = 'VPAT2.5-INT' } = req.query;
       const userId = req.user?.id;
 
-      console.log('[Confidence] Getting confidence with issues for job:', jobId);
+      logger.debug(`[Confidence] Getting confidence with issues for job: ${jobId}`);
 
       if (!jobId) {
         res.status(400).json({
@@ -184,7 +185,7 @@ export class ConfidenceController {
       });
 
       if (!job) {
-        console.error('[Confidence] Job not found:', jobId);
+        logger.warn(`[Confidence] Job not found: ${jobId}`);
         res.status(404).json({
           success: false,
           error: { message: 'Job not found' }
@@ -192,7 +193,7 @@ export class ConfidenceController {
         return;
       }
 
-      console.log('[Confidence] Job found:', !!job);
+      logger.debug(`[Confidence] Job found: ${jobId}`);
 
       interface OutputIssue {
         id?: string;
@@ -209,11 +210,11 @@ export class ConfidenceController {
       const auditOutput = job.output as Record<string, unknown> | null;
       const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
-      console.log('[Confidence] Issues from job.output:', outputIssues.length);
+      logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
 
       const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
         const ruleId = issue.ruleId || issue.code || 'unknown';
-        console.log(`[Confidence] Issue ${idx}:`, ruleId, (issue.message || issue.description || '')?.substring(0, 50));
+        logger.debug(`[Confidence] Issue ${idx}: ${ruleId} - ${(issue.message || issue.description || '')?.substring(0, 50)}`);
         return {
           id: issue.id || `issue-${idx}`,
           ruleId,
@@ -223,15 +224,15 @@ export class ConfidenceController {
         };
       });
 
-      console.log('[Confidence] Total issues extracted:', auditIssues.length);
-      console.log('[Confidence] Rule IDs:', auditIssues.map(i => i.ruleId));
+      logger.debug(`[Confidence] Total issues extracted: ${auditIssues.length}`);
+      logger.debug(`[Confidence] Rule IDs: ${auditIssues.map(i => i.ruleId).join(', ')}`);
 
       const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
         editionCode,
         auditIssues
       );
 
-      console.log('[Confidence] Criteria with issues:', confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length);
+      logger.debug(`[Confidence] Criteria with issues: ${confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length}`);
 
       const summary = {
         totalCriteria: confidenceAnalysis.length,
