@@ -7,7 +7,8 @@ export const jobTypeEnum = z.enum([
   'VPAT_GENERATION',
   'ALT_TEXT_GENERATION',
   'METADATA_EXTRACTION',
-  'BATCH_VALIDATION'
+  'BATCH_VALIDATION',
+  'ACR_WORKFLOW'
 ]);
 
 export const jobStatusEnum = z.enum([
