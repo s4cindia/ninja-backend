@@ -152,7 +152,7 @@ export class AcrService {
           level: criterion.level,
           confidence: analysis.confidence,
           aiStatus: analysis.status,
-          evidence: analysis.evidence || null,
+          evidence: analysis.evidence || undefined,
         },
       });
 
@@ -555,7 +555,7 @@ export class AcrService {
     }, {} as Record<string, number>);
 
     const parts = Object.entries(issuesByCode).map(
-      ([code, count]) => `${count} ${code} issue${count > 1 ? 's' : ''}`
+      ([code, count]) => `${count as number} ${code} issue${(count as number) > 1 ? 's' : ''}`
     );
 
     return parts.join(', ');
