@@ -153,6 +153,9 @@ export class ConfidenceController {
     try {
       const { jobId } = req.params;
       const { edition = 'VPAT2.5-INT' } = req.query;
+      const userId = req.user?.id;
+
+      console.log('[Confidence] Getting confidence with issues for job:', jobId);
 
       if (!jobId) {
         res.status(400).json({
@@ -173,12 +176,10 @@ export class ConfidenceController {
         return;
       }
 
-      const userId = req.user?.id;
-
       const job = await prisma.job.findFirst({
         where: {
           id: jobId,
-          userId: userId
+          tenant: { users: { some: { id: userId } } }
         },
         include: {
           validationResults: {
@@ -190,9 +191,10 @@ export class ConfidenceController {
       });
 
       if (!job) {
+        console.error('[Confidence] Job not found:', jobId);
         res.status(404).json({
           success: false,
-          error: { message: 'Job not found or access denied' }
+          error: { message: 'Job not found' }
         });
         return;
       }
