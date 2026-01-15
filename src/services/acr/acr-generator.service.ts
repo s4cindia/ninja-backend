@@ -293,6 +293,55 @@ class AcrGeneratorService {
     };
   }
 
+  async getEditionDetails(edition: AcrEdition): Promise<EditionDetails | undefined> {
+    const baseInfo = EDITION_INFO[edition];
+    if (!baseInfo) return undefined;
+
+    // Get full criteria for this edition
+    const criteria = await this.getCriteriaForEdition(edition);
+
+    // Group criteria by WCAG level to create sections
+    const levelACriteria = criteria.filter(c => c.level === 'A');
+    const levelAACriteria = criteria.filter(c => c.level === 'AA');
+    const levelAAACriteria = criteria.filter(c => c.level === 'AAA');
+
+    const sections: EditionSection[] = [];
+
+    if (levelACriteria.length > 0) {
+      sections.push({
+        id: 'level-a',
+        name: 'Level A',
+        criteriaCount: levelACriteria.length
+      });
+    }
+
+    if (levelAACriteria.length > 0) {
+      sections.push({
+        id: 'level-aa',
+        name: 'Level AA',
+        criteriaCount: levelAACriteria.length
+      });
+    }
+
+    if (levelAAACriteria.length > 0) {
+      sections.push({
+        id: 'level-aaa',
+        name: 'Level AAA',
+        criteriaCount: levelAAACriteria.length
+      });
+    }
+
+    return {
+      ...baseInfo,
+      criteriaCount: criteria.length,
+      criteria,
+      isRecommended: baseInfo.recommended,
+      sections,
+      applicableStandards: baseInfo.standards
+    };
+  }
+
+  // Keep the old method for backward compatibility
   getEditionInfo(edition: AcrEdition): EditionInfo | undefined {
     return EDITION_INFO[edition];
   }
