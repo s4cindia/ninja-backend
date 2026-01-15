@@ -8,6 +8,7 @@ import {
   generateFooterDisclaimer 
 } from './attribution.service';
 import { logger } from '../../lib/logger';
+import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -530,6 +531,105 @@ class AcrGeneratorService {
     
     return Array.from(criteriaMap.values());
   }
+
+  async generateConfidenceAnalysis(
+    edition: AcrEdition,
+    auditIssues: AuditIssueInput[]
+  ): Promise<CriterionConfidenceWithIssues[]> {
+    console.log('[ACR Generator] Starting analysis with', auditIssues.length, 'issues');
+    console.log('[ACR Generator] Issue rule IDs:', auditIssues.map(i => i.ruleId));
+
+    const criteria = await this.getCriteriaForEdition(edition);
+    const issueMapping = wcagIssueMapperService.mapIssuesToCriteria(auditIssues);
+
+    console.log('[ACR Generator] Issue mapping size:', issueMapping.size);
+    console.log('[ACR Generator] Mapped criteria:', Array.from(issueMapping.keys()));
+
+    const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
+      const relatedIssues = issueMapping.get(criterion.id) || [];
+      const status = this.determineStatus(relatedIssues);
+      const confidenceScore = this.calculateConfidence(relatedIssues);
+      const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
+
+      return {
+        criterionId: criterion.id,
+        name: criterion.name,
+        level: criterion.level,
+        status,
+        confidenceScore,
+        remarks,
+        relatedIssues,
+        issueCount: relatedIssues.length
+      };
+    });
+
+    return results;
+  }
+
+  private determineStatus(issues: IssueMapping[]): 'pass' | 'fail' | 'needs_review' | 'not_applicable' {
+    if (issues.length === 0) {
+      return 'pass';
+    }
+
+    const hasCritical = issues.some(i => i.impact === 'critical');
+    const hasSerious = issues.some(i => i.impact === 'serious');
+
+    if (hasCritical) {
+      return 'fail';
+    }
+    if (hasSerious) {
+      return 'needs_review';
+    }
+    return 'needs_review';
+  }
+
+  private calculateConfidence(issues: IssueMapping[]): number {
+    if (issues.length === 0) {
+      return 0.95;
+    }
+
+    const impactWeights: Record<string, number> = {
+      critical: 0.4,
+      serious: 0.6,
+      moderate: 0.75,
+      minor: 0.85
+    };
+
+    const lowestConfidence = issues.reduce((min, issue) => {
+      const weight = impactWeights[issue.impact] || 0.7;
+      return Math.min(min, weight);
+    }, 1.0);
+
+    return Math.round(lowestConfidence * 100) / 100;
+  }
+
+  private generateConfidenceRemarks(criterion: AcrCriterion, issues: IssueMapping[]): string {
+    if (issues.length === 0) {
+      return `No issues detected for ${criterion.name}. Automated analysis indicates compliance.`;
+    }
+
+    const issuesByImpact = issues.reduce((acc, issue) => {
+      acc[issue.impact] = (acc[issue.impact] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const parts = Object.entries(issuesByImpact).map(
+      ([impact, count]) => `${count} ${impact}`
+    );
+
+    return `Found ${issues.length} issue(s) (${parts.join(', ')}) related to ${criterion.name}. Manual review recommended.`;
+  }
+}
+
+export interface CriterionConfidenceWithIssues {
+  criterionId: string;
+  name: string;
+  level: 'A' | 'AA' | 'AAA';
+  status: 'pass' | 'fail' | 'needs_review' | 'not_applicable';
+  confidenceScore: number;
+  remarks: string;
+  relatedIssues?: IssueMapping[];
+  issueCount?: number;
 }
 
 export const acrGeneratorService = new AcrGeneratorService();

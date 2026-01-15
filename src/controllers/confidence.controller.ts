@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
+import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
+import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
 
 export class ConfidenceController {
   async getConfidenceSummary(req: Request, res: Response, next: NextFunction) {
@@ -145,6 +148,130 @@ export class ConfidenceController {
       success: true,
       data: assessment
     });
+  }
+
+  async getConfidenceWithIssues(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      const { edition = 'VPAT2.5-INT' } = req.query;
+      const userId = req.user?.id;
+
+      logger.debug(`[Confidence] Getting confidence with issues for job: ${jobId}`);
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      const validEditions: AcrEdition[] = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
+      const editionCode = this.normalizeEditionCode(edition as string);
+      
+      if (!validEditions.includes(editionCode)) {
+        res.status(400).json({
+          success: false,
+          error: { message: `Invalid edition. Must be one of: ${validEditions.join(', ')}` }
+        });
+        return;
+      }
+
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenant: { users: { some: { id: userId } } }
+        }
+      });
+
+      if (!job) {
+        logger.warn(`[Confidence] Job not found: ${jobId}`);
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found' }
+        });
+        return;
+      }
+
+      logger.debug(`[Confidence] Job found: ${jobId}`);
+
+      interface OutputIssue {
+        id?: string;
+        ruleId?: string;
+        code?: string;
+        message?: string;
+        description?: string;
+        impact?: string;
+        severity?: string;
+        filePath?: string;
+        location?: string;
+      }
+
+      const auditOutput = job.output as Record<string, unknown> | null;
+      const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
+
+      logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
+
+      const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
+        const ruleId = issue.ruleId || issue.code || 'unknown';
+        logger.debug(`[Confidence] Issue ${idx}: ${ruleId} - ${(issue.message || issue.description || '')?.substring(0, 50)}`);
+        return {
+          id: issue.id || `issue-${idx}`,
+          ruleId,
+          message: issue.message || issue.description || '',
+          impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          filePath: issue.filePath || issue.location || ''
+        };
+      });
+
+      logger.debug(`[Confidence] Total issues extracted: ${auditIssues.length}`);
+      logger.debug(`[Confidence] Rule IDs: ${auditIssues.map(i => i.ruleId).join(', ')}`);
+
+      const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
+        editionCode,
+        auditIssues
+      );
+
+      logger.debug(`[Confidence] Criteria with issues: ${confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length}`);
+
+      const summary = {
+        totalCriteria: confidenceAnalysis.length,
+        passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
+        failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
+        needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
+        notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        totalIssues: auditIssues.length,
+        averageConfidence: confidenceAnalysis.length > 0
+          ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
+          : 0
+      };
+
+      res.json({
+        success: true,
+        data: {
+          jobId,
+          edition: editionCode,
+          summary,
+          criteria: confidenceAnalysis
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  private normalizeEditionCode(edition: string): AcrEdition {
+    const editionMap: Record<string, AcrEdition> = {
+      'section508': 'VPAT2.5-508',
+      'wcag': 'VPAT2.5-WCAG',
+      'eu': 'VPAT2.5-EU',
+      'international': 'VPAT2.5-INT',
+      'VPAT2.5-508': 'VPAT2.5-508',
+      'VPAT2.5-WCAG': 'VPAT2.5-WCAG',
+      'VPAT2.5-EU': 'VPAT2.5-EU',
+      'VPAT2.5-INT': 'VPAT2.5-INT'
+    };
+    return editionMap[edition] || 'VPAT2.5-INT';
   }
 }
 

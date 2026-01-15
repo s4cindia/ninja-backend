@@ -120,3 +120,6 @@ data/uploads/*
 lib/epubcheck/
 .replit
 data/
+
+# Attached assets (instruction files, pasted content)
+attached_assets/
