@@ -54,7 +54,7 @@ export class IssueClassificationService {
   private async analyzeTableStructure(
     zip: any, 
     filePath: string, 
-    location: string
+    _location: string
   ): Promise<'simple' | 'complex'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
@@ -97,7 +97,7 @@ export class IssueClassificationService {
   private async analyzeImageType(
     zip: any, 
     filePath: string, 
-    location: string
+    _location: string
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
@@ -116,7 +116,6 @@ export class IssueClassificationService {
       images.each((_, img) => {
         const $img = $(img);
         const src = $img.attr('src') || '';
-        const alt = $img.attr('alt');
         const role = $img.attr('role');
         const ariaHidden = $img.attr('aria-hidden');
         const className = $img.attr('class') || '';

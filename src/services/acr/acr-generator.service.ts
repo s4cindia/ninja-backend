@@ -33,12 +33,18 @@ export interface EvaluationMethod {
 
 export interface AcrCriterion {
   id: string;
+  criterionId: string;  // Added for frontend compatibility
   name: string;
   level: 'A' | 'AA' | 'AAA';
   conformanceLevel: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable';
   remarks: string;
   attributionTag?: AttributionTag;
   attributedRemarks?: string;
+}
+
+// Helper to create criterion with criterionId
+function criterion(id: string, name: string, level: 'A' | 'AA' | 'AAA'): AcrCriterion {
+  return { id, criterionId: id, name, level, conformanceLevel: 'Not Applicable', remarks: '' };
 }
 
 export interface MethodologyInfo {
@@ -70,40 +76,63 @@ export interface AcrGenerationOptions {
 
 export interface EditionInfo {
   id: AcrEdition;
+  code: AcrEdition;  // Added for frontend compatibility
   name: string;
   description: string;
   standards: string[];
   recommended: boolean;
+  criteriaCount?: number;
+  criteria?: AcrCriterion[];
+  isRecommended?: boolean;  // Alias for 'recommended'
+}
+
+export interface EditionSection {
+  id: string;
+  name: string;
+  criteriaCount: number;
+}
+
+export interface EditionDetails extends EditionInfo {
+  sections: EditionSection[];
+  applicableStandards: string[];
 }
 
 const EDITION_INFO: Record<AcrEdition, EditionInfo> = {
   'VPAT2.5-508': {
     id: 'VPAT2.5-508',
+    code: 'VPAT2.5-508',
     name: 'Section 508 Edition',
     description: 'U.S. Federal procurement requirements only',
     standards: ['Section 508'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-WCAG': {
     id: 'VPAT2.5-WCAG',
+    code: 'VPAT2.5-WCAG',
     name: 'WCAG Edition',
     description: 'General web accessibility (WCAG 2.1)',
     standards: ['WCAG 2.1'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-EU': {
     id: 'VPAT2.5-EU',
+    code: 'VPAT2.5-EU',
     name: 'EU Edition',
     description: 'European Accessibility Act (EN 301 549)',
     standards: ['EN 301 549'],
-    recommended: false
+    recommended: false,
+    isRecommended: false
   },
   'VPAT2.5-INT': {
     id: 'VPAT2.5-INT',
+    code: 'VPAT2.5-INT',
     name: 'International Edition',
     description: 'Satisfies US Section 508, EU EN 301 549, and WCAG requirements in one document',
     standards: ['Section 508', 'EN 301 549', 'WCAG 2.1'],
-    recommended: true
+    recommended: true,
+    isRecommended: true
   }
 };
 
@@ -270,6 +299,55 @@ class AcrGeneratorService {
     };
   }
 
+  async getEditionDetails(edition: AcrEdition): Promise<EditionDetails | undefined> {
+    const baseInfo = EDITION_INFO[edition];
+    if (!baseInfo) return undefined;
+
+    // Get full criteria for this edition
+    const criteria = await this.getCriteriaForEdition(edition);
+
+    // Group criteria by WCAG level to create sections
+    const levelACriteria = criteria.filter(c => c.level === 'A');
+    const levelAACriteria = criteria.filter(c => c.level === 'AA');
+    const levelAAACriteria = criteria.filter(c => c.level === 'AAA');
+
+    const sections: EditionSection[] = [];
+
+    if (levelACriteria.length > 0) {
+      sections.push({
+        id: 'level-a',
+        name: 'Level A',
+        criteriaCount: levelACriteria.length
+      });
+    }
+
+    if (levelAACriteria.length > 0) {
+      sections.push({
+        id: 'level-aa',
+        name: 'Level AA',
+        criteriaCount: levelAACriteria.length
+      });
+    }
+
+    if (levelAAACriteria.length > 0) {
+      sections.push({
+        id: 'level-aaa',
+        name: 'Level AAA',
+        criteriaCount: levelAAACriteria.length
+      });
+    }
+
+    return {
+      ...baseInfo,
+      criteriaCount: criteria.length,
+      criteria,
+      isRecommended: baseInfo.recommended,
+      sections,
+      applicableStandards: baseInfo.standards
+    };
+  }
+
+  // Keep the old method for backward compatibility
   getEditionInfo(edition: AcrEdition): EditionInfo | undefined {
     return EDITION_INFO[edition];
   }
@@ -287,129 +365,133 @@ class AcrGeneratorService {
 
   private getSection508Criteria(): AcrCriterion[] {
     return [
-      { id: '1.1.1', name: 'Non-text Content', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.1', name: 'Audio-only and Video-only (Prerecorded)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.3', name: 'Audio Description or Media Alternative', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.1', name: 'Info and Relationships', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.1', name: 'Use of Color', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.2', name: 'Audio Control', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.1', name: 'Keyboard', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.1', name: 'Timing Adjustable', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.3.1', name: 'Three Flashes or Below Threshold', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.1', name: 'Bypass Blocks', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.2', name: 'Page Titled', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.3', name: 'Focus Order', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.1', name: 'Language of Page', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.1', name: 'On Focus', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.2', name: 'On Input', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.1', name: 'Error Identification', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.2', name: 'Labels or Instructions', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '4.1.1', name: 'Parsing', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '4.1.2', name: 'Name, Role, Value', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.4', name: 'Resize Text', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.5', name: 'Images of Text', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.5', name: 'Multiple Ways', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.6', name: 'Headings and Labels', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.7', name: 'Focus Visible', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.2', name: 'Language of Parts', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.4', name: 'Consistent Identification', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.3', name: 'Error Suggestion', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' }
+      criterion('1.1.1', 'Non-text Content', 'A'),
+      criterion('1.2.1', 'Audio-only and Video-only (Prerecorded)', 'A'),
+      criterion('1.2.2', 'Captions (Prerecorded)', 'A'),
+      criterion('1.2.3', 'Audio Description or Media Alternative', 'A'),
+      criterion('1.2.4', 'Captions (Live)', 'AA'),
+      criterion('1.2.5', 'Audio Description (Prerecorded)', 'AA'),
+      criterion('1.3.1', 'Info and Relationships', 'A'),
+      criterion('1.3.2', 'Meaningful Sequence', 'A'),
+      criterion('1.3.3', 'Sensory Characteristics', 'A'),
+      criterion('1.3.4', 'Orientation', 'AA'),
+      criterion('1.3.5', 'Identify Input Purpose', 'AA'),
+      criterion('1.4.1', 'Use of Color', 'A'),
+      criterion('1.4.2', 'Audio Control', 'A'),
+      criterion('2.1.1', 'Keyboard', 'A'),
+      criterion('2.1.2', 'No Keyboard Trap', 'A'),
+      criterion('2.2.1', 'Timing Adjustable', 'A'),
+      criterion('2.2.2', 'Pause, Stop, Hide', 'A'),
+      criterion('2.3.1', 'Three Flashes or Below Threshold', 'A'),
+      criterion('2.4.1', 'Bypass Blocks', 'A'),
+      criterion('2.4.2', 'Page Titled', 'A'),
+      criterion('2.4.3', 'Focus Order', 'A'),
+      criterion('2.4.4', 'Link Purpose (In Context)', 'A'),
+      criterion('3.1.1', 'Language of Page', 'A'),
+      criterion('3.2.1', 'On Focus', 'A'),
+      criterion('3.2.2', 'On Input', 'A'),
+      criterion('3.3.1', 'Error Identification', 'A'),
+      criterion('3.3.2', 'Labels or Instructions', 'A'),
+      criterion('4.1.1', 'Parsing', 'A'),
+      criterion('4.1.2', 'Name, Role, Value', 'A'),
+      criterion('1.4.3', 'Contrast (Minimum)', 'AA'),
+      criterion('1.4.4', 'Resize Text', 'AA'),
+      criterion('1.4.5', 'Images of Text', 'AA'),
+      criterion('2.4.5', 'Multiple Ways', 'AA'),
+      criterion('2.4.6', 'Headings and Labels', 'AA'),
+      criterion('2.4.7', 'Focus Visible', 'AA'),
+      criterion('3.1.2', 'Language of Parts', 'AA'),
+      criterion('3.2.3', 'Consistent Navigation', 'AA'),
+      criterion('3.2.4', 'Consistent Identification', 'AA'),
+      criterion('3.3.3', 'Error Suggestion', 'AA'),
+      criterion('3.3.4', 'Error Prevention (Legal, Financial, Data)', 'AA')
     ];
   }
 
   private getWcag21BaseCriteria(): AcrCriterion[] {
     return [
-      { id: '1.1.1', name: 'Non-text Content', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.1', name: 'Audio-only and Video-only (Prerecorded)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.3', name: 'Audio Description or Media Alternative', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.5', name: 'Audio Description (Prerecorded)', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.1', name: 'Info and Relationships', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.4', name: 'Orientation', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.5', name: 'Identify Input Purpose', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.1', name: 'Use of Color', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.2', name: 'Audio Control', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.4', name: 'Resize Text', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.5', name: 'Images of Text', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.10', name: 'Reflow', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.11', name: 'Non-text Contrast', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.12', name: 'Text Spacing', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.13', name: 'Content on Hover or Focus', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.1', name: 'Keyboard', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.4', name: 'Character Key Shortcuts', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.1', name: 'Timing Adjustable', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.3.1', name: 'Three Flashes or Below Threshold', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.1', name: 'Bypass Blocks', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.2', name: 'Page Titled', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.3', name: 'Focus Order', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.5', name: 'Multiple Ways', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.6', name: 'Headings and Labels', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.7', name: 'Focus Visible', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.1', name: 'Pointer Gestures', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.2', name: 'Pointer Cancellation', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.3', name: 'Label in Name', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.4', name: 'Motion Actuation', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.1', name: 'Language of Page', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.2', name: 'Language of Parts', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.1', name: 'On Focus', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.2', name: 'On Input', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.4', name: 'Consistent Identification', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.1', name: 'Error Identification', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.2', name: 'Labels or Instructions', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.3', name: 'Error Suggestion', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '4.1.1', name: 'Parsing', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '4.1.2', name: 'Name, Role, Value', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '4.1.3', name: 'Status Messages', level: 'AA', conformanceLevel: 'Not Applicable', remarks: '' }
+      criterion('1.1.1', 'Non-text Content', 'A'),
+      criterion('1.2.1', 'Audio-only and Video-only (Prerecorded)', 'A'),
+      criterion('1.2.2', 'Captions (Prerecorded)', 'A'),
+      criterion('1.2.3', 'Audio Description or Media Alternative', 'A'),
+      criterion('1.2.5', 'Audio Description (Prerecorded)', 'AA'),
+      criterion('1.3.1', 'Info and Relationships', 'A'),
+      criterion('1.3.2', 'Meaningful Sequence', 'A'),
+      criterion('1.3.3', 'Sensory Characteristics', 'A'),
+      criterion('1.3.4', 'Orientation', 'AA'),
+      criterion('1.3.5', 'Identify Input Purpose', 'AA'),
+      criterion('1.4.1', 'Use of Color', 'A'),
+      criterion('1.4.2', 'Audio Control', 'A'),
+      criterion('1.4.3', 'Contrast (Minimum)', 'AA'),
+      criterion('1.4.4', 'Resize Text', 'AA'),
+      criterion('1.4.5', 'Images of Text', 'AA'),
+      criterion('1.4.10', 'Reflow', 'AA'),
+      criterion('1.4.11', 'Non-text Contrast', 'AA'),
+      criterion('1.4.12', 'Text Spacing', 'AA'),
+      criterion('1.4.13', 'Content on Hover or Focus', 'AA'),
+      criterion('2.1.1', 'Keyboard', 'A'),
+      criterion('2.1.2', 'No Keyboard Trap', 'A'),
+      criterion('2.1.4', 'Character Key Shortcuts', 'A'),
+      criterion('2.2.1', 'Timing Adjustable', 'A'),
+      criterion('2.2.2', 'Pause, Stop, Hide', 'A'),
+      criterion('2.3.1', 'Three Flashes or Below Threshold', 'A'),
+      criterion('2.4.1', 'Bypass Blocks', 'A'),
+      criterion('2.4.2', 'Page Titled', 'A'),
+      criterion('2.4.3', 'Focus Order', 'A'),
+      criterion('2.4.4', 'Link Purpose (In Context)', 'A'),
+      criterion('2.4.5', 'Multiple Ways', 'AA'),
+      criterion('2.4.6', 'Headings and Labels', 'AA'),
+      criterion('2.4.7', 'Focus Visible', 'AA'),
+      criterion('2.5.1', 'Pointer Gestures', 'A'),
+      criterion('2.5.2', 'Pointer Cancellation', 'A'),
+      criterion('2.5.3', 'Label in Name', 'A'),
+      criterion('2.5.4', 'Motion Actuation', 'A'),
+      criterion('3.1.1', 'Language of Page', 'A'),
+      criterion('3.1.2', 'Language of Parts', 'AA'),
+      criterion('3.2.1', 'On Focus', 'A'),
+      criterion('3.2.2', 'On Input', 'A'),
+      criterion('3.2.3', 'Consistent Navigation', 'AA'),
+      criterion('3.2.4', 'Consistent Identification', 'AA'),
+      criterion('3.3.1', 'Error Identification', 'A'),
+      criterion('3.3.2', 'Labels or Instructions', 'A'),
+      criterion('3.3.3', 'Error Suggestion', 'AA'),
+      criterion('3.3.4', 'Error Prevention (Legal, Financial, Data)', 'AA'),
+      criterion('4.1.1', 'Parsing', 'A'),
+      criterion('4.1.2', 'Name, Role, Value', 'A'),
+      criterion('4.1.3', 'Status Messages', 'AA')
     ];
   }
 
   private getWcagAaaCriteria(): AcrCriterion[] {
     return [
-      { id: '1.2.6', name: 'Sign Language (Prerecorded)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.7', name: 'Extended Audio Description (Prerecorded)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.8', name: 'Media Alternative (Prerecorded)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.2.9', name: 'Audio-only (Live)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.3.6', name: 'Identify Purpose', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.6', name: 'Contrast (Enhanced)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.7', name: 'Low or No Background Audio', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.8', name: 'Visual Presentation', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '1.4.9', name: 'Images of Text (No Exception)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.1.3', name: 'Keyboard (No Exception)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.3', name: 'No Timing', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.4', name: 'Interruptions', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.5', name: 'Re-authenticating', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.2.6', name: 'Timeouts', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.3.2', name: 'Three Flashes', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.3.3', name: 'Animation from Interactions', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.8', name: 'Location', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.9', name: 'Link Purpose (Link Only)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.4.10', name: 'Section Headings', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.5', name: 'Target Size', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '2.5.6', name: 'Concurrent Input Mechanisms', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.3', name: 'Unusual Words', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.4', name: 'Abbreviations', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.5', name: 'Reading Level', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.1.6', name: 'Pronunciation', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.2.5', name: 'Change on Request', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.5', name: 'Help', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: '3.3.6', name: 'Error Prevention (All)', level: 'AAA', conformanceLevel: 'Not Applicable', remarks: '' }
+      criterion('1.2.6', 'Sign Language (Prerecorded)', 'AAA'),
+      criterion('1.2.7', 'Extended Audio Description (Prerecorded)', 'AAA'),
+      criterion('1.2.8', 'Media Alternative (Prerecorded)', 'AAA'),
+      criterion('1.2.9', 'Audio-only (Live)', 'AAA'),
+      criterion('1.3.6', 'Identify Purpose', 'AAA'),
+      criterion('1.4.6', 'Contrast (Enhanced)', 'AAA'),
+      criterion('1.4.7', 'Low or No Background Audio', 'AAA'),
+      criterion('1.4.8', 'Visual Presentation', 'AAA'),
+      criterion('1.4.9', 'Images of Text (No Exception)', 'AAA'),
+      criterion('2.1.3', 'Keyboard (No Exception)', 'AAA'),
+      criterion('2.2.3', 'No Timing', 'AAA'),
+      criterion('2.2.4', 'Interruptions', 'AAA'),
+      criterion('2.2.5', 'Re-authenticating', 'AAA'),
+      criterion('2.2.6', 'Timeouts', 'AAA'),
+      criterion('2.3.2', 'Three Flashes', 'AAA'),
+      criterion('2.3.3', 'Animation from Interactions', 'AAA'),
+      criterion('2.4.8', 'Location', 'AAA'),
+      criterion('2.4.9', 'Link Purpose (Link Only)', 'AAA'),
+      criterion('2.4.10', 'Section Headings', 'AAA'),
+      criterion('2.5.5', 'Target Size', 'AAA'),
+      criterion('2.5.6', 'Concurrent Input Mechanisms', 'AAA'),
+      criterion('3.1.3', 'Unusual Words', 'AAA'),
+      criterion('3.1.4', 'Abbreviations', 'AAA'),
+      criterion('3.1.5', 'Reading Level', 'AAA'),
+      criterion('3.1.6', 'Pronunciation', 'AAA'),
+      criterion('3.2.5', 'Change on Request', 'AAA'),
+      criterion('3.3.5', 'Help', 'AAA'),
+      criterion('3.3.6', 'Error Prevention (All)', 'AAA')
     ];
   }
 
@@ -419,13 +501,13 @@ class AcrGeneratorService {
 
   private getEnSpecificCriteria(): AcrCriterion[] {
     return [
-      { id: 'EN-5.2', name: 'Activation of accessibility features', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-5.3', name: 'Biometrics', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-5.4', name: 'Preservation of accessibility information', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-6.1', name: 'Closed functionality', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-7.1', name: 'Caption processing technology', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-7.2', name: 'Audio description technology', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' },
-      { id: 'EN-7.3', name: 'User controls for captions and audio description', level: 'A', conformanceLevel: 'Not Applicable', remarks: '' }
+      criterion('EN-5.2', 'Activation of accessibility features', 'A'),
+      criterion('EN-5.3', 'Biometrics', 'A'),
+      criterion('EN-5.4', 'Preservation of accessibility information', 'A'),
+      criterion('EN-6.1', 'Closed functionality', 'A'),
+      criterion('EN-7.1', 'Caption processing technology', 'A'),
+      criterion('EN-7.2', 'Audio description technology', 'A'),
+      criterion('EN-7.3', 'User controls for captions and audio description', 'A')
     ];
   }
 

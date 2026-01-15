@@ -13,6 +13,7 @@ import { remarksGeneratorService, RemarksGenerationRequest } from '../services/a
 import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr/acr-exporter.service';
 import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
+import { acrService } from '../services/acr.service';
 import { z } from 'zod';
 
 const ProductInfoSchema = z.object({
@@ -99,24 +100,51 @@ export class AcrController {
     });
   }
 
-  async getEditionInfo(req: Request, res: Response) {
-    const edition = req.params.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT';
-    
-    const validEditions = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
-    if (!validEditions.includes(edition)) {
-      res.status(400).json({
-        success: false,
-        error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT' }
-      });
-      return;
-    }
+  async getEditionInfo(req: Request, res: Response, next: NextFunction) {
+    try {
+      const editionParam = req.params.edition;
 
-    const info = acrGeneratorService.getEditionInfo(edition);
-    
-    res.json({
-      success: true,
-      data: info
-    });
+      // Map friendly names to full edition codes
+      const editionMap: Record<string, 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT'> = {
+        'VPAT2.5-508': 'VPAT2.5-508',
+        'VPAT2.5-WCAG': 'VPAT2.5-WCAG',
+        'VPAT2.5-EU': 'VPAT2.5-EU',
+        'VPAT2.5-INT': 'VPAT2.5-INT',
+        'section508': 'VPAT2.5-508',
+        '508': 'VPAT2.5-508',
+        'wcag': 'VPAT2.5-WCAG',
+        'eu': 'VPAT2.5-EU',
+        'international': 'VPAT2.5-INT',
+        'int': 'VPAT2.5-INT'
+      };
+
+      const edition = editionMap[editionParam] || editionMap[editionParam.toLowerCase()];
+
+      if (!edition) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT, section508, wcag, eu, international' }
+        });
+        return;
+      }
+
+      const details = await acrGeneratorService.getEditionDetails(edition);
+
+      if (!details) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Edition not found' }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: details
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 
   async validateCredibility(req: Request, res: Response, next: NextFunction) {
@@ -543,6 +571,353 @@ export class AcrController {
         res.status(404).json({
           success: false,
           error: { message: 'Job not found or access denied' }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async getAllEditions(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const editions = acrService.getAllEditions();
+
+      res.json({
+        success: true,
+        data: editions,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getEditionCriteria(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { editionCode } = req.params;
+
+      const data = acrService.getEditionCriteria(editionCode);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: 'EDITION_NOT_FOUND',
+          },
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async getCriterion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { criterionId } = req.params;
+
+      const criterion = acrService.getCriterionById(criterionId);
+
+      res.json({
+        success: true,
+        data: criterion,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: {
+            message: error.message,
+            code: 'CRITERION_NOT_FOUND',
+          },
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async createAnalysis(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { jobId, edition, documentTitle } = req.body;
+
+      if (!jobId || !edition) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'jobId and edition are required',
+            code: 'INVALID_REQUEST',
+          },
+        });
+        return;
+      }
+
+      const validEditions = [
+        'section508', '508', 'VPAT2.5-508',
+        'wcag', 'VPAT2.5-WCAG',
+        'eu', 'VPAT2.5-EU',
+        'international', 'int', 'VPAT2.5-INT'
+      ];
+      if (!validEditions.includes(edition)) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: `Invalid edition. Must be one of: section508, wcag, eu, international (or canonical codes like VPAT2.5-508)`,
+            code: 'INVALID_EDITION',
+          },
+        });
+        return;
+      }
+
+      const result = await acrService.createAcrAnalysis(
+        userId,
+        tenantId,
+        jobId,
+        edition,
+        documentTitle
+      );
+
+      res.status(201).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found or access denied', code: 'JOB_NOT_FOUND' }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async getAcrAnalysis(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { acrJobId } = req.params;
+
+      const result = await acrService.getAcrAnalysis(acrJobId, userId, tenantId);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'ACR job not found or access denied' }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async getAcrAnalysisByJobId(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { jobId } = req.params;
+
+      const result = await acrService.getAcrAnalysisByJobId(jobId, userId, tenantId);
+
+      if (!result) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'No ACR analysis found for this job' }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async saveCriterionReview(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { acrJobId, criterionId } = req.params;
+      const { conformanceLevel, remarks } = req.body;
+
+      if (!conformanceLevel) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'conformanceLevel is required',
+            code: 'INVALID_REQUEST',
+          },
+        });
+        return;
+      }
+
+      const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
+      if (!validLevels.includes(conformanceLevel)) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
+            code: 'INVALID_CONFORMANCE_LEVEL',
+          },
+        });
+        return;
+      }
+
+      const result = await acrService.saveCriterionReview(
+        acrJobId,
+        criterionId,
+        userId,
+        tenantId,
+        { conformanceLevel, remarks }
+      );
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
+        res.status(404).json({
+          success: false,
+          error: { message: error.message }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  async saveBulkReviews(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { acrJobId } = req.params;
+      const { reviews } = req.body;
+
+      if (!Array.isArray(reviews) || reviews.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'reviews array is required and must not be empty',
+            code: 'INVALID_REQUEST',
+          },
+        });
+        return;
+      }
+
+      const result = await acrService.saveBulkReviews(acrJobId, userId, tenantId, reviews);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message.includes('not found') || error.message.includes('access denied')) {
+          res.status(404).json({
+            success: false,
+            error: { message: error.message }
+          });
+          return;
+        }
+        if (error.message.includes('Invalid conformance levels')) {
+          res.status(400).json({
+            success: false,
+            error: { message: error.message, code: 'INVALID_CONFORMANCE_LEVEL' }
+          });
+          return;
+        }
+      }
+      next(error);
+    }
+  }
+
+  async getCriterionDetailsFromJob(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { acrJobId, criterionId } = req.params;
+
+      const result = await acrService.getCriterionDetails(acrJobId, criterionId, userId, tenantId);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Criterion not found in ACR job' }
         });
         return;
       }

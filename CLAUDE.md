@@ -35,6 +35,30 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 - **CI/CD:** GitHub Actions
 - **Database:** Neon PostgreSQL (serverless)
 
+### Development Environment
+
+**Primary Environment:** Replit
+
+- **Workflow:** All development is done in Replit workspaces
+- **Implementation Style:** Provide **Replit prompts** instead of direct file edits
+- **Repositories:**
+  - **Frontend:** `ninja-frontend` → Replit workspace at `C:\Users\avrve\projects\ninja-frontend`
+  - **Backend:** `ninja` → Replit workspace at `C:\Users\avrve\projects\ninja`
+- **Testing:** Changes are tested in Replit before committing
+- **Version Control:** Changes committed from Replit workspaces to GitHub
+
+**Why Replit Prompts?**
+- Allows developer to review and test changes incrementally
+- Provides clear step-by-step implementation instructions
+- Easier to track what's being changed and why
+- Developer maintains full control over when code is executed
+
+**Prompt Format:**
+- Separate prompts for frontend and backend changes
+- Include file paths, line numbers, and exact code snippets
+- Provide testing instructions after each change
+- Group related changes logically
+
 ---
 
 ## Visual Comparison Feature (Active Development)
@@ -81,9 +105,9 @@ Side-by-side visual comparison of remediation changes with:
 - `POST /api/v1/jobs/:jobId/comparison/export-pdf` - Export PDF (Phase 2)
 
 ### Session Checkpoint
-**Updated:** [DATE TIME]  
-**Last completed:** [Step name]  
-**Next step:** [Step name]  
+**Updated:** [DATE TIME]
+**Last completed:** [Step name]
+**Next step:** [Step name]
 **Blockers:** [None / Description]
 
 ---
@@ -92,7 +116,6 @@ Side-by-side visual comparison of remediation changes with:
 
 ### Backend (`ninja-backend`)
 
-```
 src/
 ├── controllers/     # Route handlers
 ├── services/        # Business logic
@@ -110,11 +133,9 @@ prisma/
 ├── migrations/      # Migration files
 .github/
 └── workflows/       # CI/CD pipelines
-```
 
 ### Frontend (`ninja-frontend`)
 
-```
 src/
 ├── components/      # Reusable UI components
 │   ├── ui/          # Base components (Button, Card, etc.)
@@ -137,7 +158,6 @@ src/
 ├── utils/           # Helper functions
 .github/
 └── workflows/       # CI/CD pipelines
-```
 
 ---
 
@@ -148,29 +168,19 @@ src/
 1. **Create feature branch:**
    ```bash
    git checkout main && git pull && git checkout -b feature/feature-name
-   ```
 
-2. **Develop in Replit** using prompts provided by Claude
+2. Develop in Replit using prompts provided by Claude
+3. Commit and push:
+git add .
+git commit -m "feat: description"
+git push -u origin feature/feature-name
+4. Create PR:
+gh pr create --title "feat: Title" --body "Description"
+5. Address CodeRabbit review comments
+6. Merge to main triggers deployment to staging
 
-3. **Commit and push:**
-   ```bash
-   git add .
-   git commit -m "feat: description"
-   git push -u origin feature/feature-name
-   ```
+Commit Message Convention
 
-4. **Create PR:**
-   ```bash
-   gh pr create --title "feat: Title" --body "Description"
-   ```
-
-5. **Address CodeRabbit review comments**
-
-6. **Merge to main** triggers deployment to staging
-
-### Commit Message Convention
-
-```
 <type>: <description>
 
 <body>
@@ -178,40 +188,30 @@ src/
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-```
 
-Types: `feat`, `fix`, `chore`, `ci`, `refactor`, `docs`, `test`
+Types: feat, fix, chore, ci, refactor, docs, test
 
-### Multi-Session Workflow
+Multi-Session Workflow
 
 When resuming work after a break:
 
-1. **Pull latest changes:**
-   ```bash
-   git pull origin feature/visual-comparison
-   ```
-
-2. **Check checkpoint** in this file (Session Checkpoint section)
-
-3. **Review pending items:**
-   - CodeRabbit comments on open PR
-   - CI/CD test results
-   - Any blockers noted
-
-4. **Continue from checkpoint** with context prompt:
-   ```
-   Continuing Visual Comparison implementation.
-   Status: [from checkpoint]
-   Next: [from checkpoint]
-   ```
+1. Pull latest changes:
+git pull origin feature/visual-comparison
+2. Check checkpoint in this file (Session Checkpoint section)
+3. Review pending items:
+  - CodeRabbit comments on open PR
+  - CI/CD test results
+  - Any blockers noted
+4. Continue from checkpoint with context prompt:
+Continuing Visual Comparison implementation.
+Status: [from checkpoint]
+Next: [from checkpoint]
 
 ---
+Database
 
-## Database
+Prisma Commands
 
-### Prisma Commands
-
-```bash
 # Generate Prisma client
 npx prisma generate
 
@@ -226,11 +226,9 @@ DATABASE_URL="..." npx prisma migrate resolve --applied migration_name
 
 # View database in browser
 npx prisma studio
-```
 
-### New Models (Visual Comparison)
+New Models (Visual Comparison)
 
-```prisma
 model RemediationChange {
   id              String       @id @default(uuid())
   jobId           String
@@ -269,21 +267,18 @@ model ComparisonReport {
   pdfUrl          String?
   generatedAt     DateTime @default(now())
 }
-```
 
-### Staging Database
+Staging Database
 
-- **Host:** `ep-falling-hall-a16iblwt-pooler.ap-southeast-1.aws.neon.tech`
-- **Database:** `neondb`
-- **Credentials:** Stored in Bitwarden and AWS Secrets Manager
+- Host: ep-falling-hall-a16iblwt-pooler.ap-southeast-1.aws.neon.tech
+- Database: neondb
+- Credentials: Stored in Bitwarden and AWS Secrets Manager
 
 ---
+Testing Patterns
 
-## Testing Patterns
+Backend (Jest)
 
-### Backend (Jest)
-
-```typescript
 // Service test pattern
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { mockDeep, mockReset, DeepMockProxy } from 'jest-mock-extended';
@@ -308,11 +303,9 @@ describe('ServiceName', () => {
     expect(result).toEqual(...);
   });
 });
-```
 
-### Frontend (Vitest + React Testing Library)
+Frontend (Vitest + React Testing Library)
 
-```typescript
 // Component test pattern
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -327,7 +320,7 @@ describe('ComponentName', () => {
 
   beforeEach(() => {
     server.use(
-      rest.get('/api/endpoint', (req, res, ctx) => 
+      rest.get('/api/endpoint', (req, res, ctx) =>
         res(ctx.json({ success: true, data: mockData }))
       )
     );
@@ -345,11 +338,9 @@ describe('ComponentName', () => {
     });
   });
 });
-```
 
-### Running Tests
+Running Tests
 
-```bash
 # Backend
 npm test                    # Run all tests
 npm test -- --watch         # Watch mode
@@ -363,46 +354,50 @@ npm run test:coverage       # With coverage
 # E2E (Playwright)
 npx playwright test
 npx playwright test --headed  # See browser
-```
 
 ---
+AWS Infrastructure
 
-## AWS Infrastructure
-
-### Key Resources
-
-| Resource | Name/ID |
-|----------|---------|
-| ECS Cluster | `ninja-cluster` |
-| ECS Service | `ninja-backend-task-service` |
-| Task Definition | `ninja-backend-task` |
-| ECR Repository | `ninja-backend` |
-| CloudFront (Backend) | `d1ruc3qmc844x9.cloudfront.net` |
-| CloudFront (Frontend) | `dhi5xqbewozlg.cloudfront.net` |
-| S3 Bucket | `ninja-epub-staging` |
-
-### GitHub Actions Variables
-
-| Variable | Purpose |
-|----------|---------|
-| `ECS_SUBNETS` | VPC subnet IDs for ECS tasks |
-| `ECS_SECURITY_GROUPS` | Security group for ECS tasks |
-| `STAGING_API_URL` | Backend API URL for tests |
-
-### IAM Permissions (github-actions-deploy)
+Key Resources
+┌───────────────────────┬───────────────────────────────┐
+│       Resource        │            Name/ID            │
+├───────────────────────┼───────────────────────────────┤
+│ ECS Cluster           │ ninja-cluster                 │
+├───────────────────────┼───────────────────────────────┤
+│ ECS Service           │ ninja-backend-task-service    │
+├───────────────────────┼───────────────────────────────┤
+│ Task Definition       │ ninja-backend-task            │
+├───────────────────────┼───────────────────────────────┤
+│ ECR Repository        │ ninja-backend                 │
+├───────────────────────┼───────────────────────────────┤
+│ CloudFront (Backend)  │ d1ruc3qmc844x9.cloudfront.net │
+├───────────────────────┼───────────────────────────────┤
+│ CloudFront (Frontend) │ dhi5xqbewozlg.cloudfront.net  │
+├───────────────────────┼───────────────────────────────┤
+│ S3 Bucket             │ ninja-epub-staging            │
+└───────────────────────┴───────────────────────────────┘
+GitHub Actions Variables
+┌─────────────────────┬──────────────────────────────┐
+│      Variable       │           Purpose            │
+├─────────────────────┼──────────────────────────────┤
+│ ECS_SUBNETS         │ VPC subnet IDs for ECS tasks │
+├─────────────────────┼──────────────────────────────┤
+│ ECS_SECURITY_GROUPS │ Security group for ECS tasks │
+├─────────────────────┼──────────────────────────────┤
+│ STAGING_API_URL     │ Backend API URL for tests    │
+└─────────────────────┴──────────────────────────────┘
+IAM Permissions (github-actions-deploy)
 
 Required permissions for CI/CD:
-- `ecr:*` (push images)
-- `ecs:*` (deploy services, run tasks)
-- `iam:PassRole` (for ECS task roles)
+- ecr:* (push images)
+- ecs:* (deploy services, run tasks)
+- iam:PassRole (for ECS task roles)
 
 ---
+Key Patterns
 
-## Key Patterns
+API Response Format
 
-### API Response Format
-
-```typescript
 // Success
 {
   success: true,
@@ -418,11 +413,9 @@ Required permissions for CI/CD:
     details: [...]
   }
 }
-```
 
-### React Query Hooks
+React Query Hooks
 
-```typescript
 // Query hook
 export function useFiles() {
   return useQuery({
@@ -441,11 +434,9 @@ export function useDeleteFile() {
     },
   });
 }
-```
 
-### Express Route Pattern
+Express Route Pattern
 
-```typescript
 // routes/example.routes.ts
 router.get('/', authenticate, validate(schema), controller.method.bind(controller));
 
@@ -453,40 +444,37 @@ router.get('/', authenticate, validate(schema), controller.method.bind(controlle
 router.get('/stats', ...);
 router.post('/bulk/delete', ...);
 router.get('/:id', ...);  // Parameterized route last
-```
 
 ---
+Common Issues & Solutions
 
-## Common Issues & Solutions
+CORS Errors on Staging
 
-### CORS Errors on Staging
+- Check CloudFront Origin Request Policy is set to CORS-S3Origin
+- Verify corsOrigins in backend config includes frontend domain
 
-- Check CloudFront Origin Request Policy is set to `CORS-S3Origin`
-- Verify `corsOrigins` in backend config includes frontend domain
+WAF Blocking File Uploads
 
-### WAF Blocking File Uploads
+- Symptom: 403 Forbidden with x-cache: Error from cloudfront on multipart uploads
+- Cause: CloudFront WAF "Core protections" blocks multipart/form-data
+- Solution: Use presigned S3 URLs for direct uploads (see PRESIGNED_S3_UPLOAD_DESIGN.md)
 
-- **Symptom:** `403 Forbidden` with `x-cache: Error from cloudfront` on multipart uploads
-- **Cause:** CloudFront WAF "Core protections" blocks multipart/form-data
-- **Solution:** Use presigned S3 URLs for direct uploads (see PRESIGNED_S3_UPLOAD_DESIGN.md)
+Prisma Migration Issues
 
-### Prisma Migration Issues
+- "Column does not exist": Migration not applied to database
+- "No migrations found": Need to baseline existing database
+- Drift detected: Dev and staging databases out of sync
 
-- **"Column does not exist":** Migration not applied to database
-- **"No migrations found":** Need to baseline existing database
-- **Drift detected:** Dev and staging databases out of sync
+ECS Task Failures
 
-### ECS Task Failures
-
-- Check CloudWatch logs: `/ecs/ninja-backend-task`
+- Check CloudWatch logs: /ecs/ninja-backend-task
 - Verify IAM permissions for the task execution role
 - Check security group allows outbound traffic
 
 ---
+File-Specific Notes
 
-## File-Specific Notes
-
-### Files Page Features
+Files Page Features
 
 1. ✅ Bulk Actions (select, delete, audit)
 2. ✅ Click Row to View Details (modal)
@@ -494,24 +482,22 @@ router.get('/:id', ...);  // Parameterized route last
 4. 🔲 Filter/Search
 5. 🔲 Download File
 
-### EPUB Workflow
+EPUB Workflow
 
 1. Upload EPUB file
 2. Run accessibility audit (ACE)
 3. View audit results with issues
 4. Create remediation plan
 5. Apply fixes (auto/manual)
-6. **NEW: Review changes (Visual Comparison)**
+6. NEW: Review changes (Visual Comparison)
 7. Re-audit to verify fixes
 8. Export remediated EPUB
 
 ---
+Useful Commands
 
-## Useful Commands
+AWS CLI
 
-### AWS CLI
-
-```bash
 # Tail backend logs
 aws logs tail /ecs/ninja-backend-task --follow
 
@@ -520,11 +506,9 @@ aws ecs describe-services --cluster ninja-cluster --services ninja-backend-task-
 
 # Get network config
 aws ecs describe-services --cluster ninja-cluster --services ninja-backend-task-service --query 'services[0].networkConfiguration'
-```
 
-### GitHub CLI
+GitHub CLI
 
-```bash
 # List PRs
 gh pr list
 
@@ -536,19 +520,16 @@ gh run rerun --failed
 
 # Set repository variable
 gh variable set VAR_NAME --body "value"
-```
 
 ---
+Related Documentation
 
-## Related Documentation
-
-- [Visual Comparison Design](./VISUAL_COMPARISON_DESIGN.md) - Feature design
-- [Visual Comparison Prompts](./VISUAL_COMPARISON_IMPLEMENTATION_PROMPTS.md) - Implementation prompts
-- [Visual Comparison Tests](./VISUAL_COMPARISON_TESTS.md) - Test specifications
-- [Workflow Lineage Design](./WORKFLOW_LINEAGE_DESIGN.md) - Workflow tracking
-- [Feedback Enhancement Design](./FEEDBACK_ENHANCEMENT_DESIGN.md) - Feedback features
-- [EPUB User Guide](./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md) - User documentation
+- ./VISUAL_COMPARISON_DESIGN.md - Feature design
+- ./VISUAL_COMPARISON_IMPLEMENTATION_PROMPTS.md - Implementation prompts
+- ./VISUAL_COMPARISON_TESTS.md - Test specifications
+- ./WORKFLOW_LINEAGE_DESIGN.md - Workflow tracking
+- ./FEEDBACK_ENHANCEMENT_DESIGN.md - Feedback features
+- ./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md - User documentation
 
 ---
-
-*Last updated: January 8, 2026*
+Last updated: January 14, 2026

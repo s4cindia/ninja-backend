@@ -666,7 +666,7 @@ class ImageExtractorService {
       } catch {
         return null;
       }
-    } catch (err) {
+    } catch (_err) {
       return null;
     }
   }
@@ -713,7 +713,6 @@ class ImageExtractorService {
     if (!match) return null;
     
     const pageNumber = parseInt(match[1], 10);
-    const index = parseInt(match[2], 10);
     
     const pageImages = await this.extractPageImages(parsedPdf, pageNumber, {
       includeBase64,

@@ -1,0 +1,334 @@
+### **BACKEND** Prompt 2: Create API Endpoint to Serve Edition Criteria
+
+  **Repository:** `ninja-backend`
+  **Branch:** `feature/acr-workflow-improvements`
+
+  TASK: Create API endpoint to return criteria list for a specific ACR edition
+
+  FILE TO CREATE: src/routes/acr.routes.ts (if doesn't exist)
+  FILE TO CREATE: src/controllers/acr.controller.ts
+  FILE TO CREATE: src/services/acr.service.ts
+
+  ---
+  STEP 1: Create ACR Service
+
+  FILE: src/services/acr.service.ts
+
+  import fs from 'fs';
+  import path from 'path';
+
+  interface Criterion {
+    id: string;
+    number: string;
+    name: string;
+    level: 'A' | 'AA' | 'AAA' | 'EU';
+    section: string;
+    description: string;
+    wcagUrl?: string;
+  }
+
+  interface Edition {
+    code: string;
+    name: string;
+    description: string;
+    totalCount: number;
+    standard: string;
+    criteriaIds: string[];
+  }
+
+  interface AcrEditionsData {
+    editions: Edition[];
+    criteria: Criterion[];
+  }
+
+  export class AcrService {
+    private editionsData: AcrEditionsData;
+
+    constructor() {
+      // Load JSON data on initialization
+      const dataPath = path.join(__dirname, '../data/acrEditions.json');
+      const rawData = fs.readFileSync(dataPath, 'utf-8');
+      this.editionsData = JSON.parse(rawData);
+    }
+
+    /**
+     * Get list of all available editions
+     */
+    getAllEditions() {
+      return this.editionsData.editions.map(edition => ({
+        code: edition.code,
+        name: edition.name,
+        description: edition.description,
+        totalCount: edition.totalCount,
+        standard: edition.standard,
+      }));
+    }
+
+    /**
+     * Get full criteria list for a specific edition
+     */
+    getEditionCriteria(editionCode: string) {
+      const edition = this.editionsData.editions.find(e => e.code === editionCode);
+
+      if (!edition) {
+        throw new Error(`Edition '${editionCode}' not found`);
+      }
+
+      // Get all criteria for this edition
+      const criteria = edition.criteriaIds
+        .map(id => this.editionsData.criteria.find(c => c.id === id))
+        .filter(c => c !== undefined) as Criterion[];
+
+      // Group by level
+      const groupedCriteria = {
+        A: criteria.filter(c => c.level === 'A'),
+        AA: criteria.filter(c => c.level === 'AA'),
+        AAA: criteria.filter(c => c.level === 'AAA'),
+        EU: criteria.filter(c => c.level === 'EU'),
+      };
+
+      return {
+        edition: {
+          code: edition.code,
+          name: edition.name,
+          description: edition.description,
+          totalCount: edition.totalCount,
+          standard: edition.standard,
+        },
+        criteriaByLevel: groupedCriteria,
+        criteriaCount: {
+          A: groupedCriteria.A.length,
+          AA: groupedCriteria.AA.length,
+          AAA: groupedCriteria.AAA.length,
+          EU: groupedCriteria.EU.length,
+          total: criteria.length,
+        },
+      };
+    }
+
+    /**
+     * Get a single criterion by ID
+     */
+    getCriterionById(criterionId: string) {
+      const criterion = this.editionsData.criteria.find(c => c.id === criterionId);
+
+      if (!criterion) {
+        throw new Error(`Criterion '${criterionId}' not found`);
+      }
+
+      return criterion;
+    }
+  }
+
+  export const acrService = new AcrService();
+
+  ---
+  STEP 2: Create ACR Controller
+
+  FILE: src/controllers/acr.controller.ts
+
+  import { Request, Response, NextFunction } from 'express';
+  import { acrService } from '../services/acr.service';
+
+  export class AcrController {
+    /**
+     * GET /acr/editions
+     * Get list of all ACR editions
+     */
+    async getEditions(req: Request, res: Response, next: NextFunction) {
+      try {
+        const editions = acrService.getAllEditions();
+
+        res.json({
+          success: true,
+          data: editions,
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+
+    /**
+     * GET /acr/editions/:editionCode/criteria
+     * Get criteria for a specific edition
+     */
+    async getEditionCriteria(req: Request, res: Response, next: NextFunction) {
+      try {
+        const { editionCode } = req.params;
+
+        const data = acrService.getEditionCriteria(editionCode);
+
+        res.json({
+          success: true,
+          data,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('not found')) {
+          res.status(404).json({
+            success: false,
+            error: {
+              message: error.message,
+              code: 'EDITION_NOT_FOUND',
+            },
+          });
+        } else {
+          next(error);
+        }
+      }
+    }
+
+    /**
+     * GET /acr/criteria/:criterionId
+     * Get a single criterion by ID
+     */
+    async getCriterion(req: Request, res: Response, next: NextFunction) {
+      try {
+        const { criterionId } = req.params;
+
+        const criterion = acrService.getCriterionById(criterionId);
+
+        res.json({
+          success: true,
+          data: criterion,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('not found')) {
+          res.status(404).json({
+            success: false,
+            error: {
+              message: error.message,
+              code: 'CRITERION_NOT_FOUND',
+            },
+          });
+        } else {
+          next(error);
+        }
+      }
+    }
+  }
+
+  export const acrController = new AcrController();
+
+  ---
+  STEP 3: Create ACR Routes
+
+  FILE: src/routes/acr.routes.ts
+
+  import { Router } from 'express';
+  import { acrController } from '../controllers/acr.controller';
+  import { authenticate } from '../middleware/auth'; // Adjust based on your auth setup
+
+  const router = Router();
+
+  // GET /acr/editions - List all editions
+  router.get('/editions', authenticate, acrController.getEditions.bind(acrController));
+
+  // GET /acr/editions/:editionCode/criteria - Get criteria for specific edition
+  router.get('/editions/:editionCode/criteria', authenticate, acrController.getEditionCriteria.bind(acrController));
+
+  // GET /acr/criteria/:criterionId - Get single criterion
+  router.get('/criteria/:criterionId', authenticate, acrController.getCriterion.bind(acrController));
+
+  export default router;
+
+  ---
+  STEP 4: Register Routes in Main App
+
+  FILE: src/app.ts or src/index.ts (wherever routes are registered)
+
+  import acrRoutes from './routes/acr.routes';
+
+  // ... existing code ...
+
+  app.use('/api/v1/acr', acrRoutes);
+
+  ---
+  EXPECTED API RESPONSES:
+
+  GET /api/v1/acr/editions
+  {
+    "success": true,
+    "data": [
+      {
+        "code": "section508",
+        "name": "Section 508 Edition",
+        "description": "Revised Section 508 Standards (2017)...",
+        "totalCount": 39,
+        "standard": "US Federal"
+      },
+      {
+        "code": "wcag",
+        "name": "WCAG Edition",
+        "description": "WCAG 2.1 Level A, AA, and select AAA...",
+        "totalCount": 50,
+        "standard": "International (W3C)"
+      }
+      // ... other editions
+    ]
+  }
+
+  GET /api/v1/acr/editions/section508/criteria
+  {
+    "success": true,
+    "data": {
+      "edition": {
+        "code": "section508",
+        "name": "Section 508 Edition",
+        "description": "...",
+        "totalCount": 39,
+        "standard": "US Federal"
+      },
+      "criteriaByLevel": {
+        "A": [
+          {
+            "id": "1.1.1-A",
+            "number": "1.1.1",
+            "name": "Non-text Content",
+            "level": "A",
+            "section": "Perceivable",
+            "description": "All non-text content...",
+            "wcagUrl": "https://..."
+          }
+          // ... all Level A criteria
+        ],
+        "AA": [
+          // ... all Level AA criteria
+        ],
+        "AAA": [],
+        "EU": []
+      },
+      "criteriaCount": {
+        "A": 25,
+        "AA": 14,
+        "AAA": 0,
+        "EU": 0,
+        "total": 39
+      }
+    }
+  }
+
+  ---
+  TESTING:
+
+  1. Start backend server
+  2. Test with curl or Postman:
+
+  # Get all editions
+  curl -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/acr/editions
+
+  # Get Section 508 criteria
+  curl -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/acr/editions/section508/criteria
+
+  # Get WCAG criteria
+  curl -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/acr/editions/wcag/criteria
+
+  # Get International criteria
+  curl -H "Authorization: Bearer YOUR_TOKEN" \
+    http://localhost:3000/api/v1/acr/editions/international/criteria
+
+  3. Verify response structure matches expected format
+  4. Check that criteria counts match (39, 50, 52, 78)
+  5. Verify criteria are grouped by level correctly
