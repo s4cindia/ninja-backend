@@ -198,10 +198,12 @@ export class ConfidenceController {
       }
 
       const auditIssues: AuditIssueInput[] = [];
+      let totalIssueCount = 0;
 
       if (job.validationResults) {
         for (const result of job.validationResults) {
           if (result.issues) {
+            totalIssueCount += result.issues.length;
             for (const issue of result.issues) {
               auditIssues.push({
                 id: issue.id,
@@ -215,10 +217,15 @@ export class ConfidenceController {
         }
       }
 
+      console.log('[Confidence] Job found, audit issues count:', totalIssueCount);
+      console.log('[Confidence] Rule IDs:', auditIssues.map(i => i.ruleId));
+
       const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
         editionCode,
         auditIssues
       );
+
+      console.log('[Confidence] Criteria with issues:', confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length);
 
       const summary = {
         totalCriteria: confidenceAnalysis.length,
