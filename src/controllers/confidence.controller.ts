@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
+import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
+import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
 
 export class ConfidenceController {
@@ -145,6 +147,117 @@ export class ConfidenceController {
       success: true,
       data: assessment
     });
+  }
+
+  async getConfidenceWithIssues(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { jobId } = req.params;
+      const { edition = 'VPAT2.5-INT' } = req.query;
+
+      if (!jobId) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Job ID is required' }
+        });
+        return;
+      }
+
+      const validEditions: AcrEdition[] = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
+      const editionCode = this.normalizeEditionCode(edition as string);
+      
+      if (!validEditions.includes(editionCode)) {
+        res.status(400).json({
+          success: false,
+          error: { message: `Invalid edition. Must be one of: ${validEditions.join(', ')}` }
+        });
+        return;
+      }
+
+      const userId = req.user?.id;
+
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          userId: userId
+        },
+        include: {
+          validationResults: {
+            include: {
+              issues: true
+            }
+          }
+        }
+      });
+
+      if (!job) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Job not found or access denied' }
+        });
+        return;
+      }
+
+      const auditIssues: AuditIssueInput[] = [];
+
+      if (job.validationResults) {
+        for (const result of job.validationResults) {
+          if (result.issues) {
+            for (const issue of result.issues) {
+              auditIssues.push({
+                id: issue.id,
+                ruleId: issue.code || 'unknown',
+                message: issue.description || '',
+                impact: issue.severity || 'moderate',
+                filePath: issue.location || ''
+              });
+            }
+          }
+        }
+      }
+
+      const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
+        editionCode,
+        auditIssues
+      );
+
+      const summary = {
+        totalCriteria: confidenceAnalysis.length,
+        passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
+        failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
+        needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
+        notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        totalIssues: auditIssues.length,
+        averageConfidence: confidenceAnalysis.length > 0
+          ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
+          : 0
+      };
+
+      res.json({
+        success: true,
+        data: {
+          jobId,
+          edition: editionCode,
+          summary,
+          criteria: confidenceAnalysis
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  private normalizeEditionCode(edition: string): AcrEdition {
+    const editionMap: Record<string, AcrEdition> = {
+      'section508': 'VPAT2.5-508',
+      'wcag': 'VPAT2.5-WCAG',
+      'eu': 'VPAT2.5-EU',
+      'international': 'VPAT2.5-INT',
+      'VPAT2.5-508': 'VPAT2.5-508',
+      'VPAT2.5-WCAG': 'VPAT2.5-WCAG',
+      'VPAT2.5-EU': 'VPAT2.5-EU',
+      'VPAT2.5-INT': 'VPAT2.5-INT'
+    };
+    return editionMap[edition] || 'VPAT2.5-INT';
   }
 }
 
