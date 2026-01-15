@@ -100,24 +100,36 @@ export class AcrController {
     });
   }
 
-  async getEditionInfo(req: Request, res: Response) {
-    const edition = req.params.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT';
-    
-    const validEditions = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
-    if (!validEditions.includes(edition)) {
-      res.status(400).json({
-        success: false,
-        error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT' }
-      });
-      return;
-    }
+  async getEditionInfo(req: Request, res: Response, next: NextFunction) {
+    try {
+      const edition = req.params.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT';
 
-    const info = acrGeneratorService.getEditionInfo(edition);
-    
-    res.json({
-      success: true,
-      data: info
-    });
+      const validEditions = ['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT'];
+      if (!validEditions.includes(edition)) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid edition. Valid options: VPAT2.5-508, VPAT2.5-WCAG, VPAT2.5-EU, VPAT2.5-INT' }
+        });
+        return;
+      }
+
+      const details = await acrGeneratorService.getEditionDetails(edition);
+
+      if (!details) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Edition not found' }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: details
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 
   async validateCredibility(req: Request, res: Response, next: NextFunction) {
