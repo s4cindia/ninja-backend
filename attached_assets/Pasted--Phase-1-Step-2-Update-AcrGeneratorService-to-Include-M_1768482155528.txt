@@ -1,0 +1,83 @@
+
+● Phase 1, Step 2: Update AcrGeneratorService to Include Mapped Issues
+
+  Backend (ninja-backend) - Replit
+
+  We need to update the ACR generator service to map audit issues to criteria and include them in the confidence analysis.
+
+  File: src/services/acr/acr-generator.service.ts (UPDATE)
+
+  Find the section where you generate criterion confidence scores (likely in a method like generateConfidenceAnalysis or evaluateCriteria). We need to:
+
+  1. Import the wcag-issue-mapper service
+  2. Map audit issues to criteria
+  3. Include issue data in the response
+
+  Add this import at the top of the file:
+
+  import { wcagIssueMapperService, IssueMapping } from './wcag-issue-mapper.service';
+
+  Then, find where you return the confidence analysis results. Update the return type and add issue mappings. Here's the modification:
+
+  // Add this interface near the top of the file or in a types file
+  export interface CriterionConfidenceWithIssues {
+    criterionId: string;
+    name: string;
+    level: 'A' | 'AA' | 'AAA';
+    status: 'pass' | 'fail' | 'needs_review' | 'not_applicable';
+    confidenceScore: number;
+    remarks: string;
+    relatedIssues?: IssueMapping[];  // NEW: Related EPUB issues
+    issueCount?: number;              // NEW: Count of related issues
+  }
+
+  // In your method that generates confidence analysis, add this logic:
+  async generateConfidenceAnalysis(jobId: string): Promise<CriterionConfidenceWithIssues[]> {
+    // ... existing code to get job, audit issues, etc.
+
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { auditIssues: true }
+    });
+
+    if (!job || !job.auditIssues) {
+      throw new Error('Job or audit issues not found');
+    }
+
+    // Map issues to criteria
+    const issueMapping = wcagIssueMapperService.mapIssuesToCriteria(job.auditIssues);
+
+    // ... existing code to evaluate each criterion
+
+    const results: CriterionConfidenceWithIssues[] = criteriaToEvaluate.map(criterion => {
+      // Get related issues for this criterion
+      const relatedIssues = issueMapping.get(criterion.criterionId) || [];
+
+      // Existing logic to determine status, confidence, remarks
+      const status = determineStatus(criterion, relatedIssues);
+      const confidence = calculateConfidence(criterion, relatedIssues);
+      const remarks = generateRemarks(criterion, relatedIssues);
+
+      return {
+        criterionId: criterion.criterionId,
+        name: criterion.name,
+        level: criterion.level,
+        status,
+        confidenceScore: confidence,
+        remarks,
+        relatedIssues,  // Include the issues
+        issueCount: relatedIssues.length
+      };
+    });
+
+    return results;
+  }
+
+  Key changes to make:
+
+  1. Import the mapper service at the top
+  2. Call wcagIssueMapperService.mapIssuesToCriteria(job.auditIssues) to get issue mappings
+  3. Add relatedIssues and issueCount to each criterion result
+  4. Use issue data when determining status and confidence (criteria with issues should be marked as "fail" or "needs_review")
+
+  Can you locate the confidence analysis method in your acr-generator.service.ts and show me the relevant section? Then I'll provide the exact modifications needed.
