@@ -428,7 +428,7 @@ model ComparisonReport {
 
 model AcrJob {
   id            String   @id @default(uuid())
-  jobId         String   @unique
+  jobId         String
   tenantId      String
   userId        String
   edition       String
@@ -440,6 +440,7 @@ model AcrJob {
   user          User     @relation(fields: [userId], references: [id])
   criteria      AcrCriterionReview[]
 
+  @@unique([tenantId, jobId])
   @@index([jobId])
   @@index([userId])
   @@index([tenantId])

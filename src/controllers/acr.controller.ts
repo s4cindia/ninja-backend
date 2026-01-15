@@ -610,9 +610,9 @@ export class AcrController {
             code: 'EDITION_NOT_FOUND',
           },
         });
-      } else {
-        next(error);
+        return;
       }
+      next(error);
     }
   }
 
@@ -635,9 +635,9 @@ export class AcrController {
             code: 'CRITERION_NOT_FOUND',
           },
         });
-      } else {
-        next(error);
+        return;
       }
+      next(error);
     }
   }
 
@@ -667,12 +667,17 @@ export class AcrController {
         return;
       }
 
-      const validEditions = ['section508', 'wcag', 'eu', 'international'];
+      const validEditions = [
+        'section508', '508', 'VPAT2.5-508',
+        'wcag', 'VPAT2.5-WCAG',
+        'eu', 'VPAT2.5-EU',
+        'international', 'int', 'VPAT2.5-INT'
+      ];
       if (!validEditions.includes(edition)) {
         res.status(400).json({
           success: false,
           error: {
-            message: `Invalid edition. Must be one of: ${validEditions.join(', ')}`,
+            message: `Invalid edition. Must be one of: section508, wcag, eu, international (or canonical codes like VPAT2.5-508)`,
             code: 'INVALID_EDITION',
           },
         });

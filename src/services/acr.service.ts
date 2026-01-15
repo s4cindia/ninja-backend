@@ -26,10 +26,28 @@ interface AcrEditionsData {
   criteria: Criterion[];
 }
 
+interface AuditIssue {
+  id?: string;
+  code: string | null;
+  severity: string;
+  message: string;
+  location?: string | null;
+  filePath?: string | null;
+  wcagCriteria?: string | null;
+  autoFixable?: boolean;
+}
+
+interface ManifestEntry {
+  id: string;
+  href: string;
+  mediaType?: string;
+  properties?: string;
+}
+
 interface AuditResults {
   fileName?: string;
-  issues: any[];
-  manifest?: any[];
+  issues: AuditIssue[];
+  manifest?: ManifestEntry[];
 }
 
 export class AcrService {
@@ -353,7 +371,7 @@ export class AcrService {
       progress: {
         reviewed: reviewedCriteria,
         total: totalCriteria,
-        percentage: Math.round((reviewedCriteria / totalCriteria) * 100),
+        percentage: totalCriteria === 0 ? 0 : Math.round((reviewedCriteria / totalCriteria) * 100),
       },
     };
   }
@@ -424,7 +442,7 @@ export class AcrService {
       progress: {
         reviewed: reviewedCriteria,
         total: totalCriteria,
-        percentage: Math.round((reviewedCriteria / totalCriteria) * 100),
+        percentage: totalCriteria === 0 ? 0 : Math.round((reviewedCriteria / totalCriteria) * 100),
       },
     };
   }
