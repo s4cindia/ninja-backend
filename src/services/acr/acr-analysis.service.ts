@@ -205,50 +205,77 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
     logger.info(`[ACR DEBUG] ACR_WORKFLOW detected, sourceJobId: ${sourceJobId}`);
 
     if (sourceJobId) {
-      logger.info(`[ACR] Fetching issues from source job: ${sourceJobId}`);
+      logger.info(`[ACR] Fetching remediation tasks from source job: ${sourceJobId}`);
 
-      const sourceJob = await prisma.job.findFirst({
-        where: { id: sourceJobId },
+      const remediationPlan = await prisma.job.findFirst({
+        where: {
+          id: sourceJobId,
+          type: 'EPUB_ACCESSIBILITY'
+        },
+        select: {
+          output: true
+        }
       });
 
-      logger.info(`[ACR DEBUG] Source job found: ${!!sourceJob}`);
+      if (remediationPlan) {
+        const planOutput = remediationPlan.output as Record<string, unknown> | null;
+        const remediationData = planOutput?.remediationPlan as Record<string, unknown> | undefined;
+        const tasks = remediationData?.tasks as Array<{
+          id?: string;
+          issueCode?: string;
+          issueMessage?: string;
+          severity?: string;
+          wcagCriteria?: string | string[];
+          status?: string;
+        }> | undefined;
 
-      if (sourceJob) {
-        const sourceOutput = sourceJob.output as Record<string, unknown> | null;
-        logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
+        logger.info(`[ACR DEBUG] Found ${tasks?.length || 0} remediation tasks`);
 
-        issues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
-        logger.info(`[ACR] Found ${issues.length} issues from source job`);
+        if (tasks && tasks.length > 0) {
+          issues = tasks.map(task => ({
+            code: task.issueCode,
+            message: task.issueMessage,
+            severity: task.severity,
+            wcagCriteria: Array.isArray(task.wcagCriteria)
+              ? task.wcagCriteria
+              : task.wcagCriteria
+                ? [task.wcagCriteria]
+                : undefined,
+          }));
 
-        if (issues.length > 0) {
-          logger.info(`[ACR DEBUG] First issue: ${JSON.stringify(issues[0])}`);
+          logger.info(`[ACR] Converted ${issues.length} remediation tasks to issues format`);
+          if (issues.length > 0) {
+            logger.info(`[ACR DEBUG] First converted issue: ${JSON.stringify(issues[0])}`);
+          }
         }
       } else {
-        logger.warn(`[ACR] Source job ${sourceJobId} not found`);
+        logger.warn(`[ACR] Source job ${sourceJobId} not found or not EPUB_ACCESSIBILITY type`);
       }
     }
 
     if (issues.length === 0 && auditOutput?.criteria) {
-      logger.info(`[ACR DEBUG] Fallback: Converting criteria to issues`);
+      logger.info(`[ACR DEBUG] Fallback: Converting ACR criteria to issues`);
       const criteria = auditOutput.criteria as Array<{
         code?: string;
         description?: string;
         severity?: string;
-        wcagCriteria?: string;
+        wcagCriteria?: string | null;
       }>;
 
-      logger.info(`[ACR DEBUG] Criteria count: ${criteria.length}`);
+      logger.info(`[ACR DEBUG] ACR Criteria count: ${criteria.length}`);
       if (criteria.length > 0) {
-        logger.info(`[ACR DEBUG] First criterion: ${JSON.stringify(criteria[0])}`);
+        logger.info(`[ACR DEBUG] First ACR criterion: ${JSON.stringify(criteria[0])}`);
       }
 
-      issues = criteria.map(c => ({
-        code: c.code,
-        message: c.description,
-        severity: c.severity,
-        wcagCriteria: c.wcagCriteria ? [c.wcagCriteria] : undefined,
-      }));
-      logger.info(`[ACR] Converted ${issues.length} criteria to issues format`);
+      issues = criteria
+        .filter(c => c.wcagCriteria)
+        .map(c => ({
+          code: c.code,
+          message: c.description,
+          severity: c.severity,
+          wcagCriteria: c.wcagCriteria ? c.wcagCriteria.split(',').map(s => s.trim()) : undefined,
+        }));
+      logger.info(`[ACR] Converted ${issues.length} ACR criteria to issues format`);
     }
   } else {
     issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
