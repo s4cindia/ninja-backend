@@ -5,6 +5,7 @@
   COPY tsconfig.json ./
   RUN npm ci
   COPY src ./src
+  COPY src/data ./src/data
   COPY prisma ./prisma
   RUN npx prisma generate
   RUN npm run build
@@ -35,6 +36,7 @@
 
   # Copy compiled code and dependencies
   COPY --from=builder /app/dist ./dist
+  COPY --from=builder /app/src/data ./dist/data
   COPY --from=builder /app/node_modules ./node_modules
   COPY --from=builder /app/prisma ./prisma
   COPY --from=builder /app/package*.json ./
