@@ -97,6 +97,7 @@ interface AuditIssue {
   severity?: string;
   message?: string;
   description?: string;
+  filePath?: string;
   location?: string;
   html?: string;
   snippet?: string;
@@ -256,44 +257,104 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
   let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string }> = [];
 
   if (job.type === 'ACR_WORKFLOW') {
-    logger.info(`[ACR DEBUG] ACR_WORKFLOW detected`);
+    const jobInput = job.input as Record<string, unknown> | null;
+    const sourceJobId = jobInput?.sourceJobId as string | undefined;
 
-    if (auditOutput?.criteria) {
-      const criteria = auditOutput.criteria as Array<{
-        code?: string;
-        description?: string;
-        severity?: string;
-        location?: string;
-        wcagCriteria?: string | null;
-      }>;
+    logger.info(`[ACR Analysis] ACR_WORKFLOW job detected, sourceJobId: ${sourceJobId}`);
 
-      logger.info(`[ACR DEBUG] Found ${criteria.length} ACR criteria`);
+    if (sourceJobId) {
+      const sourceJob = await prisma.job.findFirst({
+        where: { id: sourceJobId },
+        select: { output: true, type: true }
+      });
 
-      const wcagMappedCriteria = criteria.filter(c => c.wcagCriteria);
-      const otherCriteria = criteria.filter(c => !c.wcagCriteria);
+      if (sourceJob) {
+        const sourceOutput = sourceJob.output as Record<string, unknown> | null;
 
-      logger.info(`[ACR DEBUG] WCAG-mapped: ${wcagMappedCriteria.length}, Other: ${otherCriteria.length}`);
+        if (sourceOutput?.remediationPlan) {
+          const remediationPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ wcagCriteria?: string | string[]; issueCode?: string; issueMessage?: string; severity?: string; location?: string }> } | undefined;
+          if (remediationPlan?.tasks) {
+            const allTasks = remediationPlan.tasks;
+            logger.info(`[ACR Analysis] Found ${allTasks.length} remediation tasks from source job`);
 
-      issues = wcagMappedCriteria.map(c => ({
-        code: c.code,
-        message: c.description,
-        severity: c.severity,
-        wcagCriteria: c.wcagCriteria
-          ? c.wcagCriteria.split(',').map(s => s.trim()).filter(Boolean)
-          : undefined,
-      }));
+            issues = allTasks
+              .filter(task => task.wcagCriteria)
+              .map(task => ({
+                code: task.issueCode,
+                message: task.issueMessage,
+                severity: task.severity,
+                location: task.location,
+                wcagCriteria: Array.isArray(task.wcagCriteria)
+                  ? task.wcagCriteria
+                  : task.wcagCriteria ? [task.wcagCriteria] : undefined,
+              }));
 
-      otherIssuesData = otherCriteria.map(c => ({
-        code: c.code || 'UNKNOWN',
-        message: c.description || 'No description',
-        severity: c.severity || 'unknown',
-        location: c.location,
-      }));
+            const otherTasks = allTasks.filter(task => !task.wcagCriteria);
+            otherIssuesData = otherTasks.map(task => ({
+              code: task.issueCode || 'UNKNOWN',
+              message: task.issueMessage || 'No description',
+              severity: task.severity || 'unknown',
+              location: task.location,
+            }));
 
-      logger.info(`[ACR] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
+            logger.info(`[ACR Analysis] Filtered to ${issues.length} WCAG-mapped issues, ${otherTasks.length} other issues`);
+          }
+        } else {
+          const allIssues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
+          logger.info(`[ACR Analysis] Found ${allIssues.length} total issues from source job`);
+
+          issues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
+          const otherIssues = allIssues.filter(issue => !issue.wcagCriteria || issue.wcagCriteria.length === 0);
+
+          otherIssuesData = otherIssues.map(issue => ({
+            code: issue.code || 'UNKNOWN',
+            message: issue.message || issue.description || 'No description',
+            severity: issue.severity || 'unknown',
+            location: issue.location,
+          }));
+
+          logger.info(`[ACR Analysis] Filtered to ${issues.length} WCAG-mapped issues for analysis`);
+        }
+      } else {
+        logger.warn(`[ACR Analysis] Source job ${sourceJobId} not found`);
+      }
+    } else {
+      if (auditOutput?.criteria) {
+        const criteria = auditOutput.criteria as Array<{
+          code?: string;
+          description?: string;
+          severity?: string;
+          location?: string;
+          wcagCriteria?: string | null;
+        }>;
+
+        logger.info(`[ACR Analysis] Using ${criteria.length} criteria from ACR workflow output`);
+
+        const wcagMappedCriteria = criteria.filter(c => c.wcagCriteria);
+        const otherCriteria = criteria.filter(c => !c.wcagCriteria);
+
+        issues = wcagMappedCriteria.map(c => ({
+          code: c.code,
+          message: c.description,
+          severity: c.severity,
+          wcagCriteria: c.wcagCriteria
+            ? c.wcagCriteria.split(',').map(s => s.trim()).filter(Boolean)
+            : undefined,
+        }));
+
+        otherIssuesData = otherCriteria.map(c => ({
+          code: c.code || 'UNKNOWN',
+          message: c.description || 'No description',
+          severity: c.severity || 'unknown',
+          location: c.location,
+        }));
+
+        logger.info(`[ACR Analysis] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
+      }
     }
   } else {
     issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
+    logger.info(`[ACR Analysis] Using ${issues.length} issues from job output`);
   }
 
   logger.info(`[ACR] Analyzing job: ${jobId} with ${issues.length} issues`);
