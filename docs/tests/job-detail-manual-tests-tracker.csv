@@ -1,0 +1,52 @@
+Test ID	Category	Test Case	Input/Condition	Expected Result	Priority	Status	Tested By	Test Date	Browser/Device	Build Version	Defect ID	Comments
+MT-UX-001	UI/UX	Visual hierarchy clear	View job detail page	Score prominent; issues scannable	High	Not Started						
+MT-UX-002	UI/UX	Color coding intuitive	View severity cards	Red=bad; green=good obvious	High	Not Started						
+MT-UX-003	UI/UX	Action buttons discoverable	View page	Buttons clearly visible	High	Not Started						
+MT-UX-004	UI/UX	Loading feedback	Refresh page	Spinner while loading	Medium	Not Started						
+MT-UX-005	UI/UX	Error messages helpful	Simulate API error	Clear error message shown	Medium	Not Started						
+MT-UX-006	UI/UX	Empty state clear	View job with 0 issues	No issues message friendly	Medium	Not Started						
+MT-UX-007	UI/UX	Score circle animation	Page load	Smooth fill animation	Low	Not Started						
+MT-UX-008	UI/UX	Table sorting visual	Click column header	Sort indicator visible	Medium	Not Started						
+MT-RD-001	Responsive	Mobile layout	375px width	Single column; stacked cards	High	Not Started			Mobile 375px			
+MT-RD-002	Responsive	Tablet layout	768px width	2-column severity cards	Medium	Not Started			Tablet 768px			
+MT-RD-003	Responsive	Desktop layout	1280px width	Full 4-column layout	High	Not Started			Desktop 1280px			
+MT-RD-004	Responsive	Table horizontal scroll	Mobile	Table scrollable; not squished	High	Not Started			Mobile			
+MT-RD-005	Responsive	Action buttons stack	Mobile	Buttons full-width; stacked	Medium	Not Started			Mobile			
+MT-RD-006	Responsive	Score circle scales	All viewports	Readable at all sizes	Medium	Not Started			All			
+MT-RD-007	Responsive	Text truncation	Mobile	Long text truncated properly	Low	Not Started			Mobile			
+MT-A11Y-001	Accessibility	Keyboard navigation	Tab through page	All interactive elements focusable	Critical	Not Started						
+MT-A11Y-002	Accessibility	Focus visible	Tab through	Clear focus indicator	Critical	Not Started						
+MT-A11Y-003	Accessibility	Screen reader labels	NVDA/VoiceOver	All elements announced	High	Not Started						
+MT-A11Y-004	Accessibility	Color contrast	axe DevTools	No contrast violations	Critical	Not Started						
+MT-A11Y-005	Accessibility	Score announced	Screen reader	Compliance score 66 percent	Medium	Not Started						
+MT-A11Y-006	Accessibility	Table accessible	Screen reader	Headers announced with cells	High	Not Started						
+MT-A11Y-007	Accessibility	Button labels	Screen reader	Clear action descriptions	High	Not Started						
+MT-A11Y-008	Accessibility	Skip to content	Tab first	Skip link available	Medium	Not Started						
+MT-A11Y-009	Accessibility	No color-only info	Visual check	Icons + color for severity	High	Not Started						
+MT-A11Y-010	Accessibility	Zoom to 200%	Browser zoom	No content loss	High	Not Started						
+MT-CB-001	Cross-Browser	Chrome latest	Chrome 120+	All features work	Critical	Not Started			Chrome 120+			
+MT-CB-002	Cross-Browser	Firefox latest	Firefox 120+	All features work	High	Not Started			Firefox 120+			
+MT-CB-003	Cross-Browser	Safari latest	Safari 17+	All features work	High	Not Started			Safari 17+			
+MT-CB-004	Cross-Browser	Edge latest	Edge 120+	All features work	Medium	Not Started			Edge 120+			
+MT-CB-005	Cross-Browser	SVG score circle	All browsers	Renders correctly	High	Not Started			All			
+MT-CB-006	Cross-Browser	CSS animations	All browsers	Smooth animations	Low	Not Started			All			
+MT-E2E-001	E2E Functional	Full user flow	Login -> Jobs -> View -> Remediate	Complete without errors	Critical	Not Started						
+MT-E2E-002	E2E Functional	Start Remediation	Click button	Navigates to /remediation/:id	Critical	Not Started						
+MT-E2E-003	E2E Functional	Download Report	Click button	File downloads (or placeholder)	High	Not Started						
+MT-E2E-004	E2E Functional	Re-Audit	Click button	New audit job created	High	Not Started						
+MT-E2E-005	E2E Functional	Back navigation	Click Back	Returns to Jobs list	High	Not Started						
+MT-E2E-006	E2E Functional	Raw data toggle	Click Show/Hide	JSON expands/collapses	Medium	Not Started						
+MT-E2E-007	E2E Functional	Filter issues	Select severity filter	Table filters correctly	Medium	Not Started						
+MT-E2E-008	E2E Functional	Sort issues	Click column header	Table sorts correctly	Medium	Not Started						
+MT-E2E-009	E2E Functional	Refresh page	F5 on job detail	Data persists correctly	Medium	Not Started						
+MT-E2E-010	E2E Functional	Deep link	Direct URL to job	Page loads correctly	High	Not Started						
+MT-EC-001	Edge Case	Perfect score	score: 100 with 0 issues	Green score, "No issues"	Medium	Not Started						
+MT-EC-002	Edge Case	Zero score	score: 0 with many issues	Red score, all issues listed	Medium	Not Started						
+MT-EC-003	Edge Case	All critical issues	10 critical issues	Red severity dominant	Medium	Not Started						
+MT-EC-004	Edge Case	Very long filename	100+ char filename	Truncated with tooltip	Low	Not Started						
+MT-EC-005	Edge Case	Very long description	500+ char description	Truncated, expandable	Low	Not Started						
+MT-EC-006	Edge Case	Special characters	Unicode in description	Renders correctly	Low	Not Started						
+MT-EC-007	Edge Case	Missing output	Job still processing	Processing state shown	Medium	Not Started						
+MT-EC-008	Edge Case	Failed job	Job status FAILED	Error state, no score	High	Not Started						
+MT-EC-009	Edge Case	Cancelled job	Job status CANCELLED	Appropriate message	Medium	Not Started						
+MT-EC-010	Edge Case	100+ issues	Large issue list	Pagination or scroll	Medium	Not Started						
