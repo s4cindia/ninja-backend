@@ -65,6 +65,15 @@ export interface AcrAnalysis {
     doesNotSupport: number;
     notApplicable: number;
   };
+  otherIssues?: {
+    count: number;
+    issues: Array<{
+      code: string;
+      message: string;
+      severity: string;
+      location?: string;
+    }>;
+  };
 }
 
 interface AuditIssue {
@@ -197,106 +206,44 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
   }
 
   let issues: AuditIssue[] = [];
+  let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string }> = [];
 
   if (job.type === 'ACR_WORKFLOW') {
-    const jobInput = job.input as Record<string, unknown> | null;
-    const sourceJobId = jobInput?.sourceJobId as string | undefined;
+    logger.info(`[ACR DEBUG] ACR_WORKFLOW detected`);
 
-    logger.info(`[ACR DEBUG] ACR_WORKFLOW detected, sourceJobId: ${sourceJobId}`);
-
-    if (sourceJobId) {
-      logger.info(`[ACR] Fetching remediation tasks from source job: ${sourceJobId}`);
-
-      const remediationPlan = await prisma.job.findFirst({
-        where: {
-          id: sourceJobId,
-          type: 'EPUB_ACCESSIBILITY'
-        },
-        select: {
-          output: true
-        }
-      });
-
-      if (remediationPlan) {
-        const planOutput = remediationPlan.output as Record<string, unknown> | null;
-
-        logger.info(`[ACR DEBUG] Plan output keys: ${JSON.stringify(Object.keys(planOutput || {}))}`);
-
-        const remediationData = planOutput?.remediationPlan as Record<string, unknown> | undefined;
-
-        logger.info(`[ACR DEBUG] remediationData exists: ${!!remediationData}`);
-        if (remediationData) {
-          logger.info(`[ACR DEBUG] remediationData keys: ${JSON.stringify(Object.keys(remediationData))}`);
-        }
-
-        const tasks = remediationData?.tasks as Array<{
-          id?: string;
-          issueCode?: string;
-          issueMessage?: string;
-          severity?: string;
-          wcagCriteria?: string | string[];
-          status?: string;
-        }> | undefined;
-
-        logger.info(`[ACR DEBUG] Found ${tasks?.length || 0} remediation tasks`);
-
-        if (!tasks || tasks.length === 0) {
-          logger.info(`[ACR DEBUG] No tasks found. Checking alternative locations...`);
-          logger.info(`[ACR DEBUG] planOutput.tasks? ${Array.isArray((planOutput as Record<string, unknown>)?.tasks)}`);
-          logger.info(`[ACR DEBUG] remediationData type: ${typeof remediationData}`);
-
-          const altTasks = (planOutput as Record<string, unknown>)?.tasks as Array<Record<string, unknown>> | undefined;
-          if (altTasks && altTasks.length > 0) {
-            logger.info(`[ACR DEBUG] Found ${altTasks.length} tasks at planOutput.tasks instead!`);
-            logger.info(`[ACR DEBUG] First alt task: ${JSON.stringify(altTasks[0])}`);
-          }
-        }
-
-        if (tasks && tasks.length > 0) {
-          issues = tasks.map(task => ({
-            code: task.issueCode,
-            message: task.issueMessage,
-            severity: task.severity,
-            wcagCriteria: Array.isArray(task.wcagCriteria)
-              ? task.wcagCriteria
-              : task.wcagCriteria
-                ? [task.wcagCriteria]
-                : undefined,
-          }));
-
-          logger.info(`[ACR] Converted ${issues.length} remediation tasks to issues format`);
-          if (issues.length > 0) {
-            logger.info(`[ACR DEBUG] First converted issue: ${JSON.stringify(issues[0])}`);
-          }
-        }
-      } else {
-        logger.warn(`[ACR] Source job ${sourceJobId} not found or not EPUB_ACCESSIBILITY type`);
-      }
-    }
-
-    if (issues.length === 0 && auditOutput?.criteria) {
-      logger.info(`[ACR DEBUG] Fallback: Converting ACR criteria to issues`);
+    if (auditOutput?.criteria) {
       const criteria = auditOutput.criteria as Array<{
         code?: string;
         description?: string;
         severity?: string;
+        location?: string;
         wcagCriteria?: string | null;
       }>;
 
-      logger.info(`[ACR DEBUG] ACR Criteria count: ${criteria.length}`);
-      if (criteria.length > 0) {
-        logger.info(`[ACR DEBUG] First ACR criterion: ${JSON.stringify(criteria[0])}`);
-      }
+      logger.info(`[ACR DEBUG] Found ${criteria.length} ACR criteria`);
 
-      issues = criteria
-        .filter(c => c.wcagCriteria)
-        .map(c => ({
-          code: c.code,
-          message: c.description,
-          severity: c.severity,
-          wcagCriteria: c.wcagCriteria ? c.wcagCriteria.split(',').map(s => s.trim()) : undefined,
-        }));
-      logger.info(`[ACR] Converted ${issues.length} ACR criteria to issues format`);
+      const wcagMappedCriteria = criteria.filter(c => c.wcagCriteria);
+      const otherCriteria = criteria.filter(c => !c.wcagCriteria);
+
+      logger.info(`[ACR DEBUG] WCAG-mapped: ${wcagMappedCriteria.length}, Other: ${otherCriteria.length}`);
+
+      issues = wcagMappedCriteria.map(c => ({
+        code: c.code,
+        message: c.description,
+        severity: c.severity,
+        wcagCriteria: c.wcagCriteria
+          ? c.wcagCriteria.split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
+      }));
+
+      otherIssuesData = otherCriteria.map(c => ({
+        code: c.code || 'UNKNOWN',
+        message: c.description || 'No description',
+        severity: c.severity || 'unknown',
+        location: c.location,
+      }));
+
+      logger.info(`[ACR] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
     }
   } else {
     issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
@@ -324,6 +271,13 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
     analyzedAt: new Date().toISOString(),
     summary,
   };
+
+  if (otherIssuesData && otherIssuesData.length > 0) {
+    analysis.otherIssues = {
+      count: otherIssuesData.length,
+      issues: otherIssuesData,
+    };
+  }
 
   const updatedOutput = auditOutput
     ? { ...auditOutput, acrAnalysis: JSON.parse(JSON.stringify(analysis)) }
