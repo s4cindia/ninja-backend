@@ -47,6 +47,14 @@ export interface CriterionAnalysis {
   confidence: number;
   findings: string[];
   recommendation: string;
+  issues?: Array<{
+    code: string;
+    message: string;
+    location?: string;
+    severity?: string;
+    html?: string;
+    suggestedFix?: string;
+  }>;
 }
 
 export interface AcrAnalysis {
@@ -77,6 +85,10 @@ interface AuditIssue {
   severity?: string;
   message?: string;
   description?: string;
+  location?: string;
+  html?: string;
+  snippet?: string;
+  suggestedFix?: string;
 }
 
 function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): CriterionAnalysis[] {
@@ -161,6 +173,15 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       ).slice(0, 5);
     }
 
+    const issueDetails = relatedIssues.slice(0, 10).map(issue => ({
+      code: issue.code || 'UNKNOWN',
+      message: issue.message || issue.description || 'No description available',
+      location: issue.location,
+      severity: issue.severity,
+      html: issue.html || issue.snippet,
+      suggestedFix: issue.suggestedFix,
+    }));
+
     criteriaAnalysis.push({
       id: criterion.id,
       name: criterion.name,
@@ -170,6 +191,7 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       confidence,
       findings,
       recommendation,
+      issues: issueDetails.length > 0 ? issueDetails : undefined,
     });
   }
 
