@@ -55,6 +55,17 @@ export interface CriterionAnalysis {
     html?: string;
     suggestedFix?: string;
   }>;
+  relatedIssues?: Array<{
+    issueId: string;
+    ruleId: string;
+    impact: string;
+    message: string;
+    filePath?: string;
+    location?: string;
+    htmlSnippet?: string;
+    suggestedFix?: string;
+  }>;
+  issueCount?: number;
 }
 
 export interface AcrAnalysis {
@@ -80,6 +91,7 @@ export interface AcrAnalysis {
 }
 
 interface AuditIssue {
+  id?: string;
   code?: string;
   wcagCriteria?: string[];
   severity?: string;
@@ -182,6 +194,19 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       suggestedFix: issue.suggestedFix,
     }));
 
+    const mappedIssues = relatedIssues.slice(0, 10).map(issue => ({
+      issueId: issue.id || `issue-${Math.random().toString(36).substr(2, 9)}`,
+      ruleId: issue.code || 'UNKNOWN',
+      impact: issue.severity || 'moderate',
+      message: issue.message || issue.description || 'No description available',
+      filePath: issue.location,
+      location: issue.location,
+      htmlSnippet: issue.html || issue.snippet,
+      suggestedFix: issue.suggestedFix,
+    }));
+
+    logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${relatedIssues.length} issues found, mapped ${mappedIssues.length}`);
+
     criteriaAnalysis.push({
       id: criterion.id,
       name: criterion.name,
@@ -192,6 +217,8 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       findings,
       recommendation,
       issues: issueDetails.length > 0 ? issueDetails : undefined,
+      relatedIssues: mappedIssues.length > 0 ? mappedIssues : undefined,
+      issueCount: mappedIssues.length,
     });
   }
 
