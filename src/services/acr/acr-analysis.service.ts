@@ -1,45 +1,40 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import acrEditionsData from '../../data/acrEditions.json';
 
-const WCAG_CRITERIA = [
-  { id: '1.1.1', name: 'Non-text Content', level: 'A', category: 'Perceivable' },
-  { id: '1.2.1', name: 'Audio-only and Video-only', level: 'A', category: 'Perceivable' },
-  { id: '1.2.2', name: 'Captions (Prerecorded)', level: 'A', category: 'Perceivable' },
-  { id: '1.2.3', name: 'Audio Description or Media Alternative', level: 'A', category: 'Perceivable' },
-  { id: '1.2.5', name: 'Audio Description (Prerecorded)', level: 'AA', category: 'Perceivable' },
-  { id: '1.3.1', name: 'Info and Relationships', level: 'A', category: 'Perceivable' },
-  { id: '1.3.2', name: 'Meaningful Sequence', level: 'A', category: 'Perceivable' },
-  { id: '1.3.3', name: 'Sensory Characteristics', level: 'A', category: 'Perceivable' },
-  { id: '1.4.1', name: 'Use of Color', level: 'A', category: 'Perceivable' },
-  { id: '1.4.2', name: 'Audio Control', level: 'A', category: 'Perceivable' },
-  { id: '1.4.3', name: 'Contrast (Minimum)', level: 'AA', category: 'Perceivable' },
-  { id: '1.4.4', name: 'Resize Text', level: 'AA', category: 'Perceivable' },
-  { id: '1.4.5', name: 'Images of Text', level: 'AA', category: 'Perceivable' },
-  { id: '2.1.1', name: 'Keyboard', level: 'A', category: 'Operable' },
-  { id: '2.1.2', name: 'No Keyboard Trap', level: 'A', category: 'Operable' },
-  { id: '2.2.1', name: 'Timing Adjustable', level: 'A', category: 'Operable' },
-  { id: '2.2.2', name: 'Pause, Stop, Hide', level: 'A', category: 'Operable' },
-  { id: '2.3.1', name: 'Three Flashes or Below', level: 'A', category: 'Operable' },
-  { id: '2.4.1', name: 'Bypass Blocks', level: 'A', category: 'Operable' },
-  { id: '2.4.2', name: 'Page Titled', level: 'A', category: 'Operable' },
-  { id: '2.4.3', name: 'Focus Order', level: 'A', category: 'Operable' },
-  { id: '2.4.4', name: 'Link Purpose (In Context)', level: 'A', category: 'Operable' },
-  { id: '2.4.5', name: 'Multiple Ways', level: 'AA', category: 'Operable' },
-  { id: '2.4.6', name: 'Headings and Labels', level: 'AA', category: 'Operable' },
-  { id: '2.4.7', name: 'Focus Visible', level: 'AA', category: 'Operable' },
-  { id: '3.1.1', name: 'Language of Page', level: 'A', category: 'Understandable' },
-  { id: '3.1.2', name: 'Language of Parts', level: 'AA', category: 'Understandable' },
-  { id: '3.2.1', name: 'On Focus', level: 'A', category: 'Understandable' },
-  { id: '3.2.2', name: 'On Input', level: 'A', category: 'Understandable' },
-  { id: '3.2.3', name: 'Consistent Navigation', level: 'AA', category: 'Understandable' },
-  { id: '3.2.4', name: 'Consistent Identification', level: 'AA', category: 'Understandable' },
-  { id: '3.3.1', name: 'Error Identification', level: 'A', category: 'Understandable' },
-  { id: '3.3.2', name: 'Labels or Instructions', level: 'A', category: 'Understandable' },
-  { id: '3.3.3', name: 'Error Suggestion', level: 'AA', category: 'Understandable' },
-  { id: '3.3.4', name: 'Error Prevention (Legal, Financial, Data)', level: 'AA', category: 'Understandable' },
-  { id: '4.1.1', name: 'Parsing', level: 'A', category: 'Robust' },
-  { id: '4.1.2', name: 'Name, Role, Value', level: 'A', category: 'Robust' },
-];
+// Load WCAG criteria from shared JSON (filters out EU-specific criteria)
+const WCAG_CRITERIA = acrEditionsData.criteria
+  .filter((c: { level: string }) => ['A', 'AA', 'AAA'].includes(c.level))
+  .map((c: { number: string; name: string; level: string; section: string }) => ({
+    id: c.number,
+    name: c.name,
+    level: c.level,
+    category: c.section,
+  }));
+
+logger.info(`[ACR Analysis] Loaded ${WCAG_CRITERIA.length} WCAG 2.1 criteria from documentation`);
+
+// Filter criteria based on edition requirements
+function getEditionCriteria(editionCode?: string): typeof WCAG_CRITERIA {
+  if (!editionCode) {
+    return WCAG_CRITERIA.filter(c => c.level === 'A' || c.level === 'AA');
+  }
+
+  switch (editionCode) {
+    case 'VPAT2.5-WCAG':
+      return WCAG_CRITERIA.filter(c => c.level === 'A' || c.level === 'AA');
+
+    case 'VPAT2.5-INT':
+      return WCAG_CRITERIA;
+
+    case 'VPAT2.5-508':
+    case 'VPAT2.5-EU':
+      return WCAG_CRITERIA.filter(c => c.level === 'A' || c.level === 'AA');
+
+    default:
+      return WCAG_CRITERIA.filter(c => c.level === 'A' || c.level === 'AA');
+  }
+}
 
 const KNOWN_SEVERITIES = ['critical', 'serious', 'moderate', 'minor'];
 
@@ -84,10 +79,13 @@ interface AuditIssue {
   description?: string;
 }
 
-function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
+function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): CriterionAnalysis[] {
   const criteriaAnalysis: CriterionAnalysis[] = [];
+  const editionCriteria = getEditionCriteria(editionCode);
 
-  for (const criterion of WCAG_CRITERIA) {
+  logger.info(`[ACR Analysis] Analyzing ${editionCriteria.length} criteria for edition: ${editionCode || 'default (A+AA)'}`);
+
+  for (const criterion of editionCriteria) {
     const criterionCode = criterion.id.replace(/\./g, '');
     const pattern = criterionCode.toUpperCase();
     
@@ -251,7 +249,10 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
 
   logger.info(`[ACR] Analyzing job: ${jobId} with ${issues.length} issues`);
 
-  const criteria = analyzeWcagCriteria(issues);
+  // Get edition from job output if available
+  const editionCode = (auditOutput?.selectedEdition || auditOutput?.editionCode) as string | undefined;
+
+  const criteria = analyzeWcagCriteria(issues, editionCode);
 
   const summary = {
     supports: criteria.filter(c => c.status === 'supports').length,
