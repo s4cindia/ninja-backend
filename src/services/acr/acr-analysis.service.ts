@@ -219,7 +219,16 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
 
       if (remediationPlan) {
         const planOutput = remediationPlan.output as Record<string, unknown> | null;
+
+        logger.info(`[ACR DEBUG] Plan output keys: ${JSON.stringify(Object.keys(planOutput || {}))}`);
+
         const remediationData = planOutput?.remediationPlan as Record<string, unknown> | undefined;
+
+        logger.info(`[ACR DEBUG] remediationData exists: ${!!remediationData}`);
+        if (remediationData) {
+          logger.info(`[ACR DEBUG] remediationData keys: ${JSON.stringify(Object.keys(remediationData))}`);
+        }
+
         const tasks = remediationData?.tasks as Array<{
           id?: string;
           issueCode?: string;
@@ -230,6 +239,18 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
         }> | undefined;
 
         logger.info(`[ACR DEBUG] Found ${tasks?.length || 0} remediation tasks`);
+
+        if (!tasks || tasks.length === 0) {
+          logger.info(`[ACR DEBUG] No tasks found. Checking alternative locations...`);
+          logger.info(`[ACR DEBUG] planOutput.tasks? ${Array.isArray((planOutput as Record<string, unknown>)?.tasks)}`);
+          logger.info(`[ACR DEBUG] remediationData type: ${typeof remediationData}`);
+
+          const altTasks = (planOutput as Record<string, unknown>)?.tasks as Array<Record<string, unknown>> | undefined;
+          if (altTasks && altTasks.length > 0) {
+            logger.info(`[ACR DEBUG] Found ${altTasks.length} tasks at planOutput.tasks instead!`);
+            logger.info(`[ACR DEBUG] First alt task: ${JSON.stringify(altTasks[0])}`);
+          }
+        }
 
         if (tasks && tasks.length > 0) {
           issues = tasks.map(task => ({
