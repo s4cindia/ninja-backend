@@ -33,4 +33,6 @@ router.post('/:acrJobId/criteria/:criterionId/review', acrController.saveCriteri
 router.get('/:acrJobId/criteria/:criterionId', acrController.getCriterionDetailsFromJob.bind(acrController));
 router.post('/:acrJobId/reviews/bulk', acrController.saveBulkReviews.bind(acrController));
 
+router.get('/criterion-guidance', acrController.getCriterionGuidance.bind(acrController));
+
 export default router;
