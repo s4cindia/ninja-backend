@@ -186,6 +186,11 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
 
   const auditOutput = job.output as Record<string, unknown> | null;
 
+  // DEBUG: Log job details
+  logger.info(`[ACR DEBUG] Job type: ${job.type}`);
+  logger.info(`[ACR DEBUG] Job input: ${JSON.stringify(job.input)}`);
+  logger.info(`[ACR DEBUG] Job output keys: ${Object.keys(auditOutput || {})}`);
+
   if (auditOutput?.acrAnalysis) {
     logger.info(`[ACR] Returning cached analysis for job: ${jobId}`);
     return auditOutput.acrAnalysis as AcrAnalysis;
@@ -197,6 +202,8 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
     const jobInput = job.input as Record<string, unknown> | null;
     const sourceJobId = jobInput?.sourceJobId as string | undefined;
 
+    logger.info(`[ACR DEBUG] ACR_WORKFLOW detected, sourceJobId: ${sourceJobId}`);
+
     if (sourceJobId) {
       logger.info(`[ACR] Fetching issues from source job: ${sourceJobId}`);
 
@@ -204,22 +211,36 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
         where: { id: sourceJobId },
       });
 
+      logger.info(`[ACR DEBUG] Source job found: ${!!sourceJob}`);
+
       if (sourceJob) {
         const sourceOutput = sourceJob.output as Record<string, unknown> | null;
+        logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
+
         issues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
         logger.info(`[ACR] Found ${issues.length} issues from source job`);
+
+        if (issues.length > 0) {
+          logger.info(`[ACR DEBUG] First issue: ${JSON.stringify(issues[0])}`);
+        }
       } else {
         logger.warn(`[ACR] Source job ${sourceJobId} not found`);
       }
     }
 
     if (issues.length === 0 && auditOutput?.criteria) {
+      logger.info(`[ACR DEBUG] Fallback: Converting criteria to issues`);
       const criteria = auditOutput.criteria as Array<{
         code?: string;
         description?: string;
         severity?: string;
         wcagCriteria?: string;
       }>;
+
+      logger.info(`[ACR DEBUG] Criteria count: ${criteria.length}`);
+      if (criteria.length > 0) {
+        logger.info(`[ACR DEBUG] First criterion: ${JSON.stringify(criteria[0])}`);
+      }
 
       issues = criteria.map(c => ({
         code: c.code,
