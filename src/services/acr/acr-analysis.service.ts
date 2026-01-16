@@ -171,7 +171,7 @@ function analyzeWcagCriteria(issues: AuditIssue[]): CriterionAnalysis[] {
 
 export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
   const whereClause: { id: string; userId?: string } = { id: jobId };
-  
+
   if (userId) {
     whereClause.userId = userId;
   }
@@ -185,13 +185,53 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
   }
 
   const auditOutput = job.output as Record<string, unknown> | null;
-  
+
   if (auditOutput?.acrAnalysis) {
     logger.info(`[ACR] Returning cached analysis for job: ${jobId}`);
     return auditOutput.acrAnalysis as AcrAnalysis;
   }
 
-  const issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
+  let issues: AuditIssue[] = [];
+
+  if (job.type === 'ACR_WORKFLOW') {
+    const jobInput = job.input as Record<string, unknown> | null;
+    const sourceJobId = jobInput?.sourceJobId as string | undefined;
+
+    if (sourceJobId) {
+      logger.info(`[ACR] Fetching issues from source job: ${sourceJobId}`);
+
+      const sourceJob = await prisma.job.findFirst({
+        where: { id: sourceJobId },
+      });
+
+      if (sourceJob) {
+        const sourceOutput = sourceJob.output as Record<string, unknown> | null;
+        issues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
+        logger.info(`[ACR] Found ${issues.length} issues from source job`);
+      } else {
+        logger.warn(`[ACR] Source job ${sourceJobId} not found`);
+      }
+    }
+
+    if (issues.length === 0 && auditOutput?.criteria) {
+      const criteria = auditOutput.criteria as Array<{
+        code?: string;
+        description?: string;
+        severity?: string;
+        wcagCriteria?: string;
+      }>;
+
+      issues = criteria.map(c => ({
+        code: c.code,
+        message: c.description,
+        severity: c.severity,
+        wcagCriteria: c.wcagCriteria ? [c.wcagCriteria] : undefined,
+      }));
+      logger.info(`[ACR] Converted ${issues.length} criteria to issues format`);
+    }
+  } else {
+    issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
+  }
 
   logger.info(`[ACR] Analyzing job: ${jobId} with ${issues.length} issues`);
 
@@ -216,7 +256,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
     summary,
   };
 
-  const updatedOutput = auditOutput 
+  const updatedOutput = auditOutput
     ? { ...auditOutput, acrAnalysis: JSON.parse(JSON.stringify(analysis)) }
     : { acrAnalysis: JSON.parse(JSON.stringify(analysis)) };
 
