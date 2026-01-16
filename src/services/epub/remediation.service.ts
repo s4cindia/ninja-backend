@@ -861,6 +861,7 @@ class RemediationService {
     const acrWorkflow = {
       sourceJobId: jobId,
       fileName: plan.fileName,
+      epubTitle: plan.fileName,
       status: 'needs_verification',
       sourceType: 'remediation',
       totalCriteria: pendingTasks.length,
