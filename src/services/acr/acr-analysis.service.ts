@@ -280,7 +280,7 @@ function analyzeWcagCriteria(
   return criteriaAnalysis;
 }
 
-export async function getAnalysisForJob(jobId: string, userId?: string): Promise<AcrAnalysis> {
+export async function getAnalysisForJob(jobId: string, userId?: string, forceRefresh = false): Promise<AcrAnalysis> {
   const whereClause: { id: string; userId?: string } = { id: jobId };
 
   if (userId) {
@@ -302,9 +302,13 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
   logger.info(`[ACR DEBUG] Job input: ${JSON.stringify(job.input)}`);
   logger.info(`[ACR DEBUG] Job output keys: ${Object.keys(auditOutput || {})}`);
 
-  if (auditOutput?.acrAnalysis) {
+  if (!forceRefresh && auditOutput?.acrAnalysis) {
     logger.info(`[ACR] Returning cached analysis for job: ${jobId}`);
     return auditOutput.acrAnalysis as AcrAnalysis;
+  }
+
+  if (forceRefresh) {
+    logger.info(`[ACR] Force refresh requested, regenerating analysis for job: ${jobId}`);
   }
 
   let issues: AuditIssue[] = [];

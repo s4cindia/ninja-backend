@@ -543,6 +543,7 @@ export class AcrController {
     try {
       const { jobId } = req.params;
       const userId = req.user?.id;
+      const { refresh } = req.query;
 
       if (!jobId) {
         res.status(400).json({
@@ -560,7 +561,8 @@ export class AcrController {
         return;
       }
 
-      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId);
+      const forceRefresh = refresh === 'true';
+      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId, forceRefresh);
 
       res.json({
         success: true,
