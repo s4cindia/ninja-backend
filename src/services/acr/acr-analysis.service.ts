@@ -372,7 +372,29 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           const allIssues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
           logger.info(`[ACR Analysis] Found ${allIssues.length} total issues from source job`);
 
-          issues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
+          // Separate WCAG-mapped issues
+          const wcagMappedIssues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
+
+          // Build remediationChanges from fixed issues
+          interface IssueWithStatus extends AuditIssue {
+            status?: string;
+          }
+
+          const fixedIssues = wcagMappedIssues.filter((issue: IssueWithStatus) =>
+            issue.status === 'fixed' || issue.status === 'completed' || issue.status === 'auto-fixed'
+          );
+
+          remediationChanges = fixedIssues.map(issue => ({
+            issueCode: issue.code,
+            status: (issue as IssueWithStatus).status,
+            fixedAt: new Date().toISOString(),
+          }));
+
+          logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed issues from combinedIssues`);
+
+          // All WCAG-mapped issues (both fixed and pending) for analysis
+          issues = wcagMappedIssues;
+
           const otherIssues = allIssues.filter(issue => !issue.wcagCriteria || issue.wcagCriteria.length === 0);
 
           otherIssuesData = otherIssues.map(issue => ({
