@@ -372,6 +372,12 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           const allIssues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
           logger.info(`[ACR Analysis] Found ${allIssues.length} total issues from source job`);
 
+          // DEBUG: Log first issue structure to see available fields
+          if (allIssues.length > 0) {
+            logger.info(`[ACR DEBUG] First issue structure: ${JSON.stringify(allIssues[0], null, 2)}`);
+            logger.info(`[ACR DEBUG] Issue keys: ${Object.keys(allIssues[0] || {})}`);
+          }
+
           // Separate WCAG-mapped issues
           const wcagMappedIssues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
 
