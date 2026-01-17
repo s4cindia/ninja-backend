@@ -1,0 +1,4687 @@
+{
+  "version": "2.1",
+  "lastUpdated": "2026-01-16T06:48:22.745Z",
+  "totalCriteria": 78,
+  "criteriaDocumentation": [
+    {
+      "criterionId": "1.1.1",
+      "number": "1.1.1",
+      "name": "Non-text Content",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-content.html",
+      "shortDescription": "WCAG 1.1.1 Non-text Content - Level A",
+      "intent": "The intent of this Success Criterion is to ensure non-text content for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Non-text Content requirements",
+        "Screen reader users benefit from proper non-text content implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#non-text-content",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Non-text Content requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-content.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Non-text Content requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Non-text Content requirements according to WCAG 1.1.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Non-text Content not properly implemented",
+        "Missing non-text content in content",
+        "Incorrect non-text content implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.1",
+      "number": "1.2.1",
+      "name": "Audio-only and Video-only (Prerecorded)",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-and-video-only-prerecorded.html",
+      "shortDescription": "WCAG 1.2.1 Audio-only and Video-only (Prerecorded) - Level A",
+      "intent": "The intent of this Success Criterion is to ensure audio-only and video-only (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Audio-only and Video-only (Prerecorded) requirements",
+        "Screen reader users benefit from proper audio-only and video-only (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#audio-only-and-video-only-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Audio-only and Video-only (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-and-video-only-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Audio-only and Video-only (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Audio-only and Video-only (Prerecorded) requirements according to WCAG 1.2.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Audio-only and Video-only (Prerecorded) not properly implemented",
+        "Missing audio-only and video-only (prerecorded) in content",
+        "Incorrect audio-only and video-only (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.2",
+      "number": "1.2.2",
+      "name": "Captions (Prerecorded)",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-prerecorded.html",
+      "shortDescription": "WCAG 1.2.2 Captions (Prerecorded) - Level A",
+      "intent": "The intent of this Success Criterion is to ensure captions (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Captions (Prerecorded) requirements",
+        "Screen reader users benefit from proper captions (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#captions-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Captions (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/captions-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Captions (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Captions (Prerecorded) requirements according to WCAG 1.2.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Captions (Prerecorded) not properly implemented",
+        "Missing captions (prerecorded) in content",
+        "Incorrect captions (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.3",
+      "number": "1.2.3",
+      "name": "Audio Description or Media Alternative (Prerecorded)",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-or-media-alternative-prerecorded.html",
+      "shortDescription": "WCAG 1.2.3 Audio Description or Media Alternative (Prerecorded) - Level A",
+      "intent": "The intent of this Success Criterion is to ensure audio description or media alternative (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Audio Description or Media Alternative (Prerecorded) requirements",
+        "Screen reader users benefit from proper audio description or media alternative (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#audio-description-or-media-alternative-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Audio Description or Media Alternative (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-or-media-alternative-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Audio Description or Media Alternative (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Audio Description or Media Alternative (Prerecorded) requirements according to WCAG 1.2.3 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Audio Description or Media Alternative (Prerecorded) not properly implemented",
+        "Missing audio description or media alternative (prerecorded) in content",
+        "Incorrect audio description or media alternative (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.4",
+      "number": "1.2.4",
+      "name": "Captions (Live)",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-live.html",
+      "shortDescription": "WCAG 1.2.4 Captions (Live) - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure captions (live) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Captions (Live) requirements",
+        "Screen reader users benefit from proper captions (live) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#captions-live",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Captions (Live) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/captions-live.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Captions (Live) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Captions (Live) requirements according to WCAG 1.2.4 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Captions (Live) not properly implemented",
+        "Missing captions (live) in content",
+        "Incorrect captions (live) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.5",
+      "number": "1.2.5",
+      "name": "Audio Description (Prerecorded)",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-prerecorded.html",
+      "shortDescription": "WCAG 1.2.5 Audio Description (Prerecorded) - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure audio description (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Audio Description (Prerecorded) requirements",
+        "Screen reader users benefit from proper audio description (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#audio-description-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Audio Description (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Audio Description (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Audio Description (Prerecorded) requirements according to WCAG 1.2.5 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Audio Description (Prerecorded) not properly implemented",
+        "Missing audio description (prerecorded) in content",
+        "Incorrect audio description (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.6",
+      "number": "1.2.6",
+      "name": "Sign Language (Prerecorded)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/sign-language-prerecorded.html",
+      "shortDescription": "WCAG 1.2.6 Sign Language (Prerecorded) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure sign language (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Sign Language (Prerecorded) requirements",
+        "Screen reader users benefit from proper sign language (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#sign-language-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Sign Language (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/sign-language-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Sign Language (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Sign Language (Prerecorded) requirements according to WCAG 1.2.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Sign Language (Prerecorded) not properly implemented",
+        "Missing sign language (prerecorded) in content",
+        "Incorrect sign language (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.7",
+      "number": "1.2.7",
+      "name": "Extended Audio Description (Prerecorded)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/extended-audio-description-prerecorded.html",
+      "shortDescription": "WCAG 1.2.7 Extended Audio Description (Prerecorded) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure extended audio description (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Extended Audio Description (Prerecorded) requirements",
+        "Screen reader users benefit from proper extended audio description (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#extended-audio-description-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Extended Audio Description (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/extended-audio-description-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Extended Audio Description (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Extended Audio Description (Prerecorded) requirements according to WCAG 1.2.7 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Extended Audio Description (Prerecorded) not properly implemented",
+        "Missing extended audio description (prerecorded) in content",
+        "Incorrect extended audio description (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.8",
+      "number": "1.2.8",
+      "name": "Media Alternative (Prerecorded)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/media-alternative-prerecorded.html",
+      "shortDescription": "WCAG 1.2.8 Media Alternative (Prerecorded) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure media alternative (prerecorded) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Media Alternative (Prerecorded) requirements",
+        "Screen reader users benefit from proper media alternative (prerecorded) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#media-alternative-prerecorded",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Media Alternative (Prerecorded) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/media-alternative-prerecorded.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Media Alternative (Prerecorded) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Media Alternative (Prerecorded) requirements according to WCAG 1.2.8 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Media Alternative (Prerecorded) not properly implemented",
+        "Missing media alternative (prerecorded) in content",
+        "Incorrect media alternative (prerecorded) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.2.9",
+      "number": "1.2.9",
+      "name": "Audio-only (Live)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-live.html",
+      "shortDescription": "WCAG 1.2.9 Audio-only (Live) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure audio-only (live) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Audio-only (Live) requirements",
+        "Screen reader users benefit from proper audio-only (live) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#audio-only-live",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Audio-only (Live) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-live.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Audio-only (Live) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Audio-only (Live) requirements according to WCAG 1.2.9 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Audio-only (Live) not properly implemented",
+        "Missing audio-only (live) in content",
+        "Incorrect audio-only (live) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.1",
+      "number": "1.3.1",
+      "name": "Info and Relationships",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html",
+      "shortDescription": "WCAG 1.3.1 Info and Relationships - Level A",
+      "intent": "The intent of this Success Criterion is to ensure info and relationships for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Info and Relationships requirements",
+        "Screen reader users benefit from proper info and relationships implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#info-and-relationships",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Info and Relationships requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Info and Relationships requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Info and Relationships requirements according to WCAG 1.3.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Info and Relationships not properly implemented",
+        "Missing info and relationships in content",
+        "Incorrect info and relationships implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.2",
+      "number": "1.3.2",
+      "name": "Meaningful Sequence",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/meaningful-sequence.html",
+      "shortDescription": "WCAG 1.3.2 Meaningful Sequence - Level A",
+      "intent": "The intent of this Success Criterion is to ensure meaningful sequence for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Meaningful Sequence requirements",
+        "Screen reader users benefit from proper meaningful sequence implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#meaningful-sequence",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Meaningful Sequence requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/meaningful-sequence.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Meaningful Sequence requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Meaningful Sequence requirements according to WCAG 1.3.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Meaningful Sequence not properly implemented",
+        "Missing meaningful sequence in content",
+        "Incorrect meaningful sequence implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.3",
+      "number": "1.3.3",
+      "name": "Sensory Characteristics",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/sensory-characteristics.html",
+      "shortDescription": "WCAG 1.3.3 Sensory Characteristics - Level A",
+      "intent": "The intent of this Success Criterion is to ensure sensory characteristics for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Sensory Characteristics requirements",
+        "Screen reader users benefit from proper sensory characteristics implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#sensory-characteristics",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Sensory Characteristics requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/sensory-characteristics.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Sensory Characteristics requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Sensory Characteristics requirements according to WCAG 1.3.3 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Sensory Characteristics not properly implemented",
+        "Missing sensory characteristics in content",
+        "Incorrect sensory characteristics implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.4",
+      "number": "1.3.4",
+      "name": "Orientation",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/orientation.html",
+      "shortDescription": "WCAG 1.3.4 Orientation - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure orientation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Orientation requirements",
+        "Screen reader users benefit from proper orientation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#orientation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Orientation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/orientation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Orientation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Orientation requirements according to WCAG 1.3.4 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Orientation not properly implemented",
+        "Missing orientation in content",
+        "Incorrect orientation implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.5",
+      "number": "1.3.5",
+      "name": "Identify Input Purpose",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/identify-input-purpose.html",
+      "shortDescription": "WCAG 1.3.5 Identify Input Purpose - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure identify input purpose for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Identify Input Purpose requirements",
+        "Screen reader users benefit from proper identify input purpose implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#identify-input-purpose",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Identify Input Purpose requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/identify-input-purpose.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Identify Input Purpose requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Identify Input Purpose requirements according to WCAG 1.3.5 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Identify Input Purpose not properly implemented",
+        "Missing identify input purpose in content",
+        "Incorrect identify input purpose implementation"
+      ]
+    },
+    {
+      "criterionId": "1.3.6",
+      "number": "1.3.6",
+      "name": "Identify Purpose",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/identify-purpose.html",
+      "shortDescription": "WCAG 1.3.6 Identify Purpose - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure identify purpose for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Identify Purpose requirements",
+        "Screen reader users benefit from proper identify purpose implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#identify-purpose",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Identify Purpose requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/identify-purpose.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Identify Purpose requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Identify Purpose requirements according to WCAG 1.3.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Identify Purpose not properly implemented",
+        "Missing identify purpose in content",
+        "Incorrect identify purpose implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.1",
+      "number": "1.4.1",
+      "name": "Use of Color",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html",
+      "shortDescription": "WCAG 1.4.1 Use of Color - Level A",
+      "intent": "The intent of this Success Criterion is to ensure use of color for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Use of Color requirements",
+        "Screen reader users benefit from proper use of color implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#use-of-color",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Use of Color requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Use of Color requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Use of Color requirements according to WCAG 1.4.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Use of Color not properly implemented",
+        "Missing use of color in content",
+        "Incorrect use of color implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.2",
+      "number": "1.4.2",
+      "name": "Audio Control",
+      "level": "A",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-control.html",
+      "shortDescription": "WCAG 1.4.2 Audio Control - Level A",
+      "intent": "The intent of this Success Criterion is to ensure audio control for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Audio Control requirements",
+        "Screen reader users benefit from proper audio control implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#audio-control",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Audio Control requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/audio-control.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Audio Control requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Audio Control requirements according to WCAG 1.4.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Audio Control not properly implemented",
+        "Missing audio control in content",
+        "Incorrect audio control implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.3",
+      "number": "1.4.3",
+      "name": "Contrast (Minimum)",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html",
+      "shortDescription": "WCAG 1.4.3 Contrast (Minimum) - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure contrast (minimum) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Contrast (Minimum) requirements",
+        "Screen reader users benefit from proper contrast (minimum) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#contrast-minimum",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Contrast (Minimum) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Contrast (Minimum) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Contrast (Minimum) requirements according to WCAG 1.4.3 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Contrast (Minimum) not properly implemented",
+        "Missing contrast (minimum) in content",
+        "Incorrect contrast (minimum) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.4",
+      "number": "1.4.4",
+      "name": "Resize Text",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/resize-text.html",
+      "shortDescription": "WCAG 1.4.4 Resize Text - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure resize text for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Resize Text requirements",
+        "Screen reader users benefit from proper resize text implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#resize-text",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Resize Text requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/resize-text.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Resize Text requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Resize Text requirements according to WCAG 1.4.4 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Resize Text not properly implemented",
+        "Missing resize text in content",
+        "Incorrect resize text implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.5",
+      "number": "1.4.5",
+      "name": "Images of Text",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text.html",
+      "shortDescription": "WCAG 1.4.5 Images of Text - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure images of text for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Images of Text requirements",
+        "Screen reader users benefit from proper images of text implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#images-of-text",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Images of Text requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Images of Text requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Images of Text requirements according to WCAG 1.4.5 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Images of Text not properly implemented",
+        "Missing images of text in content",
+        "Incorrect images of text implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.6",
+      "number": "1.4.6",
+      "name": "Contrast (Enhanced)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-enhanced.html",
+      "shortDescription": "WCAG 1.4.6 Contrast (Enhanced) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure contrast (enhanced) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Contrast (Enhanced) requirements",
+        "Screen reader users benefit from proper contrast (enhanced) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#contrast-enhanced",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Contrast (Enhanced) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-enhanced.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Contrast (Enhanced) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Contrast (Enhanced) requirements according to WCAG 1.4.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Contrast (Enhanced) not properly implemented",
+        "Missing contrast (enhanced) in content",
+        "Incorrect contrast (enhanced) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.7",
+      "number": "1.4.7",
+      "name": "Low or No Background Audio",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/low-or-no-background-audio.html",
+      "shortDescription": "WCAG 1.4.7 Low or No Background Audio - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure low or no background audio for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Low or No Background Audio requirements",
+        "Screen reader users benefit from proper low or no background audio implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#low-or-no-background-audio",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Low or No Background Audio requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/low-or-no-background-audio.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Low or No Background Audio requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Low or No Background Audio requirements according to WCAG 1.4.7 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Low or No Background Audio not properly implemented",
+        "Missing low or no background audio in content",
+        "Incorrect low or no background audio implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.8",
+      "number": "1.4.8",
+      "name": "Visual Presentation",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/visual-presentation.html",
+      "shortDescription": "WCAG 1.4.8 Visual Presentation - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure visual presentation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Visual Presentation requirements",
+        "Screen reader users benefit from proper visual presentation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#visual-presentation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Visual Presentation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/visual-presentation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Visual Presentation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Visual Presentation requirements according to WCAG 1.4.8 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Visual Presentation not properly implemented",
+        "Missing visual presentation in content",
+        "Incorrect visual presentation implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.9",
+      "number": "1.4.9",
+      "name": "Images of Text (No Exception)",
+      "level": "AAA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text-no-exception.html",
+      "shortDescription": "WCAG 1.4.9 Images of Text (No Exception) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure images of text (no exception) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Images of Text (No Exception) requirements",
+        "Screen reader users benefit from proper images of text (no exception) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#images-of-text-no-exception",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Images of Text (No Exception) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text-no-exception.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Images of Text (No Exception) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Images of Text (No Exception) requirements according to WCAG 1.4.9 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Images of Text (No Exception) not properly implemented",
+        "Missing images of text (no exception) in content",
+        "Incorrect images of text (no exception) implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.10",
+      "number": "1.4.10",
+      "name": "Reflow",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/reflow.html",
+      "shortDescription": "WCAG 1.4.10 Reflow - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure reflow for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Reflow requirements",
+        "Screen reader users benefit from proper reflow implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#reflow",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Reflow requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/reflow.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Reflow requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Reflow requirements according to WCAG 1.4.10 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Reflow not properly implemented",
+        "Missing reflow in content",
+        "Incorrect reflow implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.11",
+      "number": "1.4.11",
+      "name": "Non-text Contrast",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-contrast.html",
+      "shortDescription": "WCAG 1.4.11 Non-text Contrast - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure non-text contrast for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Non-text Contrast requirements",
+        "Screen reader users benefit from proper non-text contrast implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#non-text-contrast",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Non-text Contrast requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-contrast.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Non-text Contrast requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Non-text Contrast requirements according to WCAG 1.4.11 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Non-text Contrast not properly implemented",
+        "Missing non-text contrast in content",
+        "Incorrect non-text contrast implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.12",
+      "number": "1.4.12",
+      "name": "Text Spacing",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/text-spacing.html",
+      "shortDescription": "WCAG 1.4.12 Text Spacing - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure text spacing for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Text Spacing requirements",
+        "Screen reader users benefit from proper text spacing implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#text-spacing",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Text Spacing requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/text-spacing.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Text Spacing requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Text Spacing requirements according to WCAG 1.4.12 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Text Spacing not properly implemented",
+        "Missing text spacing in content",
+        "Incorrect text spacing implementation"
+      ]
+    },
+    {
+      "criterionId": "1.4.13",
+      "number": "1.4.13",
+      "name": "Content on Hover or Focus",
+      "level": "AA",
+      "category": "Perceivable",
+      "principle": "Perceivable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/content-on-hover-or-focus.html",
+      "shortDescription": "WCAG 1.4.13 Content on Hover or Focus - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure content on hover or focus for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Content on Hover or Focus requirements",
+        "Screen reader users benefit from proper content on hover or focus implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#content-on-hover-or-focus",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Content on Hover or Focus requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/content-on-hover-or-focus.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Content on Hover or Focus requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Content on Hover or Focus requirements according to WCAG 1.4.13 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Content on Hover or Focus not properly implemented",
+        "Missing content on hover or focus in content",
+        "Incorrect content on hover or focus implementation"
+      ]
+    },
+    {
+      "criterionId": "2.1.1",
+      "number": "2.1.1",
+      "name": "Keyboard",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard.html",
+      "shortDescription": "WCAG 2.1.1 Keyboard - Level A",
+      "intent": "The intent of this Success Criterion is to ensure keyboard for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Keyboard requirements",
+        "Screen reader users benefit from proper keyboard implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#keyboard",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Keyboard requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Keyboard requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Keyboard requirements according to WCAG 2.1.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Keyboard not properly implemented",
+        "Missing keyboard in content",
+        "Incorrect keyboard implementation"
+      ]
+    },
+    {
+      "criterionId": "2.1.2",
+      "number": "2.1.2",
+      "name": "No Keyboard Trap",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/no-keyboard-trap.html",
+      "shortDescription": "WCAG 2.1.2 No Keyboard Trap - Level A",
+      "intent": "The intent of this Success Criterion is to ensure no keyboard trap for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets No Keyboard Trap requirements",
+        "Screen reader users benefit from proper no keyboard trap implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#no-keyboard-trap",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets No Keyboard Trap requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/no-keyboard-trap.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify No Keyboard Trap requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet No Keyboard Trap requirements according to WCAG 2.1.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "No Keyboard Trap not properly implemented",
+        "Missing no keyboard trap in content",
+        "Incorrect no keyboard trap implementation"
+      ]
+    },
+    {
+      "criterionId": "2.1.3",
+      "number": "2.1.3",
+      "name": "Keyboard (No Exception)",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard-no-exception.html",
+      "shortDescription": "WCAG 2.1.3 Keyboard (No Exception) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure keyboard (no exception) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Keyboard (No Exception) requirements",
+        "Screen reader users benefit from proper keyboard (no exception) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#keyboard-no-exception",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Keyboard (No Exception) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard-no-exception.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Keyboard (No Exception) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Keyboard (No Exception) requirements according to WCAG 2.1.3 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Keyboard (No Exception) not properly implemented",
+        "Missing keyboard (no exception) in content",
+        "Incorrect keyboard (no exception) implementation"
+      ]
+    },
+    {
+      "criterionId": "2.1.4",
+      "number": "2.1.4",
+      "name": "Character Key Shortcuts",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/character-key-shortcuts.html",
+      "shortDescription": "WCAG 2.1.4 Character Key Shortcuts - Level A",
+      "intent": "The intent of this Success Criterion is to ensure character key shortcuts for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Character Key Shortcuts requirements",
+        "Screen reader users benefit from proper character key shortcuts implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#character-key-shortcuts",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Character Key Shortcuts requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/character-key-shortcuts.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Character Key Shortcuts requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Character Key Shortcuts requirements according to WCAG 2.1.4 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Character Key Shortcuts not properly implemented",
+        "Missing character key shortcuts in content",
+        "Incorrect character key shortcuts implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.1",
+      "number": "2.2.1",
+      "name": "Timing Adjustable",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/timing-adjustable.html",
+      "shortDescription": "WCAG 2.2.1 Timing Adjustable - Level A",
+      "intent": "The intent of this Success Criterion is to ensure timing adjustable for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Timing Adjustable requirements",
+        "Screen reader users benefit from proper timing adjustable implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#timing-adjustable",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Timing Adjustable requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/timing-adjustable.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Timing Adjustable requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Timing Adjustable requirements according to WCAG 2.2.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Timing Adjustable not properly implemented",
+        "Missing timing adjustable in content",
+        "Incorrect timing adjustable implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.2",
+      "number": "2.2.2",
+      "name": "Pause, Stop, Hide",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pause,-stop,-hide.html",
+      "shortDescription": "WCAG 2.2.2 Pause, Stop, Hide - Level A",
+      "intent": "The intent of this Success Criterion is to ensure pause, stop, hide for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Pause, Stop, Hide requirements",
+        "Screen reader users benefit from proper pause, stop, hide implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#pause,-stop,-hide",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Pause, Stop, Hide requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/pause,-stop,-hide.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Pause, Stop, Hide requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Pause, Stop, Hide requirements according to WCAG 2.2.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Pause, Stop, Hide not properly implemented",
+        "Missing pause, stop, hide in content",
+        "Incorrect pause, stop, hide implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.3",
+      "number": "2.2.3",
+      "name": "No Timing",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/no-timing.html",
+      "shortDescription": "WCAG 2.2.3 No Timing - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure no timing for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets No Timing requirements",
+        "Screen reader users benefit from proper no timing implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#no-timing",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets No Timing requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/no-timing.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify No Timing requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet No Timing requirements according to WCAG 2.2.3 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "No Timing not properly implemented",
+        "Missing no timing in content",
+        "Incorrect no timing implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.4",
+      "number": "2.2.4",
+      "name": "Interruptions",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/interruptions.html",
+      "shortDescription": "WCAG 2.2.4 Interruptions - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure interruptions for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Interruptions requirements",
+        "Screen reader users benefit from proper interruptions implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#interruptions",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Interruptions requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/interruptions.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Interruptions requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Interruptions requirements according to WCAG 2.2.4 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Interruptions not properly implemented",
+        "Missing interruptions in content",
+        "Incorrect interruptions implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.5",
+      "number": "2.2.5",
+      "name": "Re-authenticating",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/re-authenticating.html",
+      "shortDescription": "WCAG 2.2.5 Re-authenticating - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure re-authenticating for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Re-authenticating requirements",
+        "Screen reader users benefit from proper re-authenticating implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#re-authenticating",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Re-authenticating requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/re-authenticating.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Re-authenticating requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Re-authenticating requirements according to WCAG 2.2.5 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Re-authenticating not properly implemented",
+        "Missing re-authenticating in content",
+        "Incorrect re-authenticating implementation"
+      ]
+    },
+    {
+      "criterionId": "2.2.6",
+      "number": "2.2.6",
+      "name": "Timeouts",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/timeouts.html",
+      "shortDescription": "WCAG 2.2.6 Timeouts - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure timeouts for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Timeouts requirements",
+        "Screen reader users benefit from proper timeouts implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#timeouts",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Timeouts requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/timeouts.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Timeouts requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Timeouts requirements according to WCAG 2.2.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Timeouts not properly implemented",
+        "Missing timeouts in content",
+        "Incorrect timeouts implementation"
+      ]
+    },
+    {
+      "criterionId": "2.3.1",
+      "number": "2.3.1",
+      "name": "Three Flashes or Below Threshold",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes-or-below-threshold.html",
+      "shortDescription": "WCAG 2.3.1 Three Flashes or Below Threshold - Level A",
+      "intent": "The intent of this Success Criterion is to ensure three flashes or below threshold for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Three Flashes or Below Threshold requirements",
+        "Screen reader users benefit from proper three flashes or below threshold implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#three-flashes-or-below-threshold",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Three Flashes or Below Threshold requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes-or-below-threshold.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Three Flashes or Below Threshold requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Three Flashes or Below Threshold requirements according to WCAG 2.3.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Three Flashes or Below Threshold not properly implemented",
+        "Missing three flashes or below threshold in content",
+        "Incorrect three flashes or below threshold implementation"
+      ]
+    },
+    {
+      "criterionId": "2.3.2",
+      "number": "2.3.2",
+      "name": "Three Flashes",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes.html",
+      "shortDescription": "WCAG 2.3.2 Three Flashes - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure three flashes for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Three Flashes requirements",
+        "Screen reader users benefit from proper three flashes implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#three-flashes",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Three Flashes requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Three Flashes requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Three Flashes requirements according to WCAG 2.3.2 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Three Flashes not properly implemented",
+        "Missing three flashes in content",
+        "Incorrect three flashes implementation"
+      ]
+    },
+    {
+      "criterionId": "2.3.3",
+      "number": "2.3.3",
+      "name": "Animation from Interactions",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/animation-from-interactions.html",
+      "shortDescription": "WCAG 2.3.3 Animation from Interactions - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure animation from interactions for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Animation from Interactions requirements",
+        "Screen reader users benefit from proper animation from interactions implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#animation-from-interactions",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Animation from Interactions requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/animation-from-interactions.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Animation from Interactions requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Animation from Interactions requirements according to WCAG 2.3.3 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Animation from Interactions not properly implemented",
+        "Missing animation from interactions in content",
+        "Incorrect animation from interactions implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.1",
+      "number": "2.4.1",
+      "name": "Bypass Blocks",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/bypass-blocks.html",
+      "shortDescription": "WCAG 2.4.1 Bypass Blocks - Level A",
+      "intent": "The intent of this Success Criterion is to ensure bypass blocks for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Bypass Blocks requirements",
+        "Screen reader users benefit from proper bypass blocks implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#bypass-blocks",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Bypass Blocks requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/bypass-blocks.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Bypass Blocks requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Bypass Blocks requirements according to WCAG 2.4.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Bypass Blocks not properly implemented",
+        "Missing bypass blocks in content",
+        "Incorrect bypass blocks implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.2",
+      "number": "2.4.2",
+      "name": "Page Titled",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/page-titled.html",
+      "shortDescription": "WCAG 2.4.2 Page Titled - Level A",
+      "intent": "The intent of this Success Criterion is to ensure page titled for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Page Titled requirements",
+        "Screen reader users benefit from proper page titled implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#page-titled",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Page Titled requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/page-titled.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Page Titled requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Page Titled requirements according to WCAG 2.4.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Page Titled not properly implemented",
+        "Missing page titled in content",
+        "Incorrect page titled implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.3",
+      "number": "2.4.3",
+      "name": "Focus Order",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html",
+      "shortDescription": "WCAG 2.4.3 Focus Order - Level A",
+      "intent": "The intent of this Success Criterion is to ensure focus order for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Focus Order requirements",
+        "Screen reader users benefit from proper focus order implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#focus-order",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Focus Order requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Focus Order requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Focus Order requirements according to WCAG 2.4.3 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Focus Order not properly implemented",
+        "Missing focus order in content",
+        "Incorrect focus order implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.4",
+      "number": "2.4.4",
+      "name": "Link Purpose (In Context)",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-in-context.html",
+      "shortDescription": "WCAG 2.4.4 Link Purpose (In Context) - Level A",
+      "intent": "The intent of this Success Criterion is to ensure link purpose (in context) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Link Purpose (In Context) requirements",
+        "Screen reader users benefit from proper link purpose (in context) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#link-purpose-in-context",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Link Purpose (In Context) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-in-context.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Link Purpose (In Context) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Link Purpose (In Context) requirements according to WCAG 2.4.4 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Link Purpose (In Context) not properly implemented",
+        "Missing link purpose (in context) in content",
+        "Incorrect link purpose (in context) implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.5",
+      "number": "2.4.5",
+      "name": "Multiple Ways",
+      "level": "AA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/multiple-ways.html",
+      "shortDescription": "WCAG 2.4.5 Multiple Ways - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure multiple ways for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Multiple Ways requirements",
+        "Screen reader users benefit from proper multiple ways implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#multiple-ways",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Multiple Ways requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/multiple-ways.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Multiple Ways requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Multiple Ways requirements according to WCAG 2.4.5 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Multiple Ways not properly implemented",
+        "Missing multiple ways in content",
+        "Incorrect multiple ways implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.6",
+      "number": "2.4.6",
+      "name": "Headings and Labels",
+      "level": "AA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/headings-and-labels.html",
+      "shortDescription": "WCAG 2.4.6 Headings and Labels - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure headings and labels for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Headings and Labels requirements",
+        "Screen reader users benefit from proper headings and labels implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#headings-and-labels",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Headings and Labels requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/headings-and-labels.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Headings and Labels requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Headings and Labels requirements according to WCAG 2.4.6 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Headings and Labels not properly implemented",
+        "Missing headings and labels in content",
+        "Incorrect headings and labels implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.7",
+      "number": "2.4.7",
+      "name": "Focus Visible",
+      "level": "AA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-visible.html",
+      "shortDescription": "WCAG 2.4.7 Focus Visible - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure focus visible for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Focus Visible requirements",
+        "Screen reader users benefit from proper focus visible implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#focus-visible",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Focus Visible requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/focus-visible.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Focus Visible requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Focus Visible requirements according to WCAG 2.4.7 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Focus Visible not properly implemented",
+        "Missing focus visible in content",
+        "Incorrect focus visible implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.8",
+      "number": "2.4.8",
+      "name": "Location",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/location.html",
+      "shortDescription": "WCAG 2.4.8 Location - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure location for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Location requirements",
+        "Screen reader users benefit from proper location implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#location",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Location requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/location.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Location requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Location requirements according to WCAG 2.4.8 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Location not properly implemented",
+        "Missing location in content",
+        "Incorrect location implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.9",
+      "number": "2.4.9",
+      "name": "Link Purpose (Link Only)",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-link-only.html",
+      "shortDescription": "WCAG 2.4.9 Link Purpose (Link Only) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure link purpose (link only) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Link Purpose (Link Only) requirements",
+        "Screen reader users benefit from proper link purpose (link only) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#link-purpose-link-only",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Link Purpose (Link Only) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-link-only.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Link Purpose (Link Only) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Link Purpose (Link Only) requirements according to WCAG 2.4.9 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Link Purpose (Link Only) not properly implemented",
+        "Missing link purpose (link only) in content",
+        "Incorrect link purpose (link only) implementation"
+      ]
+    },
+    {
+      "criterionId": "2.4.10",
+      "number": "2.4.10",
+      "name": "Section Headings",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/section-headings.html",
+      "shortDescription": "WCAG 2.4.10 Section Headings - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure section headings for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Section Headings requirements",
+        "Screen reader users benefit from proper section headings implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#section-headings",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Section Headings requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/section-headings.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Section Headings requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Section Headings requirements according to WCAG 2.4.10 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Section Headings not properly implemented",
+        "Missing section headings in content",
+        "Incorrect section headings implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.1",
+      "number": "2.5.1",
+      "name": "Pointer Gestures",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-gestures.html",
+      "shortDescription": "WCAG 2.5.1 Pointer Gestures - Level A",
+      "intent": "The intent of this Success Criterion is to ensure pointer gestures for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Pointer Gestures requirements",
+        "Screen reader users benefit from proper pointer gestures implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#pointer-gestures",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Pointer Gestures requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-gestures.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Pointer Gestures requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Pointer Gestures requirements according to WCAG 2.5.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Pointer Gestures not properly implemented",
+        "Missing pointer gestures in content",
+        "Incorrect pointer gestures implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.2",
+      "number": "2.5.2",
+      "name": "Pointer Cancellation",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-cancellation.html",
+      "shortDescription": "WCAG 2.5.2 Pointer Cancellation - Level A",
+      "intent": "The intent of this Success Criterion is to ensure pointer cancellation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Pointer Cancellation requirements",
+        "Screen reader users benefit from proper pointer cancellation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#pointer-cancellation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Pointer Cancellation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-cancellation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Pointer Cancellation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Pointer Cancellation requirements according to WCAG 2.5.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Pointer Cancellation not properly implemented",
+        "Missing pointer cancellation in content",
+        "Incorrect pointer cancellation implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.3",
+      "number": "2.5.3",
+      "name": "Label in Name",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html",
+      "shortDescription": "WCAG 2.5.3 Label in Name - Level A",
+      "intent": "The intent of this Success Criterion is to ensure label in name for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Label in Name requirements",
+        "Screen reader users benefit from proper label in name implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#label-in-name",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Label in Name requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Label in Name requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Label in Name requirements according to WCAG 2.5.3 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Label in Name not properly implemented",
+        "Missing label in name in content",
+        "Incorrect label in name implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.4",
+      "number": "2.5.4",
+      "name": "Motion Actuation",
+      "level": "A",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/motion-actuation.html",
+      "shortDescription": "WCAG 2.5.4 Motion Actuation - Level A",
+      "intent": "The intent of this Success Criterion is to ensure motion actuation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Motion Actuation requirements",
+        "Screen reader users benefit from proper motion actuation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#motion-actuation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Motion Actuation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/motion-actuation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Motion Actuation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Motion Actuation requirements according to WCAG 2.5.4 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Motion Actuation not properly implemented",
+        "Missing motion actuation in content",
+        "Incorrect motion actuation implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.5",
+      "number": "2.5.5",
+      "name": "Target Size",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/target-size.html",
+      "shortDescription": "WCAG 2.5.5 Target Size - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure target size for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Target Size requirements",
+        "Screen reader users benefit from proper target size implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#target-size",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Target Size requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/target-size.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Target Size requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Target Size requirements according to WCAG 2.5.5 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Target Size not properly implemented",
+        "Missing target size in content",
+        "Incorrect target size implementation"
+      ]
+    },
+    {
+      "criterionId": "2.5.6",
+      "number": "2.5.6",
+      "name": "Concurrent Input Mechanisms",
+      "level": "AAA",
+      "category": "Operable",
+      "principle": "Operable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/concurrent-input-mechanisms.html",
+      "shortDescription": "WCAG 2.5.6 Concurrent Input Mechanisms - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure concurrent input mechanisms for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Concurrent Input Mechanisms requirements",
+        "Screen reader users benefit from proper concurrent input mechanisms implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#concurrent-input-mechanisms",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Concurrent Input Mechanisms requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/concurrent-input-mechanisms.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Concurrent Input Mechanisms requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Concurrent Input Mechanisms requirements according to WCAG 2.5.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Concurrent Input Mechanisms not properly implemented",
+        "Missing concurrent input mechanisms in content",
+        "Incorrect concurrent input mechanisms implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.1",
+      "number": "3.1.1",
+      "name": "Language of Page",
+      "level": "A",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-page.html",
+      "shortDescription": "WCAG 3.1.1 Language of Page - Level A",
+      "intent": "The intent of this Success Criterion is to ensure language of page for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Language of Page requirements",
+        "Screen reader users benefit from proper language of page implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#language-of-page",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Language of Page requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-page.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Language of Page requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Language of Page requirements according to WCAG 3.1.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Language of Page not properly implemented",
+        "Missing language of page in content",
+        "Incorrect language of page implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.2",
+      "number": "3.1.2",
+      "name": "Language of Parts",
+      "level": "AA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-parts.html",
+      "shortDescription": "WCAG 3.1.2 Language of Parts - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure language of parts for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Language of Parts requirements",
+        "Screen reader users benefit from proper language of parts implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#language-of-parts",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Language of Parts requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-parts.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Language of Parts requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Language of Parts requirements according to WCAG 3.1.2 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Language of Parts not properly implemented",
+        "Missing language of parts in content",
+        "Incorrect language of parts implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.3",
+      "number": "3.1.3",
+      "name": "Unusual Words",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/unusual-words.html",
+      "shortDescription": "WCAG 3.1.3 Unusual Words - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure unusual words for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Unusual Words requirements",
+        "Screen reader users benefit from proper unusual words implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#unusual-words",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Unusual Words requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/unusual-words.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Unusual Words requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Unusual Words requirements according to WCAG 3.1.3 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Unusual Words not properly implemented",
+        "Missing unusual words in content",
+        "Incorrect unusual words implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.4",
+      "number": "3.1.4",
+      "name": "Abbreviations",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/abbreviations.html",
+      "shortDescription": "WCAG 3.1.4 Abbreviations - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure abbreviations for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Abbreviations requirements",
+        "Screen reader users benefit from proper abbreviations implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#abbreviations",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Abbreviations requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/abbreviations.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Abbreviations requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Abbreviations requirements according to WCAG 3.1.4 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Abbreviations not properly implemented",
+        "Missing abbreviations in content",
+        "Incorrect abbreviations implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.5",
+      "number": "3.1.5",
+      "name": "Reading Level",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/reading-level.html",
+      "shortDescription": "WCAG 3.1.5 Reading Level - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure reading level for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Reading Level requirements",
+        "Screen reader users benefit from proper reading level implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#reading-level",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Reading Level requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/reading-level.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Reading Level requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Reading Level requirements according to WCAG 3.1.5 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Reading Level not properly implemented",
+        "Missing reading level in content",
+        "Incorrect reading level implementation"
+      ]
+    },
+    {
+      "criterionId": "3.1.6",
+      "number": "3.1.6",
+      "name": "Pronunciation",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pronunciation.html",
+      "shortDescription": "WCAG 3.1.6 Pronunciation - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure pronunciation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Pronunciation requirements",
+        "Screen reader users benefit from proper pronunciation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#pronunciation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Pronunciation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/pronunciation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Pronunciation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Pronunciation requirements according to WCAG 3.1.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Pronunciation not properly implemented",
+        "Missing pronunciation in content",
+        "Incorrect pronunciation implementation"
+      ]
+    },
+    {
+      "criterionId": "3.2.1",
+      "number": "3.2.1",
+      "name": "On Focus",
+      "level": "A",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-focus.html",
+      "shortDescription": "WCAG 3.2.1 On Focus - Level A",
+      "intent": "The intent of this Success Criterion is to ensure on focus for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets On Focus requirements",
+        "Screen reader users benefit from proper on focus implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#on-focus",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets On Focus requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/on-focus.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify On Focus requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet On Focus requirements according to WCAG 3.2.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "On Focus not properly implemented",
+        "Missing on focus in content",
+        "Incorrect on focus implementation"
+      ]
+    },
+    {
+      "criterionId": "3.2.2",
+      "number": "3.2.2",
+      "name": "On Input",
+      "level": "A",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-input.html",
+      "shortDescription": "WCAG 3.2.2 On Input - Level A",
+      "intent": "The intent of this Success Criterion is to ensure on input for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets On Input requirements",
+        "Screen reader users benefit from proper on input implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#on-input",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets On Input requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/on-input.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify On Input requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet On Input requirements according to WCAG 3.2.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "On Input not properly implemented",
+        "Missing on input in content",
+        "Incorrect on input implementation"
+      ]
+    },
+    {
+      "criterionId": "3.2.3",
+      "number": "3.2.3",
+      "name": "Consistent Navigation",
+      "level": "AA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-navigation.html",
+      "shortDescription": "WCAG 3.2.3 Consistent Navigation - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure consistent navigation for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Consistent Navigation requirements",
+        "Screen reader users benefit from proper consistent navigation implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#consistent-navigation",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Consistent Navigation requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-navigation.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Consistent Navigation requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Consistent Navigation requirements according to WCAG 3.2.3 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Consistent Navigation not properly implemented",
+        "Missing consistent navigation in content",
+        "Incorrect consistent navigation implementation"
+      ]
+    },
+    {
+      "criterionId": "3.2.4",
+      "number": "3.2.4",
+      "name": "Consistent Identification",
+      "level": "AA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-identification.html",
+      "shortDescription": "WCAG 3.2.4 Consistent Identification - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure consistent identification for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Consistent Identification requirements",
+        "Screen reader users benefit from proper consistent identification implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#consistent-identification",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Consistent Identification requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-identification.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Consistent Identification requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Consistent Identification requirements according to WCAG 3.2.4 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Consistent Identification not properly implemented",
+        "Missing consistent identification in content",
+        "Incorrect consistent identification implementation"
+      ]
+    },
+    {
+      "criterionId": "3.2.5",
+      "number": "3.2.5",
+      "name": "Change on Request",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/change-on-request.html",
+      "shortDescription": "WCAG 3.2.5 Change on Request - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure change on request for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Change on Request requirements",
+        "Screen reader users benefit from proper change on request implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#change-on-request",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Change on Request requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/change-on-request.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Change on Request requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Change on Request requirements according to WCAG 3.2.5 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Change on Request not properly implemented",
+        "Missing change on request in content",
+        "Incorrect change on request implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.1",
+      "number": "3.3.1",
+      "name": "Error Identification",
+      "level": "A",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-identification.html",
+      "shortDescription": "WCAG 3.3.1 Error Identification - Level A",
+      "intent": "The intent of this Success Criterion is to ensure error identification for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Error Identification requirements",
+        "Screen reader users benefit from proper error identification implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#error-identification",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Error Identification requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/error-identification.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Error Identification requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Error Identification requirements according to WCAG 3.3.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Error Identification not properly implemented",
+        "Missing error identification in content",
+        "Incorrect error identification implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.2",
+      "number": "3.3.2",
+      "name": "Labels or Instructions",
+      "level": "A",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions.html",
+      "shortDescription": "WCAG 3.3.2 Labels or Instructions - Level A",
+      "intent": "The intent of this Success Criterion is to ensure labels or instructions for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Labels or Instructions requirements",
+        "Screen reader users benefit from proper labels or instructions implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#labels-or-instructions",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Labels or Instructions requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Labels or Instructions requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Labels or Instructions requirements according to WCAG 3.3.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Labels or Instructions not properly implemented",
+        "Missing labels or instructions in content",
+        "Incorrect labels or instructions implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.3",
+      "number": "3.3.3",
+      "name": "Error Suggestion",
+      "level": "AA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-suggestion.html",
+      "shortDescription": "WCAG 3.3.3 Error Suggestion - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure error suggestion for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Error Suggestion requirements",
+        "Screen reader users benefit from proper error suggestion implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#error-suggestion",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Error Suggestion requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/error-suggestion.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Error Suggestion requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Error Suggestion requirements according to WCAG 3.3.3 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Error Suggestion not properly implemented",
+        "Missing error suggestion in content",
+        "Incorrect error suggestion implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.4",
+      "number": "3.3.4",
+      "name": "Error Prevention (Legal, Financial, Data)",
+      "level": "AA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-legal,-financial,-data.html",
+      "shortDescription": "WCAG 3.3.4 Error Prevention (Legal, Financial, Data) - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure error prevention (legal, financial, data) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Error Prevention (Legal, Financial, Data) requirements",
+        "Screen reader users benefit from proper error prevention (legal, financial, data) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#error-prevention-legal,-financial,-data",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Error Prevention (Legal, Financial, Data) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-legal,-financial,-data.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Error Prevention (Legal, Financial, Data) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Error Prevention (Legal, Financial, Data) requirements according to WCAG 3.3.4 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Error Prevention (Legal, Financial, Data) not properly implemented",
+        "Missing error prevention (legal, financial, data) in content",
+        "Incorrect error prevention (legal, financial, data) implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.5",
+      "number": "3.3.5",
+      "name": "Help",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/help.html",
+      "shortDescription": "WCAG 3.3.5 Help - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure help for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Help requirements",
+        "Screen reader users benefit from proper help implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#help",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Help requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/help.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Help requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Help requirements according to WCAG 3.3.5 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Help not properly implemented",
+        "Missing help in content",
+        "Incorrect help implementation"
+      ]
+    },
+    {
+      "criterionId": "3.3.6",
+      "number": "3.3.6",
+      "name": "Error Prevention (All)",
+      "level": "AAA",
+      "category": "Understandable",
+      "principle": "Understandable",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-all.html",
+      "shortDescription": "WCAG 3.3.6 Error Prevention (All) - Level AAA",
+      "intent": "The intent of this Success Criterion is to ensure error prevention (all) for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Error Prevention (All) requirements",
+        "Screen reader users benefit from proper error prevention (all) implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#error-prevention-all",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Error Prevention (All) requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-all.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Error Prevention (All) requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Error Prevention (All) requirements according to WCAG 3.3.6 Level AAA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Error Prevention (All) not properly implemented",
+        "Missing error prevention (all) in content",
+        "Incorrect error prevention (all) implementation"
+      ]
+    },
+    {
+      "criterionId": "4.1.1",
+      "number": "4.1.1",
+      "name": "Parsing",
+      "level": "A",
+      "category": "Robust",
+      "principle": "Robust",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/parsing.html",
+      "shortDescription": "WCAG 4.1.1 Parsing - Level A",
+      "intent": "The intent of this Success Criterion is to ensure parsing for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Parsing requirements",
+        "Screen reader users benefit from proper parsing implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#parsing",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Parsing requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/parsing.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Parsing requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Parsing requirements according to WCAG 4.1.1 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Parsing not properly implemented",
+        "Missing parsing in content",
+        "Incorrect parsing implementation"
+      ]
+    },
+    {
+      "criterionId": "4.1.2",
+      "number": "4.1.2",
+      "name": "Name, Role, Value",
+      "level": "A",
+      "category": "Robust",
+      "principle": "Robust",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/name,-role,-value.html",
+      "shortDescription": "WCAG 4.1.2 Name, Role, Value - Level A",
+      "intent": "The intent of this Success Criterion is to ensure name, role, value for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Name, Role, Value requirements",
+        "Screen reader users benefit from proper name, role, value implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#name,-role,-value",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Name, Role, Value requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/name,-role,-value.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Name, Role, Value requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Name, Role, Value requirements according to WCAG 4.1.2 Level A."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Name, Role, Value not properly implemented",
+        "Missing name, role, value in content",
+        "Incorrect name, role, value implementation"
+      ]
+    },
+    {
+      "criterionId": "4.1.3",
+      "number": "4.1.3",
+      "name": "Status Messages",
+      "level": "AA",
+      "category": "Robust",
+      "principle": "Robust",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/status-messages.html",
+      "shortDescription": "WCAG 4.1.3 Status Messages - Level AA",
+      "intent": "The intent of this Success Criterion is to ensure status messages for accessibility compliance.",
+      "benefits": [
+        "Users with disabilities can access content that meets Status Messages requirements",
+        "Screen reader users benefit from proper status messages implementation",
+        "Content is more accessible across different assistive technologies"
+      ],
+      "howToMeet": {
+        "url": "https://www.w3.org/WAI/WCAG21/quickref/#status-messages",
+        "techniques": [],
+        "epubSpecific": [
+          "Ensure EPUB content meets Status Messages requirements",
+          "Test with EPUB reading systems and assistive technologies",
+          "Follow EPUB Accessibility 1.1 specifications"
+        ]
+      },
+      "understanding": {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/status-messages.html",
+        "examples": [],
+        "resources": []
+      },
+      "testingProcedure": {
+        "automated": [
+          "Run ACE by DAISY to check for automated violations",
+          "Use epubcheck to validate EPUB structure"
+        ],
+        "manual": [
+          "Open EPUB in a reading system with assistive technology",
+          "Verify Status Messages requirements are met",
+          "Test across multiple reading systems"
+        ],
+        "tools": [
+          "ACE by DAISY",
+          "epubcheck",
+          "NVDA",
+          "JAWS",
+          "VoiceOver"
+        ]
+      },
+      "remediationGuidance": {
+        "before": "<!-- Example showing non-compliant markup -->",
+        "after": "<!-- Example showing compliant markup -->",
+        "explanation": "Update content to meet Status Messages requirements according to WCAG 4.1.3 Level AA."
+      },
+      "applicableToEpub": true,
+      "applicableToPdf": true,
+      "commonIssues": [
+        "Status Messages not properly implemented",
+        "Missing status messages in content",
+        "Incorrect status messages implementation"
+      ]
+    }
+  ]
+}
