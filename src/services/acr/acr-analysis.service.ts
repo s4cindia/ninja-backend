@@ -66,6 +66,20 @@ export interface CriterionAnalysis {
     suggestedFix?: string;
   }>;
   issueCount?: number;
+  fixedIssues?: Array<{
+    issueId: string;
+    ruleId: string;
+    impact: string;
+    message: string;
+    filePath?: string;
+    location?: string;
+    htmlSnippet?: string;
+    suggestedFix?: string;
+    fixedAt?: string;
+    fixMethod?: 'automated' | 'manual';
+  }>;
+  fixedCount?: number;
+  remainingCount?: number;
 }
 
 export interface AcrAnalysis {
@@ -104,11 +118,24 @@ interface AuditIssue {
   suggestedFix?: string;
 }
 
-function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): CriterionAnalysis[] {
+interface RemediationChange {
+  issueCode?: string;
+  criterionId?: string;
+  status?: string;
+  issues?: Array<{ code?: string }>;
+  fixedAt?: string;
+}
+
+function analyzeWcagCriteria(
+  issues: AuditIssue[],
+  editionCode?: string,
+  remediationChanges: RemediationChange[] = []
+): CriterionAnalysis[] {
   const criteriaAnalysis: CriterionAnalysis[] = [];
   const editionCriteria = getEditionCriteria(editionCode);
 
   logger.info(`[ACR Analysis] Analyzing ${editionCriteria.length} criteria for edition: ${editionCode || 'default (A+AA)'}`);
+  logger.info(`[ACR Analysis] Tracking ${remediationChanges.length} completed remediation changes`);
 
   for (const criterion of editionCriteria) {
     const criterionCode = criterion.id.replace(/\./g, '');
@@ -195,18 +222,42 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       suggestedFix: issue.suggestedFix,
     }));
 
-    const mappedIssues = relatedIssues.slice(0, 10).map(issue => ({
-      issueId: issue.id || `issue-${Math.random().toString(36).substr(2, 9)}`,
-      ruleId: issue.code || 'UNKNOWN',
-      impact: issue.severity || 'moderate',
-      message: issue.message || issue.description || 'No description available',
-      filePath: issue.location,
-      location: issue.location,
-      htmlSnippet: issue.html || issue.snippet,
-      suggestedFix: issue.suggestedFix,
-    }));
+    const fixedIssuesList: CriterionAnalysis['fixedIssues'] = [];
+    const remainingIssuesList: CriterionAnalysis['relatedIssues'] = [];
 
-    logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${relatedIssues.length} issues found, mapped ${mappedIssues.length}`);
+    relatedIssues.slice(0, 20).forEach(issue => {
+      const issueCode = issue.code || 'unknown';
+
+      const wasFixed = remediationChanges.some(change =>
+        change.issueCode === issueCode ||
+        change.criterionId === criterion.id ||
+        (change.issues && change.issues.some(i => i.code === issueCode))
+      );
+
+      const issueData = {
+        issueId: issue.id || `issue-${Math.random().toString(36).substr(2, 9)}`,
+        ruleId: issueCode,
+        impact: issue.severity || 'moderate',
+        message: issue.message || issue.description || 'No description available',
+        filePath: issue.filePath,
+        location: issue.location,
+        htmlSnippet: issue.html || issue.snippet,
+        suggestedFix: issue.suggestedFix,
+      };
+
+      if (wasFixed) {
+        const matchingChange = remediationChanges.find(c => c.issueCode === issueCode);
+        fixedIssuesList!.push({
+          ...issueData,
+          fixedAt: matchingChange?.fixedAt || new Date().toISOString(),
+          fixMethod: 'automated' as const,
+        });
+      } else {
+        remainingIssuesList!.push(issueData);
+      }
+    });
+
+    logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${fixedIssuesList!.length} fixed, ${remainingIssuesList!.length} remaining`);
 
     criteriaAnalysis.push({
       id: criterion.id,
@@ -218,8 +269,11 @@ function analyzeWcagCriteria(issues: AuditIssue[], editionCode?: string): Criter
       findings,
       recommendation,
       issues: issueDetails.length > 0 ? issueDetails : undefined,
-      relatedIssues: mappedIssues.length > 0 ? mappedIssues : undefined,
-      issueCount: mappedIssues.length,
+      relatedIssues: remainingIssuesList!.length > 0 ? remainingIssuesList : undefined,
+      issueCount: remainingIssuesList!.length,
+      fixedIssues: fixedIssuesList!.length > 0 ? fixedIssuesList : undefined,
+      fixedCount: fixedIssuesList!.length,
+      remainingCount: remainingIssuesList!.length,
     });
   }
 
@@ -255,6 +309,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
 
   let issues: AuditIssue[] = [];
   let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string }> = [];
+  let remediationChanges: RemediationChange[] = [];
 
   if (job.type === 'ACR_WORKFLOW') {
     const jobInput = job.input as Record<string, unknown> | null;
@@ -272,10 +327,20 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
         const sourceOutput = sourceJob.output as Record<string, unknown> | null;
 
         if (sourceOutput?.remediationPlan) {
-          const remediationPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ wcagCriteria?: string | string[]; issueCode?: string; issueMessage?: string; severity?: string; location?: string }> } | undefined;
+          const remediationPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ wcagCriteria?: string | string[]; issueCode?: string; issueMessage?: string; severity?: string; location?: string; status?: string; completedAt?: string }> } | undefined;
           if (remediationPlan?.tasks) {
             const allTasks = remediationPlan.tasks;
             logger.info(`[ACR Analysis] Found ${allTasks.length} remediation tasks from source job`);
+
+            remediationChanges = allTasks
+              .filter(task => task.status === 'completed' || task.status === 'auto-fixed')
+              .map(task => ({
+                issueCode: task.issueCode,
+                status: task.status,
+                fixedAt: task.completedAt,
+              }));
+
+            logger.info(`[ACR Analysis] Found ${remediationChanges.length} completed/fixed remediation tasks`);
 
             issues = allTasks
               .filter(task => task.wcagCriteria)
@@ -362,7 +427,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string): Promise
   // Get edition from job output if available
   const editionCode = (auditOutput?.selectedEdition || auditOutput?.editionCode) as string | undefined;
 
-  const criteria = analyzeWcagCriteria(issues, editionCode);
+  const criteria = analyzeWcagCriteria(issues, editionCode, remediationChanges);
 
   const summary = {
     supports: criteria.filter(c => c.status === 'supports').length,
