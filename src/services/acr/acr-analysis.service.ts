@@ -375,8 +375,9 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           // DEBUG: Log source output keys to understand structure
           logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
 
-          // Check if there's a remediation plan with task statuses
+          // Check if there's remediation info - can be in remediationPlan.tasks OR autoRemediation.modifications
           const remPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> } | undefined;
+          const autoRem = sourceOutput?.autoRemediation as { modifications?: Array<{ issueCode?: string; success?: boolean; description?: string }> } | undefined;
           
           if (remPlan?.tasks) {
             logger.info(`[ACR DEBUG] Found remediationPlan with ${remPlan.tasks.length} tasks`);
@@ -393,8 +394,21 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             }));
 
             logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from remediationPlan`);
+          } else if (autoRem?.modifications) {
+            logger.info(`[ACR DEBUG] Found autoRemediation with ${autoRem.modifications.length} modifications`);
+            
+            // Build remediationChanges from successful auto-remediation modifications
+            const successfulMods = autoRem.modifications.filter(mod => mod.success === true);
+            
+            remediationChanges = successfulMods.map(mod => ({
+              issueCode: mod.issueCode,
+              status: 'auto-fixed',
+              fixedAt: (sourceOutput?.autoRemediation as { completedAt?: string })?.completedAt || new Date().toISOString(),
+            }));
+
+            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed modifications from autoRemediation`);
           } else {
-            logger.info(`[ACR DEBUG] No remediationPlan found in source output`);
+            logger.info(`[ACR DEBUG] No remediationPlan or autoRemediation found in source output`);
           }
 
           // NOTE: combinedIssues don't have wcagCriteria property - that mapping happens in analyzeWcagCriteria
