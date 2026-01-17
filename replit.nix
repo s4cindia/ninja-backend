@@ -1,5 +1,6 @@
 { pkgs }: {
   deps = [
+    pkgs.awscli
     pkgs.vips
     pkgs.libGL
     pkgs.xorg.libXrender
