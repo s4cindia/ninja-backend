@@ -263,13 +263,14 @@ export class ConfidenceController {
         failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
         needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
         notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
         averageConfidence: confidenceAnalysis.length > 0
           ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
           : 0
       };
 
-      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, totalIssues=${summary.totalIssues}`);
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
       
       res.json({
         success: true,
