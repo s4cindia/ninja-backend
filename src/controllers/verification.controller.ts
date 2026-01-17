@@ -46,13 +46,25 @@ export class VerificationController {
       
       // Enrich queue items with issues from ACR analysis
       try {
+        console.log(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
         const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, true);
         
         if (analysis?.criteria) {
-          // Create a map of criterion ID to issues
-          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[] }>();
+          console.log(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
           
+          // Create a map of criterion ID to issues
+          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[]; confidence?: number }>();
+          
+          let criteriaWithIssues = 0;
           for (const criterion of analysis.criteria) {
+            const relatedCount = criterion.relatedIssues?.length || 0;
+            const fixedCount = criterion.fixedIssues?.length || 0;
+            
+            if (relatedCount > 0 || fixedCount > 0) {
+              criteriaWithIssues++;
+              console.log(`[Verification] Criterion ${criterion.id}: ${relatedCount} remaining, ${fixedCount} fixed, confidence=${criterion.confidence}`);
+            }
+            
             criteriaIssuesMap.set(criterion.id, {
               relatedIssues: criterion.relatedIssues?.map((issue) => ({
                 code: issue.ruleId,
@@ -67,18 +79,28 @@ export class VerificationController {
                 severity: issue.impact || 'unknown',
                 location: issue.location || issue.filePath,
                 status: 'fixed'
-              }))
+              })),
+              confidence: criterion.confidence
             });
           }
+          console.log(`[Verification] Total criteria with issues: ${criteriaWithIssues}`);
           
           // Enrich queue items with issues
+          let enrichedCount = 0;
           for (const item of queue.items) {
             const issueData = criteriaIssuesMap.get(item.criterionId);
             if (issueData) {
               item.relatedIssues = issueData.relatedIssues;
               item.fixedIssues = issueData.fixedIssues;
+              if (issueData.relatedIssues?.length || issueData.fixedIssues?.length) {
+                enrichedCount++;
+                console.log(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
+              }
             }
           }
+          console.log(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
+        } else {
+          console.log(`[Verification] No criteria found in analysis`);
         }
       } catch (analysisError) {
         console.warn(`[Verification] Could not fetch ACR analysis for enrichment:`, analysisError);
