@@ -22,11 +22,31 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   // Structure issues (js-auditor)
   'EPUB-STRUCT-001': ['1.3.1'],
   'EPUB-STRUCT-002': ['1.3.1'],
+  'EPUB-STRUCT-003': ['1.3.1'],
   'EPUB-STRUCT-004': ['1.3.1'],
   'EPUB-IMG-001': ['1.1.1'],
   'EPUB-PAGE-001': ['2.4.5'],
   'EPUB-LANG-001': ['3.1.1'],
   'EPUB-TITLE-001': ['2.4.2'],
+  
+  // Metadata issues (js-auditor)
+  'EPUB-META-001': ['3.1.1'],
+  'EPUB-META-002': [],
+  'EPUB-META-003': [],
+  'EPUB-META-004': [],
+  
+  // Semantic issues (js-auditor)
+  'EPUB-SEM-001': ['3.1.1', '3.1.2'],
+  'EPUB-SEM-002': ['2.4.4'],
+  
+  // Navigation issues
+  'EPUB-NAV-001': ['2.4.1'],
+  
+  // Figure issues
+  'EPUB-FIG-001': ['1.1.1'],
+  
+  // EPUBCheck resource errors
+  'RSC-003': [],
 
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
