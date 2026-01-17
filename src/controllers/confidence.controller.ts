@@ -251,7 +251,11 @@ export class ConfidenceController {
         auditIssues
       );
 
-      logger.debug(`[Confidence] Criteria with issues: ${confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length}`);
+      const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
+      logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
+      criteriaWithIssues.forEach(c => {
+        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
+      });
 
       const summary = {
         totalCriteria: confidenceAnalysis.length,
@@ -265,6 +269,8 @@ export class ConfidenceController {
           : 0
       };
 
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, totalIssues=${summary.totalIssues}`);
+      
       res.json({
         success: true,
         data: {
