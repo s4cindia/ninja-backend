@@ -397,13 +397,19 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             logger.info(`[ACR DEBUG] No remediationPlan found in source output`);
           }
 
-          // Separate WCAG-mapped issues
-          const wcagMappedIssues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
-
-          // All WCAG-mapped issues for analysis
-          issues = wcagMappedIssues;
-
-          const otherIssues = allIssues.filter(issue => !issue.wcagCriteria || issue.wcagCriteria.length === 0);
+          // NOTE: combinedIssues don't have wcagCriteria property - that mapping happens in analyzeWcagCriteria
+          // Pass ALL issues to the analyzer which handles WCAG mapping via issueToWcagMapping
+          issues = allIssues;
+          
+          // Track issues that have no WCAG mapping (will be determined after analysis)
+          // For now, we'll identify "other" issues based on issue codes that don't map to WCAG
+          const wcagMappedCodes = new Set([
+            'EPUB-IMG-001', 'EPUB-META-001', 'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
+            'EPUB-SEM-001', 'EPUB-SEM-002', 'EPUB-STRUCT-002', 'EPUB-STRUCT-003', 'EPUB-STRUCT-004',
+            'EPUB-NAV-001', 'EPUB-FIG-001'
+          ]);
+          
+          const otherIssues = allIssues.filter(issue => !wcagMappedCodes.has(issue.code || ''));
 
           otherIssuesData = otherIssues.map(issue => ({
             code: issue.code || 'UNKNOWN',
@@ -412,7 +418,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             location: issue.location,
           }));
 
-          logger.info(`[ACR Analysis] Filtered to ${issues.length} WCAG-mapped issues for analysis`);
+          logger.info(`[ACR Analysis] Passing ${issues.length} issues to analyzer, ${otherIssues.length} non-WCAG issues`);
         }
       } else {
         logger.warn(`[ACR Analysis] Source job ${sourceJobId} not found`);

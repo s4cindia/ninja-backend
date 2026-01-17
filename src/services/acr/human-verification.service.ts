@@ -20,6 +20,14 @@ export interface VerificationRecord {
   previousStatus?: VerificationStatus;
 }
 
+export interface RelatedIssue {
+  code: string;
+  message: string;
+  severity: string;
+  location?: string;
+  status?: string;
+}
+
 export interface VerificationQueueItem {
   id: string;
   criterionId: string;
@@ -29,6 +37,8 @@ export interface VerificationQueueItem {
   automatedResult: string;
   status: VerificationStatus;
   verificationHistory: VerificationRecord[];
+  relatedIssues?: RelatedIssue[];
+  fixedIssues?: RelatedIssue[];
 }
 
 export interface VerificationQueue {

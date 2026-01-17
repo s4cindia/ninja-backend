@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { humanVerificationService, SubmitVerificationInput, VerificationStatus } from '../services/acr/human-verification.service';
+import { humanVerificationService, SubmitVerificationInput, VerificationStatus, RelatedIssue } from '../services/acr/human-verification.service';
 import { ConfidenceLevel } from '../services/acr/confidence-analyzer.service';
+import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { z } from 'zod';
 
 const SubmitVerificationSchema = z.object({
@@ -42,6 +43,47 @@ export class VerificationController {
       }
 
       const queue = await humanVerificationService.getQueueFromJob(jobId);
+      
+      // Enrich queue items with issues from ACR analysis
+      try {
+        const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, true);
+        
+        if (analysis?.criteria) {
+          // Create a map of criterion ID to issues
+          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[] }>();
+          
+          for (const criterion of analysis.criteria) {
+            criteriaIssuesMap.set(criterion.id, {
+              relatedIssues: criterion.relatedIssues?.map((issue: { code: string; message: string; severity: string; location?: string }) => ({
+                code: issue.code,
+                message: issue.message,
+                severity: issue.severity,
+                location: issue.location,
+                status: 'remaining'
+              })),
+              fixedIssues: criterion.fixedIssues?.map((issue: { code: string; message: string; severity?: string; location?: string }) => ({
+                code: issue.code,
+                message: issue.message,
+                severity: issue.severity || 'unknown',
+                location: issue.location,
+                status: 'fixed'
+              }))
+            });
+          }
+          
+          // Enrich queue items with issues
+          for (const item of queue.items) {
+            const issueData = criteriaIssuesMap.get(item.criterionId);
+            if (issueData) {
+              item.relatedIssues = issueData.relatedIssues;
+              item.fixedIssues = issueData.fixedIssues;
+            }
+          }
+        }
+      } catch (analysisError) {
+        console.warn(`[Verification] Could not fetch ACR analysis for enrichment:`, analysisError);
+        // Continue without enrichment
+      }
 
       res.json({
         success: true,
