@@ -26,9 +26,11 @@ The AWS ECS deployment was failing with container exit code 1. The root cause wa
 - ACR Workflow filter on Jobs page returned 400 error
 
 ### User-Facing Error
-```
+```http
 GET /api/v1/jobs?page=1&limit=10&type=ACR_WORKFLOW → 400 Bad Request
+```
 
+```json
 {
   "success": false,
   "error": {
@@ -110,7 +112,7 @@ COPY --from=builder /app/node_modules ./node_modules
 **Path:** AWS Console → CloudWatch → Log groups → `/ecs/ninja-backend-task`
 
 **Direct URL:**
-```
+```text
 https://ap-south-1.console.aws.amazon.com/cloudwatch/home?region=ap-south-1#logsV2:log-groups/log-group/$252Fecs$252Fninja-backend-task
 ```
 
