@@ -32,24 +32,33 @@ interface JobOutput {
 /**
  * Normalizes job output to ensure consistent structure with default values.
  * Prevents null/undefined errors when accessing output properties.
+ * Spreads raw output first, then overrides with normalized values to ensure
+ * required fields always have valid defaults.
  * @param output - Raw output data from the job, may be null or incomplete
  * @returns Normalized output with all required fields populated
  */
 function normalizeJobOutput(output: unknown): JobOutput {
-  const rawOutput = (output as JobOutput) || {};
+  const rawOutput = (output && typeof output === 'object' && !Array.isArray(output))
+    ? (output as JobOutput)
+    : {};
+  
+  const rawSummary = rawOutput.summary && typeof rawOutput.summary === 'object'
+    ? rawOutput.summary
+    : {};
+
   return {
-    score: rawOutput.score ?? 0,
-    isValid: rawOutput.isValid ?? false,
-    isAccessible: rawOutput.isAccessible ?? false,
+    ...rawOutput,
+    score: typeof rawOutput.score === 'number' ? rawOutput.score : 0,
+    isValid: typeof rawOutput.isValid === 'boolean' ? rawOutput.isValid : false,
+    isAccessible: typeof rawOutput.isAccessible === 'boolean' ? rawOutput.isAccessible : false,
     summary: {
-      total: rawOutput.summary?.total ?? 0,
-      critical: rawOutput.summary?.critical ?? 0,
-      serious: rawOutput.summary?.serious ?? 0,
-      moderate: rawOutput.summary?.moderate ?? 0,
-      minor: rawOutput.summary?.minor ?? 0,
+      total: typeof rawSummary.total === 'number' ? rawSummary.total : 0,
+      critical: typeof rawSummary.critical === 'number' ? rawSummary.critical : 0,
+      serious: typeof rawSummary.serious === 'number' ? rawSummary.serious : 0,
+      moderate: typeof rawSummary.moderate === 'number' ? rawSummary.moderate : 0,
+      minor: typeof rawSummary.minor === 'number' ? rawSummary.minor : 0,
     },
     combinedIssues: Array.isArray(rawOutput.combinedIssues) ? rawOutput.combinedIssues : [],
-    ...rawOutput,
   };
 }
 
