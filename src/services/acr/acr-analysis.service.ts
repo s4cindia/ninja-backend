@@ -337,7 +337,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             logger.info(`[ACR Analysis] Found ${allTasks.length} remediation tasks from source job`);
 
             remediationChanges = allTasks
-              .filter(task => task.status === 'completed' || task.status === 'auto-fixed')
+              .filter(task => task.status === 'completed' || task.status === 'auto-fixed' || task.status === 'fixed')
               .map(task => ({
                 issueCode: task.issueCode,
                 status: task.status,
