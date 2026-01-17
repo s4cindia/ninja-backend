@@ -5,6 +5,39 @@ import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
 import { JobType } from '../queues';
 
+interface JobOutput {
+  score?: number;
+  isValid?: boolean;
+  isAccessible?: boolean;
+  summary?: {
+    total?: number;
+    critical?: number;
+    serious?: number;
+    moderate?: number;
+    minor?: number;
+  };
+  combinedIssues?: unknown[];
+  [key: string]: unknown;
+}
+
+function normalizeJobOutput(output: unknown): JobOutput {
+  const rawOutput = (output as JobOutput) || {};
+  return {
+    score: rawOutput.score ?? 0,
+    isValid: rawOutput.isValid ?? false,
+    isAccessible: rawOutput.isAccessible ?? false,
+    summary: {
+      total: rawOutput.summary?.total ?? 0,
+      critical: rawOutput.summary?.critical ?? 0,
+      serious: rawOutput.summary?.serious ?? 0,
+      moderate: rawOutput.summary?.moderate ?? 0,
+      minor: rawOutput.summary?.minor ?? 0,
+    },
+    combinedIssues: Array.isArray(rawOutput.combinedIssues) ? rawOutput.combinedIssues : [],
+    ...rawOutput,
+  };
+}
+
 export class JobController {
   async create(req: Request, res: Response, next: NextFunction) {
     try {
@@ -100,10 +133,15 @@ export class JobController {
         prisma.job.count({ where }),
       ]);
 
+      const normalizedJobs = jobs.map(job => ({
+        ...job,
+        output: normalizeJobOutput(job.output),
+      }));
+
       res.json({
         success: true,
         data: {
-          jobs,
+          jobs: normalizedJobs,
           pagination: {
             page: pageNum,
             limit: limitNum,
@@ -226,7 +264,7 @@ export class JobController {
           jobId: job.id,
           type: job.type,
           completedAt: job.completedAt,
-          output: job.output,
+          output: normalizeJobOutput(job.output),
           validationResults: job.validationResults,
         },
       });
