@@ -193,7 +193,7 @@ export class ConfidenceController {
         return;
       }
 
-      logger.debug(`[Confidence] Job found: ${jobId}`);
+      logger.debug(`[Confidence] Job found: ${jobId}, type: ${job.type}`);
 
       interface OutputIssue {
         id?: string;
@@ -207,7 +207,26 @@ export class ConfidenceController {
         location?: string;
       }
 
-      const auditOutput = job.output as Record<string, unknown> | null;
+      let auditOutput = job.output as Record<string, unknown> | null;
+      
+      // For ACR_WORKFLOW jobs, fetch issues from the source job
+      if (job.type === 'ACR_WORKFLOW') {
+        const jobInput = job.input as { sourceJobId?: string } | null;
+        const sourceJobId = jobInput?.sourceJobId;
+        
+        if (sourceJobId) {
+          logger.debug(`[Confidence] ACR_WORKFLOW detected, fetching from source job: ${sourceJobId}`);
+          const sourceJob = await prisma.job.findUnique({
+            where: { id: sourceJobId }
+          });
+          
+          if (sourceJob?.output) {
+            auditOutput = sourceJob.output as Record<string, unknown>;
+            logger.debug(`[Confidence] Found source job output with keys: ${Object.keys(auditOutput || {})}`);
+          }
+        }
+      }
+      
       const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
       logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
