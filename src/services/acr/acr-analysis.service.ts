@@ -370,35 +370,37 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           }
         } else {
           const allIssues = (sourceOutput?.combinedIssues || sourceOutput?.issues || []) as AuditIssue[];
-          logger.info(`[ACR Analysis] Found ${allIssues.length} total issues from source job`);
+          logger.info(`[ACR Analysis] Found ${allIssues.length} total issues from source job (combinedIssues path)`);
 
-          // DEBUG: Log first issue structure to see available fields
-          if (allIssues.length > 0) {
-            logger.info(`[ACR DEBUG] First issue structure: ${JSON.stringify(allIssues[0], null, 2)}`);
-            logger.info(`[ACR DEBUG] Issue keys: ${Object.keys(allIssues[0] || {})}`);
+          // DEBUG: Log source output keys to understand structure
+          logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
+
+          // Check if there's a remediation plan with task statuses
+          const remPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> } | undefined;
+          
+          if (remPlan?.tasks) {
+            logger.info(`[ACR DEBUG] Found remediationPlan with ${remPlan.tasks.length} tasks`);
+            
+            // Build remediationChanges from remediation plan tasks
+            const fixedTasks = remPlan.tasks.filter(task =>
+              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
+            );
+
+            remediationChanges = fixedTasks.map(task => ({
+              issueCode: task.issueCode,
+              status: task.status,
+              fixedAt: task.completedAt || new Date().toISOString(),
+            }));
+
+            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from remediationPlan`);
+          } else {
+            logger.info(`[ACR DEBUG] No remediationPlan found in source output`);
           }
 
           // Separate WCAG-mapped issues
           const wcagMappedIssues = allIssues.filter(issue => issue.wcagCriteria && issue.wcagCriteria.length > 0);
 
-          // Build remediationChanges from fixed issues
-          interface IssueWithStatus extends AuditIssue {
-            status?: string;
-          }
-
-          const fixedIssues = wcagMappedIssues.filter((issue: IssueWithStatus) =>
-            issue.status === 'fixed' || issue.status === 'completed' || issue.status === 'auto-fixed'
-          );
-
-          remediationChanges = fixedIssues.map(issue => ({
-            issueCode: issue.code,
-            status: (issue as IssueWithStatus).status,
-            fixedAt: new Date().toISOString(),
-          }));
-
-          logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed issues from combinedIssues`);
-
-          // All WCAG-mapped issues (both fixed and pending) for analysis
+          // All WCAG-mapped issues for analysis
           issues = wcagMappedIssues;
 
           const otherIssues = allIssues.filter(issue => !issue.wcagCriteria || issue.wcagCriteria.length === 0);
