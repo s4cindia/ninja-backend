@@ -314,4 +314,4 @@ For questions about this fix:
 
 ---
 
-*Document generated: January 16, 2026*
+Document generated: January 16, 2026
