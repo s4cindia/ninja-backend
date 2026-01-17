@@ -54,18 +54,18 @@ export class VerificationController {
           
           for (const criterion of analysis.criteria) {
             criteriaIssuesMap.set(criterion.id, {
-              relatedIssues: criterion.relatedIssues?.map((issue: { code: string; message: string; severity: string; location?: string }) => ({
-                code: issue.code,
+              relatedIssues: criterion.relatedIssues?.map((issue) => ({
+                code: issue.ruleId,
                 message: issue.message,
-                severity: issue.severity,
-                location: issue.location,
+                severity: issue.impact,
+                location: issue.location || issue.filePath,
                 status: 'remaining'
               })),
-              fixedIssues: criterion.fixedIssues?.map((issue: { code: string; message: string; severity?: string; location?: string }) => ({
-                code: issue.code,
+              fixedIssues: criterion.fixedIssues?.map((issue) => ({
+                code: issue.ruleId,
                 message: issue.message,
-                severity: issue.severity || 'unknown',
-                location: issue.location,
+                severity: issue.impact || 'unknown',
+                location: issue.location || issue.filePath,
                 status: 'fixed'
               }))
             });
