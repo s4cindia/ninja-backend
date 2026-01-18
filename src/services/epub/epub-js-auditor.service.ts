@@ -226,26 +226,37 @@ class EPUBJSAuditorService {
       }));
     }
 
-    let localImagesWithoutAlt = 0;
+    const imagesWithoutAlt: Array<{ src: string; html: string }> = [];
     $('img').each((_, el) => {
       stats.totalImages++;
       const $el = $(el);
       const altAttr = $el.attr('alt');
       if (altAttr === undefined) {
-        localImagesWithoutAlt++;
         stats.imagesWithoutAlt++;
+        const src = $el.attr('src') || '';
+        const html = $.html(el);
+        imagesWithoutAlt.push({ src, html });
       }
     });
 
-    if (localImagesWithoutAlt > 0) {
+    if (imagesWithoutAlt.length > 0) {
+      const fileDir = filePath.replace(/[^/]+$/, '');
       issues.push(createIssue({
         code: 'EPUB-IMG-001',
         severity: 'critical',
-        message: `${localImagesWithoutAlt} image(s) missing alt attribute`,
+        message: `${imagesWithoutAlt.length} image(s) missing alt attribute`,
         wcagCriteria: '1.1.1',
         location: filePath,
         suggestion: 'Add alt attribute to all images',
         category: 'images',
+        context: JSON.stringify({
+          images: imagesWithoutAlt.map(img => ({
+            src: img.src,
+            fullPath: img.src.startsWith('/') ? img.src.slice(1) : (fileDir + img.src),
+            html: img.html,
+          })),
+        }),
+        element: imagesWithoutAlt[0]?.html,
       }));
     }
 
