@@ -68,6 +68,8 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Remediation Workflow:** Upload → Audit → Create Remediation Plan → Auto-Remediate → Download remediated EPUB.
     -   **Manual Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-fix` allows applying specific fixes with custom options.
     -   **Quick Fix Endpoint:** POST `/api/v1/epub/job/:jobId/apply-quick-fix` allows applying arbitrary file changes (insert/replace/delete) to text-based EPUB files. Validates that target files are text-based (.opf, .xhtml, .html, .htm, .xml, .ncx, .css, .smil, .svg), ensures content anchors exist for replace/delete operations, and optionally updates remediation task status when complete.
+    -   **AI Alt Text Generation for Quick Fix:** POST `/api/v1/epub/job/:jobId/generate-alt-text` extracts images from EPUB and generates alt text using Gemini Vision. Supports `imageType: 'decorative' | 'informative' | 'complex'` for different description depths. Returns `shortAlt`, `longDescription`, `confidence`, `flags`, and `needsReview` boolean.
+    -   **Image Serving Endpoint:** GET `/api/v1/epub/job/:jobId/image/*` serves images from EPUB files for preview in Quick Fix panel. Returns binary image data with appropriate Content-Type header.
 -   **Feedback Collection:**
     -   **Feedback Model:** Dedicated Prisma model with FeedbackType and FeedbackStatus enums for proper type safety.
     -   **Feedback Types:** ACCESSIBILITY_ISSUE, ALT_TEXT_QUALITY, AUDIT_ACCURACY, REMEDIATION_SUGGESTION, GENERAL, BUG_REPORT, FEATURE_REQUEST.

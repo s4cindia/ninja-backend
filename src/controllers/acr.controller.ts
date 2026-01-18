@@ -543,6 +543,7 @@ export class AcrController {
     try {
       const { jobId } = req.params;
       const userId = req.user?.id;
+      const { refresh } = req.query;
 
       if (!jobId) {
         res.status(400).json({
@@ -560,7 +561,8 @@ export class AcrController {
         return;
       }
 
-      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId);
+      const forceRefresh = refresh === 'true';
+      const analysis = await acrAnalysisService.getAnalysisForJob(jobId, userId, forceRefresh);
 
       res.json({
         success: true,
@@ -922,6 +924,97 @@ export class AcrController {
         return;
       }
       next(error);
+    }
+  }
+
+  async getCriterionGuidance(_req: Request, res: Response) {
+    try {
+      const guidance = {
+        '1.1.1': {
+          intent: 'The intent of this Success Criterion is to make information conveyed by non-text content accessible through the use of a text alternative. Text alternatives are a primary way for making information accessible because they can be rendered through any sensory modality (for example, visual, auditory or tactile) to match the needs of the user.',
+          whoBenefits: [
+            'Screen reader users can access descriptions of images, charts, and other visual content',
+            'Users with cognitive disabilities benefit from text descriptions that explain complex images',
+            'Text alternatives can be translated into other languages or presented in different modalities'
+          ],
+          commonIssues: [
+            'Missing alt attributes on images',
+            'Generic alt text like "image" or "photo"',
+            'Decorative images not marked with empty alt text',
+            'Complex images (charts, diagrams) lacking adequate descriptions',
+            'Alt text duplicating nearby caption text'
+          ],
+          testingSteps: [
+            'Inspect all <img> elements in the EPUB content',
+            'Verify each image has an alt attribute',
+            'Check that alt text is descriptive and meaningful',
+            'Confirm decorative images use alt=""',
+            'Test with screen reader to verify alt text is announced'
+          ],
+          successIndicators: [
+            'All images have alt attributes',
+            'Alt text conveys the same information as the image',
+            'Decorative images properly marked',
+            'Complex images have extended descriptions (longdesc or aria-describedby)'
+          ],
+          remediationSteps: [
+            'Add alt attributes to all <img> elements',
+            'Write descriptive alt text that conveys the image purpose',
+            'Use alt="" for purely decorative images',
+            'Provide extended descriptions for complex images',
+            'Avoid redundant alt text that duplicates nearby text'
+          ],
+          bestPractices: [
+            'Keep alt text concise (under 150 characters)',
+            'Describe the content and function, not just appearance',
+            'Don\'t include "image of" or "picture of" in alt text',
+            'Use surrounding context to inform alt text',
+            'Test with actual screen reader users when possible'
+          ]
+        },
+      };
+
+      res.json({
+        success: true,
+        data: guidance
+      });
+    } catch {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch criterion guidance'
+      });
+    }
+  }
+
+  async finalizeAcr(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const acrJob = await acrService.resolveAcrJob(jobId);
+      if (!acrJob) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR job not found',
+        });
+      }
+
+      await acrService.updateAcrJobStatus(acrJob.id, 'finalized');
+
+      return res.json({
+        success: true,
+        data: {
+          id: acrJob.id,
+          status: 'finalized',
+          finalizedAt: new Date().toISOString(),
+        },
+        message: 'ACR successfully finalized',
+      });
+    } catch (error) {
+      console.error('Failed to finalize ACR:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to finalize ACR',
+      });
     }
   }
 }

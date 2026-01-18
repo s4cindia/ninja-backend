@@ -193,7 +193,7 @@ export class ConfidenceController {
         return;
       }
 
-      logger.debug(`[Confidence] Job found: ${jobId}`);
+      logger.debug(`[Confidence] Job found: ${jobId}, type: ${job.type}`);
 
       interface OutputIssue {
         id?: string;
@@ -207,7 +207,26 @@ export class ConfidenceController {
         location?: string;
       }
 
-      const auditOutput = job.output as Record<string, unknown> | null;
+      let auditOutput = job.output as Record<string, unknown> | null;
+      
+      // For ACR_WORKFLOW jobs, fetch issues from the source job
+      if (job.type === 'ACR_WORKFLOW') {
+        const jobInput = job.input as { sourceJobId?: string } | null;
+        const sourceJobId = jobInput?.sourceJobId;
+        
+        if (sourceJobId) {
+          logger.debug(`[Confidence] ACR_WORKFLOW detected, fetching from source job: ${sourceJobId}`);
+          const sourceJob = await prisma.job.findUnique({
+            where: { id: sourceJobId }
+          });
+          
+          if (sourceJob?.output) {
+            auditOutput = sourceJob.output as Record<string, unknown>;
+            logger.debug(`[Confidence] Found source job output with keys: ${Object.keys(auditOutput || {})}`);
+          }
+        }
+      }
+      
       const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
       logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
@@ -232,7 +251,11 @@ export class ConfidenceController {
         auditIssues
       );
 
-      logger.debug(`[Confidence] Criteria with issues: ${confidenceAnalysis.filter(c => (c.issueCount || 0) > 0).length}`);
+      const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
+      logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
+      criteriaWithIssues.forEach(c => {
+        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
+      });
 
       const summary = {
         totalCriteria: confidenceAnalysis.length,
@@ -240,12 +263,15 @@ export class ConfidenceController {
         failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
         needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
         notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
         averageConfidence: confidenceAnalysis.length > 0
           ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
           : 0
       };
 
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
+      
       res.json({
         success: true,
         data: {

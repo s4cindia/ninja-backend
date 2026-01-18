@@ -16,8 +16,10 @@ router.get('/editions/:editionCode/criteria', acrController.getEditionCriteria.b
 router.get('/criteria/:criterionId', acrController.getCriterion.bind(acrController));
 router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController));
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));
+router.get('/criterion-guidance', acrController.getCriterionGuidance.bind(acrController));
 router.post('/:jobId/validate-credibility', authorizeJob, acrController.validateCredibility.bind(acrController));
 router.get('/:jobId/can-finalize', authorizeJob, verificationController.canFinalize.bind(verificationController));
+router.post('/:jobId/finalize', authorizeJob, acrController.finalizeAcr.bind(acrController));
 router.get('/:jobId/methodology', authorizeJob, acrController.getMethodology.bind(acrController));
 router.post('/:acrId/export', authorizeAcr, acrController.exportAcr.bind(acrController));
 
@@ -28,8 +30,10 @@ router.get('/:acrId/compare', authorizeAcr, acrController.compareVersions.bind(a
 
 router.post('/analysis', acrController.createAnalysis.bind(acrController));
 router.get('/job/:jobId/analysis', acrController.getAcrAnalysisByJobId.bind(acrController));
+router.get('/:acrJobId', acrController.getAcrAnalysis.bind(acrController));
 router.get('/:acrJobId/analysis', acrController.getAcrAnalysis.bind(acrController));
 router.post('/:acrJobId/criteria/:criterionId/review', acrController.saveCriterionReview.bind(acrController));
+router.patch('/:acrJobId/criteria/:criterionId', acrController.saveCriterionReview.bind(acrController));
 router.get('/:acrJobId/criteria/:criterionId', acrController.getCriterionDetailsFromJob.bind(acrController));
 router.post('/:acrJobId/reviews/bulk', acrController.saveBulkReviews.bind(acrController));
 

@@ -53,6 +53,8 @@ interface RemediationTask {
   source?: string;
   html?: string;
   remediation?: string;
+  element?: string;
+  context?: string;
 }
 
 interface RemediationPlan {
@@ -263,6 +265,8 @@ class RemediationService {
         source: (issue.source as string) || undefined,
         html: (issue.html as string) || (issue.snippet as string) || undefined,
         remediation: this.getRemediationGuidance(issueCode),
+        element: (issue.element as string) || undefined,
+        context: (issue.context as string) || undefined,
       };
     });
 
@@ -861,6 +865,7 @@ class RemediationService {
     const acrWorkflow = {
       sourceJobId: jobId,
       fileName: plan.fileName,
+      epubTitle: plan.fileName,
       status: 'needs_verification',
       sourceType: 'remediation',
       totalCriteria: pendingTasks.length,
@@ -887,6 +892,49 @@ class RemediationService {
         startedAt: new Date(),
       },
     });
+
+    // Also create AcrJob record for the Review & Edit page
+    try {
+      const acrJobRecord = await prisma.acrJob.create({
+        data: {
+          jobId: acrJob.id,
+          tenantId: originalJob.tenantId,
+          userId: originalJob.userId,
+          edition: 'section508',
+          documentTitle: plan.fileName || 'Untitled Document',
+          status: 'in_progress',
+        },
+      });
+
+      // Create AcrCriterionReview records based on WCAG criteria from pending tasks
+      const wcagCriteriaSet = new Set<string>();
+      for (const task of pendingTasks) {
+        if (Array.isArray(task.wcagCriteria)) {
+          task.wcagCriteria.forEach((c: string) => wcagCriteriaSet.add(c));
+        } else if (task.wcagCriteria) {
+          wcagCriteriaSet.add(task.wcagCriteria);
+        }
+      }
+
+      // Create criterion reviews for affected WCAG criteria
+      for (const criterionId of wcagCriteriaSet) {
+        await prisma.acrCriterionReview.create({
+          data: {
+            acrJobId: acrJobRecord.id,
+            criterionId,
+            criterionNumber: criterionId,
+            criterionName: `WCAG ${criterionId}`,
+            level: criterionId.startsWith('1.4.') ? 'AA' : 'A',
+            confidence: 50,
+            aiStatus: 'needs_review',
+          },
+        });
+      }
+
+      logger.info(`[ACR Transfer] Created AcrJob ${acrJobRecord.id} with ${wcagCriteriaSet.size} criterion reviews`);
+    } catch (acrJobError) {
+      logger.warn(`[ACR Transfer] Could not create AcrJob record: ${acrJobError instanceof Error ? acrJobError.message : 'Unknown error'}`);
+    }
 
     for (const task of pendingTasks) {
       await this.updateTaskStatus(

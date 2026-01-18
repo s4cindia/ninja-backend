@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
-import { humanVerificationService, SubmitVerificationInput, VerificationStatus } from '../services/acr/human-verification.service';
+import { humanVerificationService, SubmitVerificationInput, VerificationStatus, RelatedIssue } from '../services/acr/human-verification.service';
 import { ConfidenceLevel } from '../services/acr/confidence-analyzer.service';
+import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { z } from 'zod';
+import { logger } from '../lib/logger';
 
 const SubmitVerificationSchema = z.object({
   status: z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED']),
@@ -42,6 +44,86 @@ export class VerificationController {
       }
 
       const queue = await humanVerificationService.getQueueFromJob(jobId);
+      
+      // Parse forceRefresh query param (default false to use caching)
+      const forceRefresh = req.query.forceRefresh === 'true' || req.query.forceRefresh === '1';
+      
+      // Enrich queue items with issues from ACR analysis
+      try {
+        logger.info(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
+        const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, forceRefresh);
+        
+        if (analysis?.criteria) {
+          logger.info(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
+          
+          // Create a map of criterion ID to issues
+          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[]; confidence?: number }>();
+          
+          let criteriaWithIssues = 0;
+          for (const criterion of analysis.criteria) {
+            const relatedCount = criterion.relatedIssues?.length || 0;
+            const fixedCount = criterion.fixedIssues?.length || 0;
+            
+            if (relatedCount > 0 || fixedCount > 0) {
+              criteriaWithIssues++;
+              logger.debug(`[Verification] Criterion ${criterion.id}: ${relatedCount} remaining, ${fixedCount} fixed, confidence=${criterion.confidence}`);
+            }
+            
+            criteriaIssuesMap.set(criterion.id, {
+              relatedIssues: criterion.relatedIssues?.map((issue) => ({
+                code: issue.ruleId,
+                message: issue.message,
+                severity: issue.impact,
+                location: issue.location || issue.filePath,
+                status: 'remaining'
+              })),
+              fixedIssues: criterion.fixedIssues?.map((issue) => ({
+                code: issue.ruleId,
+                message: issue.message,
+                severity: issue.impact || 'unknown',
+                location: issue.location || issue.filePath,
+                status: 'fixed'
+              })),
+              confidence: criterion.confidence
+            });
+          }
+          logger.debug(`[Verification] Total criteria with issues: ${criteriaWithIssues}`);
+          
+          // Enrich queue items with issues
+          let enrichedCount = 0;
+          for (const item of queue.items) {
+            const issueData = criteriaIssuesMap.get(item.criterionId);
+            if (issueData) {
+              item.relatedIssues = issueData.relatedIssues;
+              item.fixedIssues = issueData.fixedIssues;
+              if (issueData.relatedIssues?.length || issueData.fixedIssues?.length) {
+                enrichedCount++;
+                logger.debug(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
+                // Log sample issue structure for debugging
+                if (issueData.relatedIssues?.[0]) {
+                  logger.debug(`[Verification] Sample relatedIssue: ${JSON.stringify(issueData.relatedIssues[0])}`);
+                }
+              }
+            }
+          }
+          logger.debug(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
+          
+          // Log a sample enriched item for frontend debugging
+          const sampleEnriched = queue.items.find(i => i.relatedIssues?.length || i.fixedIssues?.length);
+          if (sampleEnriched) {
+            logger.debug(`[Verification] Sample enriched queue item: ${JSON.stringify({
+              criterionId: sampleEnriched.criterionId,
+              relatedIssues: sampleEnriched.relatedIssues,
+              fixedIssues: sampleEnriched.fixedIssues
+            }, null, 2)}`);
+          }
+        } else {
+          logger.debug(`[Verification] No criteria found in analysis`);
+        }
+      } catch (analysisError) {
+        logger.warn(`[Verification] Could not fetch ACR analysis for enrichment: ${analysisError}`);
+        // Continue without enrichment
+      }
 
       res.json({
         success: true,

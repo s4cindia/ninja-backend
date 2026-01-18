@@ -1,144 +1,803 @@
 {
   "editions": [
     {
-      "code": "WCAG_2_1_AA",
-      "name": "WCAG 2.1 Level AA",
-      "description": "Web Content Accessibility Guidelines 2.1 Level AA conformance",
+      "code": "section508",
+      "name": "Section 508 Edition",
+      "description": "Revised Section 508 Standards (2017) aligned with WCAG 2.0 Level A & AA",
+      "totalCount": 39,
+      "standard": "US Federal",
+      "criteriaIds": [
+        "1.1.1-A", "1.2.1-A", "1.2.2-A", "1.2.3-A", "1.3.1-A", "1.3.2-A", "1.3.3-A",
+        "1.4.1-A", "1.4.2-A", "2.1.1-A", "2.1.2-A", "2.2.1-A", "2.2.2-A", "2.3.1-A",
+        "2.4.1-A", "2.4.2-A", "2.4.3-A", "2.4.4-A", "3.1.1-A", "3.2.1-A", "3.2.2-A",
+        "3.3.1-A", "3.3.2-A", "4.1.1-A", "4.1.2-A",
+        "1.2.4-AA", "1.2.5-AA", "1.4.3-AA", "1.4.4-AA", "1.4.5-AA", "2.4.5-AA",
+        "2.4.6-AA", "2.4.7-AA", "3.1.2-AA", "3.2.3-AA", "3.2.4-AA", "3.3.3-AA",
+        "3.3.4-AA", "4.1.3-AA"
+      ]
+    },
+    {
+      "code": "wcag",
+      "name": "WCAG Edition",
+      "description": "WCAG 2.1 Level A, AA, and select AAA criteria",
       "totalCount": 50,
-      "standard": "WCAG 2.1",
+      "standard": "International (W3C)",
       "criteriaIds": [
-        "1.1.1", "1.2.1", "1.2.2", "1.2.3", "1.2.4", "1.2.5",
-        "1.3.1", "1.3.2", "1.3.3", "1.3.4", "1.3.5",
-        "1.4.1", "1.4.2", "1.4.3", "1.4.4", "1.4.5", "1.4.10", "1.4.11", "1.4.12", "1.4.13",
-        "2.1.1", "2.1.2", "2.1.4",
-        "2.2.1", "2.2.2",
-        "2.3.1",
-        "2.4.1", "2.4.2", "2.4.3", "2.4.4", "2.4.5", "2.4.6", "2.4.7",
-        "2.5.1", "2.5.2", "2.5.3", "2.5.4",
-        "3.1.1", "3.1.2",
-        "3.2.1", "3.2.2", "3.2.3", "3.2.4",
-        "3.3.1", "3.3.2", "3.3.3", "3.3.4",
-        "4.1.1", "4.1.2", "4.1.3"
+        "1.1.1-A", "1.2.1-A", "1.2.2-A", "1.2.3-A", "1.3.1-A", "1.3.2-A", "1.3.3-A",
+        "1.4.1-A", "1.4.2-A", "2.1.1-A", "2.1.2-A", "2.1.4-A", "2.2.1-A", "2.2.2-A",
+        "2.3.1-A", "2.4.1-A", "2.4.2-A", "2.4.3-A", "2.4.4-A", "2.5.1-A", "2.5.2-A",
+        "2.5.3-A", "2.5.4-A", "3.1.1-A", "3.2.1-A", "3.2.2-A", "3.3.1-A", "3.3.2-A",
+        "4.1.1-A", "4.1.2-A",
+        "1.2.4-AA", "1.2.5-AA", "1.3.4-AA", "1.3.5-AA", "1.4.3-AA", "1.4.4-AA",
+        "1.4.5-AA", "1.4.10-AA", "1.4.11-AA", "1.4.12-AA", "1.4.13-AA", "2.4.5-AA",
+        "2.4.6-AA", "2.4.7-AA", "3.1.2-AA", "3.2.3-AA", "3.2.4-AA", "3.3.3-AA",
+        "3.3.4-AA", "4.1.3-AA"
       ]
     },
     {
-      "code": "WCAG_2_2_AA",
-      "name": "WCAG 2.2 Level AA",
-      "description": "Web Content Accessibility Guidelines 2.2 Level AA conformance",
-      "totalCount": 55,
-      "standard": "WCAG 2.2",
+      "code": "eu",
+      "name": "EU Edition",
+      "description": "EN 301 549 V3.2.1 (2021) - European accessibility standard",
+      "totalCount": 52,
+      "standard": "European Union",
       "criteriaIds": [
-        "1.1.1", "1.2.1", "1.2.2", "1.2.3", "1.2.4", "1.2.5",
-        "1.3.1", "1.3.2", "1.3.3", "1.3.4", "1.3.5",
-        "1.4.1", "1.4.2", "1.4.3", "1.4.4", "1.4.5", "1.4.10", "1.4.11", "1.4.12", "1.4.13",
-        "2.1.1", "2.1.2", "2.1.4",
-        "2.2.1", "2.2.2",
-        "2.3.1",
-        "2.4.1", "2.4.2", "2.4.3", "2.4.4", "2.4.5", "2.4.6", "2.4.7", "2.4.11",
-        "2.5.1", "2.5.2", "2.5.3", "2.5.4", "2.5.7", "2.5.8",
-        "3.1.1", "3.1.2",
-        "3.2.1", "3.2.2", "3.2.3", "3.2.4", "3.2.6",
-        "3.3.1", "3.3.2", "3.3.3", "3.3.4", "3.3.7", "3.3.8",
-        "4.1.2", "4.1.3"
+        "1.1.1-A", "1.2.1-A", "1.2.2-A", "1.2.3-A", "1.3.1-A", "1.3.2-A", "1.3.3-A",
+        "1.4.1-A", "1.4.2-A", "2.1.1-A", "2.1.2-A", "2.1.4-A", "2.2.1-A", "2.2.2-A",
+        "2.3.1-A", "2.4.1-A", "2.4.2-A", "2.4.3-A", "2.4.4-A", "2.5.1-A", "2.5.2-A",
+        "2.5.3-A", "2.5.4-A", "3.1.1-A", "3.2.1-A", "3.2.2-A", "3.3.1-A", "3.3.2-A",
+        "4.1.1-A", "4.1.2-A",
+        "1.2.4-AA", "1.2.5-AA", "1.3.4-AA", "1.3.5-AA", "1.4.3-AA", "1.4.4-AA",
+        "1.4.5-AA", "1.4.10-AA", "1.4.11-AA", "1.4.12-AA", "1.4.13-AA", "2.4.5-AA",
+        "2.4.6-AA", "2.4.7-AA", "3.1.2-AA", "3.2.3-AA", "3.2.4-AA", "3.3.3-AA",
+        "3.3.4-AA", "4.1.3-AA",
+        "9.2.1-EU", "9.2.2-EU"
       ]
     },
     {
-      "code": "EPUB_ACCESSIBILITY_1_1",
-      "name": "EPUB Accessibility 1.1",
-      "description": "EPUB Accessibility 1.1 specification requirements",
-      "totalCount": 20,
-      "standard": "EPUB Accessibility 1.1",
+      "code": "international",
+      "name": "International Edition",
+      "description": "Comprehensive edition satisfying US Section 508, EU EN 301 549, and WCAG 2.1 requirements",
+      "totalCount": 80,
+      "standard": "Global",
       "criteriaIds": [
-        "epub-meta-001", "epub-meta-002", "epub-meta-003",
-        "epub-nav-001", "epub-nav-002",
-        "epub-sem-001", "epub-sem-002", "epub-sem-003",
-        "epub-img-001", "epub-img-002",
-        "epub-text-001", "epub-text-002",
-        "epub-lang-001",
-        "epub-structure-001", "epub-structure-002",
-        "epub-toc-001", "epub-toc-002",
-        "epub-link-001",
-        "epub-page-001",
-        "epub-math-001"
+        "1.1.1-A", "1.2.1-A", "1.2.2-A", "1.2.3-A", "1.3.1-A", "1.3.2-A", "1.3.3-A",
+        "1.4.1-A", "1.4.2-A", "2.1.1-A", "2.1.2-A", "2.1.4-A", "2.2.1-A", "2.2.2-A",
+        "2.3.1-A", "2.4.1-A", "2.4.2-A", "2.4.3-A", "2.4.4-A", "2.5.1-A", "2.5.2-A",
+        "2.5.3-A", "2.5.4-A", "3.1.1-A", "3.2.1-A", "3.2.2-A", "3.3.1-A", "3.3.2-A",
+        "4.1.1-A", "4.1.2-A",
+        "1.2.4-AA", "1.2.5-AA", "1.3.4-AA", "1.3.5-AA", "1.4.3-AA", "1.4.4-AA",
+        "1.4.5-AA", "1.4.10-AA", "1.4.11-AA", "1.4.12-AA", "1.4.13-AA", "2.4.5-AA",
+        "2.4.6-AA", "2.4.7-AA", "3.1.2-AA", "3.2.3-AA", "3.2.4-AA", "3.3.3-AA",
+        "3.3.4-AA", "4.1.3-AA",
+        "1.2.6-AAA", "1.2.7-AAA", "1.2.8-AAA", "1.2.9-AAA", "1.3.6-AAA", "1.4.6-AAA",
+        "1.4.7-AAA", "1.4.8-AAA", "1.4.9-AAA", "2.1.3-AAA", "2.2.3-AAA", "2.2.4-AAA",
+        "2.2.5-AAA", "2.2.6-AAA", "2.3.2-AAA", "2.3.3-AAA", "2.4.8-AAA", "2.4.9-AAA",
+        "2.4.10-AAA", "2.5.5-AAA", "2.5.6-AAA", "3.1.3-AAA", "3.1.4-AAA", "3.1.5-AAA",
+        "3.1.6-AAA", "3.2.5-AAA", "3.3.5-AAA", "3.3.6-AAA",
+        "9.2.1-EU", "9.2.2-EU"
       ]
     }
   ],
   "criteria": [
-    {"id": "1.1.1", "number": "1.1.1", "name": "Non-text Content", "level": "A", "section": "Perceivable", "description": "All non-text content has a text alternative", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-content"},
-    {"id": "1.2.1", "number": "1.2.1", "name": "Audio-only and Video-only", "level": "A", "section": "Perceivable", "description": "Alternatives for time-based media", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-and-video-only-prerecorded"},
-    {"id": "1.2.2", "number": "1.2.2", "name": "Captions (Prerecorded)", "level": "A", "section": "Perceivable", "description": "Captions provided for prerecorded audio", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-prerecorded"},
-    {"id": "1.2.3", "number": "1.2.3", "name": "Audio Description or Media Alternative", "level": "A", "section": "Perceivable", "description": "Audio description or alternative provided", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-or-media-alternative-prerecorded"},
-    {"id": "1.2.4", "number": "1.2.4", "name": "Captions (Live)", "level": "AA", "section": "Perceivable", "description": "Captions provided for live audio", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-live"},
-    {"id": "1.2.5", "number": "1.2.5", "name": "Audio Description (Prerecorded)", "level": "AA", "section": "Perceivable", "description": "Audio description provided for video", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-prerecorded"},
-    {"id": "1.3.1", "number": "1.3.1", "name": "Info and Relationships", "level": "A", "section": "Perceivable", "description": "Information and relationships conveyed through presentation can be programmatically determined", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships"},
-    {"id": "1.3.2", "number": "1.3.2", "name": "Meaningful Sequence", "level": "A", "section": "Perceivable", "description": "Reading sequence is programmatically determinable", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/meaningful-sequence"},
-    {"id": "1.3.3", "number": "1.3.3", "name": "Sensory Characteristics", "level": "A", "section": "Perceivable", "description": "Instructions do not rely solely on sensory characteristics", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/sensory-characteristics"},
-    {"id": "1.3.4", "number": "1.3.4", "name": "Orientation", "level": "AA", "section": "Perceivable", "description": "Content not restricted to a single display orientation", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/orientation"},
-    {"id": "1.3.5", "number": "1.3.5", "name": "Identify Input Purpose", "level": "AA", "section": "Perceivable", "description": "Input purpose can be programmatically determined", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/identify-input-purpose"},
-    {"id": "1.4.1", "number": "1.4.1", "name": "Use of Color", "level": "A", "section": "Perceivable", "description": "Color is not the only visual means of conveying information", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color"},
-    {"id": "1.4.2", "number": "1.4.2", "name": "Audio Control", "level": "A", "section": "Perceivable", "description": "Mechanism to pause or control audio", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-control"},
-    {"id": "1.4.3", "number": "1.4.3", "name": "Contrast (Minimum)", "level": "AA", "section": "Perceivable", "description": "Minimum contrast ratio of 4.5:1", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum"},
-    {"id": "1.4.4", "number": "1.4.4", "name": "Resize Text", "level": "AA", "section": "Perceivable", "description": "Text can be resized up to 200%", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/resize-text"},
-    {"id": "1.4.5", "number": "1.4.5", "name": "Images of Text", "level": "AA", "section": "Perceivable", "description": "Use text instead of images of text", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text"},
-    {"id": "1.4.10", "number": "1.4.10", "name": "Reflow", "level": "AA", "section": "Perceivable", "description": "Content can be presented without loss of information", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/reflow"},
-    {"id": "1.4.11", "number": "1.4.11", "name": "Non-text Contrast", "level": "AA", "section": "Perceivable", "description": "UI components have contrast ratio of 3:1", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-contrast"},
-    {"id": "1.4.12", "number": "1.4.12", "name": "Text Spacing", "level": "AA", "section": "Perceivable", "description": "No loss of content with text spacing adjustments", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/text-spacing"},
-    {"id": "1.4.13", "number": "1.4.13", "name": "Content on Hover or Focus", "level": "AA", "section": "Perceivable", "description": "Additional content triggered by hover or focus is dismissible", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/content-on-hover-or-focus"},
-    {"id": "2.1.1", "number": "2.1.1", "name": "Keyboard", "level": "A", "section": "Operable", "description": "All functionality available from keyboard", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard"},
-    {"id": "2.1.2", "number": "2.1.2", "name": "No Keyboard Trap", "level": "A", "section": "Operable", "description": "Keyboard focus can be moved away from any component", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/no-keyboard-trap"},
-    {"id": "2.1.4", "number": "2.1.4", "name": "Character Key Shortcuts", "level": "A", "section": "Operable", "description": "Character key shortcuts can be turned off or remapped", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/character-key-shortcuts"},
-    {"id": "2.2.1", "number": "2.2.1", "name": "Timing Adjustable", "level": "A", "section": "Operable", "description": "Time limits can be adjusted", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/timing-adjustable"},
-    {"id": "2.2.2", "number": "2.2.2", "name": "Pause, Stop, Hide", "level": "A", "section": "Operable", "description": "Moving content can be paused, stopped, or hidden", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pause-stop-hide"},
-    {"id": "2.3.1", "number": "2.3.1", "name": "Three Flashes or Below Threshold", "level": "A", "section": "Operable", "description": "Pages do not contain content that flashes more than 3 times per second", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes-or-below-threshold"},
-    {"id": "2.4.1", "number": "2.4.1", "name": "Bypass Blocks", "level": "A", "section": "Operable", "description": "Mechanism to bypass blocks of content", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/bypass-blocks"},
-    {"id": "2.4.2", "number": "2.4.2", "name": "Page Titled", "level": "A", "section": "Operable", "description": "Pages have descriptive titles", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/page-titled"},
-    {"id": "2.4.3", "number": "2.4.3", "name": "Focus Order", "level": "A", "section": "Operable", "description": "Focus order preserves meaning and operability", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-order"},
-    {"id": "2.4.4", "number": "2.4.4", "name": "Link Purpose (In Context)", "level": "A", "section": "Operable", "description": "Link purpose can be determined from link text and context", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-in-context"},
-    {"id": "2.4.5", "number": "2.4.5", "name": "Multiple Ways", "level": "AA", "section": "Operable", "description": "More than one way to locate a page", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/multiple-ways"},
-    {"id": "2.4.6", "number": "2.4.6", "name": "Headings and Labels", "level": "AA", "section": "Operable", "description": "Headings and labels describe topic or purpose", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/headings-and-labels"},
-    {"id": "2.4.7", "number": "2.4.7", "name": "Focus Visible", "level": "AA", "section": "Operable", "description": "Keyboard focus indicator is visible", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-visible"},
-    {"id": "2.4.11", "number": "2.4.11", "name": "Focus Not Obscured (Minimum)", "level": "AA", "section": "Operable", "description": "Focused component is not entirely hidden", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum"},
-    {"id": "2.5.1", "number": "2.5.1", "name": "Pointer Gestures", "level": "A", "section": "Operable", "description": "Multipoint gestures have single-pointer alternatives", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-gestures"},
-    {"id": "2.5.2", "number": "2.5.2", "name": "Pointer Cancellation", "level": "A", "section": "Operable", "description": "Functions activated by pointer can be cancelled", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-cancellation"},
-    {"id": "2.5.3", "number": "2.5.3", "name": "Label in Name", "level": "A", "section": "Operable", "description": "Visible labels are included in accessible names", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/label-in-name"},
-    {"id": "2.5.4", "number": "2.5.4", "name": "Motion Actuation", "level": "A", "section": "Operable", "description": "Motion-triggered functions have alternatives", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/motion-actuation"},
-    {"id": "2.5.7", "number": "2.5.7", "name": "Dragging Movements", "level": "AA", "section": "Operable", "description": "Dragging movements have single-pointer alternatives", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements"},
-    {"id": "2.5.8", "number": "2.5.8", "name": "Target Size (Minimum)", "level": "AA", "section": "Operable", "description": "Targets have minimum size of 24x24 CSS pixels", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum"},
-    {"id": "3.1.1", "number": "3.1.1", "name": "Language of Page", "level": "A", "section": "Understandable", "description": "Default human language can be programmatically determined", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-page"},
-    {"id": "3.1.2", "number": "3.1.2", "name": "Language of Parts", "level": "AA", "section": "Understandable", "description": "Language of passages can be programmatically determined", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-parts"},
-    {"id": "3.2.1", "number": "3.2.1", "name": "On Focus", "level": "A", "section": "Understandable", "description": "Focus does not cause unexpected context changes", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-focus"},
-    {"id": "3.2.2", "number": "3.2.2", "name": "On Input", "level": "A", "section": "Understandable", "description": "Input does not cause unexpected context changes", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-input"},
-    {"id": "3.2.3", "number": "3.2.3", "name": "Consistent Navigation", "level": "AA", "section": "Understandable", "description": "Navigation mechanisms are consistent", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-navigation"},
-    {"id": "3.2.4", "number": "3.2.4", "name": "Consistent Identification", "level": "AA", "section": "Understandable", "description": "Components with same functionality are identified consistently", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-identification"},
-    {"id": "3.2.6", "number": "3.2.6", "name": "Consistent Help", "level": "A", "section": "Understandable", "description": "Help mechanisms are consistent", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/consistent-help"},
-    {"id": "3.3.1", "number": "3.3.1", "name": "Error Identification", "level": "A", "section": "Understandable", "description": "Input errors are identified and described", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-identification"},
-    {"id": "3.3.2", "number": "3.3.2", "name": "Labels or Instructions", "level": "A", "section": "Understandable", "description": "Labels or instructions provided for user input", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions"},
-    {"id": "3.3.3", "number": "3.3.3", "name": "Error Suggestion", "level": "AA", "section": "Understandable", "description": "Suggestions provided for fixing errors", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-suggestion"},
-    {"id": "3.3.4", "number": "3.3.4", "name": "Error Prevention (Legal, Financial, Data)", "level": "AA", "section": "Understandable", "description": "Submissions can be reviewed and corrected", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-legal-financial-data"},
-    {"id": "3.3.7", "number": "3.3.7", "name": "Redundant Entry", "level": "A", "section": "Understandable", "description": "Previously entered information is auto-populated", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/redundant-entry"},
-    {"id": "3.3.8", "number": "3.3.8", "name": "Accessible Authentication (Minimum)", "level": "AA", "section": "Understandable", "description": "Cognitive function tests not required for authentication", "wcagUrl": "https://www.w3.org/WAI/WCAG22/Understanding/accessible-authentication-minimum"},
-    {"id": "4.1.1", "number": "4.1.1", "name": "Parsing", "level": "A", "section": "Robust", "description": "Content can be parsed", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/parsing"},
-    {"id": "4.1.2", "number": "4.1.2", "name": "Name, Role, Value", "level": "A", "section": "Robust", "description": "UI components have programmatic name, role, and value", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/name-role-value"},
-    {"id": "4.1.3", "number": "4.1.3", "name": "Status Messages", "level": "AA", "section": "Robust", "description": "Status messages can be presented to users by assistive technologies", "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/status-messages"},
-    {"id": "epub-meta-001", "number": "EPUB-META-001", "name": "Accessibility Metadata", "level": "A", "section": "EPUB Metadata", "description": "EPUB includes required accessibility metadata"},
-    {"id": "epub-meta-002", "number": "EPUB-META-002", "name": "Access Modes", "level": "A", "section": "EPUB Metadata", "description": "accessMode property is specified"},
-    {"id": "epub-meta-003", "number": "EPUB-META-003", "name": "Access Mode Sufficient", "level": "A", "section": "EPUB Metadata", "description": "accessModeSufficient property is specified"},
-    {"id": "epub-nav-001", "number": "EPUB-NAV-001", "name": "Navigation Document", "level": "A", "section": "EPUB Navigation", "description": "EPUB contains a navigation document"},
-    {"id": "epub-nav-002", "number": "EPUB-NAV-002", "name": "Table of Contents", "level": "A", "section": "EPUB Navigation", "description": "Navigation document contains a table of contents"},
-    {"id": "epub-sem-001", "number": "EPUB-SEM-001", "name": "EPUB Type Attribute", "level": "A", "section": "EPUB Semantics", "description": "Structural elements use epub:type"},
-    {"id": "epub-sem-002", "number": "EPUB-SEM-002", "name": "ARIA Roles", "level": "A", "section": "EPUB Semantics", "description": "Interactive elements use appropriate ARIA roles"},
-    {"id": "epub-sem-003", "number": "EPUB-SEM-003", "name": "Semantic Structure", "level": "A", "section": "EPUB Semantics", "description": "Document uses semantic HTML structure"},
-    {"id": "epub-img-001", "number": "EPUB-IMG-001", "name": "Image Alt Text", "level": "A", "section": "EPUB Images", "description": "Images have alternative text"},
-    {"id": "epub-img-002", "number": "EPUB-IMG-002", "name": "Complex Images", "level": "A", "section": "EPUB Images", "description": "Complex images have extended descriptions"},
-    {"id": "epub-text-001", "number": "EPUB-TEXT-001", "name": "Text Content", "level": "A", "section": "EPUB Text", "description": "Text content is accessible"},
-    {"id": "epub-text-002", "number": "EPUB-TEXT-002", "name": "Reading Order", "level": "A", "section": "EPUB Text", "description": "Reading order is logical"},
-    {"id": "epub-lang-001", "number": "EPUB-LANG-001", "name": "Language Specification", "level": "A", "section": "EPUB Language", "description": "Document language is specified"},
-    {"id": "epub-structure-001", "number": "EPUB-STRUCTURE-001", "name": "Heading Structure", "level": "A", "section": "EPUB Structure", "description": "Headings are properly structured"},
-    {"id": "epub-structure-002", "number": "EPUB-STRUCTURE-002", "name": "List Structure", "level": "A", "section": "EPUB Structure", "description": "Lists use proper markup"},
-    {"id": "epub-toc-001", "number": "EPUB-TOC-001", "name": "TOC Completeness", "level": "A", "section": "EPUB TOC", "description": "Table of contents is complete"},
-    {"id": "epub-toc-002", "number": "EPUB-TOC-002", "name": "TOC Accuracy", "level": "A", "section": "EPUB TOC", "description": "Table of contents links are accurate"},
-    {"id": "epub-link-001", "number": "EPUB-LINK-001", "name": "Link Accessibility", "level": "A", "section": "EPUB Links", "description": "Links are accessible and descriptive"},
-    {"id": "epub-page-001", "number": "EPUB-PAGE-001", "name": "Page Navigation", "level": "AA", "section": "EPUB Pages", "description": "Page navigation list is provided"},
-    {"id": "epub-math-001", "number": "EPUB-MATH-001", "name": "MathML Accessibility", "level": "A", "section": "EPUB Math", "description": "Mathematical content uses MathML"}
+    {
+      "id": "1.1.1-A",
+      "number": "1.1.1",
+      "name": "Non-text Content",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "All non-text content that is presented to the user has a text alternative that serves the equivalent purpose.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-content"
+    },
+    {
+      "id": "1.2.1-A",
+      "number": "1.2.1",
+      "name": "Audio-only and Video-only (Prerecorded)",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "For prerecorded audio-only and prerecorded video-only media, an alternative is provided that presents equivalent information.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-and-video-only-prerecorded"
+    },
+    {
+      "id": "1.2.2-A",
+      "number": "1.2.2",
+      "name": "Captions (Prerecorded)",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "Captions are provided for all prerecorded audio content in synchronized media, except when the media is a media alternative for text and is clearly labeled as such.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-prerecorded"
+    },
+    {
+      "id": "1.2.3-A",
+      "number": "1.2.3",
+      "name": "Audio Description or Media Alternative (Prerecorded)",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "An alternative for time-based media or audio description of the prerecorded video content is provided for synchronized media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-or-media-alternative-prerecorded"
+    },
+    {
+      "id": "1.3.1-A",
+      "number": "1.3.1",
+      "name": "Info and Relationships",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "Information, structure, and relationships conveyed through presentation can be programmatically determined or are available in text.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/info-and-relationships"
+    },
+    {
+      "id": "1.3.2-A",
+      "number": "1.3.2",
+      "name": "Meaningful Sequence",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "When the sequence in which content is presented affects its meaning, a correct reading sequence can be programmatically determined.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/meaningful-sequence"
+    },
+    {
+      "id": "1.3.3-A",
+      "number": "1.3.3",
+      "name": "Sensory Characteristics",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "Instructions provided for understanding and operating content do not rely solely on sensory characteristics of components such as shape, color, size, visual location, orientation, or sound.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/sensory-characteristics"
+    },
+    {
+      "id": "1.4.1-A",
+      "number": "1.4.1",
+      "name": "Use of Color",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "Color is not used as the only visual means of conveying information, indicating an action, prompting a response, or distinguishing a visual element.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color"
+    },
+    {
+      "id": "1.4.2-A",
+      "number": "1.4.2",
+      "name": "Audio Control",
+      "level": "A",
+      "section": "Perceivable",
+      "description": "If any audio on a Web page plays automatically for more than 3 seconds, either a mechanism is available to pause or stop the audio, or a mechanism is available to control audio volume independently from the overall system volume level.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-control"
+    },
+    {
+      "id": "2.1.1-A",
+      "number": "2.1.1",
+      "name": "Keyboard",
+      "level": "A",
+      "section": "Operable",
+      "description": "All functionality of the content is operable through a keyboard interface without requiring specific timings for individual keystrokes.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard"
+    },
+    {
+      "id": "2.1.2-A",
+      "number": "2.1.2",
+      "name": "No Keyboard Trap",
+      "level": "A",
+      "section": "Operable",
+      "description": "If keyboard focus can be moved to a component of the page using a keyboard interface, then focus can be moved away from that component using only a keyboard interface.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/no-keyboard-trap"
+    },
+    {
+      "id": "2.1.4-A",
+      "number": "2.1.4",
+      "name": "Character Key Shortcuts",
+      "level": "A",
+      "section": "Operable",
+      "description": "If a keyboard shortcut is implemented in content using only letter, punctuation, number, or symbol characters, then at least one mechanism is available to turn off, remap, or activate only on focus.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/character-key-shortcuts"
+    },
+    {
+      "id": "2.2.1-A",
+      "number": "2.2.1",
+      "name": "Timing Adjustable",
+      "level": "A",
+      "section": "Operable",
+      "description": "For each time limit that is set by the content, the user can turn off, adjust, or extend the time limit.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/timing-adjustable"
+    },
+    {
+      "id": "2.2.2-A",
+      "number": "2.2.2",
+      "name": "Pause, Stop, Hide",
+      "level": "A",
+      "section": "Operable",
+      "description": "For moving, blinking, scrolling, or auto-updating information, there is a mechanism for the user to pause, stop, or hide it.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pause-stop-hide"
+    },
+    {
+      "id": "2.3.1-A",
+      "number": "2.3.1",
+      "name": "Three Flashes or Below Threshold",
+      "level": "A",
+      "section": "Operable",
+      "description": "Web pages do not contain anything that flashes more than three times in any one second period, or the flash is below the general flash and red flash thresholds.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes-or-below-threshold"
+    },
+    {
+      "id": "2.4.1-A",
+      "number": "2.4.1",
+      "name": "Bypass Blocks",
+      "level": "A",
+      "section": "Operable",
+      "description": "A mechanism is available to bypass blocks of content that are repeated on multiple Web pages.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/bypass-blocks"
+    },
+    {
+      "id": "2.4.2-A",
+      "number": "2.4.2",
+      "name": "Page Titled",
+      "level": "A",
+      "section": "Operable",
+      "description": "Web pages have titles that describe topic or purpose.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/page-titled"
+    },
+    {
+      "id": "2.4.3-A",
+      "number": "2.4.3",
+      "name": "Focus Order",
+      "level": "A",
+      "section": "Operable",
+      "description": "If a Web page can be navigated sequentially and the navigation sequences affect meaning or operation, focusable components receive focus in an order that preserves meaning and operability.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-order"
+    },
+    {
+      "id": "2.4.4-A",
+      "number": "2.4.4",
+      "name": "Link Purpose (In Context)",
+      "level": "A",
+      "section": "Operable",
+      "description": "The purpose of each link can be determined from the link text alone or from the link text together with its programmatically determined link context.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-in-context"
+    },
+    {
+      "id": "2.5.1-A",
+      "number": "2.5.1",
+      "name": "Pointer Gestures",
+      "level": "A",
+      "section": "Operable",
+      "description": "All functionality that uses multipoint or path-based gestures for operation can be operated with a single pointer without a path-based gesture.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-gestures"
+    },
+    {
+      "id": "2.5.2-A",
+      "number": "2.5.2",
+      "name": "Pointer Cancellation",
+      "level": "A",
+      "section": "Operable",
+      "description": "For functionality that can be operated using a single pointer, at least one of the following is true: no down-event, abort or undo, up reversal, or essential.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pointer-cancellation"
+    },
+    {
+      "id": "2.5.3-A",
+      "number": "2.5.3",
+      "name": "Label in Name",
+      "level": "A",
+      "section": "Operable",
+      "description": "For user interface components with labels that include text or images of text, the name contains the text that is presented visually.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/label-in-name"
+    },
+    {
+      "id": "2.5.4-A",
+      "number": "2.5.4",
+      "name": "Motion Actuation",
+      "level": "A",
+      "section": "Operable",
+      "description": "Functionality that can be operated by device motion or user motion can also be operated by user interface components and responding to the motion can be disabled.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/motion-actuation"
+    },
+    {
+      "id": "3.1.1-A",
+      "number": "3.1.1",
+      "name": "Language of Page",
+      "level": "A",
+      "section": "Understandable",
+      "description": "The default human language of each Web page can be programmatically determined.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-page"
+    },
+    {
+      "id": "3.2.1-A",
+      "number": "3.2.1",
+      "name": "On Focus",
+      "level": "A",
+      "section": "Understandable",
+      "description": "When any user interface component receives focus, it does not initiate a change of context.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-focus"
+    },
+    {
+      "id": "3.2.2-A",
+      "number": "3.2.2",
+      "name": "On Input",
+      "level": "A",
+      "section": "Understandable",
+      "description": "Changing the setting of any user interface component does not automatically cause a change of context unless the user has been advised of the behavior before using the component.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/on-input"
+    },
+    {
+      "id": "3.3.1-A",
+      "number": "3.3.1",
+      "name": "Error Identification",
+      "level": "A",
+      "section": "Understandable",
+      "description": "If an input error is automatically detected, the item that is in error is identified and the error is described to the user in text.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-identification"
+    },
+    {
+      "id": "3.3.2-A",
+      "number": "3.3.2",
+      "name": "Labels or Instructions",
+      "level": "A",
+      "section": "Understandable",
+      "description": "Labels or instructions are provided when content requires user input.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions"
+    },
+    {
+      "id": "4.1.1-A",
+      "number": "4.1.1",
+      "name": "Parsing",
+      "level": "A",
+      "section": "Robust",
+      "description": "In content implemented using markup languages, elements have complete start and end tags, elements are nested according to their specifications, elements do not contain duplicate attributes, and any IDs are unique.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/parsing"
+    },
+    {
+      "id": "4.1.2-A",
+      "number": "4.1.2",
+      "name": "Name, Role, Value",
+      "level": "A",
+      "section": "Robust",
+      "description": "For all user interface components, the name and role can be programmatically determined; states, properties, and values that can be set by the user can be programmatically set.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/name-role-value"
+    },
+    {
+      "id": "1.2.4-AA",
+      "number": "1.2.4",
+      "name": "Captions (Live)",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Captions are provided for all live audio content in synchronized media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/captions-live"
+    },
+    {
+      "id": "1.2.5-AA",
+      "number": "1.2.5",
+      "name": "Audio Description (Prerecorded)",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Audio description is provided for all prerecorded video content in synchronized media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-description-prerecorded"
+    },
+    {
+      "id": "1.3.4-AA",
+      "number": "1.3.4",
+      "name": "Orientation",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Content does not restrict its view and operation to a single display orientation, such as portrait or landscape, unless a specific display orientation is essential.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/orientation"
+    },
+    {
+      "id": "1.3.5-AA",
+      "number": "1.3.5",
+      "name": "Identify Input Purpose",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "The purpose of each input field collecting information about the user can be programmatically determined when the input field serves a purpose identified in the Input Purposes for User Interface Components section.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/identify-input-purpose"
+    },
+    {
+      "id": "1.4.3-AA",
+      "number": "1.4.3",
+      "name": "Contrast (Minimum)",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "The visual presentation of text and images of text has a contrast ratio of at least 4.5:1, except for large text, incidental text, and logotypes.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum"
+    },
+    {
+      "id": "1.4.4-AA",
+      "number": "1.4.4",
+      "name": "Resize Text",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Except for captions and images of text, text can be resized without assistive technology up to 200 percent without loss of content or functionality.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/resize-text"
+    },
+    {
+      "id": "1.4.5-AA",
+      "number": "1.4.5",
+      "name": "Images of Text",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "If the technologies being used can achieve the visual presentation, text is used to convey information rather than images of text.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text"
+    },
+    {
+      "id": "1.4.10-AA",
+      "number": "1.4.10",
+      "name": "Reflow",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Content can be presented without loss of information or functionality, and without requiring scrolling in two dimensions for vertical scrolling content at a width equivalent to 320 CSS pixels.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/reflow"
+    },
+    {
+      "id": "1.4.11-AA",
+      "number": "1.4.11",
+      "name": "Non-text Contrast",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "The visual presentation of user interface components and graphical objects have a contrast ratio of at least 3:1 against adjacent colors.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/non-text-contrast"
+    },
+    {
+      "id": "1.4.12-AA",
+      "number": "1.4.12",
+      "name": "Text Spacing",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "No loss of content or functionality occurs when setting line height to at least 1.5 times the font size, paragraph spacing to at least 2 times the font size, letter spacing to at least 0.12 times the font size, and word spacing to at least 0.16 times the font size.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/text-spacing"
+    },
+    {
+      "id": "1.4.13-AA",
+      "number": "1.4.13",
+      "name": "Content on Hover or Focus",
+      "level": "AA",
+      "section": "Perceivable",
+      "description": "Where receiving and then removing pointer hover or keyboard focus triggers additional content to become visible and then hidden, the additional content is dismissible, hoverable, and persistent.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/content-on-hover-or-focus"
+    },
+    {
+      "id": "2.4.5-AA",
+      "number": "2.4.5",
+      "name": "Multiple Ways",
+      "level": "AA",
+      "section": "Operable",
+      "description": "More than one way is available to locate a Web page within a set of Web pages except where the Web Page is the result of, or a step in, a process.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/multiple-ways"
+    },
+    {
+      "id": "2.4.6-AA",
+      "number": "2.4.6",
+      "name": "Headings and Labels",
+      "level": "AA",
+      "section": "Operable",
+      "description": "Headings and labels describe topic or purpose.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/headings-and-labels"
+    },
+    {
+      "id": "2.4.7-AA",
+      "number": "2.4.7",
+      "name": "Focus Visible",
+      "level": "AA",
+      "section": "Operable",
+      "description": "Any keyboard operable user interface has a mode of operation where the keyboard focus indicator is visible.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/focus-visible"
+    },
+    {
+      "id": "3.1.2-AA",
+      "number": "3.1.2",
+      "name": "Language of Parts",
+      "level": "AA",
+      "section": "Understandable",
+      "description": "The human language of each passage or phrase in the content can be programmatically determined except for proper names, technical terms, words of indeterminate language, and words or phrases that have become part of the vernacular.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/language-of-parts"
+    },
+    {
+      "id": "3.2.3-AA",
+      "number": "3.2.3",
+      "name": "Consistent Navigation",
+      "level": "AA",
+      "section": "Understandable",
+      "description": "Navigational mechanisms that are repeated on multiple Web pages within a set of Web pages occur in the same relative order each time they are repeated.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-navigation"
+    },
+    {
+      "id": "3.2.4-AA",
+      "number": "3.2.4",
+      "name": "Consistent Identification",
+      "level": "AA",
+      "section": "Understandable",
+      "description": "Components that have the same functionality within a set of Web pages are identified consistently.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/consistent-identification"
+    },
+    {
+      "id": "3.3.3-AA",
+      "number": "3.3.3",
+      "name": "Error Suggestion",
+      "level": "AA",
+      "section": "Understandable",
+      "description": "If an input error is automatically detected and suggestions for correction are known, then the suggestions are provided to the user, unless it would jeopardize the security or purpose of the content.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-suggestion"
+    },
+    {
+      "id": "3.3.4-AA",
+      "number": "3.3.4",
+      "name": "Error Prevention (Legal, Financial, Data)",
+      "level": "AA",
+      "section": "Understandable",
+      "description": "For Web pages that cause legal commitments or financial transactions for the user to occur, that modify or delete user-controllable data in data storage systems, or that submit user test responses, submissions are reversible, data is checked, or user confirmation is available.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-legal-financial-data"
+    },
+    {
+      "id": "4.1.3-AA",
+      "number": "4.1.3",
+      "name": "Status Messages",
+      "level": "AA",
+      "section": "Robust",
+      "description": "In content implemented using markup languages, status messages can be programmatically determined through role or properties such that they can be presented to the user by assistive technologies without receiving focus.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/status-messages"
+    },
+    {
+      "id": "1.2.6-AAA",
+      "number": "1.2.6",
+      "name": "Sign Language (Prerecorded)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "Sign language interpretation is provided for all prerecorded audio content in synchronized media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/sign-language-prerecorded"
+    },
+    {
+      "id": "1.2.7-AAA",
+      "number": "1.2.7",
+      "name": "Extended Audio Description (Prerecorded)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "Where pauses in foreground audio are insufficient to allow audio descriptions to convey the sense of the video, extended audio description is provided for all prerecorded video content in synchronized media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/extended-audio-description-prerecorded"
+    },
+    {
+      "id": "1.2.8-AAA",
+      "number": "1.2.8",
+      "name": "Media Alternative (Prerecorded)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "An alternative for time-based media is provided for all prerecorded synchronized media and for all prerecorded video-only media.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/media-alternative-prerecorded"
+    },
+    {
+      "id": "1.2.9-AAA",
+      "number": "1.2.9",
+      "name": "Audio-only (Live)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "An alternative for time-based media that presents equivalent information for live audio-only content is provided.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/audio-only-live"
+    },
+    {
+      "id": "1.3.6-AAA",
+      "number": "1.3.6",
+      "name": "Identify Purpose",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "In content implemented using markup languages, the purpose of User Interface Components, icons, and regions can be programmatically determined.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/identify-purpose"
+    },
+    {
+      "id": "1.4.6-AAA",
+      "number": "1.4.6",
+      "name": "Contrast (Enhanced)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "The visual presentation of text and images of text has a contrast ratio of at least 7:1, except for large text, incidental text, and logotypes.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/contrast-enhanced"
+    },
+    {
+      "id": "1.4.7-AAA",
+      "number": "1.4.7",
+      "name": "Low or No Background Audio",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "For prerecorded audio-only content that contains primarily speech in the foreground, is not an audio CAPTCHA or audio logo, and is not vocalization intended to be primarily musical expression, at least one of the following is true: no background, background sounds can be turned off, or background is at least 20 decibels lower than foreground speech.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/low-or-no-background-audio"
+    },
+    {
+      "id": "1.4.8-AAA",
+      "number": "1.4.8",
+      "name": "Visual Presentation",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "For the visual presentation of blocks of text, a mechanism is available to select foreground and background colors, width is no more than 80 characters, text is not justified, line spacing is at least space-and-a-half, and text can be resized up to 200%.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/visual-presentation"
+    },
+    {
+      "id": "1.4.9-AAA",
+      "number": "1.4.9",
+      "name": "Images of Text (No Exception)",
+      "level": "AAA",
+      "section": "Perceivable",
+      "description": "Images of text are only used for pure decoration or where a particular presentation of text is essential to the information being conveyed.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/images-of-text-no-exception"
+    },
+    {
+      "id": "2.1.3-AAA",
+      "number": "2.1.3",
+      "name": "Keyboard (No Exception)",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "All functionality of the content is operable through a keyboard interface without requiring specific timings for individual keystrokes.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/keyboard-no-exception"
+    },
+    {
+      "id": "2.2.3-AAA",
+      "number": "2.2.3",
+      "name": "No Timing",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Timing is not an essential part of the event or activity presented by the content, except for non-interactive synchronized media and real-time events.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/no-timing"
+    },
+    {
+      "id": "2.2.4-AAA",
+      "number": "2.2.4",
+      "name": "Interruptions",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Interruptions can be postponed or suppressed by the user, except interruptions involving an emergency.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/interruptions"
+    },
+    {
+      "id": "2.2.5-AAA",
+      "number": "2.2.5",
+      "name": "Re-authenticating",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "When an authenticated session expires, the user can continue the activity without loss of data after re-authenticating.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/re-authenticating"
+    },
+    {
+      "id": "2.2.6-AAA",
+      "number": "2.2.6",
+      "name": "Timeouts",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Users are warned of the duration of any user inactivity that could cause data loss, unless the data is preserved for more than 20 hours when the user does not take any actions.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/timeouts"
+    },
+    {
+      "id": "2.3.2-AAA",
+      "number": "2.3.2",
+      "name": "Three Flashes",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Web pages do not contain anything that flashes more than three times in any one second period.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/three-flashes"
+    },
+    {
+      "id": "2.3.3-AAA",
+      "number": "2.3.3",
+      "name": "Animation from Interactions",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Motion animation triggered by interaction can be disabled, unless the animation is essential to the functionality or the information being conveyed.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/animation-from-interactions"
+    },
+    {
+      "id": "2.4.8-AAA",
+      "number": "2.4.8",
+      "name": "Location",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Information about the user's location within a set of Web pages is available.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/location"
+    },
+    {
+      "id": "2.4.9-AAA",
+      "number": "2.4.9",
+      "name": "Link Purpose (Link Only)",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "A mechanism is available to allow the purpose of each link to be identified from link text alone, except where the purpose of the link would be ambiguous to users in general.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/link-purpose-link-only"
+    },
+    {
+      "id": "2.4.10-AAA",
+      "number": "2.4.10",
+      "name": "Section Headings",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Section headings are used to organize the content.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/section-headings"
+    },
+    {
+      "id": "2.5.5-AAA",
+      "number": "2.5.5",
+      "name": "Target Size",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "The size of the target for pointer inputs is at least 44 by 44 CSS pixels except when the target is available through an equivalent link or control, is inline, is user agent controlled, or is essential.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/target-size"
+    },
+    {
+      "id": "2.5.6-AAA",
+      "number": "2.5.6",
+      "name": "Concurrent Input Mechanisms",
+      "level": "AAA",
+      "section": "Operable",
+      "description": "Web content does not restrict use of input modalities available on a platform except where the restriction is essential, required to ensure the security of the content, or required to respect user settings.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/concurrent-input-mechanisms"
+    },
+    {
+      "id": "3.1.3-AAA",
+      "number": "3.1.3",
+      "name": "Unusual Words",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "A mechanism is available for identifying specific definitions of words or phrases used in an unusual or restricted way, including idioms and jargon.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/unusual-words"
+    },
+    {
+      "id": "3.1.4-AAA",
+      "number": "3.1.4",
+      "name": "Abbreviations",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "A mechanism for identifying the expanded form or meaning of abbreviations is available.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/abbreviations"
+    },
+    {
+      "id": "3.1.5-AAA",
+      "number": "3.1.5",
+      "name": "Reading Level",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "When text requires reading ability more advanced than the lower secondary education level, supplemental content or a version that does not require reading ability more advanced than the lower secondary education level is available.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/reading-level"
+    },
+    {
+      "id": "3.1.6-AAA",
+      "number": "3.1.6",
+      "name": "Pronunciation",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "A mechanism is available for identifying specific pronunciation of words where meaning of the words, in context, is ambiguous without knowing the pronunciation.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/pronunciation"
+    },
+    {
+      "id": "3.2.5-AAA",
+      "number": "3.2.5",
+      "name": "Change on Request",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "Changes of context are initiated only by user request or a mechanism is available to turn off such changes.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/change-on-request"
+    },
+    {
+      "id": "3.3.5-AAA",
+      "number": "3.3.5",
+      "name": "Help",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "Context-sensitive help is available.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/help"
+    },
+    {
+      "id": "3.3.6-AAA",
+      "number": "3.3.6",
+      "name": "Error Prevention (All)",
+      "level": "AAA",
+      "section": "Understandable",
+      "description": "For Web pages that require the user to submit information, submissions are reversible, data entered by the user is checked for input errors and the user is provided an opportunity to correct them, or a mechanism is available for reviewing, confirming, and correcting information before finalizing the submission.",
+      "wcagUrl": "https://www.w3.org/WAI/WCAG21/Understanding/error-prevention-all"
+    },
+    {
+      "id": "9.2.1-EU",
+      "number": "9.2.1",
+      "name": "Non-web documents",
+      "level": "EU",
+      "section": "EU-Specific",
+      "description": "EN 301 549 requirement for non-web documents accessibility.",
+      "wcagUrl": "https://www.etsi.org/deliver/etsi_en/301500_301599/301549/03.02.01_60/en_301549v030201p.pdf"
+    },
+    {
+      "id": "9.2.2-EU",
+      "number": "9.2.2",
+      "name": "Non-web software",
+      "level": "EU",
+      "section": "EU-Specific",
+      "description": "EN 301 549 requirement for non-web software accessibility.",
+      "wcagUrl": "https://www.etsi.org/deliver/etsi_en/301500_301599/301549/03.02.01_60/en_301549v030201p.pdf"
+    }
   ]
 }

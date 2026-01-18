@@ -186,7 +186,10 @@ export class AcrService {
   async getAcrAnalysis(acrJobId: string, userId: string, tenantId: string) {
     const acrJob = await prisma.acrJob.findFirst({
       where: {
-        id: acrJobId,
+        OR: [
+          { id: acrJobId },
+          { jobId: acrJobId }
+        ],
         userId,
         tenantId,
       },
@@ -324,7 +327,11 @@ export class AcrService {
     }
   ) {
     const acrJob = await prisma.acrJob.findFirst({
-      where: { id: acrJobId, userId, tenantId },
+      where: { 
+        OR: [{ id: acrJobId }, { jobId: acrJobId }],
+        userId, 
+        tenantId 
+      },
     });
 
     if (!acrJob) {
@@ -333,7 +340,7 @@ export class AcrService {
 
     const updated = await prisma.acrCriterionReview.updateMany({
       where: {
-        acrJobId,
+        acrJobId: acrJob.id,
         criterionId,
       },
       data: {
@@ -349,19 +356,19 @@ export class AcrService {
     }
 
     const totalCriteria = await prisma.acrCriterionReview.count({
-      where: { acrJobId },
+      where: { acrJobId: acrJob.id },
     });
 
     const reviewedCriteria = await prisma.acrCriterionReview.count({
       where: {
-        acrJobId,
+        acrJobId: acrJob.id,
         conformanceLevel: { not: null },
       },
     });
 
     if (totalCriteria === reviewedCriteria) {
       await prisma.acrJob.update({
-        where: { id: acrJobId },
+        where: { id: acrJob.id },
         data: { status: 'completed' },
       });
     }
@@ -394,7 +401,11 @@ export class AcrService {
     }
 
     const acrJob = await prisma.acrJob.findFirst({
-      where: { id: acrJobId, userId, tenantId },
+      where: { 
+        OR: [{ id: acrJobId }, { jobId: acrJobId }],
+        userId, 
+        tenantId 
+      },
     });
 
     if (!acrJob) {
@@ -405,7 +416,7 @@ export class AcrService {
       reviews.map(review =>
         prisma.acrCriterionReview.updateMany({
           where: {
-            acrJobId,
+            acrJobId: acrJob.id,
             criterionId: review.criterionId,
           },
           data: {
@@ -419,19 +430,19 @@ export class AcrService {
     );
 
     const totalCriteria = await prisma.acrCriterionReview.count({
-      where: { acrJobId },
+      where: { acrJobId: acrJob.id },
     });
 
     const reviewedCriteria = await prisma.acrCriterionReview.count({
       where: {
-        acrJobId,
+        acrJobId: acrJob.id,
         conformanceLevel: { not: null },
       },
     });
 
     if (totalCriteria === reviewedCriteria) {
       await prisma.acrJob.update({
-        where: { id: acrJobId },
+        where: { id: acrJob.id },
         data: { status: 'completed' },
       });
     }
@@ -448,17 +459,22 @@ export class AcrService {
   }
 
   async getCriterionDetails(acrJobId: string, criterionId: string, userId: string, tenantId: string) {
+    const acrJob = await prisma.acrJob.findFirst({
+      where: { 
+        OR: [{ id: acrJobId }, { jobId: acrJobId }],
+        userId, 
+        tenantId 
+      },
+    });
+
+    if (!acrJob) {
+      throw new Error('ACR job not found or access denied');
+    }
+
     const criterion = await prisma.acrCriterionReview.findFirst({
       where: {
-        acrJobId,
+        acrJobId: acrJob.id,
         criterionId,
-        acrJob: {
-          userId,
-          tenantId,
-        },
-      },
-      include: {
-        acrJob: true,
       },
     });
 
@@ -642,6 +658,27 @@ export class AcrService {
       issues: allIssues,
       manifest: [],
     };
+  }
+
+  async resolveAcrJob(jobId: string) {
+    return prisma.acrJob.findFirst({
+      where: {
+        OR: [
+          { id: jobId },
+          { jobId: jobId },
+        ],
+      },
+    });
+  }
+
+  async updateAcrJobStatus(acrJobId: string, status: string) {
+    return prisma.acrJob.update({
+      where: { id: acrJobId },
+      data: {
+        status,
+        updatedAt: new Date(),
+      },
+    });
   }
 }
 

@@ -25,6 +25,7 @@ router.post('/audit-upload', authenticate, upload.single('file'), epubController
 router.post('/audit-file', authenticate, epubController.auditFromFileId);
 router.get('/audit/:jobId/result', authenticate, authorizeJob, epubController.getAuditResult);
 router.get('/job/:jobId/audit/result', authenticate, authorizeJob, epubController.getAuditResult);
+router.get('/job/:jobId', authenticate, authorizeJob, epubController.getJob);
 
 router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubController.createRemediationPlan);
 router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
@@ -61,5 +62,7 @@ router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getA
 router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
 router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJob, epubController.scanEpubTypes);
 router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, epubController.markTaskFixed);
+router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
+router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.getImage);
 
 export default router;
