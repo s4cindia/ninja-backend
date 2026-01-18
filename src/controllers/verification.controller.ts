@@ -95,10 +95,25 @@ export class VerificationController {
               if (issueData.relatedIssues?.length || issueData.fixedIssues?.length) {
                 enrichedCount++;
                 console.log(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
+                // Log sample issue structure for debugging
+                if (issueData.relatedIssues?.[0]) {
+                  console.log(`[Verification] Sample relatedIssue:`, JSON.stringify(issueData.relatedIssues[0]));
+                }
               }
             }
           }
           console.log(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
+          
+          // Log a sample enriched item for frontend debugging
+          const sampleEnriched = queue.items.find(i => i.relatedIssues?.length || i.fixedIssues?.length);
+          if (sampleEnriched) {
+            console.log(`[Verification] Sample enriched queue item:`, JSON.stringify({
+              criterionId: sampleEnriched.criterionId,
+              criterionName: sampleEnriched.criterionName,
+              relatedIssues: sampleEnriched.relatedIssues,
+              fixedIssues: sampleEnriched.fixedIssues
+            }, null, 2));
+          }
         } else {
           console.log(`[Verification] No criteria found in analysis`);
         }
