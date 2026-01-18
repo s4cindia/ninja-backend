@@ -15,6 +15,7 @@ import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { acrService } from '../services/acr.service';
 import { z } from 'zod';
+import prisma from '../lib/prisma';
 
 const ProductInfoSchema = z.object({
   name: z.string().min(1),
@@ -306,7 +307,7 @@ export class AcrController {
         options: ExportOptionsSchema,
         acrData: z.object({
           edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
-          productInfo: ProductInfoSchema
+          productInfo: ProductInfoSchema.partial()
         }).optional()
       });
 
@@ -320,6 +321,27 @@ export class AcrController {
         branding: validatedData.options.branding
       };
 
+      const acrJob = await prisma.acrJob.findFirst({
+        where: {
+          OR: [
+            { id: acrId },
+            { jobId: acrId }
+          ]
+        }
+      });
+
+      let documentTitle = acrJob?.documentTitle || 'Unnamed Product';
+
+      if (acrJob?.jobId) {
+        const job = await prisma.job.findFirst({
+          where: { id: acrJob.jobId },
+          include: { file: true }
+        });
+        if (job?.file?.originalName) {
+          documentTitle = job.file.originalName.replace(/\.(epub|pdf|html)$/i, '');
+        }
+      }
+
       const verificationQueue = await humanVerificationService.getQueue(acrId);
       
       const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
@@ -332,16 +354,17 @@ export class AcrController {
         });
       }
 
+      const providedProductInfo = validatedData.acrData?.productInfo || {};
       const acrGenerationOptions = {
-        edition: validatedData.acrData?.edition || 'VPAT2.5-INT' as const,
+        edition: validatedData.acrData?.edition || acrJob?.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT' || 'VPAT2.5-INT' as const,
         includeMethodology: exportOptions.includeMethodology,
-        productInfo: validatedData.acrData?.productInfo || {
-          name: 'Unnamed Product',
-          version: '1.0.0',
-          description: 'Product accessibility conformance report',
-          vendor: 'Unknown Vendor',
-          contactEmail: 'contact@example.com',
-          evaluationDate: new Date()
+        productInfo: {
+          name: providedProductInfo.name || documentTitle,
+          version: providedProductInfo.version || '1.0.0',
+          description: providedProductInfo.description || 'Product accessibility conformance report',
+          vendor: providedProductInfo.vendor || 'Unknown Vendor',
+          contactEmail: providedProductInfo.contactEmail || 'contact@example.com',
+          evaluationDate: providedProductInfo.evaluationDate || acrJob?.createdAt || new Date()
         }
       };
 

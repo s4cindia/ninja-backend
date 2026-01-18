@@ -10,8 +10,7 @@ import {
   TextRun,
   HeadingLevel,
   WidthType,
-  AlignmentType,
-  BorderStyle
+  AlignmentType
 } from 'docx';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -78,34 +77,21 @@ async function exportToDocx(
   acr: AcrDocument,
   options: ExportOptions
 ): Promise<Buffer> {
-  const tableBorders = {
-    top: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-    bottom: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-    left: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' },
-    right: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' }
-  };
-
   const tableRows: TableRow[] = [
     new TableRow({
       tableHeader: true,
       children: [
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Criteria', bold: true })] })],
-          width: { size: 25, type: WidthType.PERCENTAGE },
-          borders: tableBorders,
-          shading: { fill: '2563EB' }
+          width: { size: 2500, type: WidthType.DXA }
         }),
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Conformance Level', bold: true })] })],
-          width: { size: 15, type: WidthType.PERCENTAGE },
-          borders: tableBorders,
-          shading: { fill: '2563EB' }
+          width: { size: 1500, type: WidthType.DXA }
         }),
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Remarks and Explanations', bold: true })] })],
-          width: { size: 60, type: WidthType.PERCENTAGE },
-          borders: tableBorders,
-          shading: { fill: '2563EB' }
+          width: { size: 5000, type: WidthType.DXA }
         })
       ]
     })
@@ -122,101 +108,85 @@ async function exportToDocx(
           new TableCell({
             children: [
               new Paragraph({ children: [new TextRun({ text: criterion.id, bold: true })] }),
-              new Paragraph({ children: [new TextRun({ text: criterion.name, size: 18 })] })
-            ],
-            borders: tableBorders
+              new Paragraph({ children: [new TextRun({ text: criterion.name })] })
+            ]
           }),
           new TableCell({
-            children: [new Paragraph({ text: formatConformanceLevel(criterion.conformanceLevel) })],
-            borders: tableBorders
+            children: [new Paragraph({ children: [new TextRun({ text: formatConformanceLevel(criterion.conformanceLevel) })] })]
           }),
           new TableCell({
-            children: [new Paragraph({ text: remarksText })],
-            borders: tableBorders
+            children: [new Paragraph({ children: [new TextRun({ text: remarksText })] })]
           })
         ]
       })
     );
   }
 
-  const docChildren: Paragraph[] = [
+  const children: (Paragraph | Table)[] = [
     new Paragraph({
-      children: [new TextRun({ text: `Accessibility Conformance Report - ${acr.productInfo.name}`, bold: true, size: 48 })],
+      children: [new TextRun({ text: `Accessibility Conformance Report`, bold: true, size: 48 })],
       heading: HeadingLevel.TITLE,
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 200 }
+      alignment: AlignmentType.CENTER
     }),
     new Paragraph({
-      children: [new TextRun({ text: `VPAT Version 2.5 - ${acr.edition} Edition`, size: 24 })],
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 400 }
+      children: [new TextRun({ text: acr.productInfo.name, bold: true, size: 36 })],
+      alignment: AlignmentType.CENTER
     }),
     new Paragraph({
-      children: [new TextRun({ text: 'Product Information', bold: true, size: 32 })],
-      heading: HeadingLevel.HEADING_1,
-      spacing: { before: 400, after: 200 }
+      children: [new TextRun({ text: `VPAT Version 2.5 - ${acr.edition} Edition` })],
+      alignment: AlignmentType.CENTER
+    }),
+    new Paragraph({ children: [] }),
+    new Paragraph({
+      children: [new TextRun({ text: 'Product Information', bold: true, size: 28 })],
+      heading: HeadingLevel.HEADING_1
     }),
     new Paragraph({ children: [new TextRun({ text: 'Product Name: ', bold: true }), new TextRun({ text: acr.productInfo.name })] }),
     new Paragraph({ children: [new TextRun({ text: 'Version: ', bold: true }), new TextRun({ text: acr.productInfo.version })] }),
     new Paragraph({ children: [new TextRun({ text: 'Vendor: ', bold: true }), new TextRun({ text: acr.productInfo.vendor })] }),
     new Paragraph({ children: [new TextRun({ text: 'Contact: ', bold: true }), new TextRun({ text: acr.productInfo.contactEmail })] }),
-    new Paragraph({ 
-      children: [new TextRun({ text: 'Evaluation Date: ', bold: true }), new TextRun({ text: acr.productInfo.evaluationDate.toISOString().split('T')[0] })],
-      spacing: { after: 400 }
-    }),
+    new Paragraph({ children: [new TextRun({ text: 'Evaluation Date: ', bold: true }), new TextRun({ text: acr.productInfo.evaluationDate.toISOString().split('T')[0] })] }),
+    new Paragraph({ children: [] }),
     new Paragraph({
-      children: [new TextRun({ text: 'Evaluation Methods', bold: true, size: 32 })],
-      heading: HeadingLevel.HEADING_1,
-      spacing: { before: 200, after: 200 }
+      children: [new TextRun({ text: 'Evaluation Methods', bold: true, size: 28 })],
+      heading: HeadingLevel.HEADING_1
     })
   ];
 
   for (const method of acr.evaluationMethods) {
-    docChildren.push(new Paragraph({ text: `• ${method}` }));
+    children.push(new Paragraph({ children: [new TextRun({ text: `• ${method}` })] }));
   }
 
-  docChildren.push(new Paragraph({ text: '', spacing: { after: 400 } }));
-  docChildren.push(new Paragraph({
-    children: [new TextRun({ text: 'Accessibility Conformance Report', bold: true, size: 32 })],
-    heading: HeadingLevel.HEADING_1,
-    spacing: { before: 200, after: 200 }
+  children.push(new Paragraph({ children: [] }));
+  children.push(new Paragraph({
+    children: [new TextRun({ text: 'Accessibility Conformance Report', bold: true, size: 28 })],
+    heading: HeadingLevel.HEADING_1
   }));
-
-  const table = new Table({
-    rows: tableRows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
-  });
-
-  const sectionChildren: (Paragraph | Table)[] = [...docChildren, table];
+  children.push(new Table({ rows: tableRows }));
 
   if (options.includeMethodology && acr.methodology) {
-    sectionChildren.push(new Paragraph({ text: '', spacing: { after: 400 } }));
-    sectionChildren.push(new Paragraph({
-      children: [new TextRun({ text: 'Assessment Methodology', bold: true, size: 32 })],
-      heading: HeadingLevel.HEADING_1,
-      spacing: { before: 200, after: 200 }
+    children.push(new Paragraph({ children: [] }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Assessment Methodology', bold: true, size: 28 })],
+      heading: HeadingLevel.HEADING_1
     }));
-    sectionChildren.push(new Paragraph({ children: [new TextRun({ text: 'Tool Version: ', bold: true }), new TextRun({ text: acr.methodology.toolVersion })] }));
-    sectionChildren.push(new Paragraph({ children: [new TextRun({ text: 'AI Model: ', bold: true }), new TextRun({ text: acr.methodology.aiModelInfo })] }));
-    sectionChildren.push(new Paragraph({ children: [new TextRun({ text: 'Assessment Date: ', bold: true }), new TextRun({ text: acr.methodology.assessmentDate.toISOString().split('T')[0] })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Tool Version: ', bold: true }), new TextRun({ text: acr.methodology.toolVersion })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'AI Model: ', bold: true }), new TextRun({ text: acr.methodology.aiModelInfo })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Assessment Date: ', bold: true }), new TextRun({ text: acr.methodology.assessmentDate.toISOString().split('T')[0] })] }));
   }
 
   if (acr.footerDisclaimer) {
-    sectionChildren.push(new Paragraph({ text: '', spacing: { after: 400 } }));
-    sectionChildren.push(new Paragraph({
-      children: [new TextRun({ text: 'Legal Disclaimer', bold: true, size: 28 })],
-      heading: HeadingLevel.HEADING_2,
-      spacing: { before: 200, after: 200 }
+    children.push(new Paragraph({ children: [] }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Legal Disclaimer', bold: true, size: 24 })],
+      heading: HeadingLevel.HEADING_2
     }));
-    sectionChildren.push(new Paragraph({ 
-      children: [new TextRun({ text: acr.footerDisclaimer, italics: true, size: 20 })]
-    }));
+    children.push(new Paragraph({ children: [new TextRun({ text: acr.footerDisclaimer, italics: true })] }));
   }
 
   const doc = new Document({
     sections: [{
-      properties: {},
-      children: sectionChildren
+      children: children
     }]
   });
 
