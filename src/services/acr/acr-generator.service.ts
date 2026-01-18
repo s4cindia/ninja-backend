@@ -550,6 +550,7 @@ class AcrGeneratorService {
       const status = this.determineStatus(relatedIssues);
       const confidenceScore = this.calculateConfidence(relatedIssues);
       const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
+      const hasIssues = relatedIssues.length > 0;
 
       return {
         criterionId: criterion.id,
@@ -559,7 +560,8 @@ class AcrGeneratorService {
         confidenceScore,
         remarks,
         relatedIssues,
-        issueCount: relatedIssues.length
+        issueCount: relatedIssues.length,
+        hasIssues
       };
     });
 
@@ -630,6 +632,7 @@ export interface CriterionConfidenceWithIssues {
   remarks: string;
   relatedIssues?: IssueMapping[];
   issueCount?: number;
+  hasIssues: boolean;
 }
 
 export const acrGeneratorService = new AcrGeneratorService();
