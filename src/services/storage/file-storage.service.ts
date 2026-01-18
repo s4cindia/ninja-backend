@@ -80,7 +80,10 @@ class FileStorageService {
       const sanitizedFileName = path.basename(fileName);
       const ext = path.extname(sanitizedFileName);
       const baseName = sanitizedFileName.slice(0, -ext.length);
-      const remediatedFileName = `${baseName}_remediated${ext}`;
+      
+      const remediatedFileName = baseName.endsWith('_remediated')
+        ? sanitizedFileName
+        : `${baseName}_remediated${ext}`;
       
       const filePath = path.join(STORAGE_BASE, jobId, 'remediated', remediatedFileName);
       return await fs.readFile(filePath);

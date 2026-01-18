@@ -1176,10 +1176,9 @@ export const epubController = {
 
       const input = job.input as { fileName?: string };
       const fileName = input?.fileName || 'upload.epub';
-      const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
 
       const originalBuffer = await fileStorageService.getFile(jobId, fileName);
-      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
 
       if (!originalBuffer || !remediatedBuffer) {
         return res.status(404).json({
@@ -1233,10 +1232,9 @@ export const epubController = {
 
       const input = job.input as { fileName?: string };
       const fileName = input?.fileName || 'upload.epub';
-      const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
 
       const originalBuffer = await fileStorageService.getFile(jobId, fileName);
-      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
+      const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
 
       if (!originalBuffer || !remediatedBuffer) {
         return res.status(404).json({
