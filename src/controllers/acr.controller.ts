@@ -985,6 +985,38 @@ export class AcrController {
       });
     }
   }
+
+  async finalizeAcr(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      const acrJob = await acrService.resolveAcrJob(jobId);
+      if (!acrJob) {
+        return res.status(404).json({
+          success: false,
+          error: 'ACR job not found',
+        });
+      }
+
+      await acrService.updateAcrJobStatus(acrJob.id, 'finalized');
+
+      return res.json({
+        success: true,
+        data: {
+          id: acrJob.id,
+          status: 'finalized',
+          finalizedAt: new Date().toISOString(),
+        },
+        message: 'ACR successfully finalized',
+      });
+    } catch (error) {
+      console.error('Failed to finalize ACR:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to finalize ACR',
+      });
+    }
+  }
 }
 
 export const acrController = new AcrController();

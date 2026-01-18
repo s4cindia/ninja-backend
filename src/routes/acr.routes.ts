@@ -18,6 +18,7 @@ router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));
 router.post('/:jobId/validate-credibility', authorizeJob, acrController.validateCredibility.bind(acrController));
 router.get('/:jobId/can-finalize', authorizeJob, verificationController.canFinalize.bind(verificationController));
+router.post('/:jobId/finalize', authorizeJob, acrController.finalizeAcr.bind(acrController));
 router.get('/:jobId/methodology', authorizeJob, acrController.getMethodology.bind(acrController));
 router.post('/:acrId/export', authorizeAcr, acrController.exportAcr.bind(acrController));
 

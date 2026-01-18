@@ -659,6 +659,27 @@ export class AcrService {
       manifest: [],
     };
   }
+
+  async resolveAcrJob(jobId: string) {
+    return prisma.acrJob.findFirst({
+      where: {
+        OR: [
+          { id: jobId },
+          { jobId: jobId },
+        ],
+      },
+    });
+  }
+
+  async updateAcrJobStatus(acrJobId: string, status: string) {
+    return prisma.acrJob.update({
+      where: { id: acrJobId },
+      data: {
+        status,
+        updatedAt: new Date(),
+      },
+    });
+  }
 }
 
 export const acrService = new AcrService();

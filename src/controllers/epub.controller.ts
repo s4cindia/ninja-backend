@@ -19,6 +19,62 @@ import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extract
 const comparisonService = new ComparisonService(prisma);
 
 export const epubController = {
+  async getJob(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          input: true,
+          output: true,
+          createdAt: true,
+          updatedAt: true,
+          completedAt: true,
+        },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const input = job.input as { fileName?: string } | null;
+      const output = job.output as { fileName?: string; epubTitle?: string } | null;
+
+      return res.json({
+        success: true,
+        data: {
+          ...job,
+          fileName: input?.fileName || output?.fileName || 'Unknown',
+          title: output?.epubTitle || input?.fileName || 'Untitled Document',
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to fetch job', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch job',
+      });
+    }
+  },
+
   async auditEPUB(req: Request, res: Response) {
     try {
       const job = req.job;

@@ -25,6 +25,7 @@ router.post('/audit-upload', authenticate, upload.single('file'), epubController
 router.post('/audit-file', authenticate, epubController.auditFromFileId);
 router.get('/audit/:jobId/result', authenticate, authorizeJob, epubController.getAuditResult);
 router.get('/job/:jobId/audit/result', authenticate, authorizeJob, epubController.getAuditResult);
+router.get('/job/:jobId', authenticate, authorizeJob, epubController.getJob);
 
 router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubController.createRemediationPlan);
 router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
