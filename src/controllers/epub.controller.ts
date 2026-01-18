@@ -2128,6 +2128,119 @@ export const epubController = {
       });
     }
   },
+
+  async generateImageAltText(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { imagePath, imageType } = req.body;
+
+      if (!imagePath) {
+        return res.status(400).json({
+          success: false,
+          error: 'imagePath is required',
+        });
+      }
+
+      logger.info(`[Alt Text] Generating for job ${jobId}, image: ${imagePath}`);
+
+      const { epubContentService } = await import('../services/epub/epub-content.service');
+      const { photoAltGenerator } = await import('../services/alt-text/photo-alt-generator.service');
+
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const contentResult = await epubContentService.getContent(jobId, imagePath, userId);
+
+      if (!contentResult) {
+        return res.status(404).json({
+          success: false,
+          error: 'Image not found in EPUB',
+        });
+      }
+
+      if (!contentResult.contentType.startsWith('image/')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Requested file is not an image',
+        });
+      }
+
+      const isBase64 = contentResult.contentType.includes('base64');
+      const imageBuffer = isBase64
+        ? Buffer.from(contentResult.content, 'base64')
+        : Buffer.from(contentResult.content);
+
+      const mimeType = contentResult.contentType.replace(';base64', '');
+
+      const altTextResult = await photoAltGenerator.generateAltText(imageBuffer, mimeType);
+
+      let longDescription = altTextResult.extendedAlt;
+      let imageClassification = imageType || 'informative';
+
+      if (imageType === 'complex') {
+        const complexPrompt = `
+This is a complex image that requires detailed description.
+Provide a comprehensive description (300-500 words) suitable for aria-describedby.
+Include:
+- Overall purpose and structure
+- Key data points or information
+- Trends, patterns, or relationships
+- Any text visible in the image
+- Context for understanding the image
+
+Return JSON only (no markdown):
+{
+  "longDescription": "detailed prose description",
+  "imageType": "BAR_CHART|LINE_CHART|PIE_CHART|FLOWCHART|DIAGRAM|TABLE|INFOGRAPHIC|OTHER"
+}
+`;
+        try {
+          const { GoogleGenerativeAI } = await import('@google/generative-ai');
+          const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+          const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+
+          const imagePart = {
+            inlineData: {
+              data: imageBuffer.toString('base64'),
+              mimeType,
+            },
+          };
+
+          const result = await model.generateContent([complexPrompt, imagePart]);
+          const response = await result.response;
+          const text = response.text();
+          const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, ''));
+
+          longDescription = parsed.longDescription || longDescription;
+          imageClassification = parsed.imageType || 'COMPLEX';
+        } catch (complexError) {
+          logger.warn('[Alt Text] Complex description generation failed, using extended alt', complexError instanceof Error ? complexError : undefined);
+        }
+      }
+
+      logger.info(`[Alt Text] Generated for ${imagePath}: confidence=${altTextResult.confidence}, flags=${altTextResult.flags.join(',')}`);
+
+      return res.json({
+        success: true,
+        data: {
+          shortAlt: altTextResult.shortAlt,
+          longDescription,
+          confidence: altTextResult.confidence,
+          flags: altTextResult.flags,
+          imageType: imageClassification,
+          needsReview: photoAltGenerator.needsHumanReview(altTextResult),
+          generatedAt: altTextResult.generatedAt,
+          model: altTextResult.aiModel,
+        },
+      });
+    } catch (error) {
+      logger.error('[Alt Text] Generation failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate alt text',
+      });
+    }
+  },
 };
 
 // FIX 2: Interface with nullable path field (at module level)
