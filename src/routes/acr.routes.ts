@@ -32,6 +32,7 @@ router.get('/job/:jobId/analysis', acrController.getAcrAnalysisByJobId.bind(acrC
 router.get('/:acrJobId', acrController.getAcrAnalysis.bind(acrController));
 router.get('/:acrJobId/analysis', acrController.getAcrAnalysis.bind(acrController));
 router.post('/:acrJobId/criteria/:criterionId/review', acrController.saveCriterionReview.bind(acrController));
+router.patch('/:acrJobId/criteria/:criterionId', acrController.saveCriterionReview.bind(acrController));
 router.get('/:acrJobId/criteria/:criterionId', acrController.getCriterionDetailsFromJob.bind(acrController));
 router.post('/:acrJobId/reviews/bulk', acrController.saveBulkReviews.bind(acrController));
 
