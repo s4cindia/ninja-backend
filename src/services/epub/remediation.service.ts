@@ -893,6 +893,49 @@ class RemediationService {
       },
     });
 
+    // Also create AcrJob record for the Review & Edit page
+    try {
+      const acrJobRecord = await prisma.acrJob.create({
+        data: {
+          jobId: acrJob.id,
+          tenantId: originalJob.tenantId,
+          userId: originalJob.userId,
+          edition: 'section508',
+          documentTitle: plan.fileName || 'Untitled Document',
+          status: 'in_progress',
+        },
+      });
+
+      // Create AcrCriterionReview records based on WCAG criteria from pending tasks
+      const wcagCriteriaSet = new Set<string>();
+      for (const task of pendingTasks) {
+        if (Array.isArray(task.wcagCriteria)) {
+          task.wcagCriteria.forEach((c: string) => wcagCriteriaSet.add(c));
+        } else if (task.wcagCriteria) {
+          wcagCriteriaSet.add(task.wcagCriteria);
+        }
+      }
+
+      // Create criterion reviews for affected WCAG criteria
+      for (const criterionId of wcagCriteriaSet) {
+        await prisma.acrCriterionReview.create({
+          data: {
+            acrJobId: acrJobRecord.id,
+            criterionId,
+            criterionNumber: criterionId,
+            criterionName: `WCAG ${criterionId}`,
+            level: criterionId.startsWith('1.4.') ? 'AA' : 'A',
+            confidence: 50,
+            aiStatus: 'needs_review',
+          },
+        });
+      }
+
+      logger.info(`[ACR Transfer] Created AcrJob ${acrJobRecord.id} with ${wcagCriteriaSet.size} criterion reviews`);
+    } catch (acrJobError) {
+      logger.warn(`[ACR Transfer] Could not create AcrJob record: ${acrJobError instanceof Error ? acrJobError.message : 'Unknown error'}`);
+    }
+
     for (const task of pendingTasks) {
       await this.updateTaskStatus(
         jobId,
