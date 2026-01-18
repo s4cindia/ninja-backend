@@ -62,5 +62,6 @@ router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentControl
 router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJob, epubController.scanEpubTypes);
 router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, epubController.markTaskFixed);
 router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
+router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.getImage);
 
 export default router;

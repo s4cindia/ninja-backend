@@ -2129,6 +2129,60 @@ export const epubController = {
     }
   },
 
+  async getImage(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const imagePath = req.params[0] || req.query.path as string;
+
+      if (!imagePath) {
+        return res.status(400).json({
+          success: false,
+          error: 'imagePath is required',
+        });
+      }
+
+      logger.info(`[Image] Serving image for job ${jobId}: ${imagePath}`);
+
+      const { epubContentService } = await import('../services/epub/epub-content.service');
+
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const contentResult = await epubContentService.getContent(jobId, imagePath, userId);
+
+      if (!contentResult) {
+        return res.status(404).json({
+          success: false,
+          error: 'Image not found in EPUB',
+        });
+      }
+
+      if (!contentResult.contentType.startsWith('image/')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Requested file is not an image',
+        });
+      }
+
+      const isBase64 = contentResult.contentType.includes('base64');
+      const imageBuffer = isBase64
+        ? Buffer.from(contentResult.content, 'base64')
+        : Buffer.from(contentResult.content);
+
+      const mimeType = contentResult.contentType.replace(';base64', '');
+
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(imageBuffer);
+    } catch (error) {
+      logger.error('[Image] Failed to serve image', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to serve image',
+      });
+    }
+  },
+
   async generateImageAltText(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
