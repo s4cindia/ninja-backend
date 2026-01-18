@@ -6,16 +6,25 @@ const formatMessage = (level: LogLevel, message: string): string => {
 };
 
 export const logger = {
-  debug: (message: string): void => {
+  debug: (message: string, meta?: Record<string, unknown>): void => {
     if (process.env.LOG_LEVEL === 'debug') {
-      console.warn(formatMessage('debug', message));
+      const metaStr = meta ? ` ${JSON.stringify(meta)}` : '';
+      console.warn(formatMessage('debug', message + metaStr));
     }
   },
-  info: (message: string): void => {
-    console.warn(formatMessage('info', message));
+  info: (message: string, meta?: Record<string, unknown>): void => {
+    const metaStr = meta ? ` ${JSON.stringify(meta)}` : '';
+    console.warn(formatMessage('info', message + metaStr));
   },
-  warn: (message: string): void => {
-    console.warn(formatMessage('warn', message));
+  warn: (message: string, error?: Error | Record<string, unknown>): void => {
+    if (error instanceof Error) {
+      console.warn(formatMessage('warn', message));
+      console.warn(error.stack || error.message);
+    } else if (error) {
+      console.warn(formatMessage('warn', message + ` ${JSON.stringify(error)}`));
+    } else {
+      console.warn(formatMessage('warn', message));
+    }
   },
   error: (message: string, error?: Error): void => {
     console.error(formatMessage('error', message));

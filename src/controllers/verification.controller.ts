@@ -45,10 +45,13 @@ export class VerificationController {
 
       const queue = await humanVerificationService.getQueueFromJob(jobId);
       
+      // Parse forceRefresh query param (default false to use caching)
+      const forceRefresh = req.query.forceRefresh === 'true' || req.query.forceRefresh === '1';
+      
       // Enrich queue items with issues from ACR analysis
       try {
         logger.info(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
-        const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, true);
+        const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, forceRefresh);
         
         if (analysis?.criteria) {
           logger.info(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
