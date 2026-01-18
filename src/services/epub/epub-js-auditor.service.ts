@@ -14,6 +14,8 @@ interface AccessibilityIssue {
   location?: string;
   suggestion?: string;
   category: string;
+  element?: string;
+  context?: string;
 }
 
 interface JSAuditResult {
