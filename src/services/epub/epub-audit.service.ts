@@ -68,6 +68,8 @@ interface AccessibilityIssue {
   location?: string;
   suggestion?: string;
   category?: string;
+  element?: string;
+  context?: string;
 }
 
 interface ScoreBreakdown {
@@ -225,6 +227,8 @@ class EpubAuditService {
               location: issue.location,
               suggestion: issue.suggestion,
               category: issue.category,
+              element: issue.element,
+              context: issue.context,
             });
             existingKeys.add(key);
             jsAddedCount++;
