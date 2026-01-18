@@ -53,6 +53,8 @@ interface RemediationTask {
   source?: string;
   html?: string;
   remediation?: string;
+  element?: string;
+  context?: string;
 }
 
 interface RemediationPlan {
@@ -263,6 +265,8 @@ class RemediationService {
         source: (issue.source as string) || undefined,
         html: (issue.html as string) || (issue.snippet as string) || undefined,
         remediation: this.getRemediationGuidance(issueCode),
+        element: (issue.element as string) || undefined,
+        context: (issue.context as string) || undefined,
       };
     });
 
