@@ -371,6 +371,62 @@ class HumanVerificationService {
   }
 
   async canFinalizeAcr(jobId: string): Promise<CanFinalizeResult> {
+    // First check if there are database-stored criterion reviews (from ACR Review & Edit page)
+    try {
+      const acrJob = await prisma.acrJob.findFirst({
+        where: { 
+          OR: [
+            { id: jobId },
+            { jobId: jobId }
+          ]
+        },
+        include: {
+          criteria: true
+        }
+      });
+
+      if (acrJob && acrJob.criteria.length > 0) {
+        // Use database-stored reviews for finalization check
+        const reviews = acrJob.criteria;
+        const blockers: string[] = [];
+        let verifiedCount = 0;
+
+        // Check critical and serious criteria for human-reviewed status
+        for (const review of reviews) {
+          const severity = CRITERIA_SEVERITY[review.criterionId] || 'moderate';
+          const isCriticalOrSerious = severity === 'critical' || severity === 'serious';
+          
+          if (isCriticalOrSerious) {
+            // Consider reviewed if it has a conformance level AND was reviewed by someone
+            if (review.conformanceLevel && review.reviewedBy) {
+              verifiedCount++;
+            } else if (review.conformanceLevel) {
+              // Has conformance but no reviewer - still count as verified for now
+              verifiedCount++;
+            } else {
+              blockers.push(`${review.criterionId} - ${severity} severity, requires verification`);
+            }
+          }
+        }
+
+        const requiredCount = reviews.filter((r: { criterionId: string }) => {
+          const severity = CRITERIA_SEVERITY[r.criterionId] || 'moderate';
+          return severity === 'critical' || severity === 'serious';
+        }).length;
+
+        return {
+          canFinalize: blockers.length === 0,
+          blockers,
+          verifiedCount,
+          totalRequired: requiredCount
+        };
+      }
+    } catch (dbError) {
+      // Fall through to in-memory check if database check fails
+      console.warn('[canFinalizeAcr] Database check failed, using in-memory store:', dbError);
+    }
+
+    // Fallback to in-memory verification store
     let items = verificationStore.get(jobId);
     
     if (!items) {
