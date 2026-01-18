@@ -2188,10 +2188,17 @@ export const epubController = {
       const { jobId } = req.params;
       const { imagePath, imageType } = req.body;
 
+      logger.info(`[Alt Text] Request received for job ${jobId}`, {
+        imagePath,
+        imageType,
+        body: JSON.stringify(req.body),
+      });
+
       if (!imagePath) {
+        logger.warn(`[Alt Text] Missing imagePath in request body: ${JSON.stringify(req.body)}`);
         return res.status(400).json({
           success: false,
-          error: 'imagePath is required',
+          error: 'imagePath is required. Send { imagePath: "OEBPS/images/file.png", imageType: "informative" }',
         });
       }
 
