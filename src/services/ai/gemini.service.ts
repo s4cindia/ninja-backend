@@ -69,7 +69,7 @@ class GeminiService {
     
     if (this.requestCount >= aiConfig.gemini.rateLimit.requestsPerMinute) {
       const waitTime = 60000 - timeSinceReset;
-      console.log(`Rate limit reached. Waiting ${waitTime}ms...`);
+      logger.warn(`Rate limit reached. Waiting ${waitTime}ms...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       this.requestCount = 0;
       this.lastResetTime = Date.now();
@@ -105,7 +105,7 @@ class GeminiService {
         
         if (attempt < retries) {
           const delay = aiConfig.gemini.retryDelay * Math.pow(2, attempt);
-          console.log(`Gemini API error, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`);
+          logger.warn(`Gemini API error, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }

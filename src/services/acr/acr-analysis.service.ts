@@ -1,6 +1,14 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import acrEditionsData from '../../data/acrEditions.json';
+import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
+
+// Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
+const WCAG_MAPPED_CODES = new Set(
+  Object.entries(RULE_TO_CRITERIA_MAP)
+    .filter(([, criteria]) => criteria && criteria.length > 0)
+    .map(([rule]) => rule)
+);
 
 // Load WCAG criteria from shared JSON (filters out EU-specific criteria)
 const WCAG_CRITERIA = acrEditionsData.criteria
@@ -415,15 +423,8 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           // Pass ALL issues to the analyzer which handles WCAG mapping via issueToWcagMapping
           issues = allIssues;
           
-          // Track issues that have no WCAG mapping (will be determined after analysis)
-          // For now, we'll identify "other" issues based on issue codes that don't map to WCAG
-          const wcagMappedCodes = new Set([
-            'EPUB-IMG-001', 'EPUB-META-001', 'EPUB-META-002', 'EPUB-META-003', 'EPUB-META-004',
-            'EPUB-SEM-001', 'EPUB-SEM-002', 'EPUB-STRUCT-002', 'EPUB-STRUCT-003', 'EPUB-STRUCT-004',
-            'EPUB-NAV-001', 'EPUB-FIG-001'
-          ]);
-          
-          const otherIssues = allIssues.filter(issue => !wcagMappedCodes.has(issue.code || ''));
+          // Track issues that have no WCAG mapping (derived from RULE_TO_CRITERIA_MAP)
+          const otherIssues = allIssues.filter(issue => !WCAG_MAPPED_CODES.has(issue.code || ''));
 
           otherIssuesData = otherIssues.map(issue => ({
             code: issue.code || 'UNKNOWN',

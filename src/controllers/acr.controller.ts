@@ -978,7 +978,7 @@ export class AcrController {
         success: true,
         data: guidance
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
         success: false,
         error: 'Failed to fetch criterion guidance'

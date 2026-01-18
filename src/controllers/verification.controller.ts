@@ -3,6 +3,7 @@ import { humanVerificationService, SubmitVerificationInput, VerificationStatus, 
 import { ConfidenceLevel } from '../services/acr/confidence-analyzer.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { z } from 'zod';
+import { logger } from '../lib/logger';
 
 const SubmitVerificationSchema = z.object({
   status: z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED']),
@@ -46,11 +47,11 @@ export class VerificationController {
       
       // Enrich queue items with issues from ACR analysis
       try {
-        console.log(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
+        logger.info(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
         const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, true);
         
         if (analysis?.criteria) {
-          console.log(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
+          logger.info(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
           
           // Create a map of criterion ID to issues
           const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[]; confidence?: number }>();
@@ -62,7 +63,7 @@ export class VerificationController {
             
             if (relatedCount > 0 || fixedCount > 0) {
               criteriaWithIssues++;
-              console.log(`[Verification] Criterion ${criterion.id}: ${relatedCount} remaining, ${fixedCount} fixed, confidence=${criterion.confidence}`);
+              logger.debug(`[Verification] Criterion ${criterion.id}: ${relatedCount} remaining, ${fixedCount} fixed, confidence=${criterion.confidence}`);
             }
             
             criteriaIssuesMap.set(criterion.id, {
@@ -83,7 +84,7 @@ export class VerificationController {
               confidence: criterion.confidence
             });
           }
-          console.log(`[Verification] Total criteria with issues: ${criteriaWithIssues}`);
+          logger.debug(`[Verification] Total criteria with issues: ${criteriaWithIssues}`);
           
           // Enrich queue items with issues
           let enrichedCount = 0;
@@ -94,31 +95,30 @@ export class VerificationController {
               item.fixedIssues = issueData.fixedIssues;
               if (issueData.relatedIssues?.length || issueData.fixedIssues?.length) {
                 enrichedCount++;
-                console.log(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
+                logger.debug(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
                 // Log sample issue structure for debugging
                 if (issueData.relatedIssues?.[0]) {
-                  console.log(`[Verification] Sample relatedIssue:`, JSON.stringify(issueData.relatedIssues[0]));
+                  logger.debug(`[Verification] Sample relatedIssue: ${JSON.stringify(issueData.relatedIssues[0])}`);
                 }
               }
             }
           }
-          console.log(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
+          logger.debug(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
           
           // Log a sample enriched item for frontend debugging
           const sampleEnriched = queue.items.find(i => i.relatedIssues?.length || i.fixedIssues?.length);
           if (sampleEnriched) {
-            console.log(`[Verification] Sample enriched queue item:`, JSON.stringify({
+            logger.debug(`[Verification] Sample enriched queue item: ${JSON.stringify({
               criterionId: sampleEnriched.criterionId,
-              criterionName: sampleEnriched.criterionName,
               relatedIssues: sampleEnriched.relatedIssues,
               fixedIssues: sampleEnriched.fixedIssues
-            }, null, 2));
+            }, null, 2)}`);
           }
         } else {
-          console.log(`[Verification] No criteria found in analysis`);
+          logger.debug(`[Verification] No criteria found in analysis`);
         }
       } catch (analysisError) {
-        console.warn(`[Verification] Could not fetch ACR analysis for enrichment:`, analysisError);
+        logger.warn(`[Verification] Could not fetch ACR analysis for enrichment: ${analysisError}`);
         // Continue without enrichment
       }
 
