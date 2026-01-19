@@ -1,6 +1,7 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import acrEditionsData from '../../data/acrEditions.json';
+import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
 
 // Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
@@ -520,6 +521,55 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
       output: updatedOutput,
     },
   });
+
+  // Create version after AI analysis completes
+  try {
+    const acrDocument = {
+      id: jobId,
+      version: 1,
+      status: 'draft' as const,
+      edition: (editionCode || 'VPAT2.5-INT') as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT',
+      productInfo: {
+        name: (auditOutput?.epubTitle as string) || 'Unknown Product',
+        version: '1.0',
+        vendor: '',
+        description: '',
+        contactEmail: '',
+        evaluationDate: new Date(),
+      },
+      criteria: criteria.map(c => ({
+        id: c.id,
+        name: c.name,
+        level: c.level as 'A' | 'AA' | 'AAA',
+        conformanceLevel: c.status === 'supports' ? 'Supports' as const :
+                         c.status === 'partially_supports' ? 'Partially Supports' as const :
+                         c.status === 'does_not_support' ? 'Does Not Support' as const :
+                         'Not Applicable' as const,
+        remarks: c.findings.join('. '),
+        attributionTag: 'AI_SUGGESTED' as const,
+        attributedRemarks: `[AI-SUGGESTED] ${c.findings.join('. ')}`,
+      })),
+      assessmentInfo: {
+        assessorName: 'AI System',
+        assessorOrganization: 'Ninja Platform',
+        evaluationMethods: ['Automated Analysis'],
+        toolsUsed: [{ name: 'Ninja ACR Analyzer', version: '1.0' }],
+        additionalNotes: 'AI-generated initial assessment',
+      },
+      generatedAt: new Date(),
+    };
+
+    await acrVersioningService.createVersion(
+      jobId,
+      acrDocument,
+      'system-ai',
+      'AI-generated initial assessment'
+    );
+    logger.info(`Created version for ACR ${jobId} after AI analysis`);
+  } catch (error) {
+    logger.error(`Failed to create version for ACR ${jobId}`, error instanceof Error ? error : undefined);
+    // Don't throw - version creation failure shouldn't stop ACR workflow
+  }
 
   return analysis;
 }
