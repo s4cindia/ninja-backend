@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { acrGeneratorService, AcrGenerationOptions } from '../services/acr/acr-generator.service';
+import { acrGeneratorService, AcrGenerationOptions, AcrDocument, AcrCriterion, AcrEdition } from '../services/acr/acr-generator.service';
 import { conformanceEngineService, ConformanceLevel, ValidationResult } from '../services/acr/conformance-engine.service';
 import { 
   generateMethodologySection, 
@@ -16,6 +16,7 @@ import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { acrService } from '../services/acr.service';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
 
 const ProductInfoSchema = z.object({
   name: z.string().min(1),
@@ -327,52 +328,93 @@ export class AcrController {
             { id: acrId },
             { jobId: acrId }
           ]
-        }
+        },
+        include: { criteria: true }
       });
 
-      let documentTitle = acrJob?.documentTitle || 'Unnamed Product';
-
-      if (acrJob?.jobId) {
-        const job = await prisma.job.findFirst({
-          where: { id: acrJob.jobId },
-          include: { file: true }
+      if (!acrJob) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'ACR job not found' }
         });
-        if (job?.file?.originalName) {
-          documentTitle = job.file.originalName.replace(/\.(epub|pdf|html)$/i, '');
+        return;
+      }
+
+      let documentTitle = acrJob.documentTitle;
+      if (!documentTitle || documentTitle === 'ACR Document') {
+        if (acrJob.jobId) {
+          const job = await prisma.job.findFirst({
+            where: { id: acrJob.jobId },
+            include: { file: true }
+          });
+          if (job?.file?.originalName) {
+            documentTitle = job.file.originalName.replace(/\.(epub|pdf|html)$/i, '');
+          }
+        }
+        if (!documentTitle || documentTitle === 'ACR Document') {
+          documentTitle = 'Unnamed Product';
         }
       }
 
-      const verificationQueue = await humanVerificationService.getQueue(acrId);
-      
-      const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
-      for (const item of verificationQueue.items) {
-        const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
-        verificationData.set(item.criterionId, {
-          status: item.status,
-          isAiGenerated: item.criterionId === '1.1.1',
-          notes: latestVerification?.notes
-        });
+      const criteriaFromDb: AcrCriterion[] = acrJob.criteria.map(review => {
+        const rawConformance = review.conformanceLevel?.trim();
+        const validConformanceLevels = ['Supports', 'Partially Supports', 'Does Not Support', 'Not Applicable'];
+        const conformanceLevel = (rawConformance && validConformanceLevels.includes(rawConformance))
+          ? rawConformance as AcrCriterion['conformanceLevel']
+          : 'Not Applicable';
+        const level = (review.level as 'A' | 'AA' | 'AAA') || 'A';
+        
+        const confidenceNote = review.confidence > 0 ? ` [Confidence: ${review.confidence}%]` : '';
+        const remarks = (review.reviewerNotes || '') + confidenceNote;
+        
+        return {
+          id: review.criterionId,
+          criterionId: review.criterionId,
+          name: review.criterionName,
+          level,
+          conformanceLevel,
+          remarks: remarks.trim(),
+          attributionTag: review.confidence >= 85 ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const
+        };
+      });
+
+      logger.info(`[ACR Export] Exporting with ${criteriaFromDb.length} criteria from database`);
+      if (criteriaFromDb.length > 0) {
+        logger.info(`[ACR Export] First criterion: ${JSON.stringify(criteriaFromDb[0])}`);
+      } else {
+        logger.warn(`[ACR Export] No criteria found in database for ACR ${acrJob.id}`);
       }
 
       const providedProductInfo = validatedData.acrData?.productInfo || {};
-      const acrGenerationOptions = {
-        edition: validatedData.acrData?.edition || acrJob?.edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT' || 'VPAT2.5-INT' as const,
-        includeMethodology: exportOptions.includeMethodology,
+      const edition = (validatedData.acrData?.edition || acrJob.edition || 'VPAT2.5-INT') as AcrEdition;
+
+      const acrDocument: AcrDocument = {
+        id: acrJob.id,
+        edition,
         productInfo: {
           name: providedProductInfo.name || documentTitle,
           version: providedProductInfo.version || '1.0.0',
           description: providedProductInfo.description || 'Product accessibility conformance report',
           vendor: providedProductInfo.vendor || 'Unknown Vendor',
           contactEmail: providedProductInfo.contactEmail || 'contact@example.com',
-          evaluationDate: providedProductInfo.evaluationDate || acrJob?.createdAt || new Date()
-        }
+          evaluationDate: providedProductInfo.evaluationDate || acrJob.createdAt
+        },
+        evaluationMethods: [
+          { type: 'automated', description: 'Automated accessibility scanning with EPUBCheck and JS Auditor' },
+          { type: 'ai-assisted', description: 'AI-powered analysis using Google Gemini for image descriptions and issue detection' }
+        ],
+        criteria: criteriaFromDb,
+        generatedAt: new Date(),
+        version: 1,
+        status: acrJob.status === 'completed' ? 'final' : 'draft',
+        methodology: exportOptions.includeMethodology ? {
+          assessmentDate: acrJob.createdAt,
+          toolVersion: TOOL_VERSION,
+          aiModelInfo: AI_MODEL_INFO,
+          disclaimer: LEGAL_DISCLAIMER
+        } : undefined,
+        footerDisclaimer: LEGAL_DISCLAIMER
       };
-
-      const acrDocument = await acrGeneratorService.generateAcr(
-        acrId,
-        acrGenerationOptions,
-        verificationData
-      );
 
       const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
 
