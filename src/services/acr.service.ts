@@ -322,7 +322,7 @@ export class AcrService {
     userId: string,
     tenantId: string,
     reviewData: {
-      conformanceLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+      conformanceLevel?: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
       remarks?: string;
     }
   ) {
@@ -352,14 +352,22 @@ export class AcrService {
       throw new Error('Criterion not found in ACR job');
     }
 
+    const updateData: Record<string, unknown> = {
+      reviewedAt: new Date(),
+      reviewedBy: userId,
+    };
+    
+    if (reviewData.conformanceLevel !== undefined) {
+      updateData.conformanceLevel = reviewData.conformanceLevel;
+    }
+    
+    if (reviewData.remarks !== undefined) {
+      updateData.reviewerNotes = reviewData.remarks;
+    }
+
     await prisma.acrCriterionReview.update({
       where: { id: criterion.id },
-      data: {
-        conformanceLevel: reviewData.conformanceLevel,
-        reviewerNotes: reviewData.remarks || null,
-        reviewedAt: new Date(),
-        reviewedBy: userId,
-      },
+      data: updateData,
     });
 
     const totalCriteria = await prisma.acrCriterionReview.count({

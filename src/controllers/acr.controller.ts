@@ -860,25 +860,31 @@ export class AcrController {
 
       console.log('[ACR] Updating criterion:', { acrJobId, criterionId, body: req.body });
 
-      if (!conformanceLevel) {
-        res.status(400).json({
-          success: false,
-          error: {
-            message: 'conformanceLevel is required',
-            code: 'INVALID_REQUEST',
-          },
-        });
-        return;
+      let normalizedLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | undefined;
+      
+      if (conformanceLevel) {
+        normalizedLevel = conformanceLevel.toLowerCase().replace(/\s+/g, '_') as typeof normalizedLevel;
+        const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
+        if (!validLevels.includes(normalizedLevel!)) {
+          res.status(400).json({
+            success: false,
+            error: {
+              message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
+              code: 'INVALID_CONFORMANCE_LEVEL',
+            },
+          });
+          return;
+        }
       }
 
-      const normalizedLevel = conformanceLevel.toLowerCase().replace(/\s+/g, '_');
-      const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
-      if (!validLevels.includes(normalizedLevel)) {
+      const remarksValue = remarks || reviewerNotes;
+      
+      if (!conformanceLevel && !remarksValue) {
         res.status(400).json({
           success: false,
           error: {
-            message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
-            code: 'INVALID_CONFORMANCE_LEVEL',
+            message: 'Either conformanceLevel or remarks is required',
+            code: 'INVALID_REQUEST',
           },
         });
         return;
@@ -889,7 +895,7 @@ export class AcrController {
         criterionId,
         userId,
         tenantId,
-        { conformanceLevel: normalizedLevel as 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable', remarks: remarks || reviewerNotes }
+        { conformanceLevel: normalizedLevel, remarks: remarksValue }
       );
 
       res.json({
