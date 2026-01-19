@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { acrGeneratorService, AcrGenerationOptions } from '../services/acr/acr-generator.service';
+import { acrGeneratorService, AcrGenerationOptions, AcrDocument, AcrCriterion, AcrEdition } from '../services/acr/acr-generator.service';
 import { conformanceEngineService, ConformanceLevel, ValidationResult } from '../services/acr/conformance-engine.service';
 import { 
   generateMethodologySection, 
@@ -15,6 +15,8 @@ import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { acrService } from '../services/acr.service';
 import { z } from 'zod';
+import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
 
 const ProductInfoSchema = z.object({
   name: z.string().min(1),
@@ -306,7 +308,7 @@ export class AcrController {
         options: ExportOptionsSchema,
         acrData: z.object({
           edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
-          productInfo: ProductInfoSchema
+          productInfo: ProductInfoSchema.partial()
         }).optional()
       });
 
@@ -320,42 +322,183 @@ export class AcrController {
         branding: validatedData.options.branding
       };
 
-      const verificationQueue = await humanVerificationService.getQueue(acrId);
-      
-      const verificationData = new Map<string, { status: string; isAiGenerated: boolean; notes?: string }>();
-      for (const item of verificationQueue.items) {
-        const latestVerification = item.verificationHistory[item.verificationHistory.length - 1];
-        verificationData.set(item.criterionId, {
-          status: item.status,
-          isAiGenerated: item.criterionId === '1.1.1',
-          notes: latestVerification?.notes
+      // 1. Find the source Job (ACR_WORKFLOW type) - this has all the analysis data
+      const sourceJob = await prisma.job.findFirst({
+        where: { 
+          id: acrId,
+          type: 'ACR_WORKFLOW'
+        }
+      });
+
+      if (!sourceJob) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'ACR job not found' }
         });
+        return;
       }
 
-      const acrGenerationOptions = {
-        edition: validatedData.acrData?.edition || 'VPAT2.5-INT' as const,
-        includeMethodology: exportOptions.includeMethodology,
-        productInfo: validatedData.acrData?.productInfo || {
-          name: 'Unnamed Product',
-          version: '1.0.0',
-          description: 'Product accessibility conformance report',
-          vendor: 'Unknown Vendor',
-          contactEmail: 'contact@example.com',
-          evaluationDate: new Date()
+      // 2. Parse the output JSON - THIS HAS ALL THE DATA
+      const jobOutput = sourceJob.output as Record<string, unknown> | null;
+      
+      logger.debug('[ACR Export] Job output info', { 
+        epubTitle: jobOutput?.epubTitle,
+        criteriaType: typeof jobOutput?.criteria,
+        acrAnalysisType: typeof jobOutput?.acrAnalysis,
+        acrAnalysisIsArray: Array.isArray(jobOutput?.acrAnalysis)
+      });
+
+      // 3. Get document title from job output
+      const documentTitle = (jobOutput?.epubTitle as string) || 
+                           (jobOutput?.fileName as string) ||
+                           'Unnamed Product';
+
+      // 4. Get criteria from Job output (use acrAnalysis which has the full criteria)
+      // Handle various possible structures
+      let rawCriteria = jobOutput?.acrAnalysis || jobOutput?.criteria;
+      
+      // If criteria is an object with a 'criteria' property, extract it
+      if (rawCriteria && typeof rawCriteria === 'object' && !Array.isArray(rawCriteria) && 'criteria' in (rawCriteria as Record<string, unknown>)) {
+        rawCriteria = (rawCriteria as Record<string, unknown>).criteria;
+      }
+      
+      // Ensure it's an array
+      const criteriaFromOutput = (Array.isArray(rawCriteria) ? rawCriteria : []) as Array<{
+        criterionId?: string;
+        id?: string;
+        name?: string;
+        level?: string;
+        status?: string;
+        conformanceLevel?: string;
+        remarks?: string;
+      }>;
+      
+      logger.debug('[ACR Export] criteriaFromOutput', { length: criteriaFromOutput.length });
+
+      // 5. Also get any human-edited criteria from AcrCriterionReview to merge
+      const acrJob = await prisma.acrJob.findFirst({
+        where: { 
+          OR: [
+            { id: acrId },
+            { jobId: acrId }
+          ]
+        },
+        include: { criteria: true }
+      });
+
+      // Create a map of human-edited criteria
+      const editedCriteria = new Map<string, { conformanceLevel: string; remarks: string; reviewedBy: string | null }>();
+      if (acrJob?.criteria) {
+        for (const review of acrJob.criteria) {
+          editedCriteria.set(review.criterionId, {
+            conformanceLevel: review.conformanceLevel || '',
+            remarks: review.reviewerNotes || '',
+            reviewedBy: review.reviewedBy
+          });
         }
+      }
+
+      logger.debug('[ACR Export] Human-edited criteria', { count: editedCriteria.size });
+
+      // Conformance level mapping (snake_case to Title Case)
+      const conformanceLevelMap: Record<string, AcrCriterion['conformanceLevel']> = {
+        'supports': 'Supports',
+        'partially_supports': 'Partially Supports',
+        'does_not_support': 'Does Not Support',
+        'not_applicable': 'Not Applicable',
+        'Supports': 'Supports',
+        'Partially Supports': 'Partially Supports',
+        'Does Not Support': 'Does Not Support',
+        'Not Applicable': 'Not Applicable',
+        'Not Evaluated': 'Not Applicable'
       };
 
-      const acrDocument = await acrGeneratorService.generateAcr(
-        acrId,
-        acrGenerationOptions,
-        verificationData
-      );
+      // 6. Build final criteria array - merge Job output with human edits
+      const finalCriteria: AcrCriterion[] = criteriaFromOutput.map((c) => {
+        const criterionId = c.criterionId || c.id || '';
+        const edited = editedCriteria.get(criterionId);
+        
+        const rawConformance = edited?.conformanceLevel || c.conformanceLevel || c.status || 'Not Applicable';
+        const conformanceLevel = conformanceLevelMap[rawConformance] || 'Not Applicable';
+        const level = (c.level as 'A' | 'AA' | 'AAA') || 'A';
+        const remarks = edited?.remarks || c.remarks || '';
+        const isHumanVerified = !!edited?.reviewedBy;
+        const tag = isHumanVerified ? '[HUMAN-VERIFIED]' : '[AI-SUGGESTED]';
+        const attributedRemarks = remarks ? `${tag} ${remarks.trim()}` : '';
 
-      const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+        return {
+          id: criterionId,
+          criterionId: criterionId,
+          name: c.name || criterionId,
+          level,
+          conformanceLevel,
+          remarks: remarks.trim(),
+          attributionTag: isHumanVerified ? 'HUMAN_VERIFIED' as const : 'AI_SUGGESTED' as const,
+          attributedRemarks
+        };
+      });
+
+      logger.debug('[ACR Export] Final criteria', { 
+        count: finalCriteria.length,
+        firstCriterion: finalCriteria.length > 0 ? finalCriteria[0] : null
+      });
+
+      const providedProductInfo = validatedData.acrData?.productInfo || {};
+      const edition = (validatedData.acrData?.edition || acrJob?.edition || 'VPAT2.5-INT') as AcrEdition;
+
+      // 7. Build AcrDocument with ACTUAL data
+      const acrDocument: AcrDocument = {
+        id: acrJob?.id || sourceJob.id,
+        edition,
+        productInfo: {
+          name: providedProductInfo.name || documentTitle,
+          version: providedProductInfo.version || '1.0.0',
+          description: providedProductInfo.description || 'Accessibility Conformance Report',
+          vendor: providedProductInfo.vendor || 'S4Carlisle',
+          contactEmail: providedProductInfo.contactEmail || 'accessibility@s4carlisle.com',
+          evaluationDate: providedProductInfo.evaluationDate || sourceJob.createdAt
+        },
+        evaluationMethods: [
+          { type: 'hybrid', tools: ['Ninja Platform v1.0', 'Ace by DAISY'], aiModels: ['Google Gemini'], description: 'Human verification and AI-assisted analysis' }
+        ],
+        criteria: finalCriteria,
+        generatedAt: new Date(),
+        version: 1,
+        status: acrJob?.status === 'completed' ? 'final' : 'draft',
+        methodology: exportOptions.includeMethodology ? {
+          assessmentDate: sourceJob.createdAt,
+          toolVersion: TOOL_VERSION,
+          aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.purpose})`,
+          disclaimer: LEGAL_DISCLAIMER
+        } : undefined,
+        footerDisclaimer: LEGAL_DISCLAIMER
+      };
+
+      // 8. Export
+      logger.debug('[ACR Export] Calling exporter', { criteriaCount: finalCriteria.length });
+      
+      let exportResult;
+      try {
+        exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+      } catch (exportError) {
+        logger.error('[ACR Export] Export service error', exportError instanceof Error ? exportError : undefined);
+        throw exportError;
+      }
+
+      // Read the file and return as base64 to avoid proxy issues
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const EXPORTS_DIR = path.join(process.cwd(), 'exports');
+      const filepath = path.join(EXPORTS_DIR, exportResult.filename);
+      const fileBuffer = await fs.readFile(filepath);
+      const base64Content = fileBuffer.toString('base64');
 
       res.status(200).json({
         success: true,
-        data: exportResult,
+        data: {
+          ...exportResult,
+          content: base64Content  // Include file content directly
+        },
         message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
       });
     } catch (error) {
@@ -369,6 +512,7 @@ export class AcrController {
         });
         return;
       }
+      logger.error('[ACR Export] Unhandled error', error instanceof Error ? error : undefined);
       next(error);
     }
   }
@@ -791,26 +935,41 @@ export class AcrController {
       }
 
       const { acrJobId, criterionId } = req.params;
-      const { conformanceLevel, remarks } = req.body;
+      const { conformanceLevel, remarks, reviewerNotes } = req.body;
 
-      if (!conformanceLevel) {
-        res.status(400).json({
-          success: false,
-          error: {
-            message: 'conformanceLevel is required',
-            code: 'INVALID_REQUEST',
-          },
-        });
-        return;
+      logger.debug('[ACR] Updating criterion', { 
+        acrJobId, 
+        criterionId, 
+        conformanceLevel,
+        hasRemarks: !!remarks,
+        hasReviewerNotes: !!reviewerNotes
+      });
+
+      let normalizedLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | undefined;
+      
+      if (conformanceLevel) {
+        normalizedLevel = conformanceLevel.toLowerCase().replace(/\s+/g, '_') as typeof normalizedLevel;
+        const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
+        if (!validLevels.includes(normalizedLevel!)) {
+          res.status(400).json({
+            success: false,
+            error: {
+              message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
+              code: 'INVALID_CONFORMANCE_LEVEL',
+            },
+          });
+          return;
+        }
       }
 
-      const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
-      if (!validLevels.includes(conformanceLevel)) {
+      const remarksValue = remarks || reviewerNotes;
+      
+      if (!conformanceLevel && !remarksValue) {
         res.status(400).json({
           success: false,
           error: {
-            message: `Invalid conformanceLevel. Must be one of: ${validLevels.join(', ')}`,
-            code: 'INVALID_CONFORMANCE_LEVEL',
+            message: 'Either conformanceLevel or remarks is required',
+            code: 'INVALID_REQUEST',
           },
         });
         return;
@@ -821,7 +980,7 @@ export class AcrController {
         criterionId,
         userId,
         tenantId,
-        { conformanceLevel, remarks }
+        { conformanceLevel: normalizedLevel, remarks: remarksValue }
       );
 
       res.json({
@@ -1010,7 +1169,7 @@ export class AcrController {
         message: 'ACR successfully finalized',
       });
     } catch (error) {
-      console.error('Failed to finalize ACR:', error);
+      logger.error('Failed to finalize ACR', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: 'Failed to finalize ACR',

@@ -124,3 +124,6 @@ data/
 
 # Attached assets (instruction files, pasted content)
 attached_assets/
+
+# Generated export files
+exports/

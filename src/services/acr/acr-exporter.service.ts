@@ -10,15 +10,11 @@ import {
   TextRun,
   HeadingLevel,
   WidthType,
-  AlignmentType,
-  Header,
-  Footer,
-  PageNumber
+  AlignmentType
 } from 'docx';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { AcrDocument } from './acr-generator.service';
-import { TOOL_VERSION } from './attribution.service';
 
 export type ExportFormat = 'docx' | 'pdf' | 'html';
 
@@ -58,6 +54,75 @@ function formatConformanceLevel(level: string): string {
   return level || 'Not Evaluated';
 }
 
+function formatEdition(edition: string): string {
+  const editionMap: Record<string, string> = {
+    'VPAT2.5-INT': 'VPAT 2.5 INT Edition',
+    'VPAT2.5-508': 'VPAT 2.5 Section 508 Edition',
+    'VPAT2.5-WCAG': 'VPAT 2.5 WCAG Edition',
+    'VPAT2.5-EU': 'VPAT 2.5 EU Edition',
+    'section508': 'VPAT 2.5 Section 508 Edition',
+    'WCAG': 'VPAT 2.5 WCAG Edition',
+    'EU': 'VPAT 2.5 EU Edition',
+    'INT': 'VPAT 2.5 INT Edition'
+  };
+  return editionMap[edition] || `VPAT 2.5 ${edition} Edition`;
+}
+
+function formatEvaluationMethod(method: { type: string; description?: string }): string {
+  const typeMap: Record<string, string> = {
+    'hybrid': 'Hybrid',
+    'automated': 'Automated',
+    'manual': 'Manual'
+  };
+  const formattedType = typeMap[method.type] || method.type.charAt(0).toUpperCase() + method.type.slice(1);
+  const description = method.description || 'Human verification and AI-assisted analysis';
+  return `${formattedType}: ${description}`;
+}
+
+function wrapText(text: string, maxWidth: number, fontSize: number): string[] {
+  const avgCharWidth = fontSize * 0.5;
+  const charsPerLine = Math.floor(maxWidth / avgCharWidth);
+  const lines: string[] = [];
+  
+  // Normalize line breaks and collapse multiple spaces
+  const normalizedText = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\n+/g, '\n')
+    .trim();
+  
+  // Split by paragraphs (double newline or single newline followed by specific content)
+  const paragraphs = normalizedText.split(/\n\s*\n|\n(?=Assessment Tool:|AI Model:)/);
+  
+  for (const paragraph of paragraphs) {
+    // Normalize whitespace within paragraph
+    const cleanParagraph = paragraph.replace(/\s+/g, ' ').trim();
+    if (!cleanParagraph) continue;
+    
+    const words = cleanParagraph.split(' ');
+    let currentLine = '';
+
+    for (const word of words) {
+      if (currentLine.length + word.length + 1 <= charsPerLine) {
+        currentLine += (currentLine ? ' ' : '') + word;
+      } else {
+        if (currentLine) lines.push(currentLine);
+        currentLine = word;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+    
+    // Add blank line between paragraphs
+    lines.push('');
+  }
+  
+  // Remove trailing empty lines
+  while (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  
+  return lines.length > 0 ? lines : [''];
+}
+
 async function exportToDocx(
   acr: AcrDocument,
   options: ExportOptions
@@ -68,15 +133,15 @@ async function exportToDocx(
       children: [
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Criteria', bold: true })] })],
-          width: { size: 20, type: WidthType.PERCENTAGE }
+          width: { size: 2500, type: WidthType.DXA }
         }),
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Conformance Level', bold: true })] })],
-          width: { size: 20, type: WidthType.PERCENTAGE }
+          width: { size: 1500, type: WidthType.DXA }
         }),
         new TableCell({
           children: [new Paragraph({ children: [new TextRun({ text: 'Remarks and Explanations', bold: true })] })],
-          width: { size: 60, type: WidthType.PERCENTAGE }
+          width: { size: 5000, type: WidthType.DXA }
         })
       ]
     })
@@ -91,119 +156,96 @@ async function exportToDocx(
       new TableRow({
         children: [
           new TableCell({
-            children: [new Paragraph({ text: `${criterion.id}: ${criterion.name}` })]
+            children: [
+              new Paragraph({ children: [new TextRun({ text: criterion.id, bold: true })] }),
+              new Paragraph({ children: [new TextRun({ text: criterion.name })] })
+            ]
           }),
           new TableCell({
-            children: [new Paragraph({ text: formatConformanceLevel(criterion.conformanceLevel) })]
+            children: [new Paragraph({ children: [new TextRun({ text: formatConformanceLevel(criterion.conformanceLevel) })] })]
           }),
           new TableCell({
-            children: [new Paragraph({ text: remarksText })]
+            children: [new Paragraph({ children: [new TextRun({ text: remarksText })] })]
           })
         ]
       })
     );
   }
 
-  const sections: Paragraph[] = [
+  const children: (Paragraph | Table)[] = [
     new Paragraph({
-      text: 'Voluntary Product Accessibility Template (VPAT)',
+      children: [new TextRun({ text: `Accessibility Conformance Report`, bold: true, size: 48 })],
       heading: HeadingLevel.TITLE,
       alignment: AlignmentType.CENTER
     }),
     new Paragraph({
-      text: `Version 2.5 - ${acr.edition}`,
+      children: [new TextRun({ text: acr.productInfo.name, bold: true, size: 36 })],
       alignment: AlignmentType.CENTER
     }),
-    new Paragraph({ text: '' }),
     new Paragraph({
-      text: 'Product Information',
+      children: [new TextRun({ text: formatEdition(acr.edition) })],
+      alignment: AlignmentType.CENTER
+    }),
+    new Paragraph({ children: [] }),
+    new Paragraph({
+      children: [new TextRun({ text: 'Product Information', bold: true, size: 28 })],
       heading: HeadingLevel.HEADING_1
     }),
-    new Paragraph({ text: `Name: ${acr.productInfo.name}` }),
-    new Paragraph({ text: `Version: ${acr.productInfo.version}` }),
-    new Paragraph({ text: `Vendor: ${acr.productInfo.vendor}` }),
-    new Paragraph({ text: `Contact: ${acr.productInfo.contactEmail}` }),
-    new Paragraph({ text: `Evaluation Date: ${acr.productInfo.evaluationDate.toISOString().split('T')[0]}` }),
-    new Paragraph({ text: '' }),
+    new Paragraph({ children: [new TextRun({ text: 'Product Name: ', bold: true }), new TextRun({ text: acr.productInfo.name })] }),
+    new Paragraph({ children: [new TextRun({ text: 'Version: ', bold: true }), new TextRun({ text: acr.productInfo.version })] }),
+    new Paragraph({ children: [new TextRun({ text: 'Vendor: ', bold: true }), new TextRun({ text: acr.productInfo.vendor })] }),
+    new Paragraph({ children: [new TextRun({ text: 'Contact: ', bold: true }), new TextRun({ text: acr.productInfo.contactEmail })] }),
+    new Paragraph({ children: [new TextRun({ text: 'Evaluation Date: ', bold: true }), new TextRun({ text: acr.productInfo.evaluationDate.toISOString().split('T')[0] })] }),
+    new Paragraph({ children: [] }),
     new Paragraph({
-      text: 'Evaluation Methods',
+      children: [new TextRun({ text: 'Evaluation Methods', bold: true, size: 28 })],
       heading: HeadingLevel.HEADING_1
     })
   ];
 
   for (const method of acr.evaluationMethods) {
-    sections.push(new Paragraph({ text: `• ${method}` }));
+    const methodText = typeof method === 'string' ? method : formatEvaluationMethod(method);
+    children.push(new Paragraph({ children: [new TextRun({ text: `• ${methodText}` })] }));
   }
 
-  sections.push(new Paragraph({ text: '' }));
-  sections.push(new Paragraph({
-    text: 'Accessibility Conformance Report',
+  children.push(new Paragraph({ children: [] }));
+  children.push(new Paragraph({
+    children: [new TextRun({ text: 'Accessibility Conformance Report', bold: true, size: 28 })],
     heading: HeadingLevel.HEADING_1
   }));
-
-  const table = new Table({
+  children.push(new Table({ 
     rows: tableRows,
     width: { size: 100, type: WidthType.PERCENTAGE }
-  });
-
-  const docChildren: (Paragraph | Table)[] = [...sections, table];
+  }));
 
   if (options.includeMethodology && acr.methodology) {
-    docChildren.push(new Paragraph({ text: '' }));
-    docChildren.push(new Paragraph({
-      text: 'Assessment Methodology',
+    children.push(new Paragraph({ children: [] }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Assessment Methodology', bold: true, size: 28 })],
       heading: HeadingLevel.HEADING_1
     }));
-    docChildren.push(new Paragraph({ text: `Tool Version: ${acr.methodology.toolVersion}` }));
-    docChildren.push(new Paragraph({ text: `AI Model: ${acr.methodology.aiModelInfo}` }));
-    docChildren.push(new Paragraph({ text: `Assessment Date: ${acr.methodology.assessmentDate.toISOString().split('T')[0]}` }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Tool Version: ', bold: true }), new TextRun({ text: acr.methodology.toolVersion })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'AI Model: ', bold: true }), new TextRun({ text: acr.methodology.aiModelInfo })] }));
+    children.push(new Paragraph({ children: [new TextRun({ text: 'Assessment Date: ', bold: true }), new TextRun({ text: acr.methodology.assessmentDate.toISOString().split('T')[0] })] }));
   }
 
   if (acr.footerDisclaimer) {
-    docChildren.push(new Paragraph({ text: '' }));
-    docChildren.push(new Paragraph({
-      text: 'Legal Disclaimer',
+    children.push(new Paragraph({ children: [] }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Legal Disclaimer', bold: true, size: 24 })],
       heading: HeadingLevel.HEADING_2
     }));
-    docChildren.push(new Paragraph({ text: acr.footerDisclaimer }));
+    children.push(new Paragraph({ children: [new TextRun({ text: acr.footerDisclaimer, italics: true })] }));
   }
 
   const doc = new Document({
     sections: [{
-      properties: {},
-      headers: {
-        default: new Header({
-          children: [
-            new Paragraph({
-              children: [
-                new TextRun({ text: options.branding?.companyName || 'Accessibility Conformance Report' })
-              ],
-              alignment: AlignmentType.RIGHT
-            })
-          ]
-        })
-      },
-      footers: {
-        default: new Footer({
-          children: [
-            new Paragraph({
-              children: [
-                new TextRun({ text: options.branding?.footerText || `Generated by ${TOOL_VERSION}` }),
-                new TextRun({ text: ' | Page ' }),
-                new TextRun({ children: [PageNumber.CURRENT] }),
-                new TextRun({ text: ' of ' }),
-                new TextRun({ children: [PageNumber.TOTAL_PAGES] })
-              ],
-              alignment: AlignmentType.CENTER
-            })
-          ]
-        })
-      },
-      children: docChildren
+      children: children
     }]
   });
 
-  return await Packer.toBuffer(doc);
+  const buffer = await Packer.toBuffer(doc);
+  return Buffer.from(buffer);
 }
 
 async function exportToPdf(
@@ -211,52 +253,55 @@ async function exportToPdf(
   options: ExportOptions
 ): Promise<Buffer> {
   const pdfDoc = await PDFDocument.create();
-  
-  pdfDoc.setTitle(`Accessibility Conformance Report - ${acr.productInfo.name}`);
-  pdfDoc.setAuthor(acr.productInfo.vendor);
-  pdfDoc.setSubject(`VPAT 2.5 ${acr.edition} Edition`);
-  pdfDoc.setCreator(TOOL_VERSION);
-  pdfDoc.setProducer('Ninja Platform');
-  pdfDoc.setKeywords(['accessibility', 'VPAT', 'WCAG', 'Section 508', 'ACR']);
-  pdfDoc.setLanguage('en-US');
-
   const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   let page = pdfDoc.addPage([612, 792]);
   const { width, height } = page.getSize();
-  let yPosition = height - 50;
   const margin = 50;
   const lineHeight = 14;
+  let yPosition = height - 50;
 
-  page.drawText('Voluntary Product Accessibility Template (VPAT)', {
+  page.drawText(`Accessibility Conformance Report`, {
+    x: margin,
+    y: yPosition,
+    size: 20,
+    font: helveticaBold,
+    color: rgb(0.15, 0.39, 0.92)
+  });
+  yPosition -= 25;
+
+  page.drawText(acr.productInfo.name, {
     x: margin,
     y: yPosition,
     size: 16,
     font: helveticaBold,
-    color: rgb(0, 0, 0)
-  });
-  yPosition -= 25;
-
-  page.drawText(`Version 2.5 - ${acr.edition}`, {
-    x: margin,
-    y: yPosition,
-    size: 12,
-    font: helvetica,
-    color: rgb(0.3, 0.3, 0.3)
-  });
-  yPosition -= 35;
-
-  page.drawText('Product Information', {
-    x: margin,
-    y: yPosition,
-    size: 14,
-    font: helveticaBold
+    color: rgb(0.2, 0.2, 0.2)
   });
   yPosition -= 20;
 
+  page.drawText(formatEdition(acr.edition), {
+    x: margin,
+    y: yPosition,
+    size: 10,
+    font: helvetica,
+    color: rgb(0.4, 0.4, 0.4)
+  });
+  yPosition -= 30;
+
+  page.drawLine({
+    start: { x: margin, y: yPosition },
+    end: { x: width - margin, y: yPosition },
+    thickness: 2,
+    color: rgb(0.15, 0.39, 0.92)
+  });
+  yPosition -= 25;
+
+  page.drawText('Product Information', { x: margin, y: yPosition, size: 14, font: helveticaBold });
+  yPosition -= 20;
+
   const productInfo = [
-    `Name: ${acr.productInfo.name}`,
+    `Product Name: ${acr.productInfo.name}`,
     `Version: ${acr.productInfo.version}`,
     `Vendor: ${acr.productInfo.vendor}`,
     `Contact: ${acr.productInfo.contactEmail}`,
@@ -267,47 +312,88 @@ async function exportToPdf(
     page.drawText(info, { x: margin, y: yPosition, size: 10, font: helvetica });
     yPosition -= lineHeight;
   }
+  yPosition -= 15;
+
+  page.drawText('Evaluation Methods', { x: margin, y: yPosition, size: 14, font: helveticaBold });
+  yPosition -= 18;
+
+  for (const method of acr.evaluationMethods) {
+    const methodText = typeof method === 'string' ? method : formatEvaluationMethod(method);
+    page.drawText(`• ${methodText}`, { x: margin + 10, y: yPosition, size: 9, font: helvetica });
+    yPosition -= lineHeight;
+  }
   yPosition -= 20;
 
-  page.drawText('Accessibility Conformance Report', {
+  page.drawText('Accessibility Conformance Report', { x: margin, y: yPosition, size: 14, font: helveticaBold });
+  yPosition -= 20;
+
+  const colWidths = [120, 80, width - margin * 2 - 200];
+
+  page.drawRectangle({
     x: margin,
-    y: yPosition,
-    size: 14,
-    font: helveticaBold
+    y: yPosition - 5,
+    width: width - margin * 2,
+    height: 18,
+    color: rgb(0.15, 0.39, 0.92)
   });
-  yPosition -= 20;
 
-  const colWidths = [120, 90, width - margin * 2 - 210];
-  
-  page.drawText('Criterion', { x: margin, y: yPosition, size: 10, font: helveticaBold });
-  page.drawText('Level', { x: margin + colWidths[0], y: yPosition, size: 10, font: helveticaBold });
-  page.drawText('Remarks', { x: margin + colWidths[0] + colWidths[1], y: yPosition, size: 10, font: helveticaBold });
-  yPosition -= 5;
-  
-  page.drawLine({
-    start: { x: margin, y: yPosition },
-    end: { x: width - margin, y: yPosition },
-    thickness: 1,
-    color: rgb(0.7, 0.7, 0.7)
-  });
-  yPosition -= lineHeight;
+  page.drawText('Criteria', { x: margin + 5, y: yPosition, size: 10, font: helveticaBold, color: rgb(1, 1, 1) });
+  page.drawText('Level', { x: margin + colWidths[0] + 5, y: yPosition, size: 10, font: helveticaBold, color: rgb(1, 1, 1) });
+  page.drawText('Remarks', { x: margin + colWidths[0] + colWidths[1] + 5, y: yPosition, size: 10, font: helveticaBold, color: rgb(1, 1, 1) });
+  yPosition -= 20;
 
   for (const criterion of acr.criteria) {
-    if (yPosition < 80) {
+    const remarksText = options.includeAttribution && criterion.attributedRemarks
+      ? criterion.attributedRemarks
+      : criterion.remarks || '';
+
+    const remarksLines = wrapText(remarksText, colWidths[2] - 10, 7);
+    const nameLines = wrapText(criterion.name, colWidths[0] - 10, 7);
+    
+    // Calculate row height based on all content (ID line + name lines + padding)
+    const nameHeight = 12 + (Math.min(nameLines.length, 2) * 9); // ID + name lines
+    const remarksHeight = remarksLines.length * 10;
+    const rowHeight = Math.max(nameHeight, remarksHeight, 28) + 8; // Minimum 28px + padding
+
+    if (yPosition - rowHeight < 80) {
       page = pdfDoc.addPage([612, 792]);
       yPosition = height - 50;
     }
 
-    const criterionText = `${criterion.id}`.substring(0, 15);
-    const levelText = formatConformanceLevel(criterion.conformanceLevel).substring(0, 12);
-    const remarksText = (options.includeAttribution && criterion.attributedRemarks
-      ? criterion.attributedRemarks
-      : criterion.remarks || '').substring(0, 70);
+    // Draw row separator line
+    page.drawLine({
+      start: { x: margin, y: yPosition + 3 },
+      end: { x: width - margin, y: yPosition + 3 },
+      thickness: 0.5,
+      color: rgb(0.85, 0.85, 0.85)
+    });
 
-    page.drawText(criterionText, { x: margin, y: yPosition, size: 8, font: helvetica });
-    page.drawText(levelText, { x: margin + colWidths[0], y: yPosition, size: 8, font: helvetica });
-    page.drawText(remarksText, { x: margin + colWidths[0] + colWidths[1], y: yPosition, size: 7, font: helvetica });
-    yPosition -= lineHeight;
+    // Draw criterion ID
+    page.drawText(criterion.id, { x: margin + 5, y: yPosition - 12, size: 9, font: helveticaBold });
+    
+    // Draw criterion name (wrapped)
+    let nameY = yPosition - 24;
+    for (const line of nameLines.slice(0, 2)) {
+      page.drawText(line, { x: margin + 5, y: nameY, size: 7, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
+      nameY -= 10;
+    }
+
+    // Draw conformance level
+    page.drawText(formatConformanceLevel(criterion.conformanceLevel), { 
+      x: margin + colWidths[0] + 5, 
+      y: yPosition - 12, 
+      size: 9, 
+      font: helvetica 
+    });
+
+    // Draw remarks (wrapped)
+    let remarksY = yPosition - 12;
+    for (const line of remarksLines) {
+      page.drawText(line, { x: margin + colWidths[0] + colWidths[1] + 5, y: remarksY, size: 7, font: helvetica });
+      remarksY -= 10;
+    }
+
+    yPosition -= rowHeight;
   }
 
   if (options.includeMethodology && acr.methodology) {
@@ -315,12 +401,14 @@ async function exportToPdf(
       page = pdfDoc.addPage([612, 792]);
       yPosition = height - 50;
     }
-    yPosition -= 20;
+    yPosition -= 25;
     page.drawText('Assessment Methodology', { x: margin, y: yPosition, size: 14, font: helveticaBold });
     yPosition -= 20;
-    page.drawText(`Tool: ${acr.methodology.toolVersion}`, { x: margin, y: yPosition, size: 10, font: helvetica });
+    page.drawText(`Tool Version: ${acr.methodology.toolVersion}`, { x: margin, y: yPosition, size: 10, font: helvetica });
     yPosition -= lineHeight;
     page.drawText(`AI Model: ${acr.methodology.aiModelInfo}`, { x: margin, y: yPosition, size: 10, font: helvetica });
+    yPosition -= lineHeight;
+    page.drawText(`Assessment Date: ${acr.methodology.assessmentDate.toISOString().split('T')[0]}`, { x: margin, y: yPosition, size: 10, font: helvetica });
     yPosition -= lineHeight;
   }
 
@@ -344,16 +432,16 @@ async function exportToPdf(
       yPosition = height - 50;
     }
     page.drawText('Legal Disclaimer', { x: margin, y: yPosition, size: 12, font: helveticaBold });
-    yPosition -= 15;
-    
-    const disclaimerLines = acr.footerDisclaimer.split('\n');
+    yPosition -= 18;
+
+    const disclaimerLines = wrapText(acr.footerDisclaimer, width - margin * 2, 8);
     for (const line of disclaimerLines) {
       if (yPosition < 30) {
         page = pdfDoc.addPage([612, 792]);
         yPosition = height - 50;
       }
-      page.drawText(line.substring(0, 100), { x: margin, y: yPosition, size: 8, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
-      yPosition -= 10;
+      page.drawText(line, { x: margin, y: yPosition, size: 8, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
+      yPosition -= 12;
     }
   }
 
@@ -372,7 +460,7 @@ function exportToHtml(
     const remarksText = options.includeAttribution && criterion.attributedRemarks
       ? criterion.attributedRemarks
       : criterion.remarks || '';
-    
+
     const escapedRemarks = remarksText
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -453,7 +541,7 @@ function exportToHtml(
 <body>
   <header>
     <h1>Voluntary Product Accessibility Template (VPAT)</h1>
-    <p>Version 2.5 - ${acr.edition} | ${companyName}</p>
+    <p>${formatEdition(acr.edition)} | ${companyName}</p>
   </header>
 
   <section>
@@ -498,7 +586,7 @@ async function exportAcr(
   const fileId = uuidv4();
   const timestamp = new Date().toISOString().split('T')[0];
   const productSlug = acr.productInfo.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 30);
-  
+
   let buffer: Buffer;
   let extension: string;
 

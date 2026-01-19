@@ -322,7 +322,7 @@ export class AcrService {
     userId: string,
     tenantId: string,
     reviewData: {
-      conformanceLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
+      conformanceLevel?: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable';
       remarks?: string;
     }
   ) {
@@ -338,22 +338,37 @@ export class AcrService {
       throw new Error('ACR job not found or access denied');
     }
 
-    const updated = await prisma.acrCriterionReview.updateMany({
+    const criterion = await prisma.acrCriterionReview.findFirst({
       where: {
         acrJobId: acrJob.id,
-        criterionId,
-      },
-      data: {
-        conformanceLevel: reviewData.conformanceLevel,
-        reviewerNotes: reviewData.remarks || null,
-        reviewedAt: new Date(),
-        reviewedBy: userId,
-      },
+        OR: [
+          { id: criterionId },
+          { criterionId: criterionId }
+        ]
+      }
     });
 
-    if (updated.count === 0) {
+    if (!criterion) {
       throw new Error('Criterion not found in ACR job');
     }
+
+    const updateData: Record<string, unknown> = {
+      reviewedAt: new Date(),
+      reviewedBy: userId,
+    };
+    
+    if (reviewData.conformanceLevel !== undefined) {
+      updateData.conformanceLevel = reviewData.conformanceLevel;
+    }
+    
+    if (reviewData.remarks !== undefined) {
+      updateData.reviewerNotes = reviewData.remarks;
+    }
+
+    await prisma.acrCriterionReview.update({
+      where: { id: criterion.id },
+      data: updateData,
+    });
 
     const totalCriteria = await prisma.acrCriterionReview.count({
       where: { acrJobId: acrJob.id },
