@@ -463,7 +463,15 @@ export class AcrController {
       };
 
       // 8. Export
-      const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+      console.log('[ACR Export] Calling exporter with', finalCriteria.length, 'criteria');
+      
+      let exportResult;
+      try {
+        exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+      } catch (exportError) {
+        console.error('[ACR Export] Export service error:', exportError);
+        throw exportError;
+      }
 
       res.status(200).json({
         success: true,
@@ -481,6 +489,7 @@ export class AcrController {
         });
         return;
       }
+      console.error('[ACR Export] Unhandled error:', error);
       next(error);
     }
   }
