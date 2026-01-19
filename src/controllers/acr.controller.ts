@@ -341,31 +341,46 @@ export class AcrController {
       }
 
       let documentTitle = acrJob.documentTitle;
+      
+      const sourceJob = await prisma.job.findFirst({
+        where: { id: acrJob.jobId },
+        include: { file: true }
+      });
+      
+      const jobOutput = sourceJob?.output as Record<string, unknown> | null;
       if (!documentTitle || documentTitle === 'ACR Document') {
-        if (acrJob.jobId) {
-          const job = await prisma.job.findFirst({
-            where: { id: acrJob.jobId },
-            include: { file: true }
-          });
-          if (job?.file?.originalName) {
-            documentTitle = job.file.originalName.replace(/\.(epub|pdf|html)$/i, '');
-          }
-        }
-        if (!documentTitle || documentTitle === 'ACR Document') {
-          documentTitle = 'Unnamed Product';
-        }
+        documentTitle = (jobOutput?.epubTitle as string) || 
+                       sourceJob?.file?.originalName?.replace(/\.(epub|pdf|html)$/i, '') ||
+                       'Unnamed Product';
       }
 
+      console.log('[ACR Export] Document title:', documentTitle);
+      console.log('[ACR Export] Criteria count from DB:', acrJob.criteria.length);
+      if (acrJob.criteria.length > 0) {
+        console.log('[ACR Export] First criterion:', acrJob.criteria[0]);
+      }
+
+      const conformanceLevelMap: Record<string, AcrCriterion['conformanceLevel']> = {
+        'supports': 'Supports',
+        'partially_supports': 'Partially Supports',
+        'does_not_support': 'Does Not Support',
+        'not_applicable': 'Not Applicable',
+        'Supports': 'Supports',
+        'Partially Supports': 'Partially Supports',
+        'Does Not Support': 'Does Not Support',
+        'Not Applicable': 'Not Applicable'
+      };
+
       const criteriaFromDb: AcrCriterion[] = acrJob.criteria.map(review => {
-        const rawConformance = review.conformanceLevel?.trim();
-        const validConformanceLevels = ['Supports', 'Partially Supports', 'Does Not Support', 'Not Applicable'];
-        const conformanceLevel = (rawConformance && validConformanceLevels.includes(rawConformance))
-          ? rawConformance as AcrCriterion['conformanceLevel']
-          : 'Not Applicable';
+        const rawConformance = review.conformanceLevel?.trim() || '';
+        const conformanceLevel = conformanceLevelMap[rawConformance] || 'Not Applicable';
         const level = (review.level as 'A' | 'AA' | 'AAA') || 'A';
         
-        const confidenceNote = review.confidence > 0 ? ` [Confidence: ${review.confidence}%]` : '';
-        const remarks = (review.reviewerNotes || '') + confidenceNote;
+        const remarks = review.reviewerNotes || '';
+        const attributionTag = review.reviewedBy ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const;
+        
+        const tag = review.reviewedBy ? '[HUMAN-VERIFIED]' : '[AI-SUGGESTED]';
+        const attributedRemarks = remarks ? `${tag} ${remarks.trim()}` : '';
         
         return {
           id: review.criterionId,
@@ -374,7 +389,8 @@ export class AcrController {
           level,
           conformanceLevel,
           remarks: remarks.trim(),
-          attributionTag: review.confidence >= 85 ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const
+          attributionTag,
+          attributedRemarks
         };
       });
 
