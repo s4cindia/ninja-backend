@@ -325,10 +325,8 @@ export class AcrController {
       // 1. Find the source Job (ACR_WORKFLOW type) - this has all the analysis data
       const sourceJob = await prisma.job.findFirst({
         where: { 
-          OR: [
-            { id: acrId },
-            { id: acrId, type: 'ACR_WORKFLOW' }
-          ]
+          id: acrId,
+          type: 'ACR_WORKFLOW'
         }
       });
 
@@ -343,10 +341,12 @@ export class AcrController {
       // 2. Parse the output JSON - THIS HAS ALL THE DATA
       const jobOutput = sourceJob.output as Record<string, unknown> | null;
       
-      console.log('[ACR Export] epubTitle:', jobOutput?.epubTitle);
-      console.log('[ACR Export] criteria type:', typeof jobOutput?.criteria);
-      console.log('[ACR Export] acrAnalysis type:', typeof jobOutput?.acrAnalysis);
-      console.log('[ACR Export] acrAnalysis is array:', Array.isArray(jobOutput?.acrAnalysis));
+      logger.debug('[ACR Export] Job output info', { 
+        epubTitle: jobOutput?.epubTitle,
+        criteriaType: typeof jobOutput?.criteria,
+        acrAnalysisType: typeof jobOutput?.acrAnalysis,
+        acrAnalysisIsArray: Array.isArray(jobOutput?.acrAnalysis)
+      });
 
       // 3. Get document title from job output
       const documentTitle = (jobOutput?.epubTitle as string) || 
@@ -373,7 +373,7 @@ export class AcrController {
         remarks?: string;
       }>;
       
-      console.log('[ACR Export] criteriaFromOutput length:', criteriaFromOutput.length);
+      logger.debug('[ACR Export] criteriaFromOutput', { length: criteriaFromOutput.length });
 
       // 5. Also get any human-edited criteria from AcrCriterionReview to merge
       const acrJob = await prisma.acrJob.findFirst({
@@ -398,7 +398,7 @@ export class AcrController {
         }
       }
 
-      console.log('[ACR Export] Human-edited criteria count:', editedCriteria.size);
+      logger.debug('[ACR Export] Human-edited criteria', { count: editedCriteria.size });
 
       // Conformance level mapping (snake_case to Title Case)
       const conformanceLevelMap: Record<string, AcrCriterion['conformanceLevel']> = {
@@ -418,7 +418,7 @@ export class AcrController {
         const criterionId = c.criterionId || c.id || '';
         const edited = editedCriteria.get(criterionId);
         
-        const rawConformance = edited?.conformanceLevel || c.status || c.conformanceLevel || 'Not Applicable';
+        const rawConformance = edited?.conformanceLevel || c.conformanceLevel || c.status || 'Not Applicable';
         const conformanceLevel = conformanceLevelMap[rawConformance] || 'Not Applicable';
         const level = (c.level as 'A' | 'AA' | 'AAA') || 'A';
         const remarks = edited?.remarks || c.remarks || '';
@@ -433,15 +433,15 @@ export class AcrController {
           level,
           conformanceLevel,
           remarks: remarks.trim(),
-          attributionTag: isHumanVerified ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const,
+          attributionTag: isHumanVerified ? 'HUMAN_VERIFIED' as const : 'AI_SUGGESTED' as const,
           attributedRemarks
         };
       });
 
-      console.log('[ACR Export] Final criteria count:', finalCriteria.length);
-      if (finalCriteria.length > 0) {
-        console.log('[ACR Export] First criterion:', JSON.stringify(finalCriteria[0]));
-      }
+      logger.debug('[ACR Export] Final criteria', { 
+        count: finalCriteria.length,
+        firstCriterion: finalCriteria.length > 0 ? finalCriteria[0] : null
+      });
 
       const providedProductInfo = validatedData.acrData?.productInfo || {};
       const edition = (validatedData.acrData?.edition || acrJob?.edition || 'VPAT2.5-INT') as AcrEdition;
@@ -475,13 +475,13 @@ export class AcrController {
       };
 
       // 8. Export
-      console.log('[ACR Export] Calling exporter with', finalCriteria.length, 'criteria');
+      logger.debug('[ACR Export] Calling exporter', { criteriaCount: finalCriteria.length });
       
       let exportResult;
       try {
         exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
       } catch (exportError) {
-        console.error('[ACR Export] Export service error:', exportError);
+        logger.error('[ACR Export] Export service error', exportError instanceof Error ? exportError : undefined);
         throw exportError;
       }
 
@@ -512,7 +512,7 @@ export class AcrController {
         });
         return;
       }
-      console.error('[ACR Export] Unhandled error:', error);
+      logger.error('[ACR Export] Unhandled error', error instanceof Error ? error : undefined);
       next(error);
     }
   }
@@ -937,7 +937,7 @@ export class AcrController {
       const { acrJobId, criterionId } = req.params;
       const { conformanceLevel, remarks, reviewerNotes } = req.body;
 
-      console.log('[ACR] Updating criterion:', { acrJobId, criterionId, body: req.body });
+      logger.debug('[ACR] Updating criterion', { acrJobId, criterionId, body: req.body });
 
       let normalizedLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | undefined;
       
@@ -1163,7 +1163,7 @@ export class AcrController {
         message: 'ACR successfully finalized',
       });
     } catch (error) {
-      console.error('Failed to finalize ACR:', error);
+      logger.error('Failed to finalize ACR', error instanceof Error ? error : undefined);
       return res.status(500).json({
         success: false,
         error: 'Failed to finalize ACR',
