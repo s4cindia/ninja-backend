@@ -49,7 +49,11 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
   try {
     // ACR (Accessibility Conformance Report) is generated from job audit results
     // The acrId parameter is actually the jobId of the source audit job
-    const acrId = req.params.acrId;
+    // Strip 'acr-' prefix if present (frontend may add this prefix)
+    let acrId = req.params.acrId;
+    if (acrId && acrId.startsWith('acr-')) {
+      acrId = acrId.substring(4);
+    }
     const userId = req.user?.id;
 
     if (!userId) {
