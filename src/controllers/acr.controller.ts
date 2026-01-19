@@ -485,9 +485,20 @@ export class AcrController {
         throw exportError;
       }
 
+      // Read the file and return as base64 to avoid proxy issues
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const EXPORTS_DIR = path.join(process.cwd(), 'exports');
+      const filepath = path.join(EXPORTS_DIR, exportResult.filename);
+      const fileBuffer = await fs.readFile(filepath);
+      const base64Content = fileBuffer.toString('base64');
+
       res.status(200).json({
         success: true,
-        data: exportResult,
+        data: {
+          ...exportResult,
+          content: base64Content  // Include file content directly
+        },
         message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
       });
     } catch (error) {
