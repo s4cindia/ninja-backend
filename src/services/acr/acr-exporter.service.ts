@@ -58,18 +58,43 @@ function wrapText(text: string, maxWidth: number, fontSize: number): string[] {
   const avgCharWidth = fontSize * 0.5;
   const charsPerLine = Math.floor(maxWidth / avgCharWidth);
   const lines: string[] = [];
-  const words = text.split(' ');
-  let currentLine = '';
+  
+  // Normalize line breaks and collapse multiple spaces
+  const normalizedText = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\n+/g, '\n')
+    .trim();
+  
+  // Split by paragraphs (double newline or single newline followed by specific content)
+  const paragraphs = normalizedText.split(/\n\s*\n|\n(?=Assessment Tool:|AI Model:)/);
+  
+  for (const paragraph of paragraphs) {
+    // Normalize whitespace within paragraph
+    const cleanParagraph = paragraph.replace(/\s+/g, ' ').trim();
+    if (!cleanParagraph) continue;
+    
+    const words = cleanParagraph.split(' ');
+    let currentLine = '';
 
-  for (const word of words) {
-    if (currentLine.length + word.length + 1 <= charsPerLine) {
-      currentLine += (currentLine ? ' ' : '') + word;
-    } else {
-      if (currentLine) lines.push(currentLine);
-      currentLine = word;
+    for (const word of words) {
+      if (currentLine.length + word.length + 1 <= charsPerLine) {
+        currentLine += (currentLine ? ' ' : '') + word;
+      } else {
+        if (currentLine) lines.push(currentLine);
+        currentLine = word;
+      }
     }
+    if (currentLine) lines.push(currentLine);
+    
+    // Add blank line between paragraphs
+    lines.push('');
   }
-  if (currentLine) lines.push(currentLine);
+  
+  // Remove trailing empty lines
+  while (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  
   return lines.length > 0 ? lines : [''];
 }
 

@@ -468,7 +468,7 @@ export class AcrController {
         methodology: exportOptions.includeMethodology ? {
           assessmentDate: sourceJob.createdAt,
           toolVersion: TOOL_VERSION,
-          aiModelInfo: AI_MODEL_INFO,
+          aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.purpose})`,
           disclaimer: LEGAL_DISCLAIMER
         } : undefined,
         footerDisclaimer: LEGAL_DISCLAIMER
