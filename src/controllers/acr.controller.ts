@@ -856,7 +856,9 @@ export class AcrController {
       }
 
       const { acrJobId, criterionId } = req.params;
-      const { conformanceLevel, remarks } = req.body;
+      const { conformanceLevel, remarks, reviewerNotes } = req.body;
+
+      console.log('[ACR] Updating criterion:', { acrJobId, criterionId, body: req.body });
 
       if (!conformanceLevel) {
         res.status(400).json({
@@ -869,8 +871,9 @@ export class AcrController {
         return;
       }
 
+      const normalizedLevel = conformanceLevel.toLowerCase().replace(/\s+/g, '_');
       const validLevels = ['supports', 'partially_supports', 'does_not_support', 'not_applicable'];
-      if (!validLevels.includes(conformanceLevel)) {
+      if (!validLevels.includes(normalizedLevel)) {
         res.status(400).json({
           success: false,
           error: {
@@ -886,7 +889,7 @@ export class AcrController {
         criterionId,
         userId,
         tenantId,
-        { conformanceLevel, remarks }
+        { conformanceLevel: normalizedLevel as 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable', remarks: remarks || reviewerNotes }
       );
 
       res.json({

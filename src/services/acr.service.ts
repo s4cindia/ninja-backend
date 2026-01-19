@@ -338,11 +338,22 @@ export class AcrService {
       throw new Error('ACR job not found or access denied');
     }
 
-    const updated = await prisma.acrCriterionReview.updateMany({
+    const criterion = await prisma.acrCriterionReview.findFirst({
       where: {
         acrJobId: acrJob.id,
-        criterionId,
-      },
+        OR: [
+          { id: criterionId },
+          { criterionId: criterionId }
+        ]
+      }
+    });
+
+    if (!criterion) {
+      throw new Error('Criterion not found in ACR job');
+    }
+
+    await prisma.acrCriterionReview.update({
+      where: { id: criterion.id },
       data: {
         conformanceLevel: reviewData.conformanceLevel,
         reviewerNotes: reviewData.remarks || null,
@@ -350,10 +361,6 @@ export class AcrService {
         reviewedBy: userId,
       },
     });
-
-    if (updated.count === 0) {
-      throw new Error('Criterion not found in ACR job');
-    }
 
     const totalCriteria = await prisma.acrCriterionReview.count({
       where: { acrJobId: acrJob.id },
