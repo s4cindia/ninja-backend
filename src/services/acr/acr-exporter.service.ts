@@ -154,7 +154,8 @@ async function exportToDocx(
   ];
 
   for (const method of acr.evaluationMethods) {
-    children.push(new Paragraph({ children: [new TextRun({ text: `• ${method}` })] }));
+    const methodText = typeof method === 'string' ? method : `${method.type}: ${method.description}`;
+    children.push(new Paragraph({ children: [new TextRun({ text: `• ${methodText}` })] }));
   }
 
   children.push(new Paragraph({ children: [] }));
@@ -162,7 +163,10 @@ async function exportToDocx(
     children: [new TextRun({ text: 'Accessibility Conformance Report', bold: true, size: 28 })],
     heading: HeadingLevel.HEADING_1
   }));
-  children.push(new Table({ rows: tableRows }));
+  children.push(new Table({ 
+    rows: tableRows,
+    width: { size: 100, type: WidthType.PERCENTAGE }
+  }));
 
   if (options.includeMethodology && acr.methodology) {
     children.push(new Paragraph({ children: [] }));
@@ -264,7 +268,8 @@ async function exportToPdf(
   yPosition -= 18;
 
   for (const method of acr.evaluationMethods) {
-    page.drawText(`• ${method}`, { x: margin + 10, y: yPosition, size: 9, font: helvetica });
+    const methodText = typeof method === 'string' ? method : `${method.type}: ${method.description}`;
+    page.drawText(`• ${methodText}`, { x: margin + 10, y: yPosition, size: 9, font: helvetica });
     yPosition -= lineHeight;
   }
   yPosition -= 20;
