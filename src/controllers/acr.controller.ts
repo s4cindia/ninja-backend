@@ -459,7 +459,7 @@ export class AcrController {
           evaluationDate: providedProductInfo.evaluationDate || sourceJob.createdAt
         },
         evaluationMethods: [
-          { type: 'hybrid', tools: ['Ninja Platform v1.0', 'Ace by DAISY'], aiModels: ['Google Gemini'], description: 'Automated testing with AI-assisted analysis' }
+          { type: 'hybrid', tools: ['Ninja Platform v1.0', 'Ace by DAISY'], aiModels: ['Google Gemini'], description: 'Human verification and AI-assisted analysis' }
         ],
         criteria: finalCriteria,
         generatedAt: new Date(),

@@ -54,6 +54,31 @@ function formatConformanceLevel(level: string): string {
   return level || 'Not Evaluated';
 }
 
+function formatEdition(edition: string): string {
+  const editionMap: Record<string, string> = {
+    'VPAT2.5-INT': 'VPAT 2.5 INT Edition',
+    'VPAT2.5-508': 'VPAT 2.5 Section 508 Edition',
+    'VPAT2.5-WCAG': 'VPAT 2.5 WCAG Edition',
+    'VPAT2.5-EU': 'VPAT 2.5 EU Edition',
+    'section508': 'VPAT 2.5 Section 508 Edition',
+    'WCAG': 'VPAT 2.5 WCAG Edition',
+    'EU': 'VPAT 2.5 EU Edition',
+    'INT': 'VPAT 2.5 INT Edition'
+  };
+  return editionMap[edition] || `VPAT 2.5 ${edition} Edition`;
+}
+
+function formatEvaluationMethod(method: { type: string; description?: string }): string {
+  const typeMap: Record<string, string> = {
+    'hybrid': 'Hybrid',
+    'automated': 'Automated',
+    'manual': 'Manual'
+  };
+  const formattedType = typeMap[method.type] || method.type.charAt(0).toUpperCase() + method.type.slice(1);
+  const description = method.description || 'Human verification and AI-assisted analysis';
+  return `${formattedType}: ${description}`;
+}
+
 function wrapText(text: string, maxWidth: number, fontSize: number): string[] {
   const avgCharWidth = fontSize * 0.5;
   const charsPerLine = Math.floor(maxWidth / avgCharWidth);
@@ -158,7 +183,7 @@ async function exportToDocx(
       alignment: AlignmentType.CENTER
     }),
     new Paragraph({
-      children: [new TextRun({ text: `VPAT Version 2.5 - ${acr.edition} Edition` })],
+      children: [new TextRun({ text: formatEdition(acr.edition) })],
       alignment: AlignmentType.CENTER
     }),
     new Paragraph({ children: [] }),
@@ -179,7 +204,7 @@ async function exportToDocx(
   ];
 
   for (const method of acr.evaluationMethods) {
-    const methodText = typeof method === 'string' ? method : `${method.type}: ${method.description}`;
+    const methodText = typeof method === 'string' ? method : formatEvaluationMethod(method);
     children.push(new Paragraph({ children: [new TextRun({ text: `• ${methodText}` })] }));
   }
 
@@ -255,7 +280,7 @@ async function exportToPdf(
   });
   yPosition -= 20;
 
-  page.drawText(`VPAT Version 2.5 - ${acr.edition} Edition`, {
+  page.drawText(formatEdition(acr.edition), {
     x: margin,
     y: yPosition,
     size: 10,
@@ -293,7 +318,7 @@ async function exportToPdf(
   yPosition -= 18;
 
   for (const method of acr.evaluationMethods) {
-    const methodText = typeof method === 'string' ? method : `${method.type}: ${method.description}`;
+    const methodText = typeof method === 'string' ? method : formatEvaluationMethod(method);
     page.drawText(`• ${methodText}`, { x: margin + 10, y: yPosition, size: 9, font: helvetica });
     yPosition -= lineHeight;
   }
@@ -323,13 +348,19 @@ async function exportToPdf(
       : criterion.remarks || '';
 
     const remarksLines = wrapText(remarksText, colWidths[2] - 10, 7);
-    const rowHeight = Math.max(remarksLines.length * 10, 14);
+    const nameLines = wrapText(criterion.name, colWidths[0] - 10, 7);
+    
+    // Calculate row height based on all content (ID line + name lines + padding)
+    const nameHeight = 12 + (Math.min(nameLines.length, 2) * 9); // ID + name lines
+    const remarksHeight = remarksLines.length * 10;
+    const rowHeight = Math.max(nameHeight, remarksHeight, 28) + 8; // Minimum 28px + padding
 
     if (yPosition - rowHeight < 80) {
       page = pdfDoc.addPage([612, 792]);
       yPosition = height - 50;
     }
 
+    // Draw row separator line
     page.drawLine({
       start: { x: margin, y: yPosition + 3 },
       end: { x: width - margin, y: yPosition + 3 },
@@ -337,29 +368,32 @@ async function exportToPdf(
       color: rgb(0.85, 0.85, 0.85)
     });
 
-    page.drawText(criterion.id, { x: margin + 5, y: yPosition - 10, size: 8, font: helveticaBold });
+    // Draw criterion ID
+    page.drawText(criterion.id, { x: margin + 5, y: yPosition - 12, size: 9, font: helveticaBold });
     
-    const nameLines = wrapText(criterion.name, colWidths[0] - 10, 7);
-    let nameY = yPosition - 22;
+    // Draw criterion name (wrapped)
+    let nameY = yPosition - 24;
     for (const line of nameLines.slice(0, 2)) {
       page.drawText(line, { x: margin + 5, y: nameY, size: 7, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
-      nameY -= 9;
+      nameY -= 10;
     }
 
+    // Draw conformance level
     page.drawText(formatConformanceLevel(criterion.conformanceLevel), { 
       x: margin + colWidths[0] + 5, 
-      y: yPosition - 10, 
-      size: 8, 
+      y: yPosition - 12, 
+      size: 9, 
       font: helvetica 
     });
 
-    let remarksY = yPosition - 10;
+    // Draw remarks (wrapped)
+    let remarksY = yPosition - 12;
     for (const line of remarksLines) {
       page.drawText(line, { x: margin + colWidths[0] + colWidths[1] + 5, y: remarksY, size: 7, font: helvetica });
       remarksY -= 10;
     }
 
-    yPosition -= rowHeight + 5;
+    yPosition -= rowHeight;
   }
 
   if (options.includeMethodology && acr.methodology) {
@@ -507,7 +541,7 @@ function exportToHtml(
 <body>
   <header>
     <h1>Voluntary Product Accessibility Template (VPAT)</h1>
-    <p>Version 2.5 - ${acr.edition} | ${companyName}</p>
+    <p>${formatEdition(acr.edition)} | ${companyName}</p>
   </header>
 
   <section>
