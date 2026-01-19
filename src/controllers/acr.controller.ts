@@ -322,8 +322,52 @@ export class AcrController {
         branding: validatedData.options.branding
       };
 
+      // 1. Find the source Job (ACR_WORKFLOW type) - this has all the analysis data
+      const sourceJob = await prisma.job.findFirst({
+        where: { 
+          OR: [
+            { id: acrId },
+            { id: acrId, type: 'ACR_WORKFLOW' }
+          ]
+        },
+        include: { file: true }
+      });
+
+      if (!sourceJob) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'ACR job not found' }
+        });
+        return;
+      }
+
+      // 2. Parse the output JSON - THIS HAS ALL THE DATA
+      const jobOutput = sourceJob.output as Record<string, unknown> | null;
+      
+      console.log('[ACR Export] epubTitle:', jobOutput?.epubTitle);
+      console.log('[ACR Export] criteria count:', (jobOutput?.criteria as unknown[])?.length);
+      console.log('[ACR Export] acrAnalysis criteria:', (jobOutput?.acrAnalysis as unknown[])?.length);
+
+      // 3. Get document title
+      const documentTitle = (jobOutput?.epubTitle as string) || 
+                           (jobOutput?.fileName as string) ||
+                           sourceJob.file?.originalName?.replace(/\.(epub|pdf|html)$/i, '') ||
+                           'Unnamed Product';
+
+      // 4. Get criteria from Job output (use acrAnalysis which has the full criteria)
+      const criteriaFromOutput = (jobOutput?.acrAnalysis || jobOutput?.criteria || []) as Array<{
+        criterionId?: string;
+        id?: string;
+        name?: string;
+        level?: string;
+        status?: string;
+        conformanceLevel?: string;
+        remarks?: string;
+      }>;
+
+      // 5. Also get any human-edited criteria from AcrCriterionReview to merge
       const acrJob = await prisma.acrJob.findFirst({
-        where: {
+        where: { 
           OR: [
             { id: acrId },
             { jobId: acrId }
@@ -332,34 +376,21 @@ export class AcrController {
         include: { criteria: true }
       });
 
-      if (!acrJob) {
-        res.status(404).json({
-          success: false,
-          error: { message: 'ACR job not found' }
-        });
-        return;
+      // Create a map of human-edited criteria
+      const editedCriteria = new Map<string, { conformanceLevel: string; remarks: string; reviewedBy: string | null }>();
+      if (acrJob?.criteria) {
+        for (const review of acrJob.criteria) {
+          editedCriteria.set(review.criterionId, {
+            conformanceLevel: review.conformanceLevel || '',
+            remarks: review.reviewerNotes || '',
+            reviewedBy: review.reviewedBy
+          });
+        }
       }
 
-      let documentTitle = acrJob.documentTitle;
-      
-      const sourceJob = await prisma.job.findFirst({
-        where: { id: acrJob.jobId },
-        include: { file: true }
-      });
-      
-      const jobOutput = sourceJob?.output as Record<string, unknown> | null;
-      if (!documentTitle || documentTitle === 'ACR Document') {
-        documentTitle = (jobOutput?.epubTitle as string) || 
-                       sourceJob?.file?.originalName?.replace(/\.(epub|pdf|html)$/i, '') ||
-                       'Unnamed Product';
-      }
+      console.log('[ACR Export] Human-edited criteria count:', editedCriteria.size);
 
-      console.log('[ACR Export] Document title:', documentTitle);
-      console.log('[ACR Export] Criteria count from DB:', acrJob.criteria.length);
-      if (acrJob.criteria.length > 0) {
-        console.log('[ACR Export] First criterion:', acrJob.criteria[0]);
-      }
-
+      // Conformance level mapping (snake_case to Title Case)
       const conformanceLevelMap: Record<string, AcrCriterion['conformanceLevel']> = {
         'supports': 'Supports',
         'partially_supports': 'Partially Supports',
@@ -368,63 +399,64 @@ export class AcrController {
         'Supports': 'Supports',
         'Partially Supports': 'Partially Supports',
         'Does Not Support': 'Does Not Support',
-        'Not Applicable': 'Not Applicable'
+        'Not Applicable': 'Not Applicable',
+        'Not Evaluated': 'Not Applicable'
       };
 
-      const criteriaFromDb: AcrCriterion[] = acrJob.criteria.map(review => {
-        const rawConformance = review.conformanceLevel?.trim() || '';
+      // 6. Build final criteria array - merge Job output with human edits
+      const finalCriteria: AcrCriterion[] = criteriaFromOutput.map((c) => {
+        const criterionId = c.criterionId || c.id || '';
+        const edited = editedCriteria.get(criterionId);
+        
+        const rawConformance = edited?.conformanceLevel || c.status || c.conformanceLevel || 'Not Applicable';
         const conformanceLevel = conformanceLevelMap[rawConformance] || 'Not Applicable';
-        const level = (review.level as 'A' | 'AA' | 'AAA') || 'A';
-        
-        const remarks = review.reviewerNotes || '';
-        const attributionTag = review.reviewedBy ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const;
-        
-        const tag = review.reviewedBy ? '[HUMAN-VERIFIED]' : '[AI-SUGGESTED]';
+        const level = (c.level as 'A' | 'AA' | 'AAA') || 'A';
+        const remarks = edited?.remarks || c.remarks || '';
+        const isHumanVerified = !!edited?.reviewedBy;
+        const tag = isHumanVerified ? '[HUMAN-VERIFIED]' : '[AI-SUGGESTED]';
         const attributedRemarks = remarks ? `${tag} ${remarks.trim()}` : '';
-        
+
         return {
-          id: review.criterionId,
-          criterionId: review.criterionId,
-          name: review.criterionName,
+          id: criterionId,
+          criterionId: criterionId,
+          name: c.name || criterionId,
           level,
           conformanceLevel,
           remarks: remarks.trim(),
-          attributionTag,
+          attributionTag: isHumanVerified ? 'HUMAN-VERIFIED' as const : 'AI-SUGGESTED' as const,
           attributedRemarks
         };
       });
 
-      logger.info(`[ACR Export] Exporting with ${criteriaFromDb.length} criteria from database`);
-      if (criteriaFromDb.length > 0) {
-        logger.info(`[ACR Export] First criterion: ${JSON.stringify(criteriaFromDb[0])}`);
-      } else {
-        logger.warn(`[ACR Export] No criteria found in database for ACR ${acrJob.id}`);
+      console.log('[ACR Export] Final criteria count:', finalCriteria.length);
+      if (finalCriteria.length > 0) {
+        console.log('[ACR Export] First criterion:', JSON.stringify(finalCriteria[0]));
       }
 
       const providedProductInfo = validatedData.acrData?.productInfo || {};
-      const edition = (validatedData.acrData?.edition || acrJob.edition || 'VPAT2.5-INT') as AcrEdition;
+      const edition = (validatedData.acrData?.edition || acrJob?.edition || 'VPAT2.5-INT') as AcrEdition;
 
+      // 7. Build AcrDocument with ACTUAL data
       const acrDocument: AcrDocument = {
-        id: acrJob.id,
+        id: acrJob?.id || sourceJob.id,
         edition,
         productInfo: {
           name: providedProductInfo.name || documentTitle,
           version: providedProductInfo.version || '1.0.0',
-          description: providedProductInfo.description || 'Product accessibility conformance report',
-          vendor: providedProductInfo.vendor || 'Unknown Vendor',
-          contactEmail: providedProductInfo.contactEmail || 'contact@example.com',
-          evaluationDate: providedProductInfo.evaluationDate || acrJob.createdAt
+          description: providedProductInfo.description || 'Accessibility Conformance Report',
+          vendor: providedProductInfo.vendor || 'S4Carlisle',
+          contactEmail: providedProductInfo.contactEmail || 'accessibility@s4carlisle.com',
+          evaluationDate: providedProductInfo.evaluationDate || sourceJob.createdAt
         },
         evaluationMethods: [
-          { type: 'automated', description: 'Automated accessibility scanning with EPUBCheck and JS Auditor' },
-          { type: 'ai-assisted', description: 'AI-powered analysis using Google Gemini for image descriptions and issue detection' }
+          { type: 'hybrid', tools: ['Ninja Platform v1.0', 'Ace by DAISY'], aiModels: ['Google Gemini'], description: 'Automated testing with AI-assisted analysis' }
         ],
-        criteria: criteriaFromDb,
+        criteria: finalCriteria,
         generatedAt: new Date(),
         version: 1,
-        status: acrJob.status === 'completed' ? 'final' : 'draft',
+        status: acrJob?.status === 'completed' ? 'final' : 'draft',
         methodology: exportOptions.includeMethodology ? {
-          assessmentDate: acrJob.createdAt,
+          assessmentDate: sourceJob.createdAt,
           toolVersion: TOOL_VERSION,
           aiModelInfo: AI_MODEL_INFO,
           disclaimer: LEGAL_DISCLAIMER
@@ -432,6 +464,7 @@ export class AcrController {
         footerDisclaimer: LEGAL_DISCLAIMER
       };
 
+      // 8. Export
       const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
 
       res.status(200).json({
