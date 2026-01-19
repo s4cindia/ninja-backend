@@ -937,7 +937,13 @@ export class AcrController {
       const { acrJobId, criterionId } = req.params;
       const { conformanceLevel, remarks, reviewerNotes } = req.body;
 
-      logger.debug('[ACR] Updating criterion', { acrJobId, criterionId, body: req.body });
+      logger.debug('[ACR] Updating criterion', { 
+        acrJobId, 
+        criterionId, 
+        conformanceLevel,
+        hasRemarks: !!remarks,
+        hasReviewerNotes: !!reviewerNotes
+      });
 
       let normalizedLevel: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | undefined;
       
