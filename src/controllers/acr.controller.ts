@@ -344,8 +344,9 @@ export class AcrController {
       const jobOutput = sourceJob.output as Record<string, unknown> | null;
       
       console.log('[ACR Export] epubTitle:', jobOutput?.epubTitle);
-      console.log('[ACR Export] criteria count:', (jobOutput?.criteria as unknown[])?.length);
-      console.log('[ACR Export] acrAnalysis criteria:', (jobOutput?.acrAnalysis as unknown[])?.length);
+      console.log('[ACR Export] criteria type:', typeof jobOutput?.criteria);
+      console.log('[ACR Export] acrAnalysis type:', typeof jobOutput?.acrAnalysis);
+      console.log('[ACR Export] acrAnalysis is array:', Array.isArray(jobOutput?.acrAnalysis));
 
       // 3. Get document title from job output
       const documentTitle = (jobOutput?.epubTitle as string) || 
@@ -353,7 +354,16 @@ export class AcrController {
                            'Unnamed Product';
 
       // 4. Get criteria from Job output (use acrAnalysis which has the full criteria)
-      const criteriaFromOutput = (jobOutput?.acrAnalysis || jobOutput?.criteria || []) as Array<{
+      // Handle various possible structures
+      let rawCriteria = jobOutput?.acrAnalysis || jobOutput?.criteria;
+      
+      // If criteria is an object with a 'criteria' property, extract it
+      if (rawCriteria && typeof rawCriteria === 'object' && !Array.isArray(rawCriteria) && 'criteria' in (rawCriteria as Record<string, unknown>)) {
+        rawCriteria = (rawCriteria as Record<string, unknown>).criteria;
+      }
+      
+      // Ensure it's an array
+      const criteriaFromOutput = (Array.isArray(rawCriteria) ? rawCriteria : []) as Array<{
         criterionId?: string;
         id?: string;
         name?: string;
@@ -362,6 +372,8 @@ export class AcrController {
         conformanceLevel?: string;
         remarks?: string;
       }>;
+      
+      console.log('[ACR Export] criteriaFromOutput length:', criteriaFromOutput.length);
 
       // 5. Also get any human-edited criteria from AcrCriterionReview to merge
       const acrJob = await prisma.acrJob.findFirst({
