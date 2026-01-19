@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import prisma from '../../lib/prisma';
 import { AcrDocument } from './acr-generator.service';
 
 export interface ChangeLogEntry {
@@ -30,16 +31,12 @@ export interface VersionComparison {
   };
 }
 
-// TODO: Migrate to database persistence for production (in-memory loses data on restart)
-const versionStore = new Map<string, AcrVersion[]>();
-
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
   if (a === null || b === null) return a === b;
   if (typeof a !== 'object') return false;
   
-  // Handle Date objects
   if (a instanceof Date && b instanceof Date) {
     return a.getTime() === b.getTime();
   }
@@ -165,61 +162,104 @@ function generateChangeLog(
   return changes;
 }
 
-// TODO: POST-MVP - Add optimistic locking to prevent race condition on concurrent version creation
-// TODO: POST-MVP - Migrate to database persistence with transactions
 async function createVersion(
   acrId: string,
   userId: string,
   snapshot: AcrDocument,
   reason?: string
 ): Promise<AcrVersion> {
-  const existingVersions = versionStore.get(acrId) || [];
-  const previousVersion = existingVersions.length > 0 
-    ? existingVersions[existingVersions.length - 1] 
+  const latestVersion = await prisma.acrVersion.findFirst({
+    where: { acrId },
+    orderBy: { version: 'desc' }
+  });
+  
+  const newVersionNumber = latestVersion ? latestVersion.version + 1 : 1;
+  
+  const previousSnapshot = latestVersion 
+    ? (latestVersion.snapshot as AcrDocument) 
     : null;
   
-  const newVersionNumber = previousVersion ? previousVersion.version + 1 : 1;
-  
-  const changeLog = generateChangeLog(
-    previousVersion?.snapshot || null,
-    snapshot,
-    reason
-  );
+  const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
 
   const snapshotWithVersion: AcrDocument = {
     ...snapshot,
     version: newVersionNumber
   };
 
-  const version: AcrVersion = {
-    id: uuidv4(),
-    acrId,
-    version: newVersionNumber,
-    createdAt: new Date(),
-    createdBy: userId,
-    changeLog,
-    snapshot: snapshotWithVersion
+  const created = await prisma.acrVersion.create({
+    data: {
+      id: uuidv4(),
+      acrId,
+      version: newVersionNumber,
+      createdBy: userId,
+      changeLog: changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      snapshot: snapshotWithVersion as unknown as import('@prisma/client').Prisma.InputJsonValue
+    }
+  });
+
+  return {
+    id: created.id,
+    acrId: created.acrId,
+    version: created.version,
+    createdAt: created.createdAt,
+    createdBy: created.createdBy,
+    changeLog: created.changeLog as unknown as ChangeLogEntry[],
+    snapshot: created.snapshot as unknown as AcrDocument
   };
-
-  existingVersions.push(version);
-  versionStore.set(acrId, existingVersions);
-
-  return version;
 }
 
 async function getVersions(acrId: string): Promise<AcrVersion[]> {
-  return versionStore.get(acrId) || [];
+  const versions = await prisma.acrVersion.findMany({
+    where: { acrId },
+    orderBy: { version: 'desc' }
+  });
+
+  return versions.map(v => ({
+    id: v.id,
+    acrId: v.acrId,
+    version: v.version,
+    createdAt: v.createdAt,
+    createdBy: v.createdBy,
+    changeLog: v.changeLog as unknown as ChangeLogEntry[],
+    snapshot: v.snapshot as unknown as AcrDocument
+  }));
 }
 
 async function getVersion(acrId: string, versionNumber: number): Promise<AcrVersion | null> {
-  const versions = versionStore.get(acrId) || [];
-  return versions.find(v => v.version === versionNumber) || null;
+  const version = await prisma.acrVersion.findFirst({
+    where: { acrId, version: versionNumber }
+  });
+
+  if (!version) return null;
+
+  return {
+    id: version.id,
+    acrId: version.acrId,
+    version: version.version,
+    createdAt: version.createdAt,
+    createdBy: version.createdBy,
+    changeLog: version.changeLog as unknown as ChangeLogEntry[],
+    snapshot: version.snapshot as unknown as AcrDocument
+  };
 }
 
 async function getLatestVersion(acrId: string): Promise<AcrVersion | null> {
-  const versions = versionStore.get(acrId) || [];
-  if (versions.length === 0) return null;
-  return versions[versions.length - 1];
+  const version = await prisma.acrVersion.findFirst({
+    where: { acrId },
+    orderBy: { version: 'desc' }
+  });
+
+  if (!version) return null;
+
+  return {
+    id: version.id,
+    acrId: version.acrId,
+    version: version.version,
+    createdAt: version.createdAt,
+    createdBy: version.createdBy,
+    changeLog: version.changeLog as unknown as ChangeLogEntry[],
+    snapshot: version.snapshot as unknown as AcrDocument
+  };
 }
 
 async function compareVersions(
@@ -227,16 +267,19 @@ async function compareVersions(
   versionA: number,
   versionB: number
 ): Promise<VersionComparison | null> {
-  const versions = versionStore.get(acrId) || [];
-  
-  const versionAData = versions.find(v => v.version === versionA);
-  const versionBData = versions.find(v => v.version === versionB);
+  const [versionAData, versionBData] = await Promise.all([
+    prisma.acrVersion.findFirst({ where: { acrId, version: versionA } }),
+    prisma.acrVersion.findFirst({ where: { acrId, version: versionB } })
+  ]);
   
   if (!versionAData || !versionBData) {
     return null;
   }
 
-  const changes = generateChangeLog(versionAData.snapshot, versionBData.snapshot);
+  const snapshotA = versionAData.snapshot as unknown as AcrDocument;
+  const snapshotB = versionBData.snapshot as unknown as AcrDocument;
+
+  const changes = generateChangeLog(snapshotA, snapshotB);
 
   const criteriaChanges = changes.filter(c => c.field.startsWith('criteria.'));
   const statusChanged = changes.some(c => c.field === 'status');
@@ -258,12 +301,16 @@ async function compareVersions(
 }
 
 async function deleteVersions(acrId: string): Promise<boolean> {
-  return versionStore.delete(acrId);
+  const result = await prisma.acrVersion.deleteMany({
+    where: { acrId }
+  });
+  return result.count > 0;
 }
 
-function getVersionCount(acrId: string): number {
-  const versions = versionStore.get(acrId) || [];
-  return versions.length;
+async function getVersionCount(acrId: string): Promise<number> {
+  return prisma.acrVersion.count({
+    where: { acrId }
+  });
 }
 
 export const acrVersioningService = {
