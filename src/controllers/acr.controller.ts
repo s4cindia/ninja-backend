@@ -983,6 +983,46 @@ export class AcrController {
         { conformanceLevel: normalizedLevel, remarks: remarksValue }
       );
 
+      // Create version after successful criterion update
+      try {
+        const latestVersion = await acrVersioningService.getLatestVersion(acrJobId);
+        if (latestVersion) {
+          // Update the criterion in the snapshot
+          const updatedCriteria = latestVersion.snapshot.criteria.map(c => 
+            c.id === criterionId 
+              ? { 
+                  ...c, 
+                  conformanceLevel: normalizedLevel ? (
+                    normalizedLevel === 'supports' ? 'Supports' :
+                    normalizedLevel === 'partially_supports' ? 'Partially Supports' :
+                    normalizedLevel === 'does_not_support' ? 'Does Not Support' :
+                    'Not Applicable'
+                  ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
+                  remarks: remarksValue || c.remarks,
+                  attributionTag: 'HUMAN_VERIFIED' as const,
+                  attributedRemarks: `[HUMAN-VERIFIED] ${remarksValue || c.remarks}`,
+                }
+              : c
+          );
+          
+          const updatedAcrDocument = {
+            ...latestVersion.snapshot,
+            criteria: updatedCriteria,
+          };
+
+          await acrVersioningService.createVersion(
+            acrJobId,
+            updatedAcrDocument,
+            userId,
+            `Updated criterion ${criterionId}`
+          );
+          logger.info(`Created version for ACR ${acrJobId} after user update`);
+        }
+      } catch (versionError) {
+        logger.error(`Failed to create version for ACR ${acrJobId}`, versionError instanceof Error ? versionError : undefined);
+        // Don't throw - version creation failure shouldn't stop update
+      }
+
       res.json({
         success: true,
         data: result,
@@ -1027,6 +1067,49 @@ export class AcrController {
       }
 
       const result = await acrService.saveBulkReviews(acrJobId, userId, tenantId, reviews);
+
+      // Create version after successful bulk update
+      try {
+        const latestVersion = await acrVersioningService.getLatestVersion(acrJobId);
+        if (latestVersion) {
+          const reviewMap = new Map(reviews.map((r: { criterionId: string; conformanceLevel?: string; remarks?: string }) => [r.criterionId, r]));
+          
+          const updatedCriteria = latestVersion.snapshot.criteria.map(c => {
+            const review = reviewMap.get(c.id) as { conformanceLevel?: string; remarks?: string } | undefined;
+            if (!review) return c;
+            
+            const normalizedLevel = review.conformanceLevel?.toLowerCase().replace(/\s+/g, '_');
+            return {
+              ...c,
+              conformanceLevel: normalizedLevel ? (
+                normalizedLevel === 'supports' ? 'Supports' :
+                normalizedLevel === 'partially_supports' ? 'Partially Supports' :
+                normalizedLevel === 'does_not_support' ? 'Does Not Support' :
+                'Not Applicable'
+              ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
+              remarks: review.remarks || c.remarks,
+              attributionTag: 'HUMAN_VERIFIED' as const,
+              attributedRemarks: `[HUMAN-VERIFIED] ${review.remarks || c.remarks}`,
+            };
+          });
+          
+          const updatedAcrDocument = {
+            ...latestVersion.snapshot,
+            criteria: updatedCriteria,
+          };
+
+          await acrVersioningService.createVersion(
+            acrJobId,
+            updatedAcrDocument,
+            userId,
+            `Updated ${reviews.length} criteria`
+          );
+          logger.info(`Created version for ACR ${acrJobId} after bulk update`);
+        }
+      } catch (versionError) {
+        logger.error(`Failed to create version for ACR ${acrJobId}`, versionError instanceof Error ? versionError : undefined);
+        // Don't throw - version creation failure shouldn't stop update
+      }
 
       res.json({
         success: true,
