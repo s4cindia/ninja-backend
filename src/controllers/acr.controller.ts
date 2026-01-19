@@ -329,8 +329,7 @@ export class AcrController {
             { id: acrId },
             { id: acrId, type: 'ACR_WORKFLOW' }
           ]
-        },
-        include: { file: true }
+        }
       });
 
       if (!sourceJob) {
@@ -348,10 +347,9 @@ export class AcrController {
       console.log('[ACR Export] criteria count:', (jobOutput?.criteria as unknown[])?.length);
       console.log('[ACR Export] acrAnalysis criteria:', (jobOutput?.acrAnalysis as unknown[])?.length);
 
-      // 3. Get document title
+      // 3. Get document title from job output
       const documentTitle = (jobOutput?.epubTitle as string) || 
                            (jobOutput?.fileName as string) ||
-                           sourceJob.file?.originalName?.replace(/\.(epub|pdf|html)$/i, '') ||
                            'Unnamed Product';
 
       // 4. Get criteria from Job output (use acrAnalysis which has the full criteria)
