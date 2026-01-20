@@ -893,6 +893,115 @@ export class AcrController {
     }
   }
 
+  async createAnalysisWithUpload(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'No EPUB file uploaded', code: 'FILE_REQUIRED' }
+        });
+        return;
+      }
+
+      const { edition, documentTitle } = req.body;
+
+      if (!edition) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'edition is required', code: 'INVALID_REQUEST' }
+        });
+        return;
+      }
+
+      const validEditions = [
+        'section508', '508', 'VPAT2.5-508',
+        'wcag', 'VPAT2.5-WCAG',
+        'eu', 'VPAT2.5-EU',
+        'international', 'int', 'VPAT2.5-INT'
+      ];
+      if (!validEditions.includes(edition)) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid edition', code: 'INVALID_EDITION' }
+        });
+        return;
+      }
+
+      // Import required services dynamically to avoid circular dependencies
+      const { epubAuditService } = await import('../services/epub-audit.service');
+      const { fileStorageService } = await import('../services/file-storage.service');
+
+      // Step 1: Create job and run EPUB audit
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            size: req.file.size,
+          },
+          startedAt: new Date(),
+        },
+      });
+
+      await fileStorageService.saveFile(job.id, req.file.originalname, req.file.buffer);
+
+      const auditResult = await epubAuditService.runAudit(
+        req.file.buffer,
+        job.id,
+        req.file.originalname
+      );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: JSON.parse(JSON.stringify(auditResult)),
+        },
+      });
+
+      // Step 2: Create ACR analysis
+      const result = await acrService.createAcrAnalysis(
+        userId,
+        tenantId,
+        job.id,
+        edition,
+        documentTitle || req.file.originalname
+      );
+
+      logger.info(`Created ACR analysis for job ${job.id} with acrId ${result.acrJob.id}`);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          acrId: result.acrJob.id,
+          acrJob: result.acrJob,
+          criteriaCount: result.criteriaCount,
+          auditResult,
+        },
+      });
+    } catch (error) {
+      logger.error('Error in createAnalysisWithUpload', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
   async getAcrAnalysis(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = req.user?.id;

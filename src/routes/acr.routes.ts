@@ -1,13 +1,16 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob, authorizeAcr } from '../middleware/authorize-job.middleware';
 import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 router.use(authenticate);
 
+router.post('/analysis-with-upload', upload.single('file'), acrController.createAnalysisWithUpload.bind(acrController));
 router.get('/analysis/:jobId', acrController.getAnalysis.bind(acrController));
 router.post('/generate', acrController.generateAcr.bind(acrController));
 router.post('/generate-remarks', acrController.generateRemarks.bind(acrController));
