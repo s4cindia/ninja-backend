@@ -525,6 +525,22 @@ export class AcrController {
       if (acrId && acrId.startsWith('acr-')) {
         acrId = acrId.substring(4);
       }
+
+      // Check if this is an acrJob ID
+      const acrJob = await prisma.acrJob.findUnique({
+        where: { id: acrId }
+      });
+
+      if (!acrJob) {
+        // ACR not created yet - return empty array
+        res.json({
+          success: true,
+          data: [],
+          total: 0,
+          message: 'No ACR document created yet. Complete AI Analysis step first.'
+        });
+        return;
+      }
       
       const versions = await acrVersioningService.getVersions(acrId);
 
@@ -552,6 +568,7 @@ export class AcrController {
         total: versions.length
       });
     } catch (error) {
+      logger.error('Error fetching ACR versions', error instanceof Error ? error : undefined);
       next(error);
     }
   }
