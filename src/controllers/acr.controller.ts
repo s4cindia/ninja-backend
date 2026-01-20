@@ -874,7 +874,12 @@ export class AcrController {
 
       res.status(201).json({
         success: true,
-        data: result,
+        data: {
+          jobId: result.acrJob.jobId,
+          acrId: result.acrJob.id,
+          acrJob: result.acrJob,
+          criteriaCount: result.criteriaCount,
+        },
       });
     } catch (error) {
       if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
