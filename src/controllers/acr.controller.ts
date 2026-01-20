@@ -519,8 +519,25 @@ export class AcrController {
 
   async getVersions(req: Request, res: Response, next: NextFunction) {
     try {
-      const { acrId } = req.params;
+      let acrId = req.params.acrId;
+      
+      // Strip 'acr-' prefix if present
+      if (acrId && acrId.startsWith('acr-')) {
+        acrId = acrId.substring(4);
+      }
+      
       const versions = await acrVersioningService.getVersions(acrId);
+
+      // Return empty array gracefully if no versions exist yet
+      if (!versions || versions.length === 0) {
+        res.json({
+          success: true,
+          data: [],
+          total: 0,
+          message: 'No versions found. ACR document may not be created yet.'
+        });
+        return;
+      }
 
       res.json({
         success: true,
