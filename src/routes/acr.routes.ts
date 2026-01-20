@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob, authorizeAcr } from '../middleware/authorize-job.middleware';
 import { acrController } from '../controllers/acr.controller';
@@ -6,8 +7,29 @@ import { verificationController } from '../controllers/verification.controller';
 
 const router = Router();
 
+const epubFileFilter = (req: Express.Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  const allowedMimeTypes = ['application/epub+zip', 'application/octet-stream'];
+  const allowedExtensions = ['.epub'];
+  const ext = file.originalname.toLowerCase().slice(file.originalname.lastIndexOf('.'));
+  
+  if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only EPUB files are allowed'));
+  }
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max
+  },
+  fileFilter: epubFileFilter,
+});
+
 router.use(authenticate);
 
+router.post('/analysis-with-upload', upload.single('file'), acrController.createAnalysisWithUpload.bind(acrController));
 router.get('/analysis/:jobId', acrController.getAnalysis.bind(acrController));
 router.post('/generate', acrController.generateAcr.bind(acrController));
 router.post('/generate-remarks', acrController.generateRemarks.bind(acrController));

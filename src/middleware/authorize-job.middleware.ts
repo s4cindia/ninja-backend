@@ -49,10 +49,22 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
   try {
     // ACR (Accessibility Conformance Report) is generated from job audit results
     // The acrId parameter is actually the jobId of the source audit job
-    const acrId = req.params.acrId;
+    // Strip 'acr-' prefix if present (frontend may add this prefix)
+    let acrId = req.params.acrId;
+    if (acrId && acrId.startsWith('acr-')) {
+      acrId = acrId.substring(4);
+    }
+    // Also strip 'upload-' prefix if present
+    if (acrId && acrId.startsWith('upload-')) {
+      acrId = acrId.substring(7);
+    }
+    // Update params with cleaned acrId for downstream use
+    req.params.acrId = acrId;
+    
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
 
-    if (!userId) {
+    if (!userId || !tenantId) {
       res.status(401).json({ 
         success: false, 
         error: { message: 'Authentication required' } 
@@ -68,9 +80,42 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
-    // Reuse job authorization since ACR is derived from job data
-    const job = await authorizeJobAccess(acrId, userId);
-    req.job = job;
+    // Try to authorize by job ID first (for backwards compatibility)
+    // Then check if this is an acrJob ID and validate ownership
+    try {
+      const job = await authorizeJobAccess(acrId, userId);
+      req.job = job;
+    } catch (jobError) {
+      // If job not found, check if acrId is an ACR job ID with tenant/user validation
+      // AcrJob has no direct job relation, so fetch separately
+      const prisma = (await import('../lib/prisma')).default;
+      const acrJob = await prisma.acrJob.findFirst({
+        where: {
+          id: acrId,
+          userId: userId,
+          tenantId: tenantId,
+        }
+      });
+      
+      if (acrJob && acrJob.jobId) {
+        // Fetch the Job separately using acrJob.jobId
+        const job = await prisma.job.findFirst({
+          where: {
+            id: acrJob.jobId,
+            userId: userId,
+            tenantId: tenantId,
+          }
+        });
+        
+        if (job) {
+          req.job = job;
+        } else {
+          throw jobError;
+        }
+      } else {
+        throw jobError;
+      }
+    }
     next();
   } catch (error) {
     logger.warn(`Authorization failed for ACR ${req.params.acrId}: ${error instanceof Error ? error.message : 'Unknown error'}`);

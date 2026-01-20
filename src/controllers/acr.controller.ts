@@ -519,12 +519,85 @@ export class AcrController {
 
   async getVersions(req: Request, res: Response, next: NextFunction) {
     try {
-      const { acrId } = req.params;
-      const versions = await acrVersioningService.getVersions(acrId);
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+      
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+      
+      let acrId = req.params.acrId;
+      
+      // Strip 'acr-' prefix if present
+      if (acrId && acrId.startsWith('acr-')) {
+        acrId = acrId.substring(4);
+      }
+
+      // Check if this is an acrJob ID (with tenant/user validation)
+      let acrJob = await prisma.acrJob.findFirst({
+        where: { 
+          id: acrId,
+          userId,
+          tenantId
+        }
+      });
+
+      // If not found by acrJob ID, try finding by jobId
+      if (!acrJob) {
+        acrJob = await prisma.acrJob.findFirst({
+          where: { 
+            jobId: acrId,
+            userId,
+            tenantId
+          }
+        });
+      }
+
+      if (!acrJob) {
+        // ACR not created yet or no access - return empty array
+        res.json({
+          success: true,
+          data: [],
+          total: 0,
+          message: 'No ACR document created yet. Complete AI Analysis step first.'
+        });
+        return;
+      }
+      
+      // Get versions using the actual acrJob.id
+      const versions = await acrVersioningService.getVersions(acrJob.id);
+
+      // Also check for versions by jobId for backwards compatibility
+      let allVersions = versions;
+      if (acrJob.jobId !== acrJob.id) {
+        const jobVersions = await acrVersioningService.getVersions(acrJob.jobId);
+        // Merge and deduplicate by id
+        const versionIds = new Set(versions.map(v => v.id));
+        const uniqueJobVersions = jobVersions.filter(v => !versionIds.has(v.id));
+        allVersions = [...versions, ...uniqueJobVersions];
+      }
+      
+      // Sort by version number descending (newest first)
+      allVersions.sort((a, b) => b.version - a.version);
+
+      // Return empty array gracefully if no versions exist yet
+      if (!allVersions || allVersions.length === 0) {
+        res.json({
+          success: true,
+          data: [],
+          total: 0,
+          message: 'No versions found. ACR document may not be created yet.'
+        });
+        return;
+      }
 
       res.json({
         success: true,
-        data: versions.map(v => ({
+        data: allVersions.map(v => ({
           id: v.id,
           acrId: v.acrId,
           version: v.version,
@@ -532,9 +605,10 @@ export class AcrController {
           createdBy: v.createdBy,
           changeCount: v.changeLog.length
         })),
-        total: versions.length
+        total: allVersions.length
       });
     } catch (error) {
+      logger.error('Error fetching ACR versions', error instanceof Error ? error : undefined);
       next(error);
     }
   }
@@ -651,8 +725,8 @@ export class AcrController {
 
       const version = await acrVersioningService.createVersion(
         acrId,
-        userId,
         acrDocument,
+        userId,
         validatedData.reason
       );
 
@@ -840,7 +914,12 @@ export class AcrController {
 
       res.status(201).json({
         success: true,
-        data: result,
+        data: {
+          jobId: result.acrJob.jobId,
+          acrId: result.acrJob.id,
+          acrJob: result.acrJob,
+          criteriaCount: result.criteriaCount,
+        },
       });
     } catch (error) {
       if (error instanceof Error && (error.message.includes('not found') || error.message.includes('access denied'))) {
@@ -850,6 +929,115 @@ export class AcrController {
         });
         return;
       }
+      next(error);
+    }
+  }
+
+  async createAnalysisWithUpload(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'No EPUB file uploaded', code: 'FILE_REQUIRED' }
+        });
+        return;
+      }
+
+      const { edition, documentTitle } = req.body;
+
+      if (!edition) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'edition is required', code: 'INVALID_REQUEST' }
+        });
+        return;
+      }
+
+      const validEditions = [
+        'section508', '508', 'VPAT2.5-508',
+        'wcag', 'VPAT2.5-WCAG',
+        'eu', 'VPAT2.5-EU',
+        'international', 'int', 'VPAT2.5-INT'
+      ];
+      if (!validEditions.includes(edition)) {
+        res.status(400).json({
+          success: false,
+          error: { message: 'Invalid edition', code: 'INVALID_EDITION' }
+        });
+        return;
+      }
+
+      // Import required services dynamically to avoid circular dependencies
+      const { epubAuditService } = await import('../services/epub/epub-audit.service');
+      const { fileStorageService } = await import('../services/storage/file-storage.service');
+
+      // Step 1: Create job and run EPUB audit
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'EPUB_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            size: req.file.size,
+          },
+          startedAt: new Date(),
+        },
+      });
+
+      await fileStorageService.saveFile(job.id, req.file.originalname, req.file.buffer);
+
+      const auditResult = await epubAuditService.runAudit(
+        req.file.buffer,
+        job.id,
+        req.file.originalname
+      );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: JSON.parse(JSON.stringify(auditResult)),
+        },
+      });
+
+      // Step 2: Create ACR analysis
+      const result = await acrService.createAcrAnalysis(
+        userId,
+        tenantId,
+        job.id,
+        edition,
+        documentTitle || req.file.originalname
+      );
+
+      logger.info(`Created ACR analysis for job ${job.id} with acrId ${result.acrJob.id}`);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          acrId: result.acrJob.id,
+          acrJob: result.acrJob,
+          criteriaCount: result.criteriaCount,
+          auditResult,
+        },
+      });
+    } catch (error) {
+      logger.error('Error in createAnalysisWithUpload', error instanceof Error ? error : undefined);
       next(error);
     }
   }
@@ -983,6 +1171,46 @@ export class AcrController {
         { conformanceLevel: normalizedLevel, remarks: remarksValue }
       );
 
+      // Create version after successful criterion update
+      try {
+        const latestVersion = await acrVersioningService.getLatestVersion(acrJobId);
+        if (latestVersion) {
+          // Update the criterion in the snapshot - match by c.id OR c.criterionId
+          const updatedCriteria = latestVersion.snapshot.criteria.map(c => {
+            const isMatch = c.id === criterionId || c.criterionId === criterionId;
+            if (!isMatch) return c;
+            return { 
+              ...c, 
+              conformanceLevel: normalizedLevel ? (
+                normalizedLevel === 'supports' ? 'Supports' :
+                normalizedLevel === 'partially_supports' ? 'Partially Supports' :
+                normalizedLevel === 'does_not_support' ? 'Does Not Support' :
+                'Not Applicable'
+              ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
+              remarks: remarksValue || c.remarks,
+              attributionTag: 'HUMAN_VERIFIED' as const,
+              attributedRemarks: `[HUMAN-VERIFIED] ${remarksValue || c.remarks}`,
+            };
+          });
+          
+          const updatedAcrDocument = {
+            ...latestVersion.snapshot,
+            criteria: updatedCriteria,
+          };
+
+          await acrVersioningService.createVersion(
+            acrJobId,
+            updatedAcrDocument,
+            userId,
+            `Updated criterion ${criterionId}`
+          );
+          logger.info(`Created version for ACR ${acrJobId} after user update`);
+        }
+      } catch (versionError) {
+        logger.error(`Failed to create version for ACR ${acrJobId}`, versionError instanceof Error ? versionError : undefined);
+        // Don't throw - version creation failure shouldn't stop update
+      }
+
       res.json({
         success: true,
         data: result,
@@ -1027,6 +1255,50 @@ export class AcrController {
       }
 
       const result = await acrService.saveBulkReviews(acrJobId, userId, tenantId, reviews);
+
+      // Create version after successful bulk update
+      try {
+        const latestVersion = await acrVersioningService.getLatestVersion(acrJobId);
+        if (latestVersion) {
+          const reviewMap = new Map(reviews.map((r: { criterionId: string; conformanceLevel?: string; remarks?: string }) => [r.criterionId, r]));
+          
+          const updatedCriteria = latestVersion.snapshot.criteria.map(c => {
+            // Match by c.id OR c.criterionId for dual-key lookup
+            const review = (reviewMap.get(c.id) || reviewMap.get(c.criterionId)) as { conformanceLevel?: string; remarks?: string } | undefined;
+            if (!review) return c;
+            
+            const normalizedLevel = review.conformanceLevel?.toLowerCase().replace(/\s+/g, '_');
+            return {
+              ...c,
+              conformanceLevel: normalizedLevel ? (
+                normalizedLevel === 'supports' ? 'Supports' :
+                normalizedLevel === 'partially_supports' ? 'Partially Supports' :
+                normalizedLevel === 'does_not_support' ? 'Does Not Support' :
+                'Not Applicable'
+              ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
+              remarks: review.remarks || c.remarks,
+              attributionTag: 'HUMAN_VERIFIED' as const,
+              attributedRemarks: `[HUMAN-VERIFIED] ${review.remarks || c.remarks}`,
+            };
+          });
+          
+          const updatedAcrDocument = {
+            ...latestVersion.snapshot,
+            criteria: updatedCriteria,
+          };
+
+          await acrVersioningService.createVersion(
+            acrJobId,
+            updatedAcrDocument,
+            userId,
+            `Updated ${reviews.length} criteria`
+          );
+          logger.info(`Created version for ACR ${acrJobId} after bulk update`);
+        }
+      } catch (versionError) {
+        logger.error(`Failed to create version for ACR ${acrJobId}`, versionError instanceof Error ? versionError : undefined);
+        // Don't throw - version creation failure shouldn't stop update
+      }
 
       res.json({
         success: true,

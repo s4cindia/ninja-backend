@@ -8,37 +8,37 @@ datasource db {
 }
 
 model Tenant {
-  id          String   @id @default(uuid())
-  name        String
-  slug        String   @unique
-  settings    Json     @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
+  id        String    @id @default(uuid())
+  name      String
+  slug      String    @unique
+  settings  Json      @default("{}")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
-  users       User[]
-  jobs        Job[]
-  products    Product[]
+  users    User[]
+  jobs     Job[]
+  products Product[]
 }
 
 model User {
-  id          String   @id @default(uuid())
-  email       String   @unique
-  password    String
-  firstName   String
-  lastName    String
-  role        UserRole @default(USER)
-  tenantId    String
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  firstName String
+  lastName  String
+  role      UserRole  @default(USER)
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
-  jobs                    Job[]
-  feedbacks               Feedback[]
-  feedbackAttachments     FeedbackAttachment[] @relation("AttachmentUploader")
-  acrJobs                 AcrJob[]
-  acrCriterionReviews     AcrCriterionReview[] @relation("CriterionReviewer")
+  jobs                Job[]
+  feedbacks           Feedback[]
+  feedbackAttachments FeedbackAttachment[] @relation("AttachmentUploader")
+  acrJobs             AcrJob[]
+  acrCriterionReviews AcrCriterionReview[] @relation("CriterionReviewer")
 
   @@index([tenantId])
   @@index([email])
@@ -63,8 +63,8 @@ model Product {
   updatedAt      DateTime         @updatedAt
   deletedAt      DateTime?
 
-  jobs           Job[]
-  vpats          Vpat[]
+  jobs  Job[]
+  vpats Vpat[]
 
   @@index([tenantId])
   @@index([status])
@@ -115,6 +115,20 @@ model Job {
   @@index([createdAt])
 }
 
+model AcrVersion {
+  id        String   @id @default(uuid())
+  acrId     String
+  version   Int
+  createdAt DateTime @default(now())
+  createdBy String
+  changeLog Json
+  snapshot  Json
+
+  @@unique([acrId, version])
+  @@index([acrId])
+  @@index([createdAt])
+}
+
 enum JobType {
   PDF_ACCESSIBILITY
   EPUB_ACCESSIBILITY
@@ -134,41 +148,41 @@ enum JobStatus {
 }
 
 model ValidationResult {
-  id          String   @id @default(uuid())
-  jobId       String
-  job         Job      @relation(fields: [jobId], references: [id])
-  category    String
-  checkType   String
-  passed      Boolean
-  score       Float?
-  details     Json
-  createdAt   DateTime @default(now())
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  category  String
+  checkType String
+  passed    Boolean
+  score     Float?
+  details   Json
+  createdAt DateTime @default(now())
 
-  issues      Issue[]
+  issues Issue[]
 
   @@index([jobId])
   @@index([category])
 }
 
 model Issue {
-  id                  String           @id @default(uuid())
-  validationResultId  String
-  validationResult    ValidationResult @relation(fields: [validationResultId], references: [id])
-  severity            IssueSeverity
-  wcagCriteria        String?
-  description         String
-  location            String?
-  suggestion          String?
-  autoFixable         Boolean          @default(false)
-  quickFixable        Boolean          @default(false)
-  confidence          Float?           @default(0.5)
-  fixType             String?
-  code                String?
-  filePath            String?
-  status              IssueStatus      @default(PENDING)
-  fixedAt             DateTime?
-  fixedBy             String?
-  createdAt           DateTime         @default(now())
+  id                 String           @id @default(uuid())
+  validationResultId String
+  validationResult   ValidationResult @relation(fields: [validationResultId], references: [id])
+  severity           IssueSeverity
+  wcagCriteria       String?
+  description        String
+  location           String?
+  suggestion         String?
+  autoFixable        Boolean          @default(false)
+  quickFixable       Boolean          @default(false)
+  confidence         Float?           @default(0.5)
+  fixType            String?
+  code               String?
+  filePath           String?
+  status             IssueStatus      @default(PENDING)
+  fixedAt            DateTime?
+  fixedBy            String?
+  createdAt          DateTime         @default(now())
 
   @@index([validationResultId])
   @@index([severity])
@@ -230,7 +244,7 @@ model File {
   updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
 
-  artifacts    Artifact[]
+  artifacts Artifact[]
 
   @@index([tenantId])
   @@index([status])
@@ -250,20 +264,20 @@ enum StorageType {
 }
 
 model GeneratedAltText {
-  id              String    @id @default(uuid())
-  imageId         String
-  jobId           String
-  shortAlt        String
-  extendedAlt     String?
-  confidence      Float
-  flags           String[]
-  aiModel         String
-  status          String    @default("pending")
-  approvedAlt     String?
-  approvedBy      String?
-  approvedAt      DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  imageId     String
+  jobId       String
+  shortAlt    String
+  extendedAlt String?
+  confidence  Float
+  flags       String[]
+  aiModel     String
+  status      String    @default("pending")
+  approvedAlt String?
+  approvedBy  String?
+  approvedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([jobId])
   @@index([imageId])
@@ -271,22 +285,22 @@ model GeneratedAltText {
 }
 
 model LongDescription {
-  id              String    @id @default(uuid())
-  imageId         String
-  jobId           String
-  altTextId       String?
-  trigger         String
-  plainText       String
-  markdown        String
-  html            String
-  wordCount       Int
-  sections        Json?
-  status          String    @default("pending")
-  approvedBy      String?
-  approvedAt      DateTime?
-  aiModel         String
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id         String    @id @default(uuid())
+  imageId    String
+  jobId      String
+  altTextId  String?
+  trigger    String
+  plainText  String
+  markdown   String
+  html       String
+  wordCount  Int
+  sections   Json?
+  status     String    @default("pending")
+  approvedBy String?
+  approvedAt DateTime?
+  aiModel    String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([jobId])
   @@index([imageId])
@@ -364,8 +378,8 @@ model Artifact {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  file      File?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  job  Job   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  file File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
 
   @@index([jobId])
   @@index([fileId])
@@ -437,8 +451,8 @@ model AcrJob {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  user          User     @relation(fields: [userId], references: [id])
-  criteria      AcrCriterionReview[]
+  user     User                 @relation(fields: [userId], references: [id])
+  criteria AcrCriterionReview[]
 
   @@unique([tenantId, jobId])
   @@index([jobId])
@@ -447,24 +461,24 @@ model AcrJob {
 }
 
 model AcrCriterionReview {
-  id                String    @id @default(uuid())
-  acrJobId          String
-  criterionId       String
-  criterionNumber   String
-  criterionName     String
-  level             String
-  confidence        Int       @default(0)
-  aiStatus          String
-  evidence          Json?
-  conformanceLevel  String?
-  reviewerNotes     String?   @db.Text
-  reviewedAt        DateTime?
-  reviewedBy        String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  acrJobId         String
+  criterionId      String
+  criterionNumber  String
+  criterionName    String
+  level            String
+  confidence       Int       @default(0)
+  aiStatus         String
+  evidence         Json?
+  conformanceLevel String?
+  reviewerNotes    String?   @db.Text
+  reviewedAt       DateTime?
+  reviewedBy       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  acrJob            AcrJob    @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
-  reviewer          User?     @relation("CriterionReviewer", fields: [reviewedBy], references: [id])
+  acrJob   AcrJob @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
+  reviewer User?  @relation("CriterionReviewer", fields: [reviewedBy], references: [id])
 
   @@unique([acrJobId, criterionId])
   @@index([acrJobId])

@@ -177,6 +177,54 @@ export class AcrService {
       criteriaReviews.push(review);
     }
 
+    // Create initial version snapshot
+    try {
+      const { acrVersioningService } = await import('./acr/acr-versioning.service');
+      
+      // Normalize evidence to string array
+      const normalizeEvidence = (evidence: unknown): string[] => {
+        if (!evidence) return [];
+        if (Array.isArray(evidence)) {
+          return evidence.filter((e): e is string => typeof e === 'string');
+        }
+        if (typeof evidence === 'string') return [evidence];
+        return [];
+      };
+      
+      const initialSnapshot = {
+        id: acrJob.id,
+        edition: edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT',
+        productInfo: {
+          name: documentTitle || auditResults.fileName || 'Untitled Document',
+          version: '1.0',
+          description: '',
+          vendor: '',
+          contactEmail: '',
+          evaluationDate: new Date()
+        },
+        evaluationMethods: [{
+          type: 'automated' as const,
+          tools: ['Ninja ACR Analyzer'],
+          description: 'Initial automated accessibility analysis'
+        }],
+        criteria: criteriaReviews.map(r => ({
+          id: r.id,
+          criterionId: r.criterionId,
+          name: r.criterionName,
+          level: (r.level || 'A') as 'A' | 'AA' | 'AAA',
+          conformanceLevel: 'Not Applicable' as const,
+          remarks: normalizeEvidence(r.evidence).join('. ') || '',
+        })),
+        generatedAt: new Date(),
+        version: 1,
+        status: 'draft' as const
+      };
+      await acrVersioningService.createVersion(acrJob.id, initialSnapshot, userId, 'Initial ACR analysis created');
+    } catch (versionError) {
+      // Log but don't fail the ACR creation
+      console.error('Failed to create initial version:', versionError);
+    }
+
     return {
       acrJob,
       criteriaCount: criteriaReviews.length,

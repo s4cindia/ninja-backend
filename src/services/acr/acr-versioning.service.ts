@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import prisma from '../../lib/prisma';
 import { AcrDocument } from './acr-generator.service';
 
 export interface ChangeLogEntry {
@@ -30,16 +30,12 @@ export interface VersionComparison {
   };
 }
 
-// TODO: Migrate to database persistence for production (in-memory loses data on restart)
-const versionStore = new Map<string, AcrVersion[]>();
-
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
   if (a === null || b === null) return a === b;
   if (typeof a !== 'object') return false;
   
-  // Handle Date objects
   if (a instanceof Date && b instanceof Date) {
     return a.getTime() === b.getTime();
   }
@@ -165,115 +161,184 @@ function generateChangeLog(
   return changes;
 }
 
-// TODO: POST-MVP - Add optimistic locking to prevent race condition on concurrent version creation
-// TODO: POST-MVP - Migrate to database persistence with transactions
-async function createVersion(
-  acrId: string,
-  userId: string,
-  snapshot: AcrDocument,
-  reason?: string
-): Promise<AcrVersion> {
-  const existingVersions = versionStore.get(acrId) || [];
-  const previousVersion = existingVersions.length > 0 
-    ? existingVersions[existingVersions.length - 1] 
-    : null;
-  
-  const newVersionNumber = previousVersion ? previousVersion.version + 1 : 1;
-  
-  const changeLog = generateChangeLog(
-    previousVersion?.snapshot || null,
-    snapshot,
-    reason
-  );
+class AcrVersioningService {
+  async createVersion(
+    acrId: string,
+    snapshot: AcrDocument,
+    userId: string,
+    reason?: string
+  ): Promise<AcrVersion> {
+    const maxRetries = 3;
+    let lastError: Error | null = null;
 
-  const snapshotWithVersion: AcrDocument = {
-    ...snapshot,
-    version: newVersionNumber
-  };
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const latestVersions = await tx.acrVersion.findMany({
+            where: { acrId },
+            orderBy: { version: 'desc' },
+            take: 1,
+            select: { version: true, snapshot: true }
+          });
 
-  const version: AcrVersion = {
-    id: uuidv4(),
-    acrId,
-    version: newVersionNumber,
-    createdAt: new Date(),
-    createdBy: userId,
-    changeLog,
-    snapshot: snapshotWithVersion
-  };
+          const newVersionNumber = latestVersions.length > 0
+            ? latestVersions[0].version + 1
+            : 1;
 
-  existingVersions.push(version);
-  versionStore.set(acrId, existingVersions);
+          const previousSnapshot = latestVersions.length > 0
+            ? (latestVersions[0].snapshot as unknown as AcrDocument)
+            : null;
 
-  return version;
-}
+          const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
 
-async function getVersions(acrId: string): Promise<AcrVersion[]> {
-  return versionStore.get(acrId) || [];
-}
+          const created = await tx.acrVersion.create({
+            data: {
+              acrId,
+              version: newVersionNumber,
+              createdBy: userId,
+              changeLog: changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              snapshot: snapshot as unknown as import('@prisma/client').Prisma.InputJsonValue
+            }
+          });
 
-async function getVersion(acrId: string, versionNumber: number): Promise<AcrVersion | null> {
-  const versions = versionStore.get(acrId) || [];
-  return versions.find(v => v.version === versionNumber) || null;
-}
+          return {
+            id: created.id,
+            acrId: created.acrId,
+            version: created.version,
+            createdAt: created.createdAt,
+            createdBy: created.createdBy,
+            changeLog,
+            snapshot
+          };
+        });
 
-async function getLatestVersion(acrId: string): Promise<AcrVersion | null> {
-  const versions = versionStore.get(acrId) || [];
-  if (versions.length === 0) return null;
-  return versions[versions.length - 1];
-}
+        return result;
+      } catch (error) {
+        lastError = error as Error;
+        
+        // Check for unique constraint violation (P2002)
+        const isPrismaError = error && typeof error === 'object' && 'code' in error;
+        if (isPrismaError && (error as { code: string }).code === 'P2002') {
+          if (attempt < maxRetries) {
+            // Wait briefly before retry
+            await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+            continue;
+          }
+        }
+        
+        // For other errors, throw immediately
+        throw error;
+      }
+    }
 
-async function compareVersions(
-  acrId: string,
-  versionA: number,
-  versionB: number
-): Promise<VersionComparison | null> {
-  const versions = versionStore.get(acrId) || [];
-  
-  const versionAData = versions.find(v => v.version === versionA);
-  const versionBData = versions.find(v => v.version === versionB);
-  
-  if (!versionAData || !versionBData) {
-    return null;
+    throw lastError || new Error('Failed to create version after retries');
   }
 
-  const changes = generateChangeLog(versionAData.snapshot, versionBData.snapshot);
+  async getVersions(acrId: string): Promise<AcrVersion[]> {
+    const versions = await prisma.acrVersion.findMany({
+      where: { acrId },
+      orderBy: { version: 'desc' }
+    });
 
-  const criteriaChanges = changes.filter(c => c.field.startsWith('criteria.'));
-  const statusChanged = changes.some(c => c.field === 'status');
+    return versions.map((v: { id: string; acrId: string; version: number; createdAt: Date; createdBy: string; changeLog: unknown; snapshot: unknown }) => ({
+      id: v.id,
+      acrId: v.acrId,
+      version: v.version,
+      createdAt: v.createdAt,
+      createdBy: v.createdBy,
+      changeLog: v.changeLog as unknown as ChangeLogEntry[],
+      snapshot: v.snapshot as unknown as AcrDocument
+    }));
+  }
 
-  return {
-    acrId,
-    versionA,
-    versionB,
-    changes,
-    summary: {
-      fieldsChanged: changes.length,
-      criteriaChanged: new Set(criteriaChanges.map(c => {
-        const match = c.field.match(/^criteria\.(.+?)\.(conformanceLevel|remarks|attributionTag)$/);
-        return match ? match[1] : c.field.split('.')[1];
-      })).size,
-      statusChanged
-    }
-  };
+  async getVersion(acrId: string, version: number): Promise<AcrVersion | null> {
+    const found = await prisma.acrVersion.findFirst({
+      where: { acrId, version }
+    });
+
+    if (!found) return null;
+
+    return {
+      id: found.id,
+      acrId: found.acrId,
+      version: found.version,
+      createdAt: found.createdAt,
+      createdBy: found.createdBy,
+      changeLog: found.changeLog as unknown as ChangeLogEntry[],
+      snapshot: found.snapshot as unknown as AcrDocument
+    };
+  }
+
+  async getLatestVersion(acrId: string): Promise<AcrVersion | null> {
+    const found = await prisma.acrVersion.findFirst({
+      where: { acrId },
+      orderBy: { version: 'desc' }
+    });
+
+    if (!found) return null;
+
+    return {
+      id: found.id,
+      acrId: found.acrId,
+      version: found.version,
+      createdAt: found.createdAt,
+      createdBy: found.createdBy,
+      changeLog: found.changeLog as unknown as ChangeLogEntry[],
+      snapshot: found.snapshot as unknown as AcrDocument
+    };
+  }
+
+  async compareVersions(
+    acrId: string,
+    versionA: number,
+    versionB: number
+  ): Promise<VersionComparison | null> {
+    const [vA, vB] = await Promise.all([
+      this.getVersion(acrId, versionA),
+      this.getVersion(acrId, versionB)
+    ]);
+
+    if (!vA || !vB) return null;
+
+    const changes = generateChangeLog(vA.snapshot, vB.snapshot);
+
+    const criteriaChanged = new Set(
+      changes
+        .filter(c => c.field.startsWith('criteria.'))
+        .map(c => c.field.split('.')[1])
+    ).size;
+
+    return {
+      acrId,
+      versionA,
+      versionB,
+      changes,
+      summary: {
+        fieldsChanged: changes.length,
+        criteriaChanged,
+        statusChanged: vA.snapshot.status !== vB.snapshot.status
+      }
+    };
+  }
+
+  async deleteVersions(acrId: string): Promise<boolean> {
+    const result = await prisma.acrVersion.deleteMany({
+      where: { acrId }
+    });
+    return result.count > 0;
+  }
+
+  async getVersionCount(acrId: string): Promise<number> {
+    return prisma.acrVersion.count({
+      where: { acrId }
+    });
+  }
 }
 
-async function deleteVersions(acrId: string): Promise<boolean> {
-  return versionStore.delete(acrId);
-}
+export const acrVersioningService = new AcrVersioningService();
 
-function getVersionCount(acrId: string): number {
-  const versions = versionStore.get(acrId) || [];
-  return versions.length;
-}
-
-export const acrVersioningService = {
-  createVersion,
-  getVersions,
-  getVersion,
-  getLatestVersion,
-  compareVersions,
-  deleteVersions,
-  getVersionCount
-};
-
-export { createVersion, getVersions, getVersion, getLatestVersion, compareVersions };
+export const createVersion = acrVersioningService.createVersion.bind(acrVersioningService);
+export const getVersions = acrVersioningService.getVersions.bind(acrVersioningService);
+export const getVersion = acrVersioningService.getVersion.bind(acrVersioningService);
+export const getLatestVersion = acrVersioningService.getLatestVersion.bind(acrVersioningService);
+export const compareVersions = acrVersioningService.compareVersions.bind(acrVersioningService);

@@ -188,7 +188,10 @@ export const epubController = {
 
       return res.json({
         success: true,
-        data: result,
+        data: {
+          ...result,
+          jobId: job.id,
+        },
       });
     } catch (error) {
       logger.error('EPUB audit from buffer failed', error instanceof Error ? error : undefined);
