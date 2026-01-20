@@ -54,6 +54,13 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
     if (acrId && acrId.startsWith('acr-')) {
       acrId = acrId.substring(4);
     }
+    // Also strip 'upload-' prefix if present
+    if (acrId && acrId.startsWith('upload-')) {
+      acrId = acrId.substring(7);
+    }
+    // Update params with cleaned acrId for downstream use
+    req.params.acrId = acrId;
+    
     const userId = req.user?.id;
 
     if (!userId) {
@@ -72,9 +79,22 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
-    // Reuse job authorization since ACR is derived from job data
-    const job = await authorizeJobAccess(acrId, userId);
-    req.job = job;
+    // For version-related endpoints, allow through even if job not found
+    // The controller will handle returning empty arrays gracefully
+    const isVersionEndpoint = req.path.includes('/versions');
+    
+    try {
+      // Reuse job authorization since ACR is derived from job data
+      const job = await authorizeJobAccess(acrId, userId);
+      req.job = job;
+    } catch (jobError) {
+      if (isVersionEndpoint) {
+        // Allow version endpoints to proceed - controller will handle gracefully
+        logger.debug(`ACR job not found for versions endpoint, allowing through: ${acrId}`);
+      } else {
+        throw jobError;
+      }
+    }
     next();
   } catch (error) {
     logger.warn(`Authorization failed for ACR ${req.params.acrId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
