@@ -939,8 +939,8 @@ export class AcrController {
       }
 
       // Import required services dynamically to avoid circular dependencies
-      const { epubAuditService } = await import('../services/epub-audit.service');
-      const { fileStorageService } = await import('../services/file-storage.service');
+      const { epubAuditService } = await import('../services/epub/epub-audit.service');
+      const { fileStorageService } = await import('../services/storage/file-storage.service');
 
       // Step 1: Create job and run EPUB audit
       const job = await prisma.job.create({
