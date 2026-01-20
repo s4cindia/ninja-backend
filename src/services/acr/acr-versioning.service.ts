@@ -168,42 +168,70 @@ class AcrVersioningService {
     userId: string,
     reason?: string
   ): Promise<AcrVersion> {
-    const latestVersions = await prisma.acrVersion.findMany({
-      where: { acrId },
-      orderBy: { version: 'desc' },
-      take: 1,
-      select: { version: true, snapshot: true }
-    });
+    const maxRetries = 3;
+    let lastError: Error | null = null;
 
-    const newVersionNumber = latestVersions.length > 0
-      ? latestVersions[0].version + 1
-      : 1;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const latestVersions = await tx.acrVersion.findMany({
+            where: { acrId },
+            orderBy: { version: 'desc' },
+            take: 1,
+            select: { version: true, snapshot: true }
+          });
 
-    const previousSnapshot = latestVersions.length > 0
-      ? (latestVersions[0].snapshot as AcrDocument)
-      : null;
+          const newVersionNumber = latestVersions.length > 0
+            ? latestVersions[0].version + 1
+            : 1;
 
-    const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
+          const previousSnapshot = latestVersions.length > 0
+            ? (latestVersions[0].snapshot as AcrDocument)
+            : null;
 
-    const created = await prisma.acrVersion.create({
-      data: {
-        acrId,
-        version: newVersionNumber,
-        createdBy: userId,
-        changeLog: changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
-        snapshot: snapshot as unknown as import('@prisma/client').Prisma.InputJsonValue
+          const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
+
+          const created = await tx.acrVersion.create({
+            data: {
+              acrId,
+              version: newVersionNumber,
+              createdBy: userId,
+              changeLog: changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              snapshot: snapshot as unknown as import('@prisma/client').Prisma.InputJsonValue
+            }
+          });
+
+          return {
+            id: created.id,
+            acrId: created.acrId,
+            version: created.version,
+            createdAt: created.createdAt,
+            createdBy: created.createdBy,
+            changeLog,
+            snapshot
+          };
+        });
+
+        return result;
+      } catch (error) {
+        lastError = error as Error;
+        
+        // Check for unique constraint violation (P2002)
+        const isPrismaError = error && typeof error === 'object' && 'code' in error;
+        if (isPrismaError && (error as { code: string }).code === 'P2002') {
+          if (attempt < maxRetries) {
+            // Wait briefly before retry
+            await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+            continue;
+          }
+        }
+        
+        // For other errors, throw immediately
+        throw error;
       }
-    });
+    }
 
-    return {
-      id: created.id,
-      acrId: created.acrId,
-      version: created.version,
-      createdAt: created.createdAt,
-      createdBy: created.createdBy,
-      changeLog,
-      snapshot
-    };
+    throw lastError || new Error('Failed to create version after retries');
   }
 
   async getVersions(acrId: string): Promise<AcrVersion[]> {

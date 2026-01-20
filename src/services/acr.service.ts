@@ -180,6 +180,17 @@ export class AcrService {
     // Create initial version snapshot
     try {
       const { acrVersioningService } = await import('./acr/acr-versioning.service');
+      
+      // Normalize evidence to string array
+      const normalizeEvidence = (evidence: unknown): string[] => {
+        if (!evidence) return [];
+        if (Array.isArray(evidence)) {
+          return evidence.filter((e): e is string => typeof e === 'string');
+        }
+        if (typeof evidence === 'string') return [evidence];
+        return [];
+      };
+      
       const initialSnapshot = {
         id: acrJob.id,
         edition: edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT',
@@ -191,16 +202,18 @@ export class AcrService {
           contactEmail: '',
           evaluationDate: new Date()
         },
-        evaluationMethods: [],
+        evaluationMethods: [{
+          type: 'automated' as const,
+          tools: ['Ninja ACR Analyzer'],
+          description: 'Initial automated accessibility analysis'
+        }],
         criteria: criteriaReviews.map(r => ({
-          id: r.criterionId,
+          id: r.id,
+          criterionId: r.criterionId,
           name: r.criterionName,
           level: (r.level || 'A') as 'A' | 'AA' | 'AAA',
-          conformanceLevel: 'not_evaluated' as const,
-          remarks: '',
-          evidence: r.evidence as string[] || [],
-          section: '',
-          number: r.criterionNumber
+          conformanceLevel: 'Not Applicable' as const,
+          remarks: normalizeEvidence(r.evidence).join('. ') || '',
         })),
         generatedAt: new Date(),
         version: 1,

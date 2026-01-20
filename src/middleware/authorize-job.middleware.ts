@@ -62,8 +62,9 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
     req.params.acrId = acrId;
     
     const userId = req.user?.id;
+    const tenantId = req.user?.tenantId;
 
-    if (!userId) {
+    if (!userId || !tenantId) {
       res.status(401).json({ 
         success: false, 
         error: { message: 'Authentication required' } 
@@ -79,18 +80,25 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
-    // For version-related endpoints, allow through even if job not found
-    // The controller will handle returning empty arrays gracefully
-    const isVersionEndpoint = req.path.includes('/versions');
-    
+    // Try to authorize by job ID first (for backwards compatibility)
+    // Then check if this is an acrJob ID and validate ownership
     try {
-      // Reuse job authorization since ACR is derived from job data
       const job = await authorizeJobAccess(acrId, userId);
       req.job = job;
     } catch (jobError) {
-      if (isVersionEndpoint) {
-        // Allow version endpoints to proceed - controller will handle gracefully
-        logger.debug(`ACR job not found for versions endpoint, allowing through: ${acrId}`);
+      // If job not found, check if acrId is an ACR job ID with tenant/user validation
+      const prisma = (await import('../lib/prisma')).default;
+      const acrJob = await prisma.acrJob.findFirst({
+        where: {
+          id: acrId,
+          userId: userId,
+          tenantId: tenantId,
+        },
+        include: { job: true }
+      });
+      
+      if (acrJob && acrJob.job) {
+        req.job = acrJob.job;
       } else {
         throw jobError;
       }

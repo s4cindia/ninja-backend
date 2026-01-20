@@ -6,7 +6,26 @@ import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+
+const epubFileFilter = (req: Express.Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  const allowedMimeTypes = ['application/epub+zip', 'application/octet-stream'];
+  const allowedExtensions = ['.epub'];
+  const ext = file.originalname.toLowerCase().slice(file.originalname.lastIndexOf('.'));
+  
+  if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only EPUB files are allowed'));
+  }
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max
+  },
+  fileFilter: epubFileFilter,
+});
 
 router.use(authenticate);
 

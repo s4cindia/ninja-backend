@@ -537,8 +537,15 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
         contactEmail: '',
         evaluationDate: new Date(),
       },
+      evaluationMethods: [{
+        type: 'automated' as const,
+        tools: ['Ninja ACR Analyzer'],
+        aiModels: ['Gemini 2.0 Flash'],
+        description: 'AI-assisted automated accessibility analysis'
+      }],
       criteria: criteria.map(c => ({
         id: c.id,
+        criterionId: c.id,
         name: c.name,
         level: c.level as 'A' | 'AA' | 'AAA',
         conformanceLevel: c.status === 'supports' ? 'Supports' as const :
@@ -549,13 +556,6 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
         attributionTag: 'AI_SUGGESTED' as const,
         attributedRemarks: `[AI-SUGGESTED] ${c.findings.join('. ')}`,
       })),
-      assessmentInfo: {
-        assessorName: 'AI System',
-        assessorOrganization: 'Ninja Platform',
-        evaluationMethods: ['Automated Analysis'],
-        toolsUsed: [{ name: 'Ninja ACR Analyzer', version: '1.0' }],
-        additionalNotes: 'AI-generated initial assessment',
-      },
       generatedAt: new Date(),
     };
 

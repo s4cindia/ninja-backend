@@ -519,6 +519,17 @@ export class AcrController {
 
   async getVersions(req: Request, res: Response, next: NextFunction) {
     try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+      
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+      
       let acrId = req.params.acrId;
       
       // Strip 'acr-' prefix if present
@@ -526,13 +537,28 @@ export class AcrController {
         acrId = acrId.substring(4);
       }
 
-      // Check if this is an acrJob ID
-      const acrJob = await prisma.acrJob.findUnique({
-        where: { id: acrId }
+      // Check if this is an acrJob ID (with tenant/user validation)
+      let acrJob = await prisma.acrJob.findFirst({
+        where: { 
+          id: acrId,
+          userId,
+          tenantId
+        }
       });
 
+      // If not found by acrJob ID, try finding by jobId
       if (!acrJob) {
-        // ACR not created yet - return empty array
+        acrJob = await prisma.acrJob.findFirst({
+          where: { 
+            jobId: acrId,
+            userId,
+            tenantId
+          }
+        });
+      }
+
+      if (!acrJob) {
+        // ACR not created yet or no access - return empty array
         res.json({
           success: true,
           data: [],
@@ -542,10 +568,24 @@ export class AcrController {
         return;
       }
       
-      const versions = await acrVersioningService.getVersions(acrId);
+      // Get versions using the actual acrJob.id
+      const versions = await acrVersioningService.getVersions(acrJob.id);
+
+      // Also check for versions by jobId for backwards compatibility
+      let allVersions = versions;
+      if (acrJob.jobId !== acrJob.id) {
+        const jobVersions = await acrVersioningService.getVersions(acrJob.jobId);
+        // Merge and deduplicate by id
+        const versionIds = new Set(versions.map(v => v.id));
+        const uniqueJobVersions = jobVersions.filter(v => !versionIds.has(v.id));
+        allVersions = [...versions, ...uniqueJobVersions];
+      }
+      
+      // Sort by version number descending (newest first)
+      allVersions.sort((a, b) => b.version - a.version);
 
       // Return empty array gracefully if no versions exist yet
-      if (!versions || versions.length === 0) {
+      if (!allVersions || allVersions.length === 0) {
         res.json({
           success: true,
           data: [],
@@ -557,7 +597,7 @@ export class AcrController {
 
       res.json({
         success: true,
-        data: versions.map(v => ({
+        data: allVersions.map(v => ({
           id: v.id,
           acrId: v.acrId,
           version: v.version,
@@ -565,7 +605,7 @@ export class AcrController {
           createdBy: v.createdBy,
           changeCount: v.changeLog.length
         })),
-        total: versions.length
+        total: allVersions.length
       });
     } catch (error) {
       logger.error('Error fetching ACR versions', error instanceof Error ? error : undefined);
