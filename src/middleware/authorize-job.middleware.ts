@@ -87,18 +87,31 @@ export const authorizeAcr = async (req: Request, res: Response, next: NextFuncti
       req.job = job;
     } catch (jobError) {
       // If job not found, check if acrId is an ACR job ID with tenant/user validation
+      // AcrJob has no direct job relation, so fetch separately
       const prisma = (await import('../lib/prisma')).default;
       const acrJob = await prisma.acrJob.findFirst({
         where: {
           id: acrId,
           userId: userId,
           tenantId: tenantId,
-        },
-        include: { job: true }
+        }
       });
       
-      if (acrJob && acrJob.job) {
-        req.job = acrJob.job;
+      if (acrJob && acrJob.jobId) {
+        // Fetch the Job separately using acrJob.jobId
+        const job = await prisma.job.findFirst({
+          where: {
+            id: acrJob.jobId,
+            userId: userId,
+            tenantId: tenantId,
+          }
+        });
+        
+        if (job) {
+          req.job = job;
+        } else {
+          throw jobError;
+        }
       } else {
         throw jobError;
       }

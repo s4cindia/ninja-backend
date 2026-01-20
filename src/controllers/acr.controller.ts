@@ -725,8 +725,8 @@ export class AcrController {
 
       const version = await acrVersioningService.createVersion(
         acrId,
-        userId,
         acrDocument,
+        userId,
         validatedData.reason
       );
 
@@ -1175,23 +1175,23 @@ export class AcrController {
       try {
         const latestVersion = await acrVersioningService.getLatestVersion(acrJobId);
         if (latestVersion) {
-          // Update the criterion in the snapshot
-          const updatedCriteria = latestVersion.snapshot.criteria.map(c => 
-            c.id === criterionId 
-              ? { 
-                  ...c, 
-                  conformanceLevel: normalizedLevel ? (
-                    normalizedLevel === 'supports' ? 'Supports' :
-                    normalizedLevel === 'partially_supports' ? 'Partially Supports' :
-                    normalizedLevel === 'does_not_support' ? 'Does Not Support' :
-                    'Not Applicable'
-                  ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
-                  remarks: remarksValue || c.remarks,
-                  attributionTag: 'HUMAN_VERIFIED' as const,
-                  attributedRemarks: `[HUMAN-VERIFIED] ${remarksValue || c.remarks}`,
-                }
-              : c
-          );
+          // Update the criterion in the snapshot - match by c.id OR c.criterionId
+          const updatedCriteria = latestVersion.snapshot.criteria.map(c => {
+            const isMatch = c.id === criterionId || c.criterionId === criterionId;
+            if (!isMatch) return c;
+            return { 
+              ...c, 
+              conformanceLevel: normalizedLevel ? (
+                normalizedLevel === 'supports' ? 'Supports' :
+                normalizedLevel === 'partially_supports' ? 'Partially Supports' :
+                normalizedLevel === 'does_not_support' ? 'Does Not Support' :
+                'Not Applicable'
+              ) as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' : c.conformanceLevel,
+              remarks: remarksValue || c.remarks,
+              attributionTag: 'HUMAN_VERIFIED' as const,
+              attributedRemarks: `[HUMAN-VERIFIED] ${remarksValue || c.remarks}`,
+            };
+          });
           
           const updatedAcrDocument = {
             ...latestVersion.snapshot,
@@ -1263,7 +1263,8 @@ export class AcrController {
           const reviewMap = new Map(reviews.map((r: { criterionId: string; conformanceLevel?: string; remarks?: string }) => [r.criterionId, r]));
           
           const updatedCriteria = latestVersion.snapshot.criteria.map(c => {
-            const review = reviewMap.get(c.id) as { conformanceLevel?: string; remarks?: string } | undefined;
+            // Match by c.id OR c.criterionId for dual-key lookup
+            const review = (reviewMap.get(c.id) || reviewMap.get(c.criterionId)) as { conformanceLevel?: string; remarks?: string } | undefined;
             if (!review) return c;
             
             const normalizedLevel = review.conformanceLevel?.toLowerCase().replace(/\s+/g, '_');

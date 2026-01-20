@@ -186,7 +186,7 @@ class AcrVersioningService {
             : 1;
 
           const previousSnapshot = latestVersions.length > 0
-            ? (latestVersions[0].snapshot as AcrDocument)
+            ? (latestVersions[0].snapshot as unknown as AcrDocument)
             : null;
 
           const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
@@ -246,8 +246,8 @@ class AcrVersioningService {
       version: v.version,
       createdAt: v.createdAt,
       createdBy: v.createdBy,
-      changeLog: v.changeLog as ChangeLogEntry[],
-      snapshot: v.snapshot as AcrDocument
+      changeLog: v.changeLog as unknown as ChangeLogEntry[],
+      snapshot: v.snapshot as unknown as AcrDocument
     }));
   }
 
@@ -264,8 +264,8 @@ class AcrVersioningService {
       version: found.version,
       createdAt: found.createdAt,
       createdBy: found.createdBy,
-      changeLog: found.changeLog as ChangeLogEntry[],
-      snapshot: found.snapshot as AcrDocument
+      changeLog: found.changeLog as unknown as ChangeLogEntry[],
+      snapshot: found.snapshot as unknown as AcrDocument
     };
   }
 
@@ -283,8 +283,8 @@ class AcrVersioningService {
       version: found.version,
       createdAt: found.createdAt,
       createdBy: found.createdBy,
-      changeLog: found.changeLog as ChangeLogEntry[],
-      snapshot: found.snapshot as AcrDocument
+      changeLog: found.changeLog as unknown as ChangeLogEntry[],
+      snapshot: found.snapshot as unknown as AcrDocument
     };
   }
 
