@@ -177,6 +177,41 @@ export class AcrService {
       criteriaReviews.push(review);
     }
 
+    // Create initial version snapshot
+    try {
+      const { acrVersioningService } = await import('./acr/acr-versioning.service');
+      const initialSnapshot = {
+        id: acrJob.id,
+        edition: edition as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT',
+        productInfo: {
+          name: documentTitle || auditResults.fileName || 'Untitled Document',
+          version: '1.0',
+          description: '',
+          vendor: '',
+          contactEmail: '',
+          evaluationDate: new Date()
+        },
+        evaluationMethods: [],
+        criteria: criteriaReviews.map(r => ({
+          id: r.criterionId,
+          name: r.criterionName,
+          level: (r.level || 'A') as 'A' | 'AA' | 'AAA',
+          conformanceLevel: 'not_evaluated' as const,
+          remarks: '',
+          evidence: r.evidence as string[] || [],
+          section: '',
+          number: r.criterionNumber
+        })),
+        generatedAt: new Date(),
+        version: 1,
+        status: 'draft' as const
+      };
+      await acrVersioningService.createVersion(acrJob.id, initialSnapshot, userId, 'Initial ACR analysis created');
+    } catch (versionError) {
+      // Log but don't fail the ACR creation
+      console.error('Failed to create initial version:', versionError);
+    }
+
     return {
       acrJob,
       criteriaCount: criteriaReviews.length,
