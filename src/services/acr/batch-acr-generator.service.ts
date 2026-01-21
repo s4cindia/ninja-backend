@@ -450,42 +450,22 @@ export class BatchAcrGeneratorService {
       generatedBy: string;
     }
   ): Promise<void> {
-    const batchJob = await prisma.job.findUnique({
+    const batch = await prisma.batch.findUnique({
       where: { id: batchId },
     });
 
-    if (!batchJob || !batchJob.output) {
-      throw new Error('Batch job not found');
+    if (!batch) {
+      throw new Error('Batch not found');
     }
 
-    const currentOutput = batchJob.output as Record<string, unknown>;
-    const history = (currentOutput.acrGenerationHistory as Array<{
-      mode: string;
-      acrWorkflowIds: string[];
-      generatedAt: string;
-      generatedBy: string;
-    }>) || [];
-
-    const updatedOutput = {
-      ...currentOutput,
-      acrGenerated: metadata.acrGenerated,
-      acrMode: metadata.acrMode,
-      acrWorkflowIds: metadata.acrWorkflowIds,
-      acrGeneratedAt: metadata.acrGeneratedAt,
-      acrGenerationHistory: [
-        ...history,
-        {
-          mode: metadata.acrMode,
-          acrWorkflowIds: metadata.acrWorkflowIds,
-          generatedAt: metadata.acrGeneratedAt,
-          generatedBy: metadata.generatedBy,
-        },
-      ],
-    };
-
-    await prisma.job.update({
+    await prisma.batch.update({
       where: { id: batchId },
-      data: { output: updatedOutput as unknown as import('@prisma/client').Prisma.InputJsonValue },
+      data: {
+        acrGenerated: metadata.acrGenerated,
+        acrMode: metadata.acrMode,
+        acrWorkflowIds: metadata.acrWorkflowIds,
+        acrGeneratedAt: new Date(metadata.acrGeneratedAt),
+      },
     });
 
     logger.info(`Updated batch ${batchId} with ACR metadata`);
