@@ -365,24 +365,65 @@ export class AcrController {
             });
             
             if (acrJobWithCriteria) {
-              // Get the source job for document title
+              // Get the source job for document title AND criteria from output
               const origJob = await prisma.job.findFirst({
                 where: { id: acrJobWithCriteria.jobId }
               });
               
+              const origJobOutput = origJob?.output as Record<string, unknown> | null;
               const documentTitle = acrJobWithCriteria.documentTitle || 
-                                   (origJob?.output as Record<string, unknown>)?.epubTitle as string ||
+                                   origJobOutput?.epubTitle as string ||
                                    'Unnamed Product';
               
-              // Build criteria from AcrCriterionReview records
-              const criteriaForExport: AcrCriterion[] = acrJobWithCriteria.criteria.map(c => ({
-                id: c.criterionNumber,
-                criterionId: c.criterionId,
-                name: c.criterionName,
-                level: c.level as 'A' | 'AA' | 'AAA',
-                conformanceLevel: (c.conformanceLevel || c.aiStatus || 'Not Applicable') as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable',
-                remarks: c.reviewerNotes || ''
-              }));
+              // Build criteria - first try AcrCriterionReview, then fallback to Job output
+              let criteriaForExport: AcrCriterion[] = [];
+              
+              if (acrJobWithCriteria.criteria.length > 0) {
+                // Use database-stored criteria reviews
+                criteriaForExport = acrJobWithCriteria.criteria.map(c => ({
+                  id: c.criterionNumber,
+                  criterionId: c.criterionId,
+                  name: c.criterionName,
+                  level: c.level as 'A' | 'AA' | 'AAA',
+                  conformanceLevel: (c.conformanceLevel || c.aiStatus || 'Not Applicable') as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable',
+                  remarks: c.reviewerNotes || ''
+                }));
+              } else if (origJobOutput?.acrAnalysis) {
+                // Fallback to Job output acrAnalysis.criteria
+                const acrAnalysis = origJobOutput.acrAnalysis as { criteria?: Array<{
+                  id: string;
+                  name: string;
+                  level: string;
+                  status: string;
+                  findings?: string[];
+                  recommendation?: string;
+                }> };
+                
+                if (acrAnalysis.criteria && Array.isArray(acrAnalysis.criteria)) {
+                  criteriaForExport = acrAnalysis.criteria.map(c => {
+                    // Map status to conformance level
+                    const statusMap: Record<string, 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable'> = {
+                      'supports': 'Supports',
+                      'partially_supports': 'Partially Supports',
+                      'does_not_support': 'Does Not Support',
+                      'not_applicable': 'Not Applicable'
+                    };
+                    const conformanceLevel = statusMap[c.status] || 'Not Applicable';
+                    
+                    // Build remarks from findings
+                    const remarks = c.findings?.join('. ') || c.recommendation || '';
+                    
+                    return {
+                      id: c.id,
+                      criterionId: c.id,
+                      name: c.name,
+                      level: c.level as 'A' | 'AA' | 'AAA',
+                      conformanceLevel,
+                      remarks
+                    };
+                  });
+                }
+              }
               
               const TOOL_VERSION = '1.0.0';
               const AI_MODEL_INFO = { name: 'Gemini 2.0', purpose: 'Accessibility Analysis' };
