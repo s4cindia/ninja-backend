@@ -331,7 +331,22 @@ class BatchRemediationService {
       return null;
     }
 
-    return rawOutput as unknown as BatchRemediationResult;
+    return {
+      batchId: rawOutput.batchId as string,
+      status: rawOutput.status as BatchStatus,
+      totalJobs: rawOutput.totalJobs as number,
+      completedJobs: rawOutput.completedJobs as number,
+      failedJobs: rawOutput.failedJobs as number,
+      jobs: rawOutput.jobs as BatchJob[],
+      summary: rawOutput.summary as BatchRemediationResult['summary'],
+      startedAt: rawOutput.startedAt as Date,
+      completedAt: rawOutput.completedAt as Date | undefined,
+      acrGenerated: rawOutput.acrGenerated as boolean | undefined,
+      acrMode: rawOutput.acrMode as 'individual' | 'aggregate' | undefined,
+      acrWorkflowIds: rawOutput.acrWorkflowIds as string[] | undefined,
+      acrGeneratedAt: rawOutput.acrGeneratedAt as string | undefined,
+      acrGenerationHistory: rawOutput.acrGenerationHistory as AcrGenerationHistoryEntry[] | undefined,
+    };
   }
 
   async cancelBatch(batchId: string, tenantId: string): Promise<BatchRemediationResult> {

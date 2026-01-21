@@ -37,7 +37,7 @@ interface PerEpubDetail {
   }>;
 }
 
-class BatchAcrGeneratorService {
+export class BatchAcrGeneratorService {
   async generateBatchAcr(
     batchId: string,
     tenantId: string,
