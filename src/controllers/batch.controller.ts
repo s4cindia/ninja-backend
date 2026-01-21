@@ -289,12 +289,9 @@ class BatchController {
         });
       }
 
-      const jobIds = batch.files
-        .filter(f => f.status === 'REMEDIATED')
-        .map(f => f.auditJobId!)
-        .filter(Boolean);
+      const remediatedFiles = batch.files.filter(f => f.status === 'REMEDIATED');
 
-      if (jobIds.length === 0) {
+      if (remediatedFiles.length === 0) {
         return res.status(400).json({
           success: false,
           error: {
@@ -305,10 +302,10 @@ class BatchController {
       }
 
       const result = await batchAcrGeneratorService.generateBatchAcr(
-        jobIds,
-        mode,
+        batchId,
         tenantId,
         userId,
+        mode,
         options
       );
 
