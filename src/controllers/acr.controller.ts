@@ -330,12 +330,114 @@ export class AcrController {
       };
 
       // 1. Find the source Job (ACR_WORKFLOW type) - this has all the analysis data
-      const sourceJob = await prisma.job.findFirst({
+      // First try finding as ACR_WORKFLOW job directly
+      let sourceJob = await prisma.job.findFirst({
         where: { 
           id: acrId,
           type: 'ACR_WORKFLOW'
         }
       });
+
+      // If not found, check if acrId is an AcrJob.id and find the source Job via jobId
+      if (!sourceJob) {
+        const acrJobRecord = await prisma.acrJob.findFirst({
+          where: { id: acrId }
+        });
+        
+        if (acrJobRecord) {
+          // Look for ACR_WORKFLOW job that references this job
+          sourceJob = await prisma.job.findFirst({
+            where: {
+              type: 'ACR_WORKFLOW',
+              input: {
+                path: ['sourceJobId'],
+                equals: acrJobRecord.jobId
+              }
+            }
+          });
+          
+          // If still no ACR_WORKFLOW job, create export from AcrJob data directly
+          if (!sourceJob) {
+            // Build export from AcrJob and its criteria
+            const acrJobWithCriteria = await prisma.acrJob.findFirst({
+              where: { id: acrId },
+              include: { criteria: true }
+            });
+            
+            if (acrJobWithCriteria) {
+              // Get the source job for document title
+              const origJob = await prisma.job.findFirst({
+                where: { id: acrJobWithCriteria.jobId }
+              });
+              
+              const documentTitle = acrJobWithCriteria.documentTitle || 
+                                   (origJob?.output as Record<string, unknown>)?.epubTitle as string ||
+                                   'Unnamed Product';
+              
+              // Build criteria from AcrCriterionReview records
+              const criteriaForExport: AcrCriterion[] = acrJobWithCriteria.criteria.map(c => ({
+                id: c.criterionNumber,
+                criterionId: c.criterionId,
+                name: c.criterionName,
+                level: c.level as 'A' | 'AA' | 'AAA',
+                conformanceLevel: (c.conformanceLevel || c.aiStatus || 'Not Applicable') as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable',
+                remarks: c.reviewerNotes || ''
+              }));
+              
+              const TOOL_VERSION = '1.0.0';
+              const AI_MODEL_INFO = { name: 'Gemini 2.0', purpose: 'Accessibility Analysis' };
+              const LEGAL_DISCLAIMER = 'This report contains AI-assisted accessibility analysis. Results should be verified by accessibility professionals.';
+              
+              const acrDocumentFallback: AcrDocument = {
+                id: acrId,
+                edition: acrJobWithCriteria.edition as AcrEdition,
+                productInfo: {
+                  name: documentTitle,
+                  version: '1.0',
+                  description: `Accessibility Conformance Report for ${documentTitle}`,
+                  vendor: 'Unknown',
+                  contactEmail: 'accessibility@example.com',
+                  evaluationDate: acrJobWithCriteria.createdAt
+                },
+                evaluationMethods: [
+                  { type: 'hybrid', description: 'AI-assisted automated analysis with human verification' }
+                ],
+                criteria: criteriaForExport,
+                generatedAt: new Date(),
+                version: 1,
+                status: acrJobWithCriteria.status === 'completed' ? 'final' : 'draft',
+                methodology: exportOptions.includeMethodology ? {
+                  assessmentDate: acrJobWithCriteria.createdAt,
+                  toolVersion: TOOL_VERSION,
+                  aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.purpose})`,
+                  disclaimer: LEGAL_DISCLAIMER
+                } : undefined,
+                footerDisclaimer: LEGAL_DISCLAIMER
+              };
+              
+              const exportResultFallback = await acrExporterService.exportAcr(acrDocumentFallback, exportOptions);
+              
+              // Read file and return as base64
+              const fsFallback = await import('fs/promises');
+              const pathFallback = await import('path');
+              const EXPORTS_DIR_FALLBACK = pathFallback.join(process.cwd(), 'exports');
+              const filepathFallback = pathFallback.join(EXPORTS_DIR_FALLBACK, exportResultFallback.filename);
+              const fileBufferFallback = await fsFallback.readFile(filepathFallback);
+              const base64ContentFallback = fileBufferFallback.toString('base64');
+
+              res.status(200).json({
+                success: true,
+                data: {
+                  ...exportResultFallback,
+                  content: base64ContentFallback
+                },
+                message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
+              });
+              return;
+            }
+          }
+        }
+      }
 
       if (!sourceJob) {
         res.status(404).json({
