@@ -423,11 +423,13 @@ class BatchOrchestratorService {
 
     const updatedFile = await prisma.batchFile.findUnique({ where: { id: file.id } });
 
+    const issuesFixed = result.totalIssuesFixed || 0;
+    
     await prisma.batchFile.update({
       where: { id: file.id },
       data: {
         status: 'REMEDIATED',
-        issuesAutoFixed: result.totalFixed || 0,
+        issuesAutoFixed: issuesFixed,
         remainingQuickFix: updatedFile?.issuesQuickFix || 0,
         remainingManual: updatedFile?.issuesManual || 0,
         remediatedFilePath: remediatedPath,
@@ -439,7 +441,7 @@ class BatchOrchestratorService {
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
-        autoFixedIssues: { increment: result.totalFixed || 0 },
+        autoFixedIssues: { increment: issuesFixed },
       },
     });
 
@@ -448,10 +450,10 @@ class BatchOrchestratorService {
       batchId,
       fileId: file.id,
       fileName: file.fileName,
-      issuesFixed: result.totalFixed,
+      issuesFixed,
     }, batch.tenantId);
 
-    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${result.totalFixed} issues fixed`);
+    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${issuesFixed} issues fixed`);
   }
 
   private generateBatchName(): string {
