@@ -1,7 +1,6 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { remediationService } from '../epub/remediation.service';
-import { batchRemediationService } from '../epub/batch-remediation.service';
 import {
   BatchAcrOptions,
   BatchAcrGenerationResult,
@@ -38,6 +37,23 @@ interface PerEpubDetail {
 }
 
 export class BatchAcrGeneratorService {
+  private async getBatchFromDb(batchId: string, tenantId: string) {
+    return prisma.batch.findFirst({
+      where: { id: batchId, tenantId },
+      include: {
+        files: {
+          select: {
+            id: true,
+            originalName: true,
+            status: true,
+            auditJobId: true,
+            issuesFound: true,
+          },
+        },
+      },
+    });
+  }
+
   async generateBatchAcr(
     batchId: string,
     tenantId: string,
@@ -47,13 +63,14 @@ export class BatchAcrGeneratorService {
   ): Promise<BatchAcrGenerationResult> {
     logger.info(`Starting batch ACR generation for batch ${batchId}, mode: ${mode}`);
 
-    const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+    const batch = await this.getBatchFromDb(batchId, tenantId);
     if (!batch) {
       throw new BatchNotFoundError(batchId);
     }
 
-    if (batch.status !== 'completed') {
-      throw new IncompleteBatchError(batchId, batch.completedJobs, batch.totalJobs);
+    if (batch.status !== 'COMPLETED') {
+      const completedFiles = batch.files.filter(f => f.status === 'REMEDIATED').length;
+      throw new IncompleteBatchError(batchId, completedFiles, batch.totalFiles);
     }
 
     if (mode === 'aggregate') {
@@ -76,31 +93,31 @@ export class BatchAcrGeneratorService {
   ): Promise<IndividualAcrGenerationResult> {
     logger.info(`Generating individual ACRs for batch ${batchId}`);
 
-    const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+    const batch = await this.getBatchFromDb(batchId, tenantId);
     if (!batch) {
       throw new BatchNotFoundError(batchId);
     }
 
-    const successfulJobs = batch.jobs.filter(j => j.status === 'completed');
+    const successfulFiles = batch.files.filter(f => f.status === 'REMEDIATED' && f.auditJobId);
 
-    if (successfulJobs.length === 0) {
-      throw new Error('No successful jobs to generate ACRs from');
+    if (successfulFiles.length === 0) {
+      throw new Error('No successful files to generate ACRs from');
     }
 
-    logger.info(`Found ${successfulJobs.length} successful jobs for ACR generation`);
+    logger.info(`Found ${successfulFiles.length} successful files for ACR generation`);
 
     const acrWorkflowIds: string[] = [];
     const failedJobs: Array<{ jobId: string; error: string }> = [];
 
-    for (const job of successfulJobs) {
+    for (const file of successfulFiles) {
       try {
-        const result = await remediationService.transferToAcr(job.jobId);
+        const result = await remediationService.transferToAcr(file.auditJobId!);
         acrWorkflowIds.push(result.acrWorkflowId);
-        logger.info(`Created ACR workflow ${result.acrWorkflowId} for job ${job.jobId}`);
+        logger.info(`Created ACR workflow ${result.acrWorkflowId} for file ${file.originalName}`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        logger.error(`Failed to create ACR for job ${job.jobId}: ${errorMessage}`);
-        failedJobs.push({ jobId: job.jobId, error: errorMessage });
+        logger.error(`Failed to create ACR for file ${file.originalName}: ${errorMessage}`);
+        failedJobs.push({ jobId: file.auditJobId || file.id, error: errorMessage });
       }
     }
 
@@ -142,22 +159,22 @@ export class BatchAcrGeneratorService {
       throw new InvalidAcrOptionsError('Missing required options for aggregate ACR');
     }
 
-    const batch = await batchRemediationService.getBatchStatus(batchId, tenantId);
+    const batch = await this.getBatchFromDb(batchId, tenantId);
     if (!batch) {
       throw new BatchNotFoundError(batchId);
     }
 
-    const successfulJobs = batch.jobs.filter(j => j.status === 'completed');
-    if (successfulJobs.length === 0) {
-      throw new Error('No successful jobs to generate aggregate ACR from');
+    const successfulFiles = batch.files.filter(f => f.status === 'REMEDIATED' && f.auditJobId);
+    if (successfulFiles.length === 0) {
+      throw new Error('No successful files to generate aggregate ACR from');
     }
 
-    logger.info(`Found ${successfulJobs.length} successful jobs for aggregate ACR`);
+    logger.info(`Found ${successfulFiles.length} successful files for aggregate ACR`);
 
     const jobPlans = await Promise.all(
-      successfulJobs.map(async (job) => {
-        const plan = await remediationService.getRemediationPlan(job.jobId);
-        return { jobId: job.jobId, fileName: job.fileName, plan };
+      successfulFiles.map(async (file) => {
+        const plan = await remediationService.getRemediationPlan(file.auditJobId!);
+        return { jobId: file.auditJobId!, fileName: file.originalName, plan };
       })
     );
 
