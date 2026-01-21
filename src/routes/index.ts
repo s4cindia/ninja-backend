@@ -98,6 +98,6 @@ router.use("/config", configRoutes);
 router.use("/sse", sseRoutes);
 router.use("/uploads", uploadRoutes);
 router.use("/jobs/:jobId/comparison", comparisonRoutes);
-router.use("/batches", batchRoutes);
+router.use("/batch", batchRoutes);
 
 export default router;
