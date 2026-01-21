@@ -20,6 +20,13 @@ interface BatchJob {
   completedAt?: Date;
 }
 
+interface AcrGenerationHistoryEntry {
+  mode: 'individual' | 'aggregate';
+  acrWorkflowIds: string[];
+  generatedAt: string;
+  generatedBy: string;
+}
+
 interface BatchRemediationResult {
   batchId: string;
   status: BatchStatus;
@@ -34,6 +41,11 @@ interface BatchRemediationResult {
   };
   startedAt: Date;
   completedAt?: Date;
+  acrGenerated?: boolean;
+  acrMode?: 'individual' | 'aggregate';
+  acrWorkflowIds?: string[];
+  acrGeneratedAt?: string;
+  acrGenerationHistory?: AcrGenerationHistoryEntry[];
 }
 
 interface BatchOptions {

@@ -83,26 +83,28 @@ enum ComplianceStatus {
 }
 
 model Job {
-  id          String    @id @default(uuid())
-  tenantId    String
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  productId   String?
-  product     Product?  @relation(fields: [productId], references: [id])
-  type        JobType
-  status      JobStatus @default(QUEUED)
-  priority    Int       @default(0)
-  input       Json
-  output      Json?
-  error       String?
-  progress    Int       @default(0)
-  tokensUsed  Int       @default(0)
-  costInr     Float     @default(0)
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  tenantId           String
+  tenant             Tenant    @relation(fields: [tenantId], references: [id])
+  userId             String
+  user               User      @relation(fields: [userId], references: [id])
+  productId          String?
+  product            Product?  @relation(fields: [productId], references: [id])
+  type               JobType
+  status             JobStatus @default(QUEUED)
+  priority           Int       @default(0)
+  input              Json
+  output             Json?
+  error              String?
+  progress           Int       @default(0)
+  tokensUsed         Int       @default(0)
+  costInr            Float     @default(0)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  batchSourceJobIds  String[]  @default([])
+  isBatchAcr         Boolean   @default(false)
 
   validationResults  ValidationResult[]
   artifacts          Artifact[]
@@ -113,6 +115,7 @@ model Job {
   @@index([status])
   @@index([userId])
   @@index([createdAt])
+  @@index([isBatchAcr])
 }
 
 model AcrVersion {
