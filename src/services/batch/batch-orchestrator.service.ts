@@ -319,7 +319,7 @@ class BatchOrchestratorService {
       where: { id: batchId },
       data: {
         filesAudited: { increment: 1 },
-        totalIssuesFound: { increment: totalIssues },
+        totalIssuesFound: { increment: totalIssues || 0 },
       },
     });
 
@@ -373,8 +373,8 @@ class BatchOrchestratorService {
       where: { id: batchId },
       data: {
         filesPlanned: { increment: 1 },
-        quickFixIssues: { increment: quickFixTasks.length },
-        manualIssues: { increment: manualTasks.length },
+        quickFixIssues: { increment: quickFixTasks.length || 0 },
+        manualIssues: { increment: manualTasks.length || 0 },
       },
     });
 
@@ -427,7 +427,7 @@ class BatchOrchestratorService {
       where: { id: file.id },
       data: {
         status: 'REMEDIATED',
-        issuesAutoFixed: result.totalFixed,
+        issuesAutoFixed: result.totalFixed || 0,
         remainingQuickFix: updatedFile?.issuesQuickFix || 0,
         remainingManual: updatedFile?.issuesManual || 0,
         remediatedFilePath: remediatedPath,
@@ -439,7 +439,7 @@ class BatchOrchestratorService {
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
-        autoFixedIssues: { increment: result.totalFixed },
+        autoFixedIssues: { increment: result.totalFixed || 0 },
       },
     });
 
