@@ -170,6 +170,12 @@ export class BatchAcrGeneratorService {
     }
 
     logger.info(`Found ${successfulFiles.length} successful files for aggregate ACR`);
+    
+    // Map successfulFiles to successfulJobs format for use throughout the function
+    const successfulJobs = successfulFiles.map(f => ({
+      jobId: f.auditJobId!,
+      fileName: f.originalName,
+    }));
 
     const jobPlans = await Promise.all(
       successfulFiles.map(async (file) => {
