@@ -19,6 +19,7 @@ model Tenant {
   users    User[]
   jobs     Job[]
   products Product[]
+  batches  Batch[]
 }
 
 model User {
@@ -39,6 +40,7 @@ model User {
   feedbackAttachments FeedbackAttachment[] @relation("AttachmentUploader")
   acrJobs             AcrJob[]
   acrCriterionReviews AcrCriterionReview[] @relation("CriterionReviewer")
+  batches             Batch[]
 
   @@index([tenantId])
   @@index([email])
@@ -485,4 +487,126 @@ model AcrCriterionReview {
 
   @@unique([acrJobId, criterionId])
   @@index([acrJobId])
+}
+
+// ============================================
+// BATCH PROCESSING MODELS
+// ============================================
+
+model Batch {
+  id              String      @id @default(uuid())
+  tenantId        String
+  userId          String
+  name            String
+
+  status          BatchStatus @default(DRAFT)
+
+  // Progress Tracking
+  totalFiles      Int         @default(0)
+  filesUploaded   Int         @default(0)
+  filesAudited    Int         @default(0)
+  filesPlanned    Int         @default(0)
+  filesRemediated Int         @default(0)
+  filesFailed     Int         @default(0)
+
+  // Summary Statistics
+  totalIssuesFound  Int @default(0)
+  autoFixedIssues   Int @default(0)
+  quickFixIssues    Int @default(0)
+  manualIssues      Int @default(0)
+
+  // ACR Generation Metadata
+  acrGenerated   Boolean   @default(false)
+  acrMode        String?
+  acrWorkflowIds String[]
+  acrGeneratedAt DateTime?
+
+  // Relationships
+  files  BatchFile[]
+  tenant Tenant      @relation(fields: [tenantId], references: [id])
+  user   User        @relation(fields: [userId], references: [id])
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([tenantId, status])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model BatchFile {
+  id      String @id @default(uuid())
+  batchId String
+  batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  // File Info
+  fileName    String
+  originalName String
+  fileSize    Int
+  mimeType    String @default("application/epub+zip")
+  storagePath String
+  storageType String @default("S3")
+
+  // Processing Status
+  status BatchFileStatus @default(UPLOADED)
+
+  // Job References
+  auditJobId String?
+  planJobId  String?
+
+  // Audit Results
+  auditScore  Int?
+  issuesFound Int?
+
+  // Plan Analysis
+  issuesAutoFix  Int?
+  issuesQuickFix Int?
+  issuesManual   Int?
+
+  // Remediation Results
+  issuesAutoFixed   Int?
+  remainingQuickFix Int?
+  remainingManual   Int?
+
+  // File Paths
+  remediatedFilePath   String?
+  comparisonReportPath String?
+
+  // Error Handling
+  error        String?
+  errorDetails Json?
+
+  // Timestamps
+  uploadedAt             DateTime  @default(now())
+  auditStartedAt         DateTime?
+  auditCompletedAt       DateTime?
+  planCreatedAt          DateTime?
+  remediationStartedAt   DateTime?
+  remediationCompletedAt DateTime?
+
+  @@index([batchId])
+  @@index([status])
+}
+
+enum BatchStatus {
+  DRAFT
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum BatchFileStatus {
+  UPLOADED
+  AUDITING
+  AUDITED
+  PLANNING
+  PLANNED
+  REMEDIATING
+  REMEDIATED
+  FAILED
+  SKIPPED
 }
