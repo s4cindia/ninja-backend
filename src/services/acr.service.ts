@@ -142,6 +142,22 @@ export class AcrService {
       throw new Error(`Invalid edition: ${edition}`);
     }
 
+    // Check if ACR already exists for this job
+    const existingAcrJob = await prisma.acrJob.findFirst({
+      where: { jobId, tenantId },
+    });
+
+    if (existingAcrJob) {
+      // Return existing ACR analysis
+      const existingReviews = await prisma.acrCriterionReview.findMany({
+        where: { acrJobId: existingAcrJob.id },
+      });
+      return {
+        acrJob: existingAcrJob,
+        criteriaCount: existingReviews.length,
+      };
+    }
+
     const acrJob = await prisma.acrJob.create({
       data: {
         jobId,
