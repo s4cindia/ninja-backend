@@ -8,6 +8,7 @@ export const QUEUE_NAMES = {
   VPAT: 'vpat-generation',
   FILE_PROCESSING: 'file-processing',
   BATCH_REMEDIATION: 'batch-remediation',
+  BATCH_PROCESSING: 'batch-processing',
 } as const;
 
 export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
@@ -54,6 +55,18 @@ export interface BatchJobResult {
   completedJobs: number;
   failedJobs: number;
   totalIssuesFixed: number;
+}
+
+export interface BatchProcessingJobData {
+  batchId: string;
+  tenantId: string;
+}
+
+export interface BatchProcessingJobResult {
+  batchId: string;
+  filesProcessed: number;
+  filesRemediated: number;
+  filesFailed: number;
 }
 
 interface BullMQConnectionOptions {
@@ -122,6 +135,7 @@ let _accessibilityQueue: Queue<JobData, JobResult> | null = null;
 let _vpatQueue: Queue<JobData, JobResult> | null = null;
 let _fileProcessingQueue: Queue<JobData, JobResult> | null = null;
 let _batchQueue: Queue<BatchJobData, BatchJobResult> | null = null;
+let _batchProcessingQueue: Queue<BatchProcessingJobData, BatchProcessingJobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
 let _fileProcessingQueueEvents: QueueEvents | null = null;
@@ -159,6 +173,23 @@ function ensureQueuesInitialized(): void {
   _batchQueue = new Queue<BatchJobData, BatchJobResult>(
     QUEUE_NAMES.BATCH_REMEDIATION,
     { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 } }
+  );
+
+  _batchProcessingQueue = new Queue<BatchProcessingJobData, BatchProcessingJobResult>(
+    QUEUE_NAMES.BATCH_PROCESSING,
+    {
+      connection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: {
+          age: 24 * 60 * 60,
+          count: 100,
+        },
+        removeOnFail: {
+          age: 7 * 24 * 60 * 60,
+        },
+      },
+    }
   );
 
   _accessibilityQueueEvents = new QueueEvents(QUEUE_NAMES.ACCESSIBILITY, {
@@ -206,6 +237,11 @@ export function getBatchQueue(): Queue<BatchJobData, BatchJobResult> | null {
   return _batchQueue;
 }
 
+export function getBatchProcessingQueue(): Queue<BatchProcessingJobData, BatchProcessingJobResult> | null {
+  ensureQueuesInitialized();
+  return _batchProcessingQueue;
+}
+
 export function getQueue(name: QueueName): Queue<JobData, JobResult> {
   switch (name) {
     case QUEUE_NAMES.ACCESSIBILITY:
@@ -234,6 +270,7 @@ export async function closeQueues(): Promise<void> {
   if (_vpatQueue) closePromises.push(_vpatQueue.close());
   if (_fileProcessingQueue) closePromises.push(_fileProcessingQueue.close());
   if (_batchQueue) closePromises.push(_batchQueue.close());
+  if (_batchProcessingQueue) closePromises.push(_batchProcessingQueue.close());
   if (_accessibilityQueueEvents) closePromises.push(_accessibilityQueueEvents.close());
   if (_vpatQueueEvents) closePromises.push(_vpatQueueEvents.close());
   if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
@@ -244,6 +281,7 @@ export async function closeQueues(): Promise<void> {
   _vpatQueue = null;
   _fileProcessingQueue = null;
   _batchQueue = null;
+  _batchProcessingQueue = null;
   _accessibilityQueueEvents = null;
   _vpatQueueEvents = null;
   _fileProcessingQueueEvents = null;
