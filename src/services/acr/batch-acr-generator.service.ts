@@ -177,39 +177,126 @@ export class BatchAcrGeneratorService {
       fileName: f.originalName,
     }));
 
-    const jobPlans = await Promise.all(
+    // Fetch WCAG analysis from Job outputs (contains comprehensive criteria evaluation)
+    const jobAnalyses = await Promise.all(
       successfulFiles.map(async (file) => {
+        const job = await prisma.job.findFirst({
+          where: { id: file.auditJobId! },
+          select: { id: true, output: true }
+        });
+        
+        const output = job?.output as Record<string, unknown> | null;
+        const acrAnalysis = output?.acrAnalysis as { 
+          criteria?: Array<{
+            id: string;
+            name: string;
+            level: string;
+            status: string;
+            category?: string;
+            findings?: string[];
+            recommendation?: string;
+            issueCount?: number;
+            fixedCount?: number;
+            remainingCount?: number;
+            fixedIssues?: Array<{ message: string; location?: string }>;
+            relatedIssues?: Array<{ message: string; location?: string; ruleId?: string }>;
+          }>;
+          summary?: { supports: number; partiallySupports: number; doesNotSupport: number; notApplicable: number };
+        } | null;
+        
+        // Also get remediation plan for additional issue context
         const plan = await remediationService.getRemediationPlan(file.auditJobId!);
-        return { jobId: file.auditJobId!, fileName: file.originalName, plan };
+        
+        return { 
+          jobId: file.auditJobId!, 
+          fileName: file.originalName,
+          acrAnalysis,
+          plan,
+          issuesFound: file.issuesFound || 0
+        };
       })
     );
 
-    const allPendingTasks: TaskWithSource[] = jobPlans.flatMap(({ jobId, fileName, plan }) => {
-      if (!plan) return [];
-      const pendingTasks = plan.tasks.filter((t: { status: string }) => t.status === 'pending');
-      return pendingTasks.map((task: { id: string; issueCode: string; issueMessage: string; severity: string; location?: string; status: string; wcagCriteria?: string | string[] }) => ({
-        ...task,
-        jobId,
-        fileName,
-      }));
-    });
+    logger.info(`Fetched analysis for ${jobAnalyses.length} jobs`);
 
-    logger.info(`Found ${allPendingTasks.length} pending tasks across all jobs`);
+    // Build comprehensive criteria map from all job analyses
+    const criteriaMap = new Map<string, {
+      criterionId: string;
+      criterionName: string;
+      level: 'A' | 'AA' | 'AAA';
+      category?: string;
+      perJobData: Array<{
+        jobId: string;
+        fileName: string;
+        status: string;
+        issueCount: number;
+        fixedCount: number;
+        remainingCount: number;
+        findings: string[];
+        issues: Array<{ code?: string; message: string; location?: string }>;
+      }>;
+    }>();
 
-    const criteriaMap = new Map<string, TaskWithSource[]>();
-    for (const task of allPendingTasks) {
-      const wcagCriteria = Array.isArray(task.wcagCriteria)
-        ? task.wcagCriteria
-        : task.wcagCriteria ? [task.wcagCriteria] : [];
-
-      for (const criterion of wcagCriteria) {
-        if (!criteriaMap.has(criterion)) {
-          criteriaMap.set(criterion, []);
+    // Process each job's WCAG criteria
+    for (const { jobId, fileName, acrAnalysis, plan } of jobAnalyses) {
+      if (acrAnalysis?.criteria && Array.isArray(acrAnalysis.criteria)) {
+        for (const criterion of acrAnalysis.criteria) {
+          if (!criterion.id) continue;
+          
+          if (!criteriaMap.has(criterion.id)) {
+            criteriaMap.set(criterion.id, {
+              criterionId: criterion.id,
+              criterionName: criterion.name || `WCAG ${criterion.id}`,
+              level: (criterion.level || 'A') as 'A' | 'AA' | 'AAA',
+              category: criterion.category,
+              perJobData: []
+            });
+          }
+          
+          // Collect issues from plan tasks that match this criterion
+          const relatedPlanIssues: Array<{ code?: string; message: string; location?: string }> = [];
+          if (plan?.tasks) {
+            for (const task of plan.tasks) {
+              // Check if task relates to this criterion
+              const taskWcag = Array.isArray(task.wcagCriteria) ? task.wcagCriteria : 
+                               task.wcagCriteria ? [task.wcagCriteria] : [];
+              if (taskWcag.includes(criterion.id)) {
+                relatedPlanIssues.push({
+                  code: task.issueCode,
+                  message: task.issueMessage,
+                  location: task.location
+                });
+              }
+            }
+          }
+          
+          // Add issues from criterion's relatedIssues
+          const criterionIssues = (criterion.relatedIssues || []).map(i => ({
+            code: i.ruleId,
+            message: i.message,
+            location: i.location
+          }));
+          
+          // Combine all issues
+          const allIssues = [...relatedPlanIssues, ...criterionIssues];
+          
+          criteriaMap.get(criterion.id)!.perJobData.push({
+            jobId,
+            fileName,
+            status: criterion.status || 'supports',
+            issueCount: criterion.issueCount || 0,
+            fixedCount: criterion.fixedCount || 0,
+            remainingCount: criterion.remainingCount || 0,
+            findings: criterion.findings || [],
+            issues: allIssues
+          });
         }
-        criteriaMap.get(criterion)!.push(task);
       }
     }
 
+    logger.info(`Aggregated ${criteriaMap.size} WCAG criteria from all job analyses`);
+
+    // Build final aggregate criteria array
     const aggregateCriteria: Array<{
       criterionId: string;
       criterionName: string;
@@ -219,31 +306,53 @@ export class BatchAcrGeneratorService {
       perEpubDetails: PerEpubDetail[];
     }> = [];
 
-    for (const [criterionId, tasks] of criteriaMap.entries()) {
-      const tasksByJob = new Map<string, TaskWithSource[]>();
-      for (const task of tasks) {
-        if (!tasksByJob.has(task.jobId)) {
-          tasksByJob.set(task.jobId, []);
+    for (const [criterionId, criterionData] of criteriaMap.entries()) {
+      // Map perJobData to perEpubDetails format
+      const perEpubDetails: PerEpubDetail[] = criterionData.perJobData.map(jobData => {
+        // Determine conformance level based on status
+        let status: ConformanceLevel;
+        switch (jobData.status) {
+          case 'supports':
+            status = 'Supports';
+            break;
+          case 'partially_supports':
+            status = 'Partially Supports';
+            break;
+          case 'does_not_support':
+            status = 'Does Not Support';
+            break;
+          case 'not_applicable':
+            status = 'Not Applicable';
+            break;
+          default:
+            status = jobData.remainingCount > 0 ? 'Does Not Support' : 'Supports';
         }
-        tasksByJob.get(task.jobId)!.push(task);
-      }
-
-      const perEpubDetails: PerEpubDetail[] = successfulJobs.map(job => {
-        const jobTasks = tasksByJob.get(job.jobId) || [];
-        const issueCount = jobTasks.length;
-
+        
         return {
-          fileName: job.fileName,
-          jobId: job.jobId,
-          status: (issueCount === 0 ? 'Supports' : 'Does Not Support') as ConformanceLevel,
-          issueCount,
-          issues: jobTasks.map(t => ({
-            code: t.issueCode,
-            message: t.issueMessage,
-            location: t.location,
-          })),
+          fileName: jobData.fileName,
+          jobId: jobData.jobId,
+          status,
+          issueCount: jobData.remainingCount || jobData.issueCount,
+          issues: jobData.issues.map(i => ({
+            code: i.code || '',
+            message: i.message,
+            location: i.location
+          }))
         };
       });
+
+      // Ensure all jobs are represented (even if they don't have this criterion explicitly)
+      for (const job of successfulJobs) {
+        if (!perEpubDetails.some(d => d.jobId === job.jobId)) {
+          perEpubDetails.push({
+            fileName: job.fileName,
+            jobId: job.jobId,
+            status: 'Supports', // No issues means supports
+            issueCount: 0,
+            issues: []
+          });
+        }
+      }
 
       const conformanceLevel = this.aggregateConformance(
         perEpubDetails,
@@ -254,15 +363,27 @@ export class BatchAcrGeneratorService {
 
       aggregateCriteria.push({
         criterionId,
-        criterionName: `WCAG ${criterionId}`,
-        level: this.getWcagLevel(criterionId),
+        criterionName: criterionData.criterionName,
+        level: criterionData.level,
         conformanceLevel,
         remarks,
         perEpubDetails,
       });
     }
 
-    logger.info(`Generated ${aggregateCriteria.length} aggregate criteria`);
+    // Sort criteria by WCAG number
+    aggregateCriteria.sort((a, b) => {
+      const aParts = a.criterionId.split('.').map(n => parseInt(n) || 0);
+      const bParts = b.criterionId.split('.').map(n => parseInt(n) || 0);
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        if ((aParts[i] || 0) !== (bParts[i] || 0)) {
+          return (aParts[i] || 0) - (bParts[i] || 0);
+        }
+      }
+      return 0;
+    });
+
+    logger.info(`Generated ${aggregateCriteria.length} aggregate criteria (sorted)`);
 
     const acrDocument = {
       sourceJobId: batchId,
