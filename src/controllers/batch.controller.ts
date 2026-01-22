@@ -467,16 +467,20 @@ class BatchController {
       const manualCount = file.issuesManual || manualIssues.length;
 
       const response = {
+        fileId: file.id,
         id: file.id,
         batchId: file.batchId,
         fileName: file.fileName,
         originalName: file.originalName,
+        fileSize: file.fileSize,
         status: file.status,
         auditScore: file.auditScore,
         issuesFound: file.issuesFound,
         issuesAutoFixed: file.issuesAutoFixed || autoFixedIssues.length,
         issuesQuickFix: file.issuesQuickFix || quickFixIssues.length,
         issuesManual: file.issuesManual || manualIssues.length,
+        remainingQuickFix: file.remainingQuickFix ?? quickFixIssues.length,
+        remainingManual: file.remainingManual ?? manualIssues.length,
         quickFixCount: quickFixCount,
         manualCount: manualCount,
         originalS3Key: file.storagePath,
