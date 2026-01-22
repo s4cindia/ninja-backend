@@ -590,7 +590,6 @@ class BatchController {
 
     logger.info('[extractIssuesFromPlan] Starting extraction');
 
-    // Get the plan object
     const plan = (planResults && typeof planResults === 'object') ? planResults as Record<string, unknown> : null;
     const audit = (auditResults && typeof auditResults === 'object') ? auditResults as Record<string, unknown> : null;
 
@@ -599,19 +598,8 @@ class BatchController {
       return { autoFixedIssues, quickFixIssues, manualIssues };
     }
 
-    // Get remediation data
+    // Get expected stats for logging
     const autoRemediation = plan?.autoRemediation as Record<string, unknown> | undefined;
-    const modifications = (autoRemediation?.modifications || []) as Record<string, unknown>[];
-    
-    // Build set of auto-fixed issue codes from modifications
-    const autoFixedCodes = new Set<string>();
-    for (const mod of modifications) {
-      const code = (mod.issueCode || mod.code) as string;
-      if (code) autoFixedCodes.add(code);
-    }
-    logger.info('[extractIssuesFromPlan] Auto-fixed codes from modifications:', Array.from(autoFixedCodes));
-
-    // Get expected stats
     const expectedStats = {
       autoFixed: (autoRemediation?.totalIssuesFixed as number) || 0,
       quickFix: (autoRemediation?.quickFixPending as number) || 0,
@@ -629,18 +617,11 @@ class BatchController {
 
     logger.info(`[extractIssuesFromPlan] Processing ${combinedIssues.length} issues`);
 
-    // Known quick-fixable issue code prefixes (metadata issues that need user input)
-    const quickFixPrefixes = ['METADATA-', 'ACC-'];
-    const isQuickFixCode = (code: string): boolean => {
-      return quickFixPrefixes.some(prefix => code.startsWith(prefix));
-    };
-
-    // Process each issue
+    // Process each issue - classify by code pattern
     for (const issue of combinedIssues) {
       const i = issue as Record<string, unknown>;
       const issueCode = (i.code || i.issueCode) as string;
 
-      // Map to consistent format
       const mappedIssue = {
         id: i.id || `issue-${issueCode}`,
         code: issueCode,
@@ -652,9 +633,8 @@ class BatchController {
         filePath: i.filePath || null,
       };
 
-      // Classify based on modifications and known patterns
-      if (autoFixedCodes.has(issueCode)) {
-        // This issue was auto-fixed (found in modifications)
+      // Classify by issue code pattern
+      if (this.isAutoFixableCode(issueCode)) {
         autoFixedIssues.push({
           ...mappedIssue,
           status: 'completed',
@@ -664,8 +644,7 @@ class BatchController {
           autoFixable: true,
           quickFixable: false,
         });
-      } else if (isQuickFixCode(issueCode) || i.quickFixable === true) {
-        // Quick-fixable based on code pattern or property
+      } else if (this.isQuickFixableCode(issueCode)) {
         quickFixIssues.push({
           ...mappedIssue,
           status: 'pending',
@@ -675,7 +654,6 @@ class BatchController {
           quickFixable: true,
         });
       } else {
-        // Manual intervention required
         manualIssues.push({
           ...mappedIssue,
           status: 'pending',
@@ -687,15 +665,36 @@ class BatchController {
       }
     }
 
-    const totalClassified = autoFixedIssues.length + quickFixIssues.length + manualIssues.length;
     logger.info('[extractIssuesFromPlan] Extraction complete:', {
       autoFixed: autoFixedIssues.length,
       quickFix: quickFixIssues.length,
       manual: manualIssues.length,
-      total: totalClassified,
+      total: autoFixedIssues.length + quickFixIssues.length + manualIssues.length,
     });
 
     return { autoFixedIssues, quickFixIssues, manualIssues };
+  }
+
+  private isAutoFixableCode(code: string): boolean {
+    if (!code) return false;
+    const autoFixablePrefixes = [
+      'EPUB-META-',
+      'EPUB-IMG-',
+      'EPUB-SEM-',
+      'EPUB-NAV-',
+      'EPUB-FIG-',
+    ];
+    return autoFixablePrefixes.some(prefix => code.startsWith(prefix));
+  }
+
+  private isQuickFixableCode(code: string): boolean {
+    if (!code) return false;
+    const quickFixablePrefixes = [
+      'METADATA-',
+      'EPUB-STRUCT-',
+      'ACC-',
+    ];
+    return quickFixablePrefixes.some(prefix => code.startsWith(prefix));
   }
 
   /**
