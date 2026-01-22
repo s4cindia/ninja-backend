@@ -677,10 +677,20 @@ class BatchController {
 
   private isAutoFixableCode(code: string): boolean {
     if (!code) return false;
+    
+    // Exclude codes that represent failed auto-fix attempts
+    const excludedCodes = [
+      'EPUB-STRUCT-004',  // "Could not add main landmark - no suitable element found"
+    ];
+    if (excludedCodes.includes(code)) {
+      return false;
+    }
+
     const autoFixablePrefixes = [
       'EPUB-META-',
       'EPUB-IMG-',
       'EPUB-SEM-',
+      'EPUB-STRUCT-',
       'EPUB-NAV-',
       'EPUB-FIG-',
     ];
@@ -689,9 +699,17 @@ class BatchController {
 
   private isQuickFixableCode(code: string): boolean {
     if (!code) return false;
+    
+    // Exclude failed auto-fix codes from quick-fix too (they go to manual)
+    const excludedCodes = [
+      'EPUB-STRUCT-004',
+    ];
+    if (excludedCodes.includes(code)) {
+      return false;
+    }
+
     const quickFixablePrefixes = [
       'METADATA-',
-      'EPUB-STRUCT-',
       'ACC-',
     ];
     return quickFixablePrefixes.some(prefix => code.startsWith(prefix));
