@@ -237,6 +237,37 @@ class BatchOrchestratorService {
       }
     }
 
+    // Verify and correct issue count totals before marking complete
+    const batchTotals = await prisma.batch.findUnique({
+      where: { id: batchId },
+      select: {
+        autoFixedIssues: true,
+        quickFixIssues: true,
+        manualIssues: true,
+        totalIssuesFound: true
+      }
+    });
+
+    if (batchTotals) {
+      const calculatedTotal =
+        (batchTotals.autoFixedIssues || 0) +
+        (batchTotals.quickFixIssues || 0) +
+        (batchTotals.manualIssues || 0);
+
+      if (calculatedTotal !== batchTotals.totalIssuesFound) {
+        logger.warn(
+          `[Batch ${batchId}] Issue count mismatch: stored=${batchTotals.totalIssuesFound}, ` +
+          `calculated=${calculatedTotal} (auto=${batchTotals.autoFixedIssues}, ` +
+          `quick=${batchTotals.quickFixIssues}, manual=${batchTotals.manualIssues}). Correcting...`
+        );
+
+        await prisma.batch.update({
+          where: { id: batchId },
+          data: { totalIssuesFound: calculatedTotal }
+        });
+      }
+    }
+
     const updatedBatch = await prisma.batch.update({
       where: { id: batchId },
       data: {
