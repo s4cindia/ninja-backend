@@ -626,51 +626,54 @@ class BatchController {
         
         // Log first issue structure for debugging
         if (combinedIssues.length > 0) {
-          logger.debug('[extractIssuesFromPlan] Sample issue structure:', JSON.stringify(combinedIssues[0], null, 2));
+          logger.debug('[extractIssuesFromPlan] Sample issue:', JSON.stringify(combinedIssues[0]));
         }
         
         for (const issue of combinedIssues) {
           const i = issue as Record<string, unknown>;
           const issueCode = (i.code || i.issueCode) as string;
-          const autoFixable = i.autoFixable as boolean | undefined;
-          const quickFixable = i.quickFixable as boolean | undefined;
-          const status = (i.status as string)?.toLowerCase();
-          
-          // Check if this issue was fixed by auto-remediation
-          const wasAutoFixed = fixedIssueCodes.has(issueCode) || 
-                              status === 'fixed' || 
-                              status === 'auto_fixed' ||
-                              status === 'completed';
+          const isAutoFixable = i.autoFixable === true || i.classification === 'auto-fix';
+          const isQuickFixable = i.quickFixable === true || i.classification === 'quick-fix';
+          const status = (i.status as string)?.toUpperCase();
+          const wasFixed = status === 'FIXED' || status === 'COMPLETED' || i.fixed === true;
           
           const issueData = {
             id: i.id || issueCode,
             code: issueCode,
-            criterion: this.extractCriterion(issueCode) || i.wcagCriterion || i.criterion || issueCode || 'Unknown',
-            title: i.title || i.name || i.message || issueCode || 'Accessibility Issue',
-            severity: i.severity || i.impact || 'moderate',
-            description: i.description || i.message || 'No description available',
+            criterion: this.extractCriterion(issueCode) || (i.wcagCriterion as string) || (i.criterion as string) || 'Unknown',
+            title: (i.title || i.name || i.message || issueCode || 'Accessibility Issue') as string,
+            severity: (i.severity || i.impact || 'moderate') as string,
+            description: (i.description || i.message || 'No description available') as string,
             location: i.location || i.file || i.element,
-            status: wasAutoFixed ? 'completed' : 'pending',
-            fixedBy: wasAutoFixed ? 'auto' : null,
-            autoFixable: autoFixable === true,
-            quickFixable: quickFixable === true,
+            autoFixable: isAutoFixable,
+            quickFixable: isQuickFixable,
           };
 
-          // Categorize based on whether it was fixed or its fixability
-          if (wasAutoFixed || autoFixable === true) {
+          // ✅ FIX: Proper classification logic based on issue properties
+          if (isAutoFixable && wasFixed) {
+            // Actually auto-fixed by the system
             autoFixedIssues.push({
               ...issueData,
-              fixApplied: (i.fix || i.resolution || 'Auto-fixed by system') as string,
+              status: 'completed',
+              fixedBy: 'auto',
+              fixedAt: i.fixedAt || new Date().toISOString(),
+              fixApplied: (i.fix || i.fixApplied || 'Automatically fixed by system') as string,
             });
-          } else if (quickFixable === true) {
+          } else if (isQuickFixable && !isAutoFixable) {
+            // Quick-fixable (not auto-fixed, needs user action)
             quickFixIssues.push({
               ...issueData,
-              suggestedFix: (i.suggestedFix || i.fix || i.recommendation || 'Quick-fix available') as string,
+              status: wasFixed ? 'completed' : 'pending',
+              fixedBy: wasFixed ? 'user' : null,
+              suggestedFix: (i.suggestedFix || i.fix || i.recommendation || 'Quick-fix template available') as string,
             });
           } else {
+            // Manual intervention required
             manualIssues.push({
               ...issueData,
-              guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
+              status: wasFixed ? 'completed' : 'pending',
+              fixedBy: wasFixed ? 'user' : null,
+              guidance: (i.guidance || i.recommendation || i.help || 'Manual review and correction required') as string,
             });
           }
         }
