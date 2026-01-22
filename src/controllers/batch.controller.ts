@@ -405,7 +405,7 @@ class BatchController {
     }
   }
 
-  async getBatchFile(req: AuthenticatedRequest, res: Response) {
+  getBatchFile = async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { batchId, fileId } = req.params;
       const tenantId = req.user!.tenantId;
@@ -514,7 +514,7 @@ class BatchController {
     }
   }
 
-  async downloadBatchFile(req: AuthenticatedRequest, res: Response) {
+  downloadBatchFile = async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { batchId, fileId } = req.params;
       const tenantId = req.user!.tenantId;
