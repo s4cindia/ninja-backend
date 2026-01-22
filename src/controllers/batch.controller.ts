@@ -564,14 +564,14 @@ class BatchController {
         });
       }
 
-      let s3Key: string | null = null;
+      let filePath: string | null = null;
       if (version === 'original') {
-        s3Key = file.storagePath;
+        filePath = file.storagePath;
       } else {
-        s3Key = file.remediatedFilePath || file.storagePath;
+        filePath = file.remediatedFilePath || file.storagePath;
       }
 
-      if (!s3Key) {
+      if (!filePath) {
         return res.status(404).json({
           success: false,
           error: {
@@ -581,16 +581,44 @@ class BatchController {
         });
       }
 
-      const { downloadUrl, expiresIn } = await s3Service.getPresignedDownloadUrl(s3Key, 3600);
-
-      return res.json({
-        success: true,
-        data: {
-          downloadUrl: downloadUrl,
-          fileName: file.originalName || file.fileName,
-          expiresIn: expiresIn,
-        },
-      });
+      // Check if file exists locally first (for development/local storage)
+      const fs = await import('fs');
+      const path = await import('path');
+      
+      // Handle both absolute paths and relative paths
+      const localPath = filePath.startsWith('/') ? filePath : path.join(process.cwd(), filePath);
+      
+      if (fs.existsSync(localPath)) {
+        // Serve file directly from local storage
+        const fileName = file.originalName || file.fileName || 'download.epub';
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Type', 'application/epub+zip');
+        
+        const fileStream = fs.createReadStream(localPath);
+        return fileStream.pipe(res);
+      }
+      
+      // Fall back to S3 if file not found locally
+      try {
+        const { downloadUrl, expiresIn } = await s3Service.getPresignedDownloadUrl(filePath, 3600);
+        return res.json({
+          success: true,
+          data: {
+            downloadUrl: downloadUrl,
+            fileName: file.originalName || file.fileName,
+            expiresIn: expiresIn,
+          },
+        });
+      } catch (s3Error) {
+        logger.warn('S3 download failed, file not available:', s3Error);
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'File not found in storage',
+            code: 'FILE_NOT_FOUND',
+          },
+        });
+      }
     } catch (error) {
       logger.error('Download batch file error:', error);
       return res.status(500).json({
