@@ -599,8 +599,19 @@ class BatchController {
       return { autoFixedIssues, quickFixIssues, manualIssues };
     }
 
-    // Get remediation stats for logging
+    // Get remediation data
     const autoRemediation = plan?.autoRemediation as Record<string, unknown> | undefined;
+    const modifications = (autoRemediation?.modifications || []) as Record<string, unknown>[];
+    
+    // Build set of auto-fixed issue codes from modifications
+    const autoFixedCodes = new Set<string>();
+    for (const mod of modifications) {
+      const code = (mod.issueCode || mod.code) as string;
+      if (code) autoFixedCodes.add(code);
+    }
+    logger.info('[extractIssuesFromPlan] Auto-fixed codes from modifications:', Array.from(autoFixedCodes));
+
+    // Get expected stats
     const expectedStats = {
       autoFixed: (autoRemediation?.totalIssuesFixed as number) || 0,
       quickFix: (autoRemediation?.quickFixPending as number) || 0,
@@ -608,7 +619,7 @@ class BatchController {
     };
     logger.info('[extractIssuesFromPlan] Expected stats:', expectedStats);
 
-    // Get combined issues - the SINGLE source of truth
+    // Get combined issues
     const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
 
     if (!combinedIssues || !Array.isArray(combinedIssues) || combinedIssues.length === 0) {
@@ -618,16 +629,16 @@ class BatchController {
 
     logger.info(`[extractIssuesFromPlan] Processing ${combinedIssues.length} issues`);
 
-    // Process EACH issue into ONE category only
+    // Known quick-fixable issue code prefixes (metadata issues that need user input)
+    const quickFixPrefixes = ['METADATA-', 'ACC-'];
+    const isQuickFixCode = (code: string): boolean => {
+      return quickFixPrefixes.some(prefix => code.startsWith(prefix));
+    };
+
+    // Process each issue
     for (const issue of combinedIssues) {
       const i = issue as Record<string, unknown>;
       const issueCode = (i.code || i.issueCode) as string;
-
-      // Check issue properties
-      const isAutoFixable = i.autoFixable === true || i.classification === 'auto-fix';
-      const isQuickFixable = i.quickFixable === true || i.classification === 'quick-fix';
-      const status = ((i.status as string) || '').toUpperCase();
-      const wasFixed = status === 'FIXED' || status === 'COMPLETED' || i.fixed === true;
 
       // Map to consistent format
       const mappedIssue = {
@@ -639,32 +650,39 @@ class BatchController {
         description: (i.description || i.message || 'No description available') as string,
         location: i.location || i.file || i.element || i.filePath,
         filePath: i.filePath || null,
-        autoFixable: isAutoFixable,
-        quickFixable: isQuickFixable,
       };
 
-      // Classify into ONE category only (no duplicates!)
-      if (isAutoFixable && wasFixed) {
+      // Classify based on modifications and known patterns
+      if (autoFixedCodes.has(issueCode)) {
+        // This issue was auto-fixed (found in modifications)
         autoFixedIssues.push({
           ...mappedIssue,
           status: 'completed',
           fixedBy: 'auto',
-          fixedAt: i.fixedAt || new Date().toISOString(),
-          fixApplied: (i.fix || i.fixApplied || 'Automatically fixed by system') as string,
+          fixedAt: new Date().toISOString(),
+          fixApplied: 'Automatically fixed by system',
+          autoFixable: true,
+          quickFixable: false,
         });
-      } else if (isQuickFixable && !isAutoFixable) {
+      } else if (isQuickFixCode(issueCode) || i.quickFixable === true) {
+        // Quick-fixable based on code pattern or property
         quickFixIssues.push({
           ...mappedIssue,
-          status: wasFixed ? 'completed' : 'pending',
-          fixedBy: wasFixed ? 'user' : null,
+          status: 'pending',
+          fixedBy: null,
           suggestedFix: (i.suggestedFix || i.recommendation || 'Quick-fix template available') as string,
+          autoFixable: false,
+          quickFixable: true,
         });
       } else {
+        // Manual intervention required
         manualIssues.push({
           ...mappedIssue,
-          status: wasFixed ? 'completed' : 'pending',
-          fixedBy: wasFixed ? 'user' : null,
+          status: 'pending',
+          fixedBy: null,
           guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
+          autoFixable: false,
+          quickFixable: false,
         });
       }
     }
@@ -675,13 +693,7 @@ class BatchController {
       quickFix: quickFixIssues.length,
       manual: manualIssues.length,
       total: totalClassified,
-      inputTotal: combinedIssues.length,
     });
-
-    // Validation warnings
-    if (totalClassified !== combinedIssues.length) {
-      logger.warn(`[extractIssuesFromPlan] Mismatch: classified ${totalClassified}, input ${combinedIssues.length}`);
-    }
 
     return { autoFixedIssues, quickFixIssues, manualIssues };
   }
