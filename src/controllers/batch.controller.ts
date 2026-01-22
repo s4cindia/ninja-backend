@@ -746,6 +746,86 @@ class BatchController {
 
     return 'Unknown';
   }
+
+  /**
+   * Apply quick-fixes to a specific batch file with user-provided values
+   * POST /api/v1/batch/:batchId/files/:fileId/apply-quick-fixes
+   */
+  async applyBatchFileQuickFixes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId, fileId } = req.params;
+      const { quickFixes } = req.body;
+      const tenantId = req.user!.tenantId;
+
+      if (!quickFixes || !Array.isArray(quickFixes) || quickFixes.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            message: 'quickFixes array is required and must not be empty',
+            code: 'INVALID_REQUEST',
+          },
+        });
+      }
+
+      // Validate each quick-fix entry
+      for (const fix of quickFixes) {
+        if (!fix.issueCode || typeof fix.issueCode !== 'string') {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: 'Each quick-fix must have an issueCode',
+              code: 'INVALID_ISSUE_CODE',
+            },
+          });
+        }
+        if (!fix.value || typeof fix.value !== 'string') {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: `Missing value for issueCode: ${fix.issueCode}`,
+              code: 'INVALID_VALUE',
+            },
+          });
+        }
+      }
+
+      const result = await batchQuickFixService.applyQuickFixesToFile(
+        batchId,
+        fileId,
+        tenantId,
+        quickFixes
+      );
+
+      if (result.success) {
+        return res.json({
+          success: true,
+          data: {
+            message: `Applied ${result.appliedFixes} quick-fixes`,
+            appliedFixes: result.appliedFixes,
+            results: result.results,
+          },
+        });
+      } else {
+        return res.status(207).json({
+          success: false,
+          data: {
+            message: `Partially applied ${result.appliedFixes} quick-fixes`,
+            appliedFixes: result.appliedFixes,
+            results: result.results,
+          },
+        });
+      }
+    } catch (error) {
+      logger.error('Failed to apply quick-fixes to batch file:', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to apply quick-fixes',
+          code: 'QUICK_FIX_FAILED',
+        },
+      });
+    }
+  }
 }
 
 export const batchController = new BatchController();

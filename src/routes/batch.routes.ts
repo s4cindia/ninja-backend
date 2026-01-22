@@ -114,4 +114,11 @@ router.get(
   batchController.downloadBatchFile
 );
 
+router.post(
+  '/:batchId/files/:fileId/apply-quick-fixes',
+  authenticate,
+  authorize('ADMIN', 'USER'),
+  batchController.applyBatchFileQuickFixes
+);
+
 export default router;

@@ -175,6 +175,121 @@ class BatchQuickFixService {
 
     return results;
   }
+
+  /**
+   * Apply quick-fixes with user-provided values to a single batch file
+   */
+  async applyQuickFixesToFile(
+    batchId: string,
+    fileId: string,
+    tenantId: string,
+    quickFixes: Array<{ issueCode: string; value: string }>
+  ): Promise<{
+    success: boolean;
+    appliedFixes: number;
+    results: Array<{ issueCode: string; success: boolean; error?: string }>;
+  }> {
+    logger.info(`[BatchFile ${fileId}] Applying ${quickFixes.length} quick-fixes`);
+
+    // Validate issue codes
+    const validIssueCodes = [
+      'METADATA-ACCESSMODE',
+      'METADATA-ACCESSMODESUFFICIENT',
+      'METADATA-ACCESSIBILITYFEATURE',
+      'METADATA-ACCESSIBILITYHAZARD',
+      'METADATA-ACCESSIBILITYSUMMARY',
+    ];
+
+    for (const fix of quickFixes) {
+      if (!validIssueCodes.includes(fix.issueCode)) {
+        throw new Error(`Invalid issue code: ${fix.issueCode}`);
+      }
+      if (!fix.value || fix.value.length > 500) {
+        throw new Error(`Invalid value for ${fix.issueCode}`);
+      }
+    }
+
+    // Get the batch file with its batch
+    const file = await prisma.batchFile.findFirst({
+      where: { 
+        id: fileId, 
+        batchId,
+        batch: { tenantId }
+      },
+      include: { batch: true }
+    });
+
+    if (!file) {
+      throw new Error('Batch file not found');
+    }
+
+    if (!file.auditJobId) {
+      throw new Error('File has not been audited');
+    }
+
+    // Get remediation plan and update task statuses
+    const plan = await remediationService.getRemediationPlan(file.auditJobId);
+    const results: Array<{ issueCode: string; success: boolean; error?: string }> = [];
+    let appliedFixes = 0;
+
+    for (const fix of quickFixes) {
+      try {
+        // Find matching task in plan
+        if (plan) {
+          const task = plan.tasks.find(
+            (t: { issueCode: string; status: string }) => 
+              t.issueCode === fix.issueCode && t.status === 'pending'
+          );
+          
+          if (task) {
+            await remediationService.updateTaskStatus(
+              file.auditJobId,
+              task.id,
+              'completed',
+              `Applied value: ${fix.value}`,
+              'user',
+              { completionMethod: 'manual', notes: `Value: ${fix.value}` }
+            );
+          }
+        }
+
+        appliedFixes++;
+        results.push({ issueCode: fix.issueCode, success: true });
+        logger.info(`[BatchFile ${fileId}] Applied quick-fix for ${fix.issueCode}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        results.push({ issueCode: fix.issueCode, success: false, error: errorMessage });
+        logger.error(`[BatchFile ${fileId}] Failed to apply ${fix.issueCode}: ${errorMessage}`);
+      }
+    }
+
+    // Update batch file stats
+    await prisma.batchFile.update({
+      where: { id: fileId },
+      data: {
+        issuesQuickFix: { decrement: appliedFixes },
+        issuesAutoFixed: { increment: appliedFixes },
+      },
+    });
+
+    // Broadcast update via SSE
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'file_quick_fix_applied',
+      batchId,
+      fileId,
+      fileName: file.originalName,
+      appliedFixes,
+      results,
+    }, tenantId);
+
+    logger.info(`[BatchFile ${fileId}] Quick-fix complete: ${appliedFixes} fixes applied`);
+
+    return {
+      success: results.every(r => r.success),
+      appliedFixes,
+      results,
+    };
+  }
 }
 
 export const batchQuickFixService = new BatchQuickFixService();
