@@ -590,7 +590,10 @@ class BatchController {
       
       if (fs.existsSync(localPath)) {
         // For local files, return a direct download URL pointing to our serve endpoint
-        const downloadUrl = `/api/v1/batch/${batchId}/files/${fileId}/serve${version === 'original' ? '?version=original' : ''}`;
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+        const host = req.headers['x-forwarded-host'] || req.headers.host || req.get('host');
+        const baseUrl = `${protocol}://${host}`;
+        const downloadUrl = `${baseUrl}/api/v1/batch/${batchId}/files/${fileId}/serve${version === 'original' ? '?version=original' : ''}`;
         return res.json({
           success: true,
           data: {
