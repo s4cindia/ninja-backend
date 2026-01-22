@@ -589,199 +589,99 @@ class BatchController {
     const manualIssues: unknown[] = [];
 
     logger.info('[extractIssuesFromPlan] Starting extraction');
-    logger.info('[extractIssuesFromPlan] planResults type:', typeof planResults);
-    logger.info('[extractIssuesFromPlan] auditResults type:', typeof auditResults);
 
-    if (planResults && typeof planResults === 'object') {
-      const plan = planResults as Record<string, unknown>;
-      logger.info('[extractIssuesFromPlan] Plan keys:', Object.keys(plan));
+    // Get the plan object
+    const plan = (planResults && typeof planResults === 'object') ? planResults as Record<string, unknown> : null;
+    const audit = (auditResults && typeof auditResults === 'object') ? auditResults as Record<string, unknown> : null;
 
-      // Get autoRemediation data first to build set of fixed issue codes
-      const autoRemediation = plan.autoRemediation as Record<string, unknown> | undefined;
-      const fixedIssueCodes = new Set<string>();
-      const modifications = autoRemediation?.modifications as unknown[] | undefined;
-      
-      if (modifications && Array.isArray(modifications)) {
-        logger.info('[extractIssuesFromPlan] modifications found:', modifications.length);
-        for (const mod of modifications) {
-          const m = mod as Record<string, unknown>;
-          const issueCode = m.issueCode as string || m.code as string;
-          if (issueCode) {
-            fixedIssueCodes.add(issueCode);
-          }
-        }
-        logger.info('[extractIssuesFromPlan] Fixed issue codes:', Array.from(fixedIssueCodes));
-      }
+    if (!plan && !audit) {
+      logger.warn('[extractIssuesFromPlan] No plan or audit results');
+      return { autoFixedIssues, quickFixIssues, manualIssues };
+    }
 
-      // Also check totalIssuesFixed count
-      const totalIssuesFixed = autoRemediation?.totalIssuesFixed as number || 0;
-      const quickFixPending = autoRemediation?.quickFixPending as number || 0;
-      const manualPending = autoRemediation?.manualPending as number || 0;
-      logger.info('[extractIssuesFromPlan] Remediation stats:', { totalIssuesFixed, quickFixPending, manualPending });
+    // Get remediation stats for logging
+    const autoRemediation = plan?.autoRemediation as Record<string, unknown> | undefined;
+    const expectedStats = {
+      autoFixed: (autoRemediation?.totalIssuesFixed as number) || 0,
+      quickFix: (autoRemediation?.quickFixPending as number) || 0,
+      manual: (autoRemediation?.manualPending as number) || 0,
+    };
+    logger.info('[extractIssuesFromPlan] Expected stats:', expectedStats);
 
-      // Check for combinedIssues array (actual data structure from audit)
-      const combinedIssues = plan.combinedIssues as unknown[] | undefined;
-      if (combinedIssues && Array.isArray(combinedIssues)) {
-        logger.info('[extractIssuesFromPlan] combinedIssues found:', combinedIssues.length);
-        
-        // Log first issue structure for debugging
-        if (combinedIssues.length > 0) {
-          logger.debug('[extractIssuesFromPlan] Sample issue:', JSON.stringify(combinedIssues[0]));
-        }
-        
-        for (const issue of combinedIssues) {
-          const i = issue as Record<string, unknown>;
-          const issueCode = (i.code || i.issueCode) as string;
-          const isAutoFixable = i.autoFixable === true || i.classification === 'auto-fix';
-          const isQuickFixable = i.quickFixable === true || i.classification === 'quick-fix';
-          const status = (i.status as string)?.toUpperCase();
-          const wasFixed = status === 'FIXED' || status === 'COMPLETED' || i.fixed === true;
-          
-          const issueData = {
-            id: i.id || issueCode,
-            code: issueCode,
-            criterion: this.extractCriterion(issueCode) || (i.wcagCriterion as string) || (i.criterion as string) || 'Unknown',
-            title: (i.title || i.name || i.message || issueCode || 'Accessibility Issue') as string,
-            severity: (i.severity || i.impact || 'moderate') as string,
-            description: (i.description || i.message || 'No description available') as string,
-            location: i.location || i.file || i.element,
-            autoFixable: isAutoFixable,
-            quickFixable: isQuickFixable,
-          };
+    // Get combined issues - the SINGLE source of truth
+    const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
 
-          // ✅ FIX: Proper classification logic based on issue properties
-          if (isAutoFixable && wasFixed) {
-            // Actually auto-fixed by the system
-            autoFixedIssues.push({
-              ...issueData,
-              status: 'completed',
-              fixedBy: 'auto',
-              fixedAt: i.fixedAt || new Date().toISOString(),
-              fixApplied: (i.fix || i.fixApplied || 'Automatically fixed by system') as string,
-            });
-          } else if (isQuickFixable && !isAutoFixable) {
-            // Quick-fixable (not auto-fixed, needs user action)
-            quickFixIssues.push({
-              ...issueData,
-              status: wasFixed ? 'completed' : 'pending',
-              fixedBy: wasFixed ? 'user' : null,
-              suggestedFix: (i.suggestedFix || i.fix || i.recommendation || 'Quick-fix template available') as string,
-            });
-          } else {
-            // Manual intervention required
-            manualIssues.push({
-              ...issueData,
-              status: wasFixed ? 'completed' : 'pending',
-              fixedBy: wasFixed ? 'user' : null,
-              guidance: (i.guidance || i.recommendation || i.help || 'Manual review and correction required') as string,
-            });
-          }
-        }
-      }
+    if (!combinedIssues || !Array.isArray(combinedIssues) || combinedIssues.length === 0) {
+      logger.warn('[extractIssuesFromPlan] No combinedIssues found');
+      return { autoFixedIssues, quickFixIssues, manualIssues };
+    }
 
-      // Log if autoRemediation exists
-      if (autoRemediation) {
-        logger.info('[extractIssuesFromPlan] autoRemediation found:', Object.keys(autoRemediation));
-      }
+    logger.info(`[extractIssuesFromPlan] Processing ${combinedIssues.length} issues`);
 
-      // Fallback: if no issues classified from combinedIssues but we have modification count,
-      // create placeholder auto-fixed issues from modifications
-      if (autoFixedIssues.length === 0 && modifications && Array.isArray(modifications)) {
-        logger.info('[extractIssuesFromPlan] Creating issues from modifications');
-        for (const mod of modifications) {
-          const m = mod as Record<string, unknown>;
-          const issueCode = (m.issueCode || m.code || 'Unknown') as string;
-          autoFixedIssues.push({
-            id: m.id || issueCode,
-            code: issueCode,
-            criterion: this.extractCriterion(issueCode),
-            title: (m.title || m.description || issueCode) as string,
-            severity: (m.severity || 'moderate') as string,
-            description: (m.description || m.message || 'Issue was automatically fixed') as string,
-            location: m.location || m.file,
-            status: 'completed',
-            fixedBy: 'auto',
-            fixApplied: (m.fix || m.resolution || 'Auto-fixed by system') as string,
-          });
-        }
-      }
+    // Process EACH issue into ONE category only
+    for (const issue of combinedIssues) {
+      const i = issue as Record<string, unknown>;
+      const issueCode = (i.code || i.issueCode) as string;
 
-      // Fallback: Try tasks array if no combinedIssues
-      if (autoFixedIssues.length === 0 && quickFixIssues.length === 0 && manualIssues.length === 0) {
-        const tasks = (plan.tasks || plan.remediationTasks) as unknown[] | undefined;
-        if (tasks && Array.isArray(tasks)) {
-          logger.info('[extractIssuesFromPlan] Fallback to tasks:', tasks.length);
-          for (const task of tasks) {
-            const t = task as Record<string, unknown>;
-            const status = (t.status as string)?.toLowerCase();
-            const classification = (t.classification as string)?.toLowerCase();
+      // Check issue properties
+      const isAutoFixable = i.autoFixable === true || i.classification === 'auto-fix';
+      const isQuickFixable = i.quickFixable === true || i.classification === 'quick-fix';
+      const status = ((i.status as string) || '').toUpperCase();
+      const wasFixed = status === 'FIXED' || status === 'COMPLETED' || i.fixed === true;
 
-            const issueData = {
-              id: t.id,
-              criterion: t.wcagCriterion || t.criterion || t.issueCode || 'Unknown',
-              title: t.title || t.name || t.issueCode || 'Accessibility Issue',
-              severity: t.severity || t.priority || 'moderate',
-              description: t.description || t.message || 'No description available',
-              location: t.location || t.filePath,
-            };
+      // Map to consistent format
+      const mappedIssue = {
+        id: i.id || `issue-${issueCode}`,
+        code: issueCode,
+        criterion: this.extractCriterion(issueCode) || (i.wcagCriterion as string) || (i.criterion as string) || 'Unknown',
+        title: (i.title || i.name || i.message || issueCode || 'Accessibility Issue') as string,
+        severity: (i.severity || i.impact || 'moderate') as string,
+        description: (i.description || i.message || 'No description available') as string,
+        location: i.location || i.file || i.element || i.filePath,
+        filePath: i.filePath || null,
+        autoFixable: isAutoFixable,
+        quickFixable: isQuickFixable,
+      };
 
-            if (status === 'completed' || classification === 'autofix') {
-              autoFixedIssues.push({ ...issueData, fixApplied: (t.resolution || 'Auto-fixed') as string });
-            } else if (classification === 'quickfix') {
-              quickFixIssues.push({ ...issueData, suggestedFix: (t.suggestedFix || 'Quick-fix available') as string });
-            } else {
-              manualIssues.push({ ...issueData, guidance: (t.guidance || 'Manual review required') as string });
-            }
-          }
-        }
+      // Classify into ONE category only (no duplicates!)
+      if (isAutoFixable && wasFixed) {
+        autoFixedIssues.push({
+          ...mappedIssue,
+          status: 'completed',
+          fixedBy: 'auto',
+          fixedAt: i.fixedAt || new Date().toISOString(),
+          fixApplied: (i.fix || i.fixApplied || 'Automatically fixed by system') as string,
+        });
+      } else if (isQuickFixable && !isAutoFixable) {
+        quickFixIssues.push({
+          ...mappedIssue,
+          status: wasFixed ? 'completed' : 'pending',
+          fixedBy: wasFixed ? 'user' : null,
+          suggestedFix: (i.suggestedFix || i.recommendation || 'Quick-fix template available') as string,
+        });
+      } else {
+        manualIssues.push({
+          ...mappedIssue,
+          status: wasFixed ? 'completed' : 'pending',
+          fixedBy: wasFixed ? 'user' : null,
+          guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
+        });
       }
     }
 
-    // Fallback to audit results if no issues found from plan
-    if (autoFixedIssues.length === 0 && quickFixIssues.length === 0 && auditResults && typeof auditResults === 'object') {
-      const audit = auditResults as Record<string, unknown>;
-      logger.info('[extractIssuesFromPlan] Falling back to audit results, keys:', Object.keys(audit));
-      
-      const issues = (audit.issues || audit.violations || audit.errors || audit.findings) as unknown[] | undefined;
-      logger.info('[extractIssuesFromPlan] Audit issues found:', issues ? issues.length : 0);
-
-      if (issues && Array.isArray(issues)) {
-        for (const issue of issues) {
-          const i = issue as Record<string, unknown>;
-          const fixable = i.autoFixable || i.fixable || i.canAutoFix;
-          const issueData = {
-            criterion: i.wcagCriterion || i.criterion || i.code || 'Unknown',
-            title: i.title || i.name || i.code || 'Audit Issue',
-            severity: i.severity || i.impact || 'moderate',
-            description: i.description || i.message || 'No description available',
-            location: i.location || i.element || i.path,
-          };
-
-          if (fixable === true || fixable === 'autofix') {
-            autoFixedIssues.push({
-              ...issueData,
-              fixApplied: 'Auto-fixed during remediation',
-            });
-          } else if (fixable === 'quickfix' || fixable === 'quick') {
-            quickFixIssues.push({
-              ...issueData,
-              suggestedFix: (i.suggestedFix || i.recommendation || 'Quick-fix available') as string,
-            });
-          } else {
-            manualIssues.push({
-              ...issueData,
-              guidance: (i.guidance || i.recommendation || 'Manual review required') as string,
-            });
-          }
-        }
-      }
-    }
-
+    const totalClassified = autoFixedIssues.length + quickFixIssues.length + manualIssues.length;
     logger.info('[extractIssuesFromPlan] Extraction complete:', {
       autoFixed: autoFixedIssues.length,
       quickFix: quickFixIssues.length,
       manual: manualIssues.length,
+      total: totalClassified,
+      inputTotal: combinedIssues.length,
     });
+
+    // Validation warnings
+    if (totalClassified !== combinedIssues.length) {
+      logger.warn(`[extractIssuesFromPlan] Mismatch: classified ${totalClassified}, input ${combinedIssues.length}`);
+    }
 
     return { autoFixedIssues, quickFixIssues, manualIssues };
   }
