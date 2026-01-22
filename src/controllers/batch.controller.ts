@@ -461,13 +461,10 @@ class BatchController {
         }
       }
 
-      let remediationResults = null;
-      if (planResults) {
-        remediationResults = planResults;
-      }
+      const { autoFixedIssues, quickFixIssues, manualIssues } = this.extractIssuesFromPlan(planResults, auditResults);
 
-      const quickFixCount = file.issuesQuickFix || 0;
-      const manualCount = file.issuesManual || 0;
+      const quickFixCount = file.issuesQuickFix || quickFixIssues.length;
+      const manualCount = file.issuesManual || manualIssues.length;
 
       const response = {
         id: file.id,
@@ -477,9 +474,9 @@ class BatchController {
         status: file.status,
         auditScore: file.auditScore,
         issuesFound: file.issuesFound,
-        issuesAutoFixed: file.issuesAutoFixed,
-        issuesQuickFix: file.issuesQuickFix,
-        issuesManual: file.issuesManual,
+        issuesAutoFixed: file.issuesAutoFixed || autoFixedIssues.length,
+        issuesQuickFix: file.issuesQuickFix || quickFixIssues.length,
+        issuesManual: file.issuesManual || manualIssues.length,
         quickFixCount: quickFixCount,
         manualCount: manualCount,
         originalS3Key: file.storagePath,
@@ -488,10 +485,9 @@ class BatchController {
         planJobId: file.planJobId,
         auditResults: auditResults,
         planResults: planResults,
-        remediationResults: remediationResults,
-        autoFixedIssues: this.extractAutoFixedIssues(remediationResults),
-        quickFixIssues: [],
-        manualIssues: [],
+        autoFixedIssues: autoFixedIssues,
+        quickFixIssues: quickFixIssues,
+        manualIssues: manualIssues,
         batch: file.batch,
         uploadedAt: file.uploadedAt,
         auditCompletedAt: file.auditCompletedAt,
@@ -579,62 +575,91 @@ class BatchController {
     }
   }
 
-  private extractAutoFixedIssues(remediationResults: unknown): unknown[] {
-    if (!remediationResults || typeof remediationResults !== 'object') {
-      return [];
+  private extractIssuesFromPlan(planResults: unknown, auditResults: unknown): {
+    autoFixedIssues: unknown[];
+    quickFixIssues: unknown[];
+    manualIssues: unknown[];
+  } {
+    const autoFixedIssues: unknown[] = [];
+    const quickFixIssues: unknown[] = [];
+    const manualIssues: unknown[] = [];
+
+    if (planResults && typeof planResults === 'object') {
+      const plan = planResults as Record<string, unknown>;
+      const tasks = plan.tasks as unknown[] | undefined;
+
+      if (tasks && Array.isArray(tasks)) {
+        for (const task of tasks) {
+          const t = task as Record<string, unknown>;
+          const status = t.status as string;
+          const classification = t.classification as string;
+          const issueData = {
+            id: t.id,
+            criterion: t.wcagCriterion || t.criterion || t.issueCode,
+            title: t.title || t.name || t.issueCode,
+            severity: t.severity || t.priority || 'moderate',
+            description: t.description || t.message,
+            location: t.location || t.filePath,
+            fixType: t.fixType || classification,
+          };
+
+          if (status === 'completed' || status === 'auto_fixed') {
+            autoFixedIssues.push({
+              ...issueData,
+              fixApplied: t.resolution || t.fix || 'Auto-fixed',
+            });
+          } else if (classification === 'quickfix' || classification === 'quick_fix') {
+            quickFixIssues.push({
+              ...issueData,
+              suggestedFix: t.suggestedFix || t.fix || 'Quick-fix available',
+            });
+          } else if (classification === 'manual') {
+            manualIssues.push({
+              ...issueData,
+              guidance: t.guidance || t.recommendation || 'Manual review required',
+            });
+          }
+        }
+      }
     }
 
-    const results = remediationResults as Record<string, unknown>;
-    const fixedIssues = results.fixedIssues as unknown[] | undefined;
+    if (autoFixedIssues.length === 0 && auditResults && typeof auditResults === 'object') {
+      const audit = auditResults as Record<string, unknown>;
+      const issues = audit.issues as unknown[] || audit.violations as unknown[] || [];
 
-    if (!fixedIssues || !Array.isArray(fixedIssues)) {
-      return [];
+      if (Array.isArray(issues)) {
+        for (const issue of issues) {
+          const i = issue as Record<string, unknown>;
+          const fixable = i.autoFixable || i.fixable;
+          const issueData = {
+            criterion: i.wcagCriterion || i.criterion || i.code,
+            title: i.title || i.name || i.code,
+            severity: i.severity || i.impact || 'moderate',
+            description: i.description || i.message,
+            location: i.location || i.element,
+          };
+
+          if (fixable === true) {
+            autoFixedIssues.push({
+              ...issueData,
+              fixApplied: 'Auto-fixed during remediation',
+            });
+          } else if (fixable === 'quickfix') {
+            quickFixIssues.push({
+              ...issueData,
+              suggestedFix: i.suggestedFix || 'Quick-fix available',
+            });
+          } else {
+            manualIssues.push({
+              ...issueData,
+              guidance: i.guidance || 'Manual review required',
+            });
+          }
+        }
+      }
     }
 
-    return fixedIssues.map((issue: unknown) => {
-      const i = issue as Record<string, unknown>;
-      return {
-        criterion: i.wcagCriterion || i.criterion,
-        title: i.title || i.name,
-        severity: i.severity || 'moderate',
-        description: i.description || i.message,
-        fixApplied: i.fix || i.remediation || 'Auto-fixed',
-      };
-    });
-  }
-
-  private extractQuickFixIssues(quickFixTasks: unknown[]): unknown[] {
-    if (!quickFixTasks || !Array.isArray(quickFixTasks)) {
-      return [];
-    }
-
-    return quickFixTasks.map((task: unknown) => {
-      const t = task as Record<string, unknown>;
-      return {
-        criterion: t.wcagCriterion || t.criterion,
-        title: t.title || t.name,
-        severity: t.severity || 'moderate',
-        description: t.description || t.message,
-        suggestedFix: t.suggestedFix || t.fix || 'Quick-fix available',
-      };
-    });
-  }
-
-  private extractManualIssues(manualTasks: unknown[]): unknown[] {
-    if (!manualTasks || !Array.isArray(manualTasks)) {
-      return [];
-    }
-
-    return manualTasks.map((task: unknown) => {
-      const t = task as Record<string, unknown>;
-      return {
-        criterion: t.wcagCriterion || t.criterion,
-        title: t.title || t.name,
-        severity: t.severity || 'critical',
-        description: t.description || t.message,
-        guidance: t.guidance || t.recommendation || 'Manual review required',
-      };
-    });
+    return { autoFixedIssues, quickFixIssues, manualIssues };
   }
 }
 
