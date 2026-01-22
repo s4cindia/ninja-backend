@@ -175,6 +175,7 @@ export class BatchAcrGeneratorService {
     const successfulJobs = successfulFiles.map(f => ({
       jobId: f.auditJobId!,
       fileName: f.originalName,
+      issuesFound: f.issuesFound || 0,
     }));
 
     // Fetch WCAG analysis from Job outputs (contains comprehensive criteria evaluation)
@@ -400,6 +401,8 @@ export class BatchAcrGeneratorService {
         documentList: successfulJobs.map(j => ({
           fileName: j.fileName,
           jobId: j.jobId,
+          status: 'REMEDIATED',
+          issuesFound: j.issuesFound || 0,
         })),
         aggregationStrategy: options.aggregationStrategy,
         sourceJobIds: successfulJobs.map(j => j.jobId),

@@ -54,25 +54,27 @@ function formatConformanceLevel(level: string): string {
   return level || 'Not Evaluated';
 }
 
-function formatEdition(edition: string): string {
+function formatEdition(edition: string, preserveExact: boolean = false): string {
+  // If preserveExact is true, return the edition string exactly as provided
+  if (preserveExact) {
+    return edition;
+  }
+  
+  // For backwards compatibility, transform canonical codes to display format
   const editionMap: Record<string, string> = {
-    'VPAT2.5-INT': 'VPAT 2.5 INT Edition',
-    'VPAT2.5-508': 'VPAT 2.5 Section 508 Edition',
-    'VPAT2.5-WCAG': 'VPAT 2.5 WCAG Edition',
-    'VPAT2.5-EU': 'VPAT 2.5 EU Edition',
-    'section508': 'VPAT 2.5 Section 508 Edition',
-    'WCAG': 'VPAT 2.5 WCAG Edition',
-    'EU': 'VPAT 2.5 EU Edition',
-    'INT': 'VPAT 2.5 INT Edition',
-    'wcag': 'VPAT 2.5 WCAG Edition',
-    'eu': 'VPAT 2.5 EU Edition',
-    'int': 'VPAT 2.5 INT Edition',
-    'international': 'VPAT 2.5 INT Edition',
-    '508': 'VPAT 2.5 Section 508 Edition',
-    'VPAT 2.5 WCAG': 'VPAT 2.5 WCAG Edition',
-    'VPAT 2.5 Section 508': 'VPAT 2.5 Section 508 Edition',
-    'VPAT 2.5 EU': 'VPAT 2.5 EU Edition',
-    'VPAT 2.5 INT': 'VPAT 2.5 INT Edition',
+    'VPAT2.5-INT': 'VPAT 2.5 INT',
+    'VPAT2.5-508': 'VPAT 2.5 Section 508',
+    'VPAT2.5-WCAG': 'VPAT 2.5 WCAG',
+    'VPAT2.5-EU': 'VPAT 2.5 EU',
+    'section508': 'VPAT 2.5 Section 508',
+    'WCAG': 'VPAT 2.5 WCAG',
+    'EU': 'VPAT 2.5 EU',
+    'INT': 'VPAT 2.5 INT',
+    'wcag': 'VPAT 2.5 WCAG',
+    'eu': 'VPAT 2.5 EU',
+    'int': 'VPAT 2.5 INT',
+    'international': 'VPAT 2.5 INT',
+    '508': 'VPAT 2.5 Section 508',
   };
   
   // Check direct mapping
@@ -80,23 +82,12 @@ function formatEdition(edition: string): string {
     return editionMap[edition];
   }
   
-  // Normalize and check again (handle case variations and spaces)
-  const normalizedEdition = edition.toLowerCase().replace(/\s+/g, '-').replace(/vpat-?2\.?5-?/i, '');
-  const normalizedMap: Record<string, string> = {
-    'wcag': 'VPAT 2.5 WCAG Edition',
-    '508': 'VPAT 2.5 Section 508 Edition',
-    'section-508': 'VPAT 2.5 Section 508 Edition',
-    'section508': 'VPAT 2.5 Section 508 Edition',
-    'eu': 'VPAT 2.5 EU Edition',
-    'int': 'VPAT 2.5 INT Edition',
-    'international': 'VPAT 2.5 INT Edition',
-  };
-  
-  if (normalizedMap[normalizedEdition]) {
-    return normalizedMap[normalizedEdition];
+  // If it already looks like a display format (contains "VPAT"), return as-is
+  if (edition.toLowerCase().includes('vpat')) {
+    return edition;
   }
   
-  return `VPAT 2.5 ${edition} Edition`;
+  return `VPAT 2.5 ${edition}`;
 }
 
 function formatEvaluationMethod(method: { type: string; description?: string }): string {
@@ -203,6 +194,9 @@ async function exportToDocx(
     );
   }
 
+  // Use exact edition string if it already looks like a display format
+  const editionDisplayDocx = formatEdition(acr.edition, acr.edition.toLowerCase().includes('vpat'));
+  
   const children: (Paragraph | Table)[] = [
     new Paragraph({
       children: [new TextRun({ text: `Accessibility Conformance Report`, bold: true, size: 48 })],
@@ -214,7 +208,7 @@ async function exportToDocx(
       alignment: AlignmentType.CENTER
     }),
     new Paragraph({
-      children: [new TextRun({ text: formatEdition(acr.edition) })],
+      children: [new TextRun({ text: editionDisplayDocx })],
       alignment: AlignmentType.CENTER
     }),
     new Paragraph({ children: [] }),
@@ -227,12 +221,38 @@ async function exportToDocx(
     new Paragraph({ children: [new TextRun({ text: 'Vendor: ', bold: true }), new TextRun({ text: acr.productInfo.vendor })] }),
     new Paragraph({ children: [new TextRun({ text: 'Contact: ', bold: true }), new TextRun({ text: acr.productInfo.contactEmail })] }),
     new Paragraph({ children: [new TextRun({ text: 'Evaluation Date: ', bold: true }), new TextRun({ text: acr.productInfo.evaluationDate.toISOString().split('T')[0] })] }),
-    new Paragraph({ children: [] }),
-    new Paragraph({
-      children: [new TextRun({ text: 'Evaluation Methods', bold: true, size: 28 })],
-      heading: HeadingLevel.HEADING_1
-    })
+    new Paragraph({ children: [] })
   ];
+  
+  // Add Products Evaluated section for batch ACRs (DOCX)
+  const batchInfoDocx = (acr as any).batchInfo;
+  if (batchInfoDocx && batchInfoDocx.documentList && batchInfoDocx.documentList.length > 0) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Products Evaluated', bold: true, size: 28 })],
+      heading: HeadingLevel.HEADING_1
+    }));
+    
+    for (let i = 0; i < batchInfoDocx.documentList.length; i++) {
+      const doc = batchInfoDocx.documentList[i];
+      const fileText = `${i + 1}. ${doc.fileName}`;
+      children.push(new Paragraph({ children: [new TextRun({ text: fileText })] }));
+      
+      if (doc.status || doc.issuesFound !== undefined) {
+        const detailParts = [];
+        if (doc.status) detailParts.push(`Status: ${doc.status}`);
+        if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
+        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        const detailText = detailParts.join(' | ');
+        children.push(new Paragraph({ children: [new TextRun({ text: `   ${detailText}`, italics: true, size: 18 })] }));
+      }
+    }
+    children.push(new Paragraph({ children: [] }));
+  }
+  
+  children.push(new Paragraph({
+    children: [new TextRun({ text: 'Evaluation Methods', bold: true, size: 28 })],
+    heading: HeadingLevel.HEADING_1
+  }));
 
   for (const method of acr.evaluationMethods) {
     const methodText = typeof method === 'string' ? method : formatEvaluationMethod(method);
@@ -311,7 +331,9 @@ async function exportToPdf(
   });
   yPosition -= 20;
 
-  page.drawText(formatEdition(acr.edition), {
+  // Use exact edition string if it already looks like a display format
+  const editionDisplay = formatEdition(acr.edition, acr.edition.toLowerCase().includes('vpat'));
+  page.drawText(editionDisplay, {
     x: margin,
     y: yPosition,
     size: 10,
@@ -344,6 +366,38 @@ async function exportToPdf(
     yPosition -= lineHeight;
   }
   yPosition -= 15;
+
+  // Add Products Evaluated section for batch ACRs
+  const batchInfo = (acr as any).batchInfo;
+  if (batchInfo && batchInfo.documentList && batchInfo.documentList.length > 0) {
+    page.drawText('Products Evaluated', { x: margin, y: yPosition, size: 14, font: helveticaBold });
+    yPosition -= 18;
+
+    for (let i = 0; i < batchInfo.documentList.length; i++) {
+      const doc = batchInfo.documentList[i];
+      const fileText = `${i + 1}. ${doc.fileName}`;
+      page.drawText(fileText, { x: margin + 10, y: yPosition, size: 9, font: helvetica });
+      yPosition -= lineHeight;
+      
+      // Check for additional details (status, issues)
+      if (doc.status || doc.issuesFound !== undefined) {
+        const detailParts = [];
+        if (doc.status) detailParts.push(`Status: ${doc.status}`);
+        if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
+        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        const detailText = detailParts.join(' | ');
+        page.drawText(detailText, { x: margin + 25, y: yPosition, size: 8, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
+        yPosition -= lineHeight;
+      }
+      
+      // Check for page overflow
+      if (yPosition < 100) {
+        page = pdfDoc.addPage([612, 792]);
+        yPosition = height - 50;
+      }
+    }
+    yPosition -= 10;
+  }
 
   page.drawText('Evaluation Methods', { x: margin, y: yPosition, size: 14, font: helveticaBold });
   yPosition -= 18;
