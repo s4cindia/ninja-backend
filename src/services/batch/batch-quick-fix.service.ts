@@ -290,6 +290,124 @@ class BatchQuickFixService {
       results,
     };
   }
+
+  /**
+   * Batch apply all quick-fixes to a single file using default values
+   * This is for the "Batch Apply All" button that applies all quick-fixes at once
+   */
+  async batchApplyAllQuickFixes(
+    batchId: string,
+    fileId: string,
+    tenantId: string
+  ): Promise<{
+    success: boolean;
+    appliedFixes: number;
+    results: Array<{ issueCode: string; success: boolean; error?: string }>;
+  }> {
+    logger.info(`[BatchFile ${fileId}] Batch applying all quick-fixes with defaults`);
+
+    // Get the batch file
+    const file = await prisma.batchFile.findFirst({
+      where: { 
+        id: fileId, 
+        batchId,
+        batch: { tenantId }
+      },
+      include: { batch: true }
+    });
+
+    if (!file) {
+      throw new Error('Batch file not found');
+    }
+
+    if (!file.auditJobId) {
+      throw new Error('File has not been audited');
+    }
+
+    // Get remediation plan to find pending quick-fix tasks
+    const plan = await remediationService.getRemediationPlan(file.auditJobId);
+    
+    if (!plan) {
+      throw new Error('No remediation plan found');
+    }
+
+    // Find all pending quick-fix tasks
+    const quickFixTasks = plan.tasks.filter(
+      (t: { type: string; status: string; issueCode: string }) => 
+        t.type === 'quickfix' && t.status === 'pending'
+    );
+
+    if (quickFixTasks.length === 0) {
+      return {
+        success: true,
+        appliedFixes: 0,
+        results: [],
+      };
+    }
+
+    // Default values for common metadata issues
+    const defaultValues: Record<string, string> = {
+      'METADATA-ACCESSMODE': 'textual',
+      'METADATA-ACCESSMODESUFFICIENT': 'textual',
+      'METADATA-ACCESSIBILITYFEATURE': 'structuralNavigation, tableOfContents, readingOrder',
+      'METADATA-ACCESSIBILITYHAZARD': 'none',
+      'METADATA-ACCESSIBILITYSUMMARY': 'This publication has been assessed for accessibility and meets basic requirements.',
+    };
+
+    const results: Array<{ issueCode: string; success: boolean; error?: string }> = [];
+    let appliedFixes = 0;
+
+    for (const task of quickFixTasks) {
+      try {
+        const issueCode = task.issueCode as string;
+        const defaultValue = defaultValues[issueCode] || 'Not specified';
+
+        await remediationService.updateTaskStatus(
+          file.auditJobId,
+          task.id,
+          'completed',
+          `Batch applied with default value: ${defaultValue}`,
+          'system',
+          { completionMethod: 'auto', notes: `Default value: ${defaultValue}` }
+        );
+
+        appliedFixes++;
+        results.push({ issueCode, success: true });
+        logger.info(`[BatchFile ${fileId}] Batch applied quick-fix for ${issueCode}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        results.push({ issueCode: task.issueCode, success: false, error: errorMessage });
+        logger.error(`[BatchFile ${fileId}] Failed to batch apply ${task.issueCode}: ${errorMessage}`);
+      }
+    }
+
+    // Update batch file stats
+    await prisma.batchFile.update({
+      where: { id: fileId },
+      data: {
+        issuesQuickFix: { decrement: appliedFixes },
+        issuesAutoFixed: { increment: appliedFixes },
+      },
+    });
+
+    // Broadcast update via SSE
+    sseService.broadcastToChannel(`batch:${batchId}`, {
+      type: 'batch_quick_fix_applied',
+      batchId,
+      fileId,
+      fileName: file.originalName,
+      appliedFixes,
+      results,
+    }, tenantId);
+
+    logger.info(`[BatchFile ${fileId}] Batch quick-fix complete: ${appliedFixes} fixes applied`);
+
+    return {
+      success: results.every(r => r.success),
+      appliedFixes,
+      results,
+    };
+  }
 }
 
 export const batchQuickFixService = new BatchQuickFixService();
