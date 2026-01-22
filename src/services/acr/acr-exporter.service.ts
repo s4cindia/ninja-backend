@@ -63,9 +63,40 @@ function formatEdition(edition: string): string {
     'section508': 'VPAT 2.5 Section 508 Edition',
     'WCAG': 'VPAT 2.5 WCAG Edition',
     'EU': 'VPAT 2.5 EU Edition',
-    'INT': 'VPAT 2.5 INT Edition'
+    'INT': 'VPAT 2.5 INT Edition',
+    'wcag': 'VPAT 2.5 WCAG Edition',
+    'eu': 'VPAT 2.5 EU Edition',
+    'int': 'VPAT 2.5 INT Edition',
+    'international': 'VPAT 2.5 INT Edition',
+    '508': 'VPAT 2.5 Section 508 Edition',
+    'VPAT 2.5 WCAG': 'VPAT 2.5 WCAG Edition',
+    'VPAT 2.5 Section 508': 'VPAT 2.5 Section 508 Edition',
+    'VPAT 2.5 EU': 'VPAT 2.5 EU Edition',
+    'VPAT 2.5 INT': 'VPAT 2.5 INT Edition',
   };
-  return editionMap[edition] || `VPAT 2.5 ${edition} Edition`;
+  
+  // Check direct mapping
+  if (editionMap[edition]) {
+    return editionMap[edition];
+  }
+  
+  // Normalize and check again (handle case variations and spaces)
+  const normalizedEdition = edition.toLowerCase().replace(/\s+/g, '-').replace(/vpat-?2\.?5-?/i, '');
+  const normalizedMap: Record<string, string> = {
+    'wcag': 'VPAT 2.5 WCAG Edition',
+    '508': 'VPAT 2.5 Section 508 Edition',
+    'section-508': 'VPAT 2.5 Section 508 Edition',
+    'section508': 'VPAT 2.5 Section 508 Edition',
+    'eu': 'VPAT 2.5 EU Edition',
+    'int': 'VPAT 2.5 INT Edition',
+    'international': 'VPAT 2.5 INT Edition',
+  };
+  
+  if (normalizedMap[normalizedEdition]) {
+    return normalizedMap[normalizedEdition];
+  }
+  
+  return `VPAT 2.5 ${edition} Edition`;
 }
 
 function formatEvaluationMethod(method: { type: string; description?: string }): string {
