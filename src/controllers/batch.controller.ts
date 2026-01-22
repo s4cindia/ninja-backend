@@ -596,28 +596,68 @@ class BatchController {
       const plan = planResults as Record<string, unknown>;
       logger.info('[extractIssuesFromPlan] Plan keys:', Object.keys(plan));
 
+      // Get autoRemediation data first to build set of fixed issue codes
+      const autoRemediation = plan.autoRemediation as Record<string, unknown> | undefined;
+      const fixedIssueCodes = new Set<string>();
+      const modifications = autoRemediation?.modifications as unknown[] | undefined;
+      
+      if (modifications && Array.isArray(modifications)) {
+        logger.info('[extractIssuesFromPlan] modifications found:', modifications.length);
+        for (const mod of modifications) {
+          const m = mod as Record<string, unknown>;
+          const issueCode = m.issueCode as string || m.code as string;
+          if (issueCode) {
+            fixedIssueCodes.add(issueCode);
+          }
+        }
+        logger.info('[extractIssuesFromPlan] Fixed issue codes:', Array.from(fixedIssueCodes));
+      }
+
+      // Also check totalIssuesFixed count
+      const totalIssuesFixed = autoRemediation?.totalIssuesFixed as number || 0;
+      const quickFixPending = autoRemediation?.quickFixPending as number || 0;
+      const manualPending = autoRemediation?.manualPending as number || 0;
+      logger.info('[extractIssuesFromPlan] Remediation stats:', { totalIssuesFixed, quickFixPending, manualPending });
+
       // Check for combinedIssues array (actual data structure from audit)
       const combinedIssues = plan.combinedIssues as unknown[] | undefined;
       if (combinedIssues && Array.isArray(combinedIssues)) {
         logger.info('[extractIssuesFromPlan] combinedIssues found:', combinedIssues.length);
         
+        // Log first issue structure for debugging
+        if (combinedIssues.length > 0) {
+          logger.debug('[extractIssuesFromPlan] Sample issue structure:', JSON.stringify(combinedIssues[0], null, 2));
+        }
+        
         for (const issue of combinedIssues) {
           const i = issue as Record<string, unknown>;
+          const issueCode = (i.code || i.issueCode) as string;
           const autoFixable = i.autoFixable as boolean | undefined;
           const quickFixable = i.quickFixable as boolean | undefined;
           const status = (i.status as string)?.toLowerCase();
           
+          // Check if this issue was fixed by auto-remediation
+          const wasAutoFixed = fixedIssueCodes.has(issueCode) || 
+                              status === 'fixed' || 
+                              status === 'auto_fixed' ||
+                              status === 'completed';
+          
           const issueData = {
-            id: i.id || i.code,
-            criterion: i.wcagCriterion || i.criterion || i.code || 'Unknown',
-            title: i.title || i.name || i.message || i.code || 'Accessibility Issue',
+            id: i.id || issueCode,
+            code: issueCode,
+            criterion: this.extractCriterion(issueCode) || i.wcagCriterion || i.criterion || issueCode || 'Unknown',
+            title: i.title || i.name || i.message || issueCode || 'Accessibility Issue',
             severity: i.severity || i.impact || 'moderate',
             description: i.description || i.message || 'No description available',
             location: i.location || i.file || i.element,
+            status: wasAutoFixed ? 'completed' : 'pending',
+            fixedBy: wasAutoFixed ? 'auto' : null,
+            autoFixable: autoFixable === true,
+            quickFixable: quickFixable === true,
           };
 
-          // Categorize based on autoFixable/quickFixable flags
-          if (autoFixable === true || status === 'fixed' || status === 'auto_fixed') {
+          // Categorize based on whether it was fixed or its fixability
+          if (wasAutoFixed || autoFixable === true) {
             autoFixedIssues.push({
               ...issueData,
               fixApplied: (i.fix || i.resolution || 'Auto-fixed by system') as string,
@@ -636,31 +676,30 @@ class BatchController {
         }
       }
 
-      // Also check autoRemediation object for fixed issues
-      const autoRemediation = plan.autoRemediation as Record<string, unknown> | undefined;
+      // Log if autoRemediation exists
       if (autoRemediation) {
         logger.info('[extractIssuesFromPlan] autoRemediation found:', Object.keys(autoRemediation));
-        const fixedCount = autoRemediation.fixedCount as number || 0;
-        const fixedItems = autoRemediation.fixed as unknown[] || autoRemediation.items as unknown[] || [];
-        
-        if (Array.isArray(fixedItems) && fixedItems.length > 0) {
-          logger.info('[extractIssuesFromPlan] autoRemediation fixed items:', fixedItems.length);
-          for (const item of fixedItems) {
-            const f = item as Record<string, unknown>;
-            // Only add if not already in autoFixedIssues
-            const alreadyAdded = autoFixedIssues.some((a: any) => a.id === f.id || a.criterion === f.code);
-            if (!alreadyAdded) {
-              autoFixedIssues.push({
-                id: f.id || f.code,
-                criterion: f.wcagCriterion || f.criterion || f.code || 'Unknown',
-                title: f.title || f.name || f.code || 'Fixed Issue',
-                severity: f.severity || 'moderate',
-                description: f.description || f.message || 'Issue was automatically fixed',
-                location: f.location || f.file,
-                fixApplied: (f.fix || f.resolution || 'Auto-fixed') as string,
-              });
-            }
-          }
+      }
+
+      // Fallback: if no issues classified from combinedIssues but we have modification count,
+      // create placeholder auto-fixed issues from modifications
+      if (autoFixedIssues.length === 0 && modifications && Array.isArray(modifications)) {
+        logger.info('[extractIssuesFromPlan] Creating issues from modifications');
+        for (const mod of modifications) {
+          const m = mod as Record<string, unknown>;
+          const issueCode = (m.issueCode || m.code || 'Unknown') as string;
+          autoFixedIssues.push({
+            id: m.id || issueCode,
+            code: issueCode,
+            criterion: this.extractCriterion(issueCode),
+            title: (m.title || m.description || issueCode) as string,
+            severity: (m.severity || 'moderate') as string,
+            description: (m.description || m.message || 'Issue was automatically fixed') as string,
+            location: m.location || m.file,
+            status: 'completed',
+            fixedBy: 'auto',
+            fixApplied: (m.fix || m.resolution || 'Auto-fixed by system') as string,
+          });
         }
       }
 
@@ -742,6 +781,38 @@ class BatchController {
     });
 
     return { autoFixedIssues, quickFixIssues, manualIssues };
+  }
+
+  /**
+   * Helper: Extract WCAG criterion from issue code
+   */
+  private extractCriterion(code: string): string {
+    if (!code) return 'Unknown';
+    
+    // Extract pattern like "1.1.1" from codes like "EPUB-IMG-001" or "wcag111"
+    const match = code.match(/(\d+\.\d+\.\d+)/);
+    if (match) return match[1];
+
+    // Map common prefixes to WCAG criteria
+    const criterionMap: Record<string, string> = {
+      'EPUB-IMG': '1.1.1',      // Non-text content
+      'EPUB-META': '3.1.1',     // Language of page
+      'EPUB-STRUCT': '1.3.1',   // Info and relationships
+      'EPUB-SEM': '4.1.2',      // Name, role, value
+      'EPUB-NAV': '2.4.1',      // Bypass blocks
+      'EPUB-FIG': '1.1.1',      // Non-text content (figures)
+      'METADATA': '3.1.1',      // Language
+      'OPF': '4.1.1',           // Parsing
+      'RSC': '4.1.1',           // Resource issues
+      'NCX': '2.4.5',           // Multiple ways
+      'ACC': '1.1.1',           // Accessibility general
+    };
+
+    for (const [prefix, criterion] of Object.entries(criterionMap)) {
+      if (code.startsWith(prefix)) return criterion;
+    }
+
+    return 'Unknown';
   }
 }
 
