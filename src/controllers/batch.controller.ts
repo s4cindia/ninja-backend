@@ -461,7 +461,31 @@ class BatchController {
         }
       }
 
-      const { autoFixedIssues, quickFixIssues, manualIssues } = this.extractIssuesFromPlan(planResults, auditResults);
+      // Also fetch the remediation plan job (BATCH_VALIDATION) which has updated task statuses
+      let remediationPlanTasks: unknown[] = [];
+      if (file.auditJobId) {
+        try {
+          const remediationPlanJob = await prisma.job.findFirst({
+            where: {
+              type: 'BATCH_VALIDATION',
+              input: {
+                path: ['sourceJobId'],
+                equals: file.auditJobId,
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (remediationPlanJob?.output) {
+            const output = remediationPlanJob.output as Record<string, unknown>;
+            remediationPlanTasks = (output.tasks || []) as unknown[];
+            logger.info(`[getBatchFile] Found remediation plan with ${remediationPlanTasks.length} tasks`);
+          }
+        } catch (error) {
+          logger.warn(`Failed to fetch remediation plan job:`, error);
+        }
+      }
+
+      const { autoFixedIssues, quickFixIssues, manualIssues } = this.extractIssuesFromPlan(planResults, auditResults, remediationPlanTasks);
 
       const quickFixCount = file.issuesQuickFix || quickFixIssues.length;
       const manualCount = file.issuesManual || manualIssues.length;
@@ -579,7 +603,7 @@ class BatchController {
     }
   }
 
-  private extractIssuesFromPlan(planResults: unknown, auditResults: unknown): {
+  private extractIssuesFromPlan(planResults: unknown, auditResults: unknown, remediationTasks: unknown[] = []): {
     autoFixedIssues: unknown[];
     quickFixIssues: unknown[];
     manualIssues: unknown[];
@@ -607,15 +631,15 @@ class BatchController {
     };
     logger.info('[extractIssuesFromPlan] Expected stats:', expectedStats);
 
-    // Get tasks from plan to check completion status
-    const tasks = (plan?.tasks || []) as Array<{ issueCode?: string; status?: string; type?: string }>;
+    // Get completed task codes from remediation plan tasks (the BATCH_VALIDATION job)
+    const typedRemediationTasks = remediationTasks as Array<{ issueCode?: string; status?: string; type?: string }>;
     const completedTaskCodes = new Set(
-      tasks
+      typedRemediationTasks
         .filter(t => t.status === 'completed')
         .map(t => t.issueCode)
         .filter(Boolean)
     );
-    logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes:`, [...completedTaskCodes]);
+    logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes from remediation plan:`, [...completedTaskCodes]);
 
     // Get combined issues
     const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
