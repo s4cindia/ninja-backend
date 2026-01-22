@@ -95,4 +95,11 @@ router.post(
   batchController.exportBatch
 );
 
+router.post(
+  '/:batchId/quick-fixes/apply',
+  authenticate,
+  authorize('ADMIN', 'USER'),
+  batchController.applyQuickFixes
+);
+
 export default router;

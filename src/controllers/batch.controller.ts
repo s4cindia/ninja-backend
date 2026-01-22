@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { batchOrchestratorService } from '../services/batch/batch-orchestrator.service';
 import { batchAcrGeneratorService } from '../services/acr/batch-acr-generator.service';
+import { batchQuickFixService } from '../services/batch/batch-quick-fix.service';
 import { logger } from '../lib/logger';
 
 class BatchController {
@@ -356,6 +357,46 @@ class BatchController {
         error: {
           message: error instanceof Error ? error.message : 'Failed to export batch',
           code: 'BATCH_EXPORT_FAILED',
+        },
+      });
+    }
+  }
+
+  async applyQuickFixes(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const tenantId = req.user!.tenantId;
+      const userId = req.user!.id;
+
+      const result = await batchQuickFixService.applyQuickFixes(batchId, tenantId, userId);
+
+      if (result.success) {
+        return res.json({
+          success: true,
+          data: {
+            message: `Quick-fixes applied to ${result.filesProcessed} files`,
+            filesProcessed: result.filesProcessed,
+            issuesFixed: result.issuesFixed,
+          },
+        });
+      } else {
+        return res.status(result.filesProcessed > 0 ? 207 : 400).json({
+          success: false,
+          data: {
+            message: 'Some quick-fixes failed to apply',
+            filesProcessed: result.filesProcessed,
+            issuesFixed: result.issuesFixed,
+            errors: result.errors,
+          },
+        });
+      }
+    } catch (error) {
+      logger.error('Apply quick-fixes failed', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to apply quick-fixes',
+          code: 'QUICK_FIX_FAILED',
         },
       });
     }
