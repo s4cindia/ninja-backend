@@ -596,68 +596,101 @@ class BatchController {
       const plan = planResults as Record<string, unknown>;
       logger.info('[extractIssuesFromPlan] Plan keys:', Object.keys(plan));
 
-      // Try multiple possible task locations
-      const tasks = (plan.tasks || plan.remediationTasks || plan.issues || plan.result?.tasks) as unknown[] | undefined;
-      logger.info('[extractIssuesFromPlan] Tasks found:', tasks ? tasks.length : 0);
-
-      if (tasks && Array.isArray(tasks)) {
-        for (const task of tasks) {
-          const t = task as Record<string, unknown>;
-          const status = (t.status as string)?.toLowerCase();
-          const classification = (t.classification as string)?.toLowerCase();
-          const fixType = (t.fixType as string)?.toLowerCase();
+      // Check for combinedIssues array (actual data structure from audit)
+      const combinedIssues = plan.combinedIssues as unknown[] | undefined;
+      if (combinedIssues && Array.isArray(combinedIssues)) {
+        logger.info('[extractIssuesFromPlan] combinedIssues found:', combinedIssues.length);
+        
+        for (const issue of combinedIssues) {
+          const i = issue as Record<string, unknown>;
+          const autoFixable = i.autoFixable as boolean | undefined;
+          const quickFixable = i.quickFixable as boolean | undefined;
+          const status = (i.status as string)?.toLowerCase();
           
-          logger.debug('[extractIssuesFromPlan] Task:', { id: t.id, status, classification, fixType, issueCode: t.issueCode });
-
           const issueData = {
-            id: t.id,
-            criterion: t.wcagCriterion || t.criterion || t.issueCode || 'Unknown',
-            title: t.title || t.name || t.issueCode || 'Accessibility Issue',
-            severity: t.severity || t.priority || 'moderate',
-            description: t.description || t.message || 'No description available',
-            location: t.location || t.filePath,
-            fixType: fixType || classification,
+            id: i.id || i.code,
+            criterion: i.wcagCriterion || i.criterion || i.code || 'Unknown',
+            title: i.title || i.name || i.message || i.code || 'Accessibility Issue',
+            severity: i.severity || i.impact || 'moderate',
+            description: i.description || i.message || 'No description available',
+            location: i.location || i.file || i.element,
           };
 
-          // Check for auto-fixed: completed status OR autofix classification
-          if (status === 'completed' || status === 'auto_fixed' || status === 'fixed' || 
-              classification === 'autofix' || fixType === 'autofix') {
+          // Categorize based on autoFixable/quickFixable flags
+          if (autoFixable === true || status === 'fixed' || status === 'auto_fixed') {
             autoFixedIssues.push({
               ...issueData,
-              fixApplied: t.resolution || t.fix || t.appliedFix || 'Auto-fixed by system',
+              fixApplied: (i.fix || i.resolution || 'Auto-fixed by system') as string,
             });
-          } else if (classification === 'quickfix' || classification === 'quick_fix' || 
-                     fixType === 'quickfix' || fixType === 'quick_fix' ||
-                     status === 'pending' && (classification === 'quickfix' || fixType === 'quickfix')) {
+          } else if (quickFixable === true) {
             quickFixIssues.push({
               ...issueData,
-              suggestedFix: t.suggestedFix || t.fix || t.recommendation || 'Quick-fix available',
+              suggestedFix: (i.suggestedFix || i.fix || i.recommendation || 'Quick-fix available') as string,
             });
-          } else if (classification === 'manual' || fixType === 'manual' || 
-                     status === 'pending' || status === 'requires_review') {
+          } else {
             manualIssues.push({
               ...issueData,
-              guidance: t.guidance || t.recommendation || t.help || 'Manual review required',
+              guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
             });
           }
         }
       }
 
-      // Also check for fixedIssues array in plan (remediation results)
-      const fixedIssues = (plan.fixedIssues || plan.autoFixedIssues || plan.fixed) as unknown[] | undefined;
-      if (fixedIssues && Array.isArray(fixedIssues)) {
-        logger.info('[extractIssuesFromPlan] Found fixedIssues array:', fixedIssues.length);
-        for (const issue of fixedIssues) {
-          const i = issue as Record<string, unknown>;
-          autoFixedIssues.push({
-            id: i.id || i.taskId,
-            criterion: i.wcagCriterion || i.criterion || i.issueCode || 'Unknown',
-            title: i.title || i.name || i.issueCode || 'Fixed Issue',
-            severity: i.severity || 'moderate',
-            description: i.description || i.message || 'Issue was automatically fixed',
-            location: i.location || i.filePath,
-            fixApplied: i.fix || i.resolution || i.appliedFix || 'Auto-fixed',
-          });
+      // Also check autoRemediation object for fixed issues
+      const autoRemediation = plan.autoRemediation as Record<string, unknown> | undefined;
+      if (autoRemediation) {
+        logger.info('[extractIssuesFromPlan] autoRemediation found:', Object.keys(autoRemediation));
+        const fixedCount = autoRemediation.fixedCount as number || 0;
+        const fixedItems = autoRemediation.fixed as unknown[] || autoRemediation.items as unknown[] || [];
+        
+        if (Array.isArray(fixedItems) && fixedItems.length > 0) {
+          logger.info('[extractIssuesFromPlan] autoRemediation fixed items:', fixedItems.length);
+          for (const item of fixedItems) {
+            const f = item as Record<string, unknown>;
+            // Only add if not already in autoFixedIssues
+            const alreadyAdded = autoFixedIssues.some((a: any) => a.id === f.id || a.criterion === f.code);
+            if (!alreadyAdded) {
+              autoFixedIssues.push({
+                id: f.id || f.code,
+                criterion: f.wcagCriterion || f.criterion || f.code || 'Unknown',
+                title: f.title || f.name || f.code || 'Fixed Issue',
+                severity: f.severity || 'moderate',
+                description: f.description || f.message || 'Issue was automatically fixed',
+                location: f.location || f.file,
+                fixApplied: (f.fix || f.resolution || 'Auto-fixed') as string,
+              });
+            }
+          }
+        }
+      }
+
+      // Fallback: Try tasks array if no combinedIssues
+      if (autoFixedIssues.length === 0 && quickFixIssues.length === 0 && manualIssues.length === 0) {
+        const tasks = (plan.tasks || plan.remediationTasks) as unknown[] | undefined;
+        if (tasks && Array.isArray(tasks)) {
+          logger.info('[extractIssuesFromPlan] Fallback to tasks:', tasks.length);
+          for (const task of tasks) {
+            const t = task as Record<string, unknown>;
+            const status = (t.status as string)?.toLowerCase();
+            const classification = (t.classification as string)?.toLowerCase();
+
+            const issueData = {
+              id: t.id,
+              criterion: t.wcagCriterion || t.criterion || t.issueCode || 'Unknown',
+              title: t.title || t.name || t.issueCode || 'Accessibility Issue',
+              severity: t.severity || t.priority || 'moderate',
+              description: t.description || t.message || 'No description available',
+              location: t.location || t.filePath,
+            };
+
+            if (status === 'completed' || classification === 'autofix') {
+              autoFixedIssues.push({ ...issueData, fixApplied: (t.resolution || 'Auto-fixed') as string });
+            } else if (classification === 'quickfix') {
+              quickFixIssues.push({ ...issueData, suggestedFix: (t.suggestedFix || 'Quick-fix available') as string });
+            } else {
+              manualIssues.push({ ...issueData, guidance: (t.guidance || 'Manual review required') as string });
+            }
+          }
         }
       }
     }
