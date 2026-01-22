@@ -607,6 +607,16 @@ class BatchController {
     };
     logger.info('[extractIssuesFromPlan] Expected stats:', expectedStats);
 
+    // Get tasks from plan to check completion status
+    const tasks = (plan?.tasks || []) as Array<{ issueCode?: string; status?: string; type?: string }>;
+    const completedTaskCodes = new Set(
+      tasks
+        .filter(t => t.status === 'completed')
+        .map(t => t.issueCode)
+        .filter(Boolean)
+    );
+    logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes:`, [...completedTaskCodes]);
+
     // Get combined issues
     const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
 
@@ -617,10 +627,11 @@ class BatchController {
 
     logger.info(`[extractIssuesFromPlan] Processing ${combinedIssues.length} issues`);
 
-    // Process each issue - classify by code pattern
+    // Process each issue - classify by code pattern and task completion status
     for (const issue of combinedIssues) {
       const i = issue as Record<string, unknown>;
       const issueCode = (i.code || i.issueCode) as string;
+      const isTaskCompleted = completedTaskCodes.has(issueCode);
 
       const mappedIssue = {
         id: i.id || `issue-${issueCode}`,
@@ -633,8 +644,18 @@ class BatchController {
         filePath: i.filePath || null,
       };
 
-      // Classify by issue code pattern
-      if (this.isAutoFixableCode(issueCode)) {
+      // If the task was completed (via quick-fix), move to auto-fixed
+      if (isTaskCompleted && this.isQuickFixableCode(issueCode)) {
+        autoFixedIssues.push({
+          ...mappedIssue,
+          status: 'completed',
+          fixedBy: 'user',
+          fixedAt: new Date().toISOString(),
+          fixApplied: 'Quick-fix applied by user',
+          autoFixable: false,
+          quickFixable: true,
+        });
+      } else if (this.isAutoFixableCode(issueCode)) {
         autoFixedIssues.push({
           ...mappedIssue,
           status: 'completed',
