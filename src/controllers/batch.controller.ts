@@ -588,80 +588,125 @@ class BatchController {
     const quickFixIssues: unknown[] = [];
     const manualIssues: unknown[] = [];
 
+    logger.info('[extractIssuesFromPlan] Starting extraction');
+    logger.info('[extractIssuesFromPlan] planResults type:', typeof planResults);
+    logger.info('[extractIssuesFromPlan] auditResults type:', typeof auditResults);
+
     if (planResults && typeof planResults === 'object') {
       const plan = planResults as Record<string, unknown>;
-      const tasks = plan.tasks as unknown[] | undefined;
+      logger.info('[extractIssuesFromPlan] Plan keys:', Object.keys(plan));
+
+      // Try multiple possible task locations
+      const tasks = (plan.tasks || plan.remediationTasks || plan.issues || plan.result?.tasks) as unknown[] | undefined;
+      logger.info('[extractIssuesFromPlan] Tasks found:', tasks ? tasks.length : 0);
 
       if (tasks && Array.isArray(tasks)) {
         for (const task of tasks) {
           const t = task as Record<string, unknown>;
-          const status = t.status as string;
-          const classification = t.classification as string;
+          const status = (t.status as string)?.toLowerCase();
+          const classification = (t.classification as string)?.toLowerCase();
+          const fixType = (t.fixType as string)?.toLowerCase();
+          
+          logger.debug('[extractIssuesFromPlan] Task:', { id: t.id, status, classification, fixType, issueCode: t.issueCode });
+
           const issueData = {
             id: t.id,
-            criterion: t.wcagCriterion || t.criterion || t.issueCode,
-            title: t.title || t.name || t.issueCode,
+            criterion: t.wcagCriterion || t.criterion || t.issueCode || 'Unknown',
+            title: t.title || t.name || t.issueCode || 'Accessibility Issue',
             severity: t.severity || t.priority || 'moderate',
-            description: t.description || t.message,
+            description: t.description || t.message || 'No description available',
             location: t.location || t.filePath,
-            fixType: t.fixType || classification,
+            fixType: fixType || classification,
           };
 
-          if (status === 'completed' || status === 'auto_fixed') {
+          // Check for auto-fixed: completed status OR autofix classification
+          if (status === 'completed' || status === 'auto_fixed' || status === 'fixed' || 
+              classification === 'autofix' || fixType === 'autofix') {
             autoFixedIssues.push({
               ...issueData,
-              fixApplied: t.resolution || t.fix || 'Auto-fixed',
+              fixApplied: t.resolution || t.fix || t.appliedFix || 'Auto-fixed by system',
             });
-          } else if (classification === 'quickfix' || classification === 'quick_fix') {
+          } else if (classification === 'quickfix' || classification === 'quick_fix' || 
+                     fixType === 'quickfix' || fixType === 'quick_fix' ||
+                     status === 'pending' && (classification === 'quickfix' || fixType === 'quickfix')) {
             quickFixIssues.push({
               ...issueData,
-              suggestedFix: t.suggestedFix || t.fix || 'Quick-fix available',
+              suggestedFix: t.suggestedFix || t.fix || t.recommendation || 'Quick-fix available',
             });
-          } else if (classification === 'manual') {
+          } else if (classification === 'manual' || fixType === 'manual' || 
+                     status === 'pending' || status === 'requires_review') {
             manualIssues.push({
               ...issueData,
-              guidance: t.guidance || t.recommendation || 'Manual review required',
+              guidance: t.guidance || t.recommendation || t.help || 'Manual review required',
             });
           }
         }
       }
+
+      // Also check for fixedIssues array in plan (remediation results)
+      const fixedIssues = (plan.fixedIssues || plan.autoFixedIssues || plan.fixed) as unknown[] | undefined;
+      if (fixedIssues && Array.isArray(fixedIssues)) {
+        logger.info('[extractIssuesFromPlan] Found fixedIssues array:', fixedIssues.length);
+        for (const issue of fixedIssues) {
+          const i = issue as Record<string, unknown>;
+          autoFixedIssues.push({
+            id: i.id || i.taskId,
+            criterion: i.wcagCriterion || i.criterion || i.issueCode || 'Unknown',
+            title: i.title || i.name || i.issueCode || 'Fixed Issue',
+            severity: i.severity || 'moderate',
+            description: i.description || i.message || 'Issue was automatically fixed',
+            location: i.location || i.filePath,
+            fixApplied: i.fix || i.resolution || i.appliedFix || 'Auto-fixed',
+          });
+        }
+      }
     }
 
-    if (autoFixedIssues.length === 0 && auditResults && typeof auditResults === 'object') {
+    // Fallback to audit results if no issues found from plan
+    if (autoFixedIssues.length === 0 && quickFixIssues.length === 0 && auditResults && typeof auditResults === 'object') {
       const audit = auditResults as Record<string, unknown>;
-      const issues = audit.issues as unknown[] || audit.violations as unknown[] || [];
+      logger.info('[extractIssuesFromPlan] Falling back to audit results, keys:', Object.keys(audit));
+      
+      const issues = (audit.issues || audit.violations || audit.errors || audit.findings) as unknown[] | undefined;
+      logger.info('[extractIssuesFromPlan] Audit issues found:', issues ? issues.length : 0);
 
-      if (Array.isArray(issues)) {
+      if (issues && Array.isArray(issues)) {
         for (const issue of issues) {
           const i = issue as Record<string, unknown>;
-          const fixable = i.autoFixable || i.fixable;
+          const fixable = i.autoFixable || i.fixable || i.canAutoFix;
           const issueData = {
-            criterion: i.wcagCriterion || i.criterion || i.code,
-            title: i.title || i.name || i.code,
+            criterion: i.wcagCriterion || i.criterion || i.code || 'Unknown',
+            title: i.title || i.name || i.code || 'Audit Issue',
             severity: i.severity || i.impact || 'moderate',
-            description: i.description || i.message,
-            location: i.location || i.element,
+            description: i.description || i.message || 'No description available',
+            location: i.location || i.element || i.path,
           };
 
-          if (fixable === true) {
+          if (fixable === true || fixable === 'autofix') {
             autoFixedIssues.push({
               ...issueData,
               fixApplied: 'Auto-fixed during remediation',
             });
-          } else if (fixable === 'quickfix') {
+          } else if (fixable === 'quickfix' || fixable === 'quick') {
             quickFixIssues.push({
               ...issueData,
-              suggestedFix: i.suggestedFix || 'Quick-fix available',
+              suggestedFix: (i.suggestedFix || i.recommendation || 'Quick-fix available') as string,
             });
           } else {
             manualIssues.push({
               ...issueData,
-              guidance: i.guidance || 'Manual review required',
+              guidance: (i.guidance || i.recommendation || 'Manual review required') as string,
             });
           }
         }
       }
     }
+
+    logger.info('[extractIssuesFromPlan] Extraction complete:', {
+      autoFixed: autoFixedIssues.length,
+      quickFix: quickFixIssues.length,
+      manual: manualIssues.length,
+    });
 
     return { autoFixedIssues, quickFixIssues, manualIssues };
   }
