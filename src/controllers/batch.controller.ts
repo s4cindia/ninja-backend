@@ -3,6 +3,9 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { batchOrchestratorService } from '../services/batch/batch-orchestrator.service';
 import { batchAcrGeneratorService } from '../services/acr/batch-acr-generator.service';
 import { batchQuickFixService } from '../services/batch/batch-quick-fix.service';
+import { queueService } from '../services/queue.service';
+import { s3Service } from '../services/s3.service';
+import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 class BatchController {
@@ -400,6 +403,238 @@ class BatchController {
         },
       });
     }
+  }
+
+  async getBatchFile(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId, fileId } = req.params;
+      const tenantId = req.user!.tenantId;
+
+      const file = await prisma.batchFile.findFirst({
+        where: {
+          id: fileId,
+          batchId: batchId,
+          batch: {
+            tenantId: tenantId,
+          },
+        },
+        include: {
+          batch: {
+            select: {
+              id: true,
+              name: true,
+              status: true,
+              tenantId: true,
+              userId: true,
+            },
+          },
+        },
+      });
+
+      if (!file) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch file not found',
+            code: 'FILE_NOT_FOUND',
+          },
+        });
+      }
+
+      let auditResults = null;
+      if (file.auditJobId) {
+        try {
+          const auditJob = await queueService.getJobStatus(file.auditJobId, tenantId);
+          auditResults = auditJob?.output || null;
+        } catch (error) {
+          logger.warn(`Failed to fetch audit job ${file.auditJobId}:`, error);
+        }
+      }
+
+      let planResults = null;
+      if (file.planJobId) {
+        try {
+          const planJob = await queueService.getJobStatus(file.planJobId, tenantId);
+          planResults = planJob?.output || null;
+        } catch (error) {
+          logger.warn(`Failed to fetch plan job ${file.planJobId}:`, error);
+        }
+      }
+
+      let remediationResults = null;
+      if (planResults) {
+        remediationResults = planResults;
+      }
+
+      const quickFixCount = file.issuesQuickFix || 0;
+      const manualCount = file.issuesManual || 0;
+
+      const response = {
+        id: file.id,
+        batchId: file.batchId,
+        fileName: file.fileName,
+        originalName: file.originalName,
+        status: file.status,
+        auditScore: file.auditScore,
+        issuesFound: file.issuesFound,
+        issuesAutoFixed: file.issuesAutoFixed,
+        issuesQuickFix: file.issuesQuickFix,
+        issuesManual: file.issuesManual,
+        quickFixCount: quickFixCount,
+        manualCount: manualCount,
+        originalS3Key: file.storagePath,
+        remediatedS3Key: file.remediatedFilePath,
+        auditJobId: file.auditJobId,
+        planJobId: file.planJobId,
+        auditResults: auditResults,
+        planResults: planResults,
+        remediationResults: remediationResults,
+        autoFixedIssues: this.extractAutoFixedIssues(remediationResults),
+        quickFixIssues: [],
+        manualIssues: [],
+        batch: file.batch,
+        uploadedAt: file.uploadedAt,
+        auditCompletedAt: file.auditCompletedAt,
+        remediationCompletedAt: file.remediationCompletedAt,
+      };
+
+      return res.json({
+        success: true,
+        data: response,
+      });
+    } catch (error) {
+      logger.error('Get batch file error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to load batch file details',
+          code: 'FILE_DETAILS_FAILED',
+        },
+      });
+    }
+  }
+
+  async downloadBatchFile(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId, fileId } = req.params;
+      const tenantId = req.user!.tenantId;
+      const version = req.query.version as string | undefined;
+
+      const file = await prisma.batchFile.findFirst({
+        where: {
+          id: fileId,
+          batchId: batchId,
+          batch: {
+            tenantId: tenantId,
+          },
+        },
+      });
+
+      if (!file) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch file not found',
+            code: 'FILE_NOT_FOUND',
+          },
+        });
+      }
+
+      let s3Key: string | null = null;
+      if (version === 'original') {
+        s3Key = file.storagePath;
+      } else {
+        s3Key = file.remediatedFilePath || file.storagePath;
+      }
+
+      if (!s3Key) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'File not available for download',
+            code: 'FILE_UNAVAILABLE',
+          },
+        });
+      }
+
+      const { downloadUrl, expiresIn } = await s3Service.getPresignedDownloadUrl(s3Key, 3600);
+
+      return res.json({
+        success: true,
+        data: {
+          downloadUrl: downloadUrl,
+          fileName: file.originalName || file.fileName,
+          expiresIn: expiresIn,
+        },
+      });
+    } catch (error) {
+      logger.error('Download batch file error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to generate download URL',
+          code: 'DOWNLOAD_FAILED',
+        },
+      });
+    }
+  }
+
+  private extractAutoFixedIssues(remediationResults: unknown): unknown[] {
+    if (!remediationResults || typeof remediationResults !== 'object') {
+      return [];
+    }
+
+    const results = remediationResults as Record<string, unknown>;
+    const fixedIssues = results.fixedIssues as unknown[] | undefined;
+
+    if (!fixedIssues || !Array.isArray(fixedIssues)) {
+      return [];
+    }
+
+    return fixedIssues.map((issue: unknown) => {
+      const i = issue as Record<string, unknown>;
+      return {
+        criterion: i.wcagCriterion || i.criterion,
+        title: i.title || i.name,
+        severity: i.severity || 'moderate',
+        description: i.description || i.message,
+        fixApplied: i.fix || i.remediation || 'Auto-fixed',
+      };
+    });
+  }
+
+  private extractQuickFixIssues(quickFixTasks: unknown[]): unknown[] {
+    if (!quickFixTasks || !Array.isArray(quickFixTasks)) {
+      return [];
+    }
+
+    return quickFixTasks.map((task: unknown) => {
+      const t = task as Record<string, unknown>;
+      return {
+        criterion: t.wcagCriterion || t.criterion,
+        title: t.title || t.name,
+        severity: t.severity || 'moderate',
+        description: t.description || t.message,
+        suggestedFix: t.suggestedFix || t.fix || 'Quick-fix available',
+      };
+    });
+  }
+
+  private extractManualIssues(manualTasks: unknown[]): unknown[] {
+    if (!manualTasks || !Array.isArray(manualTasks)) {
+      return [];
+    }
+
+    return manualTasks.map((task: unknown) => {
+      const t = task as Record<string, unknown>;
+      return {
+        criterion: t.wcagCriterion || t.criterion,
+        title: t.title || t.name,
+        severity: t.severity || 'critical',
+        description: t.description || t.message,
+        guidance: t.guidance || t.recommendation || 'Manual review required',
+      };
+    });
   }
 }
 

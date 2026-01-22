@@ -102,4 +102,16 @@ router.post(
   batchController.applyQuickFixes
 );
 
+router.get(
+  '/:batchId/files/:fileId',
+  authenticate,
+  batchController.getBatchFile
+);
+
+router.get(
+  '/:batchId/files/:fileId/download',
+  authenticate,
+  batchController.downloadBatchFile
+);
+
 export default router;
