@@ -114,6 +114,12 @@ router.get(
   batchController.downloadBatchFile
 );
 
+router.get(
+  '/:batchId/files/:fileId/serve',
+  authenticate,
+  batchController.serveBatchFile
+);
+
 router.post(
   '/:batchId/files/:fileId/apply-quick-fixes',
   authenticate,

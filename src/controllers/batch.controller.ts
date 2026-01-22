@@ -589,13 +589,16 @@ class BatchController {
       const localPath = filePath.startsWith('/') ? filePath : path.join(process.cwd(), filePath);
       
       if (fs.existsSync(localPath)) {
-        // Serve file directly from local storage
-        const fileName = file.originalName || file.fileName || 'download.epub';
-        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        res.setHeader('Content-Type', 'application/epub+zip');
-        
-        const fileStream = fs.createReadStream(localPath);
-        return fileStream.pipe(res);
+        // For local files, return a direct download URL pointing to our serve endpoint
+        const downloadUrl = `/api/v1/batch/${batchId}/files/${fileId}/serve${version === 'original' ? '?version=original' : ''}`;
+        return res.json({
+          success: true,
+          data: {
+            downloadUrl: downloadUrl,
+            fileName: file.originalName || file.fileName,
+            expiresIn: 3600,
+          },
+        });
       }
       
       // Fall back to S3 if file not found locally
@@ -621,6 +624,82 @@ class BatchController {
       }
     } catch (error) {
       logger.error('Download batch file error:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to generate download URL',
+          code: 'DOWNLOAD_FAILED',
+        },
+      });
+    }
+  }
+
+  serveBatchFile = async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { batchId, fileId } = req.params;
+      const tenantId = req.user!.tenantId;
+      const version = req.query.version as string | undefined;
+
+      const file = await prisma.batchFile.findFirst({
+        where: {
+          id: fileId,
+          batchId: batchId,
+          batch: {
+            tenantId: tenantId,
+          },
+        },
+      });
+
+      if (!file) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch file not found',
+            code: 'FILE_NOT_FOUND',
+          },
+        });
+      }
+
+      let filePath: string | null = null;
+      if (version === 'original') {
+        filePath = file.storagePath;
+      } else {
+        filePath = file.remediatedFilePath || file.storagePath;
+      }
+
+      if (!filePath) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'File not available for download',
+            code: 'FILE_UNAVAILABLE',
+          },
+        });
+      }
+
+      const fs = await import('fs');
+      const path = await import('path');
+      
+      const localPath = filePath.startsWith('/') ? filePath : path.join(process.cwd(), filePath);
+      
+      if (!fs.existsSync(localPath)) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'File not found in storage',
+            code: 'FILE_NOT_FOUND',
+          },
+        });
+      }
+
+      const fileName = file.originalName || file.fileName || 'download.epub';
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Type', 'application/epub+zip');
+      
+      const fileStream = fs.createReadStream(localPath);
+      return fileStream.pipe(res);
+    } catch (error) {
+      logger.error('Serve batch file error:', error);
       return res.status(500).json({
         success: false,
         error: {
