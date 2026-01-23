@@ -637,19 +637,17 @@ class BatchController {
     }
   }
 
-  serveBatchFile = async (req: AuthenticatedRequest, res: Response) => {
+  serveBatchFile = async (req: Request, res: Response) => {
     try {
       const { batchId, fileId } = req.params;
-      const tenantId = req.user!.tenantId;
       const version = req.query.version as string | undefined;
 
+      // Public endpoint - only validate that batchId and fileId match
+      // Security is through UUID obscurity (like presigned URLs)
       const file = await prisma.batchFile.findFirst({
         where: {
           id: fileId,
           batchId: batchId,
-          batch: {
-            tenantId: tenantId,
-          },
         },
       });
 
