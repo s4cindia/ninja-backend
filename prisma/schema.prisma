@@ -568,7 +568,7 @@ model BatchFile {
 
   // Remediation Results
   issuesAutoFixed    Int?
-  quickFixesApplied  Int?
+  quickFixesApplied  Int      @default(0)
   remainingQuickFix  Int?
   remainingManual    Int?
 
