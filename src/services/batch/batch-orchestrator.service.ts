@@ -238,6 +238,14 @@ class BatchOrchestratorService {
     }
 
     // Verify and correct issue count totals before marking complete
+    // Use sum of file issues as the source of truth
+    const batchFiles = await prisma.batchFile.findMany({
+      where: { batchId },
+      select: { issuesFound: true }
+    });
+    
+    const sumFromFiles = batchFiles.reduce((sum, f) => sum + (f.issuesFound || 0), 0);
+    
     const batchTotals = await prisma.batch.findUnique({
       where: { id: batchId },
       select: {
@@ -249,21 +257,21 @@ class BatchOrchestratorService {
     });
 
     if (batchTotals) {
-      const calculatedTotal =
+      const categoryTotal =
         (batchTotals.autoFixedIssues || 0) +
         (batchTotals.quickFixIssues || 0) +
         (batchTotals.manualIssues || 0);
 
-      if (calculatedTotal !== batchTotals.totalIssuesFound) {
+      // Use sum of file issues as source of truth
+      if (sumFromFiles !== batchTotals.totalIssuesFound || categoryTotal !== sumFromFiles) {
         logger.warn(
           `[Batch ${batchId}] Issue count mismatch: stored=${batchTotals.totalIssuesFound}, ` +
-          `calculated=${calculatedTotal} (auto=${batchTotals.autoFixedIssues}, ` +
-          `quick=${batchTotals.quickFixIssues}, manual=${batchTotals.manualIssues}). Correcting...`
+          `categoryTotal=${categoryTotal}, sumFromFiles=${sumFromFiles}. Correcting to ${sumFromFiles}...`
         );
 
         await prisma.batch.update({
           where: { id: batchId },
-          data: { totalIssuesFound: calculatedTotal }
+          data: { totalIssuesFound: sumFromFiles }
         });
       }
     }
