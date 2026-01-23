@@ -114,9 +114,10 @@ router.get(
   batchController.downloadBatchFile
 );
 
+// Serve endpoint is public - URLs are only given to authenticated users
+// and file IDs are UUIDs that are hard to guess (similar to presigned URLs)
 router.get(
   '/:batchId/files/:fileId/serve',
-  authenticate,
   batchController.serveBatchFile
 );
 
