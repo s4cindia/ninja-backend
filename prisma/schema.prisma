@@ -510,10 +510,11 @@ model Batch {
   filesFailed     Int         @default(0)
 
   // Summary Statistics
-  totalIssuesFound  Int @default(0)
-  autoFixedIssues   Int @default(0)
-  quickFixIssues    Int @default(0)
-  manualIssues      Int @default(0)
+  totalIssuesFound    Int @default(0)
+  autoFixedIssues     Int @default(0)
+  quickFixIssues      Int @default(0)
+  quickFixesApplied   Int @default(0)
+  manualIssues        Int @default(0)
 
   // ACR Generation Metadata
   acrGenerated   Boolean   @default(false)
@@ -566,9 +567,10 @@ model BatchFile {
   issuesManual   Int?
 
   // Remediation Results
-  issuesAutoFixed   Int?
-  remainingQuickFix Int?
-  remainingManual   Int?
+  issuesAutoFixed    Int?
+  quickFixesApplied  Int?
+  remainingQuickFix  Int?
+  remainingManual    Int?
 
   // File Paths
   remediatedFilePath   String?
