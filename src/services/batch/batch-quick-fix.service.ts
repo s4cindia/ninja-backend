@@ -116,27 +116,26 @@ class BatchQuickFixService {
           }
         }
 
-        // Update file record
-        await prisma.batchFile.update({
+        // Update file record - track quick-fixes applied
+        const updatedFile = await prisma.batchFile.update({
           where: { id: file.id },
           data: {
-            issuesQuickFix: 0,
-            issuesAutoFixed: {
-              increment: fixedCount,
-            },
+            quickFixesApplied: { increment: fixedCount },
+            remainingQuickFix: { decrement: fixedCount },
           },
         });
 
         results.filesProcessed++;
         results.issuesFixed += fixedCount;
 
-        // Broadcast progress
+        // Broadcast progress with cumulative totals
         sseService.broadcastToChannel(`batch:${batchId}`, {
           type: 'quick_fix_file_completed',
           batchId,
           fileId: file.id,
           fileName: file.originalName,
           issuesFixed: fixedCount,
+          fileQuickFixesApplied: updatedFile.quickFixesApplied || fixedCount,
         }, tenantId);
 
         logger.info(`[Batch ${batchId}] Applied ${fixedCount} quick-fixes for ${file.originalName}`);
@@ -148,21 +147,22 @@ class BatchQuickFixService {
       }
     }
 
-    // Update batch statistics
-    await prisma.batch.update({
+    // Update batch statistics - track quick-fixes applied
+    const updatedBatch = await prisma.batch.update({
       where: { id: batchId },
       data: {
-        quickFixIssues: { decrement: results.issuesFixed },
-        autoFixedIssues: { increment: results.issuesFixed },
+        quickFixesApplied: { increment: results.issuesFixed },
       },
     });
 
-    // Broadcast completion
+    // Broadcast completion with cumulative totals
     sseService.broadcastToChannel(`batch:${batchId}`, {
       type: 'quick_fix_completed',
       batchId,
       filesProcessed: results.filesProcessed,
       issuesFixed: results.issuesFixed,
+      batchQuickFixesApplied: updatedBatch.quickFixesApplied,
+      remainingQuickFixes: (updatedBatch.quickFixIssues || 0) - (updatedBatch.quickFixesApplied || 0),
       errors: results.errors,
     }, tenantId);
 
@@ -263,22 +263,32 @@ class BatchQuickFixService {
       }
     }
 
-    // Update batch file stats
-    await prisma.batchFile.update({
+    // Update batch file stats - track quick-fixes applied
+    const updatedFile = await prisma.batchFile.update({
       where: { id: fileId },
       data: {
-        issuesQuickFix: { decrement: appliedFixes },
-        issuesAutoFixed: { increment: appliedFixes },
+        quickFixesApplied: { increment: appliedFixes },
+        remainingQuickFix: { decrement: appliedFixes },
       },
     });
 
-    // Broadcast update via SSE
+    // Update batch-level totals
+    const updatedBatch = await prisma.batch.update({
+      where: { id: batchId },
+      data: {
+        quickFixesApplied: { increment: appliedFixes },
+      },
+    });
+
+    // Broadcast update via SSE with cumulative totals
     sseService.broadcastToChannel(`batch:${batchId}`, {
       type: 'file_quick_fix_applied',
       batchId,
       fileId,
       fileName: file.originalName,
       appliedFixes,
+      fileQuickFixesApplied: updatedFile.quickFixesApplied || appliedFixes,
+      batchQuickFixesApplied: updatedBatch.quickFixesApplied,
       results,
     }, tenantId);
 
@@ -381,22 +391,33 @@ class BatchQuickFixService {
       }
     }
 
-    // Update batch file stats
-    await prisma.batchFile.update({
+    // Update batch file stats - track quick-fixes applied separately
+    const updatedFile = await prisma.batchFile.update({
       where: { id: fileId },
       data: {
-        issuesQuickFix: { decrement: appliedFixes },
-        issuesAutoFixed: { increment: appliedFixes },
+        quickFixesApplied: { increment: appliedFixes },
+        remainingQuickFix: { decrement: appliedFixes },
       },
     });
 
-    // Broadcast update via SSE
+    // Update batch-level totals
+    const updatedBatch = await prisma.batch.update({
+      where: { id: batchId },
+      data: {
+        quickFixesApplied: { increment: appliedFixes },
+      },
+    });
+
+    // Broadcast update via SSE with cumulative totals
     sseService.broadcastToChannel(`batch:${batchId}`, {
       type: 'batch_quick_fix_applied',
       batchId,
       fileId,
       fileName: file.originalName,
       appliedFixes,
+      fileQuickFixesApplied: updatedFile.quickFixesApplied || appliedFixes,
+      batchQuickFixesApplied: updatedBatch.quickFixesApplied,
+      remainingQuickFixes: updatedBatch.quickFixIssues - updatedBatch.quickFixesApplied,
       results,
     }, tenantId);
 

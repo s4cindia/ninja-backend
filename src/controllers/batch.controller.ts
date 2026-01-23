@@ -169,6 +169,8 @@ class BatchController {
           totalIssuesFound: batch.totalIssuesFound,
           autoFixedIssues: batch.autoFixedIssues,
           quickFixIssues: batch.quickFixIssues,
+          quickFixesApplied: batch.quickFixesApplied || 0,
+          remainingQuickFixes: Math.max(0, (batch.quickFixIssues || 0) - (batch.quickFixesApplied || 0)),
           manualIssues: batch.manualIssues,
 
           files: batch.files.map(f => ({
@@ -183,6 +185,7 @@ class BatchController {
             issuesQuickFix: f.issuesQuickFix,
             issuesManual: f.issuesManual,
             issuesAutoFixed: f.issuesAutoFixed,
+            quickFixesApplied: f.quickFixesApplied || 0,
             remainingQuickFix: f.remainingQuickFix,
             remainingManual: f.remainingManual,
             error: f.error,
@@ -506,6 +509,7 @@ class BatchController {
         issuesAutoFixed: autoFixedIssues.length,
         issuesQuickFix: quickFixIssues.length,
         issuesManual: manualIssues.length,
+        quickFixesApplied: file.quickFixesApplied || quickFixIssues.filter((i: Record<string, unknown>) => i.status === 'completed').length,
         remainingQuickFix: quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
         remainingManual: manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
         quickFixCount: quickFixCount,
