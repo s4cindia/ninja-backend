@@ -466,12 +466,22 @@ class BatchOrchestratorService {
     
     // Get actual remaining quick-fix tasks from remediation plan
     const plan = await remediationService.getRemediationPlan(auditJobId);
+    
+    // Debug logging for task counts
+    const allQuickFixes = plan?.tasks?.filter((t: { type: string }) => t.type === 'quickfix') || [];
+    const allManual = plan?.tasks?.filter((t: { type: string }) => t.type === 'manual') || [];
+    logger.info(`[Batch ${batchId}] Post-remediation task analysis for ${file.fileName}:`);
+    logger.info(`  Total quick-fix tasks: ${allQuickFixes.length}`);
+    logger.info(`  Quick-fix statuses: ${JSON.stringify(allQuickFixes.map((t: { id: string; status: string }) => ({ id: t.id.slice(-8), status: t.status })))}`);
+    
     const pendingQuickFixes = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'quickfix' && t.status === 'pending'
     ).length || 0;
     const pendingManual = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'manual' && t.status === 'pending'
     ).length || 0;
+    
+    logger.info(`  Pending quick-fixes: ${pendingQuickFixes}, Pending manual: ${pendingManual}`);
     
     await prisma.batchFile.update({
       where: { id: file.id },
