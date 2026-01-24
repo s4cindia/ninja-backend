@@ -464,23 +464,42 @@ class BatchOrchestratorService {
 
     const issuesFixed = result.totalIssuesFixed || 0;
     
+    // Get actual remaining quick-fix tasks from remediation plan
+    const plan = await remediationService.getRemediationPlan(auditJobId);
+    const pendingQuickFixes = plan?.tasks?.filter(
+      (t: { type: string; status: string }) => t.type === 'quickfix' && t.status === 'pending'
+    ).length || 0;
+    const pendingManual = plan?.tasks?.filter(
+      (t: { type: string; status: string }) => t.type === 'manual' && t.status === 'pending'
+    ).length || 0;
+    
     await prisma.batchFile.update({
       where: { id: file.id },
       data: {
         status: 'REMEDIATED',
         issuesAutoFixed: issuesFixed,
-        remainingQuickFix: updatedFile?.issuesQuickFix || 0,
-        remainingManual: updatedFile?.issuesManual || 0,
+        issuesQuickFix: pendingQuickFixes,
+        remainingQuickFix: pendingQuickFixes,
+        issuesManual: pendingManual,
+        remainingManual: pendingManual,
         remediatedFilePath: remediatedPath,
         remediationCompletedAt: new Date(),
       },
     });
 
+    // Calculate difference between planned and actual remaining quick-fixes
+    const plannedQuickFixes = updatedFile?.issuesQuickFix || 0;
+    const quickFixDifference = plannedQuickFixes - pendingQuickFixes;
+    const plannedManual = updatedFile?.issuesManual || 0;
+    const manualDifference = plannedManual - pendingManual;
+    
     await prisma.batch.update({
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
         autoFixedIssues: { increment: issuesFixed },
+        quickFixIssues: quickFixDifference > 0 ? { decrement: quickFixDifference } : undefined,
+        manualIssues: manualDifference > 0 ? { decrement: manualDifference } : undefined,
       },
     });
 
