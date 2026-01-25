@@ -468,20 +468,46 @@ class BatchOrchestratorService {
     const plan = await remediationService.getRemediationPlan(auditJobId);
     
     // Count tasks by type and status
-    const completedAutoTasks = plan?.tasks?.filter(
-      (t: { type: string; status: string }) => t.type === 'auto' && t.status === 'completed'
-    ).length || 0;
+    const autoTasks = plan?.tasks?.filter(
+      (t: { type: string }) => t.type === 'auto'
+    ) || [];
+    const completedAutoTasks = autoTasks.filter(
+      (t: { status: string }) => t.status === 'completed'
+    ).length;
     
-    // Use autoRemediation.modifications from result to identify escalated issues
-    // success=false AND status!='skipped' = tried to fix but failed (escalated to manual)
-    // status='skipped' = quick-fix required (user input needed)
+    // Use autoRemediation.modifications to classify failed auto tasks
+    // Modifications are grouped by issueCode, so we need to map back to task counts
     const modifications = result.modifications || [];
-    const escalatedToManualCount = modifications.filter(
-      (m: { success?: boolean; status?: string }) => m.success === false && m.status !== 'skipped'
-    ).length;
-    const failedToQuickFix = modifications.filter(
-      (m: { success?: boolean; status?: string }) => m.status === 'skipped'
-    ).length;
+    
+    // Build a map of issueCode -> outcome (skipped = quick-fix, failed = manual)
+    const issueCodeOutcome = new Map<string, 'skipped' | 'failed' | 'success'>();
+    for (const mod of modifications) {
+      const m = mod as { issueCode?: string; success?: boolean; status?: string };
+      if (m.issueCode) {
+        if (m.success) {
+          issueCodeOutcome.set(m.issueCode, 'success');
+        } else if (m.status === 'skipped') {
+          issueCodeOutcome.set(m.issueCode, 'skipped');
+        } else {
+          issueCodeOutcome.set(m.issueCode, 'failed');
+        }
+      }
+    }
+    
+    // Count failed auto tasks by their outcome (quick-fix or manual)
+    let failedToQuickFix = 0;
+    let escalatedToManualCount = 0;
+    for (const task of autoTasks) {
+      const t = task as { issueCode?: string; status: string };
+      if (t.status !== 'completed' && t.issueCode) {
+        const outcome = issueCodeOutcome.get(t.issueCode);
+        if (outcome === 'skipped') {
+          failedToQuickFix++;
+        } else if (outcome === 'failed') {
+          escalatedToManualCount++;
+        }
+      }
+    }
     
     const pendingQuickFixes = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'quickfix' && t.status === 'pending'
@@ -492,15 +518,36 @@ class BatchOrchestratorService {
     ).length || 0;
     
     // Failed auto tasks that can be quick-fixed are added to quickfix count
-    const totalQuickFixes = pendingQuickFixes + failedToQuickFix;
+    let totalQuickFixes = pendingQuickFixes + failedToQuickFix;
     // Escalated issues are added to manual count
-    const totalManual = pendingManual + escalatedToManualCount;
+    let totalManual = pendingManual + escalatedToManualCount;
+    
+    // RECONCILIATION: Ensure counts add up to issuesFound
+    // Any unaccounted issues go to quick-fix (safest assumption - they need attention)
+    const fileIssuesFound = updatedFile?.issuesFound || 0;
+    const calculatedSum = completedAutoTasks + totalQuickFixes + totalManual;
+    const unaccountedIssues = fileIssuesFound - calculatedSum;
+    
+    if (unaccountedIssues !== 0) {
+      logger.warn(`[Batch ${batchId}] Issue count reconciliation for ${file.fileName}: ` +
+        `Found ${fileIssuesFound}, counted ${calculatedSum}, diff=${unaccountedIssues}`);
+      // Add unaccounted issues to quick-fix (they need user attention)
+      if (unaccountedIssues > 0) {
+        totalQuickFixes += unaccountedIssues;
+      }
+      // If we over-counted, reduce quick-fix first (but don't go negative)
+      else if (unaccountedIssues < 0) {
+        const reduction = Math.min(totalQuickFixes, Math.abs(unaccountedIssues));
+        totalQuickFixes -= reduction;
+      }
+    }
     
     logger.info(`[Batch ${batchId}] Post-remediation task analysis for ${file.fileName}:`);
     logger.info(`  Completed auto: ${completedAutoTasks}, Total modifications: ${modifications.length}`);
     logger.info(`  Escalated to manual: ${escalatedToManualCount}, Skipped (needs quick-fix): ${failedToQuickFix}`);
     logger.info(`  Pending quick-fixes: ${pendingQuickFixes}, Pending manual: ${pendingManual}`);
     logger.info(`  Total quick-fixes: ${totalQuickFixes}, Total manual: ${totalManual}`);
+    logger.info(`  Reconciled sum: ${completedAutoTasks + totalQuickFixes + totalManual} = issuesFound: ${fileIssuesFound}`);
     
     await prisma.batchFile.update({
       where: { id: file.id },

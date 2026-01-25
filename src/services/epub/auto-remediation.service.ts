@@ -190,6 +190,10 @@ class AutoRemediationService {
           const results = await handler(zip);
           
           for (const result of results) {
+            // Map modificationType: 'skip' to status: 'skipped' for quick-fix classification
+            const handlerResult = result as { modificationType?: string };
+            const status = handlerResult.modificationType === 'skip' ? 'skipped' : undefined;
+            
             modifications.push({
               issueCode,
               taskId: tasks[0]?.id || 'handler-result',
@@ -197,6 +201,7 @@ class AutoRemediationService {
               description: result.description,
               before: result.before,
               after: result.after,
+              status,
             });
 
             if (result.success) {
