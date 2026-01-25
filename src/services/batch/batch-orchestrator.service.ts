@@ -467,29 +467,39 @@ class BatchOrchestratorService {
     // Get actual remaining quick-fix tasks from remediation plan
     const plan = await remediationService.getRemediationPlan(auditJobId);
     
-    // Debug logging for task counts
-    const allQuickFixes = plan?.tasks?.filter((t: { type: string }) => t.type === 'quickfix') || [];
-    const allManual = plan?.tasks?.filter((t: { type: string }) => t.type === 'manual') || [];
-    logger.info(`[Batch ${batchId}] Post-remediation task analysis for ${file.fileName}:`);
-    logger.info(`  Total quick-fix tasks: ${allQuickFixes.length}`);
-    logger.info(`  Quick-fix statuses: ${JSON.stringify(allQuickFixes.map((t: { id: string; status: string }) => ({ id: t.id.slice(-8), status: t.status })))}`);
+    // Count tasks by type and status
+    const completedAutoTasks = plan?.tasks?.filter(
+      (t: { type: string; status: string }) => t.type === 'auto' && t.status === 'completed'
+    ).length || 0;
+    
+    // Failed/pending auto tasks need to be counted as quickfix since they require user action
+    const failedAutoTasks = plan?.tasks?.filter(
+      (t: { type: string; status: string }) => t.type === 'auto' && t.status !== 'completed'
+    ).length || 0;
     
     const pendingQuickFixes = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'quickfix' && t.status === 'pending'
     ).length || 0;
+    
     const pendingManual = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'manual' && t.status === 'pending'
     ).length || 0;
     
+    // Failed auto tasks are added to quickfix count since they need manual intervention
+    const totalQuickFixes = pendingQuickFixes + failedAutoTasks;
+    
+    logger.info(`[Batch ${batchId}] Post-remediation task analysis for ${file.fileName}:`);
+    logger.info(`  Completed auto: ${completedAutoTasks}, Failed auto: ${failedAutoTasks}`);
     logger.info(`  Pending quick-fixes: ${pendingQuickFixes}, Pending manual: ${pendingManual}`);
+    logger.info(`  Total remaining quick-fixes (including failed auto): ${totalQuickFixes}`);
     
     await prisma.batchFile.update({
       where: { id: file.id },
       data: {
         status: 'REMEDIATED',
-        issuesAutoFixed: issuesFixed,
-        issuesQuickFix: pendingQuickFixes,
-        remainingQuickFix: pendingQuickFixes,
+        issuesAutoFixed: completedAutoTasks,
+        issuesQuickFix: totalQuickFixes,
+        remainingQuickFix: totalQuickFixes,
         issuesManual: pendingManual,
         remainingManual: pendingManual,
         remediatedFilePath: remediatedPath,
@@ -499,7 +509,7 @@ class BatchOrchestratorService {
 
     // Calculate difference between planned and actual remaining quick-fixes
     const plannedQuickFixes = updatedFile?.issuesQuickFix || 0;
-    const quickFixDifference = plannedQuickFixes - pendingQuickFixes;
+    const quickFixDifference = plannedQuickFixes - totalQuickFixes;
     const plannedManual = updatedFile?.issuesManual || 0;
     const manualDifference = plannedManual - pendingManual;
     
@@ -507,7 +517,7 @@ class BatchOrchestratorService {
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
-        autoFixedIssues: { increment: issuesFixed },
+        autoFixedIssues: { increment: completedAutoTasks },
         quickFixIssues: quickFixDifference > 0 ? { decrement: quickFixDifference } : undefined,
         manualIssues: manualDifference > 0 ? { decrement: manualDifference } : undefined,
       },
@@ -518,10 +528,10 @@ class BatchOrchestratorService {
       batchId,
       fileId: file.id,
       fileName: file.fileName,
-      issuesFixed,
+      issuesFixed: completedAutoTasks,
     }, batch.tenantId);
 
-    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${issuesFixed} issues fixed`);
+    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${completedAutoTasks} auto-fixed, ${totalQuickFixes} quick-fix, ${pendingManual} manual`);
   }
 
   private generateBatchName(): string {
