@@ -172,6 +172,7 @@ class BatchController {
           quickFixesApplied: batch.quickFixesApplied || 0,
           remainingQuickFixes: Math.max(0, (batch.quickFixIssues || 0) - (batch.quickFixesApplied || 0)),
           manualIssues: batch.manualIssues,
+          escalatedToManual: batch.escalatedToManual || 0,
 
           files: batch.files.map(f => ({
             fileId: f.id,
@@ -186,6 +187,7 @@ class BatchController {
             issuesQuickFix: f.issuesQuickFix,
             issuesManual: f.issuesManual,
             issuesAutoFixed: f.issuesAutoFixed,
+            escalatedToManual: f.escalatedToManual || 0,
             quickFixesApplied: f.quickFixesApplied || 0,
             remainingQuickFix: f.remainingQuickFix,
             remainingManual: f.remainingManual,
@@ -492,13 +494,14 @@ class BatchController {
         }
       }
 
-      const { autoFixedIssues, quickFixIssues, manualIssues } = this.extractIssuesFromPlan(planResults, auditResults, remediationPlanTasks);
+      const { autoFixedIssues, quickFixIssues, manualIssues, escalatedToManual } = this.extractIssuesFromPlan(planResults, auditResults, remediationPlanTasks);
 
       // Use stored database values for summary counts (post-remediation accurate)
       // Fall back to extracted counts if database values not set
       const dbAutoFixed = file.issuesAutoFixed ?? autoFixedIssues.length;
       const dbQuickFix = file.issuesQuickFix ?? quickFixIssues.length;
       const dbManual = file.issuesManual ?? manualIssues.length;
+      const dbEscalated = file.escalatedToManual ?? escalatedToManual;
 
       const response = {
         fileId: file.id,
@@ -513,6 +516,7 @@ class BatchController {
         issuesAutoFixed: dbAutoFixed,
         issuesQuickFix: dbQuickFix,
         issuesManual: dbManual,
+        escalatedToManual: dbEscalated,
         quickFixesApplied: file.quickFixesApplied || quickFixIssues.filter((i: Record<string, unknown>) => i.status === 'completed').length,
         remainingQuickFix: file.remainingQuickFix ?? quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
         remainingManual: file.remainingManual ?? manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
@@ -726,6 +730,7 @@ class BatchController {
     autoFixedIssues: unknown[];
     quickFixIssues: unknown[];
     manualIssues: unknown[];
+    escalatedToManual: number;
   } {
     const autoFixedIssues: unknown[] = [];
     const quickFixIssues: unknown[] = [];
@@ -738,7 +743,7 @@ class BatchController {
 
     if (!plan && !audit) {
       logger.warn('[extractIssuesFromPlan] No plan or audit results');
-      return { autoFixedIssues, quickFixIssues, manualIssues };
+      return { autoFixedIssues, quickFixIssues, manualIssues, escalatedToManual: 0 };
     }
 
     // Get expected stats for logging
@@ -760,12 +765,24 @@ class BatchController {
     );
     logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes from remediation plan:`, [...completedTaskCodes]);
 
+    // Get failed modification codes from autoRemediation (issues that were auto-fixable but FAILED - not skipped)
+    // success=false means tried to fix but failed (escalated to manual)
+    // status='skipped' means quick-fix required (user input needed) - these are NOT escalated
+    const modifications = (autoRemediation?.modifications || []) as Array<{ issueCode?: string; success?: boolean; status?: string }>;
+    const failedAutoFixCodes = new Set(
+      modifications
+        .filter(m => m.success === false && m.status !== 'skipped')
+        .map(m => m.issueCode)
+        .filter(Boolean)
+    );
+    logger.info(`[extractIssuesFromPlan] Found ${failedAutoFixCodes.size} failed (escalated) auto-fix codes:`, [...failedAutoFixCodes]);
+
     // Get combined issues
     const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
 
     if (!combinedIssues || !Array.isArray(combinedIssues) || combinedIssues.length === 0) {
       logger.warn('[extractIssuesFromPlan] No combinedIssues found');
-      return { autoFixedIssues, quickFixIssues, manualIssues };
+      return { autoFixedIssues, quickFixIssues, manualIssues, escalatedToManual: 0 };
     }
 
     logger.info(`[extractIssuesFromPlan] Processing ${combinedIssues.length} issues`);
@@ -818,6 +835,8 @@ class BatchController {
           quickFixable: true,
         });
       } else {
+        // Check if this was originally auto-fixable but failed
+        const wasEscalated = failedAutoFixCodes.has(issueCode);
         manualIssues.push({
           ...mappedIssue,
           status: 'pending',
@@ -825,18 +844,22 @@ class BatchController {
           guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
           autoFixable: false,
           quickFixable: false,
+          escalatedFromQuickFix: wasEscalated,
         });
       }
     }
 
+    // Count escalated issues
+    const escalatedCount = manualIssues.filter((m: Record<string, unknown>) => m.escalatedFromQuickFix === true).length;
     logger.info('[extractIssuesFromPlan] Extraction complete:', {
       autoFixed: autoFixedIssues.length,
       quickFix: quickFixIssues.length,
       manual: manualIssues.length,
+      escalatedToManual: escalatedCount,
       total: autoFixedIssues.length + quickFixIssues.length + manualIssues.length,
     });
 
-    return { autoFixedIssues, quickFixIssues, manualIssues };
+    return { autoFixedIssues, quickFixIssues, manualIssues, escalatedToManual: escalatedCount };
   }
 
   private isAutoFixableCode(code: string): boolean {

@@ -515,6 +515,7 @@ model Batch {
   quickFixIssues      Int @default(0)
   quickFixesApplied   Int @default(0)
   manualIssues        Int @default(0)
+  escalatedToManual   Int @default(0)
 
   // ACR Generation Metadata
   acrGenerated   Boolean   @default(false)
@@ -571,6 +572,7 @@ model BatchFile {
   quickFixesApplied  Int      @default(0)
   remainingQuickFix  Int?
   remainingManual    Int?
+  escalatedToManual  Int      @default(0)
 
   // File Paths
   remediatedFilePath   String?

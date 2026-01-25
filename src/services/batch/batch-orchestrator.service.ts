@@ -472,10 +472,16 @@ class BatchOrchestratorService {
       (t: { type: string; status: string }) => t.type === 'auto' && t.status === 'completed'
     ).length || 0;
     
-    // Failed/pending auto tasks need to be counted as quickfix since they require user action
-    const failedAutoTasks = plan?.tasks?.filter(
-      (t: { type: string; status: string }) => t.type === 'auto' && t.status !== 'completed'
-    ).length || 0;
+    // Use autoRemediation.modifications from result to identify escalated issues
+    // success=false AND status!='skipped' = tried to fix but failed (escalated to manual)
+    // status='skipped' = quick-fix required (user input needed)
+    const modifications = result.modifications || [];
+    const escalatedToManualCount = modifications.filter(
+      (m: { success?: boolean; status?: string }) => m.success === false && m.status !== 'skipped'
+    ).length;
+    const failedToQuickFix = modifications.filter(
+      (m: { success?: boolean; status?: string }) => m.status === 'skipped'
+    ).length;
     
     const pendingQuickFixes = plan?.tasks?.filter(
       (t: { type: string; status: string }) => t.type === 'quickfix' && t.status === 'pending'
@@ -485,13 +491,16 @@ class BatchOrchestratorService {
       (t: { type: string; status: string }) => t.type === 'manual' && t.status === 'pending'
     ).length || 0;
     
-    // Failed auto tasks are added to quickfix count since they need manual intervention
-    const totalQuickFixes = pendingQuickFixes + failedAutoTasks;
+    // Failed auto tasks that can be quick-fixed are added to quickfix count
+    const totalQuickFixes = pendingQuickFixes + failedToQuickFix;
+    // Escalated issues are added to manual count
+    const totalManual = pendingManual + escalatedToManualCount;
     
     logger.info(`[Batch ${batchId}] Post-remediation task analysis for ${file.fileName}:`);
-    logger.info(`  Completed auto: ${completedAutoTasks}, Failed auto: ${failedAutoTasks}`);
+    logger.info(`  Completed auto: ${completedAutoTasks}, Total modifications: ${modifications.length}`);
+    logger.info(`  Escalated to manual: ${escalatedToManualCount}, Skipped (needs quick-fix): ${failedToQuickFix}`);
     logger.info(`  Pending quick-fixes: ${pendingQuickFixes}, Pending manual: ${pendingManual}`);
-    logger.info(`  Total remaining quick-fixes (including failed auto): ${totalQuickFixes}`);
+    logger.info(`  Total quick-fixes: ${totalQuickFixes}, Total manual: ${totalManual}`);
     
     await prisma.batchFile.update({
       where: { id: file.id },
@@ -500,8 +509,9 @@ class BatchOrchestratorService {
         issuesAutoFixed: completedAutoTasks,
         issuesQuickFix: totalQuickFixes,
         remainingQuickFix: totalQuickFixes,
-        issuesManual: pendingManual,
-        remainingManual: pendingManual,
+        issuesManual: totalManual,
+        remainingManual: totalManual,
+        escalatedToManual: escalatedToManualCount,
         remediatedFilePath: remediatedPath,
         remediationCompletedAt: new Date(),
       },
@@ -509,19 +519,20 @@ class BatchOrchestratorService {
 
     // Calculate difference between planned and actual remaining quick-fixes
     // plannedQuickFixes is from before auto-remediation (just quick-fix type tasks)
-    // totalQuickFixes is after auto-remediation (quick-fix + failed auto)
+    // totalQuickFixes is after auto-remediation (quick-fix + failed auto that can be quick-fixed)
     const plannedQuickFixes = updatedFile?.issuesQuickFix || 0;
     const quickFixDifference = totalQuickFixes - plannedQuickFixes; // positive if more quick-fixes needed
     const plannedManual = updatedFile?.issuesManual || 0;
-    const manualDifference = pendingManual - plannedManual; // positive if more manual needed
+    const manualDifference = totalManual - plannedManual; // positive if more manual needed (includes escalated)
     
-    logger.info(`[Batch ${batchId}] Batch total adjustments: quickFix diff=${quickFixDifference}, manual diff=${manualDifference}`);
+    logger.info(`[Batch ${batchId}] Batch total adjustments: quickFix diff=${quickFixDifference}, manual diff=${manualDifference}, escalated=${escalatedToManualCount}`);
     
     await prisma.batch.update({
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
         autoFixedIssues: { increment: completedAutoTasks },
+        escalatedToManual: { increment: escalatedToManualCount },
         // Adjust batch totals: increment if more needed, decrement if less needed
         quickFixIssues: quickFixDifference !== 0 
           ? (quickFixDifference > 0 ? { increment: quickFixDifference } : { decrement: Math.abs(quickFixDifference) })
@@ -538,9 +549,10 @@ class BatchOrchestratorService {
       fileId: file.id,
       fileName: file.fileName,
       issuesFixed: completedAutoTasks,
+      escalatedToManual: escalatedToManualCount,
     }, batch.tenantId);
 
-    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${completedAutoTasks} auto-fixed, ${totalQuickFixes} quick-fix, ${pendingManual} manual`);
+    logger.info(`[Batch ${batchId}] Remediation completed for ${file.fileName}: ${completedAutoTasks} auto-fixed, ${totalQuickFixes} quick-fix, ${totalManual} manual (${escalatedToManualCount} escalated)`);
   }
 
   private generateBatchName(): string {
