@@ -494,8 +494,11 @@ class BatchController {
 
       const { autoFixedIssues, quickFixIssues, manualIssues } = this.extractIssuesFromPlan(planResults, auditResults, remediationPlanTasks);
 
-      const quickFixCount = file.issuesQuickFix || quickFixIssues.length;
-      const manualCount = file.issuesManual || manualIssues.length;
+      // Use stored database values for summary counts (post-remediation accurate)
+      // Fall back to extracted counts if database values not set
+      const dbAutoFixed = file.issuesAutoFixed ?? autoFixedIssues.length;
+      const dbQuickFix = file.issuesQuickFix ?? quickFixIssues.length;
+      const dbManual = file.issuesManual ?? manualIssues.length;
 
       const response = {
         fileId: file.id,
@@ -507,14 +510,14 @@ class BatchController {
         status: file.status,
         auditScore: file.auditScore,
         issuesFound: file.issuesFound,
-        issuesAutoFixed: autoFixedIssues.length,
-        issuesQuickFix: quickFixIssues.length,
-        issuesManual: manualIssues.length,
+        issuesAutoFixed: dbAutoFixed,
+        issuesQuickFix: dbQuickFix,
+        issuesManual: dbManual,
         quickFixesApplied: file.quickFixesApplied || quickFixIssues.filter((i: Record<string, unknown>) => i.status === 'completed').length,
-        remainingQuickFix: quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
-        remainingManual: manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
-        quickFixCount: quickFixCount,
-        manualCount: manualCount,
+        remainingQuickFix: file.remainingQuickFix ?? quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
+        remainingManual: file.remainingManual ?? manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
+        quickFixCount: dbQuickFix,
+        manualCount: dbManual,
         originalS3Key: file.storagePath,
         remediatedS3Key: file.remediatedFilePath,
         auditJobId: file.auditJobId,
