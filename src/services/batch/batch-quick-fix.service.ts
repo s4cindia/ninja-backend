@@ -29,6 +29,8 @@ class BatchQuickFixService {
             originalName: true,
             auditJobId: true,
             issuesQuickFix: true,
+            remainingQuickFix: true,
+            quickFixesApplied: true,
             status: true,
           },
         },
@@ -43,7 +45,12 @@ class BatchQuickFixService {
       throw new Error('Batch must be completed before applying quick-fixes');
     }
 
-    const filesWithQuickFixes = batch.files.filter(f => (f.issuesQuickFix || 0) > 0);
+    // Include files that have quick-fixes OR need counter sync (negative/incorrect remainingQuickFix)
+    const filesNeedingSync = batch.files.filter(f => 
+      (f.issuesQuickFix || 0) > 0 || 
+      (f.remainingQuickFix !== null && f.remainingQuickFix !== 0)
+    );
+    const filesWithQuickFixes = filesNeedingSync;
 
     if (filesWithQuickFixes.length === 0) {
       return {
@@ -88,15 +95,37 @@ class BatchQuickFixService {
         }
 
         // Get quick-fix tasks from the plan
-        const quickFixTasks = plan.tasks.filter(
-          (t: { type: string; status: string }) => 
-            t.type === 'quickfix' && t.status === 'pending'
+        const allQuickFixTasks = plan.tasks.filter(
+          (t: { type: string }) => t.type === 'quickfix'
+        );
+        const completedQuickFixTasks = allQuickFixTasks.filter(
+          (t: { status: string }) => t.status === 'completed'
+        );
+        const pendingQuickFixTasks = allQuickFixTasks.filter(
+          (t: { status: string }) => t.status === 'pending'
         );
 
-        if (quickFixTasks.length === 0) {
+        if (pendingQuickFixTasks.length === 0) {
           logger.info(`[Batch ${batchId}] No pending quick-fix tasks for ${file.originalName}`);
+          
+          // Sync database counters with actual plan state (fix stale data)
+          const actualApplied = completedQuickFixTasks.length;
+          if (file.issuesQuickFix !== allQuickFixTasks.length || 
+              (file as { quickFixesApplied?: number }).quickFixesApplied !== actualApplied) {
+            logger.info(`[Batch ${batchId}] Syncing counters for ${file.originalName}: quickFix=${allQuickFixTasks.length}, applied=${actualApplied}`);
+            await prisma.batchFile.update({
+              where: { id: file.id },
+              data: {
+                issuesQuickFix: allQuickFixTasks.length,
+                quickFixesApplied: actualApplied,
+                remainingQuickFix: allQuickFixTasks.length - actualApplied,
+              },
+            });
+          }
           continue;
         }
+        
+        const quickFixTasks = pendingQuickFixTasks;
 
         // Apply quick-fixes using remediation service
         let fixedCount = 0;
