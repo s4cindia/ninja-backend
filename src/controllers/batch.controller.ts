@@ -856,8 +856,8 @@ class BatchController {
           quickFixable: true,
         });
       } else {
-        // Check if this was originally auto-fixable but failed
-        const wasEscalated = failedAutoFixCodes.has(issueCode);
+        // Check if this was originally auto-fixable but failed during auto-remediation
+        const wasEscalatedFromAutoFix = failedAutoFixCodes.has(issueCode);
         manualIssues.push({
           ...mappedIssue,
           status: 'pending',
@@ -865,13 +865,13 @@ class BatchController {
           guidance: (i.guidance || i.recommendation || i.help || 'Manual review required') as string,
           autoFixable: false,
           quickFixable: false,
-          escalatedFromQuickFix: wasEscalated,
+          escalatedFromAutoFix: wasEscalatedFromAutoFix,
         });
       }
     }
 
-    // Count escalated issues
-    const escalatedCount = manualIssues.filter((m: Record<string, unknown>) => m.escalatedFromQuickFix === true).length;
+    // Count escalated issues (issues that failed auto-fix and were escalated to manual)
+    const escalatedCount = manualIssues.filter((m: Record<string, unknown>) => m.escalatedFromAutoFix === true).length;
     logger.info('[extractIssuesFromPlan] Extraction complete:', {
       autoFixed: autoFixedIssues.length,
       quickFix: quickFixIssues.length,
