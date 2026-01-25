@@ -181,7 +181,8 @@ class BatchController {
             status: f.status,
             auditScore: f.auditScore,
             issuesFound: f.issuesFound,
-            issuesAutoFix: f.issuesAutoFix,
+            // For remediated files, use actual fixed count; otherwise use plan count
+            issuesAutoFix: f.remediationCompletedAt ? f.issuesAutoFixed : f.issuesAutoFix,
             issuesQuickFix: f.issuesQuickFix,
             issuesManual: f.issuesManual,
             issuesAutoFixed: f.issuesAutoFixed,
