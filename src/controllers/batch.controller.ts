@@ -503,9 +503,25 @@ class BatchController {
       const displayManual = manualIssues.length;
       const displayEscalated = escalatedToManual;
       
-      // Log if there's a mismatch with database values for debugging
-      if (file.issuesAutoFixed !== null && file.issuesAutoFixed !== displayAutoFixed) {
-        logger.warn(`[getBatchFile] Auto-fixed count mismatch: DB=${file.issuesAutoFixed}, Display=${displayAutoFixed}`);
+      // Update database if values don't match (fixes legacy data with old counting logic)
+      const needsUpdate = 
+        file.issuesAutoFixed !== displayAutoFixed ||
+        file.issuesQuickFix !== displayQuickFix ||
+        file.issuesManual !== displayManual;
+      
+      if (needsUpdate && file.status === 'REMEDIATED') {
+        logger.info(`[getBatchFile] Updating file ${fileId} counts: AutoFixed ${file.issuesAutoFixed}->${displayAutoFixed}, QuickFix ${file.issuesQuickFix}->${displayQuickFix}, Manual ${file.issuesManual}->${displayManual}`);
+        await prisma.batchFile.update({
+          where: { id: fileId },
+          data: {
+            issuesAutoFixed: displayAutoFixed,
+            issuesAutoFix: displayAutoFixed,
+            issuesQuickFix: displayQuickFix,
+            remainingQuickFix: displayQuickFix - (file.quickFixesApplied || 0),
+            issuesManual: displayManual,
+            remainingManual: displayManual,
+          },
+        });
       }
 
       const response = {
