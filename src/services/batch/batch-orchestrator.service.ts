@@ -508,18 +508,27 @@ class BatchOrchestratorService {
     });
 
     // Calculate difference between planned and actual remaining quick-fixes
+    // plannedQuickFixes is from before auto-remediation (just quick-fix type tasks)
+    // totalQuickFixes is after auto-remediation (quick-fix + failed auto)
     const plannedQuickFixes = updatedFile?.issuesQuickFix || 0;
-    const quickFixDifference = plannedQuickFixes - totalQuickFixes;
+    const quickFixDifference = totalQuickFixes - plannedQuickFixes; // positive if more quick-fixes needed
     const plannedManual = updatedFile?.issuesManual || 0;
-    const manualDifference = plannedManual - pendingManual;
+    const manualDifference = pendingManual - plannedManual; // positive if more manual needed
+    
+    logger.info(`[Batch ${batchId}] Batch total adjustments: quickFix diff=${quickFixDifference}, manual diff=${manualDifference}`);
     
     await prisma.batch.update({
       where: { id: batchId },
       data: {
         filesRemediated: { increment: 1 },
         autoFixedIssues: { increment: completedAutoTasks },
-        quickFixIssues: quickFixDifference > 0 ? { decrement: quickFixDifference } : undefined,
-        manualIssues: manualDifference > 0 ? { decrement: manualDifference } : undefined,
+        // Adjust batch totals: increment if more needed, decrement if less needed
+        quickFixIssues: quickFixDifference !== 0 
+          ? (quickFixDifference > 0 ? { increment: quickFixDifference } : { decrement: Math.abs(quickFixDifference) })
+          : undefined,
+        manualIssues: manualDifference !== 0
+          ? (manualDifference > 0 ? { increment: manualDifference } : { decrement: Math.abs(manualDifference) })
+          : undefined,
       },
     });
 
