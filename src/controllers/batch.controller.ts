@@ -496,12 +496,17 @@ class BatchController {
 
       const { autoFixedIssues, quickFixIssues, manualIssues, escalatedToManual } = this.extractIssuesFromPlan(planResults, auditResults, remediationPlanTasks);
 
-      // Use stored database values for summary counts (post-remediation accurate)
-      // Fall back to extracted counts if database values not set
-      const dbAutoFixed = file.issuesAutoFixed ?? autoFixedIssues.length;
-      const dbQuickFix = file.issuesQuickFix ?? quickFixIssues.length;
-      const dbManual = file.issuesManual ?? manualIssues.length;
-      const dbEscalated = file.escalatedToManual ?? escalatedToManual;
+      // Use extracted array lengths for consistency between summary and breakdown
+      // The breakdown arrays are what the UI displays, so summary must match
+      const displayAutoFixed = autoFixedIssues.length;
+      const displayQuickFix = quickFixIssues.length;
+      const displayManual = manualIssues.length;
+      const displayEscalated = escalatedToManual;
+      
+      // Log if there's a mismatch with database values for debugging
+      if (file.issuesAutoFixed !== null && file.issuesAutoFixed !== displayAutoFixed) {
+        logger.warn(`[getBatchFile] Auto-fixed count mismatch: DB=${file.issuesAutoFixed}, Display=${displayAutoFixed}`);
+      }
 
       const response = {
         fileId: file.id,
@@ -513,15 +518,15 @@ class BatchController {
         status: file.status,
         auditScore: file.auditScore,
         issuesFound: file.issuesFound,
-        issuesAutoFixed: dbAutoFixed,
-        issuesQuickFix: dbQuickFix,
-        issuesManual: dbManual,
-        escalatedToManual: dbEscalated,
+        issuesAutoFixed: displayAutoFixed,
+        issuesQuickFix: displayQuickFix,
+        issuesManual: displayManual,
+        escalatedToManual: displayEscalated,
         quickFixesApplied: file.quickFixesApplied || quickFixIssues.filter((i: Record<string, unknown>) => i.status === 'completed').length,
         remainingQuickFix: file.remainingQuickFix ?? quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
         remainingManual: file.remainingManual ?? manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
-        quickFixCount: dbQuickFix,
-        manualCount: dbManual,
+        quickFixCount: displayQuickFix,
+        manualCount: displayManual,
         originalS3Key: file.storagePath,
         remediatedS3Key: file.remediatedFilePath,
         auditJobId: file.auditJobId,
