@@ -284,25 +284,6 @@ class AutoRemediationService {
         }
       }
 
-      for (const task of quickFixTasks) {
-        modifications.push({
-          issueCode: task.issueCode,
-          taskId: task.id,
-          success: false,
-          description: 'Requires Quick Fix Panel - user input needed',
-          status: 'skipped',
-        });
-      }
-
-      for (const task of manualTasks) {
-        modifications.push({
-          issueCode: task.issueCode,
-          taskId: task.id,
-          success: false,
-          description: 'Requires manual code editing',
-          status: 'skipped',
-        });
-      }
 
       const remediatedBuffer = await epubModifier.saveEPUB(zip);
       const remediatedFileName = fileName.replace(/\.epub$/i, '_remediated.epub');
