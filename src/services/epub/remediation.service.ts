@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
+import { wcagCriteriaService } from '../validation/wcag-criteria.service';
 import {
   getFixType,
   FixType,
@@ -851,21 +852,98 @@ class RemediationService {
       throw new Error('Original job not found');
     }
 
-    const acrCriteria = pendingTasks.map(task => ({
-      id: `acr-${task.id}`,
-      code: task.issueCode,
-      description: task.issueMessage,
-      severity: task.severity,
-      location: task.location,
-      status: 'not_verified' as const,
-      wcagCriteria: Array.isArray(task.wcagCriteria)
-        ? task.wcagCriteria.join(', ')
-        : task.wcagCriteria || null,
-      sourceTaskId: task.id,
-      verifiedBy: null,
-      verifiedAt: null,
-      notes: null,
-    }));
+    // Group tasks by WCAG criterion to create proper VPAT criteria entries
+    const criteriaMap = new Map<string, {
+      id: string;
+      name: string;
+      level: 'A' | 'AA' | 'AAA';
+      tasks: typeof pendingTasks;
+    }>();
+
+    for (const task of pendingTasks) {
+      // Get WCAG criteria codes from task
+      const wcagCodes = Array.isArray(task.wcagCriteria)
+        ? task.wcagCriteria
+        : task.wcagCriteria
+          ? [task.wcagCriteria]
+          : [];
+
+      if (wcagCodes.length === 0) {
+        // If no WCAG code, try to infer from issue code
+        const inferredCode = this.inferWcagCriterion(task.issueCode);
+        if (inferredCode) {
+          wcagCodes.push(inferredCode);
+        }
+      }
+
+      // Add task to each related criterion
+      for (const code of wcagCodes) {
+        const criterion = wcagCriteriaService.getCriteriaById(code);
+        if (criterion) {
+          if (!criteriaMap.has(code)) {
+            criteriaMap.set(code, {
+              id: code,
+              name: criterion.name,
+              level: criterion.level,
+              tasks: [],
+            });
+          }
+          criteriaMap.get(code)!.tasks.push(task);
+        }
+      }
+    }
+
+    // Build ACR criteria from grouped tasks
+    const acrCriteria = Array.from(criteriaMap.values()).map(entry => {
+      // Combine issue descriptions from all related tasks
+      const descriptions = entry.tasks.map(t => t.issueMessage).filter(Boolean);
+      const locations = entry.tasks.map(t => t.location).filter(Boolean);
+      
+      return {
+        id: entry.id,
+        name: entry.name,
+        level: entry.level,
+        code: entry.tasks[0]?.issueCode || null,
+        description: descriptions.join('; '),
+        severity: entry.tasks[0]?.severity || 'medium',
+        location: (locations.length > 0 ? locations.join(', ') : null) as string | null,
+        status: 'not_verified' as const,
+        wcagCriteria: entry.id as string | null,
+        sourceTaskIds: entry.tasks.map(t => t.id),
+        issueCount: entry.tasks.length,
+        verifiedBy: null,
+        verifiedAt: null,
+        notes: null,
+      };
+    });
+
+    // Also include unmapped tasks with fallback identifiers
+    const unmappedTasks = pendingTasks.filter(task => {
+      const wcagCodes = Array.isArray(task.wcagCriteria)
+        ? task.wcagCriteria
+        : task.wcagCriteria ? [task.wcagCriteria] : [];
+      const inferredCode = this.inferWcagCriterion(task.issueCode);
+      return wcagCodes.length === 0 && !inferredCode;
+    });
+
+    for (const task of unmappedTasks) {
+      acrCriteria.push({
+        id: task.issueCode || `issue-${task.id.slice(0, 8)}`,
+        name: task.issueMessage || 'Accessibility Issue',
+        level: 'A' as const,
+        code: task.issueCode || null,
+        description: task.issueMessage || '',
+        severity: task.severity,
+        location: task.location || null,
+        status: 'not_verified' as const,
+        wcagCriteria: null as string | null,
+        sourceTaskIds: [task.id],
+        issueCount: 1,
+        verifiedBy: null,
+        verifiedAt: null,
+        notes: null,
+      });
+    }
 
     const acrWorkflow = {
       sourceJobId: jobId,
@@ -1285,6 +1363,72 @@ class RemediationService {
     };
 
     return names[fixType] || fixType;
+  }
+
+  /**
+   * Infer WCAG criterion from issue code
+   */
+  private inferWcagCriterion(issueCode: string | undefined): string | null {
+    if (!issueCode) return null;
+
+    // Map common issue codes to WCAG criteria
+    const issueToWcagMap: Record<string, string> = {
+      // Image alt text issues -> 1.1.1 Non-text Content
+      'EPUB-IMG-001': '1.1.1',
+      'IMG-ALT': '1.1.1',
+      'missing-alt': '1.1.1',
+      'image-alt': '1.1.1',
+      
+      // Structure issues -> 1.3.1 Info and Relationships
+      'EPUB-STRUCT-002': '1.3.1',
+      'EPUB-STRUCT-003': '1.3.1',
+      'EPUB-STRUCT-004': '1.3.1',
+      'table-headers': '1.3.1',
+      'heading-hierarchy': '1.3.1',
+      'landmark-roles': '1.3.1',
+      
+      // Language issues -> 3.1.1 Language of Page
+      'EPUB-META-001': '3.1.1',
+      'EPUB-SEM-001': '3.1.1',
+      'html-lang': '3.1.1',
+      'document-language': '3.1.1',
+      
+      // Contrast issues -> 1.4.3 Contrast (Minimum)
+      'color-contrast': '1.4.3',
+      'contrast': '1.4.3',
+      
+      // Link issues -> 2.4.4 Link Purpose (In Context)
+      'EPUB-SEM-002': '2.4.4',
+      'empty-links': '2.4.4',
+      'link-name': '2.4.4',
+      
+      // Navigation issues -> 2.4.1 Bypass Blocks
+      'EPUB-NAV-001': '2.4.1',
+      'skip-navigation': '2.4.1',
+      'bypass-blocks': '2.4.1',
+      
+      // Figure structure -> 1.1.1 Non-text Content
+      'EPUB-FIG-001': '1.1.1',
+      'figure-caption': '1.1.1',
+      
+      // Metadata issues (accessibility features)
+      'EPUB-META-002': '4.1.2',
+      'EPUB-META-003': '4.1.2',
+      'EPUB-META-004': '4.1.2',
+    };
+
+    // Check direct match
+    if (issueToWcagMap[issueCode]) {
+      return issueToWcagMap[issueCode];
+    }
+
+    // Check if issue code contains WCAG pattern (e.g., "WCAG-1.1.1")
+    const wcagPattern = issueCode.match(/(\d+\.\d+\.\d+)/);
+    if (wcagPattern) {
+      return wcagPattern[1];
+    }
+
+    return null;
   }
 
   /**
