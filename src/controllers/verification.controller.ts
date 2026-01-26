@@ -13,7 +13,9 @@ const SubmitVerificationSchema = z.object({
 
 const BulkVerificationSchema = z.object({
   itemIds: z.array(z.string().min(1)),
-  status: z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED']),
+  status: z.string().transform(val => val.toUpperCase()).pipe(
+    z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED'])
+  ),
   method: z.string().min(1),
   notes: z.string().optional().default('')
 });
