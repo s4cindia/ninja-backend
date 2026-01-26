@@ -822,7 +822,12 @@ class RemediationService {
     return resolvedTaskIds;
   }
 
-  async transferToAcr(jobId: string): Promise<{
+  async transferToAcr(jobId: string, options?: {
+    edition?: string;
+    productName?: string;
+    vendor?: string;
+    contactEmail?: string;
+  }): Promise<{
     acrWorkflowId: string;
     transferredTasks: number;
     message: string;
@@ -866,8 +871,12 @@ class RemediationService {
       sourceJobId: jobId,
       fileName: plan.fileName,
       epubTitle: plan.fileName,
+      productName: options?.productName || plan.fileName,
       status: 'needs_verification',
       sourceType: 'remediation',
+      edition: options?.edition || null,
+      vendor: options?.vendor || null,
+      contactEmail: options?.contactEmail || null,
       totalCriteria: pendingTasks.length,
       verifiedCount: 0,
       criteria: acrCriteria,

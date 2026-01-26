@@ -83,13 +83,14 @@ export class BatchAcrGeneratorService {
       return this.generateAggregateAcr(batchId, tenantId, userId, options);
     }
 
-    return this.generateIndividualAcrs(batchId, tenantId, userId);
+    return this.generateIndividualAcrs(batchId, tenantId, userId, options);
   }
 
   async generateIndividualAcrs(
     batchId: string,
     tenantId: string,
-    userId: string
+    userId: string,
+    options?: BatchAcrOptions
   ): Promise<IndividualAcrGenerationResult> {
     logger.info(`Generating individual ACRs for batch ${batchId}`);
 
@@ -111,7 +112,13 @@ export class BatchAcrGeneratorService {
 
     for (const file of successfulFiles) {
       try {
-        const result = await remediationService.transferToAcr(file.auditJobId!);
+        const transferOptions = options ? {
+          edition: options.edition,
+          productName: options.batchName,
+          vendor: options.vendor,
+          contactEmail: options.contactEmail,
+        } : undefined;
+        const result = await remediationService.transferToAcr(file.auditJobId!, transferOptions);
         acrWorkflowIds.push(result.acrWorkflowId);
         logger.info(`Created ACR workflow ${result.acrWorkflowId} for file ${file.originalName}`);
       } catch (error) {
