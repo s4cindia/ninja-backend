@@ -101,6 +101,8 @@ class BatchController {
 
       return res.json({
         success: true,
+        data: null,
+        error: null,
         message: 'File removed from batch',
       });
     } catch (error) {
@@ -395,10 +397,12 @@ class BatchController {
         return res.status(result.filesProcessed > 0 ? 207 : 400).json({
           success: false,
           data: {
-            message: 'Some quick-fixes failed to apply',
             filesProcessed: result.filesProcessed,
             issuesFixed: result.issuesFixed,
-            errors: result.errors,
+          },
+          error: {
+            message: 'Some quick-fixes failed to apply',
+            details: result.errors,
           },
         });
       }
@@ -625,17 +629,38 @@ class BatchController {
       const localPath = filePath.startsWith('/') ? filePath : path.join(process.cwd(), filePath);
       
       if (fs.existsSync(localPath)) {
-        // For local files, return a direct download URL pointing to our serve endpoint
+        // For local files, return a direct download URL pointing to our serve endpoint with signed token
         const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https';
         const host = req.headers['x-forwarded-host'] || req.headers.host || req.get('host');
         const baseUrl = `${protocol}://${host}`;
-        const downloadUrl = `${baseUrl}/api/v1/batch/${batchId}/files/${fileId}/serve${version === 'original' ? '?version=original' : ''}`;
+        
+        // Generate signed token for time-bound access
+        const expiresIn = 3600;
+        const expiresAt = Date.now() + (expiresIn * 1000);
+        const fileVersion = version === 'original' ? 'original' : 'latest';
+        const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET;
+        
+        if (!secret) {
+          return res.status(500).json({
+            success: false,
+            error: {
+              message: 'Server configuration error: download token secret not configured',
+              code: 'SECRET_NOT_CONFIGURED',
+            },
+          });
+        }
+        
+        const crypto = require('crypto');
+        const tokenPayload = `${batchId}:${fileId}:${fileVersion}:${expiresAt}`;
+        const signedToken = crypto.createHmac('sha256', secret).update(tokenPayload).digest('hex');
+        
+        const downloadUrl = `${baseUrl}/api/v1/batch/${batchId}/files/${fileId}/serve?token=${signedToken}&expires=${expiresAt}${version === 'original' ? '&version=original' : ''}`;
         return res.json({
           success: true,
           data: {
             downloadUrl: downloadUrl,
             fileName: file.originalName || file.fileName,
-            expiresIn: 3600,
+            expiresIn: expiresIn,
           },
         });
       }
@@ -702,12 +727,26 @@ class BatchController {
         });
       }
 
-      // Verify HMAC signature
-      const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET || 'ninja-download-secret';
+      // Verify HMAC signature - require explicit secret configuration
+      const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET;
+      if (!secret) {
+        logger.error('Download token secret not configured - DOWNLOAD_TOKEN_SECRET or SESSION_SECRET required');
+        return res.status(500).json({
+          success: false,
+          error: {
+            message: 'Server configuration error: download token secret not configured',
+            code: 'SECRET_NOT_CONFIGURED',
+          },
+        });
+      }
+      
       const payload = `${batchId}:${fileId}:${version || 'latest'}:${expires}`;
       const expectedToken = crypto.createHmac('sha256', secret).update(payload).digest('hex');
       
-      if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken))) {
+      // Check buffer lengths before timingSafeEqual to avoid throwing
+      const tokenBuffer = Buffer.from(token);
+      const expectedBuffer = Buffer.from(expectedToken);
+      if (tokenBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(tokenBuffer, expectedBuffer)) {
         return res.status(403).json({
           success: false,
           error: {
@@ -789,12 +828,15 @@ class BatchController {
   static generateDownloadUrl(batchId: string, fileId: string, version: string = 'latest', expiresInMs: number = 3600000): string {
     const crypto = require('crypto');
     const expires = Date.now() + expiresInMs;
-    const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET || 'ninja-download-secret';
+    const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET;
+    if (!secret) {
+      throw new Error('Download token secret not configured - set DOWNLOAD_TOKEN_SECRET or SESSION_SECRET');
+    }
     const payload = `${batchId}:${fileId}:${version}:${expires}`;
     const token = crypto.createHmac('sha256', secret).update(payload).digest('hex');
     
     const baseUrl = process.env.API_BASE_URL || '';
-    return `${baseUrl}/api/v1/batches/${batchId}/files/${fileId}/download?version=${version}&expires=${expires}&token=${token}`;
+    return `${baseUrl}/api/v1/batch/${batchId}/files/${fileId}/download?version=${version}&expires=${expires}&token=${token}`;
   }
 
   private extractIssuesFromPlan(planResults: unknown, auditResults: unknown, remediationTasks: unknown[] = []): {
@@ -984,11 +1026,13 @@ class BatchController {
     if (match) return match[1];
 
     // Map common prefixes to WCAG criteria
+    // Note: EPUB-SEM-002 maps to 2.4.4 (Link Purpose) per PR requirements
     const criterionMap: Record<string, string> = {
       'EPUB-IMG': '1.1.1',      // Non-text content
       'EPUB-META': '3.1.1',     // Language of page
       'EPUB-STRUCT': '1.3.1',   // Info and relationships
-      'EPUB-SEM': '4.1.2',      // Name, role, value
+      'EPUB-SEM-002': '2.4.4',  // Link Purpose (In Context) - specific mapping
+      'EPUB-SEM': '2.4.4',      // Link Purpose (default for semantic issues)
       'EPUB-NAV': '2.4.1',      // Bypass blocks
       'EPUB-FIG': '1.1.1',      // Non-text content (figures)
       'METADATA': '3.1.1',      // Language
