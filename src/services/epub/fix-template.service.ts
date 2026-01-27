@@ -354,7 +354,7 @@ const FIX_TEMPLATES: Record<string, FixTemplate> = {
       after: '<metadata>\n  <meta property="schema:accessibilitySummary">This publication meets basic accessibility requirements.</meta>\n</metadata>',
       description: 'Add schema:accessibilitySummary metadata',
     },
-    wcagCriteria: '4.1.2',
+    wcagCriteria: null, // EPUB accessibility metadata requirement, no direct WCAG equivalent
     canAutoFix: true,
     canQuickFix: false,
   },
@@ -426,7 +426,23 @@ class FixTemplateService {
   }
 
   hasTemplate(issueCode: string): boolean {
-    return !!FIX_TEMPLATES[issueCode] || !!FIX_TEMPLATES[issueCode.toUpperCase()];
+    // Check exact match first
+    if (FIX_TEMPLATES[issueCode] || FIX_TEMPLATES[issueCode.toUpperCase()]) {
+      return true;
+    }
+    
+    // Check prefix match (mirrors getTemplate's logic)
+    const upperCode = issueCode.toUpperCase();
+    const codePrefix = upperCode.replace(/-\d+$/, '');
+    
+    for (const key of Object.keys(FIX_TEMPLATES)) {
+      const keyPrefix = key.replace(/-\d+$/, '');
+      if (codePrefix === keyPrefix) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 }
 
