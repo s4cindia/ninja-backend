@@ -82,6 +82,24 @@ class AutoRemediationService {
     'EPUB-FIG-001': async (zip) => {
       return epubModifier.addFigureStructure(zip);
     },
+    // ACE metadata code handlers - map to equivalent EPUB-META handlers
+    'METADATA-ACCESSMODE': async (zip) => {
+      return epubModifier.addAccessModes(zip, { textual: true });
+    },
+    'METADATA-ACCESSMODESUFFICIENT': async (zip) => {
+      // addAccessModes adds both accessMode and accessModeSufficient when textual: true
+      return epubModifier.addAccessModes(zip, { textual: true });
+    },
+    'METADATA-ACCESSIBILITYFEATURE': async (zip) => {
+      return epubModifier.addAccessibilityMetadata(zip);
+    },
+    'METADATA-ACCESSIBILITYHAZARD': async (zip) => {
+      return epubModifier.addAccessibilityHazard(zip);
+    },
+    'METADATA-ACCESSIBILITYSUMMARY': async (zip) => {
+      const result = await epubModifier.addAccessibilitySummary(zip);
+      return [result];
+    },
     'COLOR-CONTRAST': async (_zip, options) => {
       const contrastIssues = options?.contrastIssues as Array<{
         filePath: string;

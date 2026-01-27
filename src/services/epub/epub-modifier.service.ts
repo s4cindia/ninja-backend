@@ -748,6 +748,63 @@ class EPUBModifierService {
     };
   }
 
+  async addAccessibilityHazard(zip: JSZip): Promise<ModificationResult[]> {
+    const results: ModificationResult[] = [];
+    const opf = await this.getOPF(zip);
+    if (!opf) {
+      return [{
+        success: false,
+        filePath: 'content.opf',
+        modificationType: 'add_accessibility_hazard',
+        description: 'Failed to locate OPF file',
+      }];
+    }
+
+    let modified = opf.content;
+    const metadataToAdd: string[] = [];
+
+    const hasHazard = (value: string): boolean => {
+      const escapedVal = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(
+        `<meta[^>]*property\\s*=\\s*["']schema:accessibilityHazard["'][^>]*>\\s*${escapedVal}\\s*</meta>`,
+        'i'
+      );
+      return pattern.test(modified);
+    };
+
+    // Default hazards to declare (none = safe publication)
+    const hazards = ['noFlashingHazard', 'noMotionSimulationHazard', 'noSoundHazard'];
+
+    for (const hazard of hazards) {
+      if (!hasHazard(hazard)) {
+        metadataToAdd.push(`<meta property="schema:accessibilityHazard">${hazard}</meta>`);
+      }
+    }
+
+    if (metadataToAdd.length === 0) {
+      return [{
+        success: true,
+        filePath: opf.path,
+        modificationType: 'add_accessibility_hazard',
+        description: 'Accessibility hazard declarations already present',
+      }];
+    }
+
+    const insertContent = '\n    ' + metadataToAdd.join('\n    ');
+    modified = modified.replace('</metadata>', insertContent + '\n  </metadata>');
+    await this.updateOPF(zip, opf.path, modified);
+
+    results.push({
+      success: true,
+      filePath: opf.path,
+      modificationType: 'add_accessibility_hazard',
+      description: `Added ${metadataToAdd.length} accessibility hazard declarations`,
+      after: metadataToAdd.join('\n'),
+    });
+
+    return results;
+  }
+
   async addHtmlLangAttributes(
     zip: JSZip,
     language: string = 'en'
@@ -1128,6 +1185,7 @@ class EPUBModifierService {
           { pattern: /(<article)(\s[^>]*>|>)/i, name: 'article' },
         ];
 
+        let foundCandidate = false;
         for (const { pattern, name } of candidates) {
           const match = content.match(pattern);
           if (match) {
@@ -1144,7 +1202,22 @@ class EPUBModifierService {
             changes.push(`Added role="main" to <${name}>`);
             modified = true;
             mainLandmarkExists = true;
+            foundCandidate = true;
             break;
+          }
+        }
+
+        // Fallback: If no suitable element found, wrap body content with <main role="main">
+        if (!foundCandidate && !mainLandmarkExists) {
+          const bodyMatch = content.match(/<body([^>]*)>([\s\S]*?)<\/body>/i);
+          if (bodyMatch) {
+            const [fullBodyMatch, bodyAttrs, bodyContent] = bodyMatch;
+            // Wrap body content with <main role="main">
+            const wrappedContent = `<body${bodyAttrs}>\n<main role="main">\n${bodyContent.trim()}\n</main>\n</body>`;
+            content = content.replace(fullBodyMatch, wrappedContent);
+            changes.push('Wrapped body content with <main role="main">');
+            modified = true;
+            mainLandmarkExists = true;
           }
         }
       }
@@ -1173,7 +1246,7 @@ class EPUBModifierService {
           success: false,
           filePath: 'all',
           modificationType: 'add_aria_landmarks',
-          description: 'Could not add main landmark - no suitable element found (main, section, or article)',
+          description: 'Could not add main landmark - no body element found',
         });
       }
     }
