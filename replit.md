@@ -25,6 +25,7 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
     -   **Section 508 Mapping & FPC Validation:** Maps WCAG 2.1 AA to Section 508 Refresh (E205, E205.4, Chapter 3 FPC, Chapter 6 documentation).
 -   **ACR/VPAT Generation:**
     -   **Multi-Edition Support:** Generates VPAT 2.5 editions (508, WCAG, EU, INT) with distinct criteria sets.
+    -   **Batch ACR Generation:** Supports batch ACR creation in two modes: individual (1 ACR per EPUB) and aggregate (1 ACR for all EPUBs). Individual mode implemented with graceful failure handling and ACR generation history tracking.
     -   **Confidence Level Indicators:** Assigns HIGH, MEDIUM, LOW, or MANUAL_REQUIRED confidence to automated checks, guiding human verification.
     -   **Human Verification Workflow:** Provides a complete workflow for manual verification, including queue management, bulk verification, audit trails, and ACR finalization gates.
     -   **Nuanced Compliance Status:** Conformance determination engine enforcing accurate status (Supports, Partially Supports, Does Not Support, Not Applicable) with mandatory remarks and credibility warnings.

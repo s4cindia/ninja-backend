@@ -6,6 +6,61 @@ import { logger } from '../lib/logger';
 
 const router = Router();
 
+router.get('/subscribe', async (req: Request, res: Response) => {
+  const channel = req.query.channel as string;
+  const token = (req.query.token as string) || req.headers.authorization?.replace('Bearer ', '');
+
+  if (!token) {
+    res.status(401).json({ success: false, error: { message: 'No token provided' } });
+    return;
+  }
+
+  if (!channel) {
+    res.status(400).json({ success: false, error: { message: 'Channel is required' } });
+    return;
+  }
+
+  try {
+    const jwtSecret = process.env.JWT_SECRET || process.env.AUTH_SECRET;
+    if (!jwtSecret) {
+      logger.error('JWT_SECRET not configured');
+      res.status(500).json({ success: false, error: { message: 'Server configuration error' } });
+      return;
+    }
+
+    const decoded = jwt.verify(token, jwtSecret) as {
+      userId: string;
+      tenantId: string;
+      sub?: string;
+    };
+
+    const userId = decoded.userId || decoded.sub;
+    const tenantId = decoded.tenantId;
+
+    if (!userId || !tenantId) {
+      res.status(401).json({ success: false, error: { message: 'Invalid token payload' } });
+      return;
+    }
+
+    logger.info(`[SSE] Client subscribing to channel ${channel}, user ${userId}`);
+
+    const clientId = sseService.addClient(res, tenantId);
+    sseService.subscribeToChannel(clientId, channel);
+    sseService.sendToClient(clientId, { type: 'subscribed', channel });
+  } catch (err) {
+    if (err instanceof jwt.JsonWebTokenError) {
+      res.status(401).json({ success: false, error: { message: 'Invalid token' } });
+      return;
+    }
+    if (err instanceof jwt.TokenExpiredError) {
+      res.status(401).json({ success: false, error: { message: 'Token expired' } });
+      return;
+    }
+    logger.error(`[SSE] Authentication error: ${err}`);
+    res.status(401).json({ success: false, error: { message: 'Authentication failed' } });
+  }
+});
+
 router.get('/batch/:batchId/progress', async (req: Request, res: Response) => {
   const { batchId } = req.params;
 

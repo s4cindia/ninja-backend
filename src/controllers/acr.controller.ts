@@ -14,6 +14,13 @@ import { acrExporterService, ExportOptions, ExportFormat } from '../services/acr
 import { acrVersioningService } from '../services/acr/acr-versioning.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
 import { acrService } from '../services/acr.service';
+import { batchAcrGeneratorService } from '../services/acr/batch-acr-generator.service';
+import { 
+  BatchNotFoundError, 
+  TenantMismatchError, 
+  IncompleteBatchError,
+  InvalidAcrOptionsError 
+} from '../types/batch-acr.types';
 import { z } from 'zod';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -323,12 +330,155 @@ export class AcrController {
       };
 
       // 1. Find the source Job (ACR_WORKFLOW type) - this has all the analysis data
-      const sourceJob = await prisma.job.findFirst({
+      // First try finding as ACR_WORKFLOW job directly
+      let sourceJob = await prisma.job.findFirst({
         where: { 
           id: acrId,
           type: 'ACR_WORKFLOW'
         }
       });
+
+      // If not found, check if acrId is an AcrJob.id and find the source Job via jobId
+      if (!sourceJob) {
+        const acrJobRecord = await prisma.acrJob.findFirst({
+          where: { id: acrId }
+        });
+        
+        if (acrJobRecord) {
+          // Look for ACR_WORKFLOW job that references this job
+          sourceJob = await prisma.job.findFirst({
+            where: {
+              type: 'ACR_WORKFLOW',
+              input: {
+                path: ['sourceJobId'],
+                equals: acrJobRecord.jobId
+              }
+            }
+          });
+          
+          // If still no ACR_WORKFLOW job, create export from AcrJob data directly
+          if (!sourceJob) {
+            // Build export from AcrJob and its criteria
+            const acrJobWithCriteria = await prisma.acrJob.findFirst({
+              where: { id: acrId },
+              include: { criteria: true }
+            });
+            
+            if (acrJobWithCriteria) {
+              // Get the source job for document title AND criteria from output
+              const origJob = await prisma.job.findFirst({
+                where: { id: acrJobWithCriteria.jobId }
+              });
+              
+              const origJobOutput = origJob?.output as Record<string, unknown> | null;
+              const documentTitle = acrJobWithCriteria.documentTitle || 
+                                   origJobOutput?.epubTitle as string ||
+                                   'Unnamed Product';
+              
+              // Build criteria - first try AcrCriterionReview, then fallback to Job output
+              let criteriaForExport: AcrCriterion[] = [];
+              
+              if (acrJobWithCriteria.criteria.length > 0) {
+                // Use database-stored criteria reviews
+                criteriaForExport = acrJobWithCriteria.criteria.map(c => ({
+                  id: c.criterionNumber,
+                  criterionId: c.criterionId,
+                  name: c.criterionName,
+                  level: c.level as 'A' | 'AA' | 'AAA',
+                  conformanceLevel: (c.conformanceLevel || c.aiStatus || 'Not Applicable') as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable',
+                  remarks: c.reviewerNotes || ''
+                }));
+              } else if (origJobOutput?.acrAnalysis) {
+                // Fallback to Job output acrAnalysis.criteria
+                const acrAnalysis = origJobOutput.acrAnalysis as { criteria?: Array<{
+                  id: string;
+                  name: string;
+                  level: string;
+                  status: string;
+                  findings?: string[];
+                  recommendation?: string;
+                }> };
+                
+                if (acrAnalysis.criteria && Array.isArray(acrAnalysis.criteria)) {
+                  criteriaForExport = acrAnalysis.criteria.map(c => {
+                    // Map status to conformance level
+                    const statusMap: Record<string, 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable'> = {
+                      'supports': 'Supports',
+                      'partially_supports': 'Partially Supports',
+                      'does_not_support': 'Does Not Support',
+                      'not_applicable': 'Not Applicable'
+                    };
+                    const conformanceLevel = statusMap[c.status] || 'Not Applicable';
+                    
+                    // Build remarks from findings
+                    const remarks = c.findings?.join('. ') || c.recommendation || '';
+                    
+                    return {
+                      id: c.id,
+                      criterionId: c.id,
+                      name: c.name,
+                      level: c.level as 'A' | 'AA' | 'AAA',
+                      conformanceLevel,
+                      remarks
+                    };
+                  });
+                }
+              }
+              
+              const TOOL_VERSION = '1.0.0';
+              const AI_MODEL_INFO = { name: 'Gemini 2.0', purpose: 'Accessibility Analysis' };
+              const LEGAL_DISCLAIMER = 'This report contains AI-assisted accessibility analysis. Results should be verified by accessibility professionals.';
+              
+              const acrDocumentFallback: AcrDocument = {
+                id: acrId,
+                edition: acrJobWithCriteria.edition as AcrEdition,
+                productInfo: {
+                  name: documentTitle,
+                  version: '1.0',
+                  description: `Accessibility Conformance Report for ${documentTitle}`,
+                  vendor: 'Unknown',
+                  contactEmail: 'accessibility@example.com',
+                  evaluationDate: acrJobWithCriteria.createdAt
+                },
+                evaluationMethods: [
+                  { type: 'hybrid', description: 'AI-assisted automated analysis with human verification' }
+                ],
+                criteria: criteriaForExport,
+                generatedAt: new Date(),
+                version: 1,
+                status: acrJobWithCriteria.status === 'completed' ? 'final' : 'draft',
+                methodology: exportOptions.includeMethodology ? {
+                  assessmentDate: acrJobWithCriteria.createdAt,
+                  toolVersion: TOOL_VERSION,
+                  aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.purpose})`,
+                  disclaimer: LEGAL_DISCLAIMER
+                } : undefined,
+                footerDisclaimer: LEGAL_DISCLAIMER
+              };
+              
+              const exportResultFallback = await acrExporterService.exportAcr(acrDocumentFallback, exportOptions);
+              
+              // Read file and return as base64
+              const fsFallback = await import('fs/promises');
+              const pathFallback = await import('path');
+              const EXPORTS_DIR_FALLBACK = pathFallback.join(process.cwd(), 'exports');
+              const filepathFallback = pathFallback.join(EXPORTS_DIR_FALLBACK, exportResultFallback.filename);
+              const fileBufferFallback = await fsFallback.readFile(filepathFallback);
+              const base64ContentFallback = fileBufferFallback.toString('base64');
+
+              res.status(200).json({
+                success: true,
+                data: {
+                  ...exportResultFallback,
+                  content: base64ContentFallback
+                },
+                message: `ACR exported successfully as ${exportOptions.format.toUpperCase()}`
+              });
+              return;
+            }
+          }
+        }
+      }
 
       if (!sourceJob) {
         res.status(404).json({
@@ -1445,6 +1595,299 @@ export class AcrController {
       return res.status(500).json({
         success: false,
         error: 'Failed to finalize ACR',
+      });
+    }
+  }
+
+  async generateBatchAcr(req: Request, res: Response) {
+    try {
+      const { batchId, mode, options } = req.body;
+      const tenantId = req.user!.tenantId;
+      const userId = req.user!.id;
+
+      logger.info(`[Batch ACR] Generating ${mode} ACR for batch ${batchId}`);
+
+      const result = await batchAcrGeneratorService.generateBatchAcr(
+        batchId,
+        tenantId,
+        userId,
+        mode,
+        options
+      );
+
+      return res.status(201).json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('[Batch ACR] Generation failed', error instanceof Error ? error : undefined);
+      
+      let statusCode = 500;
+      let errorCode = 'BATCH_ACR_GENERATION_FAILED';
+      
+      if (error instanceof BatchNotFoundError) {
+        statusCode = 404;
+        errorCode = 'BATCH_NOT_FOUND';
+      } else if (error instanceof TenantMismatchError) {
+        statusCode = 403;
+        errorCode = 'TENANT_MISMATCH';
+      } else if (error instanceof IncompleteBatchError) {
+        statusCode = 400;
+        errorCode = 'INCOMPLETE_BATCH';
+      } else if (error instanceof InvalidAcrOptionsError) {
+        statusCode = 400;
+        errorCode = 'INVALID_ACR_OPTIONS';
+      }
+      
+      return res.status(statusCode).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to generate batch ACR',
+          code: errorCode,
+        },
+      });
+    }
+  }
+
+  async getBatchAcr(req: Request, res: Response) {
+    try {
+      const { batchAcrId } = req.params;
+      const tenantId = req.user!.tenantId;
+
+      const acrJob = await prisma.job.findFirst({
+        where: {
+          id: batchAcrId,
+          tenantId,
+          type: 'ACR_WORKFLOW',
+          isBatchAcr: true,
+        },
+      });
+
+      if (!acrJob) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch ACR not found',
+            code: 'BATCH_ACR_NOT_FOUND',
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          acrDocument: acrJob.output,
+          metadata: {
+            id: acrJob.id,
+            status: acrJob.status,
+            createdAt: acrJob.createdAt,
+            completedAt: acrJob.completedAt,
+            sourceJobIds: acrJob.batchSourceJobIds,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('[Batch ACR] Retrieval failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to retrieve batch ACR',
+          code: 'BATCH_ACR_RETRIEVAL_FAILED',
+        },
+      });
+    }
+  }
+
+  async exportBatchAcr(req: Request, res: Response) {
+    try {
+      const { batchAcrId } = req.params;
+      const { format, includeMethodology } = req.body;
+      const tenantId = req.user!.tenantId;
+      const userId = req.user!.id;
+
+      const acrJob = await prisma.job.findFirst({
+        where: {
+          id: batchAcrId,
+          tenantId,
+          type: 'ACR_WORKFLOW',
+          isBatchAcr: true,
+        },
+      });
+
+      if (!acrJob) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch ACR not found',
+            code: 'BATCH_ACR_NOT_FOUND',
+          },
+        });
+      }
+
+      const acrJobRecord = await prisma.acrJob.findFirst({
+        where: { 
+          jobId: batchAcrId,
+          tenantId,
+          userId,
+        },
+        include: { criteria: true },
+      });
+
+      if (!acrJobRecord) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'ACR job record not found',
+            code: 'ACR_JOB_NOT_FOUND',
+          },
+        });
+      }
+
+      const jobOutput = acrJob.output as Record<string, unknown> | null;
+      const documentTitle = (jobOutput?.documentTitle as string) || 
+                           (jobOutput?.batchName as string) ||
+                           'Batch ACR Document';
+
+      const conformanceLevelMap: Record<string, AcrCriterion['conformanceLevel']> = {
+        'supports': 'Supports',
+        'partially_supports': 'Partially Supports',
+        'does_not_support': 'Does Not Support',
+        'not_applicable': 'Not Applicable',
+        'Supports': 'Supports',
+        'Partially Supports': 'Partially Supports',
+        'Does Not Support': 'Does Not Support',
+        'Not Applicable': 'Not Applicable',
+        'Not Evaluated': 'Not Applicable'
+      };
+
+      const criteria: AcrCriterion[] = acrJobRecord.criteria.map((review) => {
+        const rawConformance = review.conformanceLevel || 'Not Applicable';
+        const conformanceLevel = conformanceLevelMap[rawConformance] || 'Not Applicable';
+        const level = (review.level as 'A' | 'AA' | 'AAA') || 'A';
+        const remarks = review.reviewerNotes || '';
+        const isHumanVerified = !!review.reviewedBy;
+        const tag = isHumanVerified ? '[HUMAN-VERIFIED]' : '[AI-SUGGESTED]';
+        const attributedRemarks = remarks ? `${tag} ${remarks.trim()}` : '';
+
+        return {
+          id: review.criterionId,
+          criterionId: review.criterionId,
+          name: review.criterionName,
+          level,
+          conformanceLevel,
+          remarks: remarks.trim(),
+          attributionTag: isHumanVerified ? 'HUMAN_VERIFIED' as const : 'AI_SUGGESTED' as const,
+          attributedRemarks
+        };
+      });
+
+      const acrDocument: AcrDocument = {
+        id: acrJobRecord.id,
+        edition: (acrJobRecord.edition || 'VPAT2.5-INT') as AcrEdition,
+        productInfo: {
+          name: documentTitle,
+          version: '1.0.0',
+          description: 'Batch Accessibility Conformance Report',
+          vendor: (jobOutput?.vendor as string) || 'S4Carlisle',
+          contactEmail: (jobOutput?.contactEmail as string) || 'accessibility@s4carlisle.com',
+          evaluationDate: acrJob.createdAt,
+        },
+        evaluationMethods: [
+          { type: 'hybrid', tools: ['Ninja Platform v1.0', 'Ace by DAISY'], aiModels: ['Google Gemini'], description: 'Human verification and AI-assisted analysis' }
+        ],
+        criteria,
+        generatedAt: new Date(),
+        version: 1,
+        status: acrJobRecord.status === 'completed' ? 'final' : 'draft',
+        methodology: includeMethodology ? {
+          assessmentDate: acrJob.createdAt,
+          toolVersion: TOOL_VERSION,
+          aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.purpose})`,
+          disclaimer: LEGAL_DISCLAIMER
+        } : undefined,
+        footerDisclaimer: LEGAL_DISCLAIMER
+      };
+
+      const exportOptions: ExportOptions = {
+        format: format as ExportFormat,
+        includeMethodology: includeMethodology ?? true,
+        includeAttribution: true,
+      };
+
+      const exportResult = await acrExporterService.exportAcr(acrDocument, exportOptions);
+
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const EXPORTS_DIR = path.join(process.cwd(), 'exports');
+      const filepath = path.join(EXPORTS_DIR, exportResult.filename);
+      const fileBuffer = await fs.readFile(filepath);
+      const base64Content = fileBuffer.toString('base64');
+
+      return res.json({
+        success: true,
+        data: {
+          ...exportResult,
+          content: base64Content,
+        },
+      });
+    } catch (error) {
+      logger.error('[Batch ACR] Export failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to export batch ACR',
+          code: 'BATCH_ACR_EXPORT_FAILED',
+        },
+      });
+    }
+  }
+
+  async getBatchAcrHistory(req: Request, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const tenantId = req.user!.tenantId;
+
+      const batchJob = await prisma.job.findFirst({
+        where: {
+          id: batchId,
+          tenantId,
+          type: 'BATCH_VALIDATION',
+        },
+      });
+
+      if (!batchJob) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            message: 'Batch not found',
+            code: 'BATCH_NOT_FOUND',
+          },
+        });
+      }
+
+      const output = batchJob.output as Record<string, unknown> | null;
+      const history = (output?.acrGenerationHistory as unknown[]) || [];
+
+      return res.json({
+        success: true,
+        data: {
+          history,
+          currentAcr: {
+            generated: (output?.acrGenerated as boolean) || false,
+            mode: output?.acrMode as string | undefined,
+            workflowIds: (output?.acrWorkflowIds as string[]) || [],
+            generatedAt: output?.acrGeneratedAt as string | undefined,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('[Batch ACR] History retrieval failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to retrieve ACR history',
+          code: 'BATCH_ACR_HISTORY_FAILED',
+        },
       });
     }
   }

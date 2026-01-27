@@ -13,7 +13,9 @@ const SubmitVerificationSchema = z.object({
 
 const BulkVerificationSchema = z.object({
   itemIds: z.array(z.string().min(1)),
-  status: z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED']),
+  status: z.string().transform(val => val.toUpperCase()).pipe(
+    z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED'])
+  ),
   method: z.string().min(1),
   notes: z.string().optional().default('')
 });
@@ -189,6 +191,8 @@ export class VerificationController {
     try {
       const userId = (req as Request & { user?: { id: string } }).user?.id || 'anonymous';
 
+      logger.info(`[BulkVerify] Request body: ${JSON.stringify(req.body)}`);
+      
       const validatedData = BulkVerificationSchema.parse(req.body);
       
       const verification: SubmitVerificationInput = {
@@ -213,6 +217,7 @@ export class VerificationController {
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
+        logger.warn(`[BulkVerify] Validation failed: ${JSON.stringify(error.issues)}`);
         res.status(400).json({
           success: false,
           error: {

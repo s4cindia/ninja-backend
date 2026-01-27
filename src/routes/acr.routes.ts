@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authorize } from '../middleware/auth.middleware';
 import { authorizeJob, authorizeAcr } from '../middleware/authorize-job.middleware';
+import { validate } from '../middleware/validate.middleware';
 import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
+import { batchAcrGenerateSchema, batchAcrExportSchema } from '../schemas/acr.schemas';
 
 const router = Router();
 
@@ -58,5 +60,28 @@ router.post('/:acrJobId/criteria/:criterionId/review', acrController.saveCriteri
 router.patch('/:acrJobId/criteria/:criterionId', acrController.saveCriterionReview.bind(acrController));
 router.get('/:acrJobId/criteria/:criterionId', acrController.getCriterionDetailsFromJob.bind(acrController));
 router.post('/:acrJobId/reviews/bulk', acrController.saveBulkReviews.bind(acrController));
+
+router.post(
+  '/batch/generate',
+  authorize('ADMIN', 'USER'),
+  validate({ body: batchAcrGenerateSchema }),
+  acrController.generateBatchAcr.bind(acrController)
+);
+
+router.get(
+  '/batch/:batchAcrId',
+  acrController.getBatchAcr.bind(acrController)
+);
+
+router.post(
+  '/batch/:batchAcrId/export',
+  validate({ body: batchAcrExportSchema }),
+  acrController.exportBatchAcr.bind(acrController)
+);
+
+router.get(
+  '/batch/:batchId/history',
+  acrController.getBatchAcrHistory.bind(acrController)
+);
 
 export default router;

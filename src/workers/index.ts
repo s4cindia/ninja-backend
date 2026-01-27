@@ -1,10 +1,11 @@
 import { Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, BatchJobData, BatchJobResult, getBullMQConnection } from '../queues';
+import { QUEUE_NAMES, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, getBullMQConnection } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
+import { processBatchProcessingJob } from './processors/batch-processing.processor';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
 
@@ -49,6 +50,29 @@ export function startWorkers(): void {
         logger.error(`📕 Batch job ${job?.id} failed: ${err.message}`);
       });
       workers.push(batchWorker);
+
+      const batchProcessingWorker = new Worker<BatchProcessingJobData, BatchProcessingJobResult>(
+        QUEUE_NAMES.BATCH_PROCESSING,
+        processBatchProcessingJob,
+        {
+          connection,
+          concurrency: 1,
+          limiter: {
+            max: 5,
+            duration: 60000,
+          },
+        }
+      );
+      batchProcessingWorker.on('completed', (job) => {
+        logger.info(`📗 Batch processing job ${job.id} completed`);
+      });
+      batchProcessingWorker.on('failed', (job, err) => {
+        logger.error(`📕 Batch processing job ${job?.id} failed: ${err.message}`);
+      });
+      batchProcessingWorker.on('error', (err) => {
+        logger.error('[BatchProcessingWorker] Worker error:', err);
+      });
+      workers.push(batchProcessingWorker);
     }
   }
 
