@@ -2359,6 +2359,53 @@ Return JSON only (no markdown):
       });
     }
   },
+
+  async getFixTemplate(req: Request, res: Response) {
+    try {
+      const { issueCode } = req.params;
+      const { suggestion } = req.query;
+
+      if (!issueCode) {
+        return res.status(400).json({
+          success: false,
+          error: 'issueCode parameter is required',
+        });
+      }
+
+      const { fixTemplateService } = await import('../services/epub/fix-template.service');
+      const template = fixTemplateService.getTemplate(issueCode, suggestion as string | undefined);
+
+      return res.json({
+        success: true,
+        data: template,
+      });
+    } catch (error) {
+      logger.error('[Fix Template] Failed to get template', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get fix template',
+      });
+    }
+  },
+
+  async getAllFixTemplates(_req: Request, res: Response) {
+    try {
+      const { fixTemplateService } = await import('../services/epub/fix-template.service');
+      const templates = fixTemplateService.getAllTemplates();
+
+      return res.json({
+        success: true,
+        data: templates,
+        count: templates.length,
+      });
+    } catch (error) {
+      logger.error('[Fix Templates] Failed to get all templates', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get fix templates',
+      });
+    }
+  },
 };
 
 // FIX 2: Interface with nullable path field (at module level)

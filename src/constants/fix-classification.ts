@@ -13,6 +13,12 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   'EPUB-STRUCT-003',
   'EPUB-STRUCT-004',
   'EPUB-FIG-001',
+  // ACE metadata codes - now auto-fixable
+  'METADATA-ACCESSMODE',
+  'METADATA-ACCESSMODESUFFICIENT',
+  'METADATA-ACCESSIBILITYFEATURE',
+  'METADATA-ACCESSIBILITYHAZARD',
+  'METADATA-ACCESSIBILITYSUMMARY',
 ]);
 
 export function getAutoFixableCodes(): Set<string> {
@@ -26,14 +32,11 @@ export function getAutoFixableCodes(): Set<string> {
 export const AUTO_FIXABLE_CODES = BASE_AUTO_FIXABLE_CODES;
 
 export const QUICK_FIXABLE_CODES = new Set([
-  'METADATA-ACCESSMODE',
-  'METADATA-ACCESSMODESUFFICIENT',
-  'METADATA-ACCESSIBILITYFEATURE',
-  'METADATA-ACCESSIBILITYHAZARD',
-  'METADATA-ACCESSIBILITYSUMMARY',
+  // Image issues require user input for alt text
   'EPUB-IMG-001',
   'IMG-001',
   'ACE-IMG-001',
+  // Structural issues that need user review
   'EPUB-STRUCT-002',
   'EPUB-SEM-003',
   'LANDMARK-UNIQUE',

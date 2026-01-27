@@ -65,4 +65,14 @@ router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, e
 router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
 router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.getImage);
 
+router.get('/fix-template/:issueCode', authenticate, epubController.getFixTemplate);
+router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);
+
+// Dev endpoints (no auth) - for testing fix templates
+// Only enabled when explicitly opted in via ENABLE_DEV_ROUTES=true
+if (process.env.ENABLE_DEV_ROUTES === 'true') {
+  router.get('/dev/fix-template/:issueCode', epubController.getFixTemplate);
+  router.get('/dev/fix-templates', epubController.getAllFixTemplates);
+}
+
 export default router;
