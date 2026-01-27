@@ -65,4 +65,7 @@ router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, e
 router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
 router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.getImage);
 
+router.get('/fix-template/:issueCode', authenticate, epubController.getFixTemplate);
+router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);
+
 export default router;
