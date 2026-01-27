@@ -1,4 +1,4 @@
-import { Batch, BatchFile, BatchStatus } from '@prisma/client';
+import { Batch, BatchFile, BatchStatus, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { batchFileService } from './batch-file.service';
@@ -276,6 +276,17 @@ class BatchOrchestratorService {
       }
     }
 
+    // Check if batch was cancelled during processing - don't overwrite cancelled status
+    const currentBatch = await prisma.batch.findUnique({
+      where: { id: batchId },
+      select: { status: true },
+    });
+    
+    if (currentBatch?.status === 'CANCELLED') {
+      logger.info(`[Batch ${batchId}] Batch was cancelled during processing, skipping status update to COMPLETED`);
+      return;
+    }
+    
     const updatedBatch = await prisma.batch.update({
       where: { id: batchId },
       data: {
@@ -336,7 +347,7 @@ class BatchOrchestratorService {
       data: {
         status: 'COMPLETED',
         completedAt: new Date(),
-        output: auditResult as unknown as Record<string, unknown>,
+        output: auditResult as unknown as Prisma.InputJsonValue,
       },
     });
 

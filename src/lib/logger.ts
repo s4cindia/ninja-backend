@@ -68,7 +68,7 @@ export const logger = {
    * @param message - Warning message to log
    * @param error - Optional Error object or metadata to include
    */
-  warn: (message: string, error?: Error | Record<string, unknown>): void => {
+  warn: (message: string, error?: unknown): void => {
     if (error instanceof Error) {
       console.warn(formatMessage('warn', message));
       console.warn(error.stack || error.message);
@@ -81,12 +81,14 @@ export const logger = {
   /**
    * Logs error messages with optional error stack trace.
    * @param message - Error message to log
-   * @param error - Optional Error object for stack trace
+   * @param error - Optional Error object or unknown value for stack trace
    */
-  error: (message: string, error?: Error): void => {
+  error: (message: string, error?: unknown): void => {
     console.error(formatMessage('error', message));
-    if (error) {
+    if (error instanceof Error) {
       console.error(error.stack || error.message);
+    } else if (error) {
+      console.error(safeStringify(error));
     }
   },
 };

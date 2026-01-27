@@ -118,7 +118,7 @@ router.get(
 // and file IDs are UUIDs that are hard to guess (similar to presigned URLs)
 router.get(
   '/:batchId/files/:fileId/serve',
-  batchController.serveBatchFile
+  batchController.serveBatchFile.bind(batchController)
 );
 
 router.post(

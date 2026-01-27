@@ -1,4 +1,4 @@
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { batchOrchestratorService } from '../services/batch/batch-orchestrator.service';
 import { batchAcrGeneratorService } from '../services/acr/batch-acr-generator.service';
@@ -538,9 +538,9 @@ class BatchController {
         issuesQuickFix: displayQuickFix,
         issuesManual: displayManual,
         escalatedToManual: displayEscalated,
-        quickFixesApplied: file.quickFixesApplied || quickFixIssues.filter((i: Record<string, unknown>) => i.status === 'completed').length,
-        remainingQuickFix: file.remainingQuickFix ?? quickFixIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
-        remainingManual: file.remainingManual ?? manualIssues.filter((i: Record<string, unknown>) => i.status !== 'completed').length,
+        quickFixesApplied: file.quickFixesApplied || (quickFixIssues as Array<Record<string, unknown>>).filter(i => i.status === 'completed').length,
+        remainingQuickFix: file.remainingQuickFix ?? (quickFixIssues as Array<Record<string, unknown>>).filter(i => i.status !== 'completed').length,
+        remainingManual: file.remainingManual ?? (manualIssues as Array<Record<string, unknown>>).filter(i => i.status !== 'completed').length,
         quickFixCount: displayQuickFix,
         manualCount: displayManual,
         originalS3Key: file.storagePath,
@@ -673,10 +673,10 @@ class BatchController {
     }
   }
 
-  serveBatchFile = async (req: Request, res: Response) => {
+  serveBatchFile = async (req: Request<{ batchId: string; fileId: string }, unknown, unknown, { version?: string }>, res: Response) => {
     try {
       const { batchId, fileId } = req.params;
-      const version = req.query.version as string | undefined;
+      const version = req.query.version;
 
       // Public endpoint - only validate that batchId and fileId match
       // Security is through UUID obscurity (like presigned URLs)
@@ -784,7 +784,7 @@ class BatchController {
         .map(t => t.issueCode)
         .filter(Boolean)
     );
-    logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes from remediation plan:`, [...completedTaskCodes]);
+    logger.info(`[extractIssuesFromPlan] Found ${completedTaskCodes.size} completed task codes from remediation plan`, { codes: [...completedTaskCodes] });
 
     // Get failed modification codes from autoRemediation (issues that were auto-fixable but FAILED - not skipped)
     // success=false means tried to fix but failed (escalated to manual)
@@ -796,7 +796,7 @@ class BatchController {
         .map(m => m.issueCode)
         .filter(Boolean)
     );
-    logger.info(`[extractIssuesFromPlan] Found ${failedAutoFixCodes.size} failed (escalated) auto-fix codes:`, [...failedAutoFixCodes]);
+    logger.info(`[extractIssuesFromPlan] Found ${failedAutoFixCodes.size} failed (escalated) auto-fix codes`, { codes: [...failedAutoFixCodes] });
 
     // Get combined issues
     const combinedIssues = (plan?.combinedIssues || audit?.combinedIssues || audit?.issues) as unknown[] | undefined;
@@ -871,7 +871,7 @@ class BatchController {
     }
 
     // Count escalated issues (issues that failed auto-fix and were escalated to manual)
-    const escalatedCount = manualIssues.filter((m: Record<string, unknown>) => m.escalatedFromAutoFix === true).length;
+    const escalatedCount = (manualIssues as Array<Record<string, unknown>>).filter(m => m.escalatedFromAutoFix === true).length;
     logger.info('[extractIssuesFromPlan] Extraction complete:', {
       autoFixed: autoFixedIssues.length,
       quickFix: quickFixIssues.length,

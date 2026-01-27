@@ -2,10 +2,7 @@ import { z } from 'zod';
 
 export const batchAcrGenerateSchema = z.object({
   batchId: z.string().min(1, 'Batch ID is required'),
-  mode: z.enum(['individual', 'aggregate'], {
-    required_error: 'Mode is required',
-    invalid_type_error: 'Mode must be individual or aggregate',
-  }),
+  mode: z.enum(['individual', 'aggregate']).describe('Mode is required'),
   options: z.object({
     edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']),
     batchName: z.string().min(1, 'Batch name is required'),
@@ -24,9 +21,7 @@ export const batchAcrGenerateSchema = z.object({
 });
 
 export const batchAcrExportSchema = z.object({
-  format: z.enum(['pdf', 'docx', 'html'], {
-    required_error: 'Export format is required',
-  }),
+  format: z.enum(['pdf', 'docx', 'html']).describe('Export format is required'),
   includeMethodology: z.boolean().optional().default(true),
 });
 

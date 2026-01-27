@@ -340,7 +340,7 @@ export class BatchAcrGeneratorService {
           fileName: jobData.fileName,
           jobId: jobData.jobId,
           status,
-          issueCount: jobData.remainingCount || jobData.issueCount,
+          issueCount: jobData.remainingCount ?? jobData.issueCount,
           issues: jobData.issues.map(i => ({
             code: i.code || '',
             message: i.message,
