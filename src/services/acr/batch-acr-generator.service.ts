@@ -239,7 +239,7 @@ export class BatchAcrGeneratorService {
         status: string;
         issueCount: number;
         fixedCount: number;
-        remainingCount: number;
+        remainingCount?: number;
         findings: string[];
         issues: Array<{ code?: string; message: string; location?: string }>;
       }>;
@@ -292,9 +292,9 @@ export class BatchAcrGeneratorService {
             jobId,
             fileName,
             status: criterion.status || 'supports',
-            issueCount: criterion.issueCount || 0,
-            fixedCount: criterion.fixedCount || 0,
-            remainingCount: criterion.remainingCount || 0,
+            issueCount: criterion.issueCount ?? 0,
+            fixedCount: criterion.fixedCount ?? 0,
+            remainingCount: criterion.remainingCount,  // Preserve undefined
             findings: criterion.findings || [],
             issues: allIssues
           });
@@ -333,14 +333,14 @@ export class BatchAcrGeneratorService {
             status = 'Not Applicable';
             break;
           default:
-            status = jobData.remainingCount > 0 ? 'Does Not Support' : 'Supports';
+            status = (jobData.remainingCount ?? jobData.issueCount) > 0 ? 'Does Not Support' : 'Supports';
         }
         
         return {
           fileName: jobData.fileName,
           jobId: jobData.jobId,
           status,
-          issueCount: jobData.remainingCount ?? jobData.issueCount,
+          issueCount: jobData.remainingCount !== undefined ? jobData.remainingCount : jobData.issueCount,
           issues: jobData.issues.map(i => ({
             code: i.code || '',
             message: i.message,

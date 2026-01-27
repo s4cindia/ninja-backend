@@ -355,11 +355,11 @@ class BatchController {
         });
       }
 
-      return res.json({
-        success: true,
-        data: {
-          message: 'Export feature coming soon',
-          batchId: batch.id,
+      return res.status(501).json({
+        success: false,
+        error: {
+          message: 'Batch export feature is not yet implemented',
+          code: 'BATCH_EXPORT_NOT_IMPLEMENTED',
         },
       });
     } catch (error) {
@@ -673,13 +673,51 @@ class BatchController {
     }
   }
 
-  serveBatchFile = async (req: Request<{ batchId: string; fileId: string }, unknown, unknown, { version?: string }>, res: Response) => {
+  serveBatchFile = async (req: Request<{ batchId: string; fileId: string }, unknown, unknown, { version?: string; token?: string; expires?: string }>, res: Response) => {
     try {
       const { batchId, fileId } = req.params;
-      const version = req.query.version;
+      const { version, token, expires } = req.query;
+      const crypto = await import('crypto');
 
-      // Public endpoint - only validate that batchId and fileId match
-      // Security is through UUID obscurity (like presigned URLs)
+      // Validate signed token for time-bound access
+      if (!token || !expires) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            message: 'Missing download token or expiration',
+            code: 'TOKEN_REQUIRED',
+          },
+        });
+      }
+
+      // Check expiration
+      const expiresAt = parseInt(expires, 10);
+      if (isNaN(expiresAt) || Date.now() > expiresAt) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            message: 'Download link has expired',
+            code: 'TOKEN_EXPIRED',
+          },
+        });
+      }
+
+      // Verify HMAC signature
+      const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET || 'ninja-download-secret';
+      const payload = `${batchId}:${fileId}:${version || 'latest'}:${expires}`;
+      const expectedToken = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+      
+      if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken))) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            message: 'Invalid download token',
+            code: 'TOKEN_INVALID',
+          },
+        });
+      }
+
+      // Token valid - proceed with file lookup
       const file = await prisma.batchFile.findFirst({
         where: {
           id: fileId,
@@ -745,6 +783,18 @@ class BatchController {
         },
       });
     }
+  }
+
+  // Helper to generate signed download URLs
+  static generateDownloadUrl(batchId: string, fileId: string, version: string = 'latest', expiresInMs: number = 3600000): string {
+    const crypto = require('crypto');
+    const expires = Date.now() + expiresInMs;
+    const secret = process.env.DOWNLOAD_TOKEN_SECRET || process.env.SESSION_SECRET || 'ninja-download-secret';
+    const payload = `${batchId}:${fileId}:${version}:${expires}`;
+    const token = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    
+    const baseUrl = process.env.API_BASE_URL || '';
+    return `${baseUrl}/api/v1/batches/${batchId}/files/${fileId}/download?version=${version}&expires=${expires}&token=${token}`;
   }
 
   private extractIssuesFromPlan(planResults: unknown, auditResults: unknown, remediationTasks: unknown[] = []): {
