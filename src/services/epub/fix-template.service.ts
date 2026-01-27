@@ -20,7 +20,7 @@ interface FixTemplate {
   steps: FixStep[];
   codeExample?: CodeExample;
   resources?: Array<{ label: string; url: string }>;
-  wcagCriteria?: string;
+  wcagCriteria?: string | null; // null indicates no direct WCAG mapping
   canAutoFix: boolean;
   canQuickFix: boolean;
 }
@@ -50,7 +50,7 @@ const FIX_TEMPLATES: Record<string, FixTemplate> = {
       { label: 'UUID Generator', url: 'https://www.uuidgenerator.net/' },
       { label: 'EPUB 3 Identifiers', url: 'https://www.w3.org/publishing/epub3/epub-packages.html#sec-opf-dcidentifier' },
     ],
-    wcagCriteria: '1.1.1',
+    wcagCriteria: null, // OPF-085 is an EPUB spec issue, not directly mapped to WCAG
     canAutoFix: false,
     canQuickFix: false,
   },
@@ -125,7 +125,7 @@ const FIX_TEMPLATES: Record<string, FixTemplate> = {
       after: '<metadata>\n  <meta property="schema:accessibilityFeature">alternativeText</meta>\n  <meta property="schema:accessibilityFeature">readingOrder</meta>\n  <meta property="schema:accessibilityFeature">structuralNavigation</meta>\n</metadata>',
       description: 'Add schema:accessibilityFeature metadata elements',
     },
-    wcagCriteria: '4.1.2',
+    wcagCriteria: null, // EPUB accessibility metadata requirement, no direct WCAG equivalent
     canAutoFix: true,
     canQuickFix: false,
   },
@@ -148,7 +148,7 @@ const FIX_TEMPLATES: Record<string, FixTemplate> = {
       after: '<metadata>\n  <meta property="schema:accessibilitySummary">This publication meets basic accessibility requirements. All images have alternative text descriptions. The content follows a logical reading order with proper heading structure for navigation.</meta>\n</metadata>',
       description: 'Add schema:accessibilitySummary with descriptive text',
     },
-    wcagCriteria: '4.1.2',
+    wcagCriteria: null, // EPUB accessibility metadata requirement, no direct WCAG equivalent
     canAutoFix: true,
     canQuickFix: false,
   },
@@ -170,7 +170,7 @@ const FIX_TEMPLATES: Record<string, FixTemplate> = {
       after: '<metadata>\n  <meta property="schema:accessMode">textual</meta>\n  <meta property="schema:accessModeSufficient">textual</meta>\n</metadata>',
       description: 'Add schema:accessMode and schema:accessModeSufficient metadata',
     },
-    wcagCriteria: '4.1.2',
+    wcagCriteria: null, // EPUB accessibility metadata requirement, no direct WCAG equivalent
     canAutoFix: true,
     canQuickFix: false,
   },
@@ -394,8 +394,14 @@ class FixTemplateService {
       return FIX_TEMPLATES[upperCode];
     }
     
-    for (const [key, template] of Object.entries(FIX_TEMPLATES)) {
-      if (upperCode.startsWith(key.split('-')[0] + '-')) {
+    // Match by specific prefix (e.g., EPUB-SEM, EPUB-STRUCT, EPUB-META, EPUB-IMG)
+    // Sort by prefix length descending to match most specific first
+    const sortedEntries = Object.entries(FIX_TEMPLATES).sort((a, b) => b[0].length - a[0].length);
+    for (const [key, template] of sortedEntries) {
+      // Extract prefix up to the last hyphen-number segment (e.g., EPUB-SEM from EPUB-SEM-001)
+      const keyPrefix = key.replace(/-\d+$/, '');
+      const codePrefix = upperCode.replace(/-\d+$/, '');
+      if (codePrefix === keyPrefix) {
         return {
           ...template,
           issueCode: issueCode,

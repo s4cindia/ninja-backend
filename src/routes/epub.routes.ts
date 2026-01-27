@@ -69,9 +69,8 @@ router.get('/fix-template/:issueCode', authenticate, epubController.getFixTempla
 router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);
 
 // Dev endpoints (no auth) - for testing fix templates
-// Enabled when ENABLE_DEV_ROUTES=true or in non-production
-const enableDevRoutes = process.env.ENABLE_DEV_ROUTES === 'true' || process.env.NODE_ENV !== 'production';
-if (enableDevRoutes) {
+// Only enabled when explicitly opted in via ENABLE_DEV_ROUTES=true
+if (process.env.ENABLE_DEV_ROUTES === 'true') {
   router.get('/dev/fix-template/:issueCode', epubController.getFixTemplate);
   router.get('/dev/fix-templates', epubController.getAllFixTemplates);
 }
