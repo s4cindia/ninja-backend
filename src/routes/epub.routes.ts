@@ -68,4 +68,12 @@ router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.get
 router.get('/fix-template/:issueCode', authenticate, epubController.getFixTemplate);
 router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);
 
+// Dev endpoints (no auth) - for testing fix templates
+// Enabled when ENABLE_DEV_ROUTES=true or in non-production
+const enableDevRoutes = process.env.ENABLE_DEV_ROUTES === 'true' || process.env.NODE_ENV !== 'production';
+if (enableDevRoutes) {
+  router.get('/dev/fix-template/:issueCode', epubController.getFixTemplate);
+  router.get('/dev/fix-templates', epubController.getAllFixTemplates);
+}
+
 export default router;
