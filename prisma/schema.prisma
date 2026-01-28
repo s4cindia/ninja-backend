@@ -16,10 +16,13 @@ model Tenant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users    User[]
-  jobs     Job[]
-  products Product[]
-  batches  Batch[]
+  users            User[]
+  jobs             Job[]
+  products         Product[]
+  batches          Batch[]
+  editorialDocs    EditorialDocument[]
+  houseStyleRules  HouseStyleRule[]
+  editorialReports EditorialReport[]
 }
 
 model User {
@@ -650,11 +653,14 @@ model EditorialDocument {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   job               Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
   chunks            EditorialTextChunk[]
   citations         Citation[]
   styleViolations   StyleViolation[]
   plagiarismMatches PlagiarismMatch[]
+  references        Reference[]
+  editorialReports  EditorialReport[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -751,7 +757,7 @@ enum CitationStyle {
 
 model CitationComponent {
   id         String   @id @default(uuid())
-  citationId String   @unique
+  citationId String
   citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
 
   authors    String[]
@@ -825,7 +831,8 @@ model Reference {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  citations Citation[]
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  citations         Citation[]
 
   @@index([documentId])
   @@index([doi])
@@ -1007,6 +1014,8 @@ model HouseStyleRule {
   updatedAt DateTime @updatedAt
   createdBy String?
 
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   @@index([tenantId])
   @@index([category])
   @@index([isActive])
@@ -1034,6 +1043,9 @@ model EditorialReport {
 
   generatedAt DateTime @default(now())
   generatedBy String?
+
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([documentId])
   @@index([tenantId])
