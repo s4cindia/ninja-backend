@@ -45,6 +45,10 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
     case JOB_TYPES.METADATA_EXTRACTION:
       return getFileProcessingQueue();
     case JOB_TYPES.ACR_WORKFLOW:
+    case JOB_TYPES.PLAGIARISM_CHECK:
+    case JOB_TYPES.CITATION_VALIDATION:
+    case JOB_TYPES.STYLE_VALIDATION:
+    case JOB_TYPES.EDITORIAL_FULL:
       return null;
     default: {
       const exhaustiveCheck: never = type;
