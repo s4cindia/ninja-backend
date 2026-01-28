@@ -111,7 +111,69 @@ Side-by-side visual comparison of remediation changes with:
 **Blockers:** [None / Description]
 
 ---
+---
 
+## Editorial Services (Active Development - Week 1)
+
+### Feature Overview
+AI-powered editorial quality assurance with:
+- Plagiarism Detection (semantic fingerprinting, paraphrase detection)
+- Citation Management (extraction, validation, correction)
+- Style Guide Validation (Chicago, APA, MLA, custom)
+- Content Intelligence (readability, bias detection)
+
+### Technical Standards (Editorial Services)
+```
+Runtime: Node.js 18+
+Language: TypeScript 5.x (strict mode)
+API Framework: Express 4.x
+Module System: ES Modules (import/export)
+Validation: Zod
+ORM: Prisma
+Async Pattern: async/await (no callbacks)
+File Naming: kebab-case for files, PascalCase for classes
+Base Path: All code in src/
+AI Provider: Google Gemini (existing gemini.service.ts)
+```
+
+### Module Ownership (Parallel Development)
+
+| Module | Owner | Backend Path | Frontend Path |
+|--------|-------|--------------|---------------|
+| Plagiarism Detection | Ambai | `/services/plagiarism/` | `/components/plagiarism/` |
+| Citation Management | Dev2 | `/services/citation/` | `/components/citation/` |
+| Style Validation | Ambai | `/services/style/` | `/components/style/` |
+| Workflow Validation | Ambai | `/services/workflow/` | `/components/workflow/` |
+| **Shared Infrastructure** | **Ambai** | `/services/shared/` | `/components/shared/` |
+
+**RULE:** Never modify another developer's module directory without coordination.
+
+### Shared Infrastructure Files (Ambai owns)
+```
+src/services/shared/
+├── editorial-ai-client.ts   # Gemini wrapper for Editorial
+├── document-parser.ts       # PDF/EPUB/DOCX/XML parser
+├── report-generator.ts      # Validation report output
+└── index.ts                 # Central exports
+```
+
+### Key Dependencies (already installed)
+
+| Purpose | Library |
+|---------|---------|
+| AI | `@google/generative-ai` (Gemini) |
+| EPUB | `adm-zip`, `fast-xml-parser` |
+| PDF | `pdf-lib`, `pdfjs-dist` |
+| Validation | EPUBCheck, ACE by DAISY |
+
+### Session Checkpoint (Editorial)
+**Updated:** [DATE TIME]  
+**Current Sprint:** Week 1 - Shared Infrastructure  
+**Last completed:** [Step name]  
+**Next step:** [Step name]  
+**Blockers:** [None / Description]
+
+---
 ## Key Directories
 
 ### Backend (`ninja-backend`)
