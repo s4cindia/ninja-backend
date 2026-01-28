@@ -45,6 +45,10 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
     case JOB_TYPES.METADATA_EXTRACTION:
       return getFileProcessingQueue();
     case JOB_TYPES.ACR_WORKFLOW:
+    case JOB_TYPES.PLAGIARISM_CHECK:
+    case JOB_TYPES.CITATION_VALIDATION:
+    case JOB_TYPES.STYLE_VALIDATION:
+    case JOB_TYPES.EDITORIAL_FULL:
       return null;
     default: {
       const exhaustiveCheck: never = type;
@@ -90,7 +94,14 @@ export class QueueService {
     try {
       const queue = getQueueForJobType(type);
       if (!queue) {
-        logger.info(`📋 Job ${dbJob.id} created (processed synchronously): ${type}`);
+        await prisma.job.update({
+          where: { id: dbJob.id },
+          data: { 
+            status: 'CANCELLED',
+            output: { message: `Queue processor not yet implemented for job type: ${type}. Job requires dedicated queue implementation.` } as Prisma.InputJsonValue,
+          },
+        });
+        logger.warn(`📋 Job ${dbJob.id} created with CANCELLED status - no queue processor for: ${type}`);
         return dbJob.id;
       }
       await queue.add(type, jobData, {

@@ -16,10 +16,13 @@ model Tenant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users    User[]
-  jobs     Job[]
-  products Product[]
-  batches  Batch[]
+  users            User[]
+  jobs             Job[]
+  products         Product[]
+  batches          Batch[]
+  editorialDocs    EditorialDocument[]
+  houseStyleRules  HouseStyleRule[]
+  editorialReports EditorialReport[]
 }
 
 model User {
@@ -85,33 +88,34 @@ enum ComplianceStatus {
 }
 
 model Job {
-  id                 String    @id @default(uuid())
-  tenantId           String
-  tenant             Tenant    @relation(fields: [tenantId], references: [id])
-  userId             String
-  user               User      @relation(fields: [userId], references: [id])
-  productId          String?
-  product            Product?  @relation(fields: [productId], references: [id])
-  type               JobType
-  status             JobStatus @default(QUEUED)
-  priority           Int       @default(0)
-  input              Json
-  output             Json?
-  error              String?
-  progress           Int       @default(0)
-  tokensUsed         Int       @default(0)
-  costInr            Float     @default(0)
-  startedAt          DateTime?
-  completedAt        DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  batchSourceJobIds  String[]  @default([])
-  isBatchAcr         Boolean   @default(false)
+  id                String    @id @default(uuid())
+  tenantId          String
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+  userId            String
+  user              User      @relation(fields: [userId], references: [id])
+  productId         String?
+  product           Product?  @relation(fields: [productId], references: [id])
+  type              JobType
+  status            JobStatus @default(QUEUED)
+  priority          Int       @default(0)
+  input             Json
+  output            Json?
+  error             String?
+  progress          Int       @default(0)
+  tokensUsed        Int       @default(0)
+  costInr           Float     @default(0)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  batchSourceJobIds String[]  @default([])
+  isBatchAcr        Boolean   @default(false)
 
   validationResults  ValidationResult[]
   artifacts          Artifact[]
   remediationChanges RemediationChange[]
   comparisonReport   ComparisonReport?
+  editorialDocument  EditorialDocument?
 
   @@index([tenantId])
   @@index([status])
@@ -142,6 +146,10 @@ enum JobType {
   METADATA_EXTRACTION
   BATCH_VALIDATION
   ACR_WORKFLOW
+  PLAGIARISM_CHECK
+  CITATION_VALIDATION
+  STYLE_VALIDATION
+  EDITORIAL_FULL
 }
 
 enum JobStatus {
@@ -494,28 +502,28 @@ model AcrCriterionReview {
 // ============================================
 
 model Batch {
-  id              String      @id @default(uuid())
-  tenantId        String
-  userId          String
-  name            String
+  id       String @id @default(uuid())
+  tenantId String
+  userId   String
+  name     String
 
-  status          BatchStatus @default(DRAFT)
+  status BatchStatus @default(DRAFT)
 
   // Progress Tracking
-  totalFiles      Int         @default(0)
-  filesUploaded   Int         @default(0)
-  filesAudited    Int         @default(0)
-  filesPlanned    Int         @default(0)
-  filesRemediated Int         @default(0)
-  filesFailed     Int         @default(0)
+  totalFiles      Int @default(0)
+  filesUploaded   Int @default(0)
+  filesAudited    Int @default(0)
+  filesPlanned    Int @default(0)
+  filesRemediated Int @default(0)
+  filesFailed     Int @default(0)
 
   // Summary Statistics
-  totalIssuesFound    Int @default(0)
-  autoFixedIssues     Int @default(0)
-  quickFixIssues      Int @default(0)
-  quickFixesApplied   Int @default(0)
-  manualIssues        Int @default(0)
-  escalatedToManual   Int @default(0)
+  totalIssuesFound  Int @default(0)
+  autoFixedIssues   Int @default(0)
+  quickFixIssues    Int @default(0)
+  quickFixesApplied Int @default(0)
+  manualIssues      Int @default(0)
+  escalatedToManual Int @default(0)
 
   // ACR Generation Metadata
   acrGenerated   Boolean   @default(false)
@@ -544,12 +552,12 @@ model BatchFile {
   batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   // File Info
-  fileName    String
+  fileName     String
   originalName String
-  fileSize    Int
-  mimeType    String @default("application/epub+zip")
-  storagePath String
-  storageType String @default("S3")
+  fileSize     Int
+  mimeType     String @default("application/epub+zip")
+  storagePath  String
+  storageType  String @default("S3")
 
   // Processing Status
   status BatchFileStatus @default(UPLOADED)
@@ -568,11 +576,11 @@ model BatchFile {
   issuesManual   Int?
 
   // Remediation Results
-  issuesAutoFixed    Int?
-  quickFixesApplied  Int      @default(0)
-  remainingQuickFix  Int?
-  remainingManual    Int?
-  escalatedToManual  Int      @default(0)
+  issuesAutoFixed   Int?
+  quickFixesApplied Int  @default(0)
+  remainingQuickFix Int?
+  remainingManual   Int?
+  escalatedToManual Int  @default(0)
 
   // File Paths
   remediatedFilePath   String?
@@ -613,4 +621,446 @@ enum BatchFileStatus {
   REMEDIATED
   FAILED
   SKIPPED
+}
+
+// ============================================
+// EDITORIAL SERVICES MODELS
+// ============================================
+
+model EditorialDocument {
+  id           String      @id @default(uuid())
+  tenantId     String
+  jobId        String      @unique
+  fileName     String
+  originalName String
+  mimeType     String
+  fileSize     Int
+  storagePath  String
+  storageType  StorageType @default(S3)
+
+  fullText   String? @db.Text
+  wordCount  Int     @default(0)
+  pageCount  Int?
+  chunkCount Int     @default(0)
+
+  title    String?
+  authors  String[]
+  language String?
+
+  status   EditorialDocStatus @default(UPLOADED)
+  parsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job               Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chunks            EditorialTextChunk[]
+  citations         Citation[]
+  styleViolations   StyleViolation[]
+  plagiarismMatches PlagiarismMatch[]
+  references        Reference[]
+  editorialReports  EditorialReport[]
+
+  @@index([tenantId])
+  @@index([jobId])
+  @@index([status])
+}
+
+enum EditorialDocStatus {
+  UPLOADED
+  PARSING
+  PARSED
+  ANALYZING
+  COMPLETED
+  FAILED
+}
+
+model EditorialTextChunk {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  text       String @db.Text
+  wordCount  Int
+
+  startOffset    Int
+  endOffset      Int
+  pageNumber     Int?
+  paragraphIndex Int?
+  chapterTitle   String?
+
+  embedding      Float[] @default([])
+  embeddingModel String?
+
+  createdAt DateTime @default(now())
+
+  plagiarismMatches PlagiarismMatch[] @relation("SourceChunk")
+  matchedBy         PlagiarismMatch[] @relation("MatchedChunk")
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+model Citation {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  rawText       String
+  citationType  CitationType
+  detectedStyle CitationStyle?
+
+  pageNumber     Int?
+  paragraphIndex Int?
+  startOffset    Int
+  endOffset      Int
+
+  confidence Float @default(0)
+
+  isValid          Boolean?
+  validationErrors String[]
+
+  referenceId String?
+  reference   Reference? @relation(fields: [referenceId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  components  CitationComponent[]
+  validations CitationValidation[]
+
+  @@index([documentId])
+  @@index([citationType])
+  @@index([referenceId])
+}
+
+enum CitationType {
+  PARENTHETICAL
+  NARRATIVE
+  FOOTNOTE
+  ENDNOTE
+  NUMERIC
+  UNKNOWN
+}
+
+enum CitationStyle {
+  APA
+  MLA
+  CHICAGO
+  VANCOUVER
+  HARVARD
+  IEEE
+  UNKNOWN
+}
+
+model CitationComponent {
+  id         String   @id @default(uuid())
+  citationId String
+  citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
+
+  authors    String[]
+  year       String?
+  title      String?
+  source     String?
+  volume     String?
+  issue      String?
+  pages      String?
+  doi        String?
+  url        String?
+  accessDate String?
+  publisher  String?
+  edition    String?
+
+  sourceType SourceType?
+
+  fieldConfidence Json?
+
+  doiVerified  Boolean?
+  urlValid     Boolean?
+  urlCheckedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([citationId])
+  @@index([doi])
+}
+
+enum SourceType {
+  JOURNAL_ARTICLE
+  BOOK
+  BOOK_CHAPTER
+  CONFERENCE_PAPER
+  WEBSITE
+  THESIS
+  REPORT
+  NEWSPAPER
+  MAGAZINE
+  PATENT
+  LEGAL
+  PERSONAL_COMMUNICATION
+  UNKNOWN
+}
+
+model Reference {
+  id         String @id @default(uuid())
+  documentId String
+
+  rawText       String  @db.Text
+  formattedText String? @db.Text
+
+  refNumber Int?
+
+  authors    String[]
+  year       String?
+  title      String?
+  source     String?
+  doi        String?
+  url        String?
+  sourceType SourceType?
+
+  isComplete    Boolean  @default(false)
+  missingFields String[]
+  formatErrors  String[]
+
+  crossrefData Json?
+  pubmedData   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  citations         Citation[]
+
+  @@index([documentId])
+  @@index([doi])
+}
+
+model CitationValidation {
+  id         String   @id @default(uuid())
+  citationId String
+  citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
+
+  targetStyle CitationStyle
+
+  isValid  Boolean
+  errors   Json
+  warnings Json?
+
+  suggestedText String?
+
+  createdAt DateTime @default(now())
+
+  @@index([citationId])
+}
+
+model PlagiarismMatch {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  sourceChunkId String
+  sourceChunk   EditorialTextChunk @relation("SourceChunk", fields: [sourceChunkId], references: [id])
+
+  matchedChunkId String?
+  matchedChunk   EditorialTextChunk? @relation("MatchedChunk", fields: [matchedChunkId], references: [id])
+
+  externalSource String?
+  externalUrl    String?
+  externalTitle  String?
+
+  matchType       PlagiarismMatchType
+  similarityScore Float
+
+  classification PlagiarismClassification
+  confidence     Float
+  aiReasoning    String?                  @db.Text
+
+  sourceText  String @db.Text
+  matchedText String @db.Text
+
+  status      MatchReviewStatus @default(PENDING)
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  reviewNotes String?
+
+  createdAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([sourceChunkId])
+  @@index([matchType])
+  @@index([classification])
+  @@index([status])
+}
+
+enum PlagiarismMatchType {
+  INTERNAL
+  SELF_PLAGIARISM
+  EXTERNAL_WEB
+  EXTERNAL_ACADEMIC
+  EXTERNAL_PUBLISHER
+}
+
+enum PlagiarismClassification {
+  VERBATIM_COPY
+  PARAPHRASED
+  COMMON_PHRASE
+  PROPERLY_CITED
+  COINCIDENTAL
+  NEEDS_REVIEW
+}
+
+enum MatchReviewStatus {
+  PENDING
+  CONFIRMED_PLAGIARISM
+  FALSE_POSITIVE
+  PROPERLY_ATTRIBUTED
+  DISMISSED
+}
+
+model StyleViolation {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  styleGuide    StyleGuideType
+  ruleId        String?
+  ruleReference String?
+
+  category    StyleCategory
+  severity    StyleSeverity
+  title       String
+  description String
+
+  pageNumber     Int?
+  paragraphIndex Int?
+  startOffset    Int
+  endOffset      Int
+
+  originalText  String
+  suggestedText String?
+
+  status        ViolationStatus @default(PENDING)
+  fixedAt       DateTime?
+  fixedBy       String?
+  ignoredReason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([styleGuide])
+  @@index([category])
+  @@index([severity])
+  @@index([status])
+}
+
+enum StyleGuideType {
+  CHICAGO
+  APA
+  MLA
+  AP
+  CUSTOM
+}
+
+enum StyleCategory {
+  PUNCTUATION
+  CAPITALIZATION
+  NUMBERS
+  ABBREVIATIONS
+  HYPHENATION
+  SPELLING
+  GRAMMAR
+  TERMINOLOGY
+  FORMATTING
+  CITATIONS
+  OTHER
+}
+
+enum StyleSeverity {
+  ERROR
+  WARNING
+  SUGGESTION
+}
+
+enum ViolationStatus {
+  PENDING
+  FIXED
+  IGNORED
+  WONT_FIX
+}
+
+model HouseStyleRule {
+  id       String @id @default(uuid())
+  tenantId String
+
+  name        String
+  description String?
+  category    StyleCategory
+
+  ruleType      HouseRuleType
+  pattern       String?
+  preferredTerm String?
+  avoidTerms    String[]
+
+  severity StyleSeverity @default(WARNING)
+  isActive Boolean       @default(true)
+
+  baseStyleGuide StyleGuideType?
+  overridesRule  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([category])
+  @@index([isActive])
+}
+
+enum HouseRuleType {
+  TERMINOLOGY
+  PATTERN
+  CAPITALIZATION
+  PUNCTUATION
+}
+
+model EditorialReport {
+  id         String @id @default(uuid())
+  documentId String
+  tenantId   String
+
+  reportType EditorialReportType
+  format     ReportFormat
+
+  summary Json
+
+  content  Json?
+  filePath String?
+
+  generatedAt DateTime @default(now())
+  generatedBy String?
+
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([tenantId])
+  @@index([reportType])
+}
+
+enum EditorialReportType {
+  PLAGIARISM
+  CITATION
+  STYLE
+  FULL_EDITORIAL
+}
+
+enum ReportFormat {
+  JSON
+  PDF
+  DOCX
 }
