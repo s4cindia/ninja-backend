@@ -61,12 +61,13 @@ export class EditorialAiClient {
             tokenCount: Math.ceil(chunk.text.length / 4), // Approximate token count
           });
         } catch (error) {
-          logger.error(`[Editorial AI] Failed to embed chunk ${chunk.id}`, error instanceof Error ? error : undefined);
+          logger.warn(`[Editorial AI] Failed to embed chunk ${chunk.id}`, error instanceof Error ? error : undefined);
           results.push({
             chunkId: chunk.id,
-            vector: new Array(EMBEDDING_DIMENSIONS).fill(0),
+            vector: null as unknown as number[],
             tokenCount: 0,
-          });
+            success: false,
+          } as EmbeddingResult);
         }
       }
       
@@ -113,15 +114,21 @@ Respond with a JSON array only:`;
         maxOutputTokens: 4000,
       });
 
-      return response.data.map(citation => ({
-        ...citation,
-        location: {
-          pageNumber: undefined,
-          paragraphIndex: citation.location?.paragraphIndex ?? 0,
-          startOffset: citation.location?.startOffset ?? 0,
-          endOffset: citation.location?.endOffset ?? 0,
-        },
-      }));
+      return response.data.map((citation) => {
+        const raw = citation as unknown as Record<string, unknown>;
+        return {
+          text: raw.text as string,
+          type: raw.type as ExtractedCitation['type'],
+          style: raw.style as ExtractedCitation['style'],
+          confidence: raw.confidence as number,
+          location: {
+            pageNumber: undefined,
+            paragraphIndex: (raw.paragraphIndex as number) ?? 0,
+            startOffset: (raw.startOffset as number) ?? 0,
+            endOffset: (raw.endOffset as number) ?? 0,
+          },
+        };
+      });
     } catch (error) {
       logger.error('[Editorial AI] Citation detection failed', error instanceof Error ? error : undefined);
       return [];

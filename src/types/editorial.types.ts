@@ -16,8 +16,9 @@ export interface TextChunk {
 /** Embedding result with vector */
 export interface EmbeddingResult {
   chunkId: string;
-  vector: number[];  // 768-dimensional
+  vector: number[] | null;  // 768-dimensional, null if failed
   tokenCount: number;
+  success?: boolean;  // false if embedding generation failed
 }
 
 /** Classification categories for plagiarism */

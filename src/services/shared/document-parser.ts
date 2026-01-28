@@ -237,10 +237,14 @@ export class DocumentParser {
 
           const headingMatches = content.matchAll(/<h([1-6])[^>]*>([^<]+)<\/h\1>/gi);
           for (const match of headingMatches) {
+            const rawMatchIndex = content.indexOf(match[0]);
+            const textBeforeMatch = this.extractTextFromXHTML(content.substring(0, rawMatchIndex));
+            const plainTextOffset = currentOffset + textBeforeMatch.length;
+            
             headings.push({
               level: parseInt(match[1], 10),
               text: match[2].trim(),
-              offset: currentOffset + (content.indexOf(match[0]) || 0),
+              offset: plainTextOffset,
             });
           }
 
