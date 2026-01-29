@@ -725,6 +725,10 @@ model Citation {
   referenceId String?
   reference   Reference? @relation(fields: [referenceId], references: [id])
 
+  // CONSTRAINT NOTE: Prisma doesn't support composite FKs.
+  // When setting primaryComponentId, MUST use CitationValidationService.setPrimaryComponent()
+  // to ensure the component belongs to THIS citation, not a different one.
+  // See: src/services/shared/citation-validation.service.ts
   primaryComponentId String?            @unique
   primaryComponent   CitationComponent? @relation("PrimaryCitation", fields: [primaryComponentId], references: [id], onDelete: SetNull)
 
