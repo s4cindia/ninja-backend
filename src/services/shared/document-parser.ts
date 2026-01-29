@@ -216,7 +216,7 @@ export class DocumentParser {
     const chapters: DocumentStructure['chapters'] = [];
     const headings: DocumentStructure['headings'] = [];
     let currentOffset = 0;
-    let paragraphIndex = 0;
+    let _paragraphIndex = 0;
 
     for (const item of spineItems) {
       try {
@@ -250,7 +250,7 @@ export class DocumentParser {
 
           fullText += chapterText + '\n\n';
           currentOffset += chapterText.length + 2;
-          paragraphIndex++;
+          _paragraphIndex++;
         }
       } catch (error) {
         logger.warn(`[DocumentParser] Failed to parse EPUB item: ${item.href}`, error instanceof Error ? error : undefined);

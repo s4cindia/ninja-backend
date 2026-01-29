@@ -6,7 +6,7 @@
 import { editorialAi, documentParser } from '../shared';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { EditorialDocStatus, Prisma } from '@prisma/client';
+import { EditorialDocStatus } from '@prisma/client';
 import {
   DetectedCitation,
   DetectionResult,

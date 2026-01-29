@@ -14,7 +14,7 @@ class BatchQuickFixService {
   /**
    * Apply quick-fixes to all files in a batch
    */
-  async applyQuickFixes(batchId: string, tenantId: string, userId: string): Promise<QuickFixResult> {
+  async applyQuickFixes(batchId: string, tenantId: string, _userId: string): Promise<QuickFixResult> {
     logger.info(`[Batch ${batchId}] Starting batch quick-fix application`);
 
     const batch = await prisma.batch.findFirst({
