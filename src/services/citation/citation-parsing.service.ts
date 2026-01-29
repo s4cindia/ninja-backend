@@ -205,18 +205,22 @@ export class CitationParsingService {
     });
 
     return components.map(c => {
-      // Recompute review state for each component
+      // Recompute review state for each component using actual sourceType and per-field confidences
+      const fieldConfidenceRecord = (c.fieldConfidence || {}) as Record<string, number>;
+      const fieldConfidences = Object.values(fieldConfidenceRecord).map(v => 
+        typeof v === 'number' ? (v > 1 ? v / 100 : v) : 0
+      );
       const { needsReview, reviewReasons } = this.evaluateReviewNeeded(
         c.confidence,
         {
           authors: c.authors as string[],
           year: c.year,
           title: c.title,
-          type: null,
+          type: c.sourceType,
           doi: c.doi,
           url: c.url,
         },
-        [c.confidence] // Use component confidence as field confidence
+        fieldConfidences.length > 0 ? fieldConfidences : [c.confidence]
       );
       return this.mapComponentToResult(citationId, c, needsReview, reviewReasons);
     });

@@ -7,6 +7,7 @@ import { editorialAi, documentParser } from '../shared';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
+import { s3Service } from '../s3.service';
 import {
   DetectedCitation,
   DetectionResult,
@@ -25,12 +26,29 @@ export class CitationDetectionService {
    */
   async detectCitations(input: DetectionInput): Promise<DetectionResult> {
     const startTime = Date.now();
-    const { jobId, tenantId, fileBuffer, fileName } = input;
+    const { jobId, tenantId, fileS3Key, presignedUrl, fileName, fileSize } = input;
 
-    logger.info(`[Citation Detection] Starting for jobId=${jobId}, file=${fileName}`);
+    logger.info(`[Citation Detection] Starting for jobId=${jobId}, file=${fileName}, s3Key=${fileS3Key || 'N/A'}, presignedUrl=${presignedUrl ? 'provided' : 'N/A'}`);
 
     try {
-      // 1. Parse document to extract text
+      // 1. Fetch file from S3 key or presigned URL
+      let fileBuffer: Buffer;
+      if (fileS3Key) {
+        fileBuffer = await s3Service.getFileBuffer(fileS3Key);
+      } else if (presignedUrl) {
+        const response = await fetch(presignedUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        fileBuffer = Buffer.from(arrayBuffer);
+      } else {
+        throw new Error('Either fileS3Key or presignedUrl is required');
+      }
+      const actualSize = fileSize ?? fileBuffer.length;
+      logger.info(`[Citation Detection] Fetched file: ${actualSize} bytes`);
+
+      // 2. Parse document to extract text
       const parsed = await documentParser.parse(fileBuffer, fileName);
       logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
 

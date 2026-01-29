@@ -39,8 +39,10 @@ export interface DetectionInput {
   jobId: string;
   tenantId: string;
   userId: string;
-  fileBuffer: Buffer;
   fileName: string;
+  fileSize?: number;
+  fileS3Key?: string;
+  presignedUrl?: string;
 }
 
 // ============================================

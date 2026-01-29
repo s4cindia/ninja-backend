@@ -25,8 +25,20 @@ export class CitationController {
         return;
       }
 
-      if (!req.file) {
-        res.status(400).json({ success: false, error: 'File is required' });
+      const { fileS3Key, presignedUrl, fileName, fileSize } = req.body as {
+        fileS3Key?: string;
+        presignedUrl?: string;
+        fileName?: string;
+        fileSize?: number;
+      };
+
+      if (!fileName) {
+        res.status(400).json({ success: false, error: 'fileName is required' });
+        return;
+      }
+
+      if (!fileS3Key && !presignedUrl) {
+        res.status(400).json({ success: false, error: 'Either fileS3Key or presignedUrl is required' });
         return;
       }
 
@@ -37,7 +49,7 @@ export class CitationController {
           userId,
           type: 'CITATION_VALIDATION',
           status: 'PROCESSING',
-          input: { fileName: req.file.originalname, fileSize: req.file.size },
+          input: { fileS3Key, presignedUrl, fileName, fileSize },
           startedAt: new Date(),
         },
       });
@@ -47,8 +59,10 @@ export class CitationController {
           jobId: job.id,
           tenantId,
           userId,
-          fileBuffer: req.file.buffer,
-          fileName: req.file.originalname,
+          fileS3Key,
+          presignedUrl,
+          fileName,
+          fileSize,
         };
 
         const result = await citationDetectionService.detectCitations(input);
