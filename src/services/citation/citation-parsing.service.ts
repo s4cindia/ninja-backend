@@ -21,17 +21,24 @@ export class CitationParsingService {
    * Creates a new CitationComponent record
    *
    * @param citationId - ID of the citation to parse
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    * @returns Parsed citation result with component ID
    */
-  async parseCitation(citationId: string): Promise<ParsedCitationResult> {
+  async parseCitation(citationId: string, tenantId?: string): Promise<ParsedCitationResult> {
     logger.info(`[Citation Parsing] Parsing citationId=${citationId}`);
 
-    // 1. Get citation
+    // 1. Get citation with document for tenant validation
     const citation = await prisma.citation.findUnique({
       where: { id: citationId },
+      include: { document: { select: { tenantId: true } } },
     });
 
     if (!citation) {
+      throw new Error(`Citation not found: ${citationId}`);
+    }
+
+    // Enforce tenant-scoped access
+    if (tenantId && citation.document.tenantId !== tenantId) {
       throw new Error(`Citation not found: ${citationId}`);
     }
 
@@ -41,10 +48,11 @@ export class CitationParsingService {
     // 3. Determine parse variant from detected style or default to UNKNOWN
     const parseVariant = citation.detectedStyle || 'UNKNOWN';
 
-    // 4. Calculate overall confidence from field confidences
-    const fieldConfidences = Object.values(parsed.confidence || {}) as number[];
+    // 4. Calculate overall confidence from field confidences (normalize to 0-1)
+    const fieldConfidencesRaw = Object.values(parsed.confidence || {}) as number[];
+    const fieldConfidences = fieldConfidencesRaw.map(c => c / 100); // Normalize to 0-1
     const avgConfidence = fieldConfidences.length > 0
-      ? fieldConfidences.reduce((a, b) => a + b, 0) / fieldConfidences.length / 100
+      ? fieldConfidences.reduce((a, b) => a + b, 0) / fieldConfidences.length
       : 0;
 
     // 5. AC-26: Determine if citation needs review (ambiguous/incomplete)
@@ -94,11 +102,25 @@ export class CitationParsingService {
    * Skips citations that already have components
    *
    * @param documentId - ID of the editorial document
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    * @returns Bulk parse result with statistics
    */
-  async parseAllCitations(documentId: string): Promise<BulkParseResult> {
+  async parseAllCitations(documentId: string, tenantId?: string): Promise<BulkParseResult> {
     const startTime = Date.now();
     logger.info(`[Citation Parsing] Bulk parsing for documentId=${documentId}`);
+
+    // Verify document exists and belongs to tenant
+    const doc = await prisma.editorialDocument.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!doc) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
+
+    if (tenantId && doc.tenantId !== tenantId) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
 
     // Get all citations for document
     const allCitations = await prisma.citation.findMany({
@@ -118,7 +140,7 @@ export class CitationParsingService {
 
     for (const citation of unparsedCitations) {
       try {
-        const result = await this.parseCitation(citation.id);
+        const result = await this.parseCitation(citation.id, tenantId);
         results.push(result);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
@@ -148,11 +170,12 @@ export class CitationParsingService {
    * Use for improved parsing or manual corrections
    *
    * @param citationId - ID of the citation to re-parse
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    * @returns New parsed component
    */
-  async reparseCitation(citationId: string): Promise<ParsedCitationResult> {
+  async reparseCitation(citationId: string, tenantId?: string): Promise<ParsedCitationResult> {
     logger.info(`[Citation Parsing] Re-parsing citationId=${citationId}`);
-    return this.parseCitation(citationId);
+    return this.parseCitation(citationId, tenantId);
   }
 
   /**
@@ -161,13 +184,42 @@ export class CitationParsingService {
    * @param citationId - ID of the citation
    * @returns Array of parsed components, newest first
    */
-  async getCitationComponents(citationId: string): Promise<ParsedCitationResult[]> {
+  async getCitationComponents(citationId: string, tenantId?: string): Promise<ParsedCitationResult[]> {
+    // Verify citation exists and belongs to tenant
+    const citation = await prisma.citation.findUnique({
+      where: { id: citationId },
+      include: { document: { select: { tenantId: true } } },
+    });
+
+    if (!citation) {
+      throw new Error(`Citation not found: ${citationId}`);
+    }
+
+    if (tenantId && citation.document.tenantId !== tenantId) {
+      throw new Error(`Citation not found: ${citationId}`);
+    }
+
     const components = await prisma.citationComponent.findMany({
       where: { citationId },
       orderBy: { createdAt: 'desc' },
     });
 
-    return components.map(c => this.mapComponentToResult(citationId, c, false, []));
+    return components.map(c => {
+      // Recompute review state for each component
+      const { needsReview, reviewReasons } = this.evaluateReviewNeeded(
+        c.confidence,
+        {
+          authors: c.authors as string[],
+          year: c.year,
+          title: c.title,
+          type: null,
+          doi: c.doi,
+          url: c.url,
+        },
+        [c.confidence] // Use component confidence as field confidence
+      );
+      return this.mapComponentToResult(citationId, c, needsReview, reviewReasons);
+    });
   }
 
   /**
@@ -191,12 +243,14 @@ export class CitationParsingService {
    * Get citation with its latest component
    *
    * @param citationId - ID of the citation
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    * @returns Citation with latest component and component count
    */
-  async getCitationWithComponent(citationId: string): Promise<CitationWithComponent | null> {
+  async getCitationWithComponent(citationId: string, tenantId?: string): Promise<CitationWithComponent | null> {
     const citation = await prisma.citation.findUnique({
       where: { id: citationId },
       include: {
+        document: { select: { tenantId: true } },
         components: {
           orderBy: { createdAt: 'desc' },
         },
@@ -204,6 +258,11 @@ export class CitationParsingService {
     });
 
     if (!citation) return null;
+
+    // Enforce tenant-scoped access
+    if (tenantId && citation.document.tenantId !== tenantId) {
+      return null;
+    }
 
     const latestComponent = citation.components[0]
       ? this.mapComponentToResult(citationId, citation.components[0], false, [])
@@ -234,9 +293,23 @@ export class CitationParsingService {
    * Get all citations with components for a document
    *
    * @param documentId - ID of the editorial document
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    * @returns Array of citations with their latest components
    */
-  async getCitationsWithComponents(documentId: string): Promise<CitationWithComponent[]> {
+  async getCitationsWithComponents(documentId: string, tenantId?: string): Promise<CitationWithComponent[]> {
+    // Verify document exists and belongs to tenant
+    const doc = await prisma.editorialDocument.findUnique({
+      where: { id: documentId },
+    });
+
+    if (!doc) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
+
+    if (tenantId && doc.tenantId !== tenantId) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
+
     const citations = await prisma.citation.findMany({
       where: { documentId },
       include: {
@@ -297,7 +370,7 @@ export class CitationParsingService {
       reviewReasons.push(REVIEW_REASONS.LOW_OVERALL_CONFIDENCE);
     }
 
-    if (fieldConfidences.some(c => c < 50)) {
+    if (fieldConfidences.some(c => c < 0.5)) {
       reviewReasons.push(REVIEW_REASONS.LOW_FIELD_CONFIDENCE);
     }
 

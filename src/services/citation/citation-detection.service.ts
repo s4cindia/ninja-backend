@@ -70,8 +70,10 @@ export class CitationDetectionService {
 
   /**
    * Get detection results for an existing document
+   * @param documentId - Document ID
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    */
-  async getDetectionResults(documentId: string): Promise<DetectionResult | null> {
+  async getDetectionResults(documentId: string, tenantId?: string): Promise<DetectionResult | null> {
     const doc = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
       include: {
@@ -83,16 +85,26 @@ export class CitationDetectionService {
 
     if (!doc) return null;
 
+    // Enforce tenant-scoped access
+    if (tenantId && doc.tenantId !== tenantId) {
+      return null;
+    }
+
     const citations = this.mapCitationsToDetected(doc.citations);
     return this.buildDetectionResult(documentId, doc.jobId, citations, Date.now());
   }
 
   /**
    * Get detection results by job ID
+   * @param jobId - Job ID
+   * @param tenantId - Optional tenant ID for cross-tenant protection
    */
-  async getDetectionResultsByJob(jobId: string): Promise<DetectionResult | null> {
-    const doc = await prisma.editorialDocument.findUnique({
-      where: { jobId },
+  async getDetectionResultsByJob(jobId: string, tenantId?: string): Promise<DetectionResult | null> {
+    const doc = await prisma.editorialDocument.findFirst({
+      where: {
+        jobId,
+        ...(tenantId && { tenantId }),
+      },
       include: {
         citations: {
           orderBy: { startOffset: 'asc' }
@@ -109,8 +121,9 @@ export class CitationDetectionService {
   /**
    * Re-run detection on an existing document
    * Deletes existing citations and creates new ones
+   * Uses atomic transaction to prevent inconsistent state
    */
-  async redetectCitations(documentId: string): Promise<DetectionResult> {
+  async redetectCitations(documentId: string, tenantId?: string): Promise<DetectionResult> {
     const startTime = Date.now();
 
     const doc = await prisma.editorialDocument.findUnique({
@@ -121,31 +134,54 @@ export class CitationDetectionService {
       throw new Error(`Editorial document not found: ${documentId}`);
     }
 
+    if (tenantId && doc.tenantId !== tenantId) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
+
     if (!doc.fullText) {
       throw new Error(`Document has no extracted text: ${documentId}`);
     }
 
     logger.info(`[Citation Detection] Re-detecting for documentId=${documentId}`);
 
-    // Delete existing citations
-    await prisma.citation.deleteMany({
-      where: { documentId },
-    });
-
-    // Update status
-    await prisma.editorialDocument.update({
-      where: { id: documentId },
-      data: { status: EditorialDocStatus.ANALYZING },
-    });
-
-    // Re-detect
+    // Detect citations FIRST (before any DB mutations)
     const extractedCitations = await editorialAi.detectCitations(doc.fullText);
-    const citations = await this.storeCitations(documentId, extractedCitations);
 
-    // Update status
-    await prisma.editorialDocument.update({
-      where: { id: documentId },
-      data: { status: EditorialDocStatus.PARSED },
+    // Perform atomic transaction: delete old, insert new, update status
+    const citations = await prisma.$transaction(async (tx) => {
+      // Delete existing citations
+      await tx.citation.deleteMany({
+        where: { documentId },
+      });
+
+      // Store new citations within transaction
+      const stored = await Promise.all(
+        extractedCitations.map(async (extracted) => {
+          return tx.citation.create({
+            data: {
+              documentId,
+              rawText: extracted.text,
+              startOffset: extracted.location.startOffset,
+              endOffset: extracted.location.endOffset,
+              pageNumber: extracted.location.pageNumber || null,
+              paragraphIndex: extracted.location.paragraphIndex,
+              citationType: mapToCitationType(extracted.type),
+              detectedStyle: mapToCitationStyle(extracted.style),
+              confidence: extracted.confidence / 100,
+              isValid: null,
+              validationErrors: [],
+            },
+          });
+        })
+      );
+
+      // Update document status
+      await tx.editorialDocument.update({
+        where: { id: documentId },
+        data: { status: EditorialDocStatus.PARSED },
+      });
+
+      return stored;
     });
 
     return this.buildDetectionResult(documentId, doc.jobId, citations, startTime);

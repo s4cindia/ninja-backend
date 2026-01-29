@@ -65,14 +65,18 @@ export class CitationController {
 
         res.status(201).json({ success: true, data: result });
       } catch (error) {
-        // Update job to failed
-        await prisma.job.update({
-          where: { id: job.id },
-          data: {
-            status: 'FAILED',
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-        });
+        // Update job to failed with nested try-catch to preserve original error
+        try {
+          await prisma.job.update({
+            where: { id: job.id },
+            data: {
+              status: 'FAILED',
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+          });
+        } catch (updateError) {
+          logger.error(`[Citation Controller] Failed to update job ${job.id} status to FAILED`, updateError instanceof Error ? updateError : undefined);
+        }
         throw error;
       }
     } catch (error) {
@@ -95,7 +99,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationDetectionService.getDetectionResultsByJob(jobId);
+      const result = await citationDetectionService.getDetectionResultsByJob(jobId, tenantId);
 
       if (!result) {
         res.status(404).json({ success: false, error: 'No citations found for this job' });
@@ -123,7 +127,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationDetectionService.getDetectionResults(documentId);
+      const result = await citationDetectionService.getDetectionResults(documentId, tenantId);
 
       if (!result) {
         res.status(404).json({ success: false, error: 'Document not found' });
@@ -151,7 +155,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationDetectionService.redetectCitations(documentId);
+      const result = await citationDetectionService.redetectCitations(documentId, tenantId);
 
       res.json({ success: true, data: result });
     } catch (error) {
@@ -174,7 +178,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.parseCitation(citationId);
+      const result = await citationParsingService.parseCitation(citationId, tenantId);
 
       res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -197,7 +201,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.parseAllCitations(documentId);
+      const result = await citationParsingService.parseAllCitations(documentId, tenantId);
 
       res.json({ success: true, data: result });
     } catch (error) {
@@ -220,7 +224,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.getCitationWithComponent(citationId);
+      const result = await citationParsingService.getCitationWithComponent(citationId, tenantId);
 
       if (!result) {
         res.status(404).json({ success: false, error: 'Citation not found' });
@@ -248,7 +252,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.getCitationComponents(citationId);
+      const result = await citationParsingService.getCitationComponents(citationId, tenantId);
 
       res.json({ success: true, data: result });
     } catch (error) {
@@ -271,7 +275,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.reparseCitation(citationId);
+      const result = await citationParsingService.reparseCitation(citationId, tenantId);
 
       res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -294,7 +298,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationParsingService.getCitationsWithComponents(documentId);
+      const result = await citationParsingService.getCitationsWithComponents(documentId, tenantId);
 
       res.json({ success: true, data: result });
     } catch (error) {
