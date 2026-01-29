@@ -1,0 +1,308 @@
+/**
+ * Citation Controller
+ * HTTP request handlers for citation detection and parsing APIs
+ */
+
+import { Request, Response, NextFunction } from 'express';
+import { citationDetectionService } from './citation-detection.service';
+import { citationParsingService } from './citation-parsing.service';
+import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
+import { DetectionInput } from './citation.types';
+
+export class CitationController {
+  /**
+   * POST /api/v1/citation/detect
+   * Upload file and detect citations
+   */
+  async detectFromUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const tenantId = req.user?.tenantId;
+      const userId = req.user?.id;
+
+      if (!tenantId || !userId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({ success: false, error: 'File is required' });
+        return;
+      }
+
+      // Create job for audit trail
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'CITATION_VALIDATION',
+          status: 'PROCESSING',
+          input: { fileName: req.file.originalname, fileSize: req.file.size },
+          startedAt: new Date(),
+        },
+      });
+
+      try {
+        const input: DetectionInput = {
+          jobId: job.id,
+          tenantId,
+          userId,
+          fileBuffer: req.file.buffer,
+          fileName: req.file.originalname,
+        };
+
+        const result = await citationDetectionService.detectCitations(input);
+
+        // Update job to completed
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            output: result as object,
+          },
+        });
+
+        res.status(201).json({ success: true, data: result });
+      } catch (error) {
+        // Update job to failed
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+        });
+        throw error;
+      }
+    } catch (error) {
+      logger.error('[Citation Controller] detectFromUpload failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation/job/:jobId
+   * Get detection results by job ID
+   */
+  async getCitationsByJob(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationDetectionService.getDetectionResultsByJob(jobId);
+
+      if (!result) {
+        res.status(404).json({ success: false, error: 'No citations found for this job' });
+        return;
+      }
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] getCitationsByJob failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation/document/:documentId
+   * Get all citations for a document
+   */
+  async getCitations(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationDetectionService.getDetectionResults(documentId);
+
+      if (!result) {
+        res.status(404).json({ success: false, error: 'Document not found' });
+        return;
+      }
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] getCitations failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/citation/document/:documentId/redetect
+   * Re-run detection on existing document
+   */
+  async redetect(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationDetectionService.redetectCitations(documentId);
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] redetect failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/citation/:citationId/parse
+   * Parse a single citation into components
+   */
+  async parseCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { citationId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.parseCitation(citationId);
+
+      res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] parseCitation failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/citation/document/:documentId/parse-all
+   * Parse all citations in a document
+   */
+  async parseAllCitations(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.parseAllCitations(documentId);
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] parseAllCitations failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation/:citationId
+   * Get single citation with latest component
+   */
+  async getCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { citationId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.getCitationWithComponent(citationId);
+
+      if (!result) {
+        res.status(404).json({ success: false, error: 'Citation not found' });
+        return;
+      }
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] getCitation failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation/:citationId/components
+   * Get all components for a citation (version history)
+   */
+  async getComponents(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { citationId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.getCitationComponents(citationId);
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] getComponents failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/citation/:citationId/reparse
+   * Re-parse a citation (creates new component version)
+   */
+  async reparseCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { citationId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.reparseCitation(citationId);
+
+      res.status(201).json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] reparseCitation failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation/document/:documentId/with-components
+   * Get all citations with their components
+   */
+  async getCitationsWithComponents(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await citationParsingService.getCitationsWithComponents(documentId);
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Citation Controller] getCitationsWithComponents failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+}
+
+// Export singleton instance
+export const citationController = new CitationController();
