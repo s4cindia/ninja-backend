@@ -23,6 +23,7 @@ import sseRoutes from "./sse.routes";
 import uploadRoutes from "./upload.routes";
 import comparisonRoutes from "./comparison.routes";
 import batchRoutes from "./batch.routes";
+import citationRoutes from "../services/citation/citation.routes";
 
 const router = Router();
 
@@ -99,5 +100,6 @@ router.use("/sse", sseRoutes);
 router.use("/uploads", uploadRoutes);
 router.use("/jobs/:jobId/comparison", comparisonRoutes);
 router.use("/batch", batchRoutes);
+router.use("/citation", citationRoutes);
 
 export default router;
