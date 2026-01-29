@@ -1,0 +1,24 @@
+Implement US-PDF-0.1: BaseAuditService Abstraction
+
+Create an abstract base class that captures shared audit logic between EPUB and PDF audits.
+
+File to create: src/services/audit/base-audit.service.ts
+
+Requirements:
+1. Abstract class BaseAuditService<TParseResult, TValidationResult>
+2. Abstract methods:
+   - parse(filePath: string): Promise<TParseResult>
+   - validate(parsed: TParseResult): Promise<TValidationResult>
+   - generateReport(validation: TValidationResult): Promise<AuditReport>
+3. Concrete methods (shared logic):
+   - runAudit(filePath: string): Promise<AuditReport> - orchestrates parse, validate, report
+   - calculateScore(issues: AuditIssue[]): number - weighted scoring
+   - mapToWcag(issues: AuditIssue[]): WcagMapping[] - WCAG criteria mapping
+4. Shared types:
+   - AuditIssue interface (severity, message, location, wcagCriteria)
+   - AuditReport interface (score, issues, metadata)
+   - WcagMapping interface
+
+Reference: Look at existing src/services/epub/ for patterns to extract.
+
+Tests: Create src/services/audit/base-audit.service.test.ts with unit tests.
