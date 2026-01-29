@@ -313,7 +313,7 @@ export class CitationDetectionService {
           confidence: citation.confidence,
         });
       } catch (error) {
-        logger.warn(`[Citation Detection] Failed to store citation: ${extracted.text.substring(0, 50)}...`,
+        logger.warn(`[Citation Detection] Failed to store citation: documentId=${documentId}, offsets=${extracted.location.startOffset}-${extracted.location.endOffset}`,
           error instanceof Error ? error : undefined);
       }
     }
