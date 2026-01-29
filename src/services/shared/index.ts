@@ -7,7 +7,9 @@
 export { EditorialAiClient, editorialAi } from './editorial-ai-client';
 export { DocumentParser, documentParser } from './document-parser';
 export { ReportGenerator, reportGenerator } from './report-generator';
-export { CitationValidationService, citationValidation } from './citation-validation.service';
+
+// Citation services (owned by Dev2)
+export { CitationValidationService, createCitationValidationService } from '../citation/citation-validation.service';
 
 // Types from editorial.types.ts (shared type definitions)
 export type {
