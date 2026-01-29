@@ -36,12 +36,25 @@ export class CitationDetectionService {
       if (fileS3Key) {
         fileBuffer = await s3Service.getFileBuffer(fileS3Key);
       } else if (presignedUrl) {
-        const response = await fetch(presignedUrl);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+        const FETCH_TIMEOUT_MS = 10000;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        
+        try {
+          const response = await fetch(presignedUrl, { signal: controller.signal });
+          if (!response.ok) {
+            throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+          fileBuffer = Buffer.from(arrayBuffer);
+        } catch (fetchError) {
+          if (controller.signal.aborted) {
+            throw new Error(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`);
+          }
+          throw fetchError;
+        } finally {
+          clearTimeout(timeoutId);
         }
-        const arrayBuffer = await response.arrayBuffer();
-        fileBuffer = Buffer.from(arrayBuffer);
       } else {
         throw new Error('Either fileS3Key or presignedUrl is required');
       }
