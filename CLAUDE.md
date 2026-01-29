@@ -22,6 +22,11 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 - AWS S3 for file storage
 - ACE (Accessibility Checker for EPUB) microservice
 
+**PDF Processing (NEW):**
+- pdf-lib (structure, tags, metadata)
+- pdfjs-dist (content extraction, images)
+- Matterhorn Protocol validation (PDF/UA)
+
 **Frontend:**
 - React 18 + TypeScript
 - Vite build tool
@@ -167,11 +172,40 @@ src/services/shared/
 | Validation | EPUBCheck, ACE by DAISY |
 
 ### Session Checkpoint (Editorial)
-**Updated:** [DATE TIME]  
-**Current Sprint:** Week 1 - Shared Infrastructure  
-**Last completed:** [Step name]  
-**Next step:** [Step name]  
+**Updated:** [DATE TIME]
+**Current Sprint:** Week 1 - Shared Infrastructure
+**Last completed:** [Step name]
+**Next step:** [Step name]
 **Blockers:** [None / Description]
+
+---
+
+## PDF Accessibility Sprint (Active Development)
+
+### Feature Overview
+PDF accessibility audit with Matterhorn Protocol validation:
+- PDF/UA compliance checking
+- Structure tag validation
+- Alt text detection/generation (Gemini AI)
+- Color contrast analysis
+- Table accessibility validation
+- ACR/VPAT generation
+
+### New Files
+**Backend:**
+- `src/services/pdf/pdf-parser.service.ts`
+- `src/services/pdf/pdf-audit.service.ts`
+- `src/services/pdf/validators/*.ts`
+
+**Frontend:**
+- `src/pages/PdfAuditResultsPage.tsx`
+- `src/components/pdf/*`
+
+### Session Checkpoint (PDF Sprint)
+**Updated:** January 29, 2026
+**Current Story:** Not started
+**Last completed:** Setup - CLAUDE.md updated
+**Next step:** S-PDF-0.1 - BaseAuditService abstraction
 
 ---
 ## Key Directories
