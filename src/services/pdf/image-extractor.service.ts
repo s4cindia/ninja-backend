@@ -666,7 +666,7 @@ class ImageExtractorService {
       } catch {
         return null;
       }
-    } catch (_err) {
+    } catch {
       return null;
     }
   }

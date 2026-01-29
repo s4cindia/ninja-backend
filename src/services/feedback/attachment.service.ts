@@ -106,12 +106,12 @@ export class FeedbackAttachmentService {
         Key: filename,
       }));
       logger.info(`Deleted from S3: ${filename}`);
-    } catch (_s3Error) {
+    } catch {
       const localPath = path.join(LOCAL_STORAGE_PATH, filename);
       try {
         await fs.unlink(localPath);
         logger.info(`Deleted from local storage: ${localPath}`);
-      } catch (_localError) {
+      } catch {
         logger.warn(`Could not delete file from storage: ${filename}`);
       }
     }

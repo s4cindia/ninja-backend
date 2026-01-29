@@ -194,7 +194,7 @@ class BatchOrchestratorService {
 
     const files = batch.files;
     let filesRemediated = 0;
-    let filesFailed = 0;
+    let _filesFailed = 0;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -211,7 +211,7 @@ class BatchOrchestratorService {
 
       } catch (error) {
         logger.error(`[Batch ${batchId}] File ${file.fileName} failed:`, error);
-        filesFailed++;
+        _filesFailed++;
 
         await prisma.batchFile.update({
           where: { id: file.id },
@@ -473,7 +473,7 @@ class BatchOrchestratorService {
 
     const updatedFile = await prisma.batchFile.findUnique({ where: { id: file.id } });
 
-    const issuesFixed = result.totalIssuesFixed || 0;
+    const _issuesFixed = result.totalIssuesFixed || 0;
     
     // Get actual remaining quick-fix tasks from remediation plan
     const plan = await remediationService.getRemediationPlan(auditJobId);

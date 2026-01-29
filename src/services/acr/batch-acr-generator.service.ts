@@ -12,7 +12,7 @@ import {
   InvalidAcrOptionsError,
 } from '../../types/batch-acr.types';
 
-interface TaskWithSource {
+interface _TaskWithSource {
   id: string;
   issueCode: string;
   issueMessage: string;

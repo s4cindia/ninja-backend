@@ -7,7 +7,7 @@ import { logger } from '../../lib/logger';
 export async function processBatchProcessingJob(
   job: Job<BatchProcessingJobData, BatchProcessingJobResult>
 ): Promise<BatchProcessingJobResult> {
-  const { batchId, tenantId } = job.data;
+  const { batchId, tenantId: _tenantId } = job.data;
 
   logger.info(`[BatchProcessingWorker] Starting batch ${batchId}`);
 

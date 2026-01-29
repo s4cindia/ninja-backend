@@ -152,7 +152,7 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
       const cleanedJson = responseParserService.cleanJsonResponse(jsonText);
       const data = JSON.parse(cleanedJson) as T;
       return { data, usage: response.usage };
-    } catch (_parseError) {
+    } catch {
       logger.error(`Failed to parse Gemini response as JSON: ${response.text.substring(0, 200)}`);
       throw AppError.internal('Failed to parse AI response as JSON');
     }
