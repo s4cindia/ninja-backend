@@ -337,7 +337,14 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
     const deduplicated: AuditIssue[] = [];
 
     for (const issue of issues) {
-      const key = `${issue.source}-${issue.code}-${issue.location || ''}-${issue.message}`;
+      // Use JSON.stringify to create unambiguous key that avoids collisions
+      // when fields contain hyphens or other special characters
+      const key = JSON.stringify([
+        issue.source,
+        issue.code,
+        issue.location || '',
+        issue.message
+      ]);
 
       if (!seen.has(key)) {
         seen.add(key);

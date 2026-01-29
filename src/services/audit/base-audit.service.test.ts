@@ -23,7 +23,7 @@ class TestAuditService extends BaseAuditService<string, AuditIssue[]> {
     return this.parseResult || `parsed:${filePath}`;
   }
 
-  protected async validate(parsed: string): Promise<AuditIssue[]> {
+  protected async validate(_parsed: string): Promise<AuditIssue[]> {
     if (this.shouldThrowOnValidate) {
       throw new Error('Validation error');
     }
