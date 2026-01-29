@@ -725,10 +725,13 @@ model Citation {
   referenceId String?
   reference   Reference? @relation(fields: [referenceId], references: [id])
 
+  primaryComponentId String?            @unique
+  primaryComponent   CitationComponent? @relation("PrimaryCitation", fields: [primaryComponentId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  components  CitationComponent[]
+  components  CitationComponent[]  @relation("CitationComponents")
   validations CitationValidation[]
 
   @@index([documentId])
@@ -758,7 +761,7 @@ enum CitationStyle {
 model CitationComponent {
   id         String   @id @default(uuid())
   citationId String
-  citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
+  citation   Citation @relation("CitationComponents", fields: [citationId], references: [id], onDelete: Cascade)
 
   authors    String[]
   year       String?
@@ -783,13 +786,13 @@ model CitationComponent {
 
   parseVariant String?
   confidence   Float   @default(0)
-  isPrimary    Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  primaryForCitation Citation? @relation("PrimaryCitation")
+
   @@index([citationId])
-  @@index([citationId, isPrimary])
   @@index([doi])
 }
 
