@@ -1,0 +1,58 @@
+Implement US-PDF-3.2: ACR Export Service
+
+Create a service that exports ACR reports to various formats (PDF, DOCX, HTML).
+
+File to create: src/services/pdf/acr-export.service.ts
+
+Requirements:
+
+1. Export to DOCX (primary format):
+   - Use docx library (already in project)
+   - VPAT 2.4 Rev template styling
+   - Tables for WCAG results
+   - Professional formatting with headers/footers
+   - Include company logo placeholder
+
+2. Export to PDF:
+   - Convert DOCX to PDF, OR
+   - Use pdfkit/pdf-lib to generate directly
+   - Same content as DOCX version
+   - Accessible PDF with tags
+
+3. Export to HTML:
+   - Standalone HTML file
+   - Embedded CSS for styling
+   - Print-friendly layout
+   - Can be used for web display
+
+4. Input: ACRReport from acr-generator.service
+
+5. Methods:
+   - exportToDocx(report: ACRReport): Promise<Buffer>
+   - exportToPdf(report: ACRReport): Promise<Buffer>
+   - exportToHtml(report: ACRReport): Promise<string>
+
+6. Template sections:
+   - Cover page with product info
+   - Executive summary
+   - WCAG 2.1 conformance table
+   - Detailed findings by criterion
+   - Remediation recommendations
+   - Appendix with Matterhorn results
+
+7. Styling:
+   - Professional business document appearance
+   - Color-coded conformance levels
+   - Clear table formatting
+   - Page numbers and headers
+
+8. Metadata:
+   - Document title, author, creation date
+   - Keywords for searchability
+
+Reference:
+- ACRReport type from acr-generator.service.ts
+- VPAT 2.4 Rev official template
+- Existing DOCX generation in project
+
+Tests: Create acr-export.service.test.ts
