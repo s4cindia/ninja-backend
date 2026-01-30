@@ -1,0 +1,62 @@
+Implement US-PDF-2.3: PDF Contrast Validator
+
+Create a validator that checks color contrast in PDFs for accessibility compliance.
+
+File to create: src/services/pdf/validators/pdf-contrast.validator.ts
+
+Requirements:
+
+1. Follow same pattern as PdfStructureValidator and PdfAltTextValidator
+
+2. Validate text contrast:
+   - Extract text color and background color
+   - Calculate contrast ratio using WCAG formula
+   - Normal text: minimum 4.5:1 ratio (Level AA)
+   - Large text (18pt+ or 14pt+ bold): minimum 3:1 ratio
+   - Enhanced (Level AAA): 7:1 for normal, 4.5:1 for large
+
+3. Validate non-text contrast:
+   - UI components and graphics: minimum 3:1 ratio
+   - Focus indicators
+   - Form field boundaries
+
+4. Use Gemini AI for complex analysis:
+   - Analyze page screenshots for contrast issues
+   - Detect text on images/backgrounds
+   - Identify low-contrast areas
+
+5. Map issues to WCAG criteria:
+   - 1.4.3 Contrast (Minimum) (Level AA)
+   - 1.4.6 Contrast (Enhanced) (Level AAA)
+   - 1.4.11 Non-text Contrast (Level AA)
+
+6. Map issues to Matterhorn checkpoints:
+   - 14-002: Insufficient text contrast
+   - 14-003: Insufficient non-text contrast
+
+7. Severity levels:
+   - Critical: Contrast ratio below 3:1 for any text
+   - Serious: Normal text below 4.5:1
+   - Moderate: Large text below 3:1
+   - Minor: Below AAA standards but meets AA
+
+8. Return AuditIssue objects with:
+   - severity, message, description
+   - wcagCriteria
+   - matterhornCheckpoint
+   - location (page number, coordinates/region)
+   - suggestedFix (suggest color adjustments)
+   - Include actual contrast ratio in description
+
+9. Utility functions:
+   - calculateContrastRatio(color1, color2): number
+   - isLargeText(fontSize, isBold): boolean
+   - hexToRgb(hex): {r, g, b}
+   - getLuminance(r, g, b): number
+
+Reference:
+- PdfStructureValidator for pattern
+- WCAG contrast calculation formula
+- GeminiService for AI-assisted analysis
+
+Tests: Create pdf-contrast.validator.test.ts with various contrast scenarios
