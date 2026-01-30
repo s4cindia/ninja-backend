@@ -1,0 +1,47 @@
+Implement US-PDF-1.2: PDF Audit Orchestrator Service
+
+Create the main audit orchestration service that extends BaseAuditService for PDF accessibility auditing.
+
+File to create: src/services/pdf/pdf-audit.service.ts
+
+Requirements:
+
+1. Extend BaseAuditService<PdfParseResult, PdfValidationResult>
+
+2. Implement abstract methods:
+   - parse(filePath): Use PdfComprehensiveParserService
+   - validate(parsed): Run all validators and collect issues
+   - generateReport(validation, jobId, fileName): Create AuditReport
+
+3. Orchestrate validators (call in sequence):
+   - PdfStructureValidator (from feature/pdf-validators branch - import the types, stub implementation)
+   - PdfAltTextValidator (stub for now)
+   - PdfContrastValidator (stub for now)
+   - PdfTableValidator (stub for now)
+
+4. Aggregate results:
+   - Combine issues from all validators
+   - Use base class deduplicateIssues() to remove duplicates
+   - Use base class calculateScore() for final score
+   - Use base class mapToWcag() for WCAG mappings
+
+5. Create PdfValidationResult type:
+   - issues: AuditIssue[]
+   - structureIssues: AuditIssue[]
+   - altTextIssues: AuditIssue[]
+   - contrastIssues: AuditIssue[]
+   - tableIssues: AuditIssue[]
+   - matterhornResults: MatterhornCheckResult[]
+
+6. Handle partial failures:
+   - If one validator fails, continue with others
+   - Log errors but don't fail entire audit
+   - Include validator errors in report metadata
+
+Reference: 
+- BaseAuditService in src/services/audit/base-audit.service.ts
+- PdfComprehensiveParserService in src/services/pdf/pdf-comprehensive-parser.service.ts
+
+Tests: Create src/services/pdf/pdf-audit.service.test.ts
+
+Note: Create stub/interface for validators - actual implementations are in separate branch
