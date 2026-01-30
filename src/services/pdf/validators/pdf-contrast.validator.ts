@@ -37,6 +37,7 @@ interface ContrastCheckResult {
 export class PdfContrastValidator {
   name = 'PdfContrastValidator';
   private issueCounter = 0;
+  private hasLoggedColorWarning = false;
 
   /**
    * Validate PDF contrast
@@ -47,6 +48,7 @@ export class PdfContrastValidator {
   async validate(parsed: PdfParseResult): Promise<AuditIssue[]> {
     logger.info('[PdfContrastValidator] Starting contrast validation...');
     this.issueCounter = 0;
+    this.hasLoggedColorWarning = false;
 
     const issues: AuditIssue[] = [];
 
@@ -86,10 +88,20 @@ export class PdfContrastValidator {
       const isBold = content.font?.name?.toLowerCase().includes('bold') || false;
       const isLargeText = this.isLargeText(fontSize, isBold);
 
-      // Simulate contrast check (in real implementation, would extract actual colors from PDF)
-      // For now, we'll use placeholder colors to demonstrate the logic
-      const textColor: RgbColor = { r: 0, g: 0, b: 0 }; // Black text
-      const backgroundColor: RgbColor = { r: 255, g: 255, b: 255 }; // White background
+      // TODO: Implement actual color extraction from PDF content streams
+      // Issue: https://github.com/s4cindia/ninja-backend/issues/TBD
+      // Currently using placeholder colors - real implementation needs to extract
+      // colors from PDF graphics state and content stream operators
+      if (!this.hasLoggedColorWarning) {
+        logger.warn(
+          '[PdfContrastValidator] Using hardcoded colors for contrast check. ' +
+          'Actual color extraction from PDF content streams not yet implemented.'
+        );
+        this.hasLoggedColorWarning = true;
+      }
+
+      const textColor: RgbColor = { r: 0, g: 0, b: 0 }; // Black text (placeholder)
+      const backgroundColor: RgbColor = { r: 255, g: 255, b: 255 }; // White background (placeholder)
 
       const contrastResult = this.checkContrast(textColor, backgroundColor, isLargeText);
 
@@ -163,7 +175,7 @@ export class PdfContrastValidator {
       severity = 'critical';
     } else if (ratio < 4.5 && !isLargeText) {
       severity = 'serious';
-    } else if (ratio < 3.0 && isLargeText) {
+    } else if (ratio < 4.5 && isLargeText) {
       severity = 'moderate';
     } else {
       severity = 'minor';

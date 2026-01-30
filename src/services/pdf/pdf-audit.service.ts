@@ -13,6 +13,7 @@ import {
   pdfComprehensiveParserService,
   PdfParseResult,
 } from './pdf-comprehensive-parser.service';
+import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 
 /**
  * Matterhorn Protocol checkpoint result
@@ -148,18 +149,18 @@ class PdfAltTextValidatorStub implements PdfValidator {
 }
 
 /**
- * Contrast validator stub
- * TODO: Replace with actual implementation
+ * Contrast validator stub - DEPRECATED
+ * Replaced by PdfContrastValidator from validators/pdf-contrast.validator.ts
  */
-class PdfContrastValidatorStub implements PdfValidator {
-  name = 'PdfContrastValidator';
-
-  async validate(_parsed: PdfParseResult): Promise<AuditIssue[]> {
-    // Stub implementation - actual color contrast validation requires
-    // extracting color information from PDF content streams
-    return [];
-  }
-}
+// class PdfContrastValidatorStub implements PdfValidator {
+//   name = 'PdfContrastValidator';
+//
+//   async validate(_parsed: PdfParseResult): Promise<AuditIssue[]> {
+//     // Stub implementation - actual color contrast validation requires
+//     // extracting color information from PDF content streams
+//     return [];
+//   }
+// }
 
 /**
  * Table validator stub
@@ -208,7 +209,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     this.validators = [
       new PdfStructureValidatorStub(),
       new PdfAltTextValidatorStub(),
-      new PdfContrastValidatorStub(),
+      new PdfContrastValidator(),
       new PdfTableValidatorStub(),
     ];
   }

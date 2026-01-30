@@ -1,0 +1,40 @@
+In `@src/services/pdf/pdf-audit.service.ts`:
+- Around line 150-213: The PdfContrastValidatorStub currently returns no issues
+and is being instantiated in the PdfAuditService constructor; replace the stub
+by importing and instantiating the real PdfContrastValidator (the class named
+PdfContrastValidator) instead of PdfContrastValidatorStub so contrast checks are
+executed; update the validator array in PdfAuditService (constructor where new
+PdfContrastValidatorStub() is used) to use new PdfContrastValidator() and remove
+or retire PdfContrastValidatorStub to avoid duplicate/conflicting
+implementations.
+
+In `@src/services/pdf/pdf-comprehensive-parser.service.ts`:
+- Around line 144-199: The parse and parseBuffer methods currently call
+pdfParserService.close only on the success path, so if
+extractComprehensiveContent or downstream code throws the PDF handle may leak;
+update both parse and parseBuffer to assign the parsedPdf to a local variable
+before extraction and move the pdfParserService.close(parsedPdf) call into a
+finally block that always runs, wrapping the close call in its own try/catch to
+log (but not rethrow) any cleanup errors; reference the parse, parseBuffer,
+extractComprehensiveContent methods and the pdfParserService.close call when
+making this change.
+
+In `@src/services/pdf/validators/pdf-contrast.validator.ts`:
+- Around line 89-93: The validator currently uses hardcoded colors
+(textColor/backgroundColor) in pdf-contrast.validator.ts which makes contrast
+checks always pass; update the contrast validation flow in the function/method
+that sets textColor/backgroundColor (e.g., the contrast check or
+validateContrast routine) to 1) attempt real color extraction and, if extraction
+is unavailable, 2) emit a clear warning log (processLogger.warn or logger.warn)
+or throw a ValidationError to fail-fast, and 3) add a TODO comment with a
+tracking issue reference (or link) describing the need to implement actual color
+extraction from PDF content streams so future reviewers know this is intentional
+and tracked.
+- Around line 162-170: The current branching makes the `ratio < 3.0 &&
+isLargeText` branch unreachable; update the severity logic around the variables
+severity, ratio and isLargeText so large-text thresholds are compared against
+the correct upper bound. Replace the third condition with `ratio < 4.5 &&
+isLargeText` (or refactor to separate large-text and normal-text branches: if
+(ratio < 3.0) severity='critical'; else if (ratio < 4.5 && isLargeText)
+severity='moderate'; else if (ratio < 4.5 && !isLargeText) severity='serious';
+else severity='minor') to ensure the large-text path is reachable.

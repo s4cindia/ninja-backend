@@ -142,6 +142,8 @@ class PdfComprehensiveParserService {
    * @returns Complete parse result with metadata, pages, and structure
    */
   async parse(filePath: string): Promise<PdfParseResult> {
+    let parsedPdf: ParsedPDF | null = null;
+
     try {
       logger.info(`[PdfComprehensiveParser] Parsing PDF: ${filePath}`);
 
@@ -152,13 +154,10 @@ class PdfComprehensiveParserService {
       }
 
       // Parse with base parser
-      const parsedPdf = await pdfParserService.parse(filePath);
+      parsedPdf = await pdfParserService.parse(filePath);
 
       // Extract comprehensive content
       const result = await this.extractComprehensiveContent(parsedPdf);
-
-      // Cleanup
-      await pdfParserService.close(parsedPdf);
 
       logger.info(`[PdfComprehensiveParser] Parse complete: ${result.pages.length} pages, tagged=${result.isTagged}`);
 
@@ -166,6 +165,15 @@ class PdfComprehensiveParserService {
     } catch (error) {
       logger.error(`[PdfComprehensiveParser] Parse failed:`, error);
       throw error;
+    } finally {
+      // Always cleanup PDF handle, even if extraction fails
+      if (parsedPdf) {
+        try {
+          await pdfParserService.close(parsedPdf);
+        } catch (closeError) {
+          logger.warn('[PdfComprehensiveParser] Failed to close PDF handle:', closeError);
+        }
+      }
     }
   }
 
@@ -177,17 +185,16 @@ class PdfComprehensiveParserService {
    * @returns Complete parse result
    */
   async parseBuffer(buffer: Buffer, fileName = 'document.pdf'): Promise<PdfParseResult> {
+    let parsedPdf: ParsedPDF | null = null;
+
     try {
       logger.info(`[PdfComprehensiveParser] Parsing PDF buffer: ${fileName}`);
 
       // Parse with base parser
-      const parsedPdf = await pdfParserService.parseBuffer(buffer, fileName);
+      parsedPdf = await pdfParserService.parseBuffer(buffer, fileName);
 
       // Extract comprehensive content
       const result = await this.extractComprehensiveContent(parsedPdf);
-
-      // Cleanup
-      await pdfParserService.close(parsedPdf);
 
       logger.info(`[PdfComprehensiveParser] Parse complete: ${result.pages.length} pages, tagged=${result.isTagged}`);
 
@@ -195,6 +202,15 @@ class PdfComprehensiveParserService {
     } catch (error) {
       logger.error(`[PdfComprehensiveParser] Parse buffer failed:`, error);
       throw error;
+    } finally {
+      // Always cleanup PDF handle, even if extraction fails
+      if (parsedPdf) {
+        try {
+          await pdfParserService.close(parsedPdf);
+        } catch (closeError) {
+          logger.warn('[PdfComprehensiveParser] Failed to close PDF handle:', closeError);
+        }
+      }
     }
   }
 
