@@ -1,51 +1,21 @@
-In `@src/services/pdf/validators/pdf-alttext.validator.ts`:
-- Around line 169-185: The validator currently treats whitespace-only
-image.altText as present; change the check in the relevant method in
-pdf-alttext.validator (the block that pushes the 'MATTERHORN-13-002' issue) to
-treat altText.trim() === '' as missing by using a trimmed-empty check instead of
-just falsiness, so whitespace-only strings follow the missing-alt-text path
-(including the higher-severity 'critical' issue, location/message, and the
-suggestion that may call await this.generateAltTextSuggestion(image) when useAI
-&& image.base64); ensure downstream code that later emits quality-only issues
-uses the trimmed value as well to avoid duplicate/contradictory reports.
-- Around line 10-14: The singleton pdf-alttext validator uses a mutable instance
-variable issueCounter that is reset in validate() and causes race conditions for
-ID generation; change ID generation in the validator to use UUIDs instead of
-issueCounter so concurrent validate() calls produce unique IDs (replace uses of
-issueCounter and generated IDs like "pdf-alttext-{n}" with UUID-based IDs, e.g.,
-using a UUID generator when creating AuditIssue ids inside validate() and any
-helper methods that reference issueCounter).
+In `@src/services/pdf/validators/example-usage.ts`:
+- Around line 191-209: The file uses import.meta (isMainModule) and a top-level
+await calling exampleValidation, which requires newer TS module/target settings;
+fix by updating tsconfig.json compilerOptions to use "module": "NodeNext",
+"moduleResolution": "NodeNext", and "target": "ES2022" (or at least module
+ES2020/ES2022) so import.meta and top-level await are supported; if you cannot
+change tsconfig, instead wrap the CLI block in an async IIFE that checks
+import.meta.url (or use a compatible require-based main check) and invokes await
+exampleValidation inside that IIFE to avoid top-level await.
 
 In `@src/services/pdf/validators/pdf-structure.validator.ts`:
-- Around line 411-456: In validateTables, the "complex table without summary"
-check currently ignores captions on TableInfo and thus flags false positives;
-update the condition inside validateTables (function validateTables and the
-table variable checks) so that you only push 'complex table without summary'
-when table.rowCount > 5 AND table.hasSummary is false AND table.caption is
-falsy/empty (e.g., !table.caption || table.caption.trim() === ''), so a
-non-empty caption satisfies the summary requirement.
-
-In `@src/services/pdf/validators/pdf-table.validator.ts`:
-- Around line 304-320: The current check treats a caption of only whitespace as
-present; update the conditional that uses table.hasSummary and table.caption to
-treat whitespace-only captions as empty by trimming table.caption (e.g., use
-table.caption?.trim()) before evaluating it. Modify the branch around
-table.hasSummary and table.caption so the condition becomes something like "if
-(!table.hasSummary && !(table.caption && table.caption.trim()))" (referencing
-table.hasSummary, table.caption and the createIssue call) so whitespace-only
-captions do not suppress the TABLE-MISSING-SUMMARY issue.
-- Around line 169-172: The layout detection currently only penalizes tables with
-table.hasSummary; update the logic near the block that adjusts layoutScore (the
-existing "if (table.hasSummary) { layoutScore -= 50; }" check) to also treat
-tables that have a non-empty caption as summary signals: if table.caption (or
-equivalent caption property) exists and table.hasSummary is false, apply the
-same layoutScore penalty as for hasSummary so captioned tables aren't
-misclassified as layout tables; mirror the caption handling used in the metadata
-code path to keep behavior consistent.
-- Around line 10-13: The validator uses a shared mutable issueCounter that
-causes duplicate IDs under concurrent calls to validate(); replace the
-counter-based ID generation with UUIDs: import the uuid function used in
-pdf-structure.validator.ts and generate a uuid for each new AuditIssue instead
-of incrementing issueCounter, updating any references that build issue.id in
-functions inside pdf-table.validator.ts (e.g., validate() and wherever
-issueCounter is referenced) so IDs are unique and concurrency-safe.
+- Around line 159-171: The build fails because
+parsedPdf.structure.metadata.suspect is not on the PDFMetadata type; fix by
+either adding suspect?: boolean to the PDFMetadata interface in
+pdf-parser.service.ts or by guarding the access in pdf-structure.validator.ts
+(e.g., check parsedPdf.structure?.metadata && typeof
+parsedPdf.structure.metadata.suspect === 'boolean' or use optional chaining)
+before pushing the issue in the block that creates the MATTERHORN-01-004 issue;
+update references to parsedPdf.structure.metadata.suspect in the validator (and
+any related createIssue calls) to use the chosen approach so TypeScript no
+longer reports a missing property.

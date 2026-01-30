@@ -4,7 +4,7 @@
  * REST API endpoints for PDF parsing, analysis, and accessibility auditing.
  */
 
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
@@ -47,7 +47,7 @@ const uploadLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: false,
-  keyGenerator: (req) => {
+  keyGenerator: (req: Request) => {
     // Use user ID if authenticated, otherwise IP
     return req.user?.id || req.ip || 'unknown';
   },

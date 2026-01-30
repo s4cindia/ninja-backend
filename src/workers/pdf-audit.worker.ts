@@ -287,11 +287,6 @@ export function createPdfAuditWorker(): Worker<PdfAuditJobData, PdfAuditResult> 
         connection,
         concurrency: 3, // Max 3 concurrent PDF audits
         autorun: true,
-        settings: {
-          // Retry configuration
-          maxStalledCount: 1,
-          stalledInterval: 30000, // 30 seconds
-        },
       }
     );
 
