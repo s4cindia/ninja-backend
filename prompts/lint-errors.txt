@@ -1,92 +1,12 @@
 Run npx tsc --noEmit
-Error: src/services/pdf/acr-export.service.ts(309,57): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
-Error: src/services/pdf/acr-export.service.ts(313,52): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
-Error: src/services/pdf/acr-export.service.ts(317,59): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
-Error: src/services/pdf/acr-export.service.ts(321,54): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
-Error: src/services/pdf/acr-export.service.ts(325,55): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
-Error: src/services/pdf/pdf-audit.service.ts(453,15): error TS2484: Export declaration conflicts with exported declaration of 'PdfValidationResult'.
-Error: src/services/pdf/pdf-audit.service.ts(453,36): error TS2484: Export declaration conflicts with exported declaration of 'MatterhornCheckResult'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(24,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(48,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(49,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(59,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(88,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(97,72): error TS2345: Argument of type '{ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<ArrayBuffer>; }[]' is not assignable to parameter of type 'DocumentImages'.
-  Type '{ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<ArrayBuffer>; }[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(112,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(131,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(132,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(133,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(157,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(163,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(194,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(195,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(202,34): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(206,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
-  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(207,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(215,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(216,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(217,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(251,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(252,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(256,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(257,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
-  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(258,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(266,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(267,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(268,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(279,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(306,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(307,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(311,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(312,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
-  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(313,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(321,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(322,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(323,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(350,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(368,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(369,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(378,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(417,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
-  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(418,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(426,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(427,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(428,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(446,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(464,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(465,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(469,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(471,72): error TS2345: Argument of type '({ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<...>; } | { ...; })[]' is not assignable to parameter of type 'DocumentImages'.
-  Type '({ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<...>; } | { ...; })[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(496,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(504,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(505,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(506,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(524,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(542,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(543,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(547,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(548,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
-  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(549,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(557,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(558,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(560,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(254,61): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(255,51): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(256,50): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(257,50): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(264,36): error TS2339: Property 'filter' does not exist on type 'DocumentImages'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(264,43): error TS7006: Parameter 'img' implicitly has an 'any' type.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(265,61): error TS7006: Parameter 'h' implicitly has an 'any' type.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(266,40): error TS7006: Parameter 't' implicitly has an 'any' type.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(267,38): error TS7006: Parameter 'l' implicitly has an 'any' type.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(268,38): error TS7006: Parameter 'l' implicitly has an 'any' type.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(437,23): error TS2339: Property 'actualText' does not exist on type 'ImageInfo'.
-Error: src/services/pdf/pdf-comprehensive-parser.service.ts(438,23): error TS2551: Property 'hasAltText' does not exist on type 'ImageInfo'. Did you mean 'altText'?
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(60,11): error TS2740: Type '{ pageNumber: number; blocks: { text: string; pageNumber: number; lines: { text: string; pageNumber: number; items: { text: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; font: { ...; }; transform: never[]; }[]; boundingBox: { ...; }; isHeading: false; }[]; boundingBo...' is missing the following properties from type 'PageText': width, height, text, items, and 3 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(82,11): error TS2740: Type '{ pageNumber: number; blocks: never[]; }' is missing the following properties from type 'PageText': width, height, text, items, and 3 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(94,17): error TS2741: Property 'totalImages' is missing in type '{ pageNumber: number; images: { id: string; pageNumber: number; index: number; position: { x: number; y: number; width: number; height: number; }; dimensions: { width: number; height: number; }; format: "jpeg"; ... 6 more ...; mimeType: string; }[]; }' but required in type 'PageImages'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(184,29): error TS2352: Conversion of type '{ structure: { pageCount: number; pages: never[]; metadata: { isTagged: false; }; }; pdfLibDoc: PDFDocument; pdfjsDoc: PDFDocumentProxy; }' to type 'ParsedPDF' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ structure: { pageCount: number; pages: never[]; metadata: { isTagged: false; }; }; pdfLibDoc: PDFDocument; pdfjsDoc: PDFDocumentProxy; }' is missing the following properties from type 'ParsedPDF': filePath, fileSize
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(226,17): error TS2740: Type '{ pageNumber: number; blocks: never[]; }' is missing the following properties from type 'PageText': width, height, text, items, and 3 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(268,29): error TS2352: Conversion of type '{ structure: { pageCount: number; pages: never[]; metadata: { isTagged: false; }; }; pdfLibDoc: PDFDocument; pdfjsDoc: PDFDocumentProxy; }' to type 'ParsedPDF' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Type '{ structure: { pageCount: number; pages: never[]; metadata: { isTagged: false; }; }; pdfLibDoc: PDFDocument; pdfjsDoc: PDFDocumentProxy; }' is missing the following properties from type 'ParsedPDF': filePath, fileSize
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(299,17): error TS2740: Type '{ pageNumber: number; blocks: never[]; }' is missing the following properties from type 'PageText': width, height, text, items, and 3 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(308,17): error TS2741: Property 'totalImages' is missing in type '{ pageNumber: number; images: { id: string; pageNumber: number; index: number; position: { x: number; y: number; width: number; height: number; }; dimensions: { width: number; height: number; }; format: "jpeg"; ... 5 more ...; mimeType: string; }[]; }' but required in type 'PageImages'.
 Error: Process completed with exit code 2.

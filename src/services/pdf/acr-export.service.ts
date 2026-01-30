@@ -628,17 +628,20 @@ class PdfAcrExportService {
    */
   private createHtmlResultsTable(results: WcagCriterionResult[]): string {
     const rows = results.map(result => {
-      const conformanceClass = result.conformance
-        .toLowerCase()
-        .replace(/ /g, '-')
-        .replace('supports', '')
-        .replace('--', '-');
+      // Map conformance value to CSS class
+      const conformanceClassMap: Record<string, string> = {
+        'Supports': 'supports',
+        'Partially Supports': 'partial',
+        'Does Not Support': 'does-not',
+        'Not Applicable': 'na',
+      };
+      const conformanceClass = conformanceClassMap[result.conformance] || 'supports';
 
       return `
         <tr>
           <td>${this.escapeHtml(result.criterion)}</td>
           <td>${this.escapeHtml(result.name)}</td>
-          <td class="conformance-${conformanceClass === 'does-not' ? 'does-not' : conformanceClass === 'partial' ? 'partial' : conformanceClass === 'na' ? 'na' : 'supports'}">
+          <td class="conformance-${conformanceClass}">
             ${this.escapeHtml(result.conformance)}
           </td>
           <td>${result.issueCount}</td>

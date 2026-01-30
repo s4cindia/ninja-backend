@@ -1,19 +1,35 @@
-In `@src/services/pdf/pdf-audit.service.ts`:
-- Line 453: Duplicate exports are causing the build failure: remove the trailing
-"export type { PdfValidationResult, MatterhornCheckResult };" statement so the
-already-exported interfaces PdfValidationResult and MatterhornCheckResult (the
-export interface declarations) remain the single source of export for those
-symbols; locate the duplicate export near the end of the file and delete it to
-resolve the conflict.
+In `@src/services/pdf/acr-export.service.ts`:
+- Around line 629-648: The conformance-to-CSS-class logic in
+createHtmlResultsTable is incorrect because the string manipulation produces
+values like "partially-" or "does-not-" that don't match the intended classes;
+replace the current conformanceClass derivation with an explicit mapping from
+result.conformance (e.g., "Supports", "Partially Supports", "Does Not Support",
+"Not Applicable") to the exact class tokens ("supports", "partial", "does-not",
+"na"), then use that mapped value when building the td class and keep using
+escapeHtml(result.conformance) for the displayed text; update the variable
+referenced as conformanceClass and ensure the ternary that builds the class
+string uses the mapped value rather than the manipulated string.
 
 In `@src/services/pdf/pdf-comprehensive-parser.service.test.ts`:
-- Around line 22-50: The test is using unsafe unknown casts for fs.stat and PDF
-documents; update the mocks to use the correct types: import the Stats type from
-'fs' and change vi.mocked(fs.stat).mockResolvedValue({ size: 1024 * 1024 } as
-unknown) to a properly typed value (e.g., ({ size: 1024 * 1024 } as unknown as
-fs.Stats) or construct a Partial<fs.Stats> and cast to fs.Stats) and import
-PDFDocument from 'pdf-lib' and PDFDocumentProxy from 'pdfjs-dist' (or their
-types) and replace pdfLibDoc: {} as unknown and pdfjsDoc: {} as unknown with
-pdfLibDoc: {} as unknown as PDFDocument and pdfjsDoc: {} as unknown as
-PDFDocumentProxy (and apply the same typed casting pattern to the other
-occurrences listed: lines noted in the comment).
+- Around line 93-117: The mock returned by
+vi.mocked(imageExtractorService.extractImages) provides pages but each page
+object is missing the required totalImages property; update the mock so each
+page in the pages array (the page object used in the test) includes a
+totalImages numeric field (e.g., totalImages: 1) alongside pageNumber and images
+so the parser/test that reads page.totalImages will receive the expected value.
+- Around line 181-196: The mockParsedPdf object used in the test for
+pdfComprehensiveParserService.parse is missing required ParsedPDF properties
+filePath and fileSize, causing type warnings; update the mockParsedPdf in the
+test to include realistic filePath (e.g. '/test/file.pdf') and fileSize (e.g.
+1024) fields so the mock fully satisfies the ParsedPDF interface, then keep the
+existing expectations that pdfParserService.close is called with mockParsedPdf
+and that parse rejects with 'Extraction failed'.
+- Around line 57-90: The mocked return for textExtractorService.extractText in
+pdf-comprehensive-parser.service.test.ts is missing required PageText fields
+(width, height, text, items, lines, wordCount, characterCount, etc.), causing
+type errors; update both page objects in the mock to include all required
+PageText properties (populate width/height, text, items array, lines array with
+items/word/character counts, wordCount and characterCount on the page, and any
+boundingBox/position fields expected by PageText), and ensure the second page is
+not an empty object but mirrors the PageText shape (even if empty arrays / zero
+counts) so the test satisfies the PageText interface.

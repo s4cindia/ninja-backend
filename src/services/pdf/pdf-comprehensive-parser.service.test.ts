@@ -59,6 +59,29 @@ describe('PdfComprehensiveParserService', () => {
         pages: [
           {
             pageNumber: 1,
+            width: 612,
+            height: 792,
+            text: 'Page 1 text',
+            items: [{
+              text: 'Page 1 text',
+              pageNumber: 1,
+              position: { x: 100, y: 100, width: 200, height: 20 },
+              font: { name: 'Arial', size: 12, isBold: false, isItalic: false },
+              transform: [],
+            }],
+            lines: [{
+              text: 'Page 1 text',
+              pageNumber: 1,
+              items: [{
+                text: 'Page 1 text',
+                pageNumber: 1,
+                position: { x: 100, y: 100, width: 200, height: 20 },
+                font: { name: 'Arial', size: 12, isBold: false, isItalic: false },
+                transform: [],
+              }],
+              boundingBox: { x: 100, y: 100, width: 200, height: 20 },
+              isHeading: false,
+            }],
             blocks: [{
               text: 'Page 1 text',
               pageNumber: 1,
@@ -78,8 +101,20 @@ describe('PdfComprehensiveParserService', () => {
               boundingBox: { x: 100, y: 100, width: 200, height: 20 },
               type: 'paragraph',
             }],
+            wordCount: 3,
+            characterCount: 11,
           },
-          { pageNumber: 2, blocks: [] },
+          {
+            pageNumber: 2,
+            width: 612,
+            height: 792,
+            text: 'Page 2 text',
+            items: [],
+            lines: [],
+            blocks: [],
+            wordCount: 3,
+            characterCount: 11,
+          },
         ],
         fullText: 'Page 1 text Page 2 text',
         totalWords: 6,
@@ -93,6 +128,7 @@ describe('PdfComprehensiveParserService', () => {
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue({
         pages: [{
           pageNumber: 1,
+          totalImages: 1,
           images: [{
             id: 'img-1',
             pageNumber: 1,
@@ -182,6 +218,8 @@ describe('PdfComprehensiveParserService', () => {
       vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as Stats);
 
       const mockParsedPdf = {
+        filePath: '/test/file.pdf',
+        fileSize: 1024,
         structure: { pageCount: 1, pages: [], metadata: { isTagged: false } },
         pdfLibDoc: {} as unknown as PDFDocument,
         pdfjsDoc: {} as unknown as PDFDocumentProxy,
@@ -223,7 +261,17 @@ describe('PdfComprehensiveParserService', () => {
 
       vi.mocked(pdfParserService.parseBuffer).mockResolvedValue(mockParsedPdf as ParsedPDF);
       vi.mocked(textExtractorService.extractText).mockResolvedValue({
-        pages: [{ pageNumber: 1, blocks: [] }],
+        pages: [{
+          pageNumber: 1,
+          width: 612,
+          height: 792,
+          text: '',
+          items: [],
+          lines: [],
+          blocks: [],
+          wordCount: 0,
+          characterCount: 0,
+        }],
         fullText: '',
         totalWords: 0,
         totalCharacters: 0,
@@ -266,6 +314,8 @@ describe('PdfComprehensiveParserService', () => {
       const buffer = Buffer.from('test');
 
       const mockParsedPdf = {
+        filePath: 'buffer',
+        fileSize: 4,
         structure: { pageCount: 1, pages: [], metadata: { isTagged: false } },
         pdfLibDoc: {} as unknown as PDFDocument,
         pdfjsDoc: {} as unknown as PDFDocumentProxy,
@@ -296,7 +346,17 @@ describe('PdfComprehensiveParserService', () => {
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(textExtractorService.extractText).mockResolvedValue({
-        pages: [{ pageNumber: 1, blocks: [] }],
+        pages: [{
+          pageNumber: 1,
+          width: 612,
+          height: 792,
+          text: '',
+          items: [],
+          lines: [],
+          blocks: [],
+          wordCount: 0,
+          characterCount: 0,
+        }],
         fullText: '',
         totalWords: 0,
         totalCharacters: 0,
@@ -307,6 +367,7 @@ describe('PdfComprehensiveParserService', () => {
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue({
         pages: [{
           pageNumber: 1,
+          totalImages: 1,
           images: [{
             id: 'img-with-alt',
             pageNumber: 1,
