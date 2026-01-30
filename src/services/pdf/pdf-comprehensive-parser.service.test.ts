@@ -220,10 +220,22 @@ describe('PdfComprehensiveParserService', () => {
       const mockParsedPdf = {
         filePath: '/test/file.pdf',
         fileSize: 1024,
-        structure: { pageCount: 1, pages: [], metadata: { isTagged: false } },
+        structure: {
+          pageCount: 1,
+          pages: [],
+          metadata: {
+            pdfVersion: '1.7',
+            isEncrypted: false,
+            isLinearized: false,
+            isTagged: false,
+            hasOutline: false,
+            hasAcroForm: false,
+            hasXFA: false,
+          },
+        },
         pdfLibDoc: {} as unknown as PDFDocument,
         pdfjsDoc: {} as unknown as PDFDocumentProxy,
-      } as ParsedPDF;
+      } as unknown as ParsedPDF;
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(textExtractorService.extractText).mockRejectedValue(new Error('Extraction failed'));
@@ -316,10 +328,22 @@ describe('PdfComprehensiveParserService', () => {
       const mockParsedPdf = {
         filePath: 'buffer',
         fileSize: 4,
-        structure: { pageCount: 1, pages: [], metadata: { isTagged: false } },
+        structure: {
+          pageCount: 1,
+          pages: [],
+          metadata: {
+            pdfVersion: '1.7',
+            isEncrypted: false,
+            isLinearized: false,
+            isTagged: false,
+            hasOutline: false,
+            hasAcroForm: false,
+            hasXFA: false,
+          },
+        },
         pdfLibDoc: {} as unknown as PDFDocument,
         pdfjsDoc: {} as unknown as PDFDocumentProxy,
-      } as ParsedPDF;
+      } as unknown as ParsedPDF;
 
       vi.mocked(pdfParserService.parseBuffer).mockResolvedValue(mockParsedPdf);
       vi.mocked(textExtractorService.extractText).mockRejectedValue(new Error('Buffer extraction failed'));
@@ -335,14 +359,24 @@ describe('PdfComprehensiveParserService', () => {
       vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as Stats);
 
       const mockParsedPdf = {
+        filePath: '/test/file.pdf',
+        fileSize: 1024,
         structure: {
           pageCount: 1,
           pages: [{ pageNumber: 1, width: 612, height: 792, rotation: 0, hasAnnotations: false, annotationCount: 0 }],
-          metadata: { isTagged: false },
+          metadata: {
+            pdfVersion: '1.7',
+            isEncrypted: false,
+            isLinearized: false,
+            isTagged: false,
+            hasOutline: false,
+            hasAcroForm: false,
+            hasXFA: false,
+          },
         },
         pdfLibDoc: {} as unknown as PDFDocument,
         pdfjsDoc: {} as unknown as PDFDocumentProxy,
-      } as ParsedPDF;
+      } as unknown as ParsedPDF;
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(textExtractorService.extractText).mockResolvedValue({

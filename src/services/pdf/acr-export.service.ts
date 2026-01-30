@@ -32,6 +32,8 @@ const CONFORMANCE_COLORS = {
   'Not Applicable': { fill: 'D3D3D3', text: '696969' }, // Light gray / Dark gray
 };
 
+const DEFAULT_CONFORMANCE_COLOR = { fill: 'FFFFFF', text: '000000' }; // White / Black
+
 /**
  * PDF ACR Export Service
  */
@@ -329,7 +331,7 @@ class PdfAcrExportService {
     });
 
     const dataRows = results.map(result => {
-      const colors = CONFORMANCE_COLORS[result.conformance];
+      const colors = CONFORMANCE_COLORS[result.conformance as keyof typeof CONFORMANCE_COLORS] || DEFAULT_CONFORMANCE_COLOR;
 
       return new TableRow({
         children: [
