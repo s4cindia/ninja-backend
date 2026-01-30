@@ -247,25 +247,23 @@ class PdfComprehensiveParserService {
 
     // Extract images for all pages
     logger.info(`[PdfComprehensiveParser] Extracting images...`);
-    const allImages = await imageExtractorService.extractImages(parsedPdf);
+    const documentImages = await imageExtractorService.extractImages(parsedPdf);
 
     // Extract structure elements
     logger.info(`[PdfComprehensiveParser] Analyzing structure...`);
-    const headingHierarchy = await structureAnalyzerService.analyzeHeadingHierarchy(parsedPdf, documentText);
-    const tables = await structureAnalyzerService.extractTables(parsedPdf, documentText);
-    const lists = await structureAnalyzerService.extractLists(parsedPdf, documentText);
-    const links = await structureAnalyzerService.extractLinks(parsedPdf);
+    const documentStructure = await structureAnalyzerService.analyzeStructure(parsedPdf);
 
     // Build pages
     const pages: PdfPage[] = [];
     for (let pageNum = 1; pageNum <= structure.pageCount; pageNum++) {
       const pageInfo = structure.pages[pageNum - 1];
       const pageText = documentText.pages.find(p => p.pageNumber === pageNum);
-      const pageImages = allImages.filter(img => img.pageNumber === pageNum);
-      const pageHeadings = headingHierarchy.headings.filter(h => h.pageNumber === pageNum);
-      const pageTables = tables.filter(t => t.pageNumber === pageNum);
-      const pageLists = lists.filter(l => l.pageNumber === pageNum);
-      const pageLinks = links.filter(l => l.pageNumber === pageNum);
+      const pageImageInfo = documentImages.pages.find(p => p.pageNumber === pageNum);
+      const pageImages = pageImageInfo ? pageImageInfo.images : [];
+      const pageHeadings = documentStructure.headings.headings.filter((h: HeadingInfo) => h.pageNumber === pageNum);
+      const pageTables = documentStructure.tables.filter((t: TableInfo) => t.pageNumber === pageNum);
+      const pageLists = documentStructure.lists.filter((l: ListInfo) => l.pageNumber === pageNum);
+      const pageLinks = documentStructure.links.filter((l: LinkInfo) => l.pageNumber === pageNum);
 
       pages.push({
         pageNumber: pageNum,
@@ -434,8 +432,8 @@ class PdfComprehensiveParserService {
       id: img.id,
       position: img.position,
       altText: img.altText,
-      actualText: img.actualText,
-      hasAltText: img.hasAltText,
+      actualText: undefined, // ImageInfo doesn't have actualText
+      hasAltText: Boolean(img.altText),
     }));
   }
 

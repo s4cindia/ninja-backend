@@ -1,141 +1,92 @@
-Run npm run lint
-
-> ninja-backend@1.0.0 lint
-> eslint src/ tests/ --max-warnings 60
-
-
-/home/runner/work/ninja-backend/ninja-backend/src/middleware/async-handler.middleware.ts
-Warning:   7:14  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-ESLint found too many warnings (maximum: 60).
-/home/runner/work/ninja-backend/ninja-backend/src/middleware/error-handler.middleware.ts
-Warning:   84:21  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   84:58  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/accessibility/pdf-structure-validator.service.ts
-Warning:   186:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   303:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   353:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   391:7  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/acr.service.ts
-Warning:   281:31  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   346:31  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   602:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   617:69  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   629:44  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   660:47  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   681:59  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   732:32  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/acr/acr-exporter.service.ts
-Warning:   228:33  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   371:29  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/acr/batch-acr-generator.service.ts
-Warning:   15:11  warning  '_TaskWithSource' is defined but never used  @typescript-eslint/no-unused-vars
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/ai/token-counter.service.ts
-Warning:   76:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/batch/batch-orchestrator.service.ts
-Warning:   214:9   warning  '_filesFailed' is assigned a value but never used  @typescript-eslint/no-unused-vars
-Warning:   476:11  warning  '_issuesFixed' is assigned a value but never used  @typescript-eslint/no-unused-vars
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/comparison/comparison.service.ts
-Warning:    60:47  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:    99:18  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   152:49  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/epub/epub-spine.service.ts
-Warning:    64:11  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:    76:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:    80:5   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   122:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   415:5   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   416:5   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   418:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   419:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   420:7   warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/feedback/attachment.service.ts
-Warning:   79:117  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/issue-classification.service.ts
-Warning:    35:10  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:    55:10  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:    98:10  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   166:10  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/acr-generator.service.test.ts
-Warning:   2:47  warning  'ACRReport' is defined but never used  @typescript-eslint/no-unused-vars
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/acr-generator.service.ts
-Warning:   429:48  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/image-extractor.service.ts
-Warning:   199:90  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   225:19  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   407:8   warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   498:11  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/pdf-audit.service.test.ts
-Warning:     2:27  warning  'PdfValidationResult' is defined but never used  @typescript-eslint/no-unused-vars
-Warning:     4:10  warning  'AuditReport' is defined but never used          @typescript-eslint/no-unused-vars
-Warning:   281:43  warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
-Warning:   375:43  warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
-Warning:   396:43  warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
-Warning:   413:43  warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
-Warning:   430:43  warning  Unexpected any. Specify a different type         @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/pdf-comprehensive-parser.service.test.ts
-Warning:     2:41  warning  'PdfParseResult' is defined but never used  @typescript-eslint/no-unused-vars
-Warning:     7:10  warning  'AppError' is defined but never used        @typescript-eslint/no-unused-vars
-Warning:    25:69  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:    49:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:    50:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   158:52  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   164:62  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   195:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   196:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   252:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   253:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   280:62  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   307:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   308:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   351:62  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   369:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   370:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   447:62  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   465:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   466:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   525:62  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   543:26  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-Warning:   544:25  warning  Unexpected any. Specify a different type    @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/pdf/text-extractor.service.ts
-Warning:   240:11  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   243:30  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   277:82  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-Warning:   278:35  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/services/shared/document-parser.ts
-Warning:   253:11  warning  '_paragraphIndex' is assigned a value but never used  @typescript-eslint/no-unused-vars
-
-/home/runner/work/ninja-backend/ninja-backend/src/types/comparison.types.ts
-Warning:   39:12  warning  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
-
-/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/accessibility.processor.ts
-Warning:    11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   118:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-
-/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/batch-processing.processor.ts
-Warning:   10:30  warning  '_tenantId' is assigned a value but never used  @typescript-eslint/no-unused-vars
-
-/home/runner/work/ninja-backend/ninja-backend/src/workers/processors/vpat.processor.ts
-Warning:   11:3  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-Warning:   26:5  warning  Unexpected console statement. Only these console methods are allowed: warn, error  no-console
-
-✖ 85 problems (0 errors, 85 warnings)
-
-Error: Process completed with exit code 1.
+Run npx tsc --noEmit
+Error: src/services/pdf/acr-export.service.ts(309,57): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
+Error: src/services/pdf/acr-export.service.ts(313,52): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
+Error: src/services/pdf/acr-export.service.ts(317,59): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
+Error: src/services/pdf/acr-export.service.ts(321,54): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
+Error: src/services/pdf/acr-export.service.ts(325,55): error TS2353: Object literal may only specify known properties, and 'bold' does not exist in type 'IParagraphOptions'.
+Error: src/services/pdf/pdf-audit.service.ts(453,15): error TS2484: Export declaration conflicts with exported declaration of 'PdfValidationResult'.
+Error: src/services/pdf/pdf-audit.service.ts(453,36): error TS2484: Export declaration conflicts with exported declaration of 'MatterhornCheckResult'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(24,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(48,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(49,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(59,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(88,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(97,72): error TS2345: Argument of type '{ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<ArrayBuffer>; }[]' is not assignable to parameter of type 'DocumentImages'.
+  Type '{ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<ArrayBuffer>; }[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(112,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(131,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(132,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(133,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(157,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(163,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(194,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(195,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(202,34): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(206,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
+  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(207,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(215,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(216,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(217,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(251,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(252,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(256,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(257,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
+  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(258,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(266,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(267,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(268,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(279,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(306,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(307,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(311,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(312,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
+  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(313,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(321,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(322,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(323,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(350,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(368,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(369,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(378,13): error TS2353: Object literal may only specify known properties, and 'fullText' does not exist in type 'PageText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(417,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
+  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(418,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(426,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(427,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(428,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(446,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(464,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(465,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(469,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(471,72): error TS2345: Argument of type '({ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<...>; } | { ...; })[]' is not assignable to parameter of type 'DocumentImages'.
+  Type '({ id: string; pageNumber: number; position: { x: number; y: number; width: number; height: number; }; altText: string; hasAltText: boolean; actualText: undefined; width: number; height: number; data: Buffer<...>; } | { ...; })[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(496,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(504,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(505,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(506,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(524,44): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'Stats | BigIntStats'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(542,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocument | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(543,9): error TS2322: Type 'unknown' is not assignable to type 'PDFDocumentProxy | undefined'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(547,96): error TS2353: Object literal may only specify known properties, and 'wordCount' does not exist in type 'DocumentText'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(548,72): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'DocumentImages'.
+  Type 'never[]' is missing the following properties from type 'DocumentImages': pages, totalImages, imageFormats, imagesWithAltText, and 2 more.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(549,42): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(557,42): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(558,42): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.test.ts(560,42): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(254,61): error TS2339: Property 'analyzeHeadingHierarchy' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(255,51): error TS2339: Property 'extractTables' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(256,50): error TS2339: Property 'extractLists' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(257,50): error TS2339: Property 'extractLinks' does not exist on type 'StructureAnalyzerService'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(264,36): error TS2339: Property 'filter' does not exist on type 'DocumentImages'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(264,43): error TS7006: Parameter 'img' implicitly has an 'any' type.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(265,61): error TS7006: Parameter 'h' implicitly has an 'any' type.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(266,40): error TS7006: Parameter 't' implicitly has an 'any' type.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(267,38): error TS7006: Parameter 'l' implicitly has an 'any' type.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(268,38): error TS7006: Parameter 'l' implicitly has an 'any' type.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(437,23): error TS2339: Property 'actualText' does not exist on type 'ImageInfo'.
+Error: src/services/pdf/pdf-comprehensive-parser.service.ts(438,23): error TS2551: Property 'hasAltText' does not exist on type 'ImageInfo'. Did you mean 'altText'?
+Error: Process completed with exit code 2.

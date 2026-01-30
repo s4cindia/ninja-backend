@@ -450,4 +450,3 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 }
 
 export const pdfAuditService = new PdfAuditService();
-export type { PdfValidationResult, MatterhornCheckResult };

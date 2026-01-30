@@ -306,23 +306,23 @@ class PdfAcrExportService {
       tableHeader: true,
       children: [
         new TableCell({
-          children: [new Paragraph({ text: 'Criterion', bold: true })],
+          children: [new Paragraph({ children: [new TextRun({ text: 'Criterion', bold: true })] })],
           width: { size: 15, type: WidthType.PERCENTAGE },
         }),
         new TableCell({
-          children: [new Paragraph({ text: 'Name', bold: true })],
+          children: [new Paragraph({ children: [new TextRun({ text: 'Name', bold: true })] })],
           width: { size: 30, type: WidthType.PERCENTAGE },
         }),
         new TableCell({
-          children: [new Paragraph({ text: 'Conformance', bold: true })],
+          children: [new Paragraph({ children: [new TextRun({ text: 'Conformance', bold: true })] })],
           width: { size: 20, type: WidthType.PERCENTAGE },
         }),
         new TableCell({
-          children: [new Paragraph({ text: 'Issues', bold: true })],
+          children: [new Paragraph({ children: [new TextRun({ text: 'Issues', bold: true })] })],
           width: { size: 10, type: WidthType.PERCENTAGE },
         }),
         new TableCell({
-          children: [new Paragraph({ text: 'Remarks', bold: true })],
+          children: [new Paragraph({ children: [new TextRun({ text: 'Remarks', bold: true })] })],
           width: { size: 25, type: WidthType.PERCENTAGE },
         }),
       ],
