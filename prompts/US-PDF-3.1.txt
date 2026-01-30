@@ -1,0 +1,67 @@
+Implement US-PDF-3.1: ACR Generator Service
+
+Create a service that generates Accessibility Conformance Reports (ACR) from PDF audit results.
+
+File to create: src/services/pdf/acr-generator.service.ts
+
+Requirements:
+
+1. Generate VPAT 2.4 Rev format ACR:
+   - Product Information section
+   - WCAG 2.1 Evaluation Results table
+   - Section 508 mapping (where applicable)
+   - EN 301 549 mapping (for EU compliance)
+
+2. Input: PdfAuditReport from pdf-audit.service
+   - Issues grouped by WCAG criteria
+   - Matterhorn checkpoint results
+   - Overall score and summary
+
+3. Output: ACRReport structure
+   interface ACRReport {
+     productInfo: {
+       name: string;
+       version: string;
+       vendor: string;
+       evaluationDate: string;
+       evaluator: string;
+     };
+     wcagResults: WcagCriterionResult[];
+     section508Results?: Section508Result[];
+     en301549Results?: EN301549Result[];
+     summary: string;
+     notes: string[];
+   }
+
+   interface WcagCriterionResult {
+     criterion: string;        // e.g., "1.1.1"
+     name: string;             // e.g., "Non-text Content"
+     level: 'A' | 'AA' | 'AAA';
+     conformance: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable';
+     remarks: string;
+     issueCount: number;
+   }
+
+4. Conformance level determination:
+   - Supports: 0 issues for criterion
+   - Partially Supports: 1-3 minor/moderate issues
+   - Does Not Support: Any critical/serious issues or 4+ issues
+   - Not Applicable: Criterion not relevant to document
+
+5. Auto-generate remarks:
+   - Use Gemini AI to generate human-readable remarks
+   - Summarize issues found for each criterion
+   - Suggest remediation steps
+
+6. Include all WCAG 2.1 Level A and AA criteria:
+   - Perceivable (1.x.x)
+   - Operable (2.x.x)
+   - Understandable (3.x.x)
+   - Robust (4.x.x)
+
+Reference:
+- VPAT 2.4 Rev template structure
+- PdfAuditService for input format
+- GeminiService for AI-generated remarks
+
+Tests: Create acr-generator.service.test.ts
