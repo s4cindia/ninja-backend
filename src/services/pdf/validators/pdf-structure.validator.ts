@@ -17,6 +17,7 @@ import { logger } from '../../../lib/logger';
 /**
  * Matterhorn Protocol checkpoint mapping
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface MatterhornCheckpoint {
   checkpoint: string;
   description: string;
@@ -25,6 +26,7 @@ interface MatterhornCheckpoint {
 /**
  * WCAG criterion mapping with level
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface WCAGCriterion {
   criterion: string;
   level: 'A' | 'AA' | 'AAA';

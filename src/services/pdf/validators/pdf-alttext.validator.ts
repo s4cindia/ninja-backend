@@ -8,7 +8,7 @@
  */
 
 import { AuditIssue } from '../../audit/base-audit.service';
-import { imageExtractorService, ImageInfo, DocumentImages } from '../image-extractor.service';
+import { imageExtractorService, ImageInfo } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
 import { logger } from '../../../lib/logger';

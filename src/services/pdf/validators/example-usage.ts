@@ -5,7 +5,10 @@
  * to check PDF documents for accessibility compliance.
  */
 
+/* eslint-disable no-console */
+
 import { pdfStructureValidator } from './pdf-structure.validator';
+import { AuditIssue } from '../../audit/base-audit.service';
 import { logger } from '../../../lib/logger';
 
 /**
@@ -105,7 +108,7 @@ async function exampleValidation(filePath: string): Promise<void> {
 /**
  * Display a single issue with formatting
  */
-function displayIssue(issue: any): void {
+function displayIssue(issue: AuditIssue): void {
   console.log(`  [${issue.code}] ${issue.message}`);
   console.log(`    Location: ${issue.location || 'N/A'}`);
   if (issue.wcagCriteria && issue.wcagCriteria.length > 0) {

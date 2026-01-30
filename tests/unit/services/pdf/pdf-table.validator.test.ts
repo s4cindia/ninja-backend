@@ -392,9 +392,9 @@ function createMockParsedPdf(isTagged: boolean): ParsedPDF {
       },
       outline: [],
     },
-    pdfLibDoc: {} as any,
-    pdfjsDoc: {} as any,
-  } as ParsedPDF;
+    pdfLibDoc: {} as ParsedPDF['pdfLibDoc'],
+    pdfjsDoc: {} as ParsedPDF['pdfjsDoc'],
+  };
 }
 
 function createMockTable(

@@ -44,7 +44,7 @@ describe('PDF Audit Worker', () => {
 
     // Mock file system
     vi.mocked(fs.access).mockResolvedValue();
-    vi.mocked(fs.stat).mockResolvedValue({ size: 1024000 } as any);
+    vi.mocked(fs.stat).mockResolvedValue({ size: 1024000 } as Awaited<ReturnType<typeof fs.stat>>);
     vi.mocked(fs.unlink).mockResolvedValue();
 
     // Create mock job
@@ -276,7 +276,7 @@ describe('PDF Audit Worker', () => {
       // but we can verify that the attempt was made
       try {
         createPdfAuditWorker();
-      } catch (error) {
+      } catch {
         // Expected in test environment
       }
 

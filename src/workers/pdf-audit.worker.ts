@@ -19,7 +19,6 @@ import { JobData, JobResult, JOB_TYPES, getBullMQConnection, QUEUE_NAMES } from 
 import { queueService } from '../services/queue.service';
 import { logger } from '../lib/logger';
 import { isRedisConfigured } from '../lib/redis';
-import prisma from '../lib/prisma';
 
 /**
  * PDF Audit Job Data
@@ -70,7 +69,7 @@ const PROCESSING_STAGES = {
 export async function processPdfAuditJob(
   job: Job<PdfAuditJobData, PdfAuditResult>
 ): Promise<PdfAuditResult> {
-  const { type, filePath, userId, fileId } = job.data;
+  const { filePath, userId } = job.data;
   const jobId = job.id || job.name;
 
   logger.info(`📄 Starting PDF audit job ${jobId} for file: ${filePath}`);
@@ -183,7 +182,7 @@ async function updateProgress(
 async function verifyFileExists(filePath: string): Promise<void> {
   try {
     await fs.access(filePath);
-  } catch (error) {
+  } catch {
     throw new Error(`File not found: ${filePath}`);
   }
 }
@@ -193,8 +192,8 @@ async function verifyFileExists(filePath: string): Promise<void> {
  */
 async function saveAuditResults(
   jobId: string,
-  userId: string,
-  result: PdfAuditResult
+  _userId: string,
+  _result: PdfAuditResult
 ): Promise<void> {
   try {
     // TODO: Save detailed results to appropriate tables
@@ -371,7 +370,7 @@ export async function getWorkerHealth(): Promise<{
         failedJobs: 0,
       },
     };
-  } catch (error) {
+  } catch {
     return {
       status: 'unhealthy',
       queueName: QUEUE_NAMES.ACCESSIBILITY,

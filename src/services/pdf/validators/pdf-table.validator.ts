@@ -7,8 +7,8 @@
  * Maps issues to WCAG 1.3.1, 1.3.2 and Matterhorn Protocol checkpoints.
  */
 
-import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
-import { structureAnalyzerService, DocumentStructure, TableInfo } from '../structure-analyzer.service';
+import { AuditIssue } from '../../audit/base-audit.service';
+import { structureAnalyzerService, TableInfo } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { logger } from '../../../lib/logger';
 

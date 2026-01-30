@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { pdfStructureValidator } from '../../../../src/services/pdf/validators/pdf-structure.validator';
-import { structureAnalyzerService, DocumentStructure } from '../../../../src/services/pdf/structure-analyzer.service';
+import { structureAnalyzerService, DocumentStructure, TableCell } from '../../../../src/services/pdf/structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 
 // Mock dependencies
@@ -504,9 +504,9 @@ function createMockParsedPdf(options: {
       },
       outline: [],
     },
-    pdfLibDoc: {} as any,
-    pdfjsDoc: {} as any,
-  } as ParsedPDF;
+    pdfLibDoc: {} as ParsedPDF['pdfLibDoc'],
+    pdfjsDoc: {} as ParsedPDF['pdfjsDoc'],
+  };
 }
 
 function createMockStructure(options: {
@@ -536,7 +536,7 @@ function createMockStructure(options: {
     hasHeaderRow: boolean;
     hasHeaderColumn: boolean;
     hasSummary: boolean;
-    cells: any[];
+    cells: TableCell[];
     issues: string[];
     isAccessible: boolean;
   }>;
@@ -545,7 +545,7 @@ function createMockStructure(options: {
     pageNumber: number;
     type: 'ordered' | 'unordered' | 'definition';
     itemCount: number;
-    items: any[];
+    items: unknown[];
     position: { x: number; y: number };
     isProperlyTagged: boolean;
   }>;
