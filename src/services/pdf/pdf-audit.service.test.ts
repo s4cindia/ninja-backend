@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { pdfAuditService, PdfValidationResult } from './pdf-audit.service';
+import { pdfAuditService } from './pdf-audit.service';
 import { pdfComprehensiveParserService, PdfParseResult } from './pdf-comprehensive-parser.service';
-import { AuditReport } from '../audit/base-audit.service';
 
 // Mock dependencies
 vi.mock('./pdf-comprehensive-parser.service');
@@ -278,10 +277,11 @@ describe('PdfAuditService', () => {
 
       const result = await pdfAuditService.runAudit('/test/file.pdf', 'job-123', 'test.pdf');
 
-      const metadata = result.metadata as any;
-      expect(metadata.categorizedIssues.structure).toBeGreaterThan(0);
-      expect(metadata.categorizedIssues.altText).toBeGreaterThan(0);
-      expect(metadata.categorizedIssues.table).toBeGreaterThan(0);
+      const metadata = result.metadata as Record<string, unknown>;
+      const categorizedIssues = metadata.categorizedIssues as Record<string, number>;
+      expect(categorizedIssues.structure).toBeGreaterThan(0);
+      expect(categorizedIssues.altText).toBeGreaterThan(0);
+      expect(categorizedIssues.table).toBeGreaterThan(0);
     });
 
     it('should deduplicate issues', async () => {
@@ -372,7 +372,7 @@ describe('PdfAuditService', () => {
 
       const result = await pdfAuditService.runAudit('/test/file.pdf', 'job-123', 'test.pdf');
 
-      const metadata = result.metadata as any;
+      const metadata = result.metadata as Record<string, unknown>;
       expect(metadata.matterhornCheckpoints).toBeGreaterThan(0);
       expect(metadata.matterhornPassed).toBeDefined();
       expect(metadata.matterhornFailed).toBeDefined();
@@ -393,7 +393,7 @@ describe('PdfAuditService', () => {
 
       const result = await pdfAuditService.runAudit('/test/file.pdf', 'job-123', 'test.pdf');
 
-      const metadata = result.metadata as any;
+      const metadata = result.metadata as Record<string, unknown>;
       expect(metadata.matterhornFailed).toBeGreaterThan(0);
     });
 
@@ -410,7 +410,7 @@ describe('PdfAuditService', () => {
 
       const result = await pdfAuditService.runAudit('/test/file.pdf', 'job-123', 'test.pdf');
 
-      const metadata = result.metadata as any;
+      const metadata = result.metadata as Record<string, unknown>;
       expect(metadata.matterhornFailed).toBeGreaterThan(0);
     });
 
@@ -427,7 +427,7 @@ describe('PdfAuditService', () => {
 
       const result = await pdfAuditService.runAudit('/test/file.pdf', 'job-123', 'test.pdf');
 
-      const metadata = result.metadata as any;
+      const metadata = result.metadata as Record<string, unknown>;
       expect(metadata.matterhornFailed).toBeGreaterThan(0);
     });
   });

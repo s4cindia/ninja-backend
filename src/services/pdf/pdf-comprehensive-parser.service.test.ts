@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { pdfComprehensiveParserService, PdfParseResult } from './pdf-comprehensive-parser.service';
+import { pdfComprehensiveParserService } from './pdf-comprehensive-parser.service';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { textExtractorService } from './text-extractor.service';
 import { imageExtractorService } from './image-extractor.service';
 import { structureAnalyzerService } from './structure-analyzer.service';
-import { AppError } from '../../utils/app-error';
 import fs from 'fs/promises';
 
 // Mock dependencies
@@ -22,7 +21,7 @@ describe('PdfComprehensiveParserService', () => {
   describe('parse', () => {
     it('should parse PDF file successfully', async () => {
       // Mock file stats
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 * 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 * 1024 } as unknown);
 
       // Mock parsedPDF
       const mockParsedPdf: Partial<ParsedPDF> = {
@@ -46,8 +45,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -155,13 +154,13 @@ describe('PdfComprehensiveParserService', () => {
     });
 
     it('should throw error if file does not exist', async () => {
-      vi.mocked(fs.stat).mockResolvedValue(null as any);
+      vi.mocked(fs.stat).mockResolvedValue(null as unknown);
 
       await expect(pdfComprehensiveParserService.parse('/nonexistent.pdf')).rejects.toThrow();
     });
 
     it('should handle parse errors gracefully', async () => {
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as unknown);
       vi.mocked(pdfParserService.parse).mockRejectedValue(new Error('Parse failed'));
 
       await expect(pdfComprehensiveParserService.parse('/test/file.pdf')).rejects.toThrow('Parse failed');
@@ -192,8 +191,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parseBuffer).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -249,8 +248,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parseBuffer).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -277,7 +276,7 @@ describe('PdfComprehensiveParserService', () => {
 
   describe('metadata extraction', () => {
     it('should extract complete metadata', async () => {
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as unknown);
 
       const mockParsedPdf: Partial<ParsedPDF> = {
         filePath: '/test/file.pdf',
@@ -304,8 +303,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -348,7 +347,7 @@ describe('PdfComprehensiveParserService', () => {
 
   describe('content extraction', () => {
     it('should extract text content with positions', async () => {
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as unknown);
 
       const mockParsedPdf: Partial<ParsedPDF> = {
         filePath: '/test/file.pdf',
@@ -366,8 +365,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -444,7 +443,7 @@ describe('PdfComprehensiveParserService', () => {
     });
 
     it('should extract images with alt text', async () => {
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as unknown);
 
       const mockParsedPdf: Partial<ParsedPDF> = {
         filePath: '/test/file.pdf',
@@ -462,8 +461,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf as ParsedPDF);
@@ -522,7 +521,7 @@ describe('PdfComprehensiveParserService', () => {
     });
 
     it('should extract links with destinations', async () => {
-      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as any);
+      vi.mocked(fs.stat).mockResolvedValue({ size: 1024 } as unknown);
 
       const mockParsedPdf: Partial<ParsedPDF> = {
         filePath: '/test/file.pdf',
@@ -540,8 +539,8 @@ describe('PdfComprehensiveParserService', () => {
             hasXFA: false,
           },
         },
-        pdfLibDoc: {} as any,
-        pdfjsDoc: {} as any,
+        pdfLibDoc: {} as unknown,
+        pdfjsDoc: {} as unknown,
       };
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf as ParsedPDF);

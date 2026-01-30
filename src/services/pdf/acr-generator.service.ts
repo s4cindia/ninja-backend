@@ -426,10 +426,11 @@ class PdfAcrGeneratorService {
     notes.push(`Audit performed on: ${auditReport.auditedAt.toLocaleString()}`);
 
     if (auditReport.metadata) {
-      const metadata = auditReport.metadata as any;
-      if (metadata.validatorErrors && metadata.validatorErrors.length > 0) {
+      const metadata = auditReport.metadata as Record<string, unknown>;
+      const validatorErrors = metadata.validatorErrors as Array<{ validator: string; error: string }> | undefined;
+      if (validatorErrors && validatorErrors.length > 0) {
         notes.push(
-          `Warning: ${metadata.validatorErrors.length} validator(s) encountered errors during processing.`
+          `Warning: ${validatorErrors.length} validator(s) encountered errors during processing.`
         );
       }
     }

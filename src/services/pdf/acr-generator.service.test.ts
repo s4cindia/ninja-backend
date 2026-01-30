@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { pdfAcrGeneratorService, ProductInfo, ACRReport } from './acr-generator.service';
+import { pdfAcrGeneratorService, ProductInfo } from './acr-generator.service';
 import { AuditReport } from '../audit/base-audit.service';
 
 describe('PdfAcrGeneratorService', () => {

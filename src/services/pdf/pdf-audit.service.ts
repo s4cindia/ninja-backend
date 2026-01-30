@@ -16,18 +16,6 @@ import {
 import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 
 /**
- * Matterhorn Protocol checkpoint result
- */
-export interface MatterhornCheckpoint {
-  id: string;
-  category: string;
-  description: string;
-  passed: boolean;
-  failureCount: number;
-  issues: string[];
-}
-
-/**
  * Matterhorn Protocol validation result
  */
 export interface MatterhornCheckResult {
