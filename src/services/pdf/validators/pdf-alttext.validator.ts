@@ -7,7 +7,7 @@
  * Maps issues to WCAG 1.1.1 and Matterhorn Protocol checkpoints.
  */
 
-import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
+import { AuditIssue } from '../../audit/base-audit.service';
 import { imageExtractorService, ImageInfo, DocumentImages } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';

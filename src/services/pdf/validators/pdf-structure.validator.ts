@@ -8,6 +8,7 @@
  * Maps issues to WCAG 2.1 criteria and Matterhorn Protocol checkpoints.
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
@@ -58,8 +59,6 @@ export interface StructureValidationResult {
  * following WCAG 2.1 and Matterhorn Protocol standards.
  */
 class PDFStructureValidator {
-  private issueCounter = 0;
-
   /**
    * Validate PDF structure from file path
    *
@@ -85,7 +84,6 @@ class PDFStructureValidator {
    * @returns Validation result with issues
    */
   async validate(parsedPdf: ParsedPDF): Promise<StructureValidationResult> {
-    this.issueCounter = 0;
     const issues: AuditIssue[] = [];
 
     logger.info('[PDFStructureValidator] Analyzing document structure...');
@@ -468,7 +466,7 @@ class PDFStructureValidator {
    */
   private createIssue(data: Omit<AuditIssue, 'id'>): AuditIssue {
     return {
-      id: `pdf-structure-${++this.issueCounter}`,
+      id: uuidv4(),
       ...data,
     };
   }

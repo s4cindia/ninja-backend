@@ -115,7 +115,7 @@ class PDFTableValidator {
       totalTables: structure.tables.length,
       tablesWithHeaders: structure.tables.filter(t => t.hasHeaderRow || t.hasHeaderColumn).length,
       tablesWithoutHeaders: structure.tables.filter(t => !t.hasHeaderRow && !t.hasHeaderColumn).length,
-      tablesWithSummary: structure.tables.filter(t => t.hasSummary).length,
+      tablesWithSummary: structure.tables.filter(t => t.hasSummary || (t.caption && t.caption.trim().length > 0)).length,
       layoutTables: layoutTableCount,
       dataTables: dataTableCount,
     };
@@ -262,17 +262,19 @@ class PDFTableValidator {
     }
 
     // Check for scope attribute (moderate issue if missing on headers)
-    // Note: This is inferred from the structure analyzer's hasHeaderRow/Column
-    // In a real implementation, we'd need to check the actual scope attributes
+    // Only report if there's explicit evidence from structure analyzer
     if (isTaggedPDF && (table.hasHeaderRow || table.hasHeaderColumn)) {
-      // This check is simplified - in production, you'd inspect the actual TH elements
       const needsScopeCheck = table.rowCount > 3 || table.columnCount > 3;
-      if (needsScopeCheck) {
+      const hasMissingScopeEvidence = table.issues.some(
+        i => i.toLowerCase().includes('missing scope') || i.toLowerCase().includes('scope attribute')
+      );
+
+      if (needsScopeCheck && hasMissingScopeEvidence) {
         issues.push(this.createIssue({
           source: 'pdf-table',
           severity: 'moderate',
           code: 'MATTERHORN-15-004',
-          message: `Table on page ${table.pageNumber} headers may need scope attribute (${tableDimensions})`,
+          message: `Table on page ${table.pageNumber} headers missing scope attribute (${tableDimensions})`,
           wcagCriteria: ['1.3.1'],
           location,
           suggestion: 'Ensure TH (header) elements have scope attribute set to "row" or "col" to indicate what cells they apply to.',

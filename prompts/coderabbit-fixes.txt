@@ -1,0 +1,60 @@
+Fix CodeRabbit review comments for feature/pdf-validators PR:
+
+1. src/routes/pdf.routes.ts (lines 50-53):
+   - Replace (req as any) with properly typed AuthenticatedRequest
+   - Use typed request in keyGenerator that can safely reference req.user.id
+   - Fall back to req.ip or 'unknown' without any casts
+
+2. src/routes/pdf.routes.ts (lines 284-286):
+   - Remove unused 'limit' variable OR add ESLint disable comment with explanation "// kept for future pagination implementation"
+
+3. src/services/pdf/validators/example-usage.ts (lines 188-206):
+   - Convert CommonJS to ESM: replace require.main === module with import.meta.main
+   - Replace .then().catch() with async/await and try/catch
+   - Use process.argv.slice(2) for filePath
+
+4. src/services/pdf/validators/pdf-alttext-README.md (lines 296-300):
+   - Remove "(future)" from pdf-table.validator entry
+   - Add description: "Validates table accessibility and structure per US-PDF-2.4"
+
+5. src/services/pdf/validators/pdf-alttext.validator.ts (line 10):
+   - Remove unused IssueSeverity from import statement
+
+6. src/services/pdf/validators/pdf-structure.validator.ts (lines 60-62):
+   - Replace issueCounter with UUID generation for concurrency safety
+   - Install uuid if needed: npm install uuid && npm install -D @types/uuid
+   - Update createIssue() to use uuid v4 for each issue ID
+
+7. src/services/pdf/validators/pdf-table.validator.ts (lines 81-129):
+   - Update tablesWithSummary to also count tables with caption
+   - Count where t.hasSummary OR t.caption is non-empty string
+
+8. src/services/pdf/validators/pdf-table.validator.ts (lines 196-346):
+   - Fix false positive for MATTERHORN-15-004
+   - Only emit when explicit evidence of missing scope exists
+   - Check table.issues for "missing scope" or actual TH inspection
+
+9. src/workers/PDF-AUDIT-WORKER-README.md (lines 24-51, 55-59):
+   - Add language identifiers to fenced code blocks (```text or ```bash)
+   - Fix markdown table pipe spacing (add space before/after each |)
+
+10. tests/unit/services/pdf/pdf-alttext.validator.test.ts (lines 370-385):
+    - Replace "as any" casts with proper types
+    - Use ParsedPDF['pdfLibDoc'] and ParsedPDF['pdfjsDoc']
+
+11. tests/unit/workers/pdf-audit.worker.test.ts (lines 411-430):
+    - Add assertions for cleanup behavior in temp file test
+    - Assert unlink called for temp paths, not called for non-temp paths
+    - Use vi.clearAllMocks() between iterations
+
+12. US-PDF-4.1-IMPLEMENTATION.md (lines 162-169):
+    - Add express-rate-limit to dependencies
+    - Add @types/express-rate-limit to devDependencies
+    - Run npm install
+
+13. US-PDF-4.2-IMPLEMENTATION.md (lines 36-42):
+    - Fix queue name mismatch: make spec and code consistent
+    - Either update prompts/US-PDF-4.2.txt to use 'accessibility-validation'
+    - OR change all code to use 'pdf-audit' queue name
+
+Ensure all tests pass after fixes.

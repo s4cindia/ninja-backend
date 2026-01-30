@@ -186,22 +186,22 @@ export {
 };
 
 // Example CLI usage (if run directly)
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
+const isMainModule = import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`;
+
+if (isMainModule) {
+  const filePath = process.argv[2];
+  if (!filePath) {
     console.log('Usage: ts-node example-usage.ts <path-to-pdf>');
     console.log('Example: ts-node example-usage.ts /path/to/document.pdf');
     process.exit(1);
   }
 
-  const filePath = args[0];
-  exampleValidation(filePath)
-    .then(() => {
-      console.log('\n✓ Validation complete\n');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('\n✗ Validation failed:', error.message);
-      process.exit(1);
-    });
+  try {
+    await exampleValidation(filePath);
+    console.log('\n✓ Validation complete\n');
+    process.exit(0);
+  } catch (error) {
+    console.error('\n✗ Validation failed:', (error as Error).message);
+    process.exit(1);
+  }
 }

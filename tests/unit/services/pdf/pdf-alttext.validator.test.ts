@@ -369,6 +369,8 @@ describe('PDFAltTextValidator', () => {
 
 function createMockParsedPdf(): ParsedPDF {
   return {
+    filePath: '/test/document.pdf',
+    fileSize: 1024000,
     structure: {
       pageCount: 10,
       metadata: {
@@ -380,9 +382,9 @@ function createMockParsedPdf(): ParsedPDF {
       },
       outline: [],
     },
-    pdfLibDoc: {} as any,
-    pdfjsDoc: {} as any,
-  } as ParsedPDF;
+    pdfLibDoc: {} as ParsedPDF['pdfLibDoc'],
+    pdfjsDoc: {} as ParsedPDF['pdfjsDoc'],
+  };
 }
 
 function createMockImage(

@@ -422,11 +422,8 @@ describe('PDF Audit Worker', () => {
 
         await processPdfAuditJob(mockJob as Job<PdfAuditJobData, PdfAuditResult>);
 
-        // Check if unlink was attempted for temp files
-        // Note: Some paths may not be detected depending on OS path separator
-        if (path.includes('tmp') || path.includes('temp') || path.includes('uploads')) {
-          // Unlink should be called for temp directories
-        }
+        // Assert unlink was called for temp files
+        expect(fs.unlink).toHaveBeenCalledWith(path);
       }
     });
 

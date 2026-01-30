@@ -297,4 +297,4 @@ private readonly RECOMMENDED_MAX_LENGTH = 125;
 
 - **pdf-structure.validator**: Validates document structure and headings
 - **pdf-contrast.validator**: Validates color contrast (future)
-- **pdf-table.validator**: Validates table accessibility (future)
+- **pdf-table.validator**: Validates table accessibility and structure per US-PDF-2.4

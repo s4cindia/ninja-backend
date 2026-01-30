@@ -21,7 +21,7 @@ The PDF Audit Worker is responsible for processing PDF accessibility audits asyn
 
 ### Job Flow
 
-```
+```text
 1. Job Created
    ↓
 2. Status: QUEUED
@@ -52,11 +52,11 @@ The PDF Audit Worker is responsible for processing PDF accessibility audits asyn
 
 ### Processing Stages
 
-| Stage | Progress | Duration | Description |
-|-------|----------|----------|-------------|
-| **Parsing** | 0-20% | ~1-2s | Parse PDF structure, extract metadata |
-| **Validating** | 20-80% | ~5-15s | Run all accessibility validators |
-| **Generating Report** | 80-100% | ~1-2s | Compile results, save to database |
+| Stage              | Progress  | Duration | Description                                 |
+| ------------------ | --------- | -------- | ------------------------------------------- |
+| **Parsing**        | 0-20%     | ~1-2s    | Parse PDF structure, extract metadata       |
+| **Validating**     | 20-80%    | ~5-15s   | Run all accessibility validators            |
+| **Generating Report** | 80-100% | ~1-2s    | Compile results, save to database           |
 
 ## Usage
 
@@ -219,21 +219,21 @@ if (status.status === 'COMPLETED') {
 Jobs automatically retry on failure with exponential backoff:
 
 | Attempt | Delay | Total Time |
-|---------|-------|------------|
-| 1 | 0s | 0s |
-| 2 | 1s | 1s |
-| 3 | 2s | 3s |
+| ------- | ----- | ---------- |
+| 1       | 0s    | 0s         |
+| 2       | 1s    | 1s         |
+| 3       | 2s    | 3s         |
 
 After 3 failed attempts, the job is marked as `FAILED`.
 
 ### Error Types
 
-| Error | Action | Status |
-|-------|--------|--------|
-| File not found | Log error, mark failed | FAILED |
-| Processing error | Retry (up to 3x) | FAILED after retries |
-| Database error | Retry (up to 3x) | FAILED after retries |
-| Cleanup error | Log warning, continue | COMPLETED |
+| Error              | Action                     | Status                |
+| ------------------ | -------------------------- | --------------------- |
+| File not found     | Log error, mark failed     | FAILED                |
+| Processing error   | Retry (up to 3x)           | FAILED after retries  |
+| Database error     | Retry (up to 3x)           | FAILED after retries  |
+| Cleanup error      | Log warning, continue      | COMPLETED             |
 
 ### Error Logging
 
@@ -487,12 +487,12 @@ process.on('SIGTERM', async () => {
 
 ### Benchmarks
 
-| Metric | Value |
-|--------|-------|
-| **Throughput** | ~3 PDFs/minute (at concurrency 3) |
-| **Avg Processing Time** | 10-20 seconds per PDF |
-| **Memory Usage** | ~100-200 MB per job |
-| **Queue Latency** | < 100ms |
+| Metric                   | Value                             |
+| ------------------------ | --------------------------------- |
+| **Throughput**           | ~3 PDFs/minute (at concurrency 3) |
+| **Avg Processing Time**  | 10-20 seconds per PDF             |
+| **Memory Usage**         | ~100-200 MB per job               |
+| **Queue Latency**        | < 100ms                           |
 
 ### Optimization Tips
 

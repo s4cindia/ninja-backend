@@ -49,7 +49,7 @@ const uploadLimiter = rateLimit({
   skipSuccessfulRequests: false,
   keyGenerator: (req) => {
     // Use user ID if authenticated, otherwise IP
-    return (req as any).user?.id || req.ip || 'unknown';
+    return req.user?.id || req.ip || 'unknown';
   },
 });
 
@@ -282,6 +282,7 @@ router.get(
   async (req, res, next) => {
     try {
       const page = parseInt(req.query.page as string) || 1;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for future pagination implementation
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
       const status = req.query.status as string;
 
