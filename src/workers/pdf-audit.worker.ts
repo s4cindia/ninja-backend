@@ -219,7 +219,12 @@ async function cleanupTempFile(filePath: string): Promise<void> {
   try {
     // Only delete files in temp directories
     const tempDirs = ['temp', 'tmp', 'uploads'];
-    const isTempFile = tempDirs.some((dir) => filePath.includes(path.sep + dir + path.sep));
+    const normalizedPath = filePath.toLowerCase();
+    const isTempFile = tempDirs.some((dir) => {
+      const dirPattern = path.sep + dir + path.sep;
+      const startPattern = dir + path.sep;
+      return normalizedPath.includes(dirPattern) || normalizedPath.startsWith(startPattern);
+    });
 
     if (isTempFile) {
       await fs.unlink(filePath);

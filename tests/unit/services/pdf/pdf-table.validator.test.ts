@@ -100,7 +100,7 @@ describe('PDFTableValidator', () => {
     it('should identify moderate issue for missing scope attribute', async () => {
       const mockParsedPdf = createMockParsedPdf(true);
       const mockStructure = createMockStructure([
-        createMockTable(1, 0, 5, 5, true, false, false), // Medium size table with headers
+        createMockTable(1, 0, 5, 5, true, false, false, ['Missing scope attribute on headers']), // Medium size table with headers
       ]);
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
@@ -188,7 +188,7 @@ describe('PDFTableValidator', () => {
 
       const layoutIssue = result.issues.find(i => i.code === 'MATTERHORN-15-005');
       expect(layoutIssue).toBeDefined();
-      expect(layoutIssue?.message).toContain('layout table');
+      expect(layoutIssue?.message).toContain('Layout table');
     });
 
     it('should detect single-row table as layout table', async () => {

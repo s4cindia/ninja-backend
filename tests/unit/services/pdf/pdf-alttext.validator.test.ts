@@ -213,8 +213,9 @@ describe('PDFAltTextValidator', () => {
 
     it('should handle AI service failures gracefully', async () => {
       const mockParsedPdf = createMockParsedPdf();
+      const longAltText = 'This is a very long alt text that exceeds the recommended maximum length of 125 characters and should be flagged as a quality issue even without AI analysis';
       const mockDocImages = createMockDocumentImages([
-        createMockImageWithBase64(1, 0, 'A chart', false, 'base64data', 'image/jpeg'),
+        createMockImageWithBase64(1, 0, longAltText, false, 'base64data', 'image/jpeg'),
       ]);
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
@@ -226,7 +227,7 @@ describe('PDFAltTextValidator', () => {
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
       expect(result).toBeDefined();
-      // Should still identify quality issues without AI
+      // Should still identify quality issues without AI (length-based checks)
       expect(result.summary.moderate).toBeGreaterThan(0);
     });
   });
