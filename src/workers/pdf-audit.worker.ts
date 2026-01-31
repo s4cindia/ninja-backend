@@ -70,7 +70,13 @@ export async function processPdfAuditJob(
   job: Job<PdfAuditJobData, PdfAuditResult>
 ): Promise<PdfAuditResult> {
   const { filePath, userId } = job.data;
-  const jobId = job.id || job.name;
+  const jobId = job.id;
+
+  if (!jobId) {
+    const error = 'Job ID is required but was undefined';
+    logger.error(error);
+    throw new Error(error);
+  }
 
   logger.info(`📄 Starting PDF audit job ${jobId} for file: ${filePath}`);
 
@@ -219,12 +225,11 @@ async function cleanupTempFile(filePath: string): Promise<void> {
   try {
     // Only delete files in temp directories
     const tempDirs = ['temp', 'tmp', 'uploads'];
-    const normalizedPath = filePath.toLowerCase();
-    const isTempFile = tempDirs.some((dir) => {
-      const dirPattern = path.sep + dir + path.sep;
-      const startPattern = dir + path.sep;
-      return normalizedPath.includes(dirPattern) || normalizedPath.startsWith(startPattern);
-    });
+    const normalizedPath = filePath.toLowerCase().replace(/\\/g, '/');
+
+    // Split path into segments and check if any segment is a temp directory
+    const pathSegments = normalizedPath.split('/').filter(segment => segment.length > 0);
+    const isTempFile = pathSegments.some(segment => tempDirs.includes(segment));
 
     if (isTempFile) {
       await fs.unlink(filePath);
@@ -256,7 +261,12 @@ export function createPdfAuditWorker(): Worker<PdfAuditJobData, PdfAuditResult> 
     const worker = new Worker<PdfAuditJobData, PdfAuditResult>(
       QUEUE_NAMES.ACCESSIBILITY,
       async (job: Job<PdfAuditJobData, PdfAuditResult>) => {
-        const jobId = job.id || job.name;
+        const jobId = job.id;
+
+        if (!jobId) {
+          logger.error('Job ID is required but was undefined');
+          return { success: false, error: 'Job ID is required' } as PdfAuditResult;
+        }
 
         // Only process PDF accessibility jobs
         if (job.data.type !== JOB_TYPES.PDF_ACCESSIBILITY) {
