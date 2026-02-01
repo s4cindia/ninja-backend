@@ -127,3 +127,6 @@ attached_assets/
 
 # Generated export files
 exports/
+.claude/
+lint errors/
+prompts/
