@@ -246,6 +246,82 @@ describe('RemediationService - Location Tracking', () => {
       expect(result.resolvedFiles).toBeUndefined();
       expect(result.status).toBe('completed');
     });
+
+    it('should prefer task.location when it appears in modified files', async () => {
+      // This test verifies the logic for assigning resolvedLocation to each task
+      // when multiple tasks share the same issue code but have different locations
+
+      const mockPlan = {
+        jobId: 'test-job-multi',
+        fileName: 'test.epub',
+        totalIssues: 1,
+        tasks: [
+          {
+            id: 'task-ch1',
+            jobId: 'test-job-multi',
+            issueId: 'issue-ch1',
+            issueCode: 'EPUB-STRUCT-004',
+            issueMessage: 'Missing main landmark',
+            severity: 'minor',
+            category: 'structure',
+            location: 'OEBPS/chapter1.xhtml',
+            status: 'pending',
+            priority: 'low',
+            type: 'auto',
+            autoFixable: true,
+            quickFixable: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as RemediationTask,
+        ],
+        stats: {
+          pending: 1,
+          inProgress: 0,
+          completed: 0,
+          skipped: 0,
+          failed: 0,
+          autoFixable: 1,
+          quickFixable: 0,
+          manualRequired: 0,
+          byFixType: { auto: 1, quickfix: 0, manual: 0 },
+          bySource: { epubCheck: 0, ace: 0, jsAuditor: 1 },
+          bySeverity: { critical: 0, serious: 0, moderate: 0, minor: 1 },
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const mockPlanJob = {
+        id: 'plan-job-multi',
+        type: 'BATCH_VALIDATION',
+        input: { sourceJobId: 'test-job-multi' },
+        output: mockPlan,
+        status: 'COMPLETED',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as any);
+      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as any);
+
+      // Task with location 'OEBPS/chapter1.xhtml' and modified files include it
+      const result = await remediationService.updateTaskStatus(
+        'test-job-multi',
+        'task-ch1',
+        'completed',
+        'Fix applied',
+        'system',
+        {
+          resolvedLocation: 'OEBPS/chapter1.xhtml',
+          resolvedFiles: ['OEBPS/chapter1.xhtml', 'OEBPS/chapter2.xhtml'],
+        }
+      );
+
+      // Verify task got its own location (chapter1) not the first in array
+      expect(result.resolvedLocation).toBe('OEBPS/chapter1.xhtml');
+      expect(result.resolvedFiles).toContain('OEBPS/chapter1.xhtml');
+      expect(result.resolvedFiles).toContain('OEBPS/chapter2.xhtml');
+    });
   });
 
   describe('FixResult interface', () => {

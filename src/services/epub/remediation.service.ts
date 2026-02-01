@@ -1588,12 +1588,16 @@ class RemediationService {
             }
           }
 
+          // Extract resolved location from fix results (computed once for all tasks)
+          const modifiedFiles = fixResults
+            .filter(r => r.success && r.filePath && r.filePath !== 'all')
+            .map(r => r.filePath);
+
           for (const task of tasks) {
-            // Extract resolved location from fix results
-            const modifiedFiles = fixResults
-              .filter(r => r.success && r.filePath && r.filePath !== 'all')
-              .map(r => r.filePath);
-            const resolvedLocation = modifiedFiles.length > 0 ? modifiedFiles[0] : task.location;
+            // Each task prefers its own location if that location appears in modified files
+            const resolvedLocation = modifiedFiles.includes(task.location || '')
+              ? task.location
+              : (modifiedFiles.length > 0 ? modifiedFiles[0] : task.location);
 
             await this.updateTaskStatus(
               jobId,
