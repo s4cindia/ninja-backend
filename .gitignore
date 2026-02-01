@@ -129,3 +129,4 @@ attached_assets/
 exports/
 .claude/
 lint errors/
+prompts/
