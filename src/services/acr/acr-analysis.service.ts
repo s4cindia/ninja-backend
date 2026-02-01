@@ -135,6 +135,22 @@ interface RemediationChange {
   fixedAt?: string;
 }
 
+/**
+ * Helper to check if an issue was fixed based on remediation changes
+ * Checks both issue code and criterion ID to handle different remediation scenarios
+ */
+function isIssueFixed(
+  issueCode: string,
+  criterionId: string,
+  remediationChanges: RemediationChange[]
+): boolean {
+  return remediationChanges.some(change =>
+    change.issueCode === issueCode ||
+    change.criterionId === criterionId ||
+    (change.issues && change.issues.some(i => i.code === issueCode))
+  );
+}
+
 function analyzeWcagCriteria(
   issues: AuditIssue[],
   editionCode?: string,
@@ -177,10 +193,7 @@ function analyzeWcagCriteria(
     // First, determine which issues are fixed
     const issuesWithFixStatus = relatedIssues.map(issue => {
       const issueCode = issue.code || 'unknown';
-      const wasFixed = remediationChanges.some(change =>
-        change.issueCode === issueCode ||
-        (change.issues && change.issues.some(i => i.code === issueCode))
-      );
+      const wasFixed = isIssueFixed(issueCode, criterion.id, remediationChanges);
       return { ...issue, wasFixed };
     });
 
@@ -267,11 +280,7 @@ function analyzeWcagCriteria(
     relatedIssues.slice(0, 20).forEach(issue => {
       const issueCode = issue.code || 'unknown';
 
-      const wasFixed = remediationChanges.some(change =>
-        change.issueCode === issueCode ||
-        change.criterionId === criterion.id ||
-        (change.issues && change.issues.some(i => i.code === issueCode))
-      );
+      const wasFixed = isIssueFixed(issueCode, criterion.id, remediationChanges);
 
       const issueData = {
         issueId: issue.id || `issue-${Math.random().toString(36).substr(2, 9)}`,
