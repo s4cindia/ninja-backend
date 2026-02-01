@@ -21,6 +21,7 @@ import {
   clearTracking,
   findMissingIssues,
 } from '../../utils/issue-debugger';
+import type { ModificationResult } from './epub-modifier.service';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -1531,7 +1532,7 @@ class RemediationService {
 
     for (const [code, tasks] of codeGroups) {
       try {
-        let fixResults: Array<{ success: boolean; filePath: string; description: string }> = [];
+        let fixResults: ModificationResult[] = [];
 
         switch (code) {
           case 'EPUB-META-001':
@@ -1578,8 +1579,8 @@ class RemediationService {
                 filePath: result.filePath,
                 changeType: code.toLowerCase().replace(/-/g, '_'),
                 description: result.description,
-                beforeContent: (result as { before?: string }).before,
-                afterContent: (result as { after?: string }).after,
+                beforeContent: result.before,
+                afterContent: result.after,
                 severity: 'MAJOR',
                 appliedBy: 'system',
               });
