@@ -33,6 +33,7 @@ export interface PDFMetadata {
   hasOutline: boolean;
   hasAcroForm: boolean;
   hasXFA: boolean;
+  suspect?: boolean;
 }
 
 export interface PDFPageInfo {

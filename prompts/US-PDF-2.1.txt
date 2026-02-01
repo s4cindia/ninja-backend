@@ -1,0 +1,47 @@
+Implement US-PDF-2.1: PDF Structure Validator
+
+Create a validator that checks PDF document structure for accessibility compliance.
+
+File to create: src/services/pdf/validators/pdf-structure.validator.ts
+
+Requirements:
+
+1. Extend or implement interface compatible with BaseAuditService pattern
+
+2. Validate document structure:
+   - Check if PDF is tagged (critical issue if not)
+   - Validate heading hierarchy (H1 before H2, no skipped levels)
+   - Check reading order is logical
+   - Verify document language is set
+   - Check title is present in metadata
+
+3. Validate content structure:
+   - Lists are properly marked up (L, LI, Lbl, LBody)
+   - Tables have proper structure (Table, TR, TH, TD)
+   - Figures are marked as Figure elements
+   - Block quotes are marked appropriately
+
+4. Map issues to WCAG criteria:
+   - 1.3.1 Info and Relationships (Level A)
+   - 1.3.2 Meaningful Sequence (Level A)
+   - 2.4.1 Bypass Blocks (Level A)
+   - 2.4.6 Headings and Labels (Level AA)
+   - 3.1.1 Language of Page (Level A)
+
+5. Map issues to Matterhorn checkpoints:
+   - 01-003: Document not tagged
+   - 01-004: Suspect tag structure
+   - 06-001: Heading structure
+   - 09-004: Reading order
+   - 11-001: Document language
+
+6. Return array of AuditIssue objects with:
+   - severity (critical/serious/moderate/minor)
+   - message, description
+   - wcagCriteria, matterhornCheckpoint
+   - location (page number, element path)
+   - suggestedFix
+
+Reference: Use BaseAuditService types from src/services/audit/base-audit.service.ts
+
+Tests: Create pdf-structure.validator.test.ts with tests for tagged and untagged PDFs.

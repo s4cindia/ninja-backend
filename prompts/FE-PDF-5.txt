@@ -1,0 +1,57 @@
+Implement FE-PDF-5: PdfPageNavigator Component
+
+Create a component for navigating between PDF pages and viewing page-level issues.
+
+File to create: src/components/pdf/PdfPageNavigator.tsx
+
+Requirements:
+
+1. Display page thumbnails or list:
+   - Show all pages in scrollable sidebar
+   - Thumbnail view (if available) or page number list
+   - Current page highlighted
+
+2. Page-level issue indicators:
+   - Badge on each page showing issue count
+   - Color-coded by highest severity on that page
+   - Tooltip showing issue breakdown
+
+3. Navigation:
+   - Click page to navigate
+   - Keyboard navigation (arrow keys)
+   - Jump to page input field
+
+4. Filtering:
+   - Filter pages: All | With Issues | Critical Only
+   - Show only pages matching current filter
+
+5. Props interface:
+   interface PdfPageNavigatorProps {
+     pageCount: number;
+     currentPage: number;
+     issuesByPage: Map<number, PdfAuditIssue[]>;
+     onPageChange: (page: number) => void;
+     thumbnails?: string[];  // Base64 or URLs
+     orientation?: 'vertical' | 'horizontal';
+   }
+
+6. Issue summary per page:
+   - Critical: X, Serious: X, Moderate: X, Minor: X
+   - Show on hover or in expanded view
+
+7. Styling:
+   - Use Tailwind CSS
+   - Scrollable container with fixed height
+   - Responsive (collapse to dropdown on mobile)
+   - Match existing Ninja UI patterns
+
+8. Accessibility:
+   - Keyboard navigable
+   - ARIA labels for screen readers
+   - Focus management
+
+Reference:
+- PdfAuditIssue from src/types/pdf.types.ts
+- Existing navigation patterns in EPUB components
+
+Tests: Create PdfPageNavigator.test.tsx

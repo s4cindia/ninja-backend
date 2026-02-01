@@ -1,0 +1,57 @@
+Implement US-PDF-4.2: PDF Job Queue Worker
+
+Create a background worker that processes PDF audit jobs from the queue.
+
+File to create: src/workers/pdf-audit.worker.ts
+
+Requirements:
+
+1. Job queue integration:
+   - Use BullMQ (already in project) or existing queue system
+   - Listen to 'accessibility-validation' queue
+   - Process jobs concurrently (max 3 concurrent)
+
+2. Job processing flow:
+   a. Receive job with { jobId, filePath, userId }
+   b. Update job status to 'processing'
+   c. Run PdfAuditService.runAudit(filePath)
+   d. Save results to database
+   e. Update job status to 'completed'
+   f. Handle errors and update status to 'failed'
+
+3. Progress reporting:
+   - Update job progress percentage
+   - Stages: parsing (0-20%), validating (20-80%), generating-report (80-100%)
+   - Emit progress events for real-time updates
+
+4. Error handling:
+   - Retry failed jobs (max 3 attempts)
+   - Exponential backoff between retries
+   - Log errors with full context
+   - Save error message to job record
+
+5. Cleanup:
+   - Delete temporary files after processing
+   - Archive old completed jobs (configurable retention)
+
+6. Database updates:
+   - Use Prisma for job status updates
+   - Store audit results in appropriate tables
+   - Link results to user account
+
+7. Health monitoring:
+   - Log job start/complete/fail
+   - Track processing time
+   - Expose metrics for monitoring
+
+8. Graceful shutdown:
+   - Complete current job before shutdown
+   - Don't accept new jobs during shutdown
+
+Reference:
+- Existing EPUB worker for patterns
+- PdfAuditService for audit execution
+- BullMQ documentation
+- Prisma schema for job records
+
+Tests: Create pdf-audit.worker.test.ts with mocked queue

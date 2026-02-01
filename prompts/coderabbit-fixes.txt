@@ -1,0 +1,21 @@
+In `@src/services/pdf/validators/example-usage.ts`:
+- Around line 191-209: The file uses import.meta (isMainModule) and a top-level
+await calling exampleValidation, which requires newer TS module/target settings;
+fix by updating tsconfig.json compilerOptions to use "module": "NodeNext",
+"moduleResolution": "NodeNext", and "target": "ES2022" (or at least module
+ES2020/ES2022) so import.meta and top-level await are supported; if you cannot
+change tsconfig, instead wrap the CLI block in an async IIFE that checks
+import.meta.url (or use a compatible require-based main check) and invokes await
+exampleValidation inside that IIFE to avoid top-level await.
+
+In `@src/services/pdf/validators/pdf-structure.validator.ts`:
+- Around line 159-171: The build fails because
+parsedPdf.structure.metadata.suspect is not on the PDFMetadata type; fix by
+either adding suspect?: boolean to the PDFMetadata interface in
+pdf-parser.service.ts or by guarding the access in pdf-structure.validator.ts
+(e.g., check parsedPdf.structure?.metadata && typeof
+parsedPdf.structure.metadata.suspect === 'boolean' or use optional chaining)
+before pushing the issue in the block that creates the MATTERHORN-01-004 issue;
+update references to parsedPdf.structure.metadata.suspect in the validator (and
+any related createIssue calls) to use the chosen approach so TypeScript no
+longer reports a missing property.

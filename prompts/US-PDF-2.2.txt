@@ -1,0 +1,116 @@
+```
+Implement US-PDF-2.2: PDF Alt Text Validator
+
+Create a validator that checks images and figures in PDFs for proper alternative text.
+
+File to create: src/services/pdf/validators/pdf-alttext.validator.ts
+
+Requirements:
+
+1. Follow same pattern as PdfStructureValidator
+
+2. Validate alt text presence:
+   - All images must have alt text
+   - All figures must have alt text
+   - Decorative images should be marked as artifacts
+
+3. Validate alt text quality (using Gemini AI):
+   - Alt text should be descriptive (not just "image" or "figure")
+   - Alt text should not start with "image of" or "picture of"
+   - Alt text length should be appropriate (not too short, not too long)
+   - Alt text should match image content (AI verification)
+
+4. Map issues to WCAG criteria:
+   - 1.1.1 Non-text Content (Level A)
+
+5. Map issues to Matterhorn checkpoints:
+   - 13-001: Graphics not tagged as Figure
+   - 13-002: Figure without alt text
+   - 13-003: Alt text not meaningful
+
+6. Severity levels:
+   - Critical: Image with no alt text
+   - Serious: Alt text is generic ("image", "photo", etc.)
+   - Moderate: Alt text quality issues (too short, doesn't match content)
+   - Minor: Alt text style issues (starts with "image of")
+
+7. Return array of AuditIssue objects with:
+   - severity, message, description
+   - wcagCriteria (always ["1.1.1"])
+   - matterhornCheckpoint
+   - location (page number, image index, element path)
+   - suggestedFix (AI-generated suggestion when possible)
+
+8. Integration with Gemini:
+   - Use existing src/services/ai/gemini.service.ts
+   - Generate alt text suggestions for images missing alt text
+   - Validate existing alt text matches image content
+
+Reference:
+- PdfStructureValidator for pattern
+- GeminiService for AI integration
+- BaseAuditService types
+
+Tests: Create pdf-alttext.validator.test.ts with mocked Gemini responses
+```
+
+Then:
+```
+Read prompts/US-PDF-2.2.txt and implement it
+```
+
+---
+
+## BE-T1: Next Story - US-PDF-1.2
+
+Rename tab to `BE-T1-US-PDF-1.2` and save to `ninja-backend\prompts\US-PDF-1.2.txt`:
+```
+Implement US-PDF-1.2: PDF Audit Orchestrator Service
+
+Create the main audit orchestration service that extends BaseAuditService for PDF accessibility auditing.
+
+File to create: src/services/pdf/pdf-audit.service.ts
+
+Requirements:
+
+1. Extend BaseAuditService<PdfParseResult, PdfValidationResult>
+
+2. Implement abstract methods:
+   - parse(filePath): Use PdfComprehensiveParserService
+   - validate(parsed): Run all validators and collect issues
+   - generateReport(validation, jobId, fileName): Create AuditReport
+
+3. Orchestrate validators (call in sequence):
+   - PdfStructureValidator (from feature/pdf-validators branch - import the types, stub implementation)
+   - PdfAltTextValidator (stub for now)
+   - PdfContrastValidator (stub for now)
+   - PdfTableValidator (stub for now)
+
+4. Aggregate results:
+   - Combine issues from all validators
+   - Use base class deduplicateIssues() to remove duplicates
+   - Use base class calculateScore() for final score
+   - Use base class mapToWcag() for WCAG mappings
+
+5. Create PdfValidationResult type:
+   - issues: AuditIssue[]
+   - structureIssues: AuditIssue[]
+   - altTextIssues: AuditIssue[]
+   - contrastIssues: AuditIssue[]
+   - tableIssues: AuditIssue[]
+   - matterhornResults: MatterhornCheckResult[]
+
+6. Handle partial failures:
+   - If one validator fails, continue with others
+   - Log errors but don't fail entire audit
+   - Include validator errors in report metadata
+
+Reference: 
+- BaseAuditService in src/services/audit/base-audit.service.ts
+- PdfComprehensiveParserService in src/services/pdf/pdf-comprehensive-parser.service.ts
+
+Tests: Create src/services/pdf/pdf-audit.service.test.ts
+
+Note: Create stub/interface for validators - actual implementations are in separate branch
+```
+

@@ -1,0 +1,61 @@
+Implement US-PDF-2.4: PDF Table Validator
+
+Create a validator that checks table accessibility in PDFs.
+
+File to create: src/services/pdf/validators/pdf-table.validator.ts
+
+Requirements:
+
+1. Follow same pattern as other PDF validators
+
+2. Validate table structure:
+   - Tables must be tagged as Table elements
+   - Rows must be tagged as TR
+   - Header cells must be tagged as TH
+   - Data cells must be tagged as TD
+   - Check for proper nesting (Table > TR > TH/TD)
+
+3. Validate table headers:
+   - Tables must have header row(s)
+   - Headers must be in first row or column (or both)
+   - Scope attribute should be present (row/col)
+   - Complex tables need id/headers associations
+
+4. Validate table summaries:
+   - Tables should have summary/caption for screen readers
+   - Summary should describe table purpose/structure
+
+5. Validate layout tables:
+   - Detect tables used for layout (no headers, single column)
+   - Layout tables should be marked as artifacts or use role="presentation"
+
+6. Map issues to WCAG criteria:
+   - 1.3.1 Info and Relationships (Level A)
+   - 1.3.2 Meaningful Sequence (Level A)
+
+7. Map issues to Matterhorn checkpoints:
+   - 15-001: Table not tagged
+   - 15-002: Table without headers
+   - 15-003: Irregular table structure
+   - 15-004: Missing scope on headers
+   - 15-005: Layout table not marked as artifact
+
+8. Severity levels:
+   - Critical: Table not tagged at all
+   - Serious: Data table without any headers
+   - Moderate: Headers without scope attribute
+   - Minor: Missing table summary/caption
+
+9. Return AuditIssue objects with:
+   - severity, message, description
+   - wcagCriteria
+   - matterhornCheckpoint
+   - location (page number, table index, element path)
+   - suggestedFix
+   - Include table dimensions (rows x cols) in description
+
+Reference:
+- PdfStructureValidator for pattern
+- Existing table detection in structure analyzer
+
+Tests: Create pdf-table.validator.test.ts with various table scenarios
