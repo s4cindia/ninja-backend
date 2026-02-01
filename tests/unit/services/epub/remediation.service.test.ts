@@ -87,8 +87,8 @@ describe('RemediationService - Location Tracking', () => {
         updatedAt: new Date(),
       };
 
-      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as any);
-      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as any);
+      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.findFirst>>);
+      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.update>>);
 
       const result = await remediationService.updateTaskStatus(
         'test-job-123',
@@ -160,8 +160,8 @@ describe('RemediationService - Location Tracking', () => {
         updatedAt: new Date(),
       };
 
-      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as any);
-      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as any);
+      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.findFirst>>);
+      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.update>>);
 
       const result = await remediationService.updateTaskStatus(
         'test-job-123',
@@ -231,8 +231,8 @@ describe('RemediationService - Location Tracking', () => {
         updatedAt: new Date(),
       };
 
-      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as any);
-      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as any);
+      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.findFirst>>);
+      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.update>>);
 
       const result = await remediationService.updateTaskStatus(
         'test-job-123',
@@ -301,8 +301,8 @@ describe('RemediationService - Location Tracking', () => {
         updatedAt: new Date(),
       };
 
-      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as any);
-      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as any);
+      vi.mocked(prisma.job.findFirst).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.findFirst>>);
+      vi.mocked(prisma.job.update).mockResolvedValue(mockPlanJob as unknown as Awaited<ReturnType<typeof prisma.job.update>>);
 
       // Task with location 'OEBPS/chapter1.xhtml' and modified files include it
       const result = await remediationService.updateTaskStatus(

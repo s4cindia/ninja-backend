@@ -1652,4 +1652,4 @@ class RemediationService {
 }
 
 export const remediationService = new RemediationService();
-export type { RemediationPlan, RemediationTask, RemediationStatus, RemediationPriority, RemediationType };
+export type { RemediationPlan, RemediationTask, RemediationStatus, RemediationPriority, RemediationType, FixResult };
