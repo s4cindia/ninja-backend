@@ -109,6 +109,9 @@ bower_components
 web_modules/
 .lock-wscript
 
+# Prompts (working files)
+prompts/*.txt
+
 # Uploads (keep .gitkeep)
 data/uploads/*
 !data/uploads/.gitkeep
