@@ -133,7 +133,22 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
       const attrName = keyAttrMatch[1];
       const attrValue = keyAttrMatch[2];
 
-      if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
+      let matched = foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue);
+      
+      if (!matched && attrName === 'src') {
+        const basename = attrValue.split('/').pop() || attrValue;
+        const foundSrcMatch = foundTag.match(/src\s*=\s*["']([^"']+)["']/);
+        if (foundSrcMatch) {
+          const foundSrc = foundSrcMatch[1];
+          const foundBasename = foundSrc.split('/').pop() || foundSrc;
+          if (basename === foundBasename) {
+            matched = true;
+            logger.info(`Matched by basename: ${basename}`);
+          }
+        }
+      }
+
+      if (matched) {
         logger.info(`Tag pattern matched: "${foundTag.substring(0, 80)}..."`);
 
         const newTagMatch = newContent.match(/<(\w+)([^>]*)>/);
@@ -147,7 +162,16 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
 
         const foundAttrsMatch = foundTag.match(/<\w+\s*([\s\S]*?)>/);
         const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
-        const newAttrs = newTagMatch[2];
+        let newAttrs = newTagMatch[2];
+        
+        if (attrName === 'src') {
+          const foundSrcMatch = foundTag.match(/src\s*=\s*["']([^"']+)["']/);
+          if (foundSrcMatch) {
+            const originalSrc = foundSrcMatch[1];
+            newAttrs = newAttrs.replace(/src\s*=\s*["'][^"']+["']/, `src="${originalSrc}"`);
+          }
+        }
+        
         const mergedTag = mergeTagAttributes(tagName, foundAttrs, newAttrs);
 
         logger.info(`Merged tag preserving attributes: "${mergedTag}"`);
