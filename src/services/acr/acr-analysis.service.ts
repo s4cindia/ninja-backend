@@ -135,6 +135,22 @@ interface RemediationChange {
   fixedAt?: string;
 }
 
+/**
+ * Helper to check if an issue was fixed based on remediation changes
+ * Checks both issue code and criterion ID to handle different remediation scenarios
+ */
+function isIssueFixed(
+  issueCode: string,
+  criterionId: string,
+  remediationChanges: RemediationChange[]
+): boolean {
+  return remediationChanges.some(change =>
+    change.issueCode === issueCode ||
+    change.criterionId === criterionId ||
+    (change.issues && change.issues.some(i => i.code === issueCode))
+  );
+}
+
 function analyzeWcagCriteria(
   issues: AuditIssue[],
   editionCode?: string,
@@ -174,32 +190,52 @@ function analyzeWcagCriteria(
     let findings: string[] = [];
     let recommendation = '';
 
-    if (relatedIssues.length === 0) {
+    // First, determine which issues are fixed
+    const issuesWithFixStatus = relatedIssues.map(issue => {
+      const issueCode = issue.code || 'unknown';
+      const wasFixed = isIssueFixed(issueCode, criterion.id, remediationChanges);
+      return { ...issue, wasFixed };
+    });
+
+    const fixedIssues = issuesWithFixStatus.filter(i => i.wasFixed);
+    const remainingIssues = issuesWithFixStatus.filter(i => !i.wasFixed);
+    const totalIssues = relatedIssues.length;
+
+    logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${fixedIssues.length}/${totalIssues} issues fixed, ${remainingIssues.length} remaining`);
+
+    if (totalIssues === 0) {
       status = 'supports';
       confidence = 75;
       findings = ['No accessibility issues detected for this criterion'];
       recommendation = 'Continue to maintain compliance with this criterion';
+    } else if (remainingIssues.length === 0) {
+      // All issues were fixed!
+      status = 'supports';
+      confidence = 95;
+      findings = [`All ${totalIssues} issue(s) have been remediated`];
+      recommendation = 'All issues have been resolved - excellent work!';
     } else {
-      const criticalCount = relatedIssues.filter(i => i.severity === 'critical').length;
-      const seriousCount = relatedIssues.filter(i => i.severity === 'serious').length;
-      const moderateCount = relatedIssues.filter(i => i.severity === 'moderate').length;
-      const minorCount = relatedIssues.filter(i => i.severity === 'minor').length;
-      const unknownCount = relatedIssues.filter(i => 
+      // Determine status based on REMAINING issues only (not all issues)
+      const criticalCount = remainingIssues.filter(i => i.severity === 'critical').length;
+      const seriousCount = remainingIssues.filter(i => i.severity === 'serious').length;
+      const moderateCount = remainingIssues.filter(i => i.severity === 'moderate').length;
+      const minorCount = remainingIssues.filter(i => i.severity === 'minor').length;
+      const unknownCount = remainingIssues.filter(i =>
         !i.severity || !KNOWN_SEVERITIES.includes(i.severity)
       ).length;
 
       if (criticalCount > 0) {
         status = 'does_not_support';
         confidence = 90;
-        recommendation = 'Critical issues must be resolved for compliance';
+        recommendation = `${criticalCount} critical issue(s) must be resolved for compliance`;
       } else if (seriousCount > 0) {
         status = 'partially_supports';
         confidence = 80;
-        recommendation = 'Serious issues should be addressed to improve compliance';
+        recommendation = `${seriousCount} serious issue(s) should be addressed to improve compliance`;
       } else if (moderateCount > 0) {
         status = 'partially_supports';
         confidence = 70;
-        recommendation = 'Moderate issues may affect some users';
+        recommendation = `${moderateCount} moderate issue(s) may affect some users`;
       } else if (unknownCount > 0) {
         status = 'partially_supports';
         confidence = 60;
@@ -207,19 +243,26 @@ function analyzeWcagCriteria(
       } else if (minorCount > 0) {
         status = 'supports';
         confidence = 85;
-        recommendation = 'Minor issues detected but overall compliance is maintained';
+        recommendation = `${minorCount} minor issue(s) detected but overall compliance is maintained`;
       } else {
         status = 'supports';
         confidence = 85;
         recommendation = 'Issues detected but overall compliance is maintained';
       }
 
-      findings = relatedIssues.map(issue => 
+      // Include fixed issues in findings
+      const fixedFindings = fixedIssues.length > 0
+        ? [`✓ ${fixedIssues.length} issue(s) have been fixed`]
+        : [];
+
+      const remainingFindings = remainingIssues.map(issue =>
         `${(issue.severity || 'ISSUE').toUpperCase()}: ${
-          issue.message || issue.description || 
+          issue.message || issue.description ||
           (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
         }`
-      ).slice(0, 5);
+      ).slice(0, 4);
+
+      findings = [...fixedFindings, ...remainingFindings];
     }
 
     const issueDetails = relatedIssues.slice(0, 10).map(issue => ({
@@ -237,11 +280,7 @@ function analyzeWcagCriteria(
     relatedIssues.slice(0, 20).forEach(issue => {
       const issueCode = issue.code || 'unknown';
 
-      const wasFixed = remediationChanges.some(change =>
-        change.issueCode === issueCode ||
-        change.criterionId === criterion.id ||
-        (change.issues && change.issues.some(i => i.code === issueCode))
-      );
+      const wasFixed = isIssueFixed(issueCode, criterion.id, remediationChanges);
 
       const issueData = {
         issueId: issue.id || `issue-${Math.random().toString(36).substr(2, 9)}`,
@@ -492,9 +531,26 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
     notApplicable: criteria.filter(c => c.status === 'not_applicable').length,
   };
 
-  const overallConfidence = Math.round(
+  // Calculate overall confidence with remediation awareness
+  const totalFixedIssues = criteria.reduce((sum, c) => sum + (c.fixedCount || 0), 0);
+  const totalRemainingIssues = criteria.reduce((sum, c) => sum + (c.remainingCount || 0), 0);
+  const totalIssues = totalFixedIssues + totalRemainingIssues;
+
+  let baseConfidence = Math.round(
     criteria.reduce((sum, c) => sum + c.confidence, 0) / criteria.length
   );
+
+  // Add remediation bonus if issues were fixed
+  if (totalIssues > 0 && totalFixedIssues > 0) {
+    const remediationRate = totalFixedIssues / totalIssues;
+    const remediationBonus = Math.min(Math.round(remediationRate * 15), 15);
+    baseConfidence = Math.min(100, baseConfidence + remediationBonus);
+    logger.info(`[ACR Analysis] Remediation bonus: +${remediationBonus}% (${totalFixedIssues}/${totalIssues} issues fixed)`);
+  }
+
+  const overallConfidence = baseConfidence;
+
+  logger.info(`[ACR Analysis] Overall confidence: ${overallConfidence}% (${totalFixedIssues} fixed, ${totalRemainingIssues} remaining of ${totalIssues} total)`);
 
   const analysis: AcrAnalysis = {
     jobId,
