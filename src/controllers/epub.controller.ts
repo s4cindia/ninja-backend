@@ -823,7 +823,10 @@ export const epubController = {
       const input = job.input as { fileName?: string } | null;
       const fileName = input?.fileName || 'document.epub';
 
-      const epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      let epubBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(jobId, fileName);
+      }
       if (!epubBuffer) {
         return res.status(400).json({
           success: false,
