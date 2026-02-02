@@ -233,9 +233,6 @@ class EPUBSpineService {
   private readonly MAX_INLINE_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB max per image
 
   private async inlineImages(zip: JSZip, html: string, basePath: string): Promise<string> {
-    const $ = cheerio.load(html, { xmlMode: true });
-    const imgElements = $('img').toArray();
-    
     const mimeTypes: Record<string, string> = {
       png: 'image/png',
       jpg: 'image/jpeg',
@@ -245,15 +242,21 @@ class EPUBSpineService {
       webp: 'image/webp',
     };
 
-    for (const elem of imgElements) {
-      const $img = $(elem);
-      const src = $img.attr('src');
+    const imgRegex = /<img([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)>/gi;
+    let result = html;
+    const matches = [...html.matchAll(imgRegex)];
+    
+    for (const match of matches) {
+      const fullMatch = match[0];
+      const beforeSrc = match[1];
+      const src = match[2];
+      const afterSrc = match[3];
       
-      if (!src || src.startsWith('data:')) continue;
+      if (src.startsWith('data:')) continue;
       
       const fullPath = this.resolvePath(basePath, src);
-      
       const entry = zip.file(fullPath);
+      
       if (entry) {
         try {
           const buffer = await entry.async('nodebuffer');
@@ -266,14 +269,15 @@ class EPUBSpineService {
           const ext = src.split('.').pop()?.toLowerCase() || '';
           const mime = mimeTypes[ext] || 'image/png';
           const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
-          $img.attr('src', dataUri);
+          const newTag = `<img${beforeSrc}src="${dataUri}"${afterSrc}>`;
+          result = result.replace(fullMatch, newTag);
         } catch (err) {
           console.warn(`[EPUBSpineService] Failed to inline image ${src}:`, err);
         }
       }
     }
 
-    return $.html();
+    return result;
   }
 
   private xpathToCssSelector(xpath: string): string | undefined {
