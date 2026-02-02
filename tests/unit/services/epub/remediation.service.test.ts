@@ -323,32 +323,4 @@ describe('RemediationService - Location Tracking', () => {
       expect(result.resolvedFiles).toContain('OEBPS/chapter2.xhtml');
     });
   });
-
-  describe('FixResult interface', () => {
-    it('should support FixResult structure for tracking modifications', () => {
-      // This is a type-level test to ensure FixResult interface is properly defined
-      const fixResult = {
-        success: true,
-        modifiedFile: 'OEBPS/chapter1.xhtml',
-        modifiedFiles: ['OEBPS/chapter1.xhtml', 'OEBPS/chapter2.xhtml'],
-        changeDescription: 'Added role="main" to content section',
-      };
-
-      expect(fixResult.success).toBe(true);
-      expect(fixResult.modifiedFile).toBe('OEBPS/chapter1.xhtml');
-      expect(fixResult.modifiedFiles).toHaveLength(2);
-      expect(fixResult.changeDescription).toBeDefined();
-    });
-
-    it('should support FixResult with error', () => {
-      const fixResult = {
-        success: false,
-        error: 'No suitable content file found',
-      };
-
-      expect(fixResult.success).toBe(false);
-      expect(fixResult.error).toBeDefined();
-      expect(fixResult.modifiedFile).toBeUndefined();
-    });
-  });
 });

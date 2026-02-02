@@ -27,14 +27,6 @@ type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | '
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
 type RemediationType = FixType;
 
-interface FixResult {
-  success: boolean;
-  modifiedFile?: string;
-  modifiedFiles?: string[];
-  changeDescription?: string;
-  error?: string;
-}
-
 interface RemediationTask {
   id: string;
   jobId: string;
@@ -1653,4 +1645,4 @@ class RemediationService {
 }
 
 export const remediationService = new RemediationService();
-export type { RemediationPlan, RemediationTask, RemediationStatus, RemediationPriority, RemediationType, FixResult };
+export type { RemediationPlan, RemediationTask, RemediationStatus, RemediationPriority, RemediationType };
