@@ -719,6 +719,47 @@ export class AcrService {
       };
     }
 
+    // Get remediation plan to check for completed fixes
+    const remediationPlanJob = await prisma.job.findFirst({
+      where: {
+        type: 'BATCH_VALIDATION',
+        input: {
+          path: ['sourceJobId'],
+          equals: jobId,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Build a set of issue codes that have been remediated
+    const remediatedIssueCodes = new Set<string>();
+    const remediatedFilePaths = new Map<string, Set<string>>(); // issueCode -> set of fixed file paths
+    
+    if (remediationPlanJob?.output) {
+      const plan = remediationPlanJob.output as any;
+      if (plan.tasks && Array.isArray(plan.tasks)) {
+        for (const task of plan.tasks) {
+          if (task.status === 'completed') {
+            // Track completed issue codes and their file paths
+            if (task.issueCode) {
+              if (!remediatedFilePaths.has(task.issueCode)) {
+                remediatedFilePaths.set(task.issueCode, new Set());
+              }
+              if (task.location) {
+                remediatedFilePaths.get(task.issueCode)!.add(task.location);
+              }
+              // If all instances of an issue code are completed, add to remediated set
+              const allTasksForCode = plan.tasks.filter((t: any) => t.issueCode === task.issueCode);
+              const completedTasksForCode = allTasksForCode.filter((t: any) => t.status === 'completed');
+              if (allTasksForCode.length === completedTasksForCode.length) {
+                remediatedIssueCodes.add(task.issueCode);
+              }
+            }
+          }
+        }
+      }
+    }
+
     const allIssues = job.validationResults.flatMap(vr =>
       vr.issues.map(issue => ({
         code: issue.code,
@@ -729,12 +770,18 @@ export class AcrService {
       }))
     );
 
+    // Filter out issues that have been fully remediated
+    const unresolvedIssues = allIssues.filter(issue => {
+      if (!issue.code) return true;
+      return !remediatedIssueCodes.has(issue.code);
+    });
+
     const input = job.input as any;
     const fileName = input?.originalName || input?.fileName || 'Unknown Document';
 
     return {
       fileName,
-      issues: allIssues,
+      issues: unresolvedIssues,
       manifest: [],
     };
   }
