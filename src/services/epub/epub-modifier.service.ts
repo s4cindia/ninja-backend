@@ -1592,7 +1592,7 @@ class EPUBModifierService {
       }
 
       const content = await file.async('string');
-      const before = content.substring(0, 200);
+      const before = content;
       let modified = content;
       let changeApplied = false;
 
@@ -1793,7 +1793,7 @@ class EPUBModifierService {
           modificationType: change.type,
           description: change.description || `Applied ${change.type} operation`,
           before,
-          after: modified.substring(0, 200),
+          after: modified,
         });
 
         logger.info(`Quick fix modified file: ${actualPath}`);
