@@ -2240,6 +2240,62 @@ export const epubController = {
     }
   },
 
+  async getAsset(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const assetPath = decodeURIComponent(req.params[0] || req.query.path as string || '');
+
+      if (!assetPath) {
+        return res.status(400).json({
+          success: false,
+          error: 'Asset path is required',
+        });
+      }
+
+      // Security: prevent path traversal
+      if (assetPath.includes('..') || assetPath.startsWith('/')) {
+        logger.warn(`[Asset] Path traversal attempt blocked for job ${jobId}: ${assetPath}`);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid asset path',
+        });
+      }
+
+      logger.info(`[Asset] Serving asset for job ${jobId}: ${assetPath}`);
+
+      const { epubContentService } = await import('../services/epub/epub-content.service');
+
+      const authReq = req as AuthenticatedRequest;
+      const userId = authReq.user?.id;
+
+      const contentResult = await epubContentService.getContent(jobId, assetPath, userId);
+
+      if (!contentResult) {
+        return res.status(404).json({
+          success: false,
+          error: 'Asset not found in EPUB',
+        });
+      }
+
+      const isBase64 = contentResult.contentType.includes('base64');
+      const assetBuffer = isBase64
+        ? Buffer.from(contentResult.content, 'base64')
+        : Buffer.from(contentResult.content);
+
+      const mimeType = contentResult.contentType.replace(';base64', '');
+
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(assetBuffer);
+    } catch (error) {
+      logger.error('[Asset] Failed to serve asset', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to serve asset',
+      });
+    }
+  },
+
   async generateImageAltText(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
