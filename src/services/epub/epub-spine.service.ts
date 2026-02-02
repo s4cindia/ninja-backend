@@ -217,6 +217,53 @@ class EPUBSpineService {
     return path.posix.normalize(path.posix.join(dir, to));
   }
 
+  private async inlineImages(zip: JSZip, html: string, basePath: string): Promise<string> {
+    const imgRegex = /<img([^>]*?)src=["']([^"']+)["']/gi;
+    let result = html;
+    const matches: Array<{ fullMatch: string; attrs: string; src: string }> = [];
+    
+    let match;
+    while ((match = imgRegex.exec(html)) !== null) {
+      matches.push({
+        fullMatch: match[0],
+        attrs: match[1],
+        src: match[2]
+      });
+    }
+
+    for (const { fullMatch, attrs, src } of matches) {
+      if (src.startsWith('data:')) continue;
+      
+      const dir = path.posix.dirname(basePath);
+      const fullPath = src.startsWith('/') 
+        ? src.slice(1) 
+        : path.posix.normalize(path.posix.join(dir, src));
+      
+      const entry = zip.file(fullPath);
+      if (entry) {
+        try {
+          const buffer = await entry.async('nodebuffer');
+          const ext = src.split('.').pop()?.toLowerCase() || '';
+          const mimeTypes: Record<string, string> = {
+            png: 'image/png',
+            jpg: 'image/jpeg',
+            jpeg: 'image/jpeg',
+            gif: 'image/gif',
+            svg: 'image/svg+xml',
+            webp: 'image/webp',
+          };
+          const mime = mimeTypes[ext] || 'image/png';
+          const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
+          result = result.replace(fullMatch, `<img${attrs}src="${dataUri}"`);
+        } catch (err) {
+          console.warn(`[EPUBSpineService] Failed to inline image ${src}:`, err);
+        }
+      }
+    }
+
+    return result;
+  }
+
   private xpathToCssSelector(xpath: string): string | undefined {
     if (!xpath.startsWith('/')) return undefined;
 
@@ -279,7 +326,8 @@ class EPUBSpineService {
       throw new Error(`HTML file not found: ${spineItem.href}`);
     }
 
-    const html = await htmlFile.async('text');
+    const rawHtml = await htmlFile.async('text');
+    const html = await this.inlineImages(zip, rawHtml, spineItem.href);
     const css = await this.extractStyles(zip, spineItem.href, html);
 
     return {
