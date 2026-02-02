@@ -9,6 +9,7 @@ import { epubModifier } from '../services/epub/epub-modifier.service';
 import { epubComparisonService } from '../services/epub/epub-comparison.service';
 import { batchRemediationService } from '../services/epub/batch-remediation.service';
 import { epubExportService } from '../services/epub/epub-export.service';
+import { epubSpineService } from '../services/epub/epub-spine.service';
 import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -841,6 +842,7 @@ export const epubController = {
         result.remediatedFileName,
         result.remediatedBuffer
       );
+      epubSpineService.clearCache(jobId);
 
       return res.json({
         success: true,
@@ -1085,6 +1087,7 @@ export const epubController = {
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+      epubSpineService.clearCache(jobId);
 
       // Filter results to only the target file if specified (prevents logging duplicate changes)
       const targetFile = options?.targetFile;
@@ -1689,6 +1692,7 @@ export const epubController = {
         if (results.length > 0) {
           const modifiedBuffer = await epubModifier.saveEPUB(zip);
           await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+          epubSpineService.clearCache(jobId);
 
           for (const result of results.filter(r => r.success)) {
             try {
@@ -1793,6 +1797,7 @@ export const epubController = {
 
       const modifiedBuffer = await epubModifier.saveEPUB(zip);
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+      epubSpineService.clearCache(jobId);
 
       const successfulResults = results.filter(r => r.success);
       logger.info(`[QUICKFIX-LOG] Total results: ${results.length}, Successful: ${successfulResults.length}`);
@@ -2144,6 +2149,7 @@ export const epubController = {
       if (results.successful.length > 0) {
         const modifiedBuffer = await epubModifier.saveEPUB(zip);
         await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
+        epubSpineService.clearCache(jobId);
         logger.info(`[Batch Quick Fix] Saved remediated EPUB after ${results.successful.length} fixes`);
 
         for (const result of successfulResults) {

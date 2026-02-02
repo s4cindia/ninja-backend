@@ -68,16 +68,29 @@ class EPUBSpineService {
     }, 60000);
   }
 
+  clearCache(jobId: string): void {
+    const originalKey = `${jobId}-original`;
+    const remediatedKey = `${jobId}-remediated`;
+    
+    const hadOriginal = this.cache.has(originalKey);
+    const hadRemediated = this.cache.has(remediatedKey);
+    
+    this.cache.delete(originalKey);
+    this.cache.delete(remediatedKey);
+    
+    console.log(`[EPUBSpineService] Cache cleared for job ${jobId} (original: ${hadOriginal}, remediated: ${hadRemediated})`);
+  }
+
   private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
     const cacheKey = `${jobId}-${version}`;
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[EPUBSpineService] Using cached EPUB for ${cacheKey}`);
+      console.log(`[EPUBSpineService] Using cached EPUB for ${cacheKey} (age: ${Math.round((Date.now() - cached.timestamp) / 1000)}s)`);
       return cached.zip;
     }
 
-    console.log(`[EPUBSpineService] Loading EPUB from file system for ${cacheKey}`);
+    console.log(`[EPUBSpineService] Loading ${version} EPUB from file system for job ${jobId} (cache miss or expired)`);
     
     const job = await prisma.job.findUnique({
       where: { id: jobId }
