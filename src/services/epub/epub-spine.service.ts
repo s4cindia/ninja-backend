@@ -15,6 +15,7 @@ export interface SpineItem {
 export interface SpineItemContent {
   spineItem: SpineItem;
   html: string;
+  sourceHtml: string;
   css: string[];
   baseHref: string;
 }
@@ -349,6 +350,7 @@ class EPUBSpineService {
     return {
       spineItem,
       html,
+      sourceHtml: rawHtml,
       css,
       baseHref: path.posix.dirname(spineItem.href)
     };
