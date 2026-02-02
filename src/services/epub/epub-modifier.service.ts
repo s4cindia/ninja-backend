@@ -2193,6 +2193,6 @@ interface FileChange {
   description?: string;
 }
 
-export type { FileChange };
+export type { FileChange, ModificationResult };
 
 export const epubModifier = new EPUBModifierService();

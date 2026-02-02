@@ -21,6 +21,7 @@ import {
   clearTracking,
   findMissingIssues,
 } from '../../utils/issue-debugger';
+import type { ModificationResult } from './epub-modifier.service';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -46,6 +47,9 @@ interface RemediationTask {
   resolvedAt?: Date;
   notes?: string;
   completionMethod?: 'auto' | 'manual' | 'verified';
+  // Track where fix was actually applied
+  resolvedLocation?: string;
+  resolvedFiles?: string[];
   createdAt: Date;
   updatedAt: Date;
   filePath?: string;
@@ -445,7 +449,12 @@ class RemediationService {
     status: RemediationStatus,
     resolution?: string,
     resolvedBy?: string,
-    options?: { notes?: string; completionMethod?: 'auto' | 'manual' | 'verified' }
+    options?: {
+      notes?: string;
+      completionMethod?: 'auto' | 'manual' | 'verified';
+      resolvedLocation?: string;
+      resolvedFiles?: string[];
+    }
   ): Promise<RemediationTask> {
     return await prisma.$transaction(async (tx) => {
       const planJob = await tx.job.findFirst({
@@ -483,6 +492,12 @@ class RemediationService {
         }
         if (options?.notes) {
           task.notes = options.notes;
+        }
+        if (options?.resolvedLocation) {
+          task.resolvedLocation = options.resolvedLocation;
+        }
+        if (options?.resolvedFiles) {
+          task.resolvedFiles = options.resolvedFiles;
         }
       }
 
@@ -1509,7 +1524,7 @@ class RemediationService {
 
     for (const [code, tasks] of codeGroups) {
       try {
-        let fixResults: Array<{ success: boolean; filePath: string; description: string }> = [];
+        let fixResults: ModificationResult[] = [];
 
         switch (code) {
           case 'EPUB-META-001':
@@ -1529,6 +1544,9 @@ class RemediationService {
             break;
           case 'EPUB-NAV-001':
             fixResults = await epubModifier.addSkipNavigation(zip);
+            break;
+          case 'EPUB-STRUCT-004':
+            fixResults = await epubModifier.addAriaLandmarks(zip);
             break;
           default:
             logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
@@ -1553,8 +1571,8 @@ class RemediationService {
                 filePath: result.filePath,
                 changeType: code.toLowerCase().replace(/-/g, '_'),
                 description: result.description,
-                beforeContent: (result as { before?: string }).before,
-                afterContent: (result as { after?: string }).after,
+                beforeContent: result.before,
+                afterContent: result.after,
                 severity: 'MAJOR',
                 appliedBy: 'system',
               });
@@ -1563,13 +1581,27 @@ class RemediationService {
             }
           }
 
+          // Extract resolved location from fix results (computed once for all tasks)
+          const modifiedFiles = fixResults
+            .filter(r => r.success && r.filePath && r.filePath !== 'all')
+            .map(r => r.filePath);
+
           for (const task of tasks) {
+            // Each task prefers its own location if that location appears in modified files
+            const resolvedLocation = modifiedFiles.includes(task.location || '')
+              ? task.location
+              : (modifiedFiles.length > 0 ? modifiedFiles[0] : task.location);
+
             await this.updateTaskStatus(
               jobId,
               task.id,
               'completed',
               `Auto-applied high-confidence fix`,
-              'system'
+              'system',
+              {
+                resolvedLocation,
+                resolvedFiles: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+              }
             );
             results.applied++;
             results.details.push({
