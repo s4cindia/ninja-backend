@@ -5,6 +5,16 @@ import { SKIP_AUTO_ROLE_TYPES, getAriaRoleForEpubType } from '../../config/epub-
 
 const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
 
+function decodeCheerioHtml(html: string): string {
+  return html
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 function isTextFile(filePath: string): boolean {
   return EPUB_TEXT_FILE_EXTENSIONS.some(ext => filePath.toLowerCase().endsWith(ext));
 }
@@ -976,7 +986,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, decodeCheerioHtml($.html()));
         results.push({
           success: true,
           filePath,
@@ -1033,7 +1043,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, decodeCheerioHtml($.html()));
         results.push({
           success: true,
           filePath,
@@ -1151,7 +1161,7 @@ class EPUBModifierService {
       }
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, decodeCheerioHtml($.html()));
         results.push({
           success: true,
           filePath,
@@ -1315,7 +1325,7 @@ class EPUBModifierService {
       const skipLink = `<a href="#${mainId}" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to main content</a>\n`;
       $body.prepend(skipLink);
 
-      zip.file(filePath, $.html());
+      zip.file(filePath, decodeCheerioHtml($.html()));
       results.push({
         success: true,
         filePath,
@@ -1381,7 +1391,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, decodeCheerioHtml($.html()));
         results.push({
           success: true,
           filePath,
@@ -1446,7 +1456,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, $.html());
+        zip.file(filePath, decodeCheerioHtml($.html()));
         results.push({
           success: true,
           filePath,
