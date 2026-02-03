@@ -73,6 +73,12 @@ router.get(
   citationController.getCitationsWithComponents.bind(citationController)
 );
 
+router.get(
+  '/document/:documentId/stats',
+  validate({ params: documentIdParamSchema }),
+  citationController.getStats.bind(citationController)
+);
+
 // ============================================
 // JOB-LEVEL ROUTES
 // ============================================

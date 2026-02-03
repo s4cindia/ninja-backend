@@ -307,6 +307,74 @@ export class CitationController {
       next(error);
     }
   }
+
+  /**
+   * GET /api/v1/citation/document/:documentId/stats
+   * Get citation statistics for a document
+   */
+  async getStats(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      // Verify document belongs to tenant
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        select: { id: true },
+      });
+
+      if (!document) {
+        res.status(404).json({ success: false, error: 'Document not found' });
+        return;
+      }
+
+      // Fetch all citations for aggregation
+      const citations = await prisma.citation.findMany({
+        where: { documentId },
+        select: {
+          citationType: true,
+          detectedStyle: true,
+          primaryComponentId: true,
+        },
+      });
+
+      const total = citations.length;
+      const parsed = citations.filter((c) => c.primaryComponentId !== null).length;
+      const unparsed = total - parsed;
+
+      // Count by type
+      const byType: Record<string, number> = {};
+      for (const c of citations) {
+        byType[c.citationType] = (byType[c.citationType] || 0) + 1;
+      }
+
+      // Count by style
+      const byStyle: Record<string, number> = {};
+      for (const c of citations) {
+        const style = c.detectedStyle || 'UNKNOWN';
+        byStyle[style] = (byStyle[style] || 0) + 1;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          total,
+          parsed,
+          unparsed,
+          byType,
+          byStyle,
+        },
+      });
+    } catch (error) {
+      logger.error('[Citation Controller] getStats failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
 }
 
 // Export singleton instance
