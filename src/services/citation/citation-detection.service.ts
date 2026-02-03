@@ -226,7 +226,10 @@ export class CitationDetectionService {
       where: { id: documentId },
       include: {
         citations: {
-          orderBy: { startOffset: 'asc' }
+          orderBy: { startOffset: 'asc' },
+          include: {
+            primaryComponent: { select: { confidence: true } }
+          }
         }
       },
     });
@@ -255,7 +258,10 @@ export class CitationDetectionService {
       },
       include: {
         citations: {
-          orderBy: { startOffset: 'asc' }
+          orderBy: { startOffset: 'asc' },
+          include: {
+            primaryComponent: { select: { confidence: true } }
+          }
         }
       },
     });
@@ -300,7 +306,10 @@ export class CitationDetectionService {
       where: { id: output.documentId },
       include: {
         citations: {
-          orderBy: { startOffset: 'asc' }
+          orderBy: { startOffset: 'asc' },
+          include: {
+            primaryComponent: { select: { confidence: true } }
+          }
         }
       },
     });
@@ -378,7 +387,15 @@ export class CitationDetectionService {
       return stored;
     });
 
-    return this.buildDetectionResult(documentId, doc.jobId, citations, startTime);
+    // Map to DetectedCitation with parsing status
+    const mappedCitations = citations.map(c => ({
+      ...c,
+      primaryComponentId: c.primaryComponentId ?? null,
+      isParsed: c.primaryComponentId !== null,
+      parseConfidence: null as number | null, // Newly re-detected, no components yet
+    }));
+
+    return this.buildDetectionResult(documentId, doc.jobId, mappedCitations, startTime);
   }
 
   /**
@@ -475,6 +492,9 @@ export class CitationDetectionService {
           startOffset: citation.startOffset,
           endOffset: citation.endOffset,
           confidence: citation.confidence,
+          primaryComponentId: null, // Newly created, not parsed yet
+          isParsed: false,
+          parseConfidence: null,
         });
       } catch (error) {
         logger.warn(`[Citation Detection] Failed to store citation: documentId=${documentId}, offsets=${extracted.location.startOffset}-${extracted.location.endOffset}`,
@@ -498,6 +518,8 @@ export class CitationDetectionService {
     startOffset: number;
     endOffset: number;
     confidence: number;
+    primaryComponentId: string | null;
+    primaryComponent?: { confidence: number } | null;
   }>): DetectedCitation[] {
     return citations.map((c) => ({
       id: c.id,
@@ -509,6 +531,9 @@ export class CitationDetectionService {
       startOffset: c.startOffset,
       endOffset: c.endOffset,
       confidence: c.confidence,
+      primaryComponentId: c.primaryComponentId,
+      isParsed: c.primaryComponentId !== null,
+      parseConfidence: c.primaryComponent?.confidence ?? null,
     }));
   }
 

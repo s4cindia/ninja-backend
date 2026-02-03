@@ -21,6 +21,10 @@ export interface DetectedCitation {
   startOffset: number;
   endOffset: number;
   confidence: number; // 0-1 normalized
+  // Parsing status fields
+  primaryComponentId: string | null;  // Set when parsed
+  isParsed: boolean;                  // Convenience flag
+  parseConfidence: number | null;     // Component confidence when parsed
 }
 
 /** Detection result summary for a document */
