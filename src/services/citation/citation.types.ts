@@ -101,6 +101,16 @@ export interface BulkParseResult {
   results: ParsedCitationResult[];
   errors: Array<{ citationId: string; error: string }>;
   processingTimeMs: number;
+  // Enhanced fields for frontend updates
+  averageConfidence: number;        // Average confidence across all parsed citations (0-1)
+  message: string;                  // Completion status message
+  stats: {
+    total: number;
+    parsed: number;
+    unparsed: number;
+    byType: Record<string, number>;
+    byStyle: Record<string, number>;
+  };
 }
 
 /** Citation with its primary/latest parsed component */
