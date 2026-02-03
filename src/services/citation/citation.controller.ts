@@ -13,7 +13,11 @@ import { DetectionInput } from './citation.types';
 export class CitationController {
   /**
    * POST /api/v1/citation/detect
-   * Upload file and detect citations
+   * Detect citations from file upload, S3 reference, or job reference
+   * Supports three modes:
+   * 1. Direct file upload via multipart form (req.file)
+   * 2. S3 key reference (fileS3Key or presignedUrl in body)
+   * 3. Job reference (jobId in body to get existing results)
    */
   async detectFromUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -25,31 +29,89 @@ export class CitationController {
         return;
       }
 
-      const { fileS3Key, presignedUrl, fileName, fileSize } = req.body as {
+      const { fileS3Key, presignedUrl, fileName, fileSize, jobId: existingJobId } = req.body as {
         fileS3Key?: string;
         presignedUrl?: string;
         fileName?: string;
         fileSize?: number;
+        jobId?: string;
       };
 
-      if (!fileName) {
-        res.status(400).json({ success: false, error: 'fileName is required' });
+      // Mode 3: Job reference - return existing results
+      if (existingJobId) {
+        const result = await citationDetectionService.getDetectionResultsByJob(existingJobId, tenantId);
+        if (!result) {
+          res.status(404).json({ success: false, error: 'Job not found or no detection results' });
+          return;
+        }
+        res.status(200).json({ success: true, data: result });
         return;
       }
 
+      // Mode 1: Direct file upload via multipart form
+      if (req.file) {
+        const job = await prisma.job.create({
+          data: {
+            tenantId,
+            userId,
+            type: 'CITATION_VALIDATION',
+            status: 'PROCESSING',
+            input: { fileName: req.file.originalname, fileSize: req.file.size, mode: 'upload' },
+            startedAt: new Date(),
+          },
+        });
+
+        try {
+          const result = await citationDetectionService.detectFromBuffer(
+            job.id,
+            tenantId,
+            req.file.buffer,
+            req.file.originalname
+          );
+
+          await prisma.job.update({
+            where: { id: job.id },
+            data: {
+              status: 'COMPLETED',
+              completedAt: new Date(),
+              output: result as object,
+            },
+          });
+
+          res.status(201).json({ success: true, data: result });
+          return;
+        } catch (error) {
+          try {
+            await prisma.job.update({
+              where: { id: job.id },
+              data: {
+                status: 'FAILED',
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+            });
+          } catch (updateError) {
+            logger.error(`[Citation Controller] Failed to update job ${job.id} status to FAILED`, updateError instanceof Error ? updateError : undefined);
+          }
+          throw error;
+        }
+      }
+
+      // Mode 2: S3 key reference
       if (!fileS3Key && !presignedUrl) {
-        res.status(400).json({ success: false, error: 'Either fileS3Key or presignedUrl is required' });
+        res.status(400).json({ success: false, error: 'Provide file upload, fileS3Key, presignedUrl, or jobId' });
         return;
       }
 
-      // Create job for audit trail
+      // Derive fileName from S3 key if not provided
+      const resolvedFileName = fileName || (fileS3Key ? fileS3Key.split('/').pop() || 'unknown' : 'document');
+
       const job = await prisma.job.create({
         data: {
           tenantId,
           userId,
           type: 'CITATION_VALIDATION',
           status: 'PROCESSING',
-          input: { fileS3Key, presignedUrl, fileName, fileSize },
+          input: { fileS3Key, presignedUrl, fileName: resolvedFileName, fileSize, mode: 's3' },
           startedAt: new Date(),
         },
       });
@@ -61,13 +123,12 @@ export class CitationController {
           userId,
           fileS3Key,
           presignedUrl,
-          fileName,
+          fileName: resolvedFileName,
           fileSize,
         };
 
         const result = await citationDetectionService.detectCitations(input);
 
-        // Update job to completed
         await prisma.job.update({
           where: { id: job.id },
           data: {
@@ -79,7 +140,6 @@ export class CitationController {
 
         res.status(201).json({ success: true, data: result });
       } catch (error) {
-        // Update job to failed with nested try-catch to preserve original error
         try {
           await prisma.job.update({
             where: { id: job.id },

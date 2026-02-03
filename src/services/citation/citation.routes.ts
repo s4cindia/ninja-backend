@@ -16,17 +16,17 @@ import {
 
 const router = Router();
 
-// File upload configuration
+// File upload configuration for citation detection
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
-  fileFilter: (req, file, cb) => {
-    const allowedExt = ['pdf', 'epub', 'docx', 'xml', 'txt'];
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  fileFilter: (_req, file, cb) => {
+    const allowedExt = ['pdf', 'docx', 'txt', 'epub'];
     const ext = file.originalname.toLowerCase().split('.').pop();
     if (allowedExt.includes(ext || '')) {
       cb(null, true);
     } else {
-      cb(new Error('Unsupported file type. Allowed: PDF, EPUB, DOCX, XML, TXT'));
+      cb(new Error('Unsupported file type. Allowed: PDF, DOCX, TXT, EPUB'));
     }
   },
 });

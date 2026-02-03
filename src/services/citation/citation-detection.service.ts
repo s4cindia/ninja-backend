@@ -100,6 +100,64 @@ export class CitationDetectionService {
   }
 
   /**
+   * Detect citations directly from a buffer (for multipart uploads)
+   * 
+   * @param jobId - Job ID for tracking
+   * @param tenantId - Tenant ID
+   * @param fileBuffer - File buffer from multipart upload
+   * @param fileName - Original file name
+   * @returns Detection result with all found citations
+   */
+  async detectFromBuffer(
+    jobId: string,
+    tenantId: string,
+    fileBuffer: Buffer,
+    fileName: string
+  ): Promise<DetectionResult> {
+    const startTime = Date.now();
+
+    logger.info(`[Citation Detection] Starting from buffer for jobId=${jobId}, file=${fileName}, size=${fileBuffer.length}`);
+
+    try {
+      // 1. Parse document to extract text
+      const parsed = await documentParser.parse(fileBuffer, fileName);
+      logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
+
+      // 2. Create or update EditorialDocument record
+      const editorialDoc = await this.createEditorialDocument(
+        jobId,
+        tenantId,
+        fileName,
+        fileBuffer.length,
+        parsed
+      );
+
+      // 3. Detect citations using AI
+      const extractedCitations = await editorialAi.detectCitations(parsed.text);
+      logger.info(`[Citation Detection] AI found ${extractedCitations.length} citations`);
+
+      // 4. Store citations in database
+      const citations = await this.storeCitations(editorialDoc.id, extractedCitations);
+
+      // 5. Update document status
+      await prisma.editorialDocument.update({
+        where: { id: editorialDoc.id },
+        data: { status: EditorialDocStatus.PARSED },
+      });
+
+      // 6. Build and return result
+      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime);
+
+      logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
+      return result;
+
+    } catch (error) {
+      logger.error('[Citation Detection] Failed from buffer', error instanceof Error ? error : undefined);
+      throw error;
+    }
+  }
+
+  /**
    * Get detection results for an existing document
    * @param documentId - Document ID
    * @param tenantId - Optional tenant ID for cross-tenant protection
