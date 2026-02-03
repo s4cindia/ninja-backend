@@ -19,7 +19,7 @@ const router = Router();
 // File upload configuration for citation detection
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
   fileFilter: (_req, file, cb) => {
     const allowedExt = ['pdf', 'docx', 'txt', 'epub'];
     const ext = file.originalname.toLowerCase().split('.').pop();
