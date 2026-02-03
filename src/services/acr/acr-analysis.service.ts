@@ -423,40 +423,67 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           // DEBUG: Log source output keys to understand structure
           logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
 
-          // Check if there's remediation info - can be in remediationPlan.tasks OR autoRemediation.modifications
-          const remPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> } | undefined;
-          const autoRem = sourceOutput?.autoRemediation as { modifications?: Array<{ issueCode?: string; success?: boolean; description?: string }> } | undefined;
-          
-          if (remPlan?.tasks) {
-            logger.info(`[ACR DEBUG] Found remediationPlan with ${remPlan.tasks.length} tasks`);
+          // Check remediation status from BATCH_VALIDATION job (where task statuses are tracked)
+          // This is where quick fixes and auto-remediation update task status
+          const batchValidationJob = await prisma.job.findFirst({
+            where: {
+              type: 'BATCH_VALIDATION',
+              input: {
+                path: ['sourceJobId'],
+                equals: sourceJobId,
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          if (batchValidationJob?.output) {
+            const batchOutput = batchValidationJob.output as { tasks?: Array<{ id?: string; issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> };
             
-            // Build remediationChanges from remediation plan tasks
-            const fixedTasks = remPlan.tasks.filter(task =>
-              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
-            );
+            if (batchOutput.tasks && batchOutput.tasks.length > 0) {
+              logger.info(`[ACR DEBUG] Found BATCH_VALIDATION job ${batchValidationJob.id} with ${batchOutput.tasks.length} tasks`);
+              
+              // Build remediationChanges from completed/fixed tasks
+              const fixedTasks = batchOutput.tasks.filter(task =>
+                task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
+              );
 
-            remediationChanges = fixedTasks.map(task => ({
-              issueCode: task.issueCode,
-              status: task.status,
-              fixedAt: task.completedAt || new Date().toISOString(),
-            }));
+              remediationChanges = fixedTasks.map(task => ({
+                issueCode: task.issueCode,
+                status: task.status,
+                fixedAt: task.completedAt || new Date().toISOString(),
+              }));
 
-            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from remediationPlan`);
-          } else if (autoRem?.modifications) {
+              logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from BATCH_VALIDATION job`);
+            }
+          }
+          
+          // Also check autoRemediation in source job (for auto-fixes that ran)
+          const autoRem = sourceOutput?.autoRemediation as { modifications?: Array<{ issueCode?: string; success?: boolean; description?: string }> } | undefined;
+          if (autoRem?.modifications) {
             logger.info(`[ACR DEBUG] Found autoRemediation with ${autoRem.modifications.length} modifications`);
             
-            // Build remediationChanges from successful auto-remediation modifications
+            // Add successful auto-remediation modifications to remediationChanges
             const successfulMods = autoRem.modifications.filter(mod => mod.success === true);
             
-            remediationChanges = successfulMods.map(mod => ({
+            const autoChanges = successfulMods.map(mod => ({
               issueCode: mod.issueCode,
               status: 'auto-fixed',
               fixedAt: (sourceOutput?.autoRemediation as { completedAt?: string })?.completedAt || new Date().toISOString(),
             }));
 
-            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed modifications from autoRemediation`);
-          } else {
-            logger.info(`[ACR DEBUG] No remediationPlan or autoRemediation found in source output`);
+            // Merge without duplicates (by issueCode)
+            const existingCodes = new Set(remediationChanges.map(c => c.issueCode));
+            for (const change of autoChanges) {
+              if (!existingCodes.has(change.issueCode)) {
+                remediationChanges.push(change);
+              }
+            }
+
+            logger.info(`[ACR Analysis] Total ${remediationChanges.length} fixed tasks after including autoRemediation`);
+          }
+          
+          if (remediationChanges.length === 0) {
+            logger.info(`[ACR DEBUG] No completed remediation tasks found`);
           }
 
           // NOTE: combinedIssues don't have wcagCriteria property - that mapping happens in analyzeWcagCriteria
