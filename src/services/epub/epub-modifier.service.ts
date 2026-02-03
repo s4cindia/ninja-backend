@@ -5,7 +5,11 @@ import { SKIP_AUTO_ROLE_TYPES, getAriaRoleForEpubType } from '../../config/epub-
 
 const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
 
-function decodeCheerioHtml(html: string): string {
+/**
+ * @deprecated Do not use for write paths - breaks XHTML well-formedness.
+ * Only use for UI/diff display where human-readable text is needed.
+ */
+function decodeCheerioHtmlForDisplay(html: string): string {
   return html
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -986,7 +990,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, decodeCheerioHtml($.html()));
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,
@@ -1043,7 +1047,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, decodeCheerioHtml($.html()));
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,
@@ -1161,7 +1165,7 @@ class EPUBModifierService {
       }
 
       if (modified) {
-        zip.file(filePath, decodeCheerioHtml($.html()));
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,
@@ -1325,7 +1329,7 @@ class EPUBModifierService {
       const skipLink = `<a href="#${mainId}" class="skip-link" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">Skip to main content</a>\n`;
       $body.prepend(skipLink);
 
-      zip.file(filePath, decodeCheerioHtml($.html()));
+      zip.file(filePath, $.html());
       results.push({
         success: true,
         filePath,
@@ -1391,7 +1395,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, decodeCheerioHtml($.html()));
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,
@@ -1456,7 +1460,7 @@ class EPUBModifierService {
       });
 
       if (modified) {
-        zip.file(filePath, decodeCheerioHtml($.html()));
+        zip.file(filePath, $.html());
         results.push({
           success: true,
           filePath,

@@ -505,7 +505,7 @@ class RemediationService {
           const planInput = planJob.input as any;
           const sourceJobId = planInput?.sourceJobId;
           
-          if (sourceJobId) {
+          if (sourceJobId && tx.validationResult) {
             // Find all validation results for this job
             const validationResults = await tx.validationResult.findMany({
               where: { jobId: sourceJobId },
