@@ -4,17 +4,24 @@ import type { RemediationTask } from '../../../../src/services/epub/remediation.
 import prisma from '../../../../src/lib/prisma';
 
 // Mock dependencies
-vi.mock('../../../../src/lib/prisma', () => ({
-  default: {
+vi.mock('../../../../src/lib/prisma', () => {
+  const mockPrisma = {
     job: {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
       create: vi.fn(),
     },
-    $transaction: vi.fn((callback) => callback(prisma)),
-  },
-}));
+    validationResult: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    issue: {
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    $transaction: vi.fn((callback: (tx: typeof mockPrisma) => Promise<unknown>) => callback(mockPrisma)),
+  };
+  return { default: mockPrisma };
+});
 
 vi.mock('../../../../src/services/epub/epub-audit.service', () => ({
   epubAuditService: {},

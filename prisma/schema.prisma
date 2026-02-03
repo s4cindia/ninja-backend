@@ -195,6 +195,8 @@ model Issue {
   status             IssueStatus      @default(PENDING)
   fixedAt            DateTime?
   fixedBy            String?
+  remediationMethod  String?          // 'auto' | 'quick-fix' | 'manual'
+  remediationTaskId  String?          // Links to the remediation task that fixed this issue
   createdAt          DateTime         @default(now())
 
   @@index([validationResultId])
@@ -206,6 +208,8 @@ model Issue {
 enum IssueStatus {
   PENDING
   FIXED
+  REMEDIATED
+  VERIFIED
   SKIPPED
   FAILED
 }

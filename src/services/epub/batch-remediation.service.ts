@@ -216,7 +216,10 @@ class BatchRemediationService {
         // Update job.fileName to match for consistency in results
         job.fileName = fileName;
 
-        const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+        let epubBuffer = await fileStorageService.getRemediatedFile(job.jobId, fileName);
+        if (!epubBuffer) {
+          epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+        }
         if (!epubBuffer) {
           throw new Error(`EPUB file not found for job ${job.jobId}: ${fileName}`);
         }
@@ -458,7 +461,10 @@ class BatchRemediationService {
       const fileName = input?.fileName || 'upload.epub';
       job.fileName = fileName;
 
-      const epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+      let epubBuffer = await fileStorageService.getRemediatedFile(job.jobId, fileName);
+      if (!epubBuffer) {
+        epubBuffer = await fileStorageService.getFile(job.jobId, fileName);
+      }
       if (!epubBuffer) throw new Error(`EPUB file not found: ${fileName}`);
 
       const remediationResult = await autoRemediationService.runAutoRemediation(

@@ -499,6 +499,58 @@ class RemediationService {
         if (options?.resolvedFiles) {
           task.resolvedFiles = options.resolvedFiles;
         }
+
+        // Update corresponding Issue record status to REMEDIATED
+        if (status === 'completed' && task.issueCode) {
+          const planInput = planJob.input as any;
+          const sourceJobId = planInput?.sourceJobId;
+          
+          if (sourceJobId && tx.validationResult) {
+            // Find all validation results for this job
+            const validationResults = await tx.validationResult.findMany({
+              where: { jobId: sourceJobId },
+            });
+
+            for (const validationResult of validationResults) {
+              // Build location matching condition - check both filePath and location fields
+              // since task.location may match either field depending on how the issue was stored
+              const locationConditions: any[] = [];
+              if (task.location) {
+                locationConditions.push(
+                  { filePath: task.location },
+                  { location: task.location }
+                );
+              }
+
+              // Update Issue records matching this task's issue code and location
+              const updateResult = await tx.issue.updateMany({
+                where: {
+                  validationResultId: validationResult.id,
+                  code: task.issueCode,
+                  status: 'PENDING',
+                  ...(locationConditions.length > 0 ? { OR: locationConditions } : {}),
+                },
+                data: {
+                  status: 'REMEDIATED',
+                  fixedAt: new Date(),
+                  fixedBy: resolvedBy || 'system',
+                  remediationMethod: options?.completionMethod || 'quick-fix',
+                  remediationTaskId: task.id,
+                },
+              });
+              
+              if (updateResult.count > 0) {
+                logger.info(`Updated ${updateResult.count} Issue(s) to REMEDIATED for code ${task.issueCode}`, {
+                  jobId,
+                  taskId,
+                  issueCode: task.issueCode,
+                  location: task.location,
+                  validationResultId: validationResult.id,
+                });
+              }
+            }
+          }
+        }
       }
 
       const updatedTally = createTally(plan.tasks as unknown as Record<string, unknown>[], 'in_progress');

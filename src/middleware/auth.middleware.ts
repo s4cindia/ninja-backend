@@ -95,6 +95,72 @@ export const authenticate = async (
  * @returns Express middleware function
  * @example authorize('ADMIN', 'MANAGER') - Only admins and managers can access
  */
+/**
+ * Flexible authentication middleware for asset endpoints.
+ * Supports both Bearer token header and query parameter token.
+ * Used for serving images/assets to img tags in iframes that cannot set headers.
+ * @param req - Express request object
+ * @param res - Express response object
+ * @param next - Express next function
+ */
+export const authenticateFlexible = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const headerToken = req.headers.authorization?.replace('Bearer ', '');
+    const queryToken = req.query.token as string | undefined;
+    
+    const token = headerToken || queryToken;
+    
+    if (!token) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Authentication required' },
+      });
+      return;
+    }
+
+    const decoded = jwt.verify(token, config.jwtSecret) as JwtPayload;
+    
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: { id: true, email: true, tenantId: true, role: true, deletedAt: true },
+    });
+
+    if (!user || user.deletedAt) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'User not found or deactivated' },
+      });
+      return;
+    }
+
+    req.user = {
+      id: user.id,
+      email: user.email,
+      tenantId: user.tenantId,
+      role: user.role,
+    };
+
+    next();
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Token expired' },
+      });
+      return;
+    }
+    
+    res.status(401).json({
+      success: false,
+      error: { message: 'Invalid token' },
+    });
+  }
+};
+
 export const authorize = (...roles: string[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {

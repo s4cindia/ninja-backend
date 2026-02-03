@@ -47,6 +47,7 @@ interface ManifestEntry {
 interface AuditResults {
   fileName?: string;
   issues: AuditIssue[];
+  remediatedIssues?: AuditIssue[];
   manifest?: ManifestEntry[];
 }
 
@@ -715,26 +716,44 @@ export class AcrService {
       return {
         fileName: 'Unknown Document',
         issues: [],
+        remediatedIssues: [],
         manifest: [],
       };
     }
 
-    const allIssues = job.validationResults.flatMap(vr =>
-      vr.issues.map(issue => ({
-        code: issue.code,
-        severity: issue.severity,
-        message: issue.description,
-        filePath: issue.filePath,
-        wcagCriteria: issue.wcagCriteria,
-      }))
-    );
+    // Categorize issues by their resolution status
+    const pendingIssues: AuditIssue[] = [];
+    const remediatedIssues: AuditIssue[] = [];
+
+    for (const vr of job.validationResults) {
+      for (const issue of vr.issues) {
+        const issueData: AuditIssue = {
+          id: issue.id,
+          code: issue.code,
+          severity: issue.severity,
+          message: issue.description,
+          filePath: issue.filePath,
+          wcagCriteria: issue.wcagCriteria,
+        };
+
+        // Check issue status - REMEDIATED, VERIFIED, or FIXED means it's been addressed
+        if (issue.status === 'REMEDIATED' || issue.status === 'VERIFIED' || issue.status === 'FIXED') {
+          remediatedIssues.push(issueData);
+        } else {
+          // PENDING, SKIPPED, FAILED, or null status all count as unresolved
+          // These need attention in the ACR workflow
+          pendingIssues.push(issueData);
+        }
+      }
+    }
 
     const input = job.input as any;
     const fileName = input?.originalName || input?.fileName || 'Unknown Document';
 
     return {
       fileName,
-      issues: allIssues,
+      issues: pendingIssues,
+      remediatedIssues,
       manifest: [],
     };
   }

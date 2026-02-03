@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
-import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
+import { AuditIssueInput, wcagIssueMapperService } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -227,9 +227,120 @@ export class ConfidenceController {
         }
       }
       
-      const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
+      const allOutputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
-      logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
+      logger.debug(`[Confidence] Issues from job.output: ${allOutputIssues.length}`);
+
+      // Check BATCH_VALIDATION job for completed/fixed tasks to categorize issues
+      const sourceJobId = job.type === 'ACR_WORKFLOW' 
+        ? (job.input as { sourceJobId?: string })?.sourceJobId 
+        : jobId;
+      
+      interface RemediationTaskInfo {
+        issueCode?: string;
+        location?: string;
+        status?: string;
+        completedAt?: string;
+        remediationMethod?: string;
+        description?: string;
+      }
+      
+      // Key by issueCode + location to avoid marking all same-code issues as remediated
+      let completedTasksMap = new Map<string, RemediationTaskInfo>();
+      
+      if (sourceJobId) {
+        const batchValidationJob = await prisma.job.findFirst({
+          where: {
+            type: 'BATCH_VALIDATION',
+            input: {
+              path: ['sourceJobId'],
+              equals: sourceJobId,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (batchValidationJob?.output) {
+          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
+          
+          // Helper to safely coerce location to string
+          const toLocationString = (loc: unknown): string => {
+            if (!loc) return '';
+            if (typeof loc === 'string') return loc;
+            if (typeof loc === 'object') {
+              try { return JSON.stringify(loc); } catch { return ''; }
+            }
+            return String(loc);
+          };
+
+          if (batchOutput.tasks) {
+            const fixedTasks = batchOutput.tasks.filter(task =>
+              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
+            );
+            fixedTasks.forEach(task => {
+              if (task.issueCode) {
+                // Normalize location to string before building key
+                const taskLocationStr = toLocationString(task.location);
+                const key = taskLocationStr ? `${task.issueCode}::${taskLocationStr}` : task.issueCode;
+                completedTasksMap.set(key, task);
+              }
+            });
+            logger.info(`[Confidence] Found ${completedTasksMap.size} completed tasks from BATCH_VALIDATION`);
+          }
+        }
+      }
+
+      // Helper to safely coerce location to string (duplicate for scope)
+      const toLocationString = (loc: unknown): string => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (typeof loc === 'object') {
+          try { return JSON.stringify(loc); } catch { return ''; }
+        }
+        return String(loc);
+      };
+
+      // Separate pending and remediated issues
+      const pendingIssues: OutputIssue[] = [];
+      const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
+      
+      for (const issue of allOutputIssues) {
+        const issueCode = issue.ruleId || issue.code;
+        // Normalize issue location to string
+        const issueLocation = toLocationString(issue.filePath || issue.location);
+        
+        // Try to match by code + location first
+        const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
+        let matchedKey: string | null = null;
+        
+        if (specificKey && completedTasksMap.has(specificKey)) {
+          // Exact match by code + location
+          matchedKey = specificKey;
+        } else if (issueCode && completedTasksMap.has(issueCode)) {
+          // Only fall back to code-only if: task has no location OR issue has no location
+          const storedTask = completedTasksMap.get(issueCode);
+          const storedTaskLocation = toLocationString(storedTask?.location);
+          if (!storedTaskLocation || !issueLocation) {
+            matchedKey = issueCode;
+          }
+          // If both have locations but don't match, don't use code-only fallback
+        }
+        
+        if (matchedKey) {
+          remediatedIssues.push({
+            ...issue,
+            remediationInfo: completedTasksMap.get(matchedKey)
+          });
+          // Remove from map to prevent matching other issues with same code
+          completedTasksMap.delete(matchedKey);
+        } else {
+          pendingIssues.push(issue);
+        }
+      }
+      
+      const outputIssues = pendingIssues;
+
+      logger.info(`[Confidence] After categorizing: ${pendingIssues.length} pending issues, ${remediatedIssues.length} remediated`);
 
       const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
         const ruleId = issue.ruleId || issue.code || 'unknown';
@@ -257,6 +368,68 @@ export class ConfidenceController {
         logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
       });
 
+      // Format remediated issues for response (normalize filePath to string)
+      const formattedRemediatedIssues = remediatedIssues.map(issue => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        return {
+          id: issue.id,
+          code: issue.ruleId || issue.code,
+          message: issue.message || issue.description,
+          severity: issue.impact || issue.severity,
+          filePath: normalizedFilePath,
+          status: 'remediated',
+          remediationInfo: issue.remediationInfo ? {
+            status: issue.remediationInfo.status,
+            completedAt: issue.remediationInfo.completedAt,
+            method: issue.remediationInfo.remediationMethod,
+            description: issue.remediationInfo.description
+          } : undefined
+        };
+      });
+
+      // Map remediated issues to their WCAG criteria (normalize filePath to string)
+      const remediatedAuditIssues: AuditIssueInput[] = remediatedIssues.map((issue, idx) => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        return {
+          id: issue.id || `remediated-${idx}`,
+          ruleId: issue.ruleId || issue.code || 'unknown',
+          message: issue.message || issue.description || '',
+          impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          filePath: normalizedFilePath
+        };
+      });
+      
+      const remediatedIssueMapping = wcagIssueMapperService.mapIssuesToCriteria(remediatedAuditIssues);
+      logger.info(`[Confidence] Mapped remediated issues to ${remediatedIssueMapping.size} criteria`);
+
+      // Build keyed lookup for formattedRemediatedIssues using normalized code + filePath
+      const remediatedLookup = new Map<string, typeof formattedRemediatedIssues[0]>();
+      for (const r of formattedRemediatedIssues) {
+        const normalizedPath = toLocationString(r.filePath);
+        const key = normalizedPath ? `${r.code}::${normalizedPath}` : r.code;
+        if (key) remediatedLookup.set(key, r);
+      }
+
+      // Enhance criteria with remediated issues
+      const enhancedCriteria = confidenceAnalysis.map(criterion => {
+        const criterionRemediatedIssues = remediatedIssueMapping.get(criterion.criterionId) || [];
+        return {
+          ...criterion,
+          remediatedIssues: criterionRemediatedIssues.map(issue => {
+            // Normalize filePath and use keyed lookup
+            const normalizedPath = toLocationString(issue.filePath);
+            const specificKey = normalizedPath ? `${issue.ruleId}::${normalizedPath}` : issue.ruleId;
+            const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
+            return {
+              ...issue,
+              status: 'remediated',
+              remediationInfo: fullInfo?.remediationInfo
+            };
+          }),
+          remediatedCount: criterionRemediatedIssues.length
+        };
+      });
+
       const summary = {
         totalCriteria: confidenceAnalysis.length,
         passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
@@ -265,12 +438,13 @@ export class ConfidenceController {
         notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
         criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
+        remediatedIssuesCount: remediatedIssues.length,
         averageConfidence: confidenceAnalysis.length > 0
           ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
           : 0
       };
 
-      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
       
       res.json({
         success: true,
@@ -278,7 +452,8 @@ export class ConfidenceController {
           jobId,
           edition: editionCode,
           summary,
-          criteria: confidenceAnalysis
+          criteria: enhancedCriteria,
+          remediatedIssues: formattedRemediatedIssues
         }
       });
     } catch (error) {
