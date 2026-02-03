@@ -137,8 +137,27 @@ export const CITATION_TYPE_MAP: Record<string, CitationType> = {
   footnote: 'FOOTNOTE',
   endnote: 'ENDNOTE',
   numeric: 'NUMERIC',
+  reference: 'REFERENCE',
   // Fallback handled in code
 };
+
+/** Map AI response section context string to Prisma SectionContext enum */
+export const SECTION_CONTEXT_MAP: Record<string, string> = {
+  body: 'BODY',
+  references: 'REFERENCES',
+  bibliography: 'REFERENCES',
+  footnotes: 'FOOTNOTES',
+  endnotes: 'ENDNOTES',
+  abstract: 'ABSTRACT',
+  // Fallback handled in code
+};
+
+/** Safely map string to SectionContext with fallback */
+export function mapToSectionContext(value: string | undefined | null): string {
+  if (!value) return 'UNKNOWN';
+  const normalized = value.toLowerCase().trim();
+  return SECTION_CONTEXT_MAP[normalized] || 'UNKNOWN';
+}
 
 /** Map AI response style string to Prisma CitationStyle enum */
 export const CITATION_STYLE_MAP: Record<string, CitationStyle> = {

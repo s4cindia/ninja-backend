@@ -14,6 +14,7 @@ import {
   DetectionInput,
   mapToCitationType,
   mapToCitationStyle,
+  mapToSectionContext,
 } from './citation.types';
 
 export class CitationDetectionService {
@@ -359,6 +360,7 @@ export class CitationDetectionService {
               paragraphIndex: extracted.location.paragraphIndex,
               citationType: mapToCitationType(extracted.type),
               detectedStyle: mapToCitationStyle(extracted.style),
+              sectionContext: mapToSectionContext(extracted.sectionContext) as 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN',
               confidence: extracted.confidence / 100,
               isValid: null,
               validationErrors: [],
@@ -452,6 +454,7 @@ export class CitationDetectionService {
             rawText: extracted.text,
             citationType: mapToCitationType(extracted.type),
             detectedStyle: mapToCitationStyle(extracted.style),
+            sectionContext: mapToSectionContext(extracted.sectionContext) as 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN',
             pageNumber: extracted.location.pageNumber || null,
             paragraphIndex: extracted.location.paragraphIndex,
             startOffset: extracted.location.startOffset,

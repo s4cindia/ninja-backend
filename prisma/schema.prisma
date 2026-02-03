@@ -709,9 +709,10 @@ model Citation {
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  rawText       String
-  citationType  CitationType
-  detectedStyle CitationStyle?
+  rawText        String
+  citationType   CitationType
+  detectedStyle  CitationStyle?
+  sectionContext SectionContext @default(UNKNOWN)
 
   pageNumber     Int?
   paragraphIndex Int?
@@ -750,6 +751,16 @@ enum CitationType {
   FOOTNOTE
   ENDNOTE
   NUMERIC
+  REFERENCE
+  UNKNOWN
+}
+
+enum SectionContext {
+  BODY
+  REFERENCES
+  FOOTNOTES
+  ENDNOTES
+  ABSTRACT
   UNKNOWN
 }
 

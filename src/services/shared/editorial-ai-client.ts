@@ -84,15 +84,39 @@ export class EditorialAiClient {
    * @returns Array of extracted citations with type and location
    */
   async detectCitations(text: string): Promise<ExtractedCitation[]> {
-    const prompt = `Analyze the following text and extract all citations. Identify each citation's type and style.
+    const prompt = `Analyze the following text and extract all citations. Identify each citation's type, style, and section context.
 
 TEXT:
 ${text.slice(0, 8000)}
 
+DETECTION CATEGORIES:
+1. IN-TEXT CITATIONS (type: "parenthetical" or "narrative")
+   - Parenthetical: (Smith, 2020), (Smith & Jones, 2019), (Smith et al., 2021)
+   - Narrative: Smith (2020), According to Smith and Jones (2019)
+
+2. FOOTNOTE/ENDNOTE CUES (type: "numeric")
+   - Superscript numbers: ¹, ², ³
+   - Bracketed numbers: [1], [2], [3]
+   - Note: These are the cue markers, not the full notes
+
+3. REFERENCE/BIBLIOGRAPHY ENTRIES (type: "reference")
+   - Full citations in References, Bibliography, or Works Cited sections
+   - Example: "Smith, J. (2020). Title of the work. Journal Name, 10(3), 234-240."
+   - Example: "Jones, A. B., & Williams, C. D. (2019). Book title. Publisher."
+
+SECTION CONTEXT - Identify where each citation appears:
+- "body": Main text, introduction, methods, results, discussion
+- "references": References, Bibliography, Works Cited section
+- "footnotes": Footnote section at bottom of page
+- "endnotes": Endnotes section
+- "abstract": Abstract section
+- "unknown": Cannot determine section
+
 For each citation found, return a JSON array with objects containing:
 - text: the full citation text as it appears
-- type: one of "parenthetical", "narrative", "footnote", "endnote"
+- type: one of "parenthetical", "narrative", "numeric", "reference"
 - style: one of "APA", "MLA", "Chicago", "Vancouver", "unknown"
+- sectionContext: one of "body", "references", "footnotes", "endnotes", "abstract", "unknown"
 - paragraphIndex: approximate paragraph number (0-indexed)
 - startOffset: character position where citation starts
 - endOffset: character position where citation ends
@@ -101,9 +125,11 @@ For each citation found, return a JSON array with objects containing:
 IMPORTANT RULES:
 - Do NOT include figure references like "(see Figure 1)" or "(Table 2)"
 - Do NOT include page numbers alone like "(p. 42)"
-- DO include author-date citations like "(Smith, 2020)"
+- DO include author-date in-text citations like "(Smith, 2020)"
 - DO include narrative citations like "According to Smith (2020)"
-- DO include superscript/footnote markers if the notes are provided
+- DO include numeric footnote/endnote cues like [1], ¹
+- DO include full reference entries from bibliography sections
+- For reference entries, extract the COMPLETE citation including all components
 
 Respond with a JSON array only:`;
 
@@ -119,6 +145,7 @@ Respond with a JSON array only:`;
           text: raw.text as string,
           type: raw.type as ExtractedCitation['type'],
           style: raw.style as ExtractedCitation['style'],
+          sectionContext: (raw.sectionContext as ExtractedCitation['sectionContext']) ?? 'unknown',
           confidence: raw.confidence as number,
           location: {
             pageNumber: undefined,
