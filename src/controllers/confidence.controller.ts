@@ -368,38 +368,45 @@ export class ConfidenceController {
         logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
       });
 
-      // Format remediated issues for response
-      const formattedRemediatedIssues = remediatedIssues.map(issue => ({
-        id: issue.id,
-        code: issue.ruleId || issue.code,
-        message: issue.message || issue.description,
-        severity: issue.impact || issue.severity,
-        filePath: issue.filePath || issue.location,
-        status: 'remediated',
-        remediationInfo: issue.remediationInfo ? {
-          status: issue.remediationInfo.status,
-          completedAt: issue.remediationInfo.completedAt,
-          method: issue.remediationInfo.remediationMethod,
-          description: issue.remediationInfo.description
-        } : undefined
-      }));
+      // Format remediated issues for response (normalize filePath to string)
+      const formattedRemediatedIssues = remediatedIssues.map(issue => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        return {
+          id: issue.id,
+          code: issue.ruleId || issue.code,
+          message: issue.message || issue.description,
+          severity: issue.impact || issue.severity,
+          filePath: normalizedFilePath,
+          status: 'remediated',
+          remediationInfo: issue.remediationInfo ? {
+            status: issue.remediationInfo.status,
+            completedAt: issue.remediationInfo.completedAt,
+            method: issue.remediationInfo.remediationMethod,
+            description: issue.remediationInfo.description
+          } : undefined
+        };
+      });
 
-      // Map remediated issues to their WCAG criteria
-      const remediatedAuditIssues: AuditIssueInput[] = remediatedIssues.map((issue, idx) => ({
-        id: issue.id || `remediated-${idx}`,
-        ruleId: issue.ruleId || issue.code || 'unknown',
-        message: issue.message || issue.description || '',
-        impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
-        filePath: issue.filePath || issue.location || ''
-      }));
+      // Map remediated issues to their WCAG criteria (normalize filePath to string)
+      const remediatedAuditIssues: AuditIssueInput[] = remediatedIssues.map((issue, idx) => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        return {
+          id: issue.id || `remediated-${idx}`,
+          ruleId: issue.ruleId || issue.code || 'unknown',
+          message: issue.message || issue.description || '',
+          impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          filePath: normalizedFilePath
+        };
+      });
       
       const remediatedIssueMapping = wcagIssueMapperService.mapIssuesToCriteria(remediatedAuditIssues);
       logger.info(`[Confidence] Mapped remediated issues to ${remediatedIssueMapping.size} criteria`);
 
-      // Build keyed lookup for formattedRemediatedIssues using code + filePath
+      // Build keyed lookup for formattedRemediatedIssues using normalized code + filePath
       const remediatedLookup = new Map<string, typeof formattedRemediatedIssues[0]>();
       for (const r of formattedRemediatedIssues) {
-        const key = r.filePath ? `${r.code}::${r.filePath}` : r.code;
+        const normalizedPath = toLocationString(r.filePath);
+        const key = normalizedPath ? `${r.code}::${normalizedPath}` : r.code;
         if (key) remediatedLookup.set(key, r);
       }
 
@@ -409,8 +416,9 @@ export class ConfidenceController {
         return {
           ...criterion,
           remediatedIssues: criterionRemediatedIssues.map(issue => {
-            // Use keyed lookup instead of find by code alone
-            const specificKey = issue.filePath ? `${issue.ruleId}::${issue.filePath}` : issue.ruleId;
+            // Normalize filePath and use keyed lookup
+            const normalizedPath = toLocationString(issue.filePath);
+            const specificKey = normalizedPath ? `${issue.ruleId}::${normalizedPath}` : issue.ruleId;
             const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
             return {
               ...issue,
