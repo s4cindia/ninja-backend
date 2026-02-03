@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
-import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
+import { AuditIssueInput, wcagIssueMapperService } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -231,12 +231,20 @@ export class ConfidenceController {
 
       logger.debug(`[Confidence] Issues from job.output: ${allOutputIssues.length}`);
 
-      // Check BATCH_VALIDATION job for completed/fixed tasks to filter out remediated issues
+      // Check BATCH_VALIDATION job for completed/fixed tasks to categorize issues
       const sourceJobId = job.type === 'ACR_WORKFLOW' 
         ? (job.input as { sourceJobId?: string })?.sourceJobId 
         : jobId;
       
-      let completedIssueCodes = new Set<string>();
+      interface RemediationTaskInfo {
+        issueCode?: string;
+        status?: string;
+        completedAt?: string;
+        remediationMethod?: string;
+        description?: string;
+      }
+      
+      let completedTasksMap = new Map<string, RemediationTaskInfo>();
       
       if (sourceJobId) {
         const batchValidationJob = await prisma.job.findFirst({
@@ -251,29 +259,41 @@ export class ConfidenceController {
         });
 
         if (batchValidationJob?.output) {
-          const batchOutput = batchValidationJob.output as { tasks?: Array<{ issueCode?: string; status?: string }> };
+          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
           
           if (batchOutput.tasks) {
             const fixedTasks = batchOutput.tasks.filter(task =>
               task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
             );
-            completedIssueCodes = new Set(fixedTasks.map(t => t.issueCode).filter(Boolean) as string[]);
-            logger.info(`[Confidence] Found ${completedIssueCodes.size} completed issue codes from BATCH_VALIDATION`);
+            fixedTasks.forEach(task => {
+              if (task.issueCode) {
+                completedTasksMap.set(task.issueCode, task);
+              }
+            });
+            logger.info(`[Confidence] Found ${completedTasksMap.size} completed issue codes from BATCH_VALIDATION`);
           }
         }
       }
 
-      // Filter out remediated issues
-      const outputIssues = allOutputIssues.filter(issue => {
+      // Separate pending and remediated issues
+      const pendingIssues: OutputIssue[] = [];
+      const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
+      
+      for (const issue of allOutputIssues) {
         const issueCode = issue.ruleId || issue.code;
-        if (issueCode && completedIssueCodes.has(issueCode)) {
-          logger.debug(`[Confidence] Filtering out remediated issue: ${issueCode}`);
-          return false;
+        if (issueCode && completedTasksMap.has(issueCode)) {
+          remediatedIssues.push({
+            ...issue,
+            remediationInfo: completedTasksMap.get(issueCode)
+          });
+        } else {
+          pendingIssues.push(issue);
         }
-        return true;
-      });
+      }
+      
+      const outputIssues = pendingIssues;
 
-      logger.info(`[Confidence] After filtering: ${outputIssues.length} pending issues (${allOutputIssues.length - outputIssues.length} remediated)`);
+      logger.info(`[Confidence] After categorizing: ${pendingIssues.length} pending issues, ${remediatedIssues.length} remediated`);
 
       const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
         const ruleId = issue.ruleId || issue.code || 'unknown';
@@ -301,6 +321,52 @@ export class ConfidenceController {
         logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
       });
 
+      // Format remediated issues for response
+      const formattedRemediatedIssues = remediatedIssues.map(issue => ({
+        id: issue.id,
+        code: issue.ruleId || issue.code,
+        message: issue.message || issue.description,
+        severity: issue.impact || issue.severity,
+        filePath: issue.filePath || issue.location,
+        status: 'remediated',
+        remediationInfo: issue.remediationInfo ? {
+          status: issue.remediationInfo.status,
+          completedAt: issue.remediationInfo.completedAt,
+          method: issue.remediationInfo.remediationMethod,
+          description: issue.remediationInfo.description
+        } : undefined
+      }));
+
+      // Map remediated issues to their WCAG criteria
+      const remediatedAuditIssues: AuditIssueInput[] = remediatedIssues.map((issue, idx) => ({
+        id: issue.id || `remediated-${idx}`,
+        ruleId: issue.ruleId || issue.code || 'unknown',
+        message: issue.message || issue.description || '',
+        impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+        filePath: issue.filePath || issue.location || ''
+      }));
+      
+      const remediatedIssueMapping = wcagIssueMapperService.mapIssuesToCriteria(remediatedAuditIssues);
+      logger.info(`[Confidence] Mapped remediated issues to ${remediatedIssueMapping.size} criteria`);
+
+      // Enhance criteria with remediated issues
+      const enhancedCriteria = confidenceAnalysis.map(criterion => {
+        const criterionRemediatedIssues = remediatedIssueMapping.get(criterion.criterionId) || [];
+        return {
+          ...criterion,
+          remediatedIssues: criterionRemediatedIssues.map(issue => {
+            // Find the full remediation info from formattedRemediatedIssues
+            const fullInfo = formattedRemediatedIssues.find(r => r.code === issue.ruleId);
+            return {
+              ...issue,
+              status: 'remediated',
+              remediationInfo: fullInfo?.remediationInfo
+            };
+          }),
+          remediatedCount: criterionRemediatedIssues.length
+        };
+      });
+
       const summary = {
         totalCriteria: confidenceAnalysis.length,
         passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
@@ -309,12 +375,13 @@ export class ConfidenceController {
         notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
         criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
+        remediatedIssuesCount: remediatedIssues.length,
         averageConfidence: confidenceAnalysis.length > 0
           ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
           : 0
       };
 
-      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
       
       res.json({
         success: true,
@@ -322,7 +389,8 @@ export class ConfidenceController {
           jobId,
           edition: editionCode,
           summary,
-          criteria: confidenceAnalysis
+          criteria: enhancedCriteria,
+          remediatedIssues: formattedRemediatedIssues
         }
       });
     } catch (error) {
