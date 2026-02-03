@@ -18,20 +18,45 @@ import {
 
 export class CitationDetectionService {
   /**
-   * Detect all citations in a document
-   * Main entry point for US-4.1
+   * Detect all citations in a document from S3
+   * Main entry point for US-4.1 (S3 mode)
    *
-   * @param input - Detection input with file buffer and metadata
+   * @param tenantId - Tenant ID
+   * @param userId - User ID
+   * @param fileS3Key - S3 key for the file (optional if presignedUrl provided)
+   * @param presignedUrl - Presigned URL to fetch file (optional if fileS3Key provided)
+   * @param fileName - Original file name
+   * @param fileSize - File size in bytes (optional)
    * @returns Detection result with all found citations
    */
-  async detectCitations(input: DetectionInput): Promise<DetectionResult> {
+  async detectFromS3(
+    tenantId: string,
+    userId: string,
+    fileS3Key: string | undefined,
+    presignedUrl: string | undefined,
+    fileName: string,
+    fileSize?: number
+  ): Promise<DetectionResult> {
     const startTime = Date.now();
-    const { jobId, tenantId, fileS3Key, presignedUrl, fileName, fileSize } = input;
 
-    logger.info(`[Citation Detection] Starting for jobId=${jobId}, file=${fileName}, s3Key=${fileS3Key || 'N/A'}, presignedUrl=${presignedUrl ? 'provided' : 'N/A'}`);
+    logger.info(`[Citation Detection] Starting from S3 for file=${fileName}, s3Key=${fileS3Key || 'N/A'}, presignedUrl=${presignedUrl ? 'provided' : 'N/A'}`);
 
     try {
-      // 1. Fetch file from S3 key or presigned URL
+      // 1. Create Job record first
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'CITATION_DETECTION',
+          status: 'PROCESSING',
+          input: { fileS3Key, presignedUrl, fileName, fileSize, mode: 's3' },
+          startedAt: new Date(),
+        },
+      });
+      const jobId = job.id;
+      logger.info(`[Citation Detection] Created job ${jobId}`);
+
+      // 2. Fetch file from S3 key or presigned URL
       let fileBuffer: Buffer;
       if (fileS3Key) {
         fileBuffer = await s3Service.getFileBuffer(fileS3Key);
@@ -61,11 +86,11 @@ export class CitationDetectionService {
       const actualSize = fileSize ?? fileBuffer.length;
       logger.info(`[Citation Detection] Fetched file: ${actualSize} bytes`);
 
-      // 2. Parse document to extract text
+      // 3. Parse document to extract text
       const parsed = await documentParser.parse(fileBuffer, fileName);
       logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
 
-      // 2. Create or update EditorialDocument record
+      // 4. Create or update EditorialDocument record
       const editorialDoc = await this.createEditorialDocument(
         jobId,
         tenantId,
@@ -74,20 +99,30 @@ export class CitationDetectionService {
         parsed
       );
 
-      // 3. Detect citations using AI
+      // 5. Detect citations using AI
       const extractedCitations = await editorialAi.detectCitations(parsed.text);
       logger.info(`[Citation Detection] AI found ${extractedCitations.length} citations`);
 
-      // 4. Store citations in database
+      // 6. Store citations in database
       const citations = await this.storeCitations(editorialDoc.id, extractedCitations);
 
-      // 5. Update document status
+      // 7. Update document status
       await prisma.editorialDocument.update({
         where: { id: editorialDoc.id },
         data: { status: EditorialDocStatus.PARSED },
       });
 
-      // 6. Build and return result
+      // 8. Update job to COMPLETED with documentId in output
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: { documentId: editorialDoc.id },
+        },
+      });
+
+      // 9. Build and return result
       const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime);
 
       logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
@@ -102,28 +137,41 @@ export class CitationDetectionService {
   /**
    * Detect citations directly from a buffer (for multipart uploads)
    * 
-   * @param jobId - Job ID for tracking
    * @param tenantId - Tenant ID
+   * @param userId - User ID
    * @param fileBuffer - File buffer from multipart upload
    * @param fileName - Original file name
    * @returns Detection result with all found citations
    */
   async detectFromBuffer(
-    jobId: string,
     tenantId: string,
+    userId: string,
     fileBuffer: Buffer,
     fileName: string
   ): Promise<DetectionResult> {
     const startTime = Date.now();
 
-    logger.info(`[Citation Detection] Starting from buffer for jobId=${jobId}, file=${fileName}, size=${fileBuffer.length}`);
+    logger.info(`[Citation Detection] Starting from buffer for file=${fileName}, size=${fileBuffer.length}`);
 
     try {
-      // 1. Parse document to extract text
+      // 1. Create Job record first
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'CITATION_DETECTION',
+          status: 'PROCESSING',
+          input: { fileName, fileSize: fileBuffer.length },
+        },
+      });
+      const jobId = job.id;
+      logger.info(`[Citation Detection] Created job ${jobId}`);
+
+      // 2. Parse document to extract text
       const parsed = await documentParser.parse(fileBuffer, fileName);
       logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
 
-      // 2. Create or update EditorialDocument record
+      // 3. Create or update EditorialDocument record
       const editorialDoc = await this.createEditorialDocument(
         jobId,
         tenantId,
@@ -132,20 +180,30 @@ export class CitationDetectionService {
         parsed
       );
 
-      // 3. Detect citations using AI
+      // 4. Detect citations using AI
       const extractedCitations = await editorialAi.detectCitations(parsed.text);
       logger.info(`[Citation Detection] AI found ${extractedCitations.length} citations`);
 
-      // 4. Store citations in database
+      // 5. Store citations in database
       const citations = await this.storeCitations(editorialDoc.id, extractedCitations);
 
-      // 5. Update document status
+      // 6. Update document status
       await prisma.editorialDocument.update({
         where: { id: editorialDoc.id },
         data: { status: EditorialDocStatus.PARSED },
       });
 
-      // 6. Build and return result
+      // 7. Update job to COMPLETED with documentId in output
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: { documentId: editorialDoc.id },
+        },
+      });
+
+      // 8. Build and return result
       const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime);
 
       logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
@@ -194,6 +252,51 @@ export class CitationDetectionService {
         jobId,
         ...(tenantId && { tenantId }),
       },
+      include: {
+        citations: {
+          orderBy: { startOffset: 'asc' }
+        }
+      },
+    });
+
+    if (!doc) return null;
+
+    const citations = this.mapCitationsToDetected(doc.citations);
+    return this.buildDetectionResult(doc.id, jobId, citations, Date.now());
+  }
+
+  /**
+   * Get detection results by looking up the Job record and extracting documentId from output
+   * This is the preferred method for retrieving results after detection
+   * @param jobId - Job ID
+   * @param tenantId - Optional tenant ID for cross-tenant protection
+   */
+  async getResultsByJobId(jobId: string, tenantId?: string): Promise<DetectionResult | null> {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+    });
+
+    if (!job) return null;
+
+    // Enforce tenant-scoped access
+    if (tenantId && job.tenantId !== tenantId) {
+      return null;
+    }
+
+    // Job must be a citation detection job
+    if (job.type !== 'CITATION_DETECTION') {
+      return null;
+    }
+
+    // Extract documentId from job output
+    const output = job.output as { documentId?: string } | null;
+    if (!output?.documentId) {
+      return null;
+    }
+
+    // Fetch the document and its citations
+    const doc = await prisma.editorialDocument.findUnique({
+      where: { id: output.documentId },
       include: {
         citations: {
           orderBy: { startOffset: 'asc' }

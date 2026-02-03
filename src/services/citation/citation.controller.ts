@@ -8,7 +8,6 @@ import { citationDetectionService } from './citation-detection.service';
 import { citationParsingService } from './citation-parsing.service';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { DetectionInput } from './citation.types';
 
 export class CitationController {
   /**
@@ -50,50 +49,15 @@ export class CitationController {
 
       // Mode 1: Direct file upload via multipart form
       if (req.file) {
-        const job = await prisma.job.create({
-          data: {
-            tenantId,
-            userId,
-            type: 'CITATION_VALIDATION',
-            status: 'PROCESSING',
-            input: { fileName: req.file.originalname, fileSize: req.file.size, mode: 'upload' },
-            startedAt: new Date(),
-          },
-        });
+        const result = await citationDetectionService.detectFromBuffer(
+          tenantId,
+          userId,
+          req.file.buffer,
+          req.file.originalname
+        );
 
-        try {
-          const result = await citationDetectionService.detectFromBuffer(
-            job.id,
-            tenantId,
-            req.file.buffer,
-            req.file.originalname
-          );
-
-          await prisma.job.update({
-            where: { id: job.id },
-            data: {
-              status: 'COMPLETED',
-              completedAt: new Date(),
-              output: result as object,
-            },
-          });
-
-          res.status(201).json({ success: true, data: result });
-          return;
-        } catch (error) {
-          try {
-            await prisma.job.update({
-              where: { id: job.id },
-              data: {
-                status: 'FAILED',
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-            });
-          } catch (updateError) {
-            logger.error(`[Citation Controller] Failed to update job ${job.id} status to FAILED`, updateError instanceof Error ? updateError : undefined);
-          }
-          throw error;
-        }
+        res.status(201).json({ success: true, data: result });
+        return;
       }
 
       // Mode 2: S3 key reference
@@ -105,54 +69,16 @@ export class CitationController {
       // Derive fileName from S3 key if not provided
       const resolvedFileName = fileName || (fileS3Key ? fileS3Key.split('/').pop() || 'unknown' : 'document');
 
-      const job = await prisma.job.create({
-        data: {
-          tenantId,
-          userId,
-          type: 'CITATION_VALIDATION',
-          status: 'PROCESSING',
-          input: { fileS3Key, presignedUrl, fileName: resolvedFileName, fileSize, mode: 's3' },
-          startedAt: new Date(),
-        },
-      });
+      const result = await citationDetectionService.detectFromS3(
+        tenantId,
+        userId,
+        fileS3Key,
+        presignedUrl,
+        resolvedFileName,
+        fileSize
+      );
 
-      try {
-        const input: DetectionInput = {
-          jobId: job.id,
-          tenantId,
-          userId,
-          fileS3Key,
-          presignedUrl,
-          fileName: resolvedFileName,
-          fileSize,
-        };
-
-        const result = await citationDetectionService.detectCitations(input);
-
-        await prisma.job.update({
-          where: { id: job.id },
-          data: {
-            status: 'COMPLETED',
-            completedAt: new Date(),
-            output: result as object,
-          },
-        });
-
-        res.status(201).json({ success: true, data: result });
-      } catch (error) {
-        try {
-          await prisma.job.update({
-            where: { id: job.id },
-            data: {
-              status: 'FAILED',
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-          });
-        } catch (updateError) {
-          logger.error(`[Citation Controller] Failed to update job ${job.id} status to FAILED`, updateError instanceof Error ? updateError : undefined);
-        }
-        throw error;
-      }
+      res.status(201).json({ success: true, data: result });
     } catch (error) {
       logger.error('[Citation Controller] detectFromUpload failed', error instanceof Error ? error : undefined);
       next(error);
@@ -173,7 +99,8 @@ export class CitationController {
         return;
       }
 
-      const result = await citationDetectionService.getDetectionResultsByJob(jobId, tenantId);
+      // Use getResultsByJobId which looks up Job record and extracts documentId from output
+      const result = await citationDetectionService.getResultsByJobId(jobId, tenantId);
 
       if (!result) {
         res.status(404).json({ success: false, error: 'No citations found for this job' });
