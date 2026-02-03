@@ -543,13 +543,13 @@ export class ConfidenceController {
           }
         }
         
-        // Determine needsVerification: false if no remaining issues (including zero-issue criteria)
-        // needsVerification = true only when there are unresolved issues
-        const hasRemainingIssues = pendingCount > 0;
-        const needsVerification = hasRemainingIssues || criterion.status === 'needs_review';
-        
-        // Update status to 'pass' only if all issues were fixed (and there were issues to fix)
+        // Compute updatedStatus first: 'pass' if all issues were fixed (and there were issues to fix)
         const updatedStatus = allFixed ? 'pass' : criterion.status;
+        
+        // Derive needsVerification from updatedStatus for consistency
+        // needsVerification = true only when there are unresolved issues or status requires review
+        const hasRemainingIssues = pendingCount > 0;
+        const needsVerification = hasRemainingIssues || updatedStatus === 'needs_review';
         
         return {
           ...criterion,

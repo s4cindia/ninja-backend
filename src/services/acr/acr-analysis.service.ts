@@ -423,6 +423,14 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
               const isSkipped = task.status === 'skipped';
               const status: 'pending' | 'fixed' | 'failed' | 'skipped' = isFixed ? 'fixed' : isFailed ? 'failed' : isSkipped ? 'skipped' : 'pending';
               
+              // Derive fixType from task metadata if available, otherwise omit
+              const taskFixType = (task as any).fixType || (task as any).remediationType || (task as any).completionMethod;
+              const fixType: 'auto' | 'manual' | undefined = taskFixType === 'auto' || taskFixType === 'automated' || task.status === 'auto-fixed'
+                ? 'auto'
+                : taskFixType === 'manual' || taskFixType === 'verified'
+                  ? 'manual'
+                  : undefined;
+              
               return {
                 code: task.issueCode || 'UNKNOWN',
                 message: task.issueMessage || 'No description',
@@ -432,7 +440,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
                 remediationInfo: isFixed ? {
                   description: 'Fixed during remediation',
                   fixedAt: task.completedAt,
-                  fixType: 'auto' as const,
+                  ...(fixType && { fixType }),
                 } : undefined,
               };
             });
