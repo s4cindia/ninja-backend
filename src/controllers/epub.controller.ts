@@ -2238,7 +2238,8 @@ export const epubController = {
       const mimeType = contentResult.contentType.replace(';base64', '');
 
       res.setHeader('Content-Type', mimeType);
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
       return res.send(imageBuffer);
     } catch (error) {
       logger.error('[Image] Failed to serve image', error instanceof Error ? error : undefined);
@@ -2294,7 +2295,8 @@ export const epubController = {
       const mimeType = contentResult.contentType.replace(';base64', '');
 
       res.setHeader('Content-Type', mimeType);
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
       return res.send(assetBuffer);
     } catch (error) {
       logger.error('[Asset] Failed to serve asset', error instanceof Error ? error : undefined);
