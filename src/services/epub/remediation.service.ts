@@ -499,6 +499,45 @@ class RemediationService {
         if (options?.resolvedFiles) {
           task.resolvedFiles = options.resolvedFiles;
         }
+
+        // Update corresponding Issue record status to REMEDIATED
+        if (status === 'completed' && task.issueCode) {
+          const planInput = planJob.input as any;
+          const sourceJobId = planInput?.sourceJobId;
+          
+          if (sourceJobId) {
+            // Find the validation result for this job
+            const validationResult = await tx.validationResult.findFirst({
+              where: { jobId: sourceJobId },
+            });
+
+            if (validationResult) {
+              // Update Issue records matching this task's issue code and location
+              await tx.issue.updateMany({
+                where: {
+                  validationResultId: validationResult.id,
+                  code: task.issueCode,
+                  ...(task.location ? { filePath: task.location } : {}),
+                  status: 'PENDING',
+                },
+                data: {
+                  status: 'REMEDIATED',
+                  fixedAt: new Date(),
+                  fixedBy: resolvedBy || 'system',
+                  remediationMethod: options?.completionMethod || 'quick-fix',
+                  remediationTaskId: task.id,
+                },
+              });
+              
+              logger.info(`Updated Issue status to REMEDIATED for code ${task.issueCode}`, {
+                jobId,
+                taskId,
+                issueCode: task.issueCode,
+                location: task.location,
+              });
+            }
+          }
+        }
       }
 
       const updatedTally = createTally(plan.tasks as unknown as Record<string, unknown>[], 'in_progress');
