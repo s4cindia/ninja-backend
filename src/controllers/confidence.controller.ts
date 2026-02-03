@@ -244,6 +244,7 @@ export class ConfidenceController {
         description?: string;
       }
       
+      // Key by issueCode + location to avoid marking all same-code issues as remediated
       let completedTasksMap = new Map<string, RemediationTaskInfo>();
       
       if (sourceJobId) {
@@ -259,7 +260,7 @@ export class ConfidenceController {
         });
 
         if (batchValidationJob?.output) {
-          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
+          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo & { location?: string }> };
           
           if (batchOutput.tasks) {
             const fixedTasks = batchOutput.tasks.filter(task =>
@@ -267,10 +268,12 @@ export class ConfidenceController {
             );
             fixedTasks.forEach(task => {
               if (task.issueCode) {
-                completedTasksMap.set(task.issueCode, task);
+                // Use issueCode + location as key to match specific occurrences
+                const key = task.location ? `${task.issueCode}::${task.location}` : task.issueCode;
+                completedTasksMap.set(key, task);
               }
             });
-            logger.info(`[Confidence] Found ${completedTasksMap.size} completed issue codes from BATCH_VALIDATION`);
+            logger.info(`[Confidence] Found ${completedTasksMap.size} completed tasks from BATCH_VALIDATION`);
           }
         }
       }
@@ -281,11 +284,21 @@ export class ConfidenceController {
       
       for (const issue of allOutputIssues) {
         const issueCode = issue.ruleId || issue.code;
-        if (issueCode && completedTasksMap.has(issueCode)) {
+        const issueLocation = issue.filePath || issue.location || '';
+        
+        // Try to match by code + location first, then fall back to code only
+        const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
+        const matchedKey = specificKey && completedTasksMap.has(specificKey) 
+          ? specificKey 
+          : (issueCode && completedTasksMap.has(issueCode) ? issueCode : null);
+        
+        if (matchedKey) {
           remediatedIssues.push({
             ...issue,
-            remediationInfo: completedTasksMap.get(issueCode)
+            remediationInfo: completedTasksMap.get(matchedKey)
           });
+          // Remove from map to prevent matching other issues with same code
+          completedTasksMap.delete(matchedKey);
         } else {
           pendingIssues.push(issue);
         }

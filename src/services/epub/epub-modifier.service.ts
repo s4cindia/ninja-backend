@@ -1825,13 +1825,22 @@ class EPUBModifierService {
         zip.file(actualPath, modified);
         modifiedFiles.push(actualPath);
 
+        // Truncate before/after to prevent storing full file contents in DB
+        const maxSnippetLength = 500;
+        const truncatedBefore = before.length > maxSnippetLength 
+          ? before.substring(0, maxSnippetLength) + '... [truncated]' 
+          : before;
+        const truncatedAfter = modified.length > maxSnippetLength 
+          ? modified.substring(0, maxSnippetLength) + '... [truncated]' 
+          : modified;
+          
         results.push({
           success: true,
           filePath: actualPath,
           modificationType: change.type,
           description: change.description || `Applied ${change.type} operation`,
-          before,
-          after: modified,
+          before: truncatedBefore,
+          after: truncatedAfter,
         });
 
         logger.info(`Quick fix modified file: ${actualPath}`);
