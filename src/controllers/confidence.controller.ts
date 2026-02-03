@@ -533,8 +533,9 @@ export class ConfidenceController {
         if (totalIssues > 0 && fixedCount > 0) {
           const fixRatio = fixedCount / totalIssues;
           if (fixRatio === 1.0) {
-            // All issues fixed - high confidence: 80 + (15 * base_confidence_factor)
-            // Use base confidence score to add deterministic variation (0.85-0.92 range)
+            // All issues fixed - high confidence: 80 + (baseFactor * 12), capped at 92
+            // baseFactor = min(1, confidenceScore / 100) provides deterministic variation
+            // Result range: 80-92 (when baseFactor is 0-1)
             const baseFactor = Math.min(1, criterion.confidenceScore / 100);
             recalculatedConfidence = Math.min(92, 80 + (baseFactor * 12));
           } else {
