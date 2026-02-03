@@ -104,11 +104,21 @@ export interface AcrAnalysis {
   };
   otherIssues?: {
     count: number;
+    pendingCount?: number;
+    fixedCount?: number;
+    failedCount?: number;
+    skippedCount?: number;
     issues: Array<{
       code: string;
       message: string;
       severity: string;
       location?: string;
+      status?: 'pending' | 'fixed' | 'failed' | 'skipped';
+      remediationInfo?: {
+        description?: string;
+        fixedAt?: string;
+        fixType?: 'auto' | 'manual';
+      };
     }>;
   };
 }
@@ -603,8 +613,17 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   };
 
   if (otherIssuesData && otherIssuesData.length > 0) {
+    const pendingCount = otherIssuesData.filter(i => i.status === 'pending' || !i.status).length;
+    const fixedCount = otherIssuesData.filter(i => i.status === 'fixed').length;
+    const failedCount = otherIssuesData.filter(i => i.status === 'failed').length;
+    const skippedCount = otherIssuesData.filter(i => i.status === 'skipped').length;
+    
     analysis.otherIssues = {
       count: otherIssuesData.length,
+      pendingCount,
+      fixedCount,
+      failedCount,
+      skippedCount,
       issues: otherIssuesData,
     };
   }
