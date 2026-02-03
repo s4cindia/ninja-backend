@@ -263,14 +263,25 @@ export class ConfidenceController {
         if (batchValidationJob?.output) {
           const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
           
+          // Helper to safely coerce location to string
+          const toLocationString = (loc: unknown): string => {
+            if (!loc) return '';
+            if (typeof loc === 'string') return loc;
+            if (typeof loc === 'object') {
+              try { return JSON.stringify(loc); } catch { return ''; }
+            }
+            return String(loc);
+          };
+
           if (batchOutput.tasks) {
             const fixedTasks = batchOutput.tasks.filter(task =>
               task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
             );
             fixedTasks.forEach(task => {
               if (task.issueCode) {
-                // Use issueCode + location as key to match specific occurrences
-                const key = task.location ? `${task.issueCode}::${task.location}` : task.issueCode;
+                // Normalize location to string before building key
+                const taskLocationStr = toLocationString(task.location);
+                const key = taskLocationStr ? `${task.issueCode}::${taskLocationStr}` : task.issueCode;
                 completedTasksMap.set(key, task);
               }
             });
@@ -279,13 +290,24 @@ export class ConfidenceController {
         }
       }
 
+      // Helper to safely coerce location to string (duplicate for scope)
+      const toLocationString = (loc: unknown): string => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (typeof loc === 'object') {
+          try { return JSON.stringify(loc); } catch { return ''; }
+        }
+        return String(loc);
+      };
+
       // Separate pending and remediated issues
       const pendingIssues: OutputIssue[] = [];
       const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
       
       for (const issue of allOutputIssues) {
         const issueCode = issue.ruleId || issue.code;
-        const issueLocation = issue.filePath || issue.location || '';
+        // Normalize issue location to string
+        const issueLocation = toLocationString(issue.filePath || issue.location);
         
         // Try to match by code + location first
         const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
@@ -297,7 +319,7 @@ export class ConfidenceController {
         } else if (issueCode && completedTasksMap.has(issueCode)) {
           // Only fall back to code-only if: task has no location OR issue has no location
           const storedTask = completedTasksMap.get(issueCode);
-          const storedTaskLocation = storedTask?.location;
+          const storedTaskLocation = toLocationString(storedTask?.location);
           if (!storedTaskLocation || !issueLocation) {
             matchedKey = issueCode;
           }
