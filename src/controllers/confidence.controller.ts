@@ -247,8 +247,18 @@ export class ConfidenceController {
         location?: string;
         status?: string;
         completedAt?: string;
+        resolvedAt?: string;
         remediationMethod?: string;
+        completionMethod?: 'auto' | 'manual' | 'verified';
         description?: string;
+        resolution?: string;
+        notes?: string;
+        resolvedBy?: string;
+        resolvedLocation?: string;
+        resolvedFiles?: string[];
+        context?: string;
+        html?: string;
+        element?: string;
       }
       
       // Key by issueCode + location to avoid marking all same-code issues as remediated
@@ -451,10 +461,18 @@ export class ConfidenceController {
           filePath: normalizedFilePath,
           status: 'remediated',
           remediationInfo: issue.remediationInfo ? {
-            status: issue.remediationInfo.status,
-            completedAt: issue.remediationInfo.completedAt,
-            method: issue.remediationInfo.remediationMethod,
-            description: issue.remediationInfo.description
+            status: issue.remediationInfo.status || 'completed',
+            method: issue.remediationInfo.completionMethod || issue.remediationInfo.remediationMethod || 'automated',
+            completedAt: issue.remediationInfo.resolvedAt || issue.remediationInfo.completedAt,
+            description: issue.remediationInfo.resolution || issue.remediationInfo.description || 'Fixed during remediation',
+            details: {
+              notes: issue.remediationInfo.notes,
+              resolvedBy: issue.remediationInfo.resolvedBy,
+              resolvedLocation: issue.remediationInfo.resolvedLocation,
+              resolvedFiles: issue.remediationInfo.resolvedFiles,
+              context: issue.remediationInfo.context,
+              element: issue.remediationInfo.element,
+            }
           } : undefined
         };
       });
@@ -560,10 +578,18 @@ export class ConfidenceController {
           location: normalizedFilePath,
           status: issue.taskStatus,
           remediationInfo: hasRemediationAttempt && issue.remediationInfo ? {
-            description: issue.remediationInfo.description || `${issue.taskStatus} during remediation`,
-            fixedAt: issue.remediationInfo.completedAt,
-            fixType: 'auto' as const,
-            details: {}
+            status: issue.remediationInfo.status || issue.taskStatus,
+            method: issue.remediationInfo.completionMethod || issue.remediationInfo.remediationMethod || 'automated',
+            completedAt: issue.remediationInfo.resolvedAt || issue.remediationInfo.completedAt,
+            description: issue.remediationInfo.resolution || issue.remediationInfo.description || `${issue.taskStatus} during remediation`,
+            details: {
+              notes: issue.remediationInfo.notes,
+              resolvedBy: issue.remediationInfo.resolvedBy,
+              resolvedLocation: issue.remediationInfo.resolvedLocation,
+              resolvedFiles: issue.remediationInfo.resolvedFiles,
+              context: issue.remediationInfo.context,
+              element: issue.remediationInfo.element,
+            }
           } : undefined
         };
       };
