@@ -109,9 +109,9 @@ SECTION CONTEXT - Identify where each citation appears:
 
 For each citation found, return a JSON array with objects containing:
 - text: the full citation text as it appears
-- type: one of "parenthetical", "narrative", "reference"
-- style: one of "APA", "MLA", "Chicago", "Vancouver", "unknown"
-- sectionContext: one of "body", "references", "abstract", "unknown"
+- type: one of "parenthetical", "narrative", "footnote", "endnote", "numeric", "reference"
+- style: one of "APA", "MLA", "Chicago", "Vancouver", "IEEE", "unknown"
+- sectionContext: one of "body", "references", "footnotes", "endnotes", "abstract", "unknown"
 - paragraphIndex: approximate paragraph number (0-indexed)
 - startOffset: character position where citation starts
 - endOffset: character position where citation ends
@@ -120,7 +120,7 @@ For each citation found, return a JSON array with objects containing:
 IMPORTANT RULES:
 - Do NOT include figure references like "(see Figure 1)" or "(Table 2)"
 - Do NOT include page numbers alone like "(p. 42)"
-- Do NOT include footnote/endnote cue markers like [1], [2], ¹, ²
+- DO include footnote/endnote cue markers like [1], [2], ¹, ² (type: "footnote" or "numeric")
 - DO include author-date in-text citations like "(Smith, 2020)"
 - DO include narrative citations like "According to Smith (2020)"
 - DO include full reference entries from bibliography sections
