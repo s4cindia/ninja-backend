@@ -227,9 +227,53 @@ export class ConfidenceController {
         }
       }
       
-      const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
+      const allOutputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
-      logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
+      logger.debug(`[Confidence] Issues from job.output: ${allOutputIssues.length}`);
+
+      // Check BATCH_VALIDATION job for completed/fixed tasks to filter out remediated issues
+      const sourceJobId = job.type === 'ACR_WORKFLOW' 
+        ? (job.input as { sourceJobId?: string })?.sourceJobId 
+        : jobId;
+      
+      let completedIssueCodes = new Set<string>();
+      
+      if (sourceJobId) {
+        const batchValidationJob = await prisma.job.findFirst({
+          where: {
+            type: 'BATCH_VALIDATION',
+            input: {
+              path: ['sourceJobId'],
+              equals: sourceJobId,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (batchValidationJob?.output) {
+          const batchOutput = batchValidationJob.output as { tasks?: Array<{ issueCode?: string; status?: string }> };
+          
+          if (batchOutput.tasks) {
+            const fixedTasks = batchOutput.tasks.filter(task =>
+              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
+            );
+            completedIssueCodes = new Set(fixedTasks.map(t => t.issueCode).filter(Boolean) as string[]);
+            logger.info(`[Confidence] Found ${completedIssueCodes.size} completed issue codes from BATCH_VALIDATION`);
+          }
+        }
+      }
+
+      // Filter out remediated issues
+      const outputIssues = allOutputIssues.filter(issue => {
+        const issueCode = issue.ruleId || issue.code;
+        if (issueCode && completedIssueCodes.has(issueCode)) {
+          logger.debug(`[Confidence] Filtering out remediated issue: ${issueCode}`);
+          return false;
+        }
+        return true;
+      });
+
+      logger.info(`[Confidence] After filtering: ${outputIssues.length} pending issues (${allOutputIssues.length - outputIssues.length} remediated)`);
 
       const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
         const ruleId = issue.ruleId || issue.code || 'unknown';
