@@ -286,11 +286,22 @@ export class ConfidenceController {
         const issueCode = issue.ruleId || issue.code;
         const issueLocation = issue.filePath || issue.location || '';
         
-        // Try to match by code + location first, then fall back to code only
+        // Try to match by code + location first
         const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
-        const matchedKey = specificKey && completedTasksMap.has(specificKey) 
-          ? specificKey 
-          : (issueCode && completedTasksMap.has(issueCode) ? issueCode : null);
+        let matchedKey: string | null = null;
+        
+        if (specificKey && completedTasksMap.has(specificKey)) {
+          // Exact match by code + location
+          matchedKey = specificKey;
+        } else if (issueCode && completedTasksMap.has(issueCode)) {
+          // Only fall back to code-only if: task has no location OR issue has no location
+          const storedTask = completedTasksMap.get(issueCode);
+          const storedTaskLocation = storedTask?.location;
+          if (!storedTaskLocation || !issueLocation) {
+            matchedKey = issueCode;
+          }
+          // If both have locations but don't match, don't use code-only fallback
+        }
         
         if (matchedKey) {
           remediatedIssues.push({
@@ -362,14 +373,22 @@ export class ConfidenceController {
       const remediatedIssueMapping = wcagIssueMapperService.mapIssuesToCriteria(remediatedAuditIssues);
       logger.info(`[Confidence] Mapped remediated issues to ${remediatedIssueMapping.size} criteria`);
 
+      // Build keyed lookup for formattedRemediatedIssues using code + filePath
+      const remediatedLookup = new Map<string, typeof formattedRemediatedIssues[0]>();
+      for (const r of formattedRemediatedIssues) {
+        const key = r.filePath ? `${r.code}::${r.filePath}` : r.code;
+        if (key) remediatedLookup.set(key, r);
+      }
+
       // Enhance criteria with remediated issues
       const enhancedCriteria = confidenceAnalysis.map(criterion => {
         const criterionRemediatedIssues = remediatedIssueMapping.get(criterion.criterionId) || [];
         return {
           ...criterion,
           remediatedIssues: criterionRemediatedIssues.map(issue => {
-            // Find the full remediation info from formattedRemediatedIssues
-            const fullInfo = formattedRemediatedIssues.find(r => r.code === issue.ruleId);
+            // Use keyed lookup instead of find by code alone
+            const specificKey = issue.filePath ? `${issue.ruleId}::${issue.filePath}` : issue.ruleId;
+            const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
             return {
               ...issue,
               status: 'remediated',
