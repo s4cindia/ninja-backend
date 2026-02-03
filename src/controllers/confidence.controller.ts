@@ -238,6 +238,7 @@ export class ConfidenceController {
       
       interface RemediationTaskInfo {
         issueCode?: string;
+        location?: string;
         status?: string;
         completedAt?: string;
         remediationMethod?: string;
@@ -260,7 +261,7 @@ export class ConfidenceController {
         });
 
         if (batchValidationJob?.output) {
-          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo & { location?: string }> };
+          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
           
           if (batchOutput.tasks) {
             const fixedTasks = batchOutput.tasks.filter(task =>
