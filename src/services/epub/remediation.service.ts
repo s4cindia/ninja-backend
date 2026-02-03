@@ -506,19 +506,29 @@ class RemediationService {
           const sourceJobId = planInput?.sourceJobId;
           
           if (sourceJobId) {
-            // Find the validation result for this job
-            const validationResult = await tx.validationResult.findFirst({
+            // Find all validation results for this job
+            const validationResults = await tx.validationResult.findMany({
               where: { jobId: sourceJobId },
             });
 
-            if (validationResult) {
+            for (const validationResult of validationResults) {
+              // Build location matching condition - check both filePath and location fields
+              // since task.location may match either field depending on how the issue was stored
+              const locationConditions: any[] = [];
+              if (task.location) {
+                locationConditions.push(
+                  { filePath: task.location },
+                  { location: task.location }
+                );
+              }
+
               // Update Issue records matching this task's issue code and location
-              await tx.issue.updateMany({
+              const updateResult = await tx.issue.updateMany({
                 where: {
                   validationResultId: validationResult.id,
                   code: task.issueCode,
-                  ...(task.location ? { filePath: task.location } : {}),
                   status: 'PENDING',
+                  ...(locationConditions.length > 0 ? { OR: locationConditions } : {}),
                 },
                 data: {
                   status: 'REMEDIATED',
@@ -529,12 +539,15 @@ class RemediationService {
                 },
               });
               
-              logger.info(`Updated Issue status to REMEDIATED for code ${task.issueCode}`, {
-                jobId,
-                taskId,
-                issueCode: task.issueCode,
-                location: task.location,
-              });
+              if (updateResult.count > 0) {
+                logger.info(`Updated ${updateResult.count} Issue(s) to REMEDIATED for code ${task.issueCode}`, {
+                  jobId,
+                  taskId,
+                  issueCode: task.issueCode,
+                  location: task.location,
+                  validationResultId: validationResult.id,
+                });
+              }
             }
           }
         }
