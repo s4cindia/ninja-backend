@@ -276,6 +276,52 @@ export class ConfidenceController {
         return String(loc);
       };
       
+      // Helper to normalize remediationInfo values to conform to frontend enums
+      // status -> [completed, fixed, failed, skipped]
+      // method -> [auto, manual, automated]
+      const normalizeRemediationInfo = (info: RemediationTaskInfo | undefined, fallbackStatus?: string) => {
+        if (!info) return undefined;
+        
+        // Normalize status: map variations to canonical values
+        const rawStatus = info.status || fallbackStatus || 'completed';
+        let normalizedStatus: 'completed' | 'fixed' | 'failed' | 'skipped';
+        if (rawStatus === 'auto-fixed' || rawStatus === 'verified') {
+          normalizedStatus = 'completed';
+        } else if (['completed', 'fixed', 'failed', 'skipped'].includes(rawStatus)) {
+          normalizedStatus = rawStatus as 'completed' | 'fixed' | 'failed' | 'skipped';
+        } else {
+          normalizedStatus = 'completed'; // safe default
+        }
+        
+        // Normalize method: map variations to canonical values
+        const rawMethod = info.completionMethod || info.remediationMethod || 'automated';
+        let normalizedMethod: 'auto' | 'manual' | 'automated';
+        if (rawMethod === 'auto-fixed' || rawMethod === 'auto') {
+          normalizedMethod = 'auto';
+        } else if (rawMethod === 'verified' || rawMethod === 'manual') {
+          normalizedMethod = 'manual';
+        } else if (rawMethod === 'automated') {
+          normalizedMethod = 'automated';
+        } else {
+          normalizedMethod = 'automated'; // safe default
+        }
+        
+        return {
+          status: normalizedStatus,
+          method: normalizedMethod,
+          completedAt: info.resolvedAt || info.completedAt,
+          description: info.resolution || info.description || 'Fixed during remediation',
+          details: {
+            notes: info.notes,
+            resolvedBy: info.resolvedBy,
+            resolvedLocation: info.resolvedLocation,
+            resolvedFiles: info.resolvedFiles,
+            context: info.context,
+            element: info.element,
+          }
+        };
+      };
+      
       if (sourceJobId) {
         const batchValidationJob = await prisma.job.findFirst({
           where: {
@@ -460,20 +506,7 @@ export class ConfidenceController {
           severity: issue.impact || issue.severity,
           filePath: normalizedFilePath,
           status: 'remediated',
-          remediationInfo: issue.remediationInfo ? {
-            status: issue.remediationInfo.status || 'completed',
-            method: issue.remediationInfo.completionMethod || issue.remediationInfo.remediationMethod || 'automated',
-            completedAt: issue.remediationInfo.resolvedAt || issue.remediationInfo.completedAt,
-            description: issue.remediationInfo.resolution || issue.remediationInfo.description || 'Fixed during remediation',
-            details: {
-              notes: issue.remediationInfo.notes,
-              resolvedBy: issue.remediationInfo.resolvedBy,
-              resolvedLocation: issue.remediationInfo.resolvedLocation,
-              resolvedFiles: issue.remediationInfo.resolvedFiles,
-              context: issue.remediationInfo.context,
-              element: issue.remediationInfo.element,
-            }
-          } : undefined
+          remediationInfo: normalizeRemediationInfo(issue.remediationInfo)
         };
       });
 
@@ -529,14 +562,20 @@ export class ConfidenceController {
         });
         
         // Recalculate confidence based on fix ratio (per spec) - deterministic formula
-        let recalculatedConfidence = criterion.confidenceScore;
+        // Note: criterion.confidenceScore may be 0-1 (float) or 0-100 (percentage)
+        // Normalize to 0-100 scale for consistent output
+        const baseConfidence = criterion.confidenceScore <= 1 
+          ? criterion.confidenceScore * 100 
+          : criterion.confidenceScore;
+        let recalculatedConfidence = baseConfidence;
+        
         if (totalIssues > 0 && fixedCount > 0) {
           const fixRatio = fixedCount / totalIssues;
           if (fixRatio === 1.0) {
             // All issues fixed - high confidence: 80 + (baseFactor * 12), capped at 92
-            // baseFactor = min(1, confidenceScore / 100) provides deterministic variation
+            // baseFactor = min(1, baseConfidence / 100) provides deterministic variation
             // Result range: 80-92 (when baseFactor is 0-1)
-            const baseFactor = Math.min(1, criterion.confidenceScore / 100);
+            const baseFactor = Math.min(1, baseConfidence / 100);
             recalculatedConfidence = Math.min(92, 80 + (baseFactor * 12));
           } else {
             // Partial fix: 40 + (fixRatio * 40)
@@ -578,20 +617,7 @@ export class ConfidenceController {
           message: issue.message || issue.description || '',
           location: normalizedFilePath,
           status: issue.taskStatus,
-          remediationInfo: hasRemediationAttempt && issue.remediationInfo ? {
-            status: issue.remediationInfo.status || issue.taskStatus,
-            method: issue.remediationInfo.completionMethod || issue.remediationInfo.remediationMethod || 'automated',
-            completedAt: issue.remediationInfo.resolvedAt || issue.remediationInfo.completedAt,
-            description: issue.remediationInfo.resolution || issue.remediationInfo.description || `${issue.taskStatus} during remediation`,
-            details: {
-              notes: issue.remediationInfo.notes,
-              resolvedBy: issue.remediationInfo.resolvedBy,
-              resolvedLocation: issue.remediationInfo.resolvedLocation,
-              resolvedFiles: issue.remediationInfo.resolvedFiles,
-              context: issue.remediationInfo.context,
-              element: issue.remediationInfo.element,
-            }
-          } : undefined
+          remediationInfo: hasRemediationAttempt ? normalizeRemediationInfo(issue.remediationInfo, issue.taskStatus) : undefined
         };
       };
       
