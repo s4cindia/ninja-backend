@@ -3,6 +3,8 @@ import { logger } from '../../lib/logger';
 import acrEditionsData from '../../data/acrEditions.json';
 import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
+import { contentDetectionService, ApplicabilitySuggestion } from './content-detection.service';
+import fs from 'fs/promises';
 
 // Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
 const WCAG_MAPPED_CODES = new Set(
@@ -89,6 +91,7 @@ export interface CriterionAnalysis {
   }>;
   fixedCount?: number;
   remainingCount?: number;
+  naSuggestion?: ApplicabilitySuggestion;
 }
 
 export interface AcrAnalysis {
@@ -154,7 +157,8 @@ function isIssueFixed(
 function analyzeWcagCriteria(
   issues: AuditIssue[],
   editionCode?: string,
-  remediationChanges: RemediationChange[] = []
+  remediationChanges: RemediationChange[] = [],
+  naSuggestions: ApplicabilitySuggestion[] = []
 ): CriterionAnalysis[] {
   const criteriaAnalysis: CriterionAnalysis[] = [];
   const editionCriteria = getEditionCriteria(editionCode);
@@ -307,6 +311,20 @@ function analyzeWcagCriteria(
 
     logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${fixedIssuesList!.length} fixed, ${remainingIssuesList!.length} remaining`);
 
+    // Find matching N/A suggestion for this criterion
+    const naSuggestion = naSuggestions.find(s => {
+      // Match exact criterion ID (e.g., "1.2.1") or group ID (e.g., "1.2.x")
+      if (s.criterionId === criterion.id) return true;
+
+      // Match group patterns (e.g., "1.2.x" matches "1.2.1", "1.2.2", etc.)
+      if (s.criterionId.endsWith('.x')) {
+        const prefix = s.criterionId.slice(0, -2);
+        return criterion.id.startsWith(prefix + '.');
+      }
+
+      return false;
+    });
+
     criteriaAnalysis.push({
       id: criterion.id,
       name: criterion.name,
@@ -322,6 +340,7 @@ function analyzeWcagCriteria(
       fixedIssues: fixedIssuesList!.length > 0 ? fixedIssuesList : undefined,
       fixedCount: fixedIssuesList!.length,
       remainingCount: remainingIssuesList!.length,
+      naSuggestion: naSuggestion || undefined,
     });
   }
 
@@ -357,6 +376,24 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
 
   if (forceRefresh) {
     logger.info(`[ACR] Force refresh requested, regenerating analysis for job: ${jobId}`);
+  }
+
+  // Run content detection to generate N/A suggestions
+  let naSuggestions: ApplicabilitySuggestion[] = [];
+  try {
+    const jobInput = job.input as Record<string, unknown> | null;
+    const epubPath = jobInput?.epubPath as string | undefined;
+
+    if (epubPath) {
+      logger.info(`[ACR] Running content detection on EPUB: ${epubPath}`);
+      const epubBuffer = await fs.readFile(epubPath);
+      naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+      logger.info(`[ACR] Content detection generated ${naSuggestions.length} N/A suggestions`);
+    } else {
+      logger.warn(`[ACR] No EPUB path found in job input, skipping content detection`);
+    }
+  } catch (error) {
+    logger.error('[ACR] Content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
   }
 
   let issues: AuditIssue[] = [];
@@ -522,7 +559,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   // Get edition from job output if available
   const editionCode = (auditOutput?.selectedEdition || auditOutput?.editionCode) as string | undefined;
 
-  const criteria = analyzeWcagCriteria(issues, editionCode, remediationChanges);
+  const criteria = analyzeWcagCriteria(issues, editionCode, remediationChanges, naSuggestions);
 
   const summary = {
     supports: criteria.filter(c => c.status === 'supports').length,
