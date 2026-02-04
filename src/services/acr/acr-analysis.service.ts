@@ -5,6 +5,7 @@ import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
 import { contentDetectionService, ApplicabilitySuggestion } from './content-detection.service';
 import { fileStorageService } from '../storage/file-storage.service';
+import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
 // Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
 const WCAG_MAPPED_CODES = new Set(
@@ -92,6 +93,8 @@ export interface CriterionAnalysis {
   fixedCount?: number;
   remainingCount?: number;
   naSuggestion?: ApplicabilitySuggestion;
+  requiresManualVerification?: boolean;
+  automationCapability?: number;
 }
 
 export interface AcrAnalysis {
@@ -217,17 +220,40 @@ function analyzeWcagCriteria(
 
     logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${fixedIssues.length}/${totalIssues} issues fixed, ${remainingIssues.length} remaining`);
 
-    if (totalIssues === 0) {
+    // Get base confidence for this criterion (0%, 60-89%, or 90%+)
+    const baseConfidence = ConfidenceAnalyzerService.getCriterionConfidence(criterion.id);
+    const requiresManualVerification = ConfidenceAnalyzerService.requiresManualVerification(criterion.id);
+
+    if (baseConfidence === 0) {
+      // MANUAL_REQUIRED criteria - cannot be fully automated
+      // Use 'not_applicable' status with 0 confidence to indicate manual review needed
+      status = 'not_applicable';
+      confidence = 0;
+      findings = [
+        'This criterion requires manual human verification',
+        'Automated tools cannot fully evaluate semantic meaning, keyboard workflows, or content quality'
+      ];
+      recommendation = 'Manual review required - schedule accessibility testing with real users';
+
+    } else if (totalIssues === 0) {
+      // No issues detected - use base confidence
       status = 'supports';
-      confidence = 75;
+      confidence = baseConfidence;
       findings = ['No accessibility issues detected for this criterion'];
       recommendation = 'Continue to maintain compliance with this criterion';
+
     } else if (remainingIssues.length === 0) {
-      // All issues were fixed!
+      // All issues remediated - confidence limited by automation capability
       status = 'supports';
-      confidence = 95;
+      confidence = Math.min(95, baseConfidence);
       findings = [`All ${totalIssues} issue(s) have been remediated`];
-      recommendation = 'All issues have been resolved - excellent work!';
+      recommendation = 'All detected issues have been resolved - excellent work!';
+
+      // Add caveat for medium-confidence criteria
+      if (baseConfidence < 90) {
+        findings.push(`Note: This criterion has ${baseConfidence}% automation confidence - consider manual spot-checking`);
+      }
+
     } else {
       // Determine status based on REMAINING issues only (not all issues)
       const criticalCount = remainingIssues.filter(i => i.severity === 'critical').length;
@@ -238,43 +264,46 @@ function analyzeWcagCriteria(
         !i.severity || !KNOWN_SEVERITIES.includes(i.severity)
       ).length;
 
+      let severityConfidence: number;
+
       if (criticalCount > 0) {
         status = 'does_not_support';
-        confidence = 90;
+        severityConfidence = 90;
         recommendation = `${criticalCount} critical issue(s) must be resolved for compliance`;
       } else if (seriousCount > 0) {
         status = 'partially_supports';
-        confidence = 80;
+        severityConfidence = 80;
         recommendation = `${seriousCount} serious issue(s) should be addressed to improve compliance`;
       } else if (moderateCount > 0) {
         status = 'partially_supports';
-        confidence = 70;
-        recommendation = `${moderateCount} moderate issue(s) may affect some users`;
+        severityConfidence = 70;
+        recommendation = `${moderateCount} moderate issue(s) detected - address to strengthen compliance`;
       } else if (unknownCount > 0) {
         status = 'partially_supports';
-        confidence = 60;
-        recommendation = 'Issues with unknown severity require manual review';
+        severityConfidence = 60;
+        recommendation = `${unknownCount} issue(s) with unknown severity - investigate and categorize`;
       } else if (minorCount > 0) {
         status = 'supports';
-        confidence = 85;
-        recommendation = `${minorCount} minor issue(s) detected but overall compliance is maintained`;
+        severityConfidence = 85;
+        recommendation = `${minorCount} minor issue(s) detected - low priority fixes`;
       } else {
         status = 'supports';
-        confidence = 85;
+        severityConfidence = 85;
         recommendation = 'Issues detected but overall compliance is maintained';
       }
 
+      // Final confidence is capped by both severity AND criterion automation capability
+      confidence = Math.min(severityConfidence, baseConfidence);
+
       // Include fixed issues in findings
       const fixedFindings = fixedIssues.length > 0
-        ? [`✓ ${fixedIssues.length} issue(s) have been fixed`]
+        ? [`${fixedIssues.length} issue(s) have been fixed`]
         : [];
 
-      const remainingFindings = remainingIssues.map(issue =>
-        `${(issue.severity || 'ISSUE').toUpperCase()}: ${
-          issue.message || issue.description ||
-          (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
-        }`
-      ).slice(0, 4);
+      const remainingFindings = [
+        `${remainingIssues.length} of ${totalIssues} issue(s) still need attention`,
+        `Breakdown: ${criticalCount} critical, ${seriousCount} serious, ${moderateCount} moderate, ${minorCount} minor`
+      ];
 
       findings = [...fixedFindings, ...remainingFindings];
     }
@@ -351,6 +380,8 @@ function analyzeWcagCriteria(
       fixedCount: fixedIssuesList!.length,
       remainingCount: remainingIssuesList!.length,
       naSuggestion: naSuggestion || undefined,
+      requiresManualVerification,
+      automationCapability: baseConfidence,
     });
   }
 

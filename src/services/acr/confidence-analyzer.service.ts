@@ -418,4 +418,5 @@ class ConfidenceAnalyzerService {
   }
 }
 
+export { ConfidenceAnalyzerService };
 export const confidenceAnalyzerService = new ConfidenceAnalyzerService();
