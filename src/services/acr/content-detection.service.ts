@@ -136,11 +136,6 @@ class ContentDetectionService {
             analysis.hasDataTables = true;
           }
         }
-
-        // Early exit if we found multimedia (optimization)
-        if (analysis.hasAudio && analysis.hasVideo) {
-          break;
-        }
       } catch (error) {
         logger.warn(`[Content Detection] Failed to parse file ${fileName}, skipping`, error instanceof Error ? error : undefined);
         continue;
