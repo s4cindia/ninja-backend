@@ -54,6 +54,7 @@ waitForPort = 5000
 ENABLE_WORKERS = "true"
 EPUBCHECK_PATH = "/home/runner/workspace/lib/epubcheck/epubcheck.jar"
 VITE_DEFAULT_TENANT_ID = "f384770f-2f1e-49d4-86fb-f69d57298029"
+EPUB_STORAGE_PATH = "/home/runner/workspace/data/epub-storage"
 
 [userenv.development]
 ENABLE_DEV_ROUTES = "true"

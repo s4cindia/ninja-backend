@@ -11,6 +11,15 @@ const SubmitVerificationSchema = z.object({
   notes: z.string().optional().default('')
 });
 
+// Schema for the new submit endpoint (POST /verification/submit per spec)
+const SubmitCriterionVerificationSchema = z.object({
+  criterionId: z.string().min(1),
+  jobId: z.string().uuid(),
+  status: z.enum(['not_applicable', 'pass', 'fail', 'partial', 'pending']),
+  method: z.enum(['ai_suggested', 'manual_review', 'automated', 'quick_accept']),
+  notes: z.string().optional().default('')
+});
+
 const BulkVerificationSchema = z.object({
   itemIds: z.array(z.string().min(1)),
   status: z.string().transform(val => val.toUpperCase()).pipe(
@@ -344,6 +353,79 @@ export class VerificationController {
           jobId,
           totalItems: items.length,
           items
+        }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            message: 'Validation failed',
+            details: error.issues
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+  // POST /verification/submit - Submit verification for a criterion (per spec format)
+  async submitCriterionVerification(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as Request & { user?: { id: string; email?: string } }).user?.id || 'anonymous';
+      const userEmail = (req as Request & { user?: { email?: string } }).user?.email || 'unknown';
+
+      const validatedData = SubmitCriterionVerificationSchema.parse(req.body);
+      
+      logger.info(`[Verification] Submit criterion verification: criterionId=${validatedData.criterionId}, jobId=${validatedData.jobId}, status=${validatedData.status}, method=${validatedData.method}`);
+
+      // Map status to internal format
+      const statusMap: Record<string, VerificationStatus> = {
+        'not_applicable': 'VERIFIED_PASS',  // N/A is treated as verified pass
+        'pass': 'VERIFIED_PASS',
+        'fail': 'VERIFIED_FAIL',
+        'partial': 'VERIFIED_PARTIAL',
+        'pending': 'PENDING'
+      };
+
+      const verification: SubmitVerificationInput = {
+        status: statusMap[validatedData.status] || 'PENDING',
+        method: validatedData.method,
+        notes: validatedData.notes
+      };
+
+      // Find the verification queue item by criterionId and jobId
+      const queue = await humanVerificationService.getQueueFromJob(validatedData.jobId);
+      const queueItem = queue.items.find(item => item.criterionId === validatedData.criterionId);
+
+      if (!queueItem) {
+        res.status(404).json({
+          success: false,
+          error: { message: `Verification item not found for criterion ${validatedData.criterionId} in job ${validatedData.jobId}` }
+        });
+        return;
+      }
+
+      const record = await humanVerificationService.submitVerification(queueItem.id, verification, userId);
+
+      if (!record) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'Failed to submit verification' }
+        });
+        return;
+      }
+
+      res.status(201).json({
+        success: true,
+        data: {
+          criterionId: validatedData.criterionId,
+          jobId: validatedData.jobId,
+          status: validatedData.status,
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: userEmail,
+          method: validatedData.method,
+          notes: validatedData.notes
         }
       });
     } catch (error) {
