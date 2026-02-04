@@ -306,11 +306,16 @@ export class ConfidenceController {
           normalizedMethod = 'automated'; // safe default
         }
         
+        const statusAppropriateDefault = (normalizedStatus === 'completed' || normalizedStatus === 'fixed')
+          ? 'Fixed during remediation'
+          : 'Remediation not completed';
+        
         return {
           status: normalizedStatus,
           method: normalizedMethod,
           completedAt: info.resolvedAt || info.completedAt,
-          description: info.resolution || info.description || 'Fixed during remediation',
+          description: info.resolution || info.description || statusAppropriateDefault,
+          html: info.html,
           details: {
             notes: info.notes,
             resolvedBy: info.resolvedBy,
