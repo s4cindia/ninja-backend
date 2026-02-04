@@ -133,3 +133,7 @@ exports/
 .claude/
 lint errors/
 prompts/
+
+# Local temporary files
+.backup/
+IMPLEMENTATION_SUMMARY.md
