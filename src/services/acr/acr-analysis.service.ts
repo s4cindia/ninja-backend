@@ -104,11 +104,21 @@ export interface AcrAnalysis {
   };
   otherIssues?: {
     count: number;
+    pendingCount?: number;
+    fixedCount?: number;
+    failedCount?: number;
+    skippedCount?: number;
     issues: Array<{
       code: string;
       message: string;
       severity: string;
       location?: string;
+      status?: 'pending' | 'fixed' | 'failed' | 'skipped';
+      remediationInfo?: {
+        description?: string;
+        fixedAt?: string;
+        fixType?: 'auto' | 'manual';
+      };
     }>;
   };
 }
@@ -360,7 +370,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   }
 
   let issues: AuditIssue[] = [];
-  let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string }> = [];
+  let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string; status?: 'pending' | 'fixed' | 'failed' | 'skipped'; remediationInfo?: { description?: string; fixedAt?: string; fixType?: 'auto' | 'manual' } }> = [];
   let remediationChanges: RemediationChange[] = [];
 
   if (job.type === 'ACR_WORKFLOW') {
@@ -407,12 +417,33 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
               }));
 
             const otherTasks = allTasks.filter(task => !task.wcagCriteria);
-            otherIssuesData = otherTasks.map(task => ({
-              code: task.issueCode || 'UNKNOWN',
-              message: task.issueMessage || 'No description',
-              severity: task.severity || 'unknown',
-              location: task.location,
-            }));
+            otherIssuesData = otherTasks.map(task => {
+              const isFixed = task.status === 'completed' || task.status === 'auto-fixed' || task.status === 'fixed';
+              const isFailed = task.status === 'failed';
+              const isSkipped = task.status === 'skipped';
+              const status: 'pending' | 'fixed' | 'failed' | 'skipped' = isFixed ? 'fixed' : isFailed ? 'failed' : isSkipped ? 'skipped' : 'pending';
+              
+              // Derive fixType from task metadata if available, otherwise omit
+              const taskFixType = (task as any).fixType || (task as any).remediationType || (task as any).completionMethod;
+              const fixType: 'auto' | 'manual' | undefined = taskFixType === 'auto' || taskFixType === 'automated' || task.status === 'auto-fixed'
+                ? 'auto'
+                : taskFixType === 'manual' || taskFixType === 'verified'
+                  ? 'manual'
+                  : undefined;
+              
+              return {
+                code: task.issueCode || 'UNKNOWN',
+                message: task.issueMessage || 'No description',
+                severity: task.severity || 'unknown',
+                location: task.location,
+                status,
+                remediationInfo: isFixed ? {
+                  description: 'Fixed during remediation',
+                  fixedAt: task.completedAt,
+                  ...(fixType && { fixType }),
+                } : undefined,
+              };
+            });
 
             logger.info(`[ACR Analysis] Filtered to ${issues.length} WCAG-mapped issues, ${otherTasks.length} other issues`);
           }
@@ -498,6 +529,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             message: issue.message || issue.description || 'No description',
             severity: issue.severity || 'unknown',
             location: issue.location,
+            status: 'pending' as const,
           }));
 
           logger.info(`[ACR Analysis] Passing ${issues.length} issues to analyzer, ${otherIssues.length} non-WCAG issues`);
@@ -534,6 +566,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           message: c.description || 'No description',
           severity: c.severity || 'unknown',
           location: c.location,
+          status: 'pending' as const,
         }));
 
         logger.info(`[ACR Analysis] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
@@ -588,8 +621,17 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   };
 
   if (otherIssuesData && otherIssuesData.length > 0) {
+    const pendingCount = otherIssuesData.filter(i => i.status === 'pending' || !i.status).length;
+    const fixedCount = otherIssuesData.filter(i => i.status === 'fixed').length;
+    const failedCount = otherIssuesData.filter(i => i.status === 'failed').length;
+    const skippedCount = otherIssuesData.filter(i => i.status === 'skipped').length;
+    
     analysis.otherIssues = {
       count: otherIssuesData.length,
+      pendingCount,
+      fixedCount,
+      failedCount,
+      skippedCount,
       issues: otherIssuesData,
     };
   }

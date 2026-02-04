@@ -266,7 +266,8 @@ class AutoRemediationService {
                 task.id,
                 'completed',
                 description,
-                'auto-remediation'
+                'auto-remediation',
+                { completionMethod: 'auto' }
               );
             }
             logger.info(`${issueCode}: Completed ${tasks.length} task(s) - ${description}`);

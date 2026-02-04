@@ -1,9 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
-import { AuditIssueInput, wcagIssueMapperService } from '../services/acr/wcag-issue-mapper.service';
+import { AuditIssueInput, wcagIssueMapperService, RULE_TO_CRITERIA_MAP } from '../services/acr/wcag-issue-mapper.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+
+// Helper to check if a rule maps to any WCAG criterion
+function mapsToWcagCriteria(ruleId: string): boolean {
+  const criteria = RULE_TO_CRITERIA_MAP[ruleId];
+  return criteria !== undefined && criteria.length > 0;
+}
 
 export class ConfidenceController {
   async getConfidenceSummary(req: Request, res: Response, next: NextFunction) {
@@ -241,12 +247,85 @@ export class ConfidenceController {
         location?: string;
         status?: string;
         completedAt?: string;
+        resolvedAt?: string;
         remediationMethod?: string;
+        completionMethod?: 'auto' | 'manual' | 'verified';
         description?: string;
+        resolution?: string;
+        notes?: string;
+        resolvedBy?: string;
+        resolvedLocation?: string;
+        resolvedFiles?: string[];
+        context?: string;
+        html?: string;
+        element?: string;
       }
       
       // Key by issueCode + location to avoid marking all same-code issues as remediated
       let completedTasksMap = new Map<string, RemediationTaskInfo>();
+      let failedTasksMap = new Map<string, RemediationTaskInfo>();
+      let skippedTasksMap = new Map<string, RemediationTaskInfo>();
+      
+      // Helper to safely coerce location to string (declare early for reuse)
+      const toLocationStringInner = (loc: unknown): string => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (typeof loc === 'object') {
+          try { return JSON.stringify(loc); } catch { return ''; }
+        }
+        return String(loc);
+      };
+      
+      // Helper to normalize remediationInfo values to conform to frontend enums
+      // status -> [completed, fixed, failed, skipped]
+      // method -> [auto, manual, automated]
+      const normalizeRemediationInfo = (info: RemediationTaskInfo | undefined, fallbackStatus?: string) => {
+        if (!info) return undefined;
+        
+        // Normalize status: map variations to canonical values
+        const rawStatus = info.status || fallbackStatus || 'completed';
+        let normalizedStatus: 'completed' | 'fixed' | 'failed' | 'skipped';
+        if (rawStatus === 'auto-fixed' || rawStatus === 'verified') {
+          normalizedStatus = 'completed';
+        } else if (['completed', 'fixed', 'failed', 'skipped'].includes(rawStatus)) {
+          normalizedStatus = rawStatus as 'completed' | 'fixed' | 'failed' | 'skipped';
+        } else {
+          normalizedStatus = 'completed'; // safe default
+        }
+        
+        // Normalize method: map variations to canonical values
+        const rawMethod = info.completionMethod || info.remediationMethod || 'automated';
+        let normalizedMethod: 'auto' | 'manual' | 'automated';
+        if (rawMethod === 'auto-fixed' || rawMethod === 'auto') {
+          normalizedMethod = 'auto';
+        } else if (rawMethod === 'verified' || rawMethod === 'manual') {
+          normalizedMethod = 'manual';
+        } else if (rawMethod === 'automated') {
+          normalizedMethod = 'automated';
+        } else {
+          normalizedMethod = 'automated'; // safe default
+        }
+        
+        const statusAppropriateDefault = (normalizedStatus === 'completed' || normalizedStatus === 'fixed')
+          ? 'Fixed during remediation'
+          : 'Remediation not completed';
+        
+        return {
+          status: normalizedStatus,
+          method: normalizedMethod,
+          completedAt: info.resolvedAt || info.completedAt,
+          description: info.resolution || info.description || statusAppropriateDefault,
+          html: info.html,
+          details: {
+            notes: info.notes,
+            resolvedBy: info.resolvedBy,
+            resolvedLocation: info.resolvedLocation,
+            resolvedFiles: info.resolvedFiles,
+            context: info.context,
+            element: info.element,
+          }
+        };
+      };
       
       if (sourceJobId) {
         const batchValidationJob = await prisma.job.findFirst({
@@ -263,29 +342,22 @@ export class ConfidenceController {
         if (batchValidationJob?.output) {
           const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
           
-          // Helper to safely coerce location to string
-          const toLocationString = (loc: unknown): string => {
-            if (!loc) return '';
-            if (typeof loc === 'string') return loc;
-            if (typeof loc === 'object') {
-              try { return JSON.stringify(loc); } catch { return ''; }
-            }
-            return String(loc);
-          };
-
           if (batchOutput.tasks) {
-            const fixedTasks = batchOutput.tasks.filter(task =>
-              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
-            );
-            fixedTasks.forEach(task => {
+            for (const task of batchOutput.tasks) {
               if (task.issueCode) {
-                // Normalize location to string before building key
-                const taskLocationStr = toLocationString(task.location);
+                const taskLocationStr = toLocationStringInner(task.location);
                 const key = taskLocationStr ? `${task.issueCode}::${taskLocationStr}` : task.issueCode;
-                completedTasksMap.set(key, task);
+                
+                if (task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed') {
+                  completedTasksMap.set(key, task);
+                } else if (task.status === 'failed') {
+                  failedTasksMap.set(key, task);
+                } else if (task.status === 'skipped') {
+                  skippedTasksMap.set(key, task);
+                }
               }
-            });
-            logger.info(`[Confidence] Found ${completedTasksMap.size} completed tasks from BATCH_VALIDATION`);
+            }
+            logger.info(`[Confidence] Found ${completedTasksMap.size} fixed, ${failedTasksMap.size} failed, ${skippedTasksMap.size} skipped tasks from BATCH_VALIDATION`);
           }
         }
       }
@@ -300,45 +372,115 @@ export class ConfidenceController {
         return String(loc);
       };
 
-      // Separate pending and remediated issues
-      const pendingIssues: OutputIssue[] = [];
+      // Separate issues into: WCAG-mapped (pending/remediated) vs Other Issues (non-WCAG)
+      // Also track failed/skipped Other Issues
+      type OtherIssueStatus = 'pending' | 'fixed' | 'failed' | 'skipped';
+      type WcagIssueWithMeta = OutputIssue & { taskStatus?: OtherIssueStatus; remediationInfo?: RemediationTaskInfo };
+      const pendingIssues: WcagIssueWithMeta[] = [];
       const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
+      const otherIssuesWithStatus: Array<OutputIssue & { taskStatus: OtherIssueStatus; remediationInfo?: RemediationTaskInfo }> = [];
       
       for (const issue of allOutputIssues) {
-        const issueCode = issue.ruleId || issue.code;
+        const issueCode = issue.ruleId || issue.code || '';
         // Normalize issue location to string
         const issueLocation = toLocationString(issue.filePath || issue.location);
         
-        // Try to match by code + location first
-        const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
-        let matchedKey: string | null = null;
+        // Check if this issue maps to WCAG criteria
+        const isWcagMapped = mapsToWcagCriteria(issueCode);
         
+        // Build lookup keys
+        const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
+        
+        // Check in order: completed, failed, skipped
+        let matchedKey: string | null = null;
+        let taskStatus: OtherIssueStatus = 'pending';
+        let taskInfo: RemediationTaskInfo | undefined;
+        
+        // Check for completed/fixed tasks
         if (specificKey && completedTasksMap.has(specificKey)) {
-          // Exact match by code + location
           matchedKey = specificKey;
+          taskStatus = 'fixed';
+          taskInfo = completedTasksMap.get(matchedKey);
         } else if (issueCode && completedTasksMap.has(issueCode)) {
-          // Only fall back to code-only if: task has no location OR issue has no location
           const storedTask = completedTasksMap.get(issueCode);
           const storedTaskLocation = toLocationString(storedTask?.location);
           if (!storedTaskLocation || !issueLocation) {
             matchedKey = issueCode;
+            taskStatus = 'fixed';
+            taskInfo = storedTask;
           }
-          // If both have locations but don't match, don't use code-only fallback
         }
         
-        if (matchedKey) {
-          remediatedIssues.push({
-            ...issue,
-            remediationInfo: completedTasksMap.get(matchedKey)
-          });
-          // Remove from map to prevent matching other issues with same code
-          completedTasksMap.delete(matchedKey);
+        // Check for failed tasks (if not already matched)
+        if (!matchedKey) {
+          if (specificKey && failedTasksMap.has(specificKey)) {
+            matchedKey = specificKey;
+            taskStatus = 'failed';
+            taskInfo = failedTasksMap.get(matchedKey);
+          } else if (issueCode && failedTasksMap.has(issueCode)) {
+            const storedTask = failedTasksMap.get(issueCode);
+            const storedTaskLocation = toLocationString(storedTask?.location);
+            if (!storedTaskLocation || !issueLocation) {
+              matchedKey = issueCode;
+              taskStatus = 'failed';
+              taskInfo = storedTask;
+            }
+          }
+        }
+        
+        // Check for skipped tasks (if not already matched)
+        if (!matchedKey) {
+          if (specificKey && skippedTasksMap.has(specificKey)) {
+            matchedKey = specificKey;
+            taskStatus = 'skipped';
+            taskInfo = skippedTasksMap.get(matchedKey);
+          } else if (issueCode && skippedTasksMap.has(issueCode)) {
+            const storedTask = skippedTasksMap.get(issueCode);
+            const storedTaskLocation = toLocationString(storedTask?.location);
+            if (!storedTaskLocation || !issueLocation) {
+              matchedKey = issueCode;
+              taskStatus = 'skipped';
+              taskInfo = storedTask;
+            }
+          }
+        }
+        
+        if (isWcagMapped) {
+          if (taskStatus === 'fixed' && matchedKey) {
+            remediatedIssues.push({ ...issue, remediationInfo: taskInfo });
+            completedTasksMap.delete(matchedKey);
+          } else if (taskStatus === 'failed' || taskStatus === 'skipped') {
+            // Preserve remediation attempt details for failed/skipped WCAG issues
+            pendingIssues.push({ ...issue, taskStatus, remediationInfo: taskInfo });
+            if (matchedKey) {
+              failedTasksMap.delete(matchedKey);
+              skippedTasksMap.delete(matchedKey);
+            }
+          } else {
+            // Truly pending (no remediation attempt)
+            pendingIssues.push({ ...issue, taskStatus: 'pending' });
+          }
         } else {
-          pendingIssues.push(issue);
+          otherIssuesWithStatus.push({ ...issue, taskStatus, remediationInfo: taskInfo });
+          // Clean up from maps
+          if (matchedKey) {
+            completedTasksMap.delete(matchedKey);
+            failedTasksMap.delete(matchedKey);
+            skippedTasksMap.delete(matchedKey);
+          }
         }
       }
       
+      // Separate Other Issues by status for counting
+      const pendingOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'pending');
+      const remediatedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'fixed');
+      const failedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'failed');
+      const skippedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'skipped');
+      
       const outputIssues = pendingIssues;
+      
+      logger.info(`[Confidence] WCAG issues: ${pendingIssues.length} pending, ${remediatedIssues.length} remediated`);
+      logger.info(`[Confidence] Other issues: ${pendingOtherIssues.length} pending, ${remediatedOtherIssues.length} remediated`);
 
       logger.info(`[Confidence] After categorizing: ${pendingIssues.length} pending issues, ${remediatedIssues.length} remediated`);
 
@@ -378,12 +520,7 @@ export class ConfidenceController {
           severity: issue.impact || issue.severity,
           filePath: normalizedFilePath,
           status: 'remediated',
-          remediationInfo: issue.remediationInfo ? {
-            status: issue.remediationInfo.status,
-            completedAt: issue.remediationInfo.completedAt,
-            method: issue.remediationInfo.remediationMethod,
-            description: issue.remediationInfo.description
-          } : undefined
+          remediationInfo: normalizeRemediationInfo(issue.remediationInfo)
         };
       });
 
@@ -410,41 +547,119 @@ export class ConfidenceController {
         if (key) remediatedLookup.set(key, r);
       }
 
-      // Enhance criteria with remediated issues
+      // Enhance criteria with needsVerification, remediationSummary, and recalculated confidence
       const enhancedCriteria = confidenceAnalysis.map(criterion => {
         const criterionRemediatedIssues = remediatedIssueMapping.get(criterion.criterionId) || [];
+        const pendingCount = criterion.issueCount || 0;
+        const fixedCount = criterionRemediatedIssues.length;
+        const totalIssues = pendingCount + fixedCount;
+        const allFixed = pendingCount === 0 && fixedCount > 0;
+        
+        // Get latest fixedAt timestamp from remediated issues
+        let latestFixedAt: string | undefined;
+        const mappedRemediatedIssues = criterionRemediatedIssues.map(issue => {
+          const normalizedPath = toLocationString(issue.filePath);
+          const specificKey = normalizedPath ? `${issue.ruleId}::${normalizedPath}` : issue.ruleId;
+          const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
+          
+          if (fullInfo?.remediationInfo?.completedAt) {
+            if (!latestFixedAt || fullInfo.remediationInfo.completedAt > latestFixedAt) {
+              latestFixedAt = fullInfo.remediationInfo.completedAt;
+            }
+          }
+          
+          return {
+            ...issue,
+            status: 'remediated',
+            remediationInfo: fullInfo?.remediationInfo
+          };
+        });
+        
+        // Recalculate confidence based on fix ratio (per spec) - deterministic formula
+        // Note: criterion.confidenceScore may be 0-1 (float) or 0-100 (percentage)
+        // Normalize to 0-100 scale for consistent output
+        const baseConfidence = criterion.confidenceScore <= 1 
+          ? criterion.confidenceScore * 100 
+          : criterion.confidenceScore;
+        let recalculatedConfidence = baseConfidence;
+        
+        if (totalIssues > 0 && fixedCount > 0) {
+          const fixRatio = fixedCount / totalIssues;
+          if (fixRatio === 1.0) {
+            // All issues fixed - high confidence: 80 + (baseFactor * 12), capped at 92
+            // baseFactor = min(1, baseConfidence / 100) provides deterministic variation
+            // Result range: 80-92 (when baseFactor is 0-1)
+            const baseFactor = Math.min(1, baseConfidence / 100);
+            recalculatedConfidence = Math.min(92, 80 + (baseFactor * 12));
+          } else {
+            // Partial fix: 40 + (fixRatio * 40)
+            recalculatedConfidence = Math.round(40 + (fixRatio * 40));
+          }
+        }
+        
+        // Compute updatedStatus first: 'pass' if all issues were fixed (and there were issues to fix)
+        const updatedStatus = allFixed ? 'pass' : criterion.status;
+        
+        // Derive needsVerification from updatedStatus for consistency
+        // needsVerification = true only when there are unresolved issues or status requires review
+        const hasRemainingIssues = pendingCount > 0;
+        const needsVerification = hasRemainingIssues || updatedStatus === 'needs_review';
+        
         return {
           ...criterion,
-          remediatedIssues: criterionRemediatedIssues.map(issue => {
-            // Normalize filePath and use keyed lookup
-            const normalizedPath = toLocationString(issue.filePath);
-            const specificKey = normalizedPath ? `${issue.ruleId}::${normalizedPath}` : issue.ruleId;
-            const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
-            return {
-              ...issue,
-              status: 'remediated',
-              remediationInfo: fullInfo?.remediationInfo
-            };
-          }),
-          remediatedCount: criterionRemediatedIssues.length
+          confidenceScore: Math.round(recalculatedConfidence),
+          status: updatedStatus,
+          needsVerification,
+          remediationSummary: fixedCount > 0 ? {
+            totalIssues,
+            fixedIssues: fixedCount,
+            remainingIssues: pendingCount,
+            fixedAt: latestFixedAt
+          } : undefined,
+          remediatedIssues: mappedRemediatedIssues,
+          remediatedCount: fixedCount
         };
       });
+      
+      // Format Other Issues for response with all status types
+      const formatOtherIssue = (issue: OutputIssue & { taskStatus: OtherIssueStatus; remediationInfo?: RemediationTaskInfo }) => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        const hasRemediationAttempt = issue.taskStatus !== 'pending';
+        return {
+          code: issue.ruleId || issue.code,
+          severity: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          message: issue.message || issue.description || '',
+          location: normalizedFilePath,
+          status: issue.taskStatus,
+          remediationInfo: hasRemediationAttempt ? normalizeRemediationInfo(issue.remediationInfo, issue.taskStatus) : undefined
+        };
+      };
+      
+      const formattedOtherIssues = {
+        count: otherIssuesWithStatus.length,
+        pendingCount: pendingOtherIssues.length,
+        fixedCount: remediatedOtherIssues.length,
+        failedCount: failedOtherIssues.length,
+        skippedCount: skippedOtherIssues.length,
+        issues: otherIssuesWithStatus.map(formatOtherIssue)
+      };
 
       const summary = {
-        totalCriteria: confidenceAnalysis.length,
-        passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
-        failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
-        needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
-        notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        totalCriteria: enhancedCriteria.length,
+        passingCriteria: enhancedCriteria.filter(c => c.status === 'pass').length,
+        failingCriteria: enhancedCriteria.filter(c => c.status === 'fail').length,
+        needsReviewCriteria: enhancedCriteria.filter(c => c.status === 'needs_review').length,
+        notApplicableCriteria: enhancedCriteria.filter(c => c.status === 'not_applicable').length,
         criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
         remediatedIssuesCount: remediatedIssues.length,
-        averageConfidence: confidenceAnalysis.length > 0
-          ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
+        averageConfidence: enhancedCriteria.length > 0
+          ? Math.round((enhancedCriteria.reduce((sum, c) => sum + c.confidenceScore, 0) / enhancedCriteria.length) * 100) / 100
           : 0
       };
 
       logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
+      logger.info(`[Confidence] Other Issues: count=${formattedOtherIssues.count}, pending=${formattedOtherIssues.pendingCount}, fixed=${formattedOtherIssues.fixedCount}`);
       
       res.json({
         success: true,
@@ -453,7 +668,8 @@ export class ConfidenceController {
           edition: editionCode,
           summary,
           criteria: enhancedCriteria,
-          remediatedIssues: formattedRemediatedIssues
+          remediatedIssues: formattedRemediatedIssues,
+          otherIssues: formattedOtherIssues
         }
       });
     } catch (error) {
