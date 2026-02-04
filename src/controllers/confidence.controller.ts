@@ -375,7 +375,8 @@ export class ConfidenceController {
       // Separate issues into: WCAG-mapped (pending/remediated) vs Other Issues (non-WCAG)
       // Also track failed/skipped Other Issues
       type OtherIssueStatus = 'pending' | 'fixed' | 'failed' | 'skipped';
-      const pendingIssues: OutputIssue[] = [];
+      type WcagIssueWithMeta = OutputIssue & { taskStatus?: OtherIssueStatus; remediationInfo?: RemediationTaskInfo };
+      const pendingIssues: WcagIssueWithMeta[] = [];
       const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
       const otherIssuesWithStatus: Array<OutputIssue & { taskStatus: OtherIssueStatus; remediationInfo?: RemediationTaskInfo }> = [];
       
@@ -448,8 +449,16 @@ export class ConfidenceController {
           if (taskStatus === 'fixed' && matchedKey) {
             remediatedIssues.push({ ...issue, remediationInfo: taskInfo });
             completedTasksMap.delete(matchedKey);
+          } else if (taskStatus === 'failed' || taskStatus === 'skipped') {
+            // Preserve remediation attempt details for failed/skipped WCAG issues
+            pendingIssues.push({ ...issue, taskStatus, remediationInfo: taskInfo });
+            if (matchedKey) {
+              failedTasksMap.delete(matchedKey);
+              skippedTasksMap.delete(matchedKey);
+            }
           } else {
-            pendingIssues.push(issue);
+            // Truly pending (no remediation attempt)
+            pendingIssues.push({ ...issue, taskStatus: 'pending' });
           }
         } else {
           otherIssuesWithStatus.push({ ...issue, taskStatus, remediationInfo: taskInfo });
