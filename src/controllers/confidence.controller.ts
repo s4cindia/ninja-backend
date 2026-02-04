@@ -509,10 +509,29 @@ export class ConfidenceController {
 
       // Get N/A suggestions from content detection if EPUB file is available
       let naSuggestions: ApplicabilitySuggestion[] = [];
-      const jobInput = job.input as { fileName?: string } | null;
+      const jobInput = job.input as { fileName?: string; sourceJobId?: string } | null;
       const epubStoragePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
-      const epubFilePath = jobInput?.fileName 
-        ? path.join(epubStoragePath, sourceJobId || jobId, jobInput.fileName)
+      
+      // For ACR_WORKFLOW jobs, get fileName from source job's output
+      let epubFileName = jobInput?.fileName;
+      let epubJobId = sourceJobId || jobId;
+      
+      if (!epubFileName && sourceJobId) {
+        // Fetch source job to get fileName
+        const sourceJobForEpub = await prisma.job.findUnique({
+          where: { id: sourceJobId },
+          select: { output: true }
+        });
+        if (sourceJobForEpub) {
+          const sourceOutput = sourceJobForEpub.output as { fileName?: string } | null;
+          epubFileName = sourceOutput?.fileName;
+          epubJobId = sourceJobId;
+          logger.info(`[Confidence] ACR_WORKFLOW: Using fileName from source job: ${epubFileName}`);
+        }
+      }
+      
+      const epubFilePath = epubFileName 
+        ? path.join(epubStoragePath, epubJobId, epubFileName)
         : null;
       
       if (epubFilePath && fs.existsSync(epubFilePath)) {
