@@ -727,6 +727,11 @@ export class ConfidenceController {
       logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
       logger.info(`[Confidence] Other Issues: count=${formattedOtherIssues.count}, pending=${formattedOtherIssues.pendingCount}, fixed=${formattedOtherIssues.fixedCount}`);
       
+      // Prevent caching to ensure fresh naSuggestion data
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      
       res.json({
         success: true,
         data: {
