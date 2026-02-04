@@ -52,17 +52,23 @@ class ContentDetectionService {
 
       return suggestions;
     } catch (error) {
-      logger.error('[Content Detection] Failed to analyze EPUB content', error instanceof Error ? error : undefined);
+      // Preserve and log all error types (Error or non-Error)
+      const errorDetails = error instanceof Error
+        ? error
+        : new Error(typeof error === 'string' ? error : JSON.stringify(error));
+
+      logger.error('[Content Detection] Failed to analyze EPUB content', errorDetails);
       return []; // Return empty array on failure, don't block ACR analysis
     }
   }
 
   // Analyze EPUB content
   private async performContentAnalysis(zip: JSZip): Promise<ContentAnalysis> {
-    const htmlFiles = Object.keys(zip.files).filter(name =>
-      (name.endsWith('.html') || name.endsWith('.xhtml') || name.endsWith('.htm')) &&
-      !zip.files[name].dir
-    );
+    const htmlFiles = Object.keys(zip.files).filter(name => {
+      const lowerName = name.toLowerCase();
+      return (lowerName.endsWith('.html') || lowerName.endsWith('.xhtml') || lowerName.endsWith('.htm')) &&
+        !zip.files[name].dir;
+    });
 
     // Analyze each HTML file (limit to first 50 files for performance)
     const filesToAnalyze = htmlFiles.slice(0, 50);
