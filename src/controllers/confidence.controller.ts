@@ -2,8 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
 import { AuditIssueInput, wcagIssueMapperService, RULE_TO_CRITERIA_MAP } from '../services/acr/wcag-issue-mapper.service';
+import { contentDetectionService, ApplicabilitySuggestion } from '../services/acr/content-detection.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Helper to check if a rule maps to any WCAG criterion
 function mapsToWcagCriteria(ruleId: string): boolean {
@@ -504,6 +507,40 @@ export class ConfidenceController {
         auditIssues
       );
 
+      // Get N/A suggestions from content detection if EPUB file is available
+      let naSuggestions: ApplicabilitySuggestion[] = [];
+      const jobInput = job.input as { fileName?: string } | null;
+      const epubStoragePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+      const epubFilePath = jobInput?.fileName 
+        ? path.join(epubStoragePath, sourceJobId || jobId, jobInput.fileName)
+        : null;
+      
+      if (epubFilePath && fs.existsSync(epubFilePath)) {
+        try {
+          logger.info(`[Confidence] Running content detection on: ${epubFilePath}`);
+          const epubBuffer = fs.readFileSync(epubFilePath);
+          naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+          logger.info(`[Confidence] Content detection generated ${naSuggestions.length} N/A suggestions`);
+        } catch (error) {
+          logger.warn(`[Confidence] Content detection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      } else {
+        logger.debug(`[Confidence] No EPUB file found for content detection at: ${epubFilePath}`);
+      }
+
+      // Helper to match N/A suggestion to criterion
+      const findNaSuggestion = (criterionId: string): ApplicabilitySuggestion | undefined => {
+        return naSuggestions.find(s => {
+          if (s.criterionId === criterionId) return true;
+          // Match group patterns (e.g., "1.2.x" matches "1.2.1", "1.2.2", etc.)
+          if (s.criterionId.endsWith('.x')) {
+            const prefix = s.criterionId.slice(0, -2);
+            return criterionId.startsWith(prefix + '.');
+          }
+          return false;
+        });
+      };
+
       const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
       logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
       criteriaWithIssues.forEach(c => {
@@ -605,6 +642,9 @@ export class ConfidenceController {
         const hasRemainingIssues = pendingCount > 0;
         const needsVerification = hasRemainingIssues || updatedStatus === 'needs_review';
         
+        // Get N/A suggestion for this criterion
+        const naSuggestion = findNaSuggestion(criterion.criterionId);
+        
         return {
           ...criterion,
           confidenceScore: Math.round(recalculatedConfidence),
@@ -617,7 +657,14 @@ export class ConfidenceController {
             fixedAt: latestFixedAt
           } : undefined,
           remediatedIssues: mappedRemediatedIssues,
-          remediatedCount: fixedCount
+          remediatedCount: fixedCount,
+          naSuggestion: naSuggestion ? {
+            suggestedStatus: naSuggestion.suggestedStatus,
+            confidence: naSuggestion.confidence,
+            rationale: naSuggestion.rationale,
+            detectionChecks: naSuggestion.detectionChecks,
+            edgeCases: naSuggestion.edgeCases
+          } : undefined
         };
       });
       
