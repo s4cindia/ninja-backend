@@ -631,25 +631,47 @@ export class ConfidenceController {
           };
         });
         
-        // Recalculate confidence based on fix ratio (per spec) - deterministic formula
-        // Note: criterion.confidenceScore may be 0-1 (float) or 0-100 (percentage)
-        // Normalize to 0-100 scale for consistent output
-        const baseConfidence = criterion.confidenceScore <= 1 
-          ? criterion.confidenceScore * 100 
-          : criterion.confidenceScore;
-        let recalculatedConfidence = baseConfidence;
+        // Use automationCapability as base confidence if available, otherwise use confidenceScore
+        // automationCapability reflects the criterion's actual automation level (0-100)
+        const automationCapability = criterion.automationCapability ?? (
+          criterion.confidenceScore <= 1 
+            ? criterion.confidenceScore * 100 
+            : criterion.confidenceScore
+        );
+        
+        // Manual-required criteria (automationCapability = 0) always stay at 0% confidence
+        if (automationCapability === 0) {
+          // Don't recalculate - keep at 0 with not_applicable status
+          return {
+            ...criterion,
+            confidenceScore: 0,
+            status: 'not_applicable',
+            needsVerification: true,
+            requiresManualVerification: true,
+            automationCapability: 0,
+            remediationSummary: fixedCount > 0 ? {
+              totalIssues,
+              fixedIssues: fixedCount,
+              remainingIssues: pendingCount,
+              fixedAt: latestFixedAt
+            } : undefined,
+            remediatedIssues: mappedRemediatedIssues,
+            remediatedCount: fixedCount,
+            naSuggestion: undefined
+          };
+        }
+        
+        let recalculatedConfidence = automationCapability;
         
         if (totalIssues > 0 && fixedCount > 0) {
           const fixRatio = fixedCount / totalIssues;
           if (fixRatio === 1.0) {
-            // All issues fixed - high confidence: 80 + (baseFactor * 12), capped at 92
-            // baseFactor = min(1, baseConfidence / 100) provides deterministic variation
-            // Result range: 80-92 (when baseFactor is 0-1)
-            const baseFactor = Math.min(1, baseConfidence / 100);
-            recalculatedConfidence = Math.min(92, 80 + (baseFactor * 12));
+            // All issues fixed - confidence capped by automation capability
+            recalculatedConfidence = Math.min(95, automationCapability);
           } else {
-            // Partial fix: 40 + (fixRatio * 40)
-            recalculatedConfidence = Math.round(40 + (fixRatio * 40));
+            // Partial fix: scale based on fix ratio, capped by automation capability
+            const partialConfidence = Math.round(40 + (fixRatio * 40));
+            recalculatedConfidence = Math.min(partialConfidence, automationCapability);
           }
         }
         
@@ -669,6 +691,8 @@ export class ConfidenceController {
           confidenceScore: Math.round(recalculatedConfidence),
           status: updatedStatus,
           needsVerification,
+          requiresManualVerification: criterion.requiresManualVerification ?? false,
+          automationCapability,
           remediationSummary: fixedCount > 0 ? {
             totalIssues,
             fixedIssues: fixedCount,
