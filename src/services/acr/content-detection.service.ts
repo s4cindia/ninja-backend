@@ -27,6 +27,8 @@ interface ContentAnalysis {
   hasDataTables: boolean;
   documentType: string;
   fileCount: number;
+  scannedFiles: number;
+  scanCoverage: number; // 0-1 indicating % of files scanned
 }
 
 class ContentDetectionService {
@@ -41,7 +43,7 @@ class ContentDetectionService {
       // Analyze content
       const analysis = await this.performContentAnalysis(zip);
 
-      logger.info('[Content Detection] Analysis complete:', analysis);
+      logger.info('[Content Detection] Analysis complete:', { analysis });
 
       // Generate suggestions for each criterion
       const suggestions = this.generateApplicabilitySuggestions(analysis);
@@ -62,6 +64,10 @@ class ContentDetectionService {
       !zip.files[name].dir
     );
 
+    // Analyze each HTML file (limit to first 50 files for performance)
+    const filesToAnalyze = htmlFiles.slice(0, 50);
+    const scanCoverage = htmlFiles.length > 0 ? filesToAnalyze.length / htmlFiles.length : 1;
+
     const analysis: ContentAnalysis = {
       hasAudio: false,
       hasVideo: false,
@@ -71,13 +77,12 @@ class ContentDetectionService {
       hasNavigationBlocks: false,
       hasDataTables: false,
       documentType: 'text',
-      fileCount: htmlFiles.length
+      fileCount: htmlFiles.length,
+      scannedFiles: filesToAnalyze.length,
+      scanCoverage
     };
 
-    logger.debug(`[Content Detection] Analyzing ${htmlFiles.length} HTML files`);
-
-    // Analyze each HTML file (limit to first 50 files for performance)
-    const filesToAnalyze = htmlFiles.slice(0, 50);
+    logger.debug(`[Content Detection] Analyzing ${filesToAnalyze.length} of ${htmlFiles.length} HTML files (${Math.round(scanCoverage * 100)}% coverage)`);
 
     for (const fileName of filesToAnalyze) {
       try {
@@ -176,6 +181,26 @@ class ContentDetectionService {
     return suggestions;
   }
 
+  // Helper to adjust confidence based on scan coverage
+  private adjustConfidenceForCoverage(baseConfidence: number, scanCoverage: number): number {
+    // Reduce confidence if scan coverage is incomplete
+    // Full coverage (100%) = no reduction
+    // 50% coverage = reduce confidence by up to 10 points
+    if (scanCoverage >= 1) return baseConfidence;
+
+    const coveragePenalty = Math.round((1 - scanCoverage) * 10);
+    return Math.max(baseConfidence - coveragePenalty, 50);
+  }
+
+  // Helper to add partial scan warning to rationale
+  private addPartialScanWarning(rationale: string, analysis: ContentAnalysis): string {
+    if (analysis.scanCoverage < 1) {
+      const coveragePercent = Math.round(analysis.scanCoverage * 100);
+      return `${rationale} Note: Analysis based on ${analysis.scannedFiles} of ${analysis.fileCount} files (${coveragePercent}% coverage).`;
+    }
+    return rationale;
+  }
+
   // Analyze multimedia criteria (1.2.1 - 1.2.5)
   private analyzeMultimediaCriteria(analysis: ContentAnalysis): ApplicabilitySuggestion {
     const detectionChecks: DetectionCheck[] = [
@@ -204,14 +229,18 @@ class ContentDetectionService {
 
     if (!hasMedia && !hasIframes) {
       // High confidence N/A
-      confidence = 98;
+      const baseConfidence = 98;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      rationale = `Comprehensive scan found no multimedia content across all ${analysis.fileCount} EPUB files. No <audio>, <video>, or <iframe> tags detected. Multimedia criteria (1.2.1-1.2.5) do not apply to this text-only document.`;
+      const baseRationale = `Scan found no multimedia content in ${analysis.scannedFiles} EPUB files. No <audio>, <video>, or <iframe> tags detected. Multimedia criteria (1.2.1-1.2.5) do not apply to this text-only document.`;
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
     } else if (hasIframes && !hasMedia) {
       // Medium confidence - iframes could be media
-      confidence = 60;
+      const baseConfidence = 60;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'uncertain';
-      rationale = 'Found <iframe> elements which could contain embedded audio/video. Manual inspection required to determine if multimedia criteria apply.';
+      const baseRationale = 'Found <iframe> elements which could contain embedded audio/video. Manual inspection required to determine if multimedia criteria apply.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
       edgeCases.push('Iframes detected - may contain external media');
     } else {
       // Media detected - definitely applicable
@@ -250,9 +279,11 @@ class ContentDetectionService {
     const edgeCases: string[] = [];
 
     if (!analysis.hasAudio) {
-      confidence = 95;
+      const baseConfidence = 95;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      rationale = 'No audio content detected. Criterion 1.4.2 (Audio Control) does not apply.';
+      const baseRationale = 'No audio content detected. Criterion 1.4.2 (Audio Control) does not apply.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
     } else {
       confidence = 50;
       suggestedStatus = 'uncertain';
@@ -286,9 +317,11 @@ class ContentDetectionService {
     let rationale: string;
 
     if (!analysis.hasForms) {
-      confidence = 95;
+      const baseConfidence = 95;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      rationale = 'No form elements detected. Input assistance criteria (3.3.x) do not apply.';
+      const baseRationale = 'No form elements detected. Input assistance criteria (3.3.x) do not apply.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
     } else {
       confidence = 98;
       suggestedStatus = 'applicable';
@@ -330,18 +363,24 @@ class ContentDetectionService {
     const edgeCases: string[] = [];
 
     if (!analysis.hasNavigationBlocks && analysis.fileCount < 10) {
-      confidence = 90;
+      const baseConfidence = 90;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      rationale = 'No repetitive navigation blocks detected. Document appears to be linear reading structure. Bypass blocks not required.';
+      const baseRationale = 'No repetitive navigation blocks detected. Document appears to be linear reading structure. Bypass blocks not required.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
     } else if (analysis.fileCount > 20) {
-      confidence = 60;
+      const baseConfidence = 60;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'uncertain';
-      rationale = 'Large document with many files. Manual review recommended to determine if bypass mechanism would benefit users.';
+      const baseRationale = 'Large document with many files. Manual review recommended to determine if bypass mechanism would benefit users.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
       edgeCases.push('Large document - may benefit from skip links');
     } else {
-      confidence = 70;
+      const baseConfidence = 70;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'uncertain';
-      rationale = 'Navigation structure detected. Review to determine if bypass mechanism is needed.';
+      const baseRationale = 'Navigation structure detected. Review to determine if bypass mechanism is needed.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
       edgeCases.push('Custom navigation detected');
     }
 
@@ -375,9 +414,11 @@ class ContentDetectionService {
     let rationale: string;
 
     if (!analysis.hasInteractiveElements && !analysis.hasForms) {
-      confidence = 92;
+      const baseConfidence = 92;
+      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      rationale = 'No interactive elements or forms detected. Change criteria (3.2.x) do not apply to static content.';
+      const baseRationale = 'No interactive elements or forms detected. Change criteria (3.2.x) do not apply to static content.';
+      rationale = this.addPartialScanWarning(baseRationale, analysis);
     } else {
       confidence = 95;
       suggestedStatus = 'applicable';

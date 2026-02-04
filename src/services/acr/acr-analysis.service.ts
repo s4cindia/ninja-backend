@@ -4,7 +4,7 @@ import acrEditionsData from '../../data/acrEditions.json';
 import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
 import { contentDetectionService, ApplicabilitySuggestion } from './content-detection.service';
-import fs from 'fs/promises';
+import { fileStorageService } from '../storage/file-storage.service';
 
 // Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
 const WCAG_MAPPED_CODES = new Set(
@@ -382,18 +382,24 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   let naSuggestions: ApplicabilitySuggestion[] = [];
   try {
     const jobInput = job.input as Record<string, unknown> | null;
-    const epubPath = jobInput?.epubPath as string | undefined;
+    const epubFileName = jobInput?.epubFileName as string | undefined;
 
-    if (epubPath) {
-      logger.info(`[ACR] Running content detection on EPUB: ${epubPath}`);
-      const epubBuffer = await fs.readFile(epubPath);
-      naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
-      logger.info(`[ACR] Content detection generated ${naSuggestions.length} N/A suggestions`);
+    if (epubFileName) {
+      logger.info(`[ACR] Running content detection on EPUB: ${epubFileName}`);
+      const epubBuffer = await fileStorageService.getFile(jobId, epubFileName);
+
+      if (epubBuffer) {
+        naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+        logger.info(`[ACR] Content detection generated ${naSuggestions.length} N/A suggestions`);
+      } else {
+        logger.warn(`[ACR] EPUB file not found in storage: ${epubFileName}`);
+      }
     } else {
-      logger.warn(`[ACR] No EPUB path found in job input, skipping content detection`);
+      logger.warn(`[ACR] No EPUB filename found in job input, skipping content detection`);
     }
   } catch (error) {
     logger.error('[ACR] Content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
+    naSuggestions = [];
   }
 
   let issues: AuditIssue[] = [];
