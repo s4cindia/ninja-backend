@@ -54,6 +54,7 @@
     "jsonwebtoken": "^9.0.3",
     "jszip": "^3.10.1",
     "multer": "^2.0.2",
+    "nanoid": "^5.1.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.530",
     "prisma": "^5.22.0",

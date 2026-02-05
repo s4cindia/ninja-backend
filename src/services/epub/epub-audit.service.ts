@@ -6,7 +6,7 @@ import * as os from 'os';
 import AdmZip from 'adm-zip';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
-import config from '../../config';
+import { config } from '../../config';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
