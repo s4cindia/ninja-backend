@@ -34,7 +34,16 @@ const upload = multer({
   },
 });
 
-// Apply authentication to all routes
+// ============================================
+// PUBLIC ROUTES (no authentication required)
+// ============================================
+
+router.get(
+  '/styles',
+  citationValidationController.getStyles.bind(citationValidationController)
+);
+
+// Apply authentication to all remaining routes
 router.use(authenticate);
 
 // ============================================
@@ -123,11 +132,6 @@ router.post(
 // ============================================
 // VALIDATION ROUTES
 // ============================================
-
-router.get(
-  '/styles',
-  citationValidationController.getStyles.bind(citationValidationController)
-);
 
 router.post(
   '/document/:documentId/validate',
