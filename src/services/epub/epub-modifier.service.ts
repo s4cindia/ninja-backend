@@ -2211,14 +2211,19 @@ body, p, span, div, li, td, th, a, label {
 
       // First pass: Check if any file already has a main landmark
       for (const fileName of contentFiles) {
-        const file = zip.files[fileName];
-        const content = await file.async('text');
-        const $ = cheerio.load(content, { xmlMode: true });
+        try {
+          const file = zip.files[fileName];
+          const content = await file.async('text');
+          const $ = cheerio.load(content, { xmlMode: true });
 
-        if ($('[role="main"], main').length > 0) {
-          hasMainLandmark = true;
-          logger.info(`[Landmark Validation] Main landmark found in ${fileName}`);
-          break;
+          if ($('[role="main"], main').length > 0) {
+            hasMainLandmark = true;
+            logger.info(`[Landmark Validation] Main landmark found in ${fileName}`);
+            break;
+          }
+        } catch (parseError) {
+          logger.warn(`[Landmark Validation] Failed to parse ${fileName}, skipping:`, parseError);
+          continue;
         }
       }
 
@@ -2236,97 +2241,106 @@ body, p, span, div, li, td, th, a, label {
         }) || contentFiles[0];
 
         if (suitableFile) {
-          const file = zip.files[suitableFile];
-          let content = await file.async('text');
-          const $ = cheerio.load(content, { xmlMode: true });
+          try {
+            const file = zip.files[suitableFile];
+            let content = await file.async('text');
+            const $ = cheerio.load(content, { xmlMode: true });
 
-          // Try to add role="main" to first suitable element
-          const $body = $('body');
-          if ($body.length > 0) {
-            const $firstSection = $body.find('section, article, div.content, div.chapter').first();
+            // Try to add role="main" to first suitable element
+            const $body = $('body');
+            if ($body.length > 0) {
+              const $firstSection = $body.find('section, article, div.content, div.chapter').first();
 
-            if ($firstSection.length > 0) {
-              $firstSection.attr('role', 'main');
-              content = $.html();
-              zip.file(suitableFile, content);
+              if ($firstSection.length > 0) {
+                $firstSection.attr('role', 'main');
+                content = $.html();
+                zip.file(suitableFile, content);
 
-              changes.push({
-                filePath: suitableFile,
-                modificationType: 'add_aria_landmarks',
-                description: `Added role="main" to first section`,
-                oldContent: undefined,
-                content: undefined
-              });
+                changes.push({
+                  filePath: suitableFile,
+                  modificationType: 'add_aria_landmarks',
+                  description: `Added role="main" to first section`,
+                  oldContent: undefined,
+                  content: undefined
+                });
 
-              logger.info(`[Landmark Validation] Added main landmark to ${suitableFile}`);
-            } else {
-              // Wrap body content with <main>
-              const bodyContent = $body.html() || '';
-              $body.html(`<main role="main">\n${bodyContent}\n</main>`);
-              content = $.html();
-              zip.file(suitableFile, content);
+                logger.info(`[Landmark Validation] Added main landmark to ${suitableFile}`);
+              } else {
+                // Wrap body content with <main>
+                const bodyContent = $body.html() || '';
+                $body.html(`<main role="main">\n${bodyContent}\n</main>`);
+                content = $.html();
+                zip.file(suitableFile, content);
 
-              changes.push({
-                filePath: suitableFile,
-                modificationType: 'add_aria_landmarks',
-                description: 'Wrapped content with <main role="main">',
-                oldContent: undefined,
-                content: undefined
-              });
+                changes.push({
+                  filePath: suitableFile,
+                  modificationType: 'add_aria_landmarks',
+                  description: 'Wrapped content with <main role="main">',
+                  oldContent: undefined,
+                  content: undefined
+                });
 
-              logger.info(`[Landmark Validation] Wrapped content with main landmark in ${suitableFile}`);
+                logger.info(`[Landmark Validation] Wrapped content with main landmark in ${suitableFile}`);
+              }
             }
+          } catch (parseError) {
+            logger.error(`[Landmark Validation] Failed to add main landmark to ${suitableFile}:`, parseError);
           }
         }
       }
 
       // Third pass: Ensure all files have at least one landmark (main, navigation, or contentinfo)
       for (const fileName of contentFiles) {
-        const file = zip.files[fileName];
-        let content = await file.async('text');
-        const $ = cheerio.load(content, { xmlMode: true });
+        try {
+          const file = zip.files[fileName];
+          let content = await file.async('text');
+          const $ = cheerio.load(content, { xmlMode: true });
 
-        // Check if file has ANY landmark
-        const hasLandmark = $(
-          '[role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], ' +
-          'main, nav, header[role], footer[role]'
-        ).length > 0;
+          // Check if file has ANY landmark
+          const hasLandmark = $(
+            '[role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], ' +
+            'main, nav, header[role], footer[role]'
+          ).length > 0;
 
-        if (!hasLandmark) {
-          const lower = fileName.toLowerCase();
+          if (!hasLandmark) {
+            const lower = fileName.toLowerCase();
 
-          // Determine appropriate landmark based on file name
-          let landmarkRole = 'region'; // Default fallback
+            // Determine appropriate landmark based on file name
+            let landmarkRole = 'region'; // Default fallback
 
-          if (lower.includes('cover') || lower.includes('title')) {
-            landmarkRole = 'banner';
-          } else if (lower.includes('toc') || lower.includes('nav')) {
-            landmarkRole = 'navigation';
-          } else if (lower.includes('ack') || lower.includes('colophon') || lower.includes('copyright')) {
-            landmarkRole = 'contentinfo';
-          }
+            if (lower.includes('cover') || lower.includes('title')) {
+              landmarkRole = 'banner';
+            } else if (lower.includes('toc') || lower.includes('nav')) {
+              landmarkRole = 'navigation';
+            } else if (lower.includes('ack') || lower.includes('colophon') || lower.includes('copyright')) {
+              landmarkRole = 'contentinfo';
+            }
 
-          // Add landmark to body's first child or wrap content
-          const $body = $('body');
-          if ($body.length > 0) {
-            const $firstChild = $body.children().first();
+            // Add landmark to body's first child or wrap content
+            const $body = $('body');
+            if ($body.length > 0) {
+              const $firstChild = $body.children().first();
 
-            if ($firstChild.length > 0 && $firstChild.prop('tagName') !== 'script') {
-              $firstChild.attr('role', landmarkRole);
-              content = $.html();
-              zip.file(fileName, content);
+              if ($firstChild.length > 0 && $firstChild.prop('tagName') !== 'script') {
+                $firstChild.attr('role', landmarkRole);
+                content = $.html();
+                zip.file(fileName, content);
 
-              changes.push({
-                filePath: fileName,
-                modificationType: 'add_aria_landmarks',
-                description: `Added role="${landmarkRole}" to ensure landmark presence`,
-                oldContent: undefined,
-                content: undefined
-              });
+                changes.push({
+                  filePath: fileName,
+                  modificationType: 'add_aria_landmarks',
+                  description: `Added role="${landmarkRole}" to ensure landmark presence`,
+                  oldContent: undefined,
+                  content: undefined
+                });
 
-              logger.info(`[Landmark Validation] Added ${landmarkRole} landmark to ${fileName}`);
+                logger.info(`[Landmark Validation] Added ${landmarkRole} landmark to ${fileName}`);
+              }
             }
           }
+        } catch (parseError) {
+          logger.warn(`[Landmark Validation] Failed to process ${fileName}, skipping:`, parseError);
+          continue;
         }
       }
 
