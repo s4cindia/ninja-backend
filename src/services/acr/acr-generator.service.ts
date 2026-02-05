@@ -572,8 +572,9 @@ class AcrGeneratorService {
       
       const status = this.determineStatus(relatedIssues);
       // Use automation capability as confidence base, capped appropriately
+      // baseConfidence is 0-1, automationCapability is 0-100, normalize to 0-100
       const baseConfidence = this.calculateConfidence(relatedIssues);
-      const confidenceScore = Math.min(baseConfidence, automationCapability / 100);
+      const confidenceScore = Math.min(baseConfidence * 100, automationCapability);
       const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
       const hasIssues = relatedIssues.length > 0;
 

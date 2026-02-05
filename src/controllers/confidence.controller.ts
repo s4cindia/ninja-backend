@@ -531,7 +531,7 @@ export class ConfidenceController {
       }
       
       const epubFilePath = epubFileName 
-        ? path.join(epubStoragePath, epubJobId, epubFileName)
+        ? path.join(epubStoragePath, epubJobId, path.basename(epubFileName))
         : null;
       
       if (epubFilePath && fs.existsSync(epubFilePath)) {

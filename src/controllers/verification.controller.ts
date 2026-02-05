@@ -401,7 +401,10 @@ export class VerificationController {
       if (!queueItem) {
         res.status(404).json({
           success: false,
-          error: { message: `Verification item not found for criterion ${validatedData.criterionId} in job ${validatedData.jobId}` }
+          error: { 
+            code: 'NOT_FOUND_QUEUE_ITEM',
+            message: `Verification item not found for criterion ${validatedData.criterionId} in job ${validatedData.jobId}` 
+          }
         });
         return;
       }
@@ -411,7 +414,10 @@ export class VerificationController {
       if (!record) {
         res.status(404).json({
           success: false,
-          error: { message: 'Failed to submit verification' }
+          error: { 
+            code: 'VERIFICATION_NOT_SUBMITTED',
+            message: 'Failed to submit verification' 
+          }
         });
         return;
       }
@@ -433,6 +439,7 @@ export class VerificationController {
         res.status(400).json({
           success: false,
           error: {
+            code: 'VALIDATION_ERROR',
             message: 'Validation failed',
             details: error.issues
           }
