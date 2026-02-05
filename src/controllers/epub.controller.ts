@@ -697,10 +697,25 @@ export const epubController = {
 
       logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
 
+      // Transform result for frontend consumption
+      const isFullyCompliant = result.newIssues === 0;
+      const message = isFullyCompliant
+        ? 'All issues fixed - EPUB is fully compliant'
+        : `Remediation incomplete: ${result.newIssues} issue(s) remain`;
+
       return res.json({
-        success: true,
-        data: result,
-        message: `Re-audit complete: ${result.resolved} issues verified as fixed`,
+        success: isFullyCompliant,
+        message,
+        data: {
+          originalIssues: result.originalIssues,
+          fixedIssues: result.resolved,
+          newIssues: result.newIssuesFound.length,
+          remainingIssues: result.newIssues,
+          auditCoverage: result.coverage,
+          remainingIssuesList: result.newIssuesFound
+        },
+        // Include raw result for backward compatibility
+        rawResult: result
       });
     } catch (error) {
       logger.error('Re-audit failed', error instanceof Error ? error : undefined);

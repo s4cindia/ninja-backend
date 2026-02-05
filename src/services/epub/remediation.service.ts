@@ -677,6 +677,16 @@ class RemediationService {
       before: { total: number; bySeverity: Record<string, number> };
       after: { total: number; bySeverity: Record<string, number> };
     };
+    coverage: {
+      totalFiles: number;
+      filesScanned: number;
+      percentage: number;
+      fileCategories: {
+        frontMatter: number;
+        chapters: number;
+        backMatter: number;
+      };
+    };
   }> {
     const originalPlan = await this.getRemediationPlan(jobId);
     if (!originalPlan) {
@@ -745,6 +755,7 @@ class RemediationService {
         before: { total: originalPlan.tasks.length, bySeverity: beforeBySeverity },
         after: { total: newAuditResult.combinedIssues.length, bySeverity: afterBySeverity },
       },
+      coverage: newAuditResult.coverage,
     };
   }
 
@@ -1633,9 +1644,29 @@ class RemediationService {
     }
 
     if (results.applied > 0) {
-      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      let modifiedBuffer = await epubModifier.saveEPUB(zip);
+
+      // Phase 2: Post-modification landmark validation
+      logger.info('[Post-Modification] Validating landmarks after all fixes...');
+      const landmarkValidation = await epubModifier.validateAndFixLandmarks(modifiedBuffer);
+
+      if (landmarkValidation.success && landmarkValidation.changes.length > 0) {
+        logger.info(`[Post-Modification] Applied ${landmarkValidation.changes.length} landmark fixes`);
+        modifiedBuffer = landmarkValidation.buffer;
+
+        // Track landmark fixes in results
+        results.applied += landmarkValidation.changes.length;
+        for (const change of landmarkValidation.changes) {
+          logger.info(`  - ${change.filePath}: ${change.description}`);
+        }
+      } else if (landmarkValidation.success) {
+        logger.info('[Post-Modification] All landmarks validated - no fixes needed');
+      } else {
+        logger.warn('[Post-Modification] Landmark validation failed:', landmarkValidation.error);
+      }
+
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
-      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes`);
+      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes (including landmark validation)`);
     }
 
     logger.info(`[AutoFix] Results: ${results.applied} applied, ${results.failed} failed, ${results.skipped} skipped`);
