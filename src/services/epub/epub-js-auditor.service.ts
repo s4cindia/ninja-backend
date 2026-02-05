@@ -91,9 +91,12 @@ class EPUBJSAuditorService {
         issues.push(...docIssues);
 
         // Check if this file has a main landmark
-        const hasMainLandmark = this.hasMainRole(content);
-        if (!hasMainLandmark) {
-          filesWithoutMainLandmark.push(filePath);
+        // Skip frontmatter/backmatter as they don't need main landmarks
+        if (!this.isFrontOrBackMatter(content)) {
+          const hasMainLandmark = this.hasMainRole(content);
+          if (!hasMainLandmark) {
+            filesWithoutMainLandmark.push(filePath);
+          }
         }
       }
 
@@ -404,6 +407,29 @@ class EPUBJSAuditorService {
     ];
 
     return navPatterns.some(pattern => pattern.test(filePath));
+  }
+
+  /**
+   * Check if document is frontmatter/backmatter that doesn't need main landmark
+   * These include: cover, title pages, copyright, dedications, etc.
+   */
+  private isFrontOrBackMatter(content: string): boolean {
+    // Check for epub:type attributes that indicate non-main content
+    const patterns = [
+      /epub:type\s*=\s*["'][^"']*cover[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*frontmatter[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*backmatter[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*titlepage[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*halftitlepage[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*copyright-page[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*dedication[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*epigraph[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*foreword[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*preface[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*acknowledgments[^"']*["']/i,
+    ];
+
+    return patterns.some(pattern => pattern.test(content));
   }
 }
 

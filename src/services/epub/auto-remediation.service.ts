@@ -73,8 +73,10 @@ class AutoRemediationService {
     'EPUB-STRUCT-003': async (zip) => {
       return epubModifier.fixHeadingHierarchy(zip);
     },
-    'EPUB-STRUCT-004': async (zip) => {
-      return epubModifier.addAriaLandmarks(zip);
+    'EPUB-STRUCT-004': async (zip, options) => {
+      // Pass target file locations from tasks so landmarks are added to the correct files
+      const targetLocations = options?.targetLocations as string[] | undefined;
+      return epubModifier.addAriaLandmarks(zip, targetLocations);
     },
     'EPUB-NAV-001': async (zip) => {
       return epubModifier.addSkipNavigation(zip);
@@ -205,7 +207,17 @@ class AutoRemediationService {
         }
 
         try {
-          const results = await handler(zip);
+          // Pass task locations as options for handlers that need file-specific targeting
+          const options: Record<string, unknown> = {};
+          const targetLocations = tasks
+            .map(t => t.location)
+            .filter((loc): loc is string => !!loc);
+
+          if (targetLocations.length > 0) {
+            options.targetLocations = targetLocations;
+          }
+
+          const results = await handler(zip, options);
           
           for (const result of results) {
             // Map modificationType: 'skip' to status: 'skipped' for quick-fix classification

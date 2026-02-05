@@ -1150,11 +1150,29 @@ class EPUBModifierService {
     return results;
   }
 
-  async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+  async addAriaLandmarks(zip: JSZip, targetLocations?: string[]): Promise<ModificationResult[]> {
     const results: ModificationResult[] = [];
-    const files = Object.keys(zip.files)
+    let files = Object.keys(zip.files)
       .filter(f => /\.(html|xhtml|htm)$/i.test(f) && !zip.files[f].dir)
       .sort(); // Sort for consistent ordering
+
+    // If target locations are provided, prioritize those files first
+    if (targetLocations && targetLocations.length > 0) {
+      const targetSet = new Set(targetLocations);
+      const targetFiles: string[] = [];
+      const otherFiles: string[] = [];
+
+      for (const file of files) {
+        if (targetSet.has(file)) {
+          targetFiles.push(file);
+        } else {
+          otherFiles.push(file);
+        }
+      }
+
+      // Process target files first, then others
+      files = [...targetFiles, ...otherFiles];
+    }
 
     // Track if we've added a main landmark anywhere
     let mainLandmarkExists = false;

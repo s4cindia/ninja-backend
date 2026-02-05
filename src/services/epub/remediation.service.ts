@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { nanoid } from 'nanoid';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
@@ -414,6 +415,7 @@ class RemediationService {
 
     await prisma.job.create({
       data: {
+        id: nanoid(),
         tenantId: job.tenantId,
         userId: job.userId,
         type: 'BATCH_VALIDATION',
@@ -421,6 +423,7 @@ class RemediationService {
         input: { sourceJobId: jobId, planType: 'remediation' },
         output: JSON.parse(JSON.stringify(plan)),
         completedAt: new Date(),
+        updatedAt: new Date(),
       },
     });
 
@@ -695,9 +698,38 @@ class RemediationService {
 
     logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${file.originalname}`);
 
+    // Get original job to extract tenant and user info
+    const originalJob = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { tenantId: true, userId: true },
+    });
+
+    if (!originalJob) {
+      throw new Error('Original job not found');
+    }
+
+    // Create a new job for the re-audit
+    const reauditJobId = nanoid();
+    await prisma.job.create({
+      data: {
+        id: reauditJobId,
+        tenantId: originalJob.tenantId,
+        userId: originalJob.userId,
+        type: 'EPUB_ACCESSIBILITY',
+        status: 'PROCESSING',
+        input: {
+          sourceJobId: jobId,
+          fileName: file.originalname,
+          auditType: 'reaudit',
+        },
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
     const newAuditResult = await epubAuditService.runAudit(
       file.buffer,
-      `reaudit-${jobId}`,
+      reauditJobId,
       file.originalname
     );
 
@@ -846,8 +878,9 @@ class RemediationService {
 
     for (const task of originalTasks) {
       const taskKey = `${task.issueCode}:${task.location || ''}`;
-      if (!newIssueKeys.has(taskKey) && task.status === 'pending') {
-        resolvedTaskIds.push(task.id);
+      // Check if issue no longer exists in new audit, regardless of task status
+      if (!newIssueKeys.has(taskKey)) {
+        resolvedTaskIds.push(task.issueCode);
       }
     }
 
@@ -1557,7 +1590,11 @@ class RemediationService {
             fixResults = await epubModifier.addSkipNavigation(zip);
             break;
           case 'EPUB-STRUCT-004':
-            fixResults = await epubModifier.addAriaLandmarks(zip);
+            // Pass target file locations so landmarks are added to the correct files
+            const targetLocations = tasks
+              .map(t => t.location)
+              .filter((loc): loc is string => !!loc);
+            fixResults = await epubModifier.addAriaLandmarks(zip, targetLocations);
             break;
           default:
             logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
