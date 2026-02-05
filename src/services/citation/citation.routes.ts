@@ -124,6 +124,11 @@ router.post(
 // VALIDATION ROUTES
 // ============================================
 
+router.get(
+  '/styles',
+  citationValidationController.getStyles.bind(citationValidationController)
+);
+
 router.post(
   '/document/:documentId/validate',
   validate({ params: documentIdParamSchema }),
@@ -134,11 +139,6 @@ router.get(
   '/document/:documentId/validations',
   validate({ params: documentIdParamSchema }),
   citationValidationController.getValidations.bind(citationValidationController)
-);
-
-router.get(
-  '/styles',
-  citationValidationController.getStyles.bind(citationValidationController)
 );
 
 // ============================================
