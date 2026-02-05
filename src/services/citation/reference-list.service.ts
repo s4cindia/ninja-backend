@@ -476,10 +476,16 @@ Return a JSON object:
 
   private fallbackFormat(entry: any, styleCode: string): string {
     const authors = entry.authors || [];
-    const authorStr =
-      authors.length > 0
-        ? authors.map((a: any) => `${a.lastName}, ${a.firstName?.charAt(0) || ''}.`).join(', ')
-        : 'Unknown Author';
+    const validAuthors = authors.filter((a: any) => a && (a.lastName || a.firstName));
+    
+    let authorStr = 'Unknown Author';
+    if (validAuthors.length > 0) {
+      authorStr = validAuthors.map((a: any) => {
+        const lastName = a.lastName || 'Unknown';
+        const firstInitial = a.firstName ? `${a.firstName.charAt(0)}.` : '';
+        return firstInitial ? `${lastName}, ${firstInitial}` : lastName;
+      }).join(', ');
+    }
 
     const year = entry.year ? ` (${entry.year}).` : '.';
     const title = entry.title ? ` ${entry.title}.` : '';
