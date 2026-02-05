@@ -1689,7 +1689,9 @@ class RemediationService {
 
       if (landmarkValidation.success && landmarkValidation.changes.length > 0) {
         logger.info(`[Post-Modification] Applied ${landmarkValidation.changes.length} landmark fixes`);
-        modifiedBuffer = landmarkValidation.buffer;
+        if (landmarkValidation.buffer) {
+          modifiedBuffer = landmarkValidation.buffer;
+        }
 
         // Track landmark fixes in results
         results.applied += landmarkValidation.changes.length;
