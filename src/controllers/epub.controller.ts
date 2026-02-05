@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as fs from 'fs';
+import { nanoid } from 'nanoid';
 import { FileStatus } from '@prisma/client';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
@@ -149,6 +150,7 @@ export const epubController = {
 
       const job = await prisma.job.create({
         data: {
+          id: nanoid(),
           tenantId,
           userId,
           type: 'EPUB_ACCESSIBILITY',
@@ -159,6 +161,7 @@ export const epubController = {
             size: req.file.size,
           },
           startedAt: new Date(),
+          updatedAt: new Date(),
         },
       });
       jobId = job.id;
@@ -283,6 +286,7 @@ export const epubController = {
 
       const job = await prisma.job.create({
         data: {
+          id: nanoid(),
           tenantId,
           userId,
           type: 'EPUB_ACCESSIBILITY',
@@ -295,6 +299,7 @@ export const epubController = {
             storageType: fileRecord.storageType,
             storagePath: fileRecord.storagePath,
           },
+          updatedAt: new Date(),
         },
       });
 
@@ -698,10 +703,27 @@ export const epubController = {
 
       logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
 
+      // Transform result for frontend consumption
+      const isFullyCompliant = result.newIssues === 0;
+      const message = isFullyCompliant
+        ? 'All issues fixed - EPUB is fully compliant'
+        : `Remediation incomplete: ${result.newIssues} issue(s) remain`;
+
       return res.json({
-        success: true,
-        data: result,
-        message: `Re-audit complete: ${result.resolved} issues verified as fixed`,
+        success: isFullyCompliant,
+        message,
+        data: {
+          originalIssues: result.originalIssues,
+          fixedIssues: result.resolved,
+          newIssues: result.newIssuesFound.length,
+          remainingIssues: result.newIssues,
+          auditCoverage: result.coverage,
+          remainingIssuesList: result.newIssuesFound
+        },
+        error: !isFullyCompliant ? { message } : null,
+        errorCode: !isFullyCompliant ? 'REMEDIATION_INCOMPLETE' : undefined,
+        // Include raw result for backward compatibility
+        rawResult: result
       });
     } catch (error) {
       logger.error('Re-audit failed', error instanceof Error ? error : undefined);

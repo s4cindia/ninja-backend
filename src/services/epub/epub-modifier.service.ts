@@ -1188,11 +1188,29 @@ class EPUBModifierService {
     return results;
   }
 
-  async addAriaLandmarks(zip: JSZip): Promise<ModificationResult[]> {
+  async addAriaLandmarks(zip: JSZip, targetLocations?: string[]): Promise<ModificationResult[]> {
     const results: ModificationResult[] = [];
-    const files = Object.keys(zip.files)
+    let files = Object.keys(zip.files)
       .filter(f => /\.(html|xhtml|htm)$/i.test(f) && !zip.files[f].dir)
       .sort(); // Sort for consistent ordering
+
+    // If target locations are provided, prioritize those files first
+    if (targetLocations && targetLocations.length > 0) {
+      const targetSet = new Set(targetLocations);
+      const targetFiles: string[] = [];
+      const otherFiles: string[] = [];
+
+      for (const file of files) {
+        if (targetSet.has(file)) {
+          targetFiles.push(file);
+        } else {
+          otherFiles.push(file);
+        }
+      }
+
+      // Process target files first, then others
+      files = [...targetFiles, ...otherFiles];
+    }
 
     // Track if we've added a main landmark anywhere
     let mainLandmarkExists = false;
@@ -2229,6 +2247,193 @@ body, p, span, div, li, td, th, a, label {
 
     return results;
   }
+
+  /**
+   * Validate and fix landmarks after modifications (Phase 2: Post-Restructuring Validation)
+   * Ensures all content files have appropriate ARIA landmarks
+   *
+   * @param buffer - EPUB buffer
+   * @returns Result with any landmark fixes applied
+   */
+  async validateAndFixLandmarks(buffer: Buffer): Promise<LandmarkValidationResult> {
+    try {
+      logger.info('[Landmark Validation] Starting post-modification landmark validation...');
+
+      const zip = new JSZip();
+      await zip.loadAsync(buffer);
+
+      const changes: FileChange[] = [];
+      let hasMainLandmark = false;
+
+      // Get all XHTML/HTML content files
+      const contentFiles = Object.keys(zip.files).filter(fileName =>
+        !zip.files[fileName].dir &&
+        (fileName.endsWith('.xhtml') || fileName.endsWith('.html')) &&
+        !fileName.includes('META-INF')
+      );
+
+      logger.info(`[Landmark Validation] Found ${contentFiles.length} content files to validate`);
+
+      // First pass: Check if any file already has a main landmark
+      for (const fileName of contentFiles) {
+        try {
+          const file = zip.files[fileName];
+          const content = await file.async('text');
+          const $ = cheerio.load(content, { xmlMode: true });
+
+          if ($('[role="main"], main').length > 0) {
+            hasMainLandmark = true;
+            logger.info(`[Landmark Validation] Main landmark found in ${fileName}`);
+            break;
+          }
+        } catch (parseError) {
+          logger.warn(`[Landmark Validation] Failed to parse ${fileName}, skipping:`, parseError);
+          continue;
+        }
+      }
+
+      // Second pass: Add main landmark if missing
+      if (!hasMainLandmark) {
+        logger.warn('[Landmark Validation] No main landmark found - adding to first content file');
+
+        // Find first suitable file (prefer chapter over cover/toc)
+        const suitableFile = contentFiles.find(f => {
+          const lower = f.toLowerCase();
+          return !lower.includes('cover') &&
+                 !lower.includes('toc') &&
+                 !lower.includes('nav') &&
+                 (lower.includes('chapter') || lower.includes('content') || lower.includes('xhtml'));
+        }) || contentFiles[0];
+
+        if (suitableFile) {
+          try {
+            const file = zip.files[suitableFile];
+            let content = await file.async('text');
+            const $ = cheerio.load(content, { xmlMode: true });
+
+            // Try to add role="main" to first suitable element
+            const $body = $('body');
+            if ($body.length > 0) {
+              const $firstSection = $body.find('section, article, div.content, div.chapter').first();
+
+              if ($firstSection.length > 0) {
+                $firstSection.attr('role', 'main');
+                content = $.html();
+                zip.file(suitableFile, content);
+
+                changes.push({
+                  type: 'replace',
+                  filePath: suitableFile,
+                  description: `Added role="main" to first section`,
+                  oldContent: undefined,
+                  content: undefined
+                });
+
+                logger.info(`[Landmark Validation] Added main landmark to ${suitableFile}`);
+              } else {
+                // Wrap body content with <main>
+                const bodyContent = $body.html() || '';
+                $body.html(`<main role="main">\n${bodyContent}\n</main>`);
+                content = $.html();
+                zip.file(suitableFile, content);
+
+                changes.push({
+                  type: 'replace',
+                  filePath: suitableFile,
+                  description: 'Wrapped content with <main role="main">',
+                  oldContent: undefined,
+                  content: undefined
+                });
+
+                logger.info(`[Landmark Validation] Wrapped content with main landmark in ${suitableFile}`);
+              }
+            }
+          } catch (parseError) {
+            logger.error(`[Landmark Validation] Failed to add main landmark to ${suitableFile}:`, parseError);
+          }
+        }
+      }
+
+      // Third pass: Ensure all files have at least one landmark (main, navigation, or contentinfo)
+      for (const fileName of contentFiles) {
+        try {
+          const file = zip.files[fileName];
+          let content = await file.async('text');
+          const $ = cheerio.load(content, { xmlMode: true });
+
+          // Check if file has ANY landmark
+          const hasLandmark = $(
+            '[role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], ' +
+            'main, nav, header[role], footer[role]'
+          ).length > 0;
+
+          if (!hasLandmark) {
+            const lower = fileName.toLowerCase();
+
+            // Determine appropriate landmark based on file name
+            let landmarkRole = 'region'; // Default fallback
+
+            if (lower.includes('cover') || lower.includes('title')) {
+              landmarkRole = 'banner';
+            } else if (lower.includes('toc') || lower.includes('nav')) {
+              landmarkRole = 'navigation';
+            } else if (lower.includes('ack') || lower.includes('colophon') || lower.includes('copyright')) {
+              landmarkRole = 'contentinfo';
+            }
+
+            // Add landmark to body's first child or wrap content
+            const $body = $('body');
+            if ($body.length > 0) {
+              const $firstChild = $body.children().first();
+
+              if ($firstChild.length > 0 && $firstChild.prop('tagName') !== 'script') {
+                $firstChild.attr('role', landmarkRole);
+                content = $.html();
+                zip.file(fileName, content);
+
+                changes.push({
+                  type: 'replace',
+                  filePath: fileName,
+                  description: `Added role="${landmarkRole}" to ensure landmark presence`,
+                  oldContent: undefined,
+                  content: undefined
+                });
+
+                logger.info(`[Landmark Validation] Added ${landmarkRole} landmark to ${fileName}`);
+              }
+            }
+          }
+        } catch (parseError) {
+          logger.warn(`[Landmark Validation] Failed to process ${fileName}, skipping:`, parseError);
+          continue;
+        }
+      }
+
+      // Generate new buffer
+      const newBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 },
+      });
+
+      logger.info(`[Landmark Validation] Complete - ${changes.length} landmark fixes applied`);
+
+      return {
+        buffer: newBuffer,
+        changes,
+        success: true,
+      };
+
+    } catch (error) {
+      logger.error('[Landmark Validation] Failed:', error);
+      return {
+        buffer,
+        changes: [],
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
 }
 
 interface FileChange {
@@ -2240,6 +2445,13 @@ interface FileChange {
   description?: string;
 }
 
-export type { FileChange, ModificationResult };
+interface LandmarkValidationResult {
+  success: boolean;
+  buffer?: Buffer;
+  changes: FileChange[];
+  error?: string;
+}
+
+export type { FileChange, ModificationResult, LandmarkValidationResult };
 
 export const epubModifier = new EPUBModifierService();
