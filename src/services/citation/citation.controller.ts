@@ -325,7 +325,7 @@ export class CitationController {
       // Verify document belongs to tenant
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { id: true },
+        select: { id: true, originalName: true, fileName: true },
       });
 
       if (!document) {
@@ -340,12 +340,27 @@ export class CitationController {
           citationType: true,
           detectedStyle: true,
           primaryComponentId: true,
+          confidence: true,
         },
       });
 
       const total = citations.length;
       const parsed = citations.filter((c) => c.primaryComponentId !== null).length;
       const unparsed = total - parsed;
+
+      // needsReview: citations with low confidence (< 0.7) that need manual review
+      const needsReview = citations.filter((c) => c.confidence < 0.7 && c.primaryComponentId !== null).length;
+
+      // Calculate average confidence (use detection confidence, normalize 0-1 to 0-100)
+      let averageConfidence = 0;
+      if (total > 0) {
+        const totalConfidence = citations.reduce((sum, c) => {
+          // Confidence is stored as 0-1, convert to 0-100
+          const conf = c.confidence <= 1 ? c.confidence * 100 : c.confidence;
+          return sum + conf;
+        }, 0);
+        averageConfidence = Math.round(totalConfidence / total);
+      }
 
       // Count by type
       const byType: Record<string, number> = {};
@@ -366,8 +381,11 @@ export class CitationController {
           total,
           parsed,
           unparsed,
+          needsReview,
+          averageConfidence,
           byType,
           byStyle,
+          fileName: document.originalName || document.fileName,
         },
       });
     } catch (error) {
