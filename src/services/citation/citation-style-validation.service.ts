@@ -186,7 +186,13 @@ Return ONLY valid JSON array, no other text.`;
         maxOutputTokens: 2048
       });
 
-      const violations = JSON.parse(response.text);
+      // Strip markdown code blocks if present
+      let jsonText = response.text.trim();
+      if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+
+      const violations = JSON.parse(jsonText);
 
       if (!Array.isArray(violations)) {
         return [];
