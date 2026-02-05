@@ -3,6 +3,7 @@ import { logger } from '../../lib/logger';
 import { geminiService } from '../ai/gemini.service';
 import { crossRefService, EnrichedMetadata } from './crossref.service';
 import { styleRulesService } from './style-rules.service';
+import { citationParsingService } from './citation-parsing.service';
 import { AppError } from '../../utils/app-error';
 
 export interface ReferenceEntry {
@@ -67,6 +68,31 @@ class ReferenceListService {
 
     if (!document) {
       throw AppError.notFound('Document not found');
+    }
+
+    if (citations.length === 0) {
+      throw AppError.badRequest('No citations found in document. Please detect citations first.');
+    }
+
+    // Auto-parse citations that don't have components
+    const unparsedCitations = citations.filter(c => !c.components || c.components.length === 0);
+    if (unparsedCitations.length > 0) {
+      logger.info(`[Reference List] Auto-parsing ${unparsedCitations.length} citations without components`);
+      for (const citation of unparsedCitations) {
+        try {
+          await citationParsingService.parseCitation(citation.id, tenantId);
+        } catch (err) {
+          logger.warn(`[Reference List] Failed to parse citation ${citation.id}: ${err}`);
+        }
+      }
+      
+      // Re-fetch citations with newly parsed components
+      const updatedCitations = await prisma.citation.findMany({
+        where: { documentId },
+        include: { components: true }
+      });
+      citations.length = 0;
+      citations.push(...updatedCitations);
     }
 
     if (!options.regenerate) {
