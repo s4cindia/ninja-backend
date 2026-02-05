@@ -23,6 +23,7 @@ export interface ReferenceEntry {
   url?: string | null;
   enrichmentSource: string;
   enrichmentConfidence: number;
+  formattedEntry?: string;
   formattedApa?: string | null;
   formattedMla?: string | null;
   formattedChicago?: string | null;
@@ -369,17 +370,25 @@ Return a JSON object:
       a.sortKey.localeCompare(b.sortKey)
     );
 
-    const formattedList = sortedEntries
-      .map((e) => (e as any)[formattedColumn] || this.fallbackFormat(e, styleCode))
+    const entriesWithFormatted = sortedEntries.map((e) => {
+      const existingFormatted = (e as any)[formattedColumn];
+      const formatted = existingFormatted || this.fallbackFormat(e, styleCode);
+      return {
+        ...e,
+        authors: e.authors as any,
+        formattedEntry: formatted,
+        [formattedColumn]: formatted
+      };
+    });
+
+    const formattedList = entriesWithFormatted
+      .map((e) => e.formattedEntry)
       .join('\n\n');
 
     return {
       documentId,
       styleCode,
-      entries: sortedEntries.map((e) => ({
-        ...e,
-        authors: e.authors as any
-      })),
+      entries: entriesWithFormatted,
       formattedList,
       stats: stats || {
         totalEntries: entries.length,
