@@ -10,6 +10,7 @@ import { validate } from '../../middleware/validate.middleware';
 import { citationController } from './citation.controller';
 import { citationValidationController } from '../../controllers/citation-validation.controller';
 import { citationCorrectionController } from '../../controllers/citation-correction.controller';
+import { referenceListController } from '../../controllers/reference-list.controller';
 import {
   documentIdParamSchema,
   citationIdParamSchema,
@@ -174,6 +175,27 @@ router.get(
 router.post(
   '/change/:changeId/revert',
   citationCorrectionController.revertChange.bind(citationCorrectionController)
+);
+
+// ============================================
+// REFERENCE LIST ROUTES
+// ============================================
+
+router.post(
+  '/document/:documentId/reference-list/generate',
+  validate({ params: documentIdParamSchema }),
+  referenceListController.generateReferenceList.bind(referenceListController)
+);
+
+router.patch(
+  '/reference-list/:entryId',
+  referenceListController.updateEntry.bind(referenceListController)
+);
+
+router.post(
+  '/document/:documentId/reference-list/finalize',
+  validate({ params: documentIdParamSchema }),
+  referenceListController.finalizeReferenceList.bind(referenceListController)
 );
 
 export default router;
