@@ -8,6 +8,7 @@ import multer from 'multer';
 import { authenticate } from '../../middleware/auth.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { citationController } from './citation.controller';
+import { citationValidationController } from '../../controllers/citation-validation.controller';
 import {
   documentIdParamSchema,
   citationIdParamSchema,
@@ -115,6 +116,27 @@ router.post(
   '/:citationId/reparse',
   validate({ params: citationIdParamSchema }),
   citationController.reparseCitation.bind(citationController)
+);
+
+// ============================================
+// VALIDATION ROUTES
+// ============================================
+
+router.post(
+  '/document/:documentId/validate',
+  validate({ params: documentIdParamSchema }),
+  citationValidationController.validateDocument.bind(citationValidationController)
+);
+
+router.get(
+  '/document/:documentId/validations',
+  validate({ params: documentIdParamSchema }),
+  citationValidationController.getValidations.bind(citationValidationController)
+);
+
+router.get(
+  '/styles',
+  citationValidationController.getStyles.bind(citationValidationController)
 );
 
 export default router;
