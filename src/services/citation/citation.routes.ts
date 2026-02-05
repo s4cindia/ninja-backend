@@ -9,6 +9,7 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { citationController } from './citation.controller';
 import { citationValidationController } from '../../controllers/citation-validation.controller';
+import { citationCorrectionController } from '../../controllers/citation-correction.controller';
 import {
   documentIdParamSchema,
   citationIdParamSchema,
@@ -137,6 +138,42 @@ router.get(
 router.get(
   '/styles',
   citationValidationController.getStyles.bind(citationValidationController)
+);
+
+// ============================================
+// CORRECTION ROUTES
+// ============================================
+
+router.post(
+  '/validation/:validationId/accept',
+  citationCorrectionController.acceptCorrection.bind(citationCorrectionController)
+);
+
+router.post(
+  '/validation/:validationId/reject',
+  citationCorrectionController.rejectCorrection.bind(citationCorrectionController)
+);
+
+router.post(
+  '/validation/:validationId/edit',
+  citationCorrectionController.applyManualEdit.bind(citationCorrectionController)
+);
+
+router.post(
+  '/document/:documentId/correct/batch',
+  validate({ params: documentIdParamSchema }),
+  citationCorrectionController.batchCorrect.bind(citationCorrectionController)
+);
+
+router.get(
+  '/document/:documentId/changes',
+  validate({ params: documentIdParamSchema }),
+  citationCorrectionController.getChanges.bind(citationCorrectionController)
+);
+
+router.post(
+  '/change/:changeId/revert',
+  citationCorrectionController.revertChange.bind(citationCorrectionController)
 );
 
 export default router;
