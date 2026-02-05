@@ -224,7 +224,9 @@ class AcrGeneratorService {
           remarks = `What works: ${remarks} Limitations: Some elements require manual remediation.`;
         }
       } else if (!remarks) {
-        if (verification?.status === 'VERIFIED_PASS') {
+        if (verification?.status === 'NOT_APPLICABLE') {
+          remarks = `This criterion does not apply to the evaluated content. ${verification.notes || 'No relevant content detected.'}`;
+        } else if (verification?.status === 'VERIFIED_PASS') {
           remarks = `Criterion evaluation confirmed through human verification.`;
         } else if (verification?.status === 'VERIFIED_FAIL') {
           remarks = `Reason: Human verification identified non-compliance issues requiring remediation.`;

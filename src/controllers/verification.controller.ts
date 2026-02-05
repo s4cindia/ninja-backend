@@ -381,7 +381,7 @@ export class VerificationController {
 
       // Map status to internal format
       const statusMap: Record<string, VerificationStatus> = {
-        'not_applicable': 'VERIFIED_PASS',  // N/A is treated as verified pass
+        'not_applicable': 'NOT_APPLICABLE',  // N/A has dedicated status for proper handling
         'pass': 'VERIFIED_PASS',
         'fail': 'VERIFIED_FAIL',
         'partial': 'VERIFIED_PARTIAL',
