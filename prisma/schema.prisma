@@ -654,6 +654,10 @@ model EditorialDocument {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  referenceListStatus    String?    // "draft", "finalized"
+  referenceListStyle     String?
+  referenceListGeneratedAt DateTime?
+
   tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   job               Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
   chunks            EditorialTextChunk[]
@@ -662,6 +666,9 @@ model EditorialDocument {
   plagiarismMatches PlagiarismMatch[]
   references        Reference[]
   editorialReports  EditorialReport[]
+  citationValidations    CitationValidation[]
+  citationChanges        CitationChange[]
+  referenceListEntries   ReferenceListEntry[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -734,6 +741,10 @@ model Citation {
   primaryComponentId String?            @unique
   primaryComponent   CitationComponent? @relation("PrimaryCitation", fields: [primaryComponentId], references: [id], onDelete: SetNull)
 
+  validationStatus   String?    // "valid", "has_errors", "has_warnings", "not_validated"
+  lastValidatedAt    DateTime?
+  lastValidatedStyle String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -743,6 +754,7 @@ model Citation {
   @@index([documentId])
   @@index([citationType])
   @@index([referenceId])
+  @@index([validationStatus])
 }
 
 enum CitationType {
@@ -862,22 +874,114 @@ model Reference {
   @@index([doi])
 }
 
+model CitationStyleGuide {
+  id            String   @id @default(uuid())
+  code          String   @unique  // "apa7", "mla9", "chicago17"
+  name          String            // "APA 7th Edition"
+  version       String?
+
+  inTextRules   Json     // Rules for in-text citations
+  referenceRules Json    // Rules for reference entries
+
+  sortOrder     String   @default("alphabetical") // "alphabetical", "numbered", "appearance"
+  hangingIndent Boolean  @default(true)
+  doubleSpacing Boolean  @default(true)
+
+  isSystem      Boolean  @default(true)
+  tenantId      String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
 model CitationValidation {
   id         String   @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
   citationId String
   citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
 
-  targetStyle CitationStyle
+  styleCode     String
 
-  isValid  Boolean
-  errors   Json
-  warnings Json?
+  violationType String   // "punctuation", "capitalization", "author_format", "date_format", "italics"
+  ruleReference String   // "APA 8.17"
+  ruleName      String
+  explanation   String?
 
-  suggestedText String?
+  originalText  String
+  suggestedFix  String
+
+  severity      String   @default("warning") // "error", "warning", "info"
+
+  status        String   @default("pending") // "pending", "accepted", "rejected", "edited"
+  resolvedText  String?
+  resolvedBy    String?
+  resolvedAt    DateTime?
 
   createdAt DateTime @default(now())
 
+  @@index([documentId])
   @@index([citationId])
+  @@index([status])
+}
+
+model CitationChange {
+  id            String   @id @default(uuid())
+  documentId    String
+  document      EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  citationId    String?
+  changeType    String   // "correction", "format", "revert"
+
+  beforeText    String
+  afterText     String
+
+  appliedBy     String
+  appliedAt     DateTime @default(now())
+
+  isReverted    Boolean  @default(false)
+  revertedAt    DateTime?
+
+  @@index([documentId])
+}
+
+model ReferenceListEntry {
+  id            String   @id @default(uuid())
+  documentId    String
+  document      EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  citationIds   String[]
+  sortKey       String
+
+  authors       Json
+  year          String?
+  title         String
+  sourceType    String
+
+  journalName   String?
+  volume        String?
+  issue         String?
+  pages         String?
+  publisher     String?
+  doi           String?
+  url           String?
+
+  enrichmentSource     String   // "crossref", "pubmed", "manual", "ai"
+  enrichmentConfidence Float
+
+  formattedApa     String?
+  formattedMla     String?
+  formattedChicago String?
+
+  isEdited      Boolean  @default(false)
+  editedAt      DateTime?
+
+  createdAt     DateTime @default(now())
+
+  @@index([documentId])
 }
 
 model PlagiarismMatch {
