@@ -45,7 +45,7 @@
 #### ⚠️ Minor Issues
 
 **Issue 1.1: Error logging could be more specific**
-```typescript
+```text
 // Current
 logger.warn('Failed to calculate coverage, returning default', error);
 
@@ -56,7 +56,7 @@ logger.warn(`Failed to calculate coverage (buffer size: ${buffer.length}), retur
 **Impact:** Better debugging capabilities
 
 **Issue 1.2: File categorization could be more robust**
-```typescript
+```text
 // Current: Simple string matching
 if (basename.includes('cover') || basename.includes('toc') || ...)
 
@@ -88,7 +88,7 @@ if (FRONT_MATTER_PATTERNS.test(basename)) {
 #### ⚠️ Suggestions
 
 **Issue 2.1: Error handling for landmark validation**
-```typescript
+```text
 // Current: Logs warning but continues
 logger.warn('[Post-Modification] Landmark validation failed:', landmarkValidation.error);
 
@@ -123,7 +123,7 @@ if (!landmarkValidation.success) {
 #### ⚠️ Issues
 
 **Issue 3.1: Potential infinite loop risk (Low)**
-```typescript
+```text
 // Current: Iterates all files twice
 for (const fileName of contentFiles) { ... }  // First pass
 for (const fileName of contentFiles) { ... }  // Third pass
@@ -135,7 +135,7 @@ for (const fileName of contentFiles) { ... }  // Third pass
 **Impact:** Performance optimization for large EPUBs
 
 **Issue 3.2: Cheerio error handling**
-```typescript
+```text
 // Current: No specific handling for malformed HTML
 const $ = cheerio.load(content, { xmlMode: true });
 
@@ -152,7 +152,7 @@ try {
 **Impact:** Better resilience for malformed EPUBs
 
 **Issue 3.3: Main landmark preference logic**
-```typescript
+```text
 // Current: Simple find()
 const suitableFile = contentFiles.find(f => {
   const lower = f.toLowerCase();
@@ -204,7 +204,7 @@ const suitableFile = contentFiles.find(f => {
 #### ⚠️ Suggestion
 
 **Issue 5.1: Add discriminated union for success states**
-```typescript
+```text
 // Current: success boolean + optional fields
 interface RemediationApiResponse {
   success: boolean;

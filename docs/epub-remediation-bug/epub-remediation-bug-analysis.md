@@ -151,7 +151,7 @@ After remediation, the system should have:
 **File:** `src/services/epub/remediation-workflow.service.ts`
 
 **Current Flow:**
-```
+```text
 1. Audit EPUB → Find issues
 2. Remediate issues → Fix 5 files
 3. Validate fixes → Check 5 modified files
@@ -159,7 +159,7 @@ After remediation, the system should have:
 ```
 
 **Correct Flow:**
-```
+```text
 1. Audit EPUB → Find issues (scan ALL files)
 2. Remediate issues → Fix identified issues
 3. FULL re-audit → Scan entire EPUB again

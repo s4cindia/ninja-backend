@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as fs from 'fs';
+import { nanoid } from 'nanoid';
 import { FileStatus } from '@prisma/client';
 import { epubAuditService } from '../services/epub/epub-audit.service';
 import { remediationService } from '../services/epub/remediation.service';
@@ -148,6 +149,7 @@ export const epubController = {
 
       const job = await prisma.job.create({
         data: {
+          id: nanoid(),
           tenantId,
           userId,
           type: 'EPUB_ACCESSIBILITY',
@@ -158,6 +160,7 @@ export const epubController = {
             size: req.file.size,
           },
           startedAt: new Date(),
+          updatedAt: new Date(),
         },
       });
       jobId = job.id;
@@ -282,6 +285,7 @@ export const epubController = {
 
       const job = await prisma.job.create({
         data: {
+          id: nanoid(),
           tenantId,
           userId,
           type: 'EPUB_ACCESSIBILITY',
@@ -294,6 +298,7 @@ export const epubController = {
             storageType: fileRecord.storageType,
             storagePath: fileRecord.storagePath,
           },
+          updatedAt: new Date(),
         },
       });
 
@@ -714,6 +719,8 @@ export const epubController = {
           auditCoverage: result.coverage,
           remainingIssuesList: result.newIssuesFound
         },
+        error: !isFullyCompliant ? { message } : null,
+        errorCode: !isFullyCompliant ? 'REMEDIATION_INCOMPLETE' : undefined,
         // Include raw result for backward compatibility
         rawResult: result
       });

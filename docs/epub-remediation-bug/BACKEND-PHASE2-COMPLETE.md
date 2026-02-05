@@ -41,7 +41,7 @@ async validateAndFixLandmarks(buffer: Buffer): Promise<ModificationResult>
    - Other files → `role="region"` (fallback)
 
 **Example Output:**
-```
+```text
 [Landmark Validation] Found 81 content files to validate
 [Landmark Validation] Main landmark found in Chapter01.xhtml
 [Landmark Validation] Added role="banner" to 00_cover.xhtml
@@ -57,7 +57,7 @@ async validateAndFixLandmarks(buffer: Buffer): Promise<ModificationResult>
 **Integration Point:**
 After all auto-fixes are applied, before saving the final EPUB:
 
-```typescript
+```bash
 if (results.applied > 0) {
   let modifiedBuffer = await epubModifier.saveEPUB(zip);
 
@@ -83,7 +83,7 @@ Landmark validation runs automatically after every remediation, ensuring no file
 ## 🎯 Impact
 
 ### Before Phase 2:
-```
+```text
 Original EPUB: 5 issues detected
 After Remediation: "All 5 issues fixed!" ✅
 Re-audit: 1 NEW issue found ❌ (cover page missing landmark)
@@ -91,7 +91,7 @@ User: Confused and disappointed 😞
 ```
 
 ### After Phase 2:
-```
+```text
 Original EPUB: 5 issues detected
 After Remediation:
   - Fixed 5 original issues ✅
@@ -123,7 +123,7 @@ User: Happy! 😊
 3. **Run remediation** (fixes 5 issues)
 4. **Observe:** Landmark validation runs automatically
 5. **Check logs:**
-   ```
+   ```text
    [Post-Modification] Validating landmarks after all fixes...
    [Post-Modification] Applied 1 landmark fixes
      - OEBPS/xhtml/00_cover.xhtml: Added role="banner"
@@ -133,7 +133,7 @@ User: Happy! 😊
 ### Expected Behavior
 
 **Log Output:**
-```
+```text
 [AutoFix] Results: 5 applied, 0 failed, 0 skipped
 [Post-Modification] Validating landmarks after all fixes...
 [Landmark Validation] Found 81 content files to validate
@@ -213,7 +213,7 @@ Backend is **100% complete** and ready for frontend integration!
 
 - Validation runs automatically - no manual intervention needed
 - Adds ~200ms to remediation time (negligible)
-- Zero breaking changes - backward compatible
+- Zero breaking changes - backward-compatible
 - Handles edge cases (no body, malformed HTML)
 - Comprehensive logging for debugging
 

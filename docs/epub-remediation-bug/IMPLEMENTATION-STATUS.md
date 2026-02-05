@@ -44,7 +44,7 @@ This is lower-risk than rewriting large portions of the audit logic.
 **File:** `src/services/epub/epub-audit.service.ts`
 
 **Add to `EpubAuditResult` interface:**
-```typescript
+```text
 interface EpubAuditResult {
   // ... existing fields ...
   coverage: {
@@ -61,7 +61,7 @@ interface EpubAuditResult {
 ```
 
 **In `runAudit()` method, after combining results:**
-```typescript
+```text
 // Extract EPUB and count files
 const zip = new AdmZip(buffer);
 const zipEntries = zip.getEntries();
@@ -83,7 +83,7 @@ return {
 ```
 
 **Add helper method:**
-```typescript
+```text
 private categorizeFiles(files: any[]): {
   frontMatter: number;
   chapters: number;
@@ -118,7 +118,7 @@ private categorizeFiles(files: any[]): {
 **Find where remediation completes** (likely in an `executeRemediation` or similar method)
 
 **Add after remediation:**
-```typescript
+```text
 // After all fixes are applied...
 logger.info('[Remediation] All fixes applied, starting full re-audit...');
 
@@ -144,7 +144,7 @@ await this.storeRemediationResults(jobId, reauditResult);
 **File:** `src/controllers/remediation.controller.ts` (or similar)
 
 **Add new endpoint:**
-```typescript
+```text
 /**
  * Get remediation results with full audit details
  */
@@ -176,7 +176,7 @@ async getRemediationResults(req: Request, res: Response) {
 
 **File:** `src/types/remediation.types.ts` (create if doesn't exist)
 
-```typescript
+```text
 export interface AuditCoverage {
   totalFiles: number;
   filesScanned: number;
@@ -243,7 +243,7 @@ export interface RemediationResult {
 
 ### Terminal 2 (Frontend)
 Open new Claude Code session and paste:
-```
+```text
 Read docs/epub-remediation-bug/FRONTEND-IMPLEMENTATION-PROMPT.md
 Then implement all frontend tasks (#3, #4, #5, #6)
 ```

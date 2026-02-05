@@ -124,7 +124,7 @@ docs/epub-remediation-bug/
 - **Priority:** Medium (code is functionally correct)
 
 **Suggested Tests:**
-```
+```text
 describe('EpubAuditService.calculateCoverage', () => {
   it('should return 100% for valid EPUB')
   it('should return defaults on error')
@@ -143,7 +143,7 @@ describe('EPUBModifierService.validateAndFixLandmarks', () => {
 ## 📊 API Response Format
 
 ### Before
-```json
+```text
 {
   "success": true,
   "data": { ... },
@@ -213,7 +213,7 @@ See `CODE-REVIEW.md` for complete details.
 ## 🎯 Success Metrics
 
 ### Before Implementation
-```
+```text
 Remediation Accuracy: ~80%  ❌
 Issue Detection Rate: ~6%   ❌ (5/81 files)
 False Completion Rate: ~20% ❌
@@ -222,7 +222,7 @@ User Trust: Declining       ❌
 ```
 
 ### After Implementation
-```
+```text
 Remediation Accuracy: >95%  ✅
 Issue Detection Rate: 100%  ✅ (81/81 files)
 False Completion Rate: <1%  ✅
@@ -287,7 +287,7 @@ User Trust: High            ✅
 - [ ] Unit tests (recommended for follow-up)
 
 ### Merge Process
-```bash
+```text
 # 1. Ensure branch is up to date
 git fetch origin
 git rebase origin/main
@@ -350,7 +350,7 @@ gh pr create --title "Fix EPUB remediation validation gap" \
 - **Verify:** Re-audit catches remaining issues
 
 ### Monitoring
-```bash
+```text
 # Watch for landmark validation in logs
 tail -f logs/app.log | grep "Landmark Validation"
 

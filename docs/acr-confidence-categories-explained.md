@@ -40,7 +40,7 @@ The Ninja ACR system organizes WCAG 2.1 criteria into four primary categories:
 
 ### Visual Hierarchy
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │ ⚠️ NEEDS REVIEW (43 criteria)                   │
 │   🟢 High Confidence (16 items)    80-98%       │
@@ -351,7 +351,7 @@ Some criteria show **both** "N/A" badge **and** appear in "Needs Review" with me
 
 ### Interpretation Logic
 
-```
+```text
 IF criterion.isNotApplicable THEN
   status = "NOT_APPLICABLE"
   confidence = N/A
@@ -389,7 +389,7 @@ END
 
 Based on typical ACR output:
 
-```
+```text
 Total WCAG 2.1 Level A/AA Criteria: 50
 
 ⚠️ NEEDS REVIEW: 43 criteria
@@ -403,14 +403,14 @@ Total WCAG 2.1 Level A/AA Criteria: 50
 ### Conformance Status Calculation
 
 **Automated Conformance:**
-```
+```text
 Applicable Criteria = 50 - 6 (N/A) = 44
 Automated Pass = 43 (Needs Review) + 1 (Passed) = 44
 Automated Conformance = 44/44 = 100% ✅
 ```
 
 **True Conformance:**
-```
+```text
 Fully Verified = 1 (Passed)
 Automated Only = 43 (Needs Review)
 Manual Required = 7 (0% confidence)

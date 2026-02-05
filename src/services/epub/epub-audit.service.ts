@@ -6,6 +6,7 @@ import * as os from 'os';
 import AdmZip from 'adm-zip';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import config from '../../config';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
@@ -418,8 +419,10 @@ class EpubAuditService {
     logger.info(`Running EPUBCheck on: ${epubPath}`);
     logger.info(`EPUBCheck JAR path: ${this.epubCheckPath}`);
 
+    const javaCommand = config.javaPath || 'java';
+
     try {
-      await execFileAsync('java', ['-version']);
+      await execFileAsync(javaCommand, ['-version']);
       logger.info('Java is available');
     } catch (javaError) {
       logger.warn(`Java not available, skipping EPUBCheck: ${javaError instanceof Error ? javaError.message : 'unknown error'}`);
@@ -433,9 +436,9 @@ class EpubAuditService {
     }
 
     try {
-      logger.info(`Executing: java -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
+      logger.info(`Executing: ${javaCommand} -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
       await execFileAsync(
-        'java',
+        javaCommand,
         ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
         { timeout: 60000 }
       );
@@ -709,10 +712,14 @@ class EpubAuditService {
 
       const fileCategories = this.categorizeFiles(contentFiles);
 
+      const totalFiles = contentFiles.length;
+      const filesScanned = contentFiles.length; // EPUBCheck/ACE scan all files
+      const percentage = totalFiles === 0 ? 0 : Math.round((filesScanned / totalFiles) * 100);
+
       return {
-        totalFiles: contentFiles.length,
-        filesScanned: contentFiles.length, // EPUBCheck/ACE scan all files
-        percentage: 100,
+        totalFiles,
+        filesScanned,
+        percentage,
         fileCategories
       };
     } catch (error) {
