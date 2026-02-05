@@ -2208,7 +2208,7 @@ body, p, span, div, li, td, th, a, label {
    * @param buffer - EPUB buffer
    * @returns Result with any landmark fixes applied
    */
-  async validateAndFixLandmarks(buffer: Buffer): Promise<ModificationResult> {
+  async validateAndFixLandmarks(buffer: Buffer): Promise<LandmarkValidationResult> {
     try {
       logger.info('[Landmark Validation] Starting post-modification landmark validation...');
 
@@ -2275,8 +2275,8 @@ body, p, span, div, li, td, th, a, label {
                 zip.file(suitableFile, content);
 
                 changes.push({
+                  type: 'replace',
                   filePath: suitableFile,
-                  modificationType: 'add_aria_landmarks',
                   description: `Added role="main" to first section`,
                   oldContent: undefined,
                   content: undefined
@@ -2291,8 +2291,8 @@ body, p, span, div, li, td, th, a, label {
                 zip.file(suitableFile, content);
 
                 changes.push({
+                  type: 'replace',
                   filePath: suitableFile,
-                  modificationType: 'add_aria_landmarks',
                   description: 'Wrapped content with <main role="main">',
                   oldContent: undefined,
                   content: undefined
@@ -2345,8 +2345,8 @@ body, p, span, div, li, td, th, a, label {
                 zip.file(fileName, content);
 
                 changes.push({
+                  type: 'replace',
                   filePath: fileName,
-                  modificationType: 'add_aria_landmarks',
                   description: `Added role="${landmarkRole}" to ensure landmark presence`,
                   oldContent: undefined,
                   content: undefined
@@ -2398,6 +2398,13 @@ interface FileChange {
   description?: string;
 }
 
-export type { FileChange, ModificationResult };
+interface LandmarkValidationResult {
+  success: boolean;
+  buffer?: Buffer;
+  changes: FileChange[];
+  error?: string;
+}
+
+export type { FileChange, ModificationResult, LandmarkValidationResult };
 
 export const epubModifier = new EPUBModifierService();
