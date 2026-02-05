@@ -238,13 +238,19 @@ Return ONLY valid JSON array, no other text.`;
     if (filters?.severity) where.severity = filters.severity;
     if (filters?.violationType) where.violationType = filters.violationType;
 
-    return prisma.citationValidation.findMany({
+    const validations = await prisma.citationValidation.findMany({
       where,
       include: {
         citation: true
       },
       orderBy: { createdAt: 'desc' }
     });
+
+    return validations.map(v => ({
+      ...v,
+      citationText: v.citation?.rawText || '',
+      correctedCitation: v.suggestedFix || v.originalText || ''
+    }));
   }
 
   getAvailableStyles() {
