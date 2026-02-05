@@ -2,8 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
 import { AuditIssueInput, wcagIssueMapperService, RULE_TO_CRITERIA_MAP } from '../services/acr/wcag-issue-mapper.service';
+import { contentDetectionService, ApplicabilitySuggestion } from '../services/acr/content-detection.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Helper to check if a rule maps to any WCAG criterion
 function mapsToWcagCriteria(ruleId: string): boolean {
@@ -504,6 +507,59 @@ export class ConfidenceController {
         auditIssues
       );
 
+      // Get N/A suggestions from content detection if EPUB file is available
+      let naSuggestions: ApplicabilitySuggestion[] = [];
+      const jobInput = job.input as { fileName?: string; sourceJobId?: string } | null;
+      const epubStoragePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+      
+      // For ACR_WORKFLOW jobs, get fileName from source job's output
+      let epubFileName = jobInput?.fileName;
+      let epubJobId = sourceJobId || jobId;
+      
+      if (!epubFileName && sourceJobId) {
+        // Fetch source job to get fileName
+        const sourceJobForEpub = await prisma.job.findUnique({
+          where: { id: sourceJobId },
+          select: { output: true }
+        });
+        if (sourceJobForEpub) {
+          const sourceOutput = sourceJobForEpub.output as { fileName?: string } | null;
+          epubFileName = sourceOutput?.fileName;
+          epubJobId = sourceJobId;
+          logger.info(`[Confidence] ACR_WORKFLOW: Using fileName from source job: ${epubFileName}`);
+        }
+      }
+      
+      const epubFilePath = epubFileName 
+        ? path.join(epubStoragePath, epubJobId, path.basename(epubFileName))
+        : null;
+      
+      if (epubFilePath && fs.existsSync(epubFilePath)) {
+        try {
+          logger.info(`[Confidence] Running content detection on: ${epubFilePath}`);
+          const epubBuffer = fs.readFileSync(epubFilePath);
+          naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+          logger.info(`[Confidence] Content detection generated ${naSuggestions.length} N/A suggestions`);
+        } catch (error) {
+          logger.warn(`[Confidence] Content detection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      } else {
+        logger.debug(`[Confidence] No EPUB file found for content detection at: ${epubFilePath}`);
+      }
+
+      // Helper to match N/A suggestion to criterion
+      const findNaSuggestion = (criterionId: string): ApplicabilitySuggestion | undefined => {
+        return naSuggestions.find(s => {
+          if (s.criterionId === criterionId) return true;
+          // Match group patterns (e.g., "1.2.x" matches "1.2.1", "1.2.2", etc.)
+          if (s.criterionId.endsWith('.x')) {
+            const prefix = s.criterionId.slice(0, -2);
+            return criterionId.startsWith(prefix + '.');
+          }
+          return false;
+        });
+      };
+
       const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
       logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
       criteriaWithIssues.forEach(c => {
@@ -575,25 +631,47 @@ export class ConfidenceController {
           };
         });
         
-        // Recalculate confidence based on fix ratio (per spec) - deterministic formula
-        // Note: criterion.confidenceScore may be 0-1 (float) or 0-100 (percentage)
-        // Normalize to 0-100 scale for consistent output
-        const baseConfidence = criterion.confidenceScore <= 1 
-          ? criterion.confidenceScore * 100 
-          : criterion.confidenceScore;
-        let recalculatedConfidence = baseConfidence;
+        // Use automationCapability as base confidence if available, otherwise use confidenceScore
+        // automationCapability reflects the criterion's actual automation level (0-100)
+        const automationCapability = criterion.automationCapability ?? (
+          criterion.confidenceScore <= 1 
+            ? criterion.confidenceScore * 100 
+            : criterion.confidenceScore
+        );
+        
+        // Manual-required criteria (automationCapability = 0) always stay at 0% confidence
+        if (automationCapability === 0) {
+          // Don't recalculate - keep at 0 with not_applicable status
+          return {
+            ...criterion,
+            confidenceScore: 0,
+            status: 'not_applicable',
+            needsVerification: true,
+            requiresManualVerification: true,
+            automationCapability: 0,
+            remediationSummary: fixedCount > 0 ? {
+              totalIssues,
+              fixedIssues: fixedCount,
+              remainingIssues: pendingCount,
+              fixedAt: latestFixedAt
+            } : undefined,
+            remediatedIssues: mappedRemediatedIssues,
+            remediatedCount: fixedCount,
+            naSuggestion: undefined
+          };
+        }
+        
+        let recalculatedConfidence = automationCapability;
         
         if (totalIssues > 0 && fixedCount > 0) {
           const fixRatio = fixedCount / totalIssues;
           if (fixRatio === 1.0) {
-            // All issues fixed - high confidence: 80 + (baseFactor * 12), capped at 92
-            // baseFactor = min(1, baseConfidence / 100) provides deterministic variation
-            // Result range: 80-92 (when baseFactor is 0-1)
-            const baseFactor = Math.min(1, baseConfidence / 100);
-            recalculatedConfidence = Math.min(92, 80 + (baseFactor * 12));
+            // All issues fixed - confidence capped by automation capability
+            recalculatedConfidence = Math.min(95, automationCapability);
           } else {
-            // Partial fix: 40 + (fixRatio * 40)
-            recalculatedConfidence = Math.round(40 + (fixRatio * 40));
+            // Partial fix: scale based on fix ratio, capped by automation capability
+            const partialConfidence = Math.round(40 + (fixRatio * 40));
+            recalculatedConfidence = Math.min(partialConfidence, automationCapability);
           }
         }
         
@@ -605,11 +683,16 @@ export class ConfidenceController {
         const hasRemainingIssues = pendingCount > 0;
         const needsVerification = hasRemainingIssues || updatedStatus === 'needs_review';
         
+        // Get N/A suggestion for this criterion
+        const naSuggestion = findNaSuggestion(criterion.criterionId);
+        
         return {
           ...criterion,
           confidenceScore: Math.round(recalculatedConfidence),
           status: updatedStatus,
           needsVerification,
+          requiresManualVerification: criterion.requiresManualVerification ?? false,
+          automationCapability,
           remediationSummary: fixedCount > 0 ? {
             totalIssues,
             fixedIssues: fixedCount,
@@ -617,7 +700,14 @@ export class ConfidenceController {
             fixedAt: latestFixedAt
           } : undefined,
           remediatedIssues: mappedRemediatedIssues,
-          remediatedCount: fixedCount
+          remediatedCount: fixedCount,
+          naSuggestion: naSuggestion ? {
+            suggestedStatus: naSuggestion.suggestedStatus,
+            confidence: naSuggestion.confidence,
+            rationale: naSuggestion.rationale,
+            detectionChecks: naSuggestion.detectionChecks,
+            edgeCases: naSuggestion.edgeCases
+          } : undefined
         };
       });
       
@@ -660,6 +750,11 @@ export class ConfidenceController {
 
       logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
       logger.info(`[Confidence] Other Issues: count=${formattedOtherIssues.count}, pending=${formattedOtherIssues.pendingCount}, fixed=${formattedOtherIssues.fixedCount}`);
+      
+      // Prevent caching to ensure fresh naSuggestion data
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
       
       res.json({
         success: true,

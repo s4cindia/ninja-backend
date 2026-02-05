@@ -9,6 +9,7 @@ import {
 } from './attribution.service';
 import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
+import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -223,7 +224,9 @@ class AcrGeneratorService {
           remarks = `What works: ${remarks} Limitations: Some elements require manual remediation.`;
         }
       } else if (!remarks) {
-        if (verification?.status === 'VERIFIED_PASS') {
+        if (verification?.status === 'NOT_APPLICABLE') {
+          remarks = `This criterion does not apply to the evaluated content. ${verification.notes || 'No relevant content detected.'}`;
+        } else if (verification?.status === 'VERIFIED_PASS') {
           remarks = `Criterion evaluation confirmed through human verification.`;
         } else if (verification?.status === 'VERIFIED_FAIL') {
           remarks = `Reason: Human verification identified non-compliance issues requiring remediation.`;
@@ -547,8 +550,33 @@ class AcrGeneratorService {
 
     const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
       const relatedIssues = issueMapping.get(criterion.id) || [];
+      
+      // Get automation capability for this criterion
+      const automationCapability = ConfidenceAnalyzerService.getCriterionConfidence(criterion.id);
+      const requiresManualVerification = ConfidenceAnalyzerService.requiresManualVerification(criterion.id);
+      
+      // Manual-required criteria get 0% confidence and not_applicable status
+      if (automationCapability === 0) {
+        return {
+          criterionId: criterion.id,
+          name: criterion.name,
+          level: criterion.level,
+          status: 'not_applicable' as const,
+          confidenceScore: 0,
+          remarks: 'This criterion requires manual human verification. Automated tools cannot fully evaluate semantic meaning, keyboard workflows, or content quality.',
+          relatedIssues,
+          issueCount: relatedIssues.length,
+          hasIssues: relatedIssues.length > 0,
+          requiresManualVerification: true,
+          automationCapability: 0
+        };
+      }
+      
       const status = this.determineStatus(relatedIssues);
-      const confidenceScore = this.calculateConfidence(relatedIssues);
+      // Use automation capability as confidence base, capped appropriately
+      // baseConfidence is 0-1, automationCapability is 0-100, normalize to 0-100
+      const baseConfidence = this.calculateConfidence(relatedIssues);
+      const confidenceScore = Math.min(baseConfidence * 100, automationCapability);
       const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
       const hasIssues = relatedIssues.length > 0;
 
@@ -561,7 +589,9 @@ class AcrGeneratorService {
         remarks,
         relatedIssues,
         issueCount: relatedIssues.length,
-        hasIssues
+        hasIssues,
+        requiresManualVerification,
+        automationCapability
       };
     });
 
@@ -633,6 +663,8 @@ export interface CriterionConfidenceWithIssues {
   relatedIssues?: IssueMapping[];
   issueCount?: number;
   hasIssues: boolean;
+  requiresManualVerification?: boolean;
+  automationCapability?: number;
 }
 
 export const acrGeneratorService = new AcrGeneratorService();

@@ -25,6 +25,11 @@ interface ContentAnalysis {
   hasInteractiveElements: boolean;
   hasNavigationBlocks: boolean;
   hasDataTables: boolean;
+  hasJavaScript: boolean;
+  hasExternalUrls: boolean;
+  externalUrlCount: number;
+  hasAudioFiles: boolean;
+  hasVideoFiles: boolean;
   documentType: string;
   fileCount: number;
   scannedFiles: number;
@@ -74,6 +79,13 @@ class ContentDetectionService {
     const filesToAnalyze = htmlFiles.slice(0, 50);
     const scanCoverage = htmlFiles.length > 0 ? filesToAnalyze.length / htmlFiles.length : 1;
 
+    // Check manifest for media files
+    const allFiles = Object.keys(zip.files);
+    const audioExtensions = ['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.flac'];
+    const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
+    const hasAudioFiles = allFiles.some(f => audioExtensions.some(ext => f.toLowerCase().endsWith(ext)));
+    const hasVideoFiles = allFiles.some(f => videoExtensions.some(ext => f.toLowerCase().endsWith(ext)));
+
     const analysis: ContentAnalysis = {
       hasAudio: false,
       hasVideo: false,
@@ -82,6 +94,11 @@ class ContentDetectionService {
       hasInteractiveElements: false,
       hasNavigationBlocks: false,
       hasDataTables: false,
+      hasJavaScript: false,
+      hasExternalUrls: false,
+      externalUrlCount: 0,
+      hasAudioFiles,
+      hasVideoFiles,
       documentType: 'text',
       fileCount: htmlFiles.length,
       scannedFiles: filesToAnalyze.length,
@@ -89,6 +106,7 @@ class ContentDetectionService {
     };
 
     logger.debug(`[Content Detection] Analyzing ${filesToAnalyze.length} of ${htmlFiles.length} HTML files (${Math.round(scanCoverage * 100)}% coverage)`);
+    logger.debug(`[Content Detection] Manifest check: audioFiles=${hasAudioFiles}, videoFiles=${hasVideoFiles}`);
 
     for (const fileName of filesToAnalyze) {
       try {
@@ -142,6 +160,20 @@ class ContentDetectionService {
             analysis.hasDataTables = true;
           }
         }
+
+        // Check for JavaScript
+        if ($('script').length > 0) {
+          analysis.hasJavaScript = true;
+        }
+
+        // Check for external URLs (potential embedded media) - comprehensive element check
+        $('a[href], iframe[src], embed[src], object[data], audio[src], video[src], source[src], link[href], script[src], img[src]').each((_, elem) => {
+          const url = $(elem).attr('href') || $(elem).attr('src') || $(elem).attr('data') || '';
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            analysis.hasExternalUrls = true;
+            analysis.externalUrlCount++;
+          }
+        });
       } catch (error) {
         logger.warn(`[Content Detection] Failed to parse file ${fileName}, skipping`, error instanceof Error ? error : undefined);
         continue;
@@ -202,50 +234,86 @@ class ContentDetectionService {
     return rationale;
   }
 
+  // Calculate confidence using spec formula (additive/subtractive factors)
+  private calculateSpecConfidence(analysis: ContentAnalysis, hasRelevantElements: boolean, hasRelevantFiles: boolean): number {
+    // Base confidence = 50%
+    let confidence = 50;
+    
+    // Positive factors (add)
+    if (!hasRelevantFiles) confidence += 15;  // No relevant file types in manifest
+    if (!hasRelevantElements) confidence += 15;  // No relevant HTML elements
+    if (analysis.documentType === 'text') confidence += 10;  // Text-only document
+    if (!analysis.hasExternalUrls) confidence += 10;  // No external media references
+    
+    // Negative factors (subtract)
+    if (analysis.hasExternalUrls) confidence -= 20;  // External URLs found
+    if (analysis.hasJavaScript) confidence -= 15;  // JavaScript present
+    if (analysis.hasIframes) confidence -= 10;  // Iframe elements present
+    
+    // Maximum 95% (always leave room for edge cases)
+    return Math.min(95, Math.max(0, confidence));
+  }
+
   // Analyze multimedia criteria (1.2.1 - 1.2.5)
   private analyzeMultimediaCriteria(analysis: ContentAnalysis): ApplicabilitySuggestion {
     const detectionChecks: DetectionCheck[] = [
       {
-        check: 'No <audio> tags found',
-        result: analysis.hasAudio ? 'fail' : 'pass'
+        check: 'Audio file presence',
+        result: analysis.hasAudioFiles ? 'fail' : 'pass',
+        details: analysis.hasAudioFiles ? 'Audio files found in manifest' : 'No .mp3, .wav, .ogg, or .aac files found in manifest'
       },
       {
-        check: 'No <video> tags found',
-        result: analysis.hasVideo ? 'fail' : 'pass'
+        check: 'Video file presence',
+        result: analysis.hasVideoFiles ? 'fail' : 'pass',
+        details: analysis.hasVideoFiles ? 'Video files found in manifest' : 'No .mp4, .webm, .mov, or .avi files found in manifest'
       },
       {
-        check: 'No <iframe> tags found',
-        result: analysis.hasIframes ? 'fail' : 'pass',
-        details: analysis.hasIframes ? 'Could be embedded media' : undefined
+        check: 'Embedded media elements',
+        result: (analysis.hasAudio || analysis.hasVideo) ? 'fail' : 'pass',
+        details: (analysis.hasAudio || analysis.hasVideo) ? '<audio> or <video> HTML elements detected' : 'No <audio> or <video> HTML elements detected'
+      },
+      {
+        check: 'External media references',
+        result: analysis.hasExternalUrls ? 'warning' : 'pass',
+        details: analysis.hasExternalUrls ? `Found ${analysis.externalUrlCount} external URLs - manual verification recommended` : 'No external media references found'
       }
     ];
 
-    const hasMedia = analysis.hasAudio || analysis.hasVideo;
-    const hasIframes = analysis.hasIframes;
+    const hasMediaElements = analysis.hasAudio || analysis.hasVideo;
+    const hasMediaFiles = analysis.hasAudioFiles || analysis.hasVideoFiles;
+    const hasMedia = hasMediaElements || hasMediaFiles;
 
     let confidence: number;
     let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
     let rationale: string;
     const edgeCases: string[] = [];
 
-    if (!hasMedia && !hasIframes) {
-      // High confidence N/A
-      const baseConfidence = 98;
-      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
+    if (!hasMedia && !analysis.hasIframes) {
+      // Calculate confidence using spec formula
+      confidence = this.calculateSpecConfidence(analysis, hasMediaElements, hasMediaFiles);
+      confidence = this.adjustConfidenceForCoverage(confidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      const baseRationale = `Scan found no multimedia content in ${analysis.scannedFiles} EPUB files. No <audio>, <video>, or <iframe> tags detected. Multimedia criteria (1.2.1-1.2.5) do not apply to this text-only document.`;
+      const baseRationale = `No audio-only or video-only prerecorded content was detected in this EPUB. The publication contains only text and static images.`;
       rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else if (hasIframes && !hasMedia) {
+      
+      // Add edge cases based on analysis
+      if (analysis.hasJavaScript) {
+        edgeCases.push('JavaScript-loaded media content cannot be analyzed statically');
+      }
+      if (analysis.hasExternalUrls) {
+        edgeCases.push('External embedded media players may not be detected');
+      }
+    } else if (analysis.hasIframes && !hasMedia) {
       // Medium confidence - iframes could be media
-      const baseConfidence = 60;
-      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
+      confidence = this.calculateSpecConfidence(analysis, hasMediaElements, hasMediaFiles);
+      confidence = this.adjustConfidenceForCoverage(confidence, analysis.scanCoverage);
       suggestedStatus = 'uncertain';
       const baseRationale = 'Found <iframe> elements which could contain embedded audio/video. Manual inspection required to determine if multimedia criteria apply.';
       rationale = this.addPartialScanWarning(baseRationale, analysis);
       edgeCases.push('Iframes detected - may contain external media');
     } else {
       // Media detected - definitely applicable
-      confidence = 98;
+      confidence = 95;
       suggestedStatus = 'applicable';
       rationale = 'Audio and/or video content detected. Multimedia criteria (1.2.1-1.2.5) are applicable.';
     }

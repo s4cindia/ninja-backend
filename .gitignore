@@ -137,3 +137,7 @@ prompts/
 # Local temporary files
 .backup/
 IMPLEMENTATION_SUMMARY.md
+
+# EPUB storage (persistent)
+data/epub-storage/*
+!data/epub-storage/.gitkeep
