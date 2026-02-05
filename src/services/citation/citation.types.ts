@@ -31,6 +31,7 @@ export interface DetectedCitation {
 export interface DetectionResult {
   documentId: string;
   jobId: string;
+  filename?: string;
   citations: DetectedCitation[];
   totalCount: number;
   byType: Record<string, number>;

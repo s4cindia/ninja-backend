@@ -124,7 +124,7 @@ export class CitationDetectionService {
       });
 
       // 9. Build and return result
-      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime);
+      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime, fileName);
 
       logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
       return result;
@@ -205,7 +205,7 @@ export class CitationDetectionService {
       });
 
       // 8. Build and return result
-      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime);
+      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime, fileName);
 
       logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
       return result;
@@ -242,7 +242,7 @@ export class CitationDetectionService {
     }
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(documentId, doc.jobId, citations, Date.now());
+    return this.buildDetectionResult(documentId, doc.jobId, citations, Date.now(), doc.originalName || doc.fileName);
   }
 
   /**
@@ -269,7 +269,7 @@ export class CitationDetectionService {
     if (!doc) return null;
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(doc.id, jobId, citations, Date.now());
+    return this.buildDetectionResult(doc.id, jobId, citations, Date.now(), doc.originalName || doc.fileName);
   }
 
   /**
@@ -317,7 +317,7 @@ export class CitationDetectionService {
     if (!doc) return null;
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(doc.id, jobId, citations, Date.now());
+    return this.buildDetectionResult(doc.id, jobId, citations, Date.now(), doc.originalName || doc.fileName);
   }
 
   /**
@@ -395,7 +395,7 @@ export class CitationDetectionService {
       parseConfidence: null as number | null, // Newly re-detected, no components yet
     }));
 
-    return this.buildDetectionResult(documentId, doc.jobId, mappedCitations, startTime);
+    return this.buildDetectionResult(documentId, doc.jobId, mappedCitations, startTime, doc.originalName || doc.fileName);
   }
 
   /**
@@ -544,7 +544,8 @@ export class CitationDetectionService {
     documentId: string,
     jobId: string,
     citations: DetectedCitation[],
-    startTime: number
+    startTime: number,
+    filename?: string
   ): DetectionResult {
     const byType: Record<string, number> = {};
     const byStyle: Record<string, number> = {};
@@ -561,6 +562,7 @@ export class CitationDetectionService {
     return {
       documentId,
       jobId,
+      filename,
       citations,
       totalCount: citations.length,
       byType,
