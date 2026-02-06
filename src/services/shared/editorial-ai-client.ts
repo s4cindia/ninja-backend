@@ -82,7 +82,7 @@ export class EditorialAiClient {
    * Examines patterns in the text to determine if the document uses
    * numeric [1], superscript, or author-date citation styles.
    */
-  private detectCitationStyleFromText(text: string): {
+  detectCitationStyleFromText(text: string): {
     style: 'numeric-bracket' | 'numeric-superscript' | 'author-date' | 'mixed' | 'unknown';
     numericCount: number;
     authorDateCount: number;
@@ -127,7 +127,7 @@ export class EditorialAiClient {
    * Extract numeric bracket citations deterministically from text.
    * Finds all [N] patterns that are actual citations (not equation/figure refs).
    */
-  private extractNumericCitations(text: string): ExtractedCitation[] {
+  extractNumericCitations(text: string): ExtractedCitation[] {
     const results: ExtractedCitation[] = [];
     const seen = new Set<string>();
 
@@ -182,7 +182,7 @@ export class EditorialAiClient {
   /**
    * Determine section context for a given offset in the text.
    */
-  private determineSectionContext(text: string, offset: number): ExtractedCitation['sectionContext'] {
+  determineSectionContext(text: string, offset: number): ExtractedCitation['sectionContext'] {
     const textBefore = text.slice(0, offset).toLowerCase();
 
     const refPatterns = [

@@ -127,7 +127,7 @@ export class EditorialOverviewController {
             : null,
           jobs: jobLinks,
           links: {
-            citations: `/api/v1/citation/document/${documentId}`,
+            stylesheetAnalysis: `/api/v1/citation/document/${documentId}`,
             citationsWithComponents: `/api/v1/citation/document/${documentId}/with-components`,
             stats: `/api/v1/citation/document/${documentId}/stats`,
             validate: `/api/v1/citation/document/${documentId}/validate`,

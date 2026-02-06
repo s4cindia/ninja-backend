@@ -76,6 +76,66 @@ export interface DetectionInput {
 }
 
 // ============================================
+// STYLESHEET DETECTION TYPES
+// ============================================
+
+export interface StylesheetAnalysisResult {
+  documentId: string;
+  jobId: string;
+  filename?: string;
+  processingTimeMs: number;
+  detectedStyle: {
+    styleCode: string;
+    styleName: string;
+    confidence: number;
+    citationFormat: 'numeric-bracket' | 'author-date' | 'footnote' | 'mixed' | 'unknown';
+    evidence: string[];
+  };
+  sequenceAnalysis: SequenceAnalysis;
+  crossReference: CrossReferenceAnalysis;
+  referenceList: {
+    totalEntries: number;
+    entries: ReferenceListSummaryEntry[];
+  };
+  citations: {
+    totalCount: number;
+    inBody: number;
+    inReferences: number;
+    items: DetectedCitation[];
+  };
+  conversionOptions: string[];
+  validation?: ValidationSummary;
+}
+
+export interface SequenceAnalysis {
+  isSequential: boolean;
+  totalNumbers: number;
+  expectedRange: { start: number; end: number } | null;
+  missingNumbers: number[];
+  duplicateNumbers: number[];
+  outOfOrderNumbers: number[];
+  gaps: Array<{ after: number; before: number }>;
+  summary: string;
+}
+
+export interface CrossReferenceAnalysis {
+  totalBodyCitations: number;
+  totalReferenceEntries: number;
+  matched: number;
+  citationsWithoutReference: Array<{ number: number | null; text: string; citationId: string }>;
+  referencesWithoutCitation: Array<{ number: number | null; text: string; entryIndex: number }>;
+  summary: string;
+}
+
+export interface ReferenceListSummaryEntry {
+  index: number;
+  number: number | null;
+  text: string;
+  matchedCitationIds: string[];
+  hasMatch: boolean;
+}
+
+// ============================================
 // PARSING TYPES (US-4.2)
 // ============================================
 
