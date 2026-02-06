@@ -1076,6 +1076,7 @@ class RemediationService {
       for (const criterionId of wcagCriteriaSet) {
         await prisma.acrCriterionReview.create({
           data: {
+            id: nanoid(),
             acrJobId: acrJobRecord.id,
             criterionId,
             criterionNumber: criterionId,
