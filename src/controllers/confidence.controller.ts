@@ -251,34 +251,79 @@ export class ConfidenceController {
         auditIssues
       );
 
-      const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
+      // Extract fixed issues from autoRemediation.modifications
+      const modifications = (auditOutput?.autoRemediation as Record<string, unknown>)?.modifications as Array<{
+        issueCode?: string;
+        success?: boolean;
+        method?: string;
+      }> | undefined;
+
+      const fixedModifications = modifications?.filter(m => m.success !== false) || [];
+      logger.debug(`[Confidence] Found ${fixedModifications.length} fixed modifications from autoRemediation`);
+
+      // Add fixed/remaining counts to each criterion
+      const enhancedAnalysis = confidenceAnalysis.map(criterion => {
+        const relatedIssues = criterion.relatedIssues || [];
+
+        // Count which issues were fixed
+        const fixedIssues = relatedIssues.filter(issue => {
+          const issueCode = issue.ruleId || issue.id || 'unknown';
+          return fixedModifications.some(mod =>
+            mod.issueCode === issueCode ||
+            (mod.issueCode && issueCode.includes(mod.issueCode))
+          );
+        });
+
+        const remainingIssues = relatedIssues.filter(issue => {
+          const issueCode = issue.ruleId || issue.id || 'unknown';
+          return !fixedModifications.some(mod =>
+            mod.issueCode === issueCode ||
+            (mod.issueCode && issueCode.includes(mod.issueCode))
+          );
+        });
+
+        const fixedCount = fixedIssues.length;
+        const remainingCount = remainingIssues.length;
+
+        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${fixedCount} fixed, ${remainingCount} remaining`);
+
+        return {
+          ...criterion,
+          fixedCount,
+          remainingCount,
+          fixedIssues: fixedCount > 0 ? fixedIssues : undefined,
+          issueCount: remainingCount, // Update to only show remaining issues
+        };
+      });
+
+      const criteriaWithIssues = enhancedAnalysis.filter(c => (c.issueCount || 0) > 0 || (c.fixedCount || 0) > 0);
       logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
       criteriaWithIssues.forEach(c => {
-        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
+        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.fixedCount || 0} fixed, ${c.issueCount} remaining, status=${c.status}, confidence=${c.confidenceScore}`);
       });
 
       const summary = {
-        totalCriteria: confidenceAnalysis.length,
-        passingCriteria: confidenceAnalysis.filter(c => c.status === 'pass').length,
-        failingCriteria: confidenceAnalysis.filter(c => c.status === 'fail').length,
-        needsReviewCriteria: confidenceAnalysis.filter(c => c.status === 'needs_review').length,
-        notApplicableCriteria: confidenceAnalysis.filter(c => c.status === 'not_applicable').length,
+        totalCriteria: enhancedAnalysis.length,
+        passingCriteria: enhancedAnalysis.filter(c => c.status === 'pass').length,
+        failingCriteria: enhancedAnalysis.filter(c => c.status === 'fail').length,
+        needsReviewCriteria: enhancedAnalysis.filter(c => c.status === 'needs_review').length,
+        notApplicableCriteria: enhancedAnalysis.filter(c => c.status === 'not_applicable').length,
         criteriaWithIssuesCount: criteriaWithIssues.length,
         totalIssues: auditIssues.length,
-        averageConfidence: confidenceAnalysis.length > 0
-          ? Math.round((confidenceAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / confidenceAnalysis.length) * 100) / 100
+        averageConfidence: enhancedAnalysis.length > 0
+          ? Math.round((enhancedAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / enhancedAnalysis.length) * 100) / 100
           : 0
       };
 
       logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
-      
+
       res.json({
         success: true,
         data: {
           jobId,
           edition: editionCode,
           summary,
-          criteria: confidenceAnalysis
+          criteria: enhancedAnalysis
         }
       });
     } catch (error) {
