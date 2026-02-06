@@ -1052,6 +1052,7 @@ class RemediationService {
     try {
       const acrJobRecord = await prisma.acrJob.create({
         data: {
+          id: nanoid(),
           jobId: acrJob.id,
           tenantId: originalJob.tenantId,
           userId: originalJob.userId,
