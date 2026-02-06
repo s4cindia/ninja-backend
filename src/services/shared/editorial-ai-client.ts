@@ -490,17 +490,23 @@ Respond with JSON only:`;
     ).join('\n');
 
     let textForContext: string;
-    if (fullText.length <= 12000) {
+    const maxContext = 24000;
+    if (fullText.length <= maxContext) {
       textForContext = fullText;
     } else {
       const refSectionMatch = fullText.match(/\n\s*(REFERENCES|BIBLIOGRAPHY|WORKS?\s+CITED|LITERATURE\s+CITED)\s*\n/i);
       if (refSectionMatch && refSectionMatch.index !== undefined) {
         const refStart = refSectionMatch.index;
-        const bodyPortion = fullText.slice(0, Math.min(8000, refStart));
-        const refPortion = fullText.slice(refStart, refStart + 4000);
+        const refContent = fullText.slice(refStart);
+        const refAllocation = Math.min(refContent.length, Math.floor(maxContext * 0.75));
+        const bodyAllocation = maxContext - refAllocation;
+        const bodyPortion = fullText.slice(0, Math.min(bodyAllocation, refStart));
+        const refPortion = refContent.slice(0, refAllocation);
+        logger.info(`[Editorial AI] Long document (${fullText.length} chars): using ${bodyPortion.length} body + ${refPortion.length} refs for AI context`);
         textForContext = bodyPortion + '\n\n...[body truncated]...\n\n' + refPortion;
       } else {
-        textForContext = fullText.slice(0, 6000) + '\n\n...[middle truncated]...\n\n' + fullText.slice(-6000);
+        const halfContext = Math.floor(maxContext / 2);
+        textForContext = fullText.slice(0, halfContext) + '\n\n...[middle truncated]...\n\n' + fullText.slice(-halfContext);
       }
     }
 
