@@ -221,6 +221,35 @@ export class EditorialOverviewController {
       next(error);
     }
   }
+  async getDocumentText(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        select: { fullText: true },
+      });
+
+      if (!document) {
+        res.status(404).json({ success: false, error: 'Document not found' });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: { fullText: document.fullText || null },
+      });
+    } catch (error) {
+      logger.error('[Editorial Overview] getDocumentText failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
 }
 
 export const editorialOverviewController = new EditorialOverviewController();

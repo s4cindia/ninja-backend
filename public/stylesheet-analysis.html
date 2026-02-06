@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ninja — Citation Stylesheet Analysis</title>
+  <link rel="stylesheet" href="/css/stylesheet-analysis.css">
+</head>
+<body>
+
+  <div id="login-screen" style="display:flex;align-items:center;justify-content:center;height:100vh;">
+    <form id="login-form" style="background:var(--surface);padding:32px;border-radius:12px;border:1px solid var(--border);width:360px;">
+      <h2 style="margin-bottom:20px;font-size:18px;">Sign In to <span style="color:var(--accent)">Ninja</span></h2>
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">Email</label>
+        <input id="login-email" type="email" required style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">Password</label>
+        <input id="login-password" type="password" required style="width:100%;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:10px;">Sign In</button>
+    </form>
+  </div>
+
+  <div id="main-app" class="hidden">
+    <header class="app-header">
+      <h1><span>Ninja</span> Citation Stylesheet Analysis</h1>
+      <div class="header-controls">
+        <select id="doc-select" class="doc-selector">
+          <option value="">Select a document...</option>
+        </select>
+        <button id="analyze-btn" class="btn btn-primary">Re-Analyze</button>
+      </div>
+    </header>
+
+    <div class="main-layout">
+      <div id="doc-panel" class="panel document-panel">
+        <div class="panel-header">
+          <h2>Document Source</h2>
+        </div>
+        <div class="panel-body">
+          <div class="empty-state">
+            <h3>No Document Selected</h3>
+            <p>Choose a document from the dropdown above</p>
+          </div>
+        </div>
+      </div>
+
+      <div id="issues-panel" class="panel issues-panel">
+        <div class="panel-header">
+          <h2>Issues &amp; Fixes</h2>
+        </div>
+        <div class="panel-body">
+          <div class="empty-state">
+            <h3>No Analysis</h3>
+            <p>Select a document to analyze</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/js/stylesheet-analysis.js"></script>
+</body>
+</html>

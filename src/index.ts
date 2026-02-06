@@ -2,6 +2,7 @@ import express, { Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import path from 'path';
 import { config } from './config';
 import { requestLogger } from './middleware/request-logger.middleware';
 import { errorHandler } from './middleware/error-handler.middleware';
@@ -63,6 +64,16 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(compression());
 
 app.use(requestLogger);
+
+app.use(express.static(path.join(__dirname, '../public'), {
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  },
+}));
+
+app.get('/', (_req, res) => {
+  res.redirect('/stylesheet-analysis.html');
+});
 
 app.get('/health', (req, res) => {
   const redisAvailable = isRedisConfigured();

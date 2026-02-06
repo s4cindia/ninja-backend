@@ -16,4 +16,9 @@ router.get(
   editorialOverviewController.getDocumentOverview.bind(editorialOverviewController)
 );
 
+router.get(
+  '/document/:documentId/text',
+  editorialOverviewController.getDocumentText.bind(editorialOverviewController)
+);
+
 export default router;
