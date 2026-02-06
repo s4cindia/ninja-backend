@@ -54,6 +54,7 @@ router.get('/:acrId/compare', authorizeAcr, acrController.compareVersions.bind(a
 
 router.post('/analysis', acrController.createAnalysis.bind(acrController));
 router.get('/job/:jobId/analysis', acrController.getAcrAnalysisByJobId.bind(acrController));
+router.get('/job/:jobId', acrController.getAcrJobByJobId.bind(acrController));
 router.get('/:acrJobId', acrController.getAcrAnalysis.bind(acrController));
 router.get('/:acrJobId/analysis', acrController.getAcrAnalysis.bind(acrController));
 router.post('/:acrJobId/criteria/:criterionId/review', acrController.saveCriterionReview.bind(acrController));

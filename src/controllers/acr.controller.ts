@@ -1259,6 +1259,46 @@ export class AcrController {
     }
   }
 
+  async getAcrJobByJobId(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
+
+      if (!userId || !tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { jobId } = req.params;
+
+      // Look up AcrJob by its jobId field (which links to the ACR_WORKFLOW Job)
+      const acrJob = await prisma.acrJob.findFirst({
+        where: {
+          jobId,
+          tenantId,
+        },
+      });
+
+      if (!acrJob) {
+        res.status(404).json({
+          success: false,
+          error: { message: 'No ACR job found for this workflow job ID' }
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: acrJob,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async saveCriterionReview(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = req.user?.id;
