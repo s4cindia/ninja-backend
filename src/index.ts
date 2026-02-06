@@ -75,6 +75,10 @@ app.get('/', (_req, res) => {
   res.redirect('/stylesheet-analysis.html');
 });
 
+app.get('/editorial/citations/:documentId', (_req, res) => {
+  res.sendFile(path.join(__dirname, '../public/editorial-citations.html'));
+});
+
 app.get('/health', (req, res) => {
   const redisAvailable = isRedisConfigured();
   res.json({
