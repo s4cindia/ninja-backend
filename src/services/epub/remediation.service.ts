@@ -1036,6 +1036,7 @@ class RemediationService {
 
     const acrJob = await prisma.job.create({
       data: {
+        id: nanoid(),
         tenantId: originalJob.tenantId,
         userId: originalJob.userId,
         type: 'ACR_WORKFLOW',
@@ -1043,6 +1044,7 @@ class RemediationService {
         input: { sourceJobId: jobId, sourceType: 'remediation' },
         output: JSON.parse(JSON.stringify(acrWorkflow)),
         startedAt: new Date(),
+        updatedAt: new Date(),
       },
     });
 
