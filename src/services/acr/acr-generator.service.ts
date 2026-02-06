@@ -591,8 +591,11 @@ class AcrGeneratorService {
     const confidenceAssessment = confidenceAnalyzerService.analyzeConfidence(criterionId);
     const baseConfidence = confidenceAssessment.confidencePercentage / 100; // Convert to 0-1 scale
 
+    logger.debug(`[ACR Generator] Criterion ${criterionId}: baseConfidence=${baseConfidence} (${confidenceAssessment.confidencePercentage}%), issues=${issues.length}`);
+
     // If no issues detected, return the criterion's base automation capability
     if (issues.length === 0) {
+      logger.debug(`[ACR Generator] Criterion ${criterionId}: No issues, returning base confidence ${baseConfidence}`);
       return baseConfidence;
     }
 
@@ -609,8 +612,11 @@ class AcrGeneratorService {
       return Math.min(min, weight);
     }, 1.0);
 
+    const finalConfidence = Math.round(Math.min(baseConfidence, severityBasedConfidence) * 100) / 100;
+    logger.debug(`[ACR Generator] Criterion ${criterionId}: With issues, severityBased=${severityBasedConfidence}, final=${finalConfidence}`);
+
     // Return the lower of: base capability OR severity impact
-    return Math.round(Math.min(baseConfidence, severityBasedConfidence) * 100) / 100;
+    return finalConfidence;
   }
 
   private generateConfidenceRemarks(criterion: AcrCriterion, issues: IssueMapping[]): string {
