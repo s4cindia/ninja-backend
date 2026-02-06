@@ -50,6 +50,30 @@ interface FormatReferenceResult {
 }
 
 class ReferenceListService {
+  async getReferenceList(
+    documentId: string,
+    styleCode: string,
+    tenantId: string
+  ): Promise<GeneratedReferenceList | null> {
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: documentId, tenantId }
+    });
+
+    if (!document) {
+      throw AppError.notFound('Document not found');
+    }
+
+    const entries = await prisma.referenceListEntry.findMany({
+      where: { documentId }
+    });
+
+    if (entries.length === 0) {
+      return null;
+    }
+
+    return this.buildReferenceListResult(documentId, styleCode || document.referenceListStyle || 'apa7', entries);
+  }
+
   async generateReferenceList(
     documentId: string,
     styleCode: string,
@@ -155,9 +179,21 @@ class ReferenceListService {
         }
       });
 
-      entries.push({
+      const entryWithAuthors = {
         ...entry,
         authors: metadata.authors
+      };
+
+      const formattedColumn = this.getFormattedColumn(styleCode);
+      const formatted = this.fallbackFormat(entryWithAuthors, styleCode);
+      await prisma.referenceListEntry.update({
+        where: { id: entry.id },
+        data: { [formattedColumn]: formatted }
+      });
+
+      entries.push({
+        ...entryWithAuthors,
+        [formattedColumn]: formatted
       });
     }
 
@@ -475,8 +511,8 @@ Return a JSON object:
   }
 
   private fallbackFormat(entry: any, styleCode: string): string {
-    const authors = entry.authors || [];
-    const validAuthors = authors.filter((a: any) => a && (a.lastName || a.firstName));
+    const rawAuthors = Array.isArray(entry.authors) ? entry.authors : [];
+    const validAuthors = rawAuthors.filter((a: any) => a && typeof a === 'object' && (a.lastName || a.firstName));
     
     let authorStr = 'Unknown Author';
     if (validAuthors.length > 0) {
@@ -495,7 +531,10 @@ Return a JSON object:
     const pages = entry.pages ? `, ${entry.pages}` : '';
     const doi = entry.doi ? ` https://doi.org/${entry.doi}` : '';
 
-    return `${authorStr}${year}${title}${journal}${volume}${issue}${pages}.${doi}`;
+    const source = `${journal}${volume}${issue}${pages}`;
+    const sourceSuffix = source ? `${source}.` : '';
+
+    return `${authorStr}${year}${title}${sourceSuffix}${doi}`.trim();
   }
 
   private parseAiResponse<T>(text: string): T {

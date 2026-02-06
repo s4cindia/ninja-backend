@@ -3,6 +3,35 @@ import { referenceListService } from '../services/citation/reference-list.servic
 import { logger } from '../lib/logger';
 
 export class ReferenceListController {
+  async getReferenceList(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const { styleCode } = req.query;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const result = await referenceListService.getReferenceList(
+        documentId,
+        (styleCode as string) || '',
+        tenantId
+      );
+
+      if (!result) {
+        res.json({ success: true, data: null });
+        return;
+      }
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      logger.error('[Reference List Controller] get failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
   async generateReferenceList(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;

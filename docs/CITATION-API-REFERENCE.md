@@ -294,6 +294,14 @@ POST /change/:changeId/revert
 
 ## 5. Reference List Generation
 
+### Get Reference List (cached)
+```
+GET /document/:documentId/reference-list?styleCode=apa7
+```
+
+Returns the previously generated reference list. Use this when switching tabs to avoid re-generating.
+Returns `{ success: true, data: null }` if no reference list has been generated yet.
+
 ### Generate Reference List
 ```
 POST /document/:documentId/reference-list/generate
@@ -307,7 +315,7 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
+**Response (both GET and POST):**
 ```json
 {
   "success": true,
@@ -328,20 +336,24 @@ Content-Type: application/json
         "issue": "3",
         "pages": "45-67",
         "doi": "10.1234/jdp.2023.001",
-        "formattedApa": "Smith, J., & Jones, M. (2023). Understanding AI in publishing. Journal of Digital Publishing, 15(3), 45-67. https://doi.org/10.1234/jdp.2023.001",
+        "formattedEntry": "Smith, J., Jones, M. (2023). Understanding AI in Publishing. *Journal of Digital Publishing*, 15(3), 45-67. https://doi.org/10.1234/jdp.2023.001",
+        "formattedApa": "Smith, J., Jones, M. (2023). Understanding AI in Publishing. *Journal of Digital Publishing*, 15(3), 45-67. https://doi.org/10.1234/jdp.2023.001",
         "isEdited": false,
-        "crossrefEnriched": true,
-        "confidence": 0.95
+        "enrichmentSource": "crossref",
+        "enrichmentConfidence": 0.95
       }
     ],
+    "formattedList": "Smith, J., ...\n\nJones, M., ...",
     "stats": {
-      "total": 12,
-      "enrichedWithDoi": 8,
-      "needsReview": 2
+      "totalEntries": 12,
+      "enrichedCount": 8,
+      "manualCount": 4
     }
   }
 }
 ```
+
+**Key field: `formattedEntry`** - Always contains the formatted reference text for the selected style. Use this field directly in the UI.
 
 ### Update Reference Entry
 ```

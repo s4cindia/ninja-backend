@@ -248,8 +248,8 @@ Return ONLY valid JSON array, no other text.`;
 
     return validations.map(v => ({
       ...v,
-      citationText: v.citation?.rawText || '',
-      correctedCitation: v.suggestedFix || v.originalText || ''
+      citationText: v.citation?.rawText || v.originalText || '',
+      correctedCitation: v.resolvedText || v.suggestedFix || v.originalText || ''
     }));
   }
 

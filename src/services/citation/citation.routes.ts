@@ -185,6 +185,12 @@ router.post(
 // REFERENCE LIST ROUTES
 // ============================================
 
+router.get(
+  '/document/:documentId/reference-list',
+  validate({ params: documentIdParamSchema }),
+  referenceListController.getReferenceList.bind(referenceListController)
+);
+
 router.post(
   '/document/:documentId/reference-list/generate',
   validate({ params: documentIdParamSchema }),
