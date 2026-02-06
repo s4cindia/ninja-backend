@@ -1,14 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
-import { 
-  AttributionTag, 
-  ATTRIBUTION_MARKERS, 
+import {
+  AttributionTag,
+  ATTRIBUTION_MARKERS,
   LEGAL_DISCLAIMER,
   TOOL_VERSION,
   AI_MODEL_INFO,
-  generateFooterDisclaimer 
+  generateFooterDisclaimer
 } from './attribution.service';
 import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
+import { confidenceAnalyzerService } from './confidence-analyzer.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -548,7 +549,7 @@ class AcrGeneratorService {
     const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
       const relatedIssues = issueMapping.get(criterion.id) || [];
       const status = this.determineStatus(relatedIssues);
-      const confidenceScore = this.calculateConfidence(relatedIssues);
+      const confidenceScore = this.calculateConfidence(criterion.id, relatedIssues);
       const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
       const hasIssues = relatedIssues.length > 0;
 
@@ -585,11 +586,17 @@ class AcrGeneratorService {
     return 'needs_review';
   }
 
-  private calculateConfidence(issues: IssueMapping[]): number {
+  private calculateConfidence(criterionId: string, issues: IssueMapping[]): number {
+    // Get the predefined automation capability for this criterion
+    const confidenceAssessment = confidenceAnalyzerService.analyzeConfidence(criterionId);
+    const baseConfidence = confidenceAssessment.confidencePercentage / 100; // Convert to 0-1 scale
+
+    // If no issues detected, return the criterion's base automation capability
     if (issues.length === 0) {
-      return 0.95;
+      return baseConfidence;
     }
 
+    // If issues exist, cap confidence by both severity AND automation capability
     const impactWeights: Record<string, number> = {
       critical: 0.4,
       serious: 0.6,
@@ -597,12 +604,13 @@ class AcrGeneratorService {
       minor: 0.85
     };
 
-    const lowestConfidence = issues.reduce((min, issue) => {
+    const severityBasedConfidence = issues.reduce((min, issue) => {
       const weight = impactWeights[issue.impact] || 0.7;
       return Math.min(min, weight);
     }, 1.0);
 
-    return Math.round(lowestConfidence * 100) / 100;
+    // Return the lower of: base capability OR severity impact
+    return Math.round(Math.min(baseConfidence, severityBasedConfidence) * 100) / 100;
   }
 
   private generateConfidenceRemarks(criterion: AcrCriterion, issues: IssueMapping[]): string {
