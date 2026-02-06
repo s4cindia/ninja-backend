@@ -285,7 +285,22 @@ export class ConfidenceController {
         const fixedCount = fixedIssues.length;
         const remainingCount = remainingIssues.length;
 
-        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${fixedCount} fixed, ${remainingCount} remaining`);
+        // Recalculate confidence based on REMAINING issues only
+        let updatedConfidence = criterion.confidenceScore;
+        let updatedStatus = criterion.status;
+
+        if (remainingCount === 0 && fixedCount > 0) {
+          // All issues were fixed - high confidence pass
+          updatedConfidence = 0.95;
+          updatedStatus = 'pass';
+        } else if (remainingCount === 0) {
+          // No issues at all - high confidence pass
+          updatedConfidence = 0.95;
+          updatedStatus = 'pass';
+        }
+        // Otherwise keep the original confidence/status based on remaining issues
+
+        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${fixedCount} fixed, ${remainingCount} remaining, confidence=${updatedConfidence}`);
 
         return {
           ...criterion,
@@ -293,10 +308,13 @@ export class ConfidenceController {
           remainingCount,
           fixedIssues: fixedCount > 0 ? fixedIssues : undefined,
           issueCount: remainingCount, // Update to only show remaining issues
+          confidenceScore: updatedConfidence,
+          status: updatedStatus,
         };
       });
 
-      const criteriaWithIssues = enhancedAnalysis.filter(c => (c.issueCount || 0) > 0 || (c.fixedCount || 0) > 0);
+      // Only count criteria with REMAINING issues, not fixed ones
+      const criteriaWithIssues = enhancedAnalysis.filter(c => (c.issueCount || 0) > 0);
       logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
       criteriaWithIssues.forEach(c => {
         logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.fixedCount || 0} fixed, ${c.issueCount} remaining, status=${c.status}, confidence=${c.confidenceScore}`);
