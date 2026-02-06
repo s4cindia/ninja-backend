@@ -454,6 +454,153 @@ Respond with JSON only:`;
       };
     }
   }
+  async generateReferenceEntries(
+    fullText: string,
+    citationTexts: { id: string; rawText: string; citationType: string; sectionContext?: string }[],
+    styleCode: string
+  ): Promise<{
+    entries: Array<{
+      citationIds: string[];
+      authors: { firstName?: string; lastName: string }[];
+      year?: string;
+      title: string;
+      sourceType: string;
+      journalName?: string;
+      volume?: string;
+      issue?: string;
+      pages?: string;
+      publisher?: string;
+      doi?: string;
+      url?: string;
+      formattedEntry: string;
+      confidence: number;
+    }>;
+  }> {
+    const styleNames: Record<string, string> = {
+      apa7: 'APA 7th Edition',
+      mla9: 'MLA 9th Edition',
+      chicago17: 'Chicago 17th Edition (Notes-Bibliography)',
+      vancouver: 'Vancouver',
+      ieee: 'IEEE',
+    };
+    const styleName = styleNames[styleCode] || styleCode.toUpperCase();
+
+    const citationSummary = citationTexts.map(c =>
+      `[ID:${c.id}] (${c.citationType}, section:${c.sectionContext || 'unknown'}) "${c.rawText}"`
+    ).join('\n');
+
+    let textForContext: string;
+    if (fullText.length <= 12000) {
+      textForContext = fullText;
+    } else {
+      const refSectionMatch = fullText.match(/\n\s*(REFERENCES|BIBLIOGRAPHY|WORKS?\s+CITED|LITERATURE\s+CITED)\s*\n/i);
+      if (refSectionMatch && refSectionMatch.index !== undefined) {
+        const refStart = refSectionMatch.index;
+        const bodyPortion = fullText.slice(0, Math.min(8000, refStart));
+        const refPortion = fullText.slice(refStart, refStart + 4000);
+        textForContext = bodyPortion + '\n\n...[body truncated]...\n\n' + refPortion;
+      } else {
+        textForContext = fullText.slice(0, 6000) + '\n\n...[middle truncated]...\n\n' + fullText.slice(-6000);
+      }
+    }
+
+    const prompt = `You are an expert academic reference list generator.
+
+TASK: Analyze the document below and produce a complete, properly formatted reference list in ${styleName} style.
+
+FULL DOCUMENT TEXT:
+---
+${textForContext}
+---
+
+DETECTED CITATIONS (with IDs):
+${citationSummary}
+
+INSTRUCTIONS:
+1. Read the ENTIRE document carefully, especially any REFERENCES / BIBLIOGRAPHY / WORKS CITED section
+2. For each unique source cited in the document, create exactly ONE reference entry
+3. MATCH in-text citations to their full reference entries:
+   - "Smith (2020)" in the body matches "[2] Smith, J. (2020). Global Temperature Trends..." in REFERENCES
+   - Numeric citations like [1] match the numbered entry in REFERENCES
+   - Group ALL citation IDs that refer to the same source into one entry
+4. For in-text citations WITHOUT a full reference in the document, reconstruct from context:
+   - Use the author name and year from the in-text citation
+   - Infer topic from the surrounding sentence context
+   - Set confidence low (0.3-0.5) for these reconstructed entries
+5. Do NOT create entries for bare numeric references [2,3] or [4-6] that merely reference other numbered entries unless those numbered entries exist in the references section. If [3],[4],[5],[6] have no entries in the REFERENCES section, skip them.
+6. Format each entry properly in ${styleName} style
+
+AUTHOR NAME RULES (CRITICAL):
+- "lastName" is the family/surname: Smith, Johnson, Brown, Williams, Davis, Martinez, Thompson, IPCC
+- "firstName" is the given/first name or initial: J., John, M., etc.
+- For "Smith (2020)": authors = [{"lastName": "Smith"}]
+- For "Johnson and Lee (2019)": authors = [{"lastName": "Johnson"}, {"lastName": "Lee"}]
+- For "Williams & Davis, 2018": authors = [{"lastName": "Williams"}, {"lastName": "Davis"}]
+- For "Brown et al. (2021)": authors = [{"lastName": "Brown"}] (et al. means additional unknown co-authors)
+- For "Smith, J. (2020)": authors = [{"firstName": "J.", "lastName": "Smith"}]
+- For organizations like "IPCC": authors = [{"lastName": "IPCC"}]
+- NEVER put the surname/family name in firstName. NEVER use "Unknown" for lastName.
+
+Return a JSON object:
+{
+  "entries": [
+    {
+      "citationIds": ["id1", "id2"],
+      "authors": [{"firstName": "J.", "lastName": "Smith"}],
+      "year": "2020",
+      "title": "Title of the Work",
+      "sourceType": "journal",
+      "journalName": "Journal Name or null",
+      "volume": "10 or null",
+      "issue": "3 or null",
+      "pages": "234-240 or null",
+      "publisher": "Publisher Name or null",
+      "doi": "10.xxxx/yyyy or null",
+      "url": "https://... or null",
+      "formattedEntry": "The complete formatted reference in ${styleName} style",
+      "confidence": 0.0-1.0
+    }
+  ]
+}
+
+CRITICAL:
+- Do NOT create duplicate entries for the same source
+- Do NOT create entries for references not cited in the document
+- Use the REFERENCES section as the primary source of truth for metadata
+- For ${styleName}, follow exact formatting rules
+- confidence: 1.0 = full reference data available, 0.3-0.5 = reconstructed from in-text only
+
+Respond with JSON only:`;
+
+    try {
+      const response = await geminiService.generateStructuredOutput<{
+        entries: Array<{
+          citationIds: string[];
+          authors: { firstName?: string; lastName: string }[];
+          year?: string;
+          title: string;
+          sourceType: string;
+          journalName?: string;
+          volume?: string;
+          issue?: string;
+          pages?: string;
+          publisher?: string;
+          doi?: string;
+          url?: string;
+          formattedEntry: string;
+          confidence: number;
+        }>;
+      }>(prompt, {
+        temperature: 0.1,
+        maxOutputTokens: 8000,
+      });
+
+      return response.data;
+    } catch (error) {
+      logger.error('[Editorial AI] Reference list generation failed', error instanceof Error ? error : undefined);
+      return { entries: [] };
+    }
+  }
 }
 
 export const editorialAi = new EditorialAiClient();

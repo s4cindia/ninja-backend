@@ -1,6 +1,7 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { geminiService } from '../ai/gemini.service';
+import { editorialAi } from '../shared';
 import { crossRefService, EnrichedMetadata } from './crossref.service';
 import { styleRulesService } from './style-rules.service';
 import { citationParsingService } from './citation-parsing.service';
@@ -84,40 +85,16 @@ class ReferenceListService {
       where: { id: documentId, tenantId }
     });
 
-    const citations = await prisma.citation.findMany({
-      where: { documentId },
-      include: {
-        components: true
-      }
-    });
-
     if (!document) {
       throw AppError.notFound('Document not found');
     }
 
+    const citations = await prisma.citation.findMany({
+      where: { documentId },
+    });
+
     if (citations.length === 0) {
       throw AppError.badRequest('No citations found in document. Please detect citations first.');
-    }
-
-    // Auto-parse citations that don't have components
-    const unparsedCitations = citations.filter(c => !c.components || c.components.length === 0);
-    if (unparsedCitations.length > 0) {
-      logger.info(`[Reference List] Auto-parsing ${unparsedCitations.length} citations without components`);
-      for (const citation of unparsedCitations) {
-        try {
-          await citationParsingService.parseCitation(citation.id, tenantId);
-        } catch (err) {
-          logger.warn(`[Reference List] Failed to parse citation ${citation.id}: ${err}`);
-        }
-      }
-      
-      // Re-fetch citations with newly parsed components
-      const updatedCitations = await prisma.citation.findMany({
-        where: { documentId },
-        include: { components: true }
-      });
-      citations.length = 0;
-      citations.push(...updatedCitations);
     }
 
     if (!options.regenerate) {
@@ -132,69 +109,151 @@ class ReferenceListService {
 
     await prisma.referenceListEntry.deleteMany({ where: { documentId } });
 
-    const groupedCitations = this.groupCitationsByReference(citations);
+    const fullText = document.fullText || '';
+    if (!fullText) {
+      logger.warn(`[Reference List] No fullText stored for document ${documentId}, falling back to citation-only generation`);
+    }
+
+    const citationInputs = citations.map(c => ({
+      id: c.id,
+      rawText: c.rawText,
+      citationType: c.citationType,
+      sectionContext: c.sectionContext || undefined,
+    }));
+
+    logger.info(`[Reference List] Generating reference list with full document context. ${citations.length} citations, ${fullText.length} chars of text, style=${styleCode}`);
+
+    const aiResult = await editorialAi.generateReferenceEntries(fullText, citationInputs, styleCode);
 
     const entries: ReferenceEntry[] = [];
     let enrichedCount = 0;
     let manualCount = 0;
 
-    for (const group of groupedCitations) {
-      let metadata: EnrichedMetadata | null = null;
-      let enrichmentSource = 'ai';
-
-      const doi = this.extractDoi(group.citations);
-      if (doi) {
-        metadata = await crossRefService.lookupByDoi(doi);
-        if (metadata) {
-          enrichmentSource = 'crossref';
-          enrichedCount++;
+    if (aiResult.entries && aiResult.entries.length > 0) {
+      for (const aiEntry of aiResult.entries) {
+        const validCitationIds = (aiEntry.citationIds || []).filter(id =>
+          citations.some(c => c.id === id)
+        );
+        if (validCitationIds.length === 0) {
+          validCitationIds.push(citations[0]?.id || 'unknown');
         }
-      }
 
-      if (!metadata) {
-        metadata = this.extractMetadataFromParsed(group.citations);
+        const authors = (aiEntry.authors || []).map(a => {
+          let lastName = a.lastName || '';
+          let firstName = a.firstName || undefined;
+          if ((!lastName || lastName === 'Unknown') && firstName && firstName !== 'Unknown') {
+            lastName = firstName;
+            firstName = undefined;
+          }
+          if (lastName === 'Unknown') {
+            lastName = '';
+          }
+          return { firstName, lastName: lastName || 'Unknown' };
+        }).filter(a => a.lastName && a.lastName !== 'Unknown');
+
+        let enrichmentSource = 'ai';
+        let enrichmentConfidence = aiEntry.confidence || 0.7;
+
+        if (aiEntry.doi) {
+          try {
+            const crossrefData = await crossRefService.lookupByDoi(aiEntry.doi);
+            if (crossrefData) {
+              enrichmentSource = 'crossref';
+              enrichmentConfidence = Math.max(enrichmentConfidence, crossrefData.confidence);
+              enrichedCount++;
+              if (crossrefData.authors?.length) {
+                authors.length = 0;
+                authors.push(...crossrefData.authors.map(a => ({
+                  firstName: a.firstName || undefined,
+                  lastName: a.lastName || 'Unknown',
+                })));
+              }
+            }
+          } catch (err) {
+            logger.warn(`[Reference List] CrossRef lookup failed for DOI ${aiEntry.doi}`);
+          }
+        }
+
+        if (enrichmentSource !== 'crossref') {
+          manualCount++;
+        }
+
+        const sortKey = this.generateSortKey({
+          authors,
+          year: aiEntry.year,
+          title: aiEntry.title,
+        });
+
+        const formattedColumn = this.getFormattedColumn(styleCode);
+        const formattedText = aiEntry.formattedEntry || this.fallbackFormat({
+          authors,
+          year: aiEntry.year,
+          title: aiEntry.title,
+          journalName: aiEntry.journalName,
+          volume: aiEntry.volume,
+          issue: aiEntry.issue,
+          pages: aiEntry.pages,
+          doi: aiEntry.doi,
+        }, styleCode);
+
+        const entry = await prisma.referenceListEntry.create({
+          data: {
+            documentId,
+            citationIds: validCitationIds,
+            sortKey,
+            authors: authors as any,
+            year: aiEntry.year || null,
+            title: aiEntry.title || '',
+            sourceType: aiEntry.sourceType || 'unknown',
+            journalName: aiEntry.journalName || null,
+            volume: aiEntry.volume || null,
+            issue: aiEntry.issue || null,
+            pages: aiEntry.pages || null,
+            publisher: aiEntry.publisher || null,
+            doi: aiEntry.doi || null,
+            url: aiEntry.url || null,
+            enrichmentSource,
+            enrichmentConfidence,
+            [formattedColumn]: formattedText,
+          }
+        });
+
+        entries.push({
+          ...entry,
+          authors,
+          formattedEntry: formattedText,
+          [formattedColumn]: formattedText,
+        });
+      }
+    } else {
+      logger.warn(`[Reference List] AI returned no entries, falling back to citation-based generation`);
+      for (const citation of citations) {
+        const fallbackFormatted = `${citation.rawText}`;
+        const formattedColumn = this.getFormattedColumn(styleCode);
+
+        const entry = await prisma.referenceListEntry.create({
+          data: {
+            documentId,
+            citationIds: [citation.id],
+            sortKey: citation.rawText.substring(0, 30).toLowerCase(),
+            authors: [],
+            year: null,
+            title: citation.rawText,
+            sourceType: 'unknown',
+            enrichmentSource: 'none',
+            enrichmentConfidence: 0.3,
+            [formattedColumn]: fallbackFormatted,
+          }
+        });
+
+        entries.push({
+          ...entry,
+          authors: [],
+          formattedEntry: fallbackFormatted,
+          [formattedColumn]: fallbackFormatted,
+        });
         manualCount++;
       }
-
-      const sortKey = this.generateSortKey(metadata);
-
-      const entry = await prisma.referenceListEntry.create({
-        data: {
-          documentId,
-          citationIds: group.citationIds,
-          sortKey,
-          authors: metadata.authors as any,
-          year: metadata.year,
-          title: metadata.title,
-          sourceType: metadata.sourceType,
-          journalName: metadata.journalName,
-          volume: metadata.volume,
-          issue: metadata.issue,
-          pages: metadata.pages,
-          publisher: metadata.publisher,
-          doi: metadata.doi,
-          url: metadata.url,
-          enrichmentSource,
-          enrichmentConfidence: metadata.confidence
-        }
-      });
-
-      const entryWithAuthors = {
-        ...entry,
-        authors: metadata.authors
-      };
-
-      const formattedColumn = this.getFormattedColumn(styleCode);
-      const formatted = this.fallbackFormat(entryWithAuthors, styleCode);
-      await prisma.referenceListEntry.update({
-        where: { id: entry.id },
-        data: { [formattedColumn]: formatted }
-      });
-
-      entries.push({
-        ...entryWithAuthors,
-        [formattedColumn]: formatted
-      });
     }
 
     await prisma.editorialDocument.update({
@@ -505,7 +564,9 @@ Return a JSON object:
     const columns: Record<string, string> = {
       apa7: 'formattedApa',
       mla9: 'formattedMla',
-      chicago17: 'formattedChicago'
+      chicago17: 'formattedChicago',
+      vancouver: 'formattedApa',
+      ieee: 'formattedApa',
     };
     return columns[styleCode] || 'formattedApa';
   }
