@@ -616,6 +616,282 @@ Respond with JSON only:`;
       return { entries: [] };
     }
   }
+
+  extractReferenceSection(fullText: string): { body: string; references: string; refStart: number } | null {
+    const patterns = [
+      /(?:\n|<[Hh]\d>)\s*(REFERENCES|References)\s*\n/,
+      /\n\s*(REFERENCES|References)\s*\n/,
+      /(?:\n|<[Hh]\d>)\s*(BIBLIOGRAPHY|Bibliography)\s*\n/,
+      /\n\s*(BIBLIOGRAPHY|Bibliography)\s*\n/,
+      /(?:\n|<[Hh]\d>)\s*(WORKS?\s+CITED|Works?\s+Cited)\s*\n/,
+      /\n\s*(WORKS?\s+CITED|Works?\s+Cited)\s*\n/,
+      /(?:\n|<[Hh]\d>)\s*(LITERATURE\s+CITED|Literature\s+Cited)\s*\n/,
+      /\n\s*(LITERATURE\s+CITED|Literature\s+Cited)\s*\n/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = fullText.match(pattern);
+      if (match && match.index !== undefined) {
+        const refStart = match.index;
+        const body = fullText.slice(0, refStart);
+        let references = fullText.slice(refStart + match[0].length);
+
+        const endPatterns = [
+          /\n\s*(?:<[Hh]\d>)?\s*(?:Figure|FIGURE|Table|TABLE|Appendix|APPENDIX)\s*[\d.]/,
+          /\n\s*(?:<[Hh]\d>)?\s*(?:ACKNOWLEDGMENTS?|Acknowledgments?)\s*\n/,
+          /\n\s*(?:<[Hh]\d>)?\s*(?:SUPPLEMENTARY|Supplementary)\s/,
+        ];
+
+        for (const endPat of endPatterns) {
+          const endMatch = references.match(endPat);
+          if (endMatch && endMatch.index !== undefined && endMatch.index > references.length * 0.3) {
+            const trimmedLen = endMatch.index;
+            logger.info(`[Editorial AI] Trimming reference section at non-reference content: ${references.length} -> ${trimmedLen} chars`);
+            references = references.slice(0, trimmedLen);
+            break;
+          }
+        }
+
+        logger.info(`[Editorial AI] Found reference section at position ${refStart}, section length: ${references.length} chars`);
+        return { body, references, refStart };
+      }
+    }
+    logger.info(`[Editorial AI] No reference section heading found in document`);
+    return null;
+  }
+
+  splitReferencesIntoChunks(refText: string, maxChunkSize: number = 14000): string[] {
+    if (refText.length <= maxChunkSize) {
+      return [refText];
+    }
+
+    const chunks: string[] = [];
+    let remaining = refText;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxChunkSize) {
+        chunks.push(remaining);
+        break;
+      }
+
+      let splitPoint = remaining.lastIndexOf('\n', maxChunkSize);
+      if (splitPoint <= 0) {
+        splitPoint = maxChunkSize;
+      }
+
+      chunks.push(remaining.slice(0, splitPoint));
+      remaining = remaining.slice(splitPoint).trimStart();
+    }
+
+    return chunks;
+  }
+
+  private parseAiJsonResponse(text: string): any {
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.slice(7);
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.slice(3);
+    }
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.slice(0, -3);
+    }
+    cleaned = cleaned.trim();
+
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (firstError) {
+      logger.warn(`[Editorial AI] JSON parse failed, attempting truncated JSON repair`);
+      let jsonStr = jsonMatch[0];
+
+      const lastCompleteEntry = jsonStr.lastIndexOf('},');
+      if (lastCompleteEntry > 0) {
+        jsonStr = jsonStr.slice(0, lastCompleteEntry + 1) + ']}';
+        try {
+          const repaired = JSON.parse(jsonStr);
+          if (repaired.entries && Array.isArray(repaired.entries)) {
+            logger.info(`[Editorial AI] Repaired truncated JSON: recovered ${repaired.entries.length} entries`);
+            return repaired;
+          }
+        } catch (_) {}
+      }
+
+      const lastCompleteBrace = jsonStr.lastIndexOf('}');
+      if (lastCompleteBrace > 0) {
+        const beforeBrace = jsonStr.slice(0, lastCompleteBrace + 1);
+        const openBrackets = (beforeBrace.match(/\[/g) || []).length;
+        const closeBrackets = (beforeBrace.match(/\]/g) || []).length;
+        let suffix = ']'.repeat(Math.max(0, openBrackets - closeBrackets));
+        const openBraces = (beforeBrace.match(/\{/g) || []).length;
+        const closeBraces = (beforeBrace.match(/\}/g) || []).length;
+        suffix += '}'.repeat(Math.max(0, openBraces - closeBraces));
+        try {
+          const repaired = JSON.parse(beforeBrace + suffix);
+          if (repaired.entries && Array.isArray(repaired.entries)) {
+            logger.info(`[Editorial AI] Repaired truncated JSON (method 2): recovered ${repaired.entries.length} entries`);
+            return repaired;
+          }
+        } catch (_) {}
+      }
+
+      throw firstError;
+    }
+  }
+
+  async generateReferenceEntriesChunked(
+    fullText: string,
+    citationTexts: Array<{
+      id: string;
+      rawText: string;
+      citationType: string;
+      sectionContext?: string;
+    }>,
+    styleCode: string
+  ): Promise<{
+    entries: Array<{
+      citationIds: string[];
+      authors: { firstName?: string; lastName: string }[];
+      year?: string;
+      title: string;
+      sourceType: string;
+      journalName?: string;
+      volume?: string;
+      issue?: string;
+      pages?: string;
+      publisher?: string;
+      doi?: string;
+      url?: string;
+      formattedEntry: string;
+      confidence: number;
+    }>;
+  }> {
+    const refSection = this.extractReferenceSection(fullText);
+
+    if (!refSection || refSection.references.length < 20000) {
+      logger.info(`[Editorial AI] Reference section ${refSection ? refSection.references.length + ' chars' : 'not found'}, using single-pass generation`);
+      return this.generateReferenceEntries(fullText, citationTexts, styleCode);
+    }
+
+    const styleNames: Record<string, string> = {
+      apa7: 'APA 7th Edition',
+      mla9: 'MLA 9th Edition',
+      chicago17: 'Chicago 17th Edition (Notes-Bibliography)',
+      vancouver: 'Vancouver',
+      ieee: 'IEEE',
+    };
+    const styleName = styleNames[styleCode] || styleCode.toUpperCase();
+
+    const chunks = this.splitReferencesIntoChunks(refSection.references, 8000);
+    logger.info(`[Editorial AI] Large reference section (${refSection.references.length} chars) split into ${chunks.length} chunks for processing`);
+
+    const allEntries: Array<{
+      citationIds: string[];
+      authors: { firstName?: string; lastName: string }[];
+      year?: string;
+      title: string;
+      sourceType: string;
+      journalName?: string;
+      volume?: string;
+      issue?: string;
+      pages?: string;
+      publisher?: string;
+      doi?: string;
+      url?: string;
+      formattedEntry: string;
+      confidence: number;
+    }> = [];
+
+    const processChunk = async (chunk: string, chunkIndex: number): Promise<void> => {
+      logger.info(`[Editorial AI] Processing reference chunk ${chunkIndex + 1}/${chunks.length} (${chunk.length} chars)`);
+
+      const prompt = `You are an expert academic reference list parser.
+
+TASK: Parse the following CHUNK of a references section and extract every individual reference entry. Format each in ${styleName} style.
+
+This is chunk ${chunkIndex + 1} of ${chunks.length} from a larger references section. Parse ALL references in this chunk.
+
+REFERENCES TEXT:
+---
+${chunk}
+---
+
+INSTRUCTIONS:
+1. Parse EVERY reference entry in this chunk - do not skip any
+2. Extract authors, year, title, journal, volume, issue, pages, DOI, and URL from each entry
+3. Format each entry properly in ${styleName} style
+4. Set confidence to 0.85 for entries with complete metadata
+
+AUTHOR NAME RULES:
+- "lastName" = family/surname: Smith, Johnson, Jain, Martin
+- "firstName" = given/first name or initial: J., John, R. K.
+- For "Martin, J. D.": authors = [{"firstName": "J. D.", "lastName": "Martin"}]
+- For "Jain, R. K.": authors = [{"firstName": "R. K.", "lastName": "Jain"}]
+- For multiple authors separated by semicolons: parse each author separately
+- NEVER put surname in firstName field
+
+Return a JSON object with this EXACT structure (do NOT include formattedEntry - it will be generated later):
+{
+  "entries": [
+    {
+      "authors": [{"firstName": "J. D.", "lastName": "Martin"}, {"firstName": "G.", "lastName": "Seano"}, {"firstName": "R. K.", "lastName": "Jain"}],
+      "year": "2019",
+      "title": "Title of Work",
+      "sourceType": "journal",
+      "journalName": "Journal Name",
+      "volume": "81",
+      "issue": null,
+      "pages": "505-534",
+      "doi": null
+    }
+  ]
+}
+
+CRITICAL:
+- Parse EVERY reference in this chunk - do not stop early or summarize
+- Use null (not string "null") for unknown fields
+- Do NOT include formattedEntry, citationIds, publisher, or url fields - keep output compact
+- Each distinct reference is typically separated by a newline
+- List ALL authors for each reference, do not abbreviate with "et al."
+
+Respond with JSON only:`;
+
+      try {
+        const response = await geminiService.generateText(prompt, {
+          temperature: 0.1,
+          maxOutputTokens: 8192,
+        });
+
+        const parsed = this.parseAiJsonResponse(response.text);
+        if (parsed && parsed.entries && Array.isArray(parsed.entries)) {
+          logger.info(`[Editorial AI] Chunk ${chunkIndex + 1}/${chunks.length}: parsed ${parsed.entries.length} entries`);
+          allEntries.push(...parsed.entries);
+        } else {
+          logger.warn(`[Editorial AI] Chunk ${chunkIndex + 1}/${chunks.length}: failed to parse entries`);
+        }
+      } catch (error) {
+        logger.error(`[Editorial AI] Chunk ${chunkIndex + 1}/${chunks.length} processing failed`, error instanceof Error ? error : undefined);
+      }
+    };
+
+    const PARALLEL_BATCH_SIZE = 3;
+    for (let batchStart = 0; batchStart < chunks.length; batchStart += PARALLEL_BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + PARALLEL_BATCH_SIZE, chunks.length);
+      const batchPromises = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        batchPromises.push(processChunk(chunks[i], i));
+      }
+      logger.info(`[Editorial AI] Processing batch ${Math.floor(batchStart / PARALLEL_BATCH_SIZE) + 1}/${Math.ceil(chunks.length / PARALLEL_BATCH_SIZE)} (chunks ${batchStart + 1}-${batchEnd})`);
+      await Promise.all(batchPromises);
+    }
+
+    logger.info(`[Editorial AI] Chunked processing complete: ${allEntries.length} total entries from ${chunks.length} chunks`);
+    return { entries: allEntries };
+  }
 }
 
 export const editorialAi = new EditorialAiClient();

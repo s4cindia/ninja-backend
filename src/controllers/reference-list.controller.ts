@@ -34,6 +34,9 @@ export class ReferenceListController {
 
   async generateReferenceList(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      req.setTimeout(300000);
+      res.setTimeout(300000);
+
       const { documentId } = req.params;
       const { styleCode, regenerate, options } = req.body;
       const tenantId = req.user?.tenantId;

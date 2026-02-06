@@ -132,7 +132,7 @@ class ReferenceListService {
 
     logger.info(`[Reference List] Generating reference list with full document context. ${citations.length} citations, ${fullText.length} chars of text, style=${styleCode}`);
 
-    const aiResult = await editorialAi.generateReferenceEntries(fullText, citationInputs, styleCode);
+    const aiResult = await editorialAi.generateReferenceEntriesChunked(fullText, citationInputs, styleCode);
 
     const entries: ReferenceEntry[] = [];
     let enrichedCount = 0;
