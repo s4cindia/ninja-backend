@@ -180,7 +180,7 @@ export class ConfidenceController {
       const job = await prisma.job.findFirst({
         where: {
           id: jobId,
-          tenant: { users: { some: { id: userId } } }
+          userId: userId
         }
       });
 
