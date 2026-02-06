@@ -78,53 +78,218 @@ export class EditorialAiClient {
   }
 
   /**
+   * Detect the citation style used in a document deterministically.
+   * Examines patterns in the text to determine if the document uses
+   * numeric [1], superscript, or author-date citation styles.
+   */
+  private detectCitationStyleFromText(text: string): {
+    style: 'numeric-bracket' | 'numeric-superscript' | 'author-date' | 'mixed' | 'unknown';
+    numericCount: number;
+    authorDateCount: number;
+    hasReferenceSection: boolean;
+  } {
+    const numericBracketPattern = /\[(\d{1,3})\]/g;
+    const numericBracketMatches = text.match(numericBracketPattern) || [];
+    const equationRefs = text.match(/equation\s*\(\d+\)/gi) || [];
+    const figureRefs = text.match(/\[\s*(?:Fig|Figure|Table)\s*\d+\s*\]/gi) || [];
+    const netNumericBrackets = numericBracketMatches.length - figureRefs.length;
+
+    const authorDatePattern = /\([A-Z][a-z]+(?:\s+(?:et\s+al\.|&\s+[A-Z][a-z]+))?,\s*\d{4}[a-z]?\)/g;
+    const authorDateMatches = text.match(authorDatePattern) || [];
+
+    const refSectionPattern = /(?:^|\n)\s*(?:References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*(?:\n|$)/im;
+    const hasReferenceSection = refSectionPattern.test(text);
+
+    let style: 'numeric-bracket' | 'numeric-superscript' | 'author-date' | 'mixed' | 'unknown' = 'unknown';
+    if (netNumericBrackets >= 3 && authorDateMatches.length <= 2) {
+      style = 'numeric-bracket';
+    } else if (authorDateMatches.length >= 3 && netNumericBrackets <= 2) {
+      style = 'author-date';
+    } else if (netNumericBrackets >= 3 && authorDateMatches.length >= 3) {
+      style = 'mixed';
+    } else if (netNumericBrackets >= 1) {
+      style = 'numeric-bracket';
+    } else if (authorDateMatches.length >= 1) {
+      style = 'author-date';
+    }
+
+    logger.info(`[Editorial AI] Citation style detection: style=${style}, numericBrackets=${netNumericBrackets}, authorDate=${authorDateMatches.length}, equationRefs=${equationRefs.length}, hasRefSection=${hasReferenceSection}`);
+
+    return {
+      style,
+      numericCount: netNumericBrackets,
+      authorDateCount: authorDateMatches.length,
+      hasReferenceSection,
+    };
+  }
+
+  /**
+   * Extract numeric bracket citations deterministically from text.
+   * Finds all [N] patterns that are actual citations (not equation/figure refs).
+   */
+  private extractNumericCitations(text: string): ExtractedCitation[] {
+    const results: ExtractedCitation[] = [];
+    const seen = new Set<string>();
+
+    const pattern = /\[(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\]/g;
+    let match: RegExpExecArray | null;
+
+    const excludeContextPattern = /(?:equation|eq\.|figure|fig\.|table|tab\.|section|sec\.|chapter|ch\.|step|item|ref\.|appendix)\s*$/i;
+
+    while ((match = pattern.exec(text)) !== null) {
+      const fullMatch = match[0];
+      const innerText = match[1];
+      const startOffset = match.index;
+      const endOffset = startOffset + fullMatch.length;
+
+      const contextBefore = text.slice(Math.max(0, startOffset - 30), startOffset).toLowerCase();
+      if (excludeContextPattern.test(contextBefore)) {
+        continue;
+      }
+
+      if (/^\(\d+\)$/.test(text.slice(startOffset - 1, endOffset + 1).trim())) {
+        continue;
+      }
+
+      const key = `${startOffset}-${endOffset}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      let paragraphIndex = 0;
+      const textBefore = text.slice(0, startOffset);
+      paragraphIndex = (textBefore.match(/\n\s*\n/g) || []).length;
+
+      const sectionContext = this.determineSectionContext(text, startOffset);
+
+      results.push({
+        text: fullMatch,
+        type: 'numeric',
+        style: 'Vancouver',
+        sectionContext,
+        confidence: 95,
+        location: {
+          pageNumber: undefined,
+          paragraphIndex,
+          startOffset,
+          endOffset,
+        },
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Determine section context for a given offset in the text.
+   */
+  private determineSectionContext(text: string, offset: number): ExtractedCitation['sectionContext'] {
+    const textBefore = text.slice(0, offset).toLowerCase();
+
+    const refPatterns = [
+      /(?:^|\n)\s*references\s*(?:\n|$)/,
+      /(?:^|\n)\s*bibliography\s*(?:\n|$)/,
+      /(?:^|\n)\s*works\s+cited\s*(?:\n|$)/,
+      /(?:^|\n)\s*<h1[^>]*>\s*references\s*<\/h1>/,
+    ];
+    for (const pat of refPatterns) {
+      if (pat.test(textBefore)) {
+        const matchPos = textBefore.search(pat);
+        if (matchPos >= 0 && (offset - matchPos) < text.length * 0.4) {
+          return 'references';
+        }
+      }
+    }
+
+    if (/(?:^|\n)\s*abstract\s*(?:\n|$)/.test(textBefore)) {
+      const abstractPos = textBefore.lastIndexOf('abstract');
+      const introPos = textBefore.lastIndexOf('introduction');
+      if (abstractPos > introPos) {
+        return 'abstract';
+      }
+    }
+
+    return 'body';
+  }
+
+  /**
    * Detect and extract all citations from text
    * Used by: Citation Management (US-4.1)
+   * 
+   * Two-phase approach:
+   * Phase 1: Deterministic detection of citation markers using regex
+   * Phase 2: AI-powered detection for author-date and reference entries
+   * 
    * @param text - Full text to analyze for citations
    * @returns Array of extracted citations with type and location
    */
   async detectCitations(text: string): Promise<ExtractedCitation[]> {
-    const prompt = `Analyze the following text and extract all citations. Identify each citation's type, style, and section context.
+    const styleInfo = this.detectCitationStyleFromText(text);
+    const allCitations: ExtractedCitation[] = [];
+
+    if (styleInfo.style === 'numeric-bracket' || styleInfo.style === 'mixed') {
+      const numericCitations = this.extractNumericCitations(text);
+      allCitations.push(...numericCitations);
+      logger.info(`[Citation Detection] Phase 1: Found ${numericCitations.length} numeric bracket citations deterministically`);
+    }
+
+    if (styleInfo.style === 'author-date' || styleInfo.style === 'mixed' || styleInfo.style === 'unknown') {
+      const aiCitations = await this.detectCitationsWithAI(text, styleInfo.style);
+      allCitations.push(...aiCitations);
+      logger.info(`[Citation Detection] Phase 2: AI found ${aiCitations.length} author-date citations`);
+    } else if (styleInfo.style === 'numeric-bracket') {
+      logger.info(`[Citation Detection] Skipping AI narrative detection for numeric-bracket style document (would produce false positives)`);
+    }
+
+    allCitations.sort((a, b) => a.location.startOffset - b.location.startOffset);
+
+    const deduped = this.deduplicateCitations(allCitations);
+
+    logger.info(`[Citation Detection] Total: ${deduped.length} citations (${styleInfo.style} style)`);
+    return deduped;
+  }
+
+  /**
+   * AI-powered citation detection for author-date style documents.
+   * Only called when the document uses author-date or unknown citation style.
+   */
+  private async detectCitationsWithAI(
+    text: string,
+    detectedStyle: string
+  ): Promise<ExtractedCitation[]> {
+    const textSample = text.slice(0, 12000);
+
+    const prompt = `Analyze the following academic text and extract ONLY actual citation markers. A citation marker is a specific notation that points to a source in the reference list.
 
 TEXT:
-${text.slice(0, 8000)}
+${textSample}
 
-DETECTION CATEGORIES:
-1. IN-TEXT CITATIONS (type: "parenthetical" or "narrative")
-   - Parenthetical: (Smith, 2020), (Smith & Jones, 2019), (Smith et al., 2021)
-   - Narrative: Smith (2020), According to Smith and Jones (2019)
+WHAT TO DETECT (citation markers only):
+1. PARENTHETICAL citations: (Smith, 2020), (Smith & Jones, 2019), (Smith et al., 2021, p. 42)
+2. NARRATIVE citations with year: Smith (2020) found that..., According to Jones and Lee (2019)
+3. NUMERIC bracket citations: [1], [2,3], [1-5]
 
-2. REFERENCE/BIBLIOGRAPHY ENTRIES (type: "reference")
-   - Full citations in References, Bibliography, or Works Cited sections
-   - Example: "Smith, J. (2020). Title of the work. Journal Name, 10(3), 234-240."
-   - Example: "Jones, A. B., & Williams, C. D. (2019). Book title. Publisher."
+CRITICAL - DO NOT DETECT these (they are NOT citations):
+- Sentences that merely mention a researcher's name without a year in parentheses
+  Example: "Wang's research team designed a system" → NOT a citation
+  Example: "Kumar Khadanga et al. proposed a new controller" → NOT a citation
+  Example: "Doguer and other scholars proposed" → NOT a citation
+- These are narrative prose that DISCUSSES someone's work, not a citation marker
+- Only count it as a citation if there is a specific year reference like (2020) or a bracket number like [5]
+- Equation references like (1), (2), equation (3)
+- Figure references like (Figure 1), (Table 2), Figure 3
+- Page references like (p. 42)
 
-SECTION CONTEXT - Identify where each citation appears:
-- "body": Main text, introduction, methods, results, discussion
-- "references": References, Bibliography, Works Cited section
-- "footnotes": Footnote section at bottom of page
-- "endnotes": Endnotes section
-- "abstract": Abstract section
-- "unknown": Cannot determine section
-
-For each citation found, return a JSON array with objects containing:
-- text: the full citation text as it appears
-- type: one of "parenthetical", "narrative", "footnote", "endnote", "numeric", "reference"
-- style: one of "APA", "MLA", "Chicago", "Vancouver", "IEEE", "unknown"
-- sectionContext: one of "body", "references", "footnotes", "endnotes", "abstract", "unknown"
+For each ACTUAL citation marker found, return a JSON array with objects containing:
+- text: the citation marker text only (e.g., "(Smith, 2020)" or "[5]"), NOT the surrounding sentence
+- type: "parenthetical", "narrative", or "numeric"
+- style: "APA", "MLA", "Chicago", "Vancouver", "IEEE", or "unknown"
+- sectionContext: "body", "references", "abstract", or "unknown"
 - paragraphIndex: approximate paragraph number (0-indexed)
 - startOffset: character position where citation starts
 - endOffset: character position where citation ends
-- confidence: 0-100 confidence score
+- confidence: 0-100
 
-IMPORTANT RULES:
-- Do NOT include figure references like "(see Figure 1)" or "(Table 2)"
-- Do NOT include page numbers alone like "(p. 42)"
-- DO include footnote/endnote cue markers like [1], [2], ¹, ² (type: "footnote" or "numeric")
-- DO include author-date in-text citations like "(Smith, 2020)"
-- DO include narrative citations like "According to Smith (2020)"
-- DO include full reference entries from bibliography sections
-- For reference entries, extract the COMPLETE citation including all components
+If no actual citation markers are found, return an empty array [].
 
 Respond with a JSON array only:`;
 
@@ -134,10 +299,18 @@ Respond with a JSON array only:`;
         maxOutputTokens: 4000,
       });
 
-      return response.data.map((citation) => {
+      const mapped: ExtractedCitation[] = [];
+      for (const citation of response.data) {
         const raw = citation as unknown as Record<string, unknown>;
-        return {
-          text: raw.text as string,
+        const citText = (raw.text as string) || '';
+
+        if (this.isLikelyFalsePositive(citText)) {
+          logger.debug(`[Citation Detection] Filtered false positive: "${citText.slice(0, 60)}"`);
+          continue;
+        }
+
+        mapped.push({
+          text: citText,
           type: raw.type as ExtractedCitation['type'],
           style: raw.style as ExtractedCitation['style'],
           sectionContext: (raw.sectionContext as ExtractedCitation['sectionContext']) ?? 'unknown',
@@ -148,12 +321,74 @@ Respond with a JSON array only:`;
             startOffset: (raw.startOffset as number) ?? 0,
             endOffset: (raw.endOffset as number) ?? 0,
           },
-        };
-      });
+        });
+      }
+      return mapped;
     } catch (error) {
-      logger.error('[Editorial AI] Citation detection failed', error instanceof Error ? error : undefined);
+      logger.error('[Editorial AI] AI citation detection failed', error instanceof Error ? error : undefined);
       return [];
     }
+  }
+
+  /**
+   * Post-processing filter to catch false positives the AI might still produce.
+   * Returns true if the text looks like a narrative sentence rather than a citation marker.
+   */
+  private isLikelyFalsePositive(text: string): boolean {
+    if (text.length > 200) return true;
+
+    const narrativePatterns = [
+      /^[A-Z][a-z]+(?:'s)?\s+(?:research|team|group|study|proposed|designed|developed|introduced|presented|showed|demonstrated|found|reported|concluded|suggested|argued|claimed|noted|observed|examined|investigated|analyzed|explored|applied|utilized|used|combined|integrated|improved|enhanced|achieved|established|created|built|implemented|constructed|formulated)/i,
+      /^(?:According to|Based on|Following|As described by|As noted by|As shown by|As reported by)\s+[A-Z]/i,
+      /(?:scholars?|researchers?|scientists?|authors?|investigators?|team)\s+proposed/i,
+      /et\s+al\.\s+proposed/i,
+      /and\s+other\s+(?:scholars?|researchers?|scientists?)\s+proposed/i,
+    ];
+
+    for (const pattern of narrativePatterns) {
+      if (pattern.test(text)) {
+        return true;
+      }
+    }
+
+    if (text.length > 100 && !/\(\d{4}[a-z]?\)/.test(text) && !/\[\d+\]/.test(text)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Remove duplicate citations based on overlapping offsets or identical text.
+   */
+  private deduplicateCitations(citations: ExtractedCitation[]): ExtractedCitation[] {
+    if (citations.length <= 1) return citations;
+
+    const result: ExtractedCitation[] = [];
+    const usedOffsets = new Set<string>();
+
+    for (const cit of citations) {
+      const key = `${cit.location.startOffset}-${cit.location.endOffset}`;
+      if (usedOffsets.has(key)) continue;
+
+      let isDuplicate = false;
+      for (const existing of result) {
+        if (
+          cit.location.startOffset >= existing.location.startOffset &&
+          cit.location.endOffset <= existing.location.endOffset
+        ) {
+          isDuplicate = true;
+          break;
+        }
+      }
+
+      if (!isDuplicate) {
+        usedOffsets.add(key);
+        result.push(cit);
+      }
+    }
+
+    return result;
   }
 
   /**

@@ -349,14 +349,11 @@ export class CitationDetectionService {
     // Detect citations FIRST (before any DB mutations)
     const extractedCitations = await editorialAi.detectCitations(doc.fullText);
 
-    // Perform atomic transaction: delete old, insert new, update status
     const citations = await prisma.$transaction(async (tx) => {
-      // Delete existing citations
       await tx.citation.deleteMany({
         where: { documentId },
       });
 
-      // Store new citations within transaction
       const stored = await Promise.all(
         extractedCitations.map(async (extracted) => {
           return tx.citation.create({
@@ -378,14 +375,13 @@ export class CitationDetectionService {
         })
       );
 
-      // Update document status
       await tx.editorialDocument.update({
         where: { id: documentId },
         data: { status: EditorialDocStatus.PARSED },
       });
 
       return stored;
-    });
+    }, { timeout: 30000 });
 
     // Map to DetectedCitation with parsing status
     const mappedCitations = citations.map(c => ({
