@@ -541,7 +541,7 @@ AUTHOR NAME RULES (CRITICAL):
 - For organizations like "IPCC": authors = [{"lastName": "IPCC"}]
 - NEVER put the surname/family name in firstName. NEVER use "Unknown" for lastName.
 
-Return a JSON object:
+Return a JSON object with this EXACT structure. Use null (not strings like "null") for unknown fields:
 {
   "entries": [
     {
@@ -550,15 +550,15 @@ Return a JSON object:
       "year": "2020",
       "title": "Title of the Work",
       "sourceType": "journal",
-      "journalName": "Journal Name or null",
-      "volume": "10 or null",
-      "issue": "3 or null",
-      "pages": "234-240 or null",
-      "publisher": "Publisher Name or null",
-      "doi": "10.xxxx/yyyy or null",
-      "url": "https://... or null",
-      "formattedEntry": "The complete formatted reference in ${styleName} style",
-      "confidence": 0.0-1.0
+      "journalName": null,
+      "volume": null,
+      "issue": null,
+      "pages": null,
+      "publisher": null,
+      "doi": null,
+      "url": null,
+      "formattedEntry": "The complete formatted reference in the requested style",
+      "confidence": 0.85
     }
   ]
 }
@@ -569,33 +569,42 @@ CRITICAL:
 - Use the REFERENCES section as the primary source of truth for metadata
 - For ${styleName}, follow exact formatting rules
 - confidence: 1.0 = full reference data available, 0.3-0.5 = reconstructed from in-text only
+- For formattedEntry: ONLY include known data. Do NOT include placeholder text like "[Journal Name]" or "[Publisher]" in the formatted output. If journal name is unknown, omit it from the formatted entry entirely.
+- Use null for any field where the information is not available. NEVER use strings like "null", "Journal Name or null", etc.
 
 Respond with JSON only:`;
 
     try {
-      const response = await geminiService.generateStructuredOutput<{
-        entries: Array<{
-          citationIds: string[];
-          authors: { firstName?: string; lastName: string }[];
-          year?: string;
-          title: string;
-          sourceType: string;
-          journalName?: string;
-          volume?: string;
-          issue?: string;
-          pages?: string;
-          publisher?: string;
-          doi?: string;
-          url?: string;
-          formattedEntry: string;
-          confidence: number;
-        }>;
-      }>(prompt, {
+      const response = await geminiService.generateText(prompt, {
         temperature: 0.1,
         maxOutputTokens: 8000,
       });
 
-      return response.data;
+      let text = response.text.trim();
+      if (text.startsWith('```json')) {
+        text = text.slice(7);
+      } else if (text.startsWith('```')) {
+        text = text.slice(3);
+      }
+      if (text.endsWith('```')) {
+        text = text.slice(0, -3);
+      }
+      text = text.trim();
+
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        logger.error('[Editorial AI] No JSON object found in AI response');
+        return { entries: [] };
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!parsed.entries || !Array.isArray(parsed.entries)) {
+        logger.error('[Editorial AI] AI response missing entries array');
+        return { entries: [] };
+      }
+
+      logger.info(`[Editorial AI] Successfully parsed ${parsed.entries.length} reference entries from AI`);
+      return parsed;
     } catch (error) {
       logger.error('[Editorial AI] Reference list generation failed', error instanceof Error ? error : undefined);
       return { entries: [] };

@@ -103,7 +103,16 @@ class ReferenceListService {
       });
 
       if (existingEntries.length > 0) {
-        return this.buildReferenceListResult(documentId, styleCode, existingEntries);
+        const hasValidData = existingEntries.some(e => {
+          const authors = Array.isArray(e.authors) ? e.authors as any[] : [];
+          return authors.some((a: any) => a?.lastName && a.lastName !== 'Unknown' && a.lastName !== '');
+        });
+
+        if (hasValidData) {
+          return this.buildReferenceListResult(documentId, styleCode, existingEntries);
+        }
+        logger.info(`[Reference List] Existing entries have invalid data (empty authors), forcing regeneration`);
+        await prisma.referenceListEntry.deleteMany({ where: { documentId } });
       }
     }
 
@@ -573,13 +582,23 @@ Return a JSON object:
 
   private fallbackFormat(entry: any, styleCode: string): string {
     const rawAuthors = Array.isArray(entry.authors) ? entry.authors : [];
-    const validAuthors = rawAuthors.filter((a: any) => a && typeof a === 'object' && (a.lastName || a.firstName));
+    const validAuthors = rawAuthors.filter((a: any) => {
+      if (!a || typeof a !== 'object') return false;
+      const hasLastName = a.lastName && a.lastName !== 'Unknown' && a.lastName.trim() !== '';
+      const hasFirstName = a.firstName && a.firstName !== 'Unknown' && a.firstName.trim() !== '';
+      return hasLastName || hasFirstName;
+    });
     
     let authorStr = 'Unknown Author';
     if (validAuthors.length > 0) {
       authorStr = validAuthors.map((a: any) => {
-        const lastName = a.lastName || 'Unknown';
-        const firstInitial = a.firstName ? `${a.firstName.charAt(0)}.` : '';
+        let lastName = (a.lastName && a.lastName !== 'Unknown') ? a.lastName.trim() : '';
+        let firstName = (a.firstName && a.firstName !== 'Unknown') ? a.firstName.trim() : '';
+        if (!lastName && firstName) {
+          lastName = firstName;
+          firstName = '';
+        }
+        const firstInitial = firstName ? `${firstName.charAt(0)}.` : '';
         return firstInitial ? `${lastName}, ${firstInitial}` : lastName;
       }).join(', ');
     }

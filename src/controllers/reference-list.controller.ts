@@ -35,7 +35,7 @@ export class ReferenceListController {
   async generateReferenceList(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
-      const { styleCode, options } = req.body;
+      const { styleCode, regenerate, options } = req.body;
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
@@ -48,11 +48,16 @@ export class ReferenceListController {
         return;
       }
 
+      const mergedOptions = {
+        ...options,
+        regenerate: regenerate === true || options?.regenerate === true,
+      };
+
       const result = await referenceListService.generateReferenceList(
         documentId,
         styleCode,
         tenantId,
-        options
+        mergedOptions
       );
 
       res.json({ success: true, data: result });
