@@ -162,7 +162,7 @@ export class JobController {
             completedAt: true,
             productId: true,
             userId: true,
-            product: {
+            Product: {
               select: {
                 id: true,
                 title: true,
