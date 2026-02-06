@@ -902,10 +902,12 @@ class RemediationService {
       throw new Error('Remediation plan not found');
     }
 
-    const pendingTasks = plan.tasks.filter(t => t.status === 'pending');
+    // Transfer ALL tasks (both pending and completed) to ACR
+    // ACR workflow needs to know what was remediated and what still needs verification
+    const pendingTasks = plan.tasks;
 
     if (pendingTasks.length === 0) {
-      throw new Error('No pending tasks to transfer. All tasks are already completed.');
+      throw new Error('No tasks found to transfer. Please complete remediation first.');
     }
 
     const originalJob = await prisma.job.findFirst({
