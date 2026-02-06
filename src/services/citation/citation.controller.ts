@@ -6,8 +6,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { citationDetectionService } from './citation-detection.service';
 import { citationParsingService } from './citation-parsing.service';
+import { citationStyleValidationService } from './citation-style-validation.service';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { DetectionResult, ValidationSummary } from './citation.types';
 
 export class CitationController {
   /**
@@ -28,12 +30,13 @@ export class CitationController {
         return;
       }
 
-      const { fileS3Key, presignedUrl, fileName, fileSize, jobId: existingJobId } = req.body as {
+      const { fileS3Key, presignedUrl, fileName, fileSize, jobId: existingJobId, styleCode } = req.body as {
         fileS3Key?: string;
         presignedUrl?: string;
         fileName?: string;
         fileSize?: number;
         jobId?: string;
+        styleCode?: string;
       };
 
       // Mode 3: Job reference - return existing results
@@ -42,6 +45,9 @@ export class CitationController {
         if (!result) {
           res.status(404).json({ success: false, error: 'Job not found or no detection results' });
           return;
+        }
+        if (styleCode && result.totalCount > 0) {
+          result.validation = await this.runValidation(result.documentId, styleCode, tenantId);
         }
         res.status(200).json({ success: true, data: result });
         return;
@@ -56,6 +62,10 @@ export class CitationController {
           req.file.originalname
         );
 
+        if (styleCode && result.totalCount > 0) {
+          result.validation = await this.runValidation(result.documentId, styleCode, tenantId);
+        }
+
         res.status(201).json({ success: true, data: result });
         return;
       }
@@ -66,7 +76,6 @@ export class CitationController {
         return;
       }
 
-      // Derive fileName from S3 key if not provided
       const resolvedFileName = fileName || (fileS3Key ? fileS3Key.split('/').pop() || 'unknown' : 'document');
 
       const result = await citationDetectionService.detectFromS3(
@@ -77,6 +86,10 @@ export class CitationController {
         resolvedFileName,
         fileSize
       );
+
+      if (styleCode && result.totalCount > 0) {
+        result.validation = await this.runValidation(result.documentId, styleCode, tenantId);
+      }
 
       res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -391,6 +404,46 @@ export class CitationController {
     } catch (error) {
       logger.error('[Citation Controller] getStats failed', error instanceof Error ? error : undefined);
       next(error);
+    }
+  }
+
+  private async runValidation(
+    documentId: string,
+    styleCode: string,
+    tenantId: string
+  ): Promise<ValidationSummary> {
+    try {
+      logger.info(`[Citation Controller] Auto-validating document=${documentId} with style=${styleCode}`);
+      const validationResult = await citationStyleValidationService.validateDocument(
+        documentId,
+        styleCode,
+        tenantId
+      );
+      return {
+        styleCode: validationResult.styleCode,
+        styleName: validationResult.styleName,
+        totalCitations: validationResult.summary.totalCitations,
+        validCitations: validationResult.summary.validCitations,
+        citationsWithErrors: validationResult.summary.citationsWithErrors,
+        citationsWithWarnings: validationResult.summary.citationsWithWarnings,
+        errorCount: validationResult.summary.errorCount,
+        warningCount: validationResult.summary.warningCount,
+        violations: validationResult.violations,
+      };
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[Citation Controller] Auto-validation failed: ${errMsg}`, error instanceof Error ? error : undefined);
+      return {
+        styleCode,
+        styleName: `${styleCode} (validation failed: ${errMsg})`,
+        totalCitations: 0,
+        validCitations: 0,
+        citationsWithErrors: 0,
+        citationsWithWarnings: 0,
+        errorCount: 0,
+        warningCount: 0,
+        violations: [],
+      };
     }
   }
 }

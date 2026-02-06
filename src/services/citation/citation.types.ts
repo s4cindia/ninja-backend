@@ -37,6 +37,31 @@ export interface DetectionResult {
   byType: Record<string, number>;
   byStyle: Record<string, number>;
   processingTimeMs: number;
+  validation?: ValidationSummary;
+}
+
+/** Validation summary included in detection result when styleCode is provided */
+export interface ValidationSummary {
+  styleCode: string;
+  styleName: string;
+  totalCitations: number;
+  validCitations: number;
+  citationsWithErrors: number;
+  citationsWithWarnings: number;
+  errorCount: number;
+  warningCount: number;
+  violations: Array<{
+    citationId: string;
+    citationText: string;
+    violationType: string;
+    ruleReference: string;
+    ruleName: string;
+    explanation: string;
+    originalText: string;
+    suggestedFix: string;
+    correctedCitation: string;
+    severity: 'error' | 'warning' | 'info';
+  }>;
 }
 
 /** Input for detection operation */

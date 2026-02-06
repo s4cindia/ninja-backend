@@ -83,6 +83,11 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
 -   URLs use kebab-case.
 -   Standardized error responses with request IDs.
 
+-   **Editorial Overview & Unified Detection:**
+    -   **Merged Detection + Validation:** `POST /api/v1/citation/detect` accepts optional `styleCode` field to automatically run style validation after detection, returning combined results in a single response. Valid style codes: `apa7`, `mla9`, `chicago17`, `vancouver`, `ieee`.
+    -   **Editorial Document Overview:** `GET /api/v1/editorial/document/:documentId/overview` returns document metadata, citation/validation/correction/reference counts, links to all related jobs, and API links for all document operations.
+    -   **Editorial Document List:** `GET /api/v1/editorial/documents` returns paginated list of all editorial documents with counts and overview links. Supports `status`, `limit`, `offset` query params.
+
 **Project Structure:**
 The project follows a modular structure with dedicated directories for configuration (`config/`), routes (`routes/`), controllers (`controllers/`), services (`services/`), middleware (`middleware/`), Prisma models (`models/`), BullMQ queues (`queues/`) and workers (`workers/`), and utilities (`utils/`).
 
