@@ -274,37 +274,20 @@ export class ConfidenceController {
         remainingAuditIssues
       );
 
-      // Add fixed issue counts to each criterion
-      // Since we already filtered fixed issues, we need to count them from the original list
+      // Add remaining count to each criterion
+      // Note: fixedCount tracking requires complex WCAG mapping - omitted for now
+      // The ACR analysis endpoint already provides accurate fixedCount via the ACR analysis service
       const enhancedAnalysis = confidenceAnalysis.map(criterion => {
         const remainingIssues = criterion.relatedIssues || [];
         const remainingCount = remainingIssues.length;
 
-        // Count fixed issues for this criterion from the original audit issues
-        const allCriterionIssues = auditIssues.filter(issue => {
-          const issueCode = issue.ruleId || 'unknown';
-          // Match this criterion - you'd need proper mapping here
-          return true; // Simplified - would need WCAG mapping
-        });
-
-        const fixedIssuesForCriterion = allCriterionIssues.filter(issue => {
-          const issueCode = issue.ruleId || 'unknown';
-          return fixedModifications.some(mod =>
-            mod.issueCode === issueCode ||
-            (mod.issueCode && issueCode.includes(mod.issueCode))
-          );
-        });
-
-        const fixedCount = fixedIssuesForCriterion.length;
-
-        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${fixedCount} fixed, ${remainingCount} remaining, confidence=${criterion.confidenceScore}`);
+        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${remainingCount} remaining, confidence=${criterion.confidenceScore}`);
 
         return {
           ...criterion,
-          fixedCount,
           remainingCount,
-          fixedIssues: fixedCount > 0 ? fixedIssuesForCriterion : undefined,
           issueCount: remainingCount,
+          // Don't provide fixedCount from this endpoint - it's available from ACR analysis
         };
       });
 
