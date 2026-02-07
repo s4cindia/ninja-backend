@@ -283,12 +283,13 @@ export class EditorialOverviewController {
         logger.warn('[Editorial Overview] Citation highlighting failed, returning plain HTML', hlError instanceof Error ? hlError : undefined);
       }
 
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.json({
         success: true,
         data: {
           documentId: document.id,
           fullText: document.fullText || null,
-          fullHtml: document.fullHtml || null,
+          fullHtml: highlightedHtml || document.fullHtml || null,
           highlightedHtml,
           referenceLookup,
         },
