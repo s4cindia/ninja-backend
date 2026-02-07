@@ -265,6 +265,7 @@ export class CitationStylesheetDetectionService {
         startOffset: c.startOffset,
         endOffset: c.endOffset,
         confidence: c.confidence,
+        sectionContext: c.sectionContext || 'BODY',
         primaryComponentId: c.primaryComponentId,
         isParsed: !!c.primaryComponentId,
         parseConfidence: c.primaryComponent?.confidence ?? null,
@@ -275,13 +276,14 @@ export class CitationStylesheetDetectionService {
     }
 
     const bodyCitations = citations.filter(c =>
-      c.citationType !== 'REFERENCE'
+      c.sectionContext !== 'REFERENCES' && c.citationType !== 'REFERENCE'
     );
     const refCitations = citations.filter(c =>
-      c.citationType === 'REFERENCE'
+      c.sectionContext === 'REFERENCES' || c.citationType === 'REFERENCE'
     );
 
     let referenceEntries: Array<{ number: number | null; text: string; citationIds?: string[] }> = this.extractReferenceEntries(fullText);
+    logger.info(`[Citation Analysis] bodyCitations=${bodyCitations.length}, refCitations=${refCitations.length}, extractedReferenceEntries=${referenceEntries.length}`);
 
     if (referenceEntries.length === 0) {
       const dbEntries = await prisma.referenceListEntry.findMany({
@@ -585,12 +587,12 @@ export class CitationStylesheetDetectionService {
 
   private extractReferenceEntries(fullText: string): Array<{ number: number | null; text: string }> {
     const refSectionMatch = fullText.match(
-      /(?:^|\n)\s*(References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*\n([\s\S]*?)(?:\n\s*(?:Appendix|Acknowledgments?|About\s+the\s+Author|Notes)\s*\n|$)/im
+      /(?:^|\n)\s*(References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*\n([\s\S]*?)(?:\n\s*(?:Appendix|Acknowledgments?|About\s+the\s+Author|Notes)\s*\n|$)/i
     );
 
     if (!refSectionMatch) {
       const lastRefMatch = fullText.match(
-        /(?:^|\n)\s*(References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*\n([\s\S]*)$/im
+        /(?:^|\n)\s*(References|Bibliography|Works\s+Cited|Literature\s+Cited)\s*\n([\s\S]*)$/i
       );
       if (!lastRefMatch) return [];
       return this.parseReferenceText(lastRefMatch[2]);

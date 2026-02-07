@@ -20,11 +20,11 @@ export interface DetectedCitation {
   paragraphIndex: number | null;
   startOffset: number;
   endOffset: number;
-  confidence: number; // 0-1 normalized
-  // Parsing status fields
-  primaryComponentId: string | null;  // Set when parsed
-  isParsed: boolean;                  // Convenience flag
-  parseConfidence: number | null;     // Component confidence when parsed
+  confidence: number;
+  sectionContext?: string;
+  primaryComponentId: string | null;
+  isParsed: boolean;
+  parseConfidence: number | null;
 }
 
 /** Detection result summary for a document */
