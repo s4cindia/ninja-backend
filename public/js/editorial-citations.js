@@ -5,6 +5,8 @@ const state = {
   documentId: null,
   analysis: null,
   documentText: null,
+  documentHtml: null,
+  referenceLookup: {},
   issues: [],
   activeTab: 'all',
   decisions: {},
@@ -186,12 +188,15 @@ async function runAnalysis() {
   document.getElementById('doc-info').textContent = `Document: ${state.documentId.slice(0, 8)}...`;
 
   try {
-    const [analysis, textData] = await Promise.all([
+    const [analysis, textData, refLookup] = await Promise.all([
       api(`/citation/document/${state.documentId}`),
       api(`/editorial/document/${state.documentId}/text`).catch(() => null),
+      api(`/editorial/document/${state.documentId}/reference-lookup`).catch(() => null),
     ]);
     state.analysis = analysis;
     state.documentText = textData?.fullText || null;
+    state.documentHtml = textData?.fullHtml || null;
+    state.referenceLookup = refLookup?.referenceLookup || {};
     buildIssuesFromAnalysis();
     state.activeTab = state.issues.length > 0 ? 'all' : 'references';
     renderDocumentPanel();
@@ -259,9 +264,18 @@ async function handleFileSelect(file) {
       state.decisions = {};
       state.selectedFixId = {};
       try {
-        const textData = await api(`/editorial/document/${result.documentId}/text`);
+        const [textData, refLookup] = await Promise.all([
+          api(`/editorial/document/${result.documentId}/text`),
+          api(`/editorial/document/${result.documentId}/reference-lookup`).catch(() => null),
+        ]);
         state.documentText = textData?.fullText || null;
-      } catch { state.documentText = null; }
+        state.documentHtml = textData?.fullHtml || null;
+        state.referenceLookup = refLookup?.referenceLookup || {};
+      } catch {
+        state.documentText = null;
+        state.documentHtml = null;
+        state.referenceLookup = {};
+      }
       buildIssuesFromAnalysis();
       state.activeTab = state.issues.length > 0 ? 'all' : 'references';
       renderDocumentPanel();
@@ -400,7 +414,9 @@ function renderDocumentPanel() {
     html += '</div>';
   }
 
-  if (state.documentText) {
+  if (state.documentHtml) {
+    html += renderHtmlEditorView(state.documentHtml);
+  } else if (state.documentText) {
     html += renderEditorView(state.documentText);
   } else if (a?.citations?.items?.length > 0) {
     html += '<div class="section-label" style="padding:12px 16px 4px">Detected Citations</div>';
@@ -422,10 +438,54 @@ function renderDocumentPanel() {
   }
 
   body.innerHTML = html;
+  initCitationTooltips(body);
 }
 
-function renderEditorView(text) {
-  const lines = text.split('\n');
+function initCitationTooltips(container) {
+  let tooltip = document.getElementById('citation-tooltip');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'citation-tooltip';
+    tooltip.className = 'citation-tooltip';
+    document.body.appendChild(tooltip);
+  }
+
+  container.querySelectorAll('.citation-highlight[data-cit-num]').forEach(el => {
+    el.addEventListener('mouseenter', (e) => {
+      const num = el.dataset.citNum;
+      const cls = el.classList.contains('matched') ? 'matched' : 'issue';
+      const text = getTooltipText(parseInt(num, 10), cls);
+      tooltip.innerHTML = `<div class="tooltip-header">[${escapeHtml(num)}]</div><div class="tooltip-body">${escapeHtml(text)}</div>`;
+      tooltip.classList.add('visible');
+      tooltip.classList.toggle('tooltip-matched', cls === 'matched');
+      tooltip.classList.toggle('tooltip-issue', cls === 'issue');
+      positionTooltip(tooltip, e);
+    });
+    el.addEventListener('mousemove', (e) => {
+      positionTooltip(tooltip, e);
+    });
+    el.addEventListener('mouseleave', () => {
+      tooltip.classList.remove('visible');
+    });
+  });
+}
+
+function positionTooltip(tooltip, e) {
+  const pad = 12;
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  const rect = tooltip.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth - pad) {
+    x = e.clientX - rect.width - pad;
+  }
+  if (y + rect.height > window.innerHeight - pad) {
+    y = e.clientY - rect.height - pad;
+  }
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = y + 'px';
+}
+
+function getMatchedNums() {
   const a = state.analysis;
   const matchedNums = new Set();
   if (a?.crossReference) {
@@ -434,6 +494,36 @@ function renderEditorView(text) {
       if (!orphanNums.has(i)) matchedNums.add(i);
     }
   }
+  return matchedNums;
+}
+
+function getTooltipText(n, cls) {
+  const refText = state.referenceLookup[String(n)];
+  if (refText) {
+    return refText.length > 200 ? refText.slice(0, 200) + '...' : refText;
+  }
+  return cls === 'matched' ? `Citation [${n}] — has reference` : `Citation [${n}] — no matching reference`;
+}
+
+function highlightCitations(htmlStr) {
+  const matchedNums = getMatchedNums();
+  return htmlStr.replace(/\[(\d{1,4})\]/g, (match, num) => {
+    const n = parseInt(num, 10);
+    const cls = matchedNums.has(n) ? 'matched' : 'issue';
+    return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
+  });
+}
+
+function renderHtmlEditorView(html) {
+  const highlighted = highlightCitations(html);
+  return `<div class="editor-wrapper html-editor">
+    <div class="editor-content styled-html">${highlighted}</div>
+  </div>`;
+}
+
+function renderEditorView(text) {
+  const lines = text.split('\n');
+  const matchedNums = getMatchedNums();
 
   let lineNumsHtml = '';
   let contentHtml = '';
@@ -444,10 +534,10 @@ function renderEditorView(text) {
     const highlighted = escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
       const n = parseInt(num, 10);
       const cls = matchedNums.has(n) ? 'matched' : 'issue';
-      return `<span class="citation-highlight ${cls}" data-cit-num="${n}" title="Citation [${n}] — ${cls === 'matched' ? 'has reference' : 'no matching reference'}">${match}</span>`;
+      return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
     });
     const alsoHighlightAuthorDate = highlighted.replace(/\(([A-Z][a-z]+(?:\s(?:et\s+al\.?|&amp;\s+[A-Z][a-z]+))?(?:,?\s*\d{4}[a-z]?))\)/g, (match) => {
-      return `<span class="citation-highlight matched" title="Author-date citation">${match}</span>`;
+      return `<span class="citation-highlight matched">${match}</span>`;
     });
     contentHtml += `<div class="editor-line" data-line="${lineNum}">${alsoHighlightAuthorDate || '&nbsp;'}</div>`;
   });
