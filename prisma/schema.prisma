@@ -640,6 +640,7 @@ model EditorialDocument {
   storageType  StorageType @default(S3)
 
   fullText   String? @db.Text
+  fullHtml   String? @db.Text
   wordCount  Int     @default(0)
   pageCount  Int?
   chunkCount Int     @default(0)
