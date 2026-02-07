@@ -410,11 +410,11 @@ export class CitationDetectionService {
     });
 
     if (existing) {
-      // Update existing document
       return prisma.editorialDocument.update({
         where: { id: existing.id },
         data: {
           fullText: parsed.text,
+          fullHtml: parsed.html || null,
           wordCount: parsed.metadata.wordCount,
           pageCount: parsed.metadata.pageCount || null,
           chunkCount: parsed.chunks.length,
@@ -427,7 +427,6 @@ export class CitationDetectionService {
       });
     }
 
-    // Create new document
     return prisma.editorialDocument.create({
       data: {
         tenantId,
@@ -436,8 +435,9 @@ export class CitationDetectionService {
         originalName: fileName,
         mimeType: this.getMimeType(fileName),
         fileSize,
-        storagePath: '', // Buffer-based, not stored
+        storagePath: '',
         fullText: parsed.text,
+        fullHtml: parsed.html || null,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,

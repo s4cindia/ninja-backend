@@ -6,11 +6,41 @@ Add an editor view to the existing `/editorial/citations/:documentId` page that 
 
 ## API Endpoints Required
 
-### 1. Get Document Full Text (NEW — not yet used by frontend)
+### 1. Get Document Content — Text + HTML (updated)
 
 ```
 GET /api/v1/editorial/document/:documentId/text
 Authorization: Bearer <token>
+```
+
+The `:documentId` parameter accepts **either a document ID or a job ID** (the backend resolves both).
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "documentId": "4f8893df-8cfe-4c73-821d-b8f0fefa1c70",
+    "fullText": "Plain text extracted from document...",
+    "fullHtml": "<h1>Title</h1><p>Paragraph with <strong>bold</strong> and <em>italic</em>...</p>"
+  }
+}
+```
+
+- **`fullHtml`** — Styled HTML converted from the original Word document using mammoth.js. Preserves headings (h1-h4), bold, italic, underline, strikethrough, lists, tables, and superscripts/subscripts. **Use this for the editor panel** to show the document like a Word file.
+- **`fullText`** — Plain text fallback (no formatting). Only use if `fullHtml` is null.
+- **`fullHtml` will be `null` for documents uploaded before this feature.** Use the regenerate endpoint below to backfill.
+
+### 1b. Regenerate HTML for Existing Documents
+
+For documents uploaded before HTML support was added, re-upload the DOCX file to generate HTML:
+
+```
+POST /api/v1/editorial/document/:documentId/regenerate-html
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+Body: file=<DOCX file>
 ```
 
 **Response:**
@@ -18,12 +48,14 @@ Authorization: Bearer <token>
 {
   "success": true,
   "data": {
-    "fullText": "Full document text as a single string with newlines..."
+    "documentId": "4f8893df-...",
+    "htmlLength": 28450,
+    "warnings": 2
   }
 }
 ```
 
-This is the raw document text that should be displayed in the editor panel. It preserves original line breaks and paragraph structure.
+After calling this, the `GET .../text` endpoint will return `fullHtml` for that document.
 
 ### 2. Get Citation Analysis (already used)
 

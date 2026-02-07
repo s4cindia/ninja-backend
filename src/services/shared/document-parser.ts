@@ -6,9 +6,11 @@
 
 import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
+import mammoth from 'mammoth';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { logger } from '../../lib/logger';
+import { sanitizeDocumentHtml } from '../../utils/html-sanitizer';
 
 export interface TextChunk {
   id: string;
@@ -47,6 +49,7 @@ export interface DocumentStructure {
 
 export interface ParsedDocument {
   text: string;
+  html?: string;
   chunks: TextChunk[];
   metadata: DocumentMetadata;
   structure: DocumentStructure;
@@ -307,8 +310,32 @@ export class DocumentParser {
 
     const chunks = this.chunkText(fullText);
 
+    let html: string | undefined;
+    try {
+      const result = await mammoth.convertToHtml({ buffer }, {
+        styleMap: [
+          "p[style-name='Title'] => h1.doc-title",
+          "p[style-name='Heading 1'] => h1",
+          "p[style-name='Heading 2'] => h2",
+          "p[style-name='Heading 3'] => h3",
+          "p[style-name='Heading 4'] => h4",
+          "b => strong",
+          "i => em",
+          "u => u",
+          "strike => s",
+        ],
+      });
+      html = sanitizeDocumentHtml(result.value);
+      if (result.messages.length > 0) {
+        logger.debug(`[DocumentParser] Mammoth warnings: ${result.messages.length}`);
+      }
+    } catch (err) {
+      logger.warn('[DocumentParser] Mammoth HTML conversion failed, falling back to text-only', err instanceof Error ? err : undefined);
+    }
+
     return {
       text: fullText,
+      html,
       chunks,
       metadata,
       structure: { chapters: [], headings },
