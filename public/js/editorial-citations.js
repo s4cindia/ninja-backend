@@ -195,8 +195,8 @@ async function runAnalysis() {
     ]);
     state.analysis = analysis;
     state.documentText = textData?.fullText || null;
-    state.documentHtml = textData?.fullHtml || null;
-    state.referenceLookup = refLookup?.referenceLookup || {};
+    state.documentHtml = textData?.highlightedHtml || textData?.fullHtml || null;
+    state.referenceLookup = textData?.referenceLookup || refLookup?.referenceLookup || {};
     buildIssuesFromAnalysis();
     state.activeTab = state.issues.length > 0 ? 'all' : 'references';
     renderDocumentPanel();

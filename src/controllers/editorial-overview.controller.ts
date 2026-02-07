@@ -5,6 +5,7 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { sanitizeDocumentHtml, MAMMOTH_STYLE_MAP } from '../utils/html-sanitizer';
 import { citationStylesheetDetectionService } from '../services/citation/citation-stylesheet-detection.service';
+import { highlightCitationsInHtml, CitationHighlightData } from '../utils/citation-highlighter';
 
 export class EditorialOverviewController {
   async getDocumentOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -252,12 +253,44 @@ export class EditorialOverviewController {
         return;
       }
 
+      let highlightedHtml: string | null = null;
+      let referenceLookup: Record<string, string> = {};
+
+      try {
+        const analysis = await citationStylesheetDetectionService.getAnalysisResults(document.id, tenantId)
+          || await citationStylesheetDetectionService.getAnalysisByJobId(document.id, tenantId);
+
+        if (analysis && document.fullHtml) {
+          const lookupMap: Record<string, string> = {};
+          for (const entry of analysis.referenceList.entries) {
+            if (entry.number !== null) {
+              lookupMap[String(entry.number)] = entry.text;
+            }
+          }
+          referenceLookup = lookupMap;
+
+          const orphanedNumbers = new Set<number>();
+          if (analysis.crossReference?.citationsWithoutReference) {
+            for (const cit of analysis.crossReference.citationsWithoutReference) {
+              if (cit.number !== null) orphanedNumbers.add(cit.number);
+            }
+          }
+
+          const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers };
+          highlightedHtml = highlightCitationsInHtml(document.fullHtml, highlightData);
+        }
+      } catch (hlError) {
+        logger.warn('[Editorial Overview] Citation highlighting failed, returning plain HTML', hlError instanceof Error ? hlError : undefined);
+      }
+
       res.json({
         success: true,
         data: {
           documentId: document.id,
           fullText: document.fullText || null,
           fullHtml: document.fullHtml || null,
+          highlightedHtml,
+          referenceLookup,
         },
       });
     } catch (error) {
