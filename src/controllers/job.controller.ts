@@ -281,7 +281,7 @@ export class JobController {
           status: true,
           output: true,
           completedAt: true,
-          validationResults: {
+          ValidationResult: {
             select: {
               id: true,
               category: true,
@@ -289,7 +289,7 @@ export class JobController {
               passed: true,
               score: true,
               details: true,
-              issues: {
+              Issue: {
                 select: {
                   id: true,
                   severity: true,
@@ -323,7 +323,7 @@ export class JobController {
           type: job.type,
           completedAt: job.completedAt,
           output: normalizeJobOutput(job.output),
-          validationResults: job.validationResults,
+          validationResults: job.ValidationResult,
         },
       });
     } catch (error) {

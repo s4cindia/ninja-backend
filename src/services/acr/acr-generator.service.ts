@@ -10,6 +10,7 @@ import {
 import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
 import { confidenceAnalyzerService } from './confidence-analyzer.service';
+import { ApplicabilitySuggestion } from './content-detection.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -535,23 +536,66 @@ class AcrGeneratorService {
 
   async generateConfidenceAnalysis(
     edition: AcrEdition,
-    auditIssues: AuditIssueInput[]
+    auditIssues: AuditIssueInput[],
+    fixedIssuesMap?: Map<string, RemediatedIssue[]>,
+    naSuggestions?: ApplicabilitySuggestion[]
   ): Promise<CriterionConfidenceWithIssues[]> {
     logger.info(`[ACR Generator] Starting analysis with ${auditIssues.length} issues`);
     logger.debug(`[ACR Generator] Issue rule IDs: ${JSON.stringify(auditIssues.map(i => i.ruleId))}`);
 
-    const criteria = await this.getCriteriaForEdition(edition);
+    // Get criteria for edition and filter to only A and AA levels (exclude AAA)
+    const allCriteria = await this.getCriteriaForEdition(edition);
+    const criteria = allCriteria.filter(c => c.level === 'A' || c.level === 'AA');
+    logger.info(`[ACR Generator] Filtered to ${criteria.length} criteria (A and AA only, excluding AAA)`);
+
     const issueMapping = wcagIssueMapperService.mapIssuesToCriteria(auditIssues);
 
     logger.debug(`[ACR Generator] Issue mapping size: ${issueMapping.size}`);
     logger.debug(`[ACR Generator] Mapped criteria: ${JSON.stringify(Array.from(issueMapping.keys()))}`);
+    if (fixedIssuesMap) {
+      logger.debug(`[ACR Generator] Fixed issues mapping size: ${fixedIssuesMap.size}`);
+    }
 
     const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
       const relatedIssues = issueMapping.get(criterion.id) || [];
-      const status = this.determineStatus(relatedIssues);
-      const confidenceScore = this.calculateConfidence(criterion.id, relatedIssues);
-      const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
+      const fixedIssues = fixedIssuesMap?.get(criterion.id) || [];
+
+      // Find N/A suggestion for this criterion
+      const naSuggestion = this.findNaSuggestion(criterion.id, naSuggestions);
+
+      // Determine if criterion is N/A based on suggestion (high confidence threshold)
+      const isNotApplicable = naSuggestion?.suggestedStatus === 'not_applicable'
+                              && naSuggestion.confidence >= 0.8;  // 80% confidence threshold
+
+      const naReason = isNotApplicable ? naSuggestion?.rationale : undefined;
+
+      // Skip confidence calculation if N/A (or set to 100% pass)
+      const status = isNotApplicable
+        ? 'not_applicable'
+        : this.determineStatus(relatedIssues);
+
+      const confidenceScore = isNotApplicable
+        ? 1.0  // 100% confidence for N/A
+        : this.calculateConfidence(criterion.id, relatedIssues);
+
+      const remarks = isNotApplicable
+        ? `Not applicable: ${naReason}`
+        : this.generateConfidenceRemarks(criterion, relatedIssues);
+
       const hasIssues = relatedIssues.length > 0;
+
+      // Get base automation capability (doesn't change with issues)
+      const confidenceAssessment = confidenceAnalyzerService.analyzeConfidence(criterion.id);
+      const automationCapability = confidenceAssessment.confidencePercentage / 100;
+
+      // Generate findings and recommendation
+      const findings = isNotApplicable
+        ? [`Criterion not applicable: ${naReason}`]
+        : this.generateFindings(criterion, relatedIssues, fixedIssues);
+
+      const recommendation = isNotApplicable
+        ? 'No action required - criterion does not apply to this content'
+        : this.generateRecommendation(criterion, relatedIssues, confidenceScore);
 
       return {
         criterionId: criterion.id,
@@ -562,8 +606,24 @@ class AcrGeneratorService {
         remarks,
         relatedIssues,
         issueCount: relatedIssues.length,
-        hasIssues
+        hasIssues,
+        fixedIssues: fixedIssues.length > 0 ? fixedIssues : undefined,
+        fixedCount: fixedIssues.length,
+        requiresManualVerification: automationCapability === 0,
+        automationCapability,
+        findings,
+        recommendation,
+        isNotApplicable,
+        naReason,
+        naSuggestion: naSuggestion || undefined
       };
+    });
+
+    // Log N/A criteria
+    const naCriteria = results.filter(r => r.isNotApplicable);
+    logger.info(`[ACR Generator] ${naCriteria.length} criteria marked as N/A`);
+    naCriteria.forEach(c => {
+      logger.debug(`[ACR Generator] N/A: ${c.criterionId} - ${c.naReason}`);
     });
 
     return results;
@@ -635,6 +695,97 @@ class AcrGeneratorService {
 
     return `Found ${issues.length} issue(s) (${parts.join(', ')}) related to ${criterion.name}. Manual review recommended.`;
   }
+
+  private generateFindings(
+    criterion: AcrCriterion,
+    issues: IssueMapping[],
+    fixedIssues: RemediatedIssue[]
+  ): string[] {
+    const findings: string[] = [];
+
+    if (issues.length === 0 && fixedIssues.length === 0) {
+      findings.push(`No issues detected for ${criterion.name}`);
+    }
+
+    if (fixedIssues.length > 0) {
+      findings.push(`${fixedIssues.length} issue(s) were successfully remediated`);
+    }
+
+    if (issues.length > 0) {
+      findings.push(`${issues.length} issue(s) require attention`);
+      const criticalCount = issues.filter(i => i.impact === 'critical').length;
+      const seriousCount = issues.filter(i => i.impact === 'serious').length;
+
+      if (criticalCount > 0) {
+        findings.push(`${criticalCount} critical severity issue(s) found`);
+      }
+      if (seriousCount > 0) {
+        findings.push(`${seriousCount} serious severity issue(s) found`);
+      }
+    }
+
+    return findings;
+  }
+
+  private generateRecommendation(
+    criterion: AcrCriterion,
+    issues: IssueMapping[],
+    confidence: number
+  ): string {
+    if (confidence === 0) {
+      return 'Manual review required - this criterion cannot be fully automated';
+    }
+
+    if (issues.length > 0) {
+      const hasCritical = issues.some(i => i.impact === 'critical');
+      if (hasCritical) {
+        return 'Fix critical issues immediately and re-test';
+      }
+      return 'Fix identified issues and re-test';
+    }
+
+    if (confidence >= 0.9) {
+      return 'Continue to maintain compliance';
+    }
+
+    if (confidence >= 0.7) {
+      return 'Recommended: Manual verification of key elements';
+    }
+
+    return 'Manual review strongly recommended';
+  }
+
+  private findNaSuggestion(
+    criterionId: string,
+    naSuggestions?: ApplicabilitySuggestion[]
+  ): ApplicabilitySuggestion | undefined {
+    if (!naSuggestions || naSuggestions.length === 0) return undefined;
+
+    return naSuggestions.find(s => {
+      // Exact match
+      if (s.criterionId === criterionId) return true;
+
+      // Group match (e.g., "1.2.x" matches "1.2.1", "1.2.2")
+      if (s.criterionId.endsWith('.x')) {
+        const prefix = s.criterionId.slice(0, -2);
+        return criterionId.startsWith(prefix + '.');
+      }
+
+      return false;
+    });
+  }
+}
+
+export interface RemediatedIssue {
+  ruleId: string;
+  message: string;
+  filePath: string;
+  remediationInfo: {
+    status: 'REMEDIATED';
+    method: 'autofix' | 'quickfix' | 'manual';
+    description: string;
+    completedAt: string;
+  };
 }
 
 export interface CriterionConfidenceWithIssues {
@@ -647,6 +798,16 @@ export interface CriterionConfidenceWithIssues {
   relatedIssues?: IssueMapping[];
   issueCount?: number;
   hasIssues: boolean;
+  fixedIssues?: RemediatedIssue[];
+  fixedCount?: number;
+  // New fields from spec
+  requiresManualVerification: boolean;
+  automationCapability: number;
+  findings: string[];
+  recommendation: string;
+  isNotApplicable: boolean;
+  naReason?: string;
+  naSuggestion?: ApplicabilitySuggestion;
 }
 
 export const acrGeneratorService = new AcrGeneratorService();

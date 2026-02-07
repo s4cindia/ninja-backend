@@ -703,9 +703,9 @@ export class AcrService {
         userId,
       },
       include: {
-        validationResults: {
+        ValidationResult: {
           include: {
-            issues: true,
+            Issue: true,
           },
         },
       },
@@ -719,15 +719,15 @@ export class AcrService {
       };
     }
 
-    const allIssues = job.validationResults.flatMap(vr =>
-      vr.issues.map(issue => ({
+    const allIssues = job.ValidationResult?.flatMap(vr =>
+      vr.Issue?.map(issue => ({
         code: issue.code,
         severity: issue.severity,
         message: issue.description,
         filePath: issue.filePath,
         wcagCriteria: issue.wcagCriteria,
-      }))
-    );
+      })) || []
+    ) || [];
 
     const input = job.input as any;
     const fileName = input?.originalName || input?.fileName || 'Unknown Document';

@@ -177,6 +177,28 @@ export interface AuditIssueInput {
   xpath?: string | null;
 }
 
+export interface RemediatedIssue {
+  ruleId: string;
+  message: string;
+  filePath: string;
+  remediationInfo: {
+    status: 'REMEDIATED';
+    method: 'autofix' | 'quickfix' | 'manual';
+    description: string;
+    completedAt: string;
+  };
+}
+
+export interface FixedModification {
+  issueCode?: string;
+  ruleId?: string;
+  success?: boolean;
+  method?: 'autofix' | 'quickfix' | 'manual';
+  description?: string;
+  completedAt?: string;
+  targetFile?: string;
+}
+
 export class WcagIssueMapperService {
   mapIssuesToCriteria(auditIssues: AuditIssueInput[]): Map<string, IssueMapping[]> {
     const criteriaMap = new Map<string, IssueMapping[]>();
@@ -231,6 +253,55 @@ export class WcagIssueMapperService {
   hasCriterionIssues(criterionId: string, auditIssues: AuditIssueInput[]): boolean {
     const issues = this.getIssuesForCriterion(criterionId, auditIssues);
     return issues.length > 0;
+  }
+
+  /**
+   * Maps fixed issues (from autoRemediation.modifications) to WCAG criteria
+   * @param fixedModifications Array of successfully remediated modifications
+   * @param allAuditIssues All audit issues (to get original issue details)
+   * @returns Map of criterionId to array of RemediatedIssue
+   */
+  mapFixedIssuesToCriteria(
+    fixedModifications: FixedModification[],
+    allAuditIssues: AuditIssueInput[]
+  ): Map<string, RemediatedIssue[]> {
+    const criteriaMap = new Map<string, RemediatedIssue[]>();
+
+    for (const modification of fixedModifications) {
+      // Get the rule ID from either issueCode or ruleId field
+      const ruleId = modification.issueCode || modification.ruleId;
+      if (!ruleId) continue;
+
+      // Map this rule to WCAG criteria
+      const criteriaIds = RULE_TO_CRITERIA_MAP[ruleId] || [];
+      if (criteriaIds.length === 0) continue;
+
+      // Find the original issue to get message and details
+      const originalIssue = allAuditIssues.find(issue =>
+        issue.ruleId === ruleId || issue.ruleId.includes(ruleId)
+      );
+
+      const remediatedIssue: RemediatedIssue = {
+        ruleId,
+        message: originalIssue?.message || `Fixed issue: ${ruleId}`,
+        filePath: modification.targetFile || originalIssue?.filePath || 'unknown',
+        remediationInfo: {
+          status: 'REMEDIATED',
+          method: modification.method || 'autofix',
+          description: modification.description || `Automatically fixed ${ruleId}`,
+          completedAt: modification.completedAt || new Date().toISOString()
+        }
+      };
+
+      // Add this remediated issue to all relevant criteria
+      for (const criterionId of criteriaIds) {
+        const existing = criteriaMap.get(criterionId) || [];
+        existing.push(remediatedIssue);
+        criteriaMap.set(criterionId, existing);
+      }
+    }
+
+    return criteriaMap;
   }
 }
 

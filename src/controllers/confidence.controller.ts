@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
-import { AuditIssueInput } from '../services/acr/wcag-issue-mapper.service';
+import { AuditIssueInput, wcagIssueMapperService, FixedModification } from '../services/acr/wcag-issue-mapper.service';
+import { contentDetectionService, ApplicabilitySuggestion } from '../services/acr/content-detection.service';
+import { fileStorageService } from '../services/storage/file-storage.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -21,14 +23,14 @@ export class ConfidenceController {
       const userId = req.user?.id;
       
       const job = await prisma.job.findFirst({
-        where: { 
+        where: {
           id: jobId,
           userId: userId,
         },
         include: {
-          validationResults: {
+          ValidationResult: {
             include: {
-              issues: true
+              Issue: true
             }
           }
         }
@@ -44,10 +46,10 @@ export class ConfidenceController {
 
       let summary;
 
-      if (job.validationResults && job.validationResults.length > 0) {
+      if (job.ValidationResult && job.ValidationResult.length > 0) {
         const criteriaMap = new Map<string, ValidationResultInput>();
-        
-        for (const result of job.validationResults) {
+
+        for (const result of job.ValidationResult) {
           const details = result.details as Record<string, unknown> | null;
           
           if (details && typeof details === 'object') {
@@ -246,21 +248,56 @@ export class ConfidenceController {
       logger.debug(`[Confidence] Total issues extracted: ${auditIssues.length}`);
       logger.debug(`[Confidence] Rule IDs: ${auditIssues.map(i => i.ruleId).join(', ')}`);
 
+      // Run content detection to get N/A suggestions
+      let naSuggestions: ApplicabilitySuggestion[] = [];
+      try {
+        const jobInput = job.input as Record<string, unknown> | null;
+        const jobOutput = job.output as Record<string, unknown> | null;
+
+        // Try input first (for direct uploads), then output (for ACR workflow jobs)
+        const epubFileName = (jobInput?.fileName || jobOutput?.fileName) as string | undefined;
+
+        // For ACR workflow jobs, file is stored under source job ID
+        const sourceJobId = (jobInput?.sourceJobId || jobOutput?.sourceJobId) as string | undefined;
+        const fileJobId = sourceJobId || jobId;
+
+        if (epubFileName) {
+          logger.info(`[Confidence] Running content detection on EPUB: ${epubFileName} (using job ID: ${fileJobId})`);
+          const epubBuffer = await fileStorageService.getFile(fileJobId, epubFileName);
+
+          if (epubBuffer) {
+            naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+            logger.info(`[Confidence] Content detection generated ${naSuggestions.length} N/A suggestions`);
+          } else {
+            logger.warn(`[Confidence] EPUB file not found in storage: ${epubFileName} (job ID: ${fileJobId})`);
+          }
+        } else {
+          logger.debug('[Confidence] No epubFileName in job input or output, skipping content detection');
+        }
+      } catch (error) {
+        logger.error('[Confidence] Content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
+        naSuggestions = [];
+      }
+
       // Extract fixed issues from autoRemediation.modifications BEFORE analyzing
-      const modifications = (auditOutput?.autoRemediation as Record<string, unknown>)?.modifications as Array<{
-        issueCode?: string;
-        success?: boolean;
-        method?: string;
-      }> | undefined;
+      const modifications = (auditOutput?.autoRemediation as Record<string, unknown>)?.modifications as FixedModification[] | undefined;
 
       const fixedModifications = modifications?.filter(m => m.success !== false) || [];
       logger.debug(`[Confidence] Found ${fixedModifications.length} fixed modifications from autoRemediation`);
+
+      // Map fixed issues to WCAG criteria
+      const fixedIssuesMap = wcagIssueMapperService.mapFixedIssuesToCriteria(
+        fixedModifications,
+        auditIssues
+      );
+      logger.info(`[Confidence] Mapped fixed issues to ${fixedIssuesMap.size} criteria`);
 
       // Filter out fixed issues BEFORE passing to confidence analysis
       const remainingAuditIssues = auditIssues.filter(issue => {
         const issueCode = issue.ruleId || 'unknown';
         const isFixed = fixedModifications.some(mod =>
           mod.issueCode === issueCode ||
+          mod.ruleId === issueCode ||
           (mod.issueCode && issueCode.includes(mod.issueCode))
         );
         return !isFixed;
@@ -268,26 +305,25 @@ export class ConfidenceController {
 
       logger.info(`[Confidence] Filtered issues: ${auditIssues.length} total, ${remainingAuditIssues.length} remaining after removing fixed`);
 
-      // Generate confidence analysis with REMAINING issues only
+      // Generate confidence analysis with REMAINING issues only, but include fixed issues and N/A suggestions
       const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
         editionCode,
-        remainingAuditIssues
+        remainingAuditIssues,
+        fixedIssuesMap,
+        naSuggestions
       );
 
       // Add remaining count to each criterion
-      // Note: fixedCount tracking requires complex WCAG mapping - omitted for now
-      // The ACR analysis endpoint already provides accurate fixedCount via the ACR analysis service
       const enhancedAnalysis = confidenceAnalysis.map(criterion => {
         const remainingIssues = criterion.relatedIssues || [];
         const remainingCount = remainingIssues.length;
 
-        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${remainingCount} remaining, confidence=${criterion.confidenceScore}`);
+        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${remainingCount} remaining, ${criterion.fixedCount || 0} fixed, confidence=${criterion.confidenceScore}`);
 
         return {
           ...criterion,
           remainingCount,
-          issueCount: remainingCount,
-          // Don't provide fixedCount from this endpoint - it's available from ACR analysis
+          issueCount: remainingCount
         };
       });
 
@@ -300,15 +336,28 @@ export class ConfidenceController {
 
       const summary = {
         totalCriteria: enhancedAnalysis.length,
-        passingCriteria: enhancedAnalysis.filter(c => c.status === 'pass').length,
-        failingCriteria: enhancedAnalysis.filter(c => c.status === 'fail').length,
-        needsReviewCriteria: enhancedAnalysis.filter(c => c.status === 'needs_review').length,
-        notApplicableCriteria: enhancedAnalysis.filter(c => c.status === 'not_applicable').length,
+        notApplicableCriteria: enhancedAnalysis.filter(c => c.isNotApplicable).length,
+        // Exclude N/A from pass/fail counts
+        passingCriteria: enhancedAnalysis.filter(c =>
+          !c.isNotApplicable && c.status === 'pass'
+        ).length,
+        failingCriteria: enhancedAnalysis.filter(c =>
+          !c.isNotApplicable && c.status === 'fail'
+        ).length,
+        needsReviewCriteria: enhancedAnalysis.filter(c =>
+          !c.isNotApplicable && c.status === 'needs_review'
+        ).length,
         criteriaWithIssuesCount: criteriaWithIssues.length,
-        totalIssues: auditIssues.length,
-        averageConfidence: enhancedAnalysis.length > 0
-          ? Math.round((enhancedAnalysis.reduce((sum, c) => sum + c.confidenceScore, 0) / enhancedAnalysis.length) * 100) / 100
-          : 0
+        totalIssues: enhancedAnalysis
+          .filter(c => !c.isNotApplicable)
+          .reduce((sum, c) => sum + (c.issueCount || 0), 0),
+        // Average confidence excludes N/A
+        averageConfidence: (() => {
+          const applicableCriteria = enhancedAnalysis.filter(c => !c.isNotApplicable);
+          return applicableCriteria.length > 0
+            ? Math.round((applicableCriteria.reduce((sum, c) => sum + c.confidenceScore, 0) / applicableCriteria.length) * 100) / 100
+            : 0;
+        })()
       };
 
       logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
