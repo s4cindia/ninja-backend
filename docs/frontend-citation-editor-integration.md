@@ -144,7 +144,7 @@ Authorization: Bearer <token>
 
 ## Frontend Implementation Plan
 
-### Step 1: Fetch Document Text
+### Step 1: Fetch Document Content + Analysis
 
 Call both endpoints in parallel when the page loads:
 
@@ -154,65 +154,120 @@ const [analysisRes, textRes] = await Promise.all([
   api.get(`/editorial/document/${documentId}/text`)
 ]);
 const analysis = analysisRes.data;
-const fullText = textRes.data.fullText;
+const { fullHtml, fullText } = textRes.data;
 ```
+
+**Important:** Prefer `fullHtml` over `fullText`. The HTML preserves the original Word document formatting (headings, bold, italic, tables, lists, etc.). Only fall back to `fullText` if `fullHtml` is `null` (older documents uploaded before HTML support). In that case, prompt the user to re-upload the DOCX via the regenerate-html endpoint (see Section 1b above).
 
 ### Step 2: Render Editor Panel (Left Side)
 
-Display the document source text with line numbers and highlighted citations.
+Display the document as styled HTML with highlighted citations. The document should look like the original Word file.
 
 **Layout structure:**
 ```
 +------------------------------------------+----------------------------+
-|  DOCUMENT SOURCE (editor view)           |  ISSUES & FIXES            |
+|  DOCUMENT SOURCE (styled HTML view)      |  ISSUES & FIXES            |
 |                                          |                            |
-|  1 | Introduction text here...           |  [E] Citation [3] has no   |
-|  2 | Some body text with [1] cited       |      matching reference    |
-|  3 | and more text with [2] here         |      ○ Add reference entry |
-|  4 | then [3] appears without ref        |      ● Flag for review     |
-|  5 | continued text...                   |      [Accept Fix] [Dismiss]|
-|  6 |                                     |                            |
-|  7 | Another paragraph with [5] and      |  [W] 2 missing citation    |
-|  8 | some [5] duplicate usage            |      numbers               |
-|                                          |      ○ Renumber citations   |
-|                                          |      ● Flag for manual rev  |
+|  Title Heading (h1, styled)              |  [E] Citation [3] has no   |
+|                                          |      matching reference    |
+|  Introduction paragraph with [1] cited   |      ○ Add reference entry |
+|  and more **bold text** with [2] here    |      ● Flag for review     |
+|  then [3] appears without ref            |      [Accept Fix] [Dismiss]|
+|                                          |                            |
+|  Subheading (h2)                         |  [W] 2 missing citation    |
+|                                          |      numbers               |
+|  Another paragraph with [5] and          |      ○ Renumber citations   |
+|  some [5] duplicate usage                |      ● Flag for manual rev  |
 |                                          |      [Accept Fix] [Dismiss]|
 +------------------------------------------+----------------------------+
 ```
 
-**How to highlight citations in the text:**
+**Rendering the HTML content:**
 
-For numeric-bracket style (Vancouver, IEEE):
-- Use regex: `/\[(\d{1,4})\]/g` to find `[1]`, `[2]`, etc.
-- Cross-check each number against `crossReference.citationsWithoutReference` 
-- Green highlight = citation has a matching reference
-- Red highlight = citation is orphaned (no reference match)
+The `fullHtml` is server-sanitized and safe to render directly via `innerHTML` or `dangerouslySetInnerHTML` (React). It contains standard HTML tags: `h1`-`h4`, `p`, `strong`, `em`, `u`, `s`, `table`, `ul`, `ol`, `li`, `img` (with embedded data URIs for images), `sup`, `sub`, `blockquote`, `pre`, `code`.
 
-For author-date style (APA, Chicago, Harvard):
-- Use `citations.items[].startOffset` and `endOffset` to locate citations in the text
-- Apply highlights at those character positions
+Style the container with document-like CSS (serif font, readable line height, appropriate heading sizes) to make it look like the original Word document rather than a code editor.
+
+**How to highlight citations in the HTML:**
+
+Since `fullHtml` already contains HTML tags, you need to highlight citations within the text content without breaking the existing markup. Use a DOM-based approach:
 
 ```javascript
-function highlightCitations(fullText, analysis) {
+function highlightCitationsInHtml(htmlString, analysis) {
   const orphanNumbers = new Set(
     analysis.crossReference.citationsWithoutReference.map(c => c.number)
   );
-  
-  // Escape HTML first, then highlight
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlString, 'text/html');
+
+  const walker = document.createTreeWalker(
+    doc.body,
+    NodeFilter.SHOW_TEXT,
+    null
+  );
+
+  const textNodes = [];
+  while (walker.nextNode()) {
+    textNodes.push(walker.currentNode);
+  }
+
+  textNodes.forEach(node => {
+    const text = node.textContent;
+    if (!/\[\d{1,4}\]/.test(text)) return;
+
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    const regex = /\[(\d{1,4})\]/g;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(
+          document.createTextNode(text.slice(lastIndex, match.index))
+        );
+      }
+      const n = parseInt(match[1]);
+      const span = document.createElement('span');
+      span.className = orphanNumbers.has(n) ? 'citation-issue' : 'citation-matched';
+      span.dataset.citation = String(n);
+      span.textContent = match[0];
+      fragment.appendChild(span);
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    node.parentNode.replaceChild(fragment, node);
+  });
+
+  return doc.body.innerHTML;
+}
+```
+
+For author-date style (APA, Chicago, Harvard):
+- Use `citations.items[].startOffset` and `endOffset` to locate citations
+- These offsets refer to the plain-text version (`fullText`), so map them to the HTML DOM positions using the TreeWalker approach above
+
+**Fallback for plain text (when fullHtml is null):**
+
+If `fullHtml` is not available, fall back to the plain-text approach with line numbers:
+```javascript
+function highlightCitationsPlainText(fullText, analysis) {
+  const orphanNumbers = new Set(
+    analysis.crossReference.citationsWithoutReference.map(c => c.number)
+  );
   const escaped = escapeHtml(fullText);
   return escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
     const n = parseInt(num);
-    const isOrphan = orphanNumbers.has(n);
-    const cssClass = isOrphan ? 'citation-issue' : 'citation-matched';
+    const cssClass = orphanNumbers.has(n) ? 'citation-issue' : 'citation-matched';
     return `<span class="${cssClass}" data-citation="${n}">${match}</span>`;
   });
 }
 ```
-
-**Line numbers:**
-- Split text by `\n`
-- Render a gutter column with line numbers
-- Render content column with highlighted text
+For plain text: split by `\n`, render a gutter column with line numbers + content column.
 
 ### Step 3: Build Issues from Analysis Data
 
@@ -378,7 +433,25 @@ When user clicks an issue card:
 ## CSS Suggestions
 
 ```css
-/* Editor gutter + content layout */
+/* Two-panel layout */
+.citation-editor { display: flex; height: 100vh; }
+.document-panel { flex: 1; overflow-y: auto; padding: 32px 40px; background: #fff; }
+.issues-panel { width: 380px; overflow-y: auto; padding: 16px; background: #fafafa; border-left: 1px solid #e0e0e0; }
+
+/* Document-style rendering (styled HTML from fullHtml) */
+.document-panel h1 { font-size: 24px; font-weight: 700; margin: 24px 0 12px; font-family: 'Georgia', serif; }
+.document-panel h2 { font-size: 20px; font-weight: 600; margin: 20px 0 10px; font-family: 'Georgia', serif; }
+.document-panel h3 { font-size: 17px; font-weight: 600; margin: 16px 0 8px; font-family: 'Georgia', serif; }
+.document-panel p { font-size: 14px; line-height: 1.7; margin: 0 0 12px; font-family: 'Georgia', serif; }
+.document-panel table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+.document-panel th, .document-panel td { border: 1px solid #ccc; padding: 8px 12px; font-size: 13px; }
+.document-panel th { background: #f5f5f5; font-weight: 600; }
+.document-panel ul, .document-panel ol { margin: 8px 0 12px 24px; }
+.document-panel li { font-size: 14px; line-height: 1.6; }
+.document-panel img { max-width: 100%; height: auto; margin: 12px 0; }
+.document-panel blockquote { border-left: 3px solid #ccc; padding-left: 16px; color: #555; margin: 12px 0; }
+
+/* Plain-text fallback (when fullHtml is null) */
 .editor-wrapper { display: flex; height: 100%; overflow: auto; }
 .editor-gutter { min-width: 44px; background: #f5f5f5; border-right: 1px solid #ddd; }
 .editor-gutter .line-num { text-align: right; padding: 0 8px; font-size: 11px; color: #999; line-height: 1.8; }
@@ -406,9 +479,13 @@ When user clicks an issue card:
 
 | Area | What to Do |
 |------|-----------|
-| **New API call** | Fetch `GET /api/v1/editorial/document/:documentId/text` for document source |
-| **Left panel** | Add editor view with line numbers + highlighted citations from `fullText` |
-| **Right panel** | Replace current accordion sections with expanded issue cards with fix options |
-| **Issue cards** | Show severity icon, title, detail, radio-button fix options, Accept/Dismiss buttons |
-| **Bulk actions** | Add "Accept All" and "Dismiss All" buttons at top of issues list |
+| **New API call** | Fetch `GET /api/v1/editorial/document/:documentId/text` — returns both `fullHtml` and `fullText` |
+| **Left panel** | Render `fullHtml` as styled document (like Word). Fall back to `fullText` with line numbers only if `fullHtml` is null |
+| **Citation highlights** | Use DOM TreeWalker to inject highlight spans into HTML text nodes without breaking markup |
+| **Backfill** | If `fullHtml` is null, prompt user to re-upload DOCX via `POST .../regenerate-html` |
+| **Right panel** | Expanded issue cards with fix options built from citation analysis data |
+| **Issue cards** | Severity icon, title, detail, radio-button fix options, Accept/Dismiss buttons |
+| **Bulk actions** | "Accept All" and "Dismiss All" buttons at top of issues list |
 | **Interactions** | Click citation in editor → scroll to issue; click issue → scroll to citation |
+| **Allowed HTML tags** | h1-h6, p, br, hr, strong, b, em, i, u, s, del, ins, sup, sub, span, ul, ol, li, table/thead/tbody/tfoot/tr/th/td/caption, blockquote, pre, code, a, img, figure, figcaption |
+| **Embedded images** | `img` tags may use `data:` URIs for images embedded in the DOCX — render them inline |
