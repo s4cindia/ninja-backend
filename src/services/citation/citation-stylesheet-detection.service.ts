@@ -619,14 +619,16 @@ export class CitationStylesheetDetectionService {
     }
 
     const lines = refText.split(/\n{2,}|\n(?=[A-Z])/);
+    let seqNumber = 1;
     for (const line of lines) {
       const trimmed = line.trim().replace(/\n\s+/g, ' ');
       if (trimmed.length > 15) {
         const numMatch = trimmed.match(/^(\d{1,4})[.\)]\s+/);
         entries.push({
-          number: numMatch ? parseInt(numMatch[1], 10) : null,
+          number: numMatch ? parseInt(numMatch[1], 10) : seqNumber,
           text: trimmed,
         });
+        seqNumber++;
       }
     }
 
@@ -636,6 +638,8 @@ export class CitationStylesheetDetectionService {
   private extractCitationNumber(text: string): number | null {
     const bracketMatch = text.match(/\[(\d{1,4})\]/);
     if (bracketMatch) return parseInt(bracketMatch[1], 10);
+    const parenMatch = text.match(/\((\d{1,4})\)/);
+    if (parenMatch) return parseInt(parenMatch[1], 10);
     const plainMatch = text.trim().match(/^(\d{1,4})$/);
     if (plainMatch) return parseInt(plainMatch[1], 10);
     return null;
@@ -649,9 +653,14 @@ export class CitationStylesheetDetectionService {
     if (bracketMatch) {
       inner = bracketMatch[1];
     } else {
-      const plainMatch = text.trim().match(/^(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)$/);
-      if (!plainMatch) return numbers;
-      inner = plainMatch[1];
+      const parenMatch = text.match(/\((\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\)/);
+      if (parenMatch) {
+        inner = parenMatch[1];
+      } else {
+        const plainMatch = text.trim().match(/^(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)$/);
+        if (!plainMatch) return numbers;
+        inner = plainMatch[1];
+      }
     }
 
     if (inner.includes('-') || inner.includes('–')) {
