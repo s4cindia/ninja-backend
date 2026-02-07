@@ -490,9 +490,21 @@ function getMatchedNums() {
   const matchedNums = new Set();
   if (a?.crossReference) {
     const orphanNums = new Set((a.crossReference.citationsWithoutReference || []).map(c => c.number));
-    for (let i = 1; i <= (a.sequenceAnalysis?.expectedRange?.end || 999); i++) {
-      if (!orphanNums.has(i)) matchedNums.add(i);
+    const maxFromSeq = a.sequenceAnalysis?.expectedRange?.end || 0;
+    if (maxFromSeq > 0) {
+      for (let i = 1; i <= maxFromSeq; i++) {
+        if (!orphanNums.has(i)) matchedNums.add(i);
+      }
     }
+    Object.keys(state.referenceLookup).forEach(key => {
+      const n = parseInt(key, 10);
+      if (!isNaN(n) && !orphanNums.has(n)) matchedNums.add(n);
+    });
+    const refEntries = a.referenceList?.entries || [];
+    refEntries.forEach(entry => {
+      const n = entry.number || (entry.index != null ? entry.index + 1 : null);
+      if (n && !orphanNums.has(n)) matchedNums.add(n);
+    });
   }
   return matchedNums;
 }
@@ -507,11 +519,26 @@ function getTooltipText(n, cls) {
 
 function highlightCitations(htmlStr) {
   const matchedNums = getMatchedNums();
-  return htmlStr.replace(/\[(\d{1,4})\]/g, (match, num) => {
+  const citFormat = state.analysis?.detectedStyle?.citationFormat || 'unknown';
+  const isNumericBracket = citFormat === 'numeric-bracket' || citFormat === 'numeric-superscript';
+
+  let result = htmlStr.replace(/\[(\d{1,4})\]/g, (match, num) => {
     const n = parseInt(num, 10);
     const cls = matchedNums.has(n) ? 'matched' : 'issue';
     return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
   });
+
+  if (!isNumericBracket) {
+    result = result.replace(/(?<![.\d])(?:\((\d{1,4})\))/g, (match, num) => {
+      const n = parseInt(num, 10);
+      if (n < 1 || n > (state.analysis?.sequenceAnalysis?.expectedRange?.end || 200)) return match;
+      if (result.indexOf(`data-cit-num="${n}"`) !== -1 && htmlStr.indexOf(`[${n}]`) !== -1) return match;
+      const cls = matchedNums.has(n) ? 'matched' : 'issue';
+      return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
+    });
+  }
+
+  return result;
 }
 
 function renderHtmlEditorView(html) {
@@ -524,6 +551,9 @@ function renderHtmlEditorView(html) {
 function renderEditorView(text) {
   const lines = text.split('\n');
   const matchedNums = getMatchedNums();
+  const citFormat = state.analysis?.detectedStyle?.citationFormat || 'unknown';
+  const isNumericBracket = citFormat === 'numeric-bracket' || citFormat === 'numeric-superscript';
+  const maxNum = state.analysis?.sequenceAnalysis?.expectedRange?.end || 200;
 
   let lineNumsHtml = '';
   let contentHtml = '';
@@ -531,11 +561,19 @@ function renderEditorView(text) {
     const lineNum = idx + 1;
     lineNumsHtml += `<div class="ln">${lineNum}</div>`;
     const escaped = escapeHtml(line);
-    const highlighted = escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
+    let highlighted = escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
       const n = parseInt(num, 10);
       const cls = matchedNums.has(n) ? 'matched' : 'issue';
       return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
     });
+    if (!isNumericBracket) {
+      highlighted = highlighted.replace(/(?<![.\d])\((\d{1,4})\)/g, (match, num) => {
+        const n = parseInt(num, 10);
+        if (n < 1 || n > maxNum) return match;
+        const cls = matchedNums.has(n) ? 'matched' : 'issue';
+        return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
+      });
+    }
     const alsoHighlightAuthorDate = highlighted.replace(/\(([A-Z][a-z]+(?:\s(?:et\s+al\.?|&amp;\s+[A-Z][a-z]+))?(?:,?\s*\d{4}[a-z]?))\)/g, (match) => {
       return `<span class="citation-highlight matched">${match}</span>`;
     });
