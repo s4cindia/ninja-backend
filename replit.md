@@ -93,6 +93,11 @@ The Ninja platform uses a Node.js 20+ runtime with TypeScript 5.x in strict mode
 -   **Editorial Overview:**
     -   **Editorial Document Overview:** `GET /api/v1/editorial/document/:documentId/overview` returns document metadata, citation/validation/correction/reference counts, links to all related jobs, and API links for all document operations.
     -   **Editorial Document List:** `GET /api/v1/editorial/documents` returns paginated list of all editorial documents with counts and overview links. Supports `status`, `limit`, `offset` query params.
+    -   **Document Text + HTML:** `GET /api/v1/editorial/document/:documentId/text` returns `fullText` (plain) and `fullHtml` (styled HTML from mammoth.js DOCX conversion with headings, bold, italic, tables, lists preserved). Accepts document ID or job ID.
+    -   **Regenerate HTML:** `POST /api/v1/editorial/document/:documentId/regenerate-html` backfills HTML for documents uploaded before HTML support. Requires DOCX file upload.
+    -   **Citation Validation:** `GET /api/v1/editorial/document/:documentId/validate-citations` checks for duplicate in-text citations, missing citation numbers, orphaned citations (no reference match), and uncited references. Returns pre-built issue objects with severity/type/citationNumbers, a referenceLookup map for hover tooltips, and summary counts.
+    -   **Reference Lookup:** `GET /api/v1/editorial/document/:documentId/reference-lookup` returns citation-number-to-reference-text map for hover tooltips.
+    -   **HTML Sanitization:** Centralized in `src/utils/html-sanitizer.ts` with shared MAMMOTH_STYLE_MAP for consistent DOCX→HTML conversion across document-parser and regenerate-html endpoints.
 
 **Project Structure:**
 The project follows a modular structure with dedicated directories for configuration (`config/`), routes (`routes/`), controllers (`controllers/`), services (`services/`), middleware (`middleware/`), Prisma models (`models/`), BullMQ queues (`queues/`) and workers (`workers/`), and utilities (`utils/`).

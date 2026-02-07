@@ -29,4 +29,14 @@ router.post(
   editorialOverviewController.regenerateHtml.bind(editorialOverviewController)
 );
 
+router.get(
+  '/document/:documentId/reference-lookup',
+  editorialOverviewController.getReferenceLookup.bind(editorialOverviewController)
+);
+
+router.get(
+  '/document/:documentId/validate-citations',
+  editorialOverviewController.runCitationValidation.bind(editorialOverviewController)
+);
+
 export default router;

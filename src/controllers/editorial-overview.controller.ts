@@ -3,7 +3,8 @@ import mammoth from 'mammoth';
 import path from 'path';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { sanitizeDocumentHtml } from '../utils/html-sanitizer';
+import { sanitizeDocumentHtml, MAMMOTH_STYLE_MAP } from '../utils/html-sanitizer';
+import { citationStylesheetDetectionService } from '../services/citation/citation-stylesheet-detection.service';
 
 export class EditorialOverviewController {
   async getDocumentOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -304,17 +305,7 @@ export class EditorialOverviewController {
       }
 
       const result = await mammoth.convertToHtml({ buffer: req.file.buffer }, {
-        styleMap: [
-          "p[style-name='Title'] => h1.doc-title",
-          "p[style-name='Heading 1'] => h1",
-          "p[style-name='Heading 2'] => h2",
-          "p[style-name='Heading 3'] => h3",
-          "p[style-name='Heading 4'] => h4",
-          "b => strong",
-          "i => em",
-          "u => u",
-          "strike => s",
-        ],
+        styleMap: MAMMOTH_STYLE_MAP,
       });
 
       const sanitizedHtml = sanitizeDocumentHtml(result.value);
@@ -336,6 +327,213 @@ export class EditorialOverviewController {
       });
     } catch (error) {
       logger.error('[Editorial Overview] regenerateHtml failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  async getReferenceLookup(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      const analysis = await citationStylesheetDetectionService.getAnalysisResults(documentId, tenantId);
+
+      if (!analysis) {
+        const analysisByJob = await citationStylesheetDetectionService.getAnalysisByJobId(documentId, tenantId);
+        if (!analysisByJob) {
+          res.status(404).json({ success: false, error: 'No citation analysis found. Run citation detection first.' });
+          return;
+        }
+
+        const lookupMap: Record<string, string> = {};
+        for (const entry of analysisByJob.referenceList.entries) {
+          if (entry.number !== null) {
+            lookupMap[String(entry.number)] = entry.text;
+          }
+        }
+
+        res.json({
+          success: true,
+          data: {
+            documentId: analysisByJob.documentId,
+            totalReferences: analysisByJob.referenceList.totalEntries,
+            lookupMap,
+            crossReference: analysisByJob.crossReference,
+            sequenceAnalysis: analysisByJob.sequenceAnalysis,
+          },
+        });
+        return;
+      }
+
+      const lookupMap: Record<string, string> = {};
+      for (const entry of analysis.referenceList.entries) {
+        if (entry.number !== null) {
+          lookupMap[String(entry.number)] = entry.text;
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          documentId: analysis.documentId,
+          totalReferences: analysis.referenceList.totalEntries,
+          lookupMap,
+          crossReference: analysis.crossReference,
+          sequenceAnalysis: analysis.sequenceAnalysis,
+        },
+      });
+    } catch (error) {
+      logger.error('[Editorial Overview] getReferenceLookup failed', error instanceof Error ? error : undefined);
+      next(error);
+    }
+  }
+
+  async runCitationValidation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: 'Authentication required' });
+        return;
+      }
+
+      let doc = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        select: { id: true, jobId: true },
+      });
+
+      if (!doc) {
+        doc = await prisma.editorialDocument.findFirst({
+          where: { jobId: documentId, tenantId },
+          select: { id: true, jobId: true },
+        });
+      }
+
+      if (!doc) {
+        res.status(404).json({ success: false, error: 'Document not found' });
+        return;
+      }
+
+      const analysis = await citationStylesheetDetectionService.getAnalysisResults(doc.id, tenantId);
+
+      if (!analysis) {
+        res.status(404).json({ success: false, error: 'No citation analysis found. Run citation detection first.' });
+        return;
+      }
+
+      const issues: Array<{
+        id: string;
+        severity: 'error' | 'warning';
+        type: string;
+        title: string;
+        detail: string;
+        citationNumbers?: number[];
+      }> = [];
+
+      const seq = analysis.sequenceAnalysis;
+      const xref = analysis.crossReference;
+
+      if (seq.duplicateNumbers.length > 0) {
+        issues.push({
+          id: 'seq-duplicates',
+          severity: 'error',
+          type: 'DUPLICATE_CITATION',
+          title: `${seq.duplicateNumbers.length} duplicate in-text citation number(s)`,
+          detail: `Duplicated: ${seq.duplicateNumbers.map(n => '[' + n + ']').join(', ')}`,
+          citationNumbers: seq.duplicateNumbers,
+        });
+      }
+
+      if (seq.missingNumbers.length > 0) {
+        issues.push({
+          id: 'seq-missing',
+          severity: 'error',
+          type: 'MISSING_CITATION_NUMBER',
+          title: `${seq.missingNumbers.length} missing citation number(s) in sequence`,
+          detail: `Missing: ${seq.missingNumbers.map(n => '[' + n + ']').join(', ')}`,
+          citationNumbers: seq.missingNumbers,
+        });
+      }
+
+      if (seq.outOfOrderNumbers.length > 0) {
+        issues.push({
+          id: 'seq-out-of-order',
+          severity: 'warning',
+          type: 'OUT_OF_ORDER',
+          title: `${seq.outOfOrderNumbers.length} citation(s) appear out of order`,
+          detail: `Out of order: ${seq.outOfOrderNumbers.map(n => '[' + n + ']').join(', ')}`,
+          citationNumbers: seq.outOfOrderNumbers,
+        });
+      }
+
+      seq.gaps.forEach((gap, i) => {
+        issues.push({
+          id: `seq-gap-${i}`,
+          severity: 'warning',
+          type: 'SEQUENCE_GAP',
+          title: `Gap in citation sequence: [${gap.after}] to [${gap.before}]`,
+          detail: `Skips ${gap.before - gap.after - 1} number(s)`,
+          citationNumbers: [],
+        });
+      });
+
+      xref.citationsWithoutReference.forEach(cit => {
+        issues.push({
+          id: `xref-orphan-${cit.number || cit.citationId}`,
+          severity: 'error',
+          type: 'CITATION_WITHOUT_REFERENCE',
+          title: `Citation ${cit.text} has no matching reference`,
+          detail: `In-text citation "${cit.text}" not found in the reference list at the bottom`,
+          citationNumbers: cit.number !== null ? [cit.number] : [],
+        });
+      });
+
+      xref.referencesWithoutCitation.forEach(ref => {
+        issues.push({
+          id: `xref-uncited-${ref.number || ref.entryIndex}`,
+          severity: 'warning',
+          type: 'REFERENCE_WITHOUT_CITATION',
+          title: `Reference ${ref.number ? '[' + ref.number + ']' : '#' + (ref.entryIndex + 1)} not cited in text`,
+          detail: `"${ref.text.substring(0, 100)}${ref.text.length > 100 ? '...' : ''}" appears in the reference list but is not cited in the document body`,
+          citationNumbers: ref.number !== null ? [ref.number] : [],
+        });
+      });
+
+      const lookupMap: Record<string, string> = {};
+      for (const entry of analysis.referenceList.entries) {
+        if (entry.number !== null) {
+          lookupMap[String(entry.number)] = entry.text;
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          documentId: doc.id,
+          totalIssues: issues.length,
+          errors: issues.filter(i => i.severity === 'error').length,
+          warnings: issues.filter(i => i.severity === 'warning').length,
+          issues,
+          referenceLookup: lookupMap,
+          summary: {
+            totalBodyCitations: xref.totalBodyCitations,
+            totalReferences: xref.totalReferenceEntries,
+            matched: xref.matched,
+            duplicates: seq.duplicateNumbers.length,
+            missingInSequence: seq.missingNumbers.length,
+            orphanedCitations: xref.citationsWithoutReference.length,
+            uncitedReferences: xref.referencesWithoutCitation.length,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('[Editorial Overview] runCitationValidation failed', error instanceof Error ? error : undefined);
       next(error);
     }
   }

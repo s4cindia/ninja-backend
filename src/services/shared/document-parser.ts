@@ -10,7 +10,7 @@ import mammoth from 'mammoth';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { logger } from '../../lib/logger';
-import { sanitizeDocumentHtml } from '../../utils/html-sanitizer';
+import { sanitizeDocumentHtml, MAMMOTH_STYLE_MAP } from '../../utils/html-sanitizer';
 
 export interface TextChunk {
   id: string;
@@ -313,17 +313,7 @@ export class DocumentParser {
     let html: string | undefined;
     try {
       const result = await mammoth.convertToHtml({ buffer }, {
-        styleMap: [
-          "p[style-name='Title'] => h1.doc-title",
-          "p[style-name='Heading 1'] => h1",
-          "p[style-name='Heading 2'] => h2",
-          "p[style-name='Heading 3'] => h3",
-          "p[style-name='Heading 4'] => h4",
-          "b => strong",
-          "i => em",
-          "u => u",
-          "strike => s",
-        ],
+        styleMap: MAMMOTH_STYLE_MAP,
       });
       html = sanitizeDocumentHtml(result.value);
       if (result.messages.length > 0) {

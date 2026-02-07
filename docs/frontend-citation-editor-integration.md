@@ -57,7 +57,126 @@ Body: file=<DOCX file>
 
 After calling this, the `GET .../text` endpoint will return `fullHtml` for that document.
 
-### 2. Get Citation Analysis (already used)
+### 2. Run Citation Validation (NEW)
+
+Checks for duplicate in-text citations, missing citation numbers, orphaned citations (no matching reference), and uncited references. Also returns a **reference lookup map** for hover tooltips.
+
+```
+GET /api/v1/editorial/document/:documentId/validate-citations
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "documentId": "uuid",
+    "totalIssues": 5,
+    "errors": 3,
+    "warnings": 2,
+    "issues": [
+      {
+        "id": "seq-duplicates",
+        "severity": "error",
+        "type": "DUPLICATE_CITATION",
+        "title": "2 duplicate in-text citation number(s)",
+        "detail": "Duplicated: [5], [8]",
+        "citationNumbers": [5, 8]
+      },
+      {
+        "id": "xref-orphan-3",
+        "severity": "error",
+        "type": "CITATION_WITHOUT_REFERENCE",
+        "title": "Citation [3] has no matching reference",
+        "detail": "In-text citation \"[3]\" not found in the reference list at the bottom",
+        "citationNumbers": [3]
+      },
+      {
+        "id": "xref-uncited-14",
+        "severity": "warning",
+        "type": "REFERENCE_WITHOUT_CITATION",
+        "title": "Reference [14] not cited in text",
+        "detail": "\"Smith et al. 2020...\" appears in the reference list but is not cited in the document body",
+        "citationNumbers": [14]
+      }
+    ],
+    "referenceLookup": {
+      "1": "An R, Men XJ, Ni XH, et al. Full reference text...",
+      "2": "Baker SM, Jones KL. Another reference...",
+      "3": null
+    },
+    "summary": {
+      "totalBodyCitations": 15,
+      "totalReferences": 13,
+      "matched": 11,
+      "duplicates": 2,
+      "missingInSequence": 1,
+      "orphanedCitations": 2,
+      "uncitedReferences": 1
+    }
+  }
+}
+```
+
+**Issue types:**
+| Type | Severity | Meaning |
+|------|----------|---------|
+| `DUPLICATE_CITATION` | error | Same citation number appears multiple times in body |
+| `MISSING_CITATION_NUMBER` | error | Gap in numbered sequence (e.g., [1], [2], [4] — missing [3]) |
+| `CITATION_WITHOUT_REFERENCE` | error | In-text citation has no matching entry in reference list |
+| `REFERENCE_WITHOUT_CITATION` | warning | Reference list entry is never cited in the body |
+| `OUT_OF_ORDER` | warning | Citations don't appear in numerical order |
+| `SEQUENCE_GAP` | warning | Large gap between consecutive citation numbers |
+
+### 3. Reference Lookup for Hover Tooltips (NEW)
+
+Returns a map of citation numbers to their full reference text. Use this to show hover tooltips when the user hovers over a citation like `[1]` in the document.
+
+```
+GET /api/v1/editorial/document/:documentId/reference-lookup
+Authorization: Bearer <token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "documentId": "uuid",
+    "totalReferences": 13,
+    "lookupMap": {
+      "1": "An R, Men XJ, Ni XH, Yu HL, Xie J, Peng SE. Breast angiosarcoma: a systematic review. Eur J Surg Oncol. 2024;50:106–15.",
+      "2": "Baker SM, Jones KL. Clinical features of primary angiosarcoma. J Oncol. 2023;41:234–9.",
+      "3": "Chen D, Liu F. Radiation-associated angiosarcoma: a review. Ann Surg Oncol. 2022;29:4567–78."
+    },
+    "crossReference": { "...same structure as citation analysis..." },
+    "sequenceAnalysis": { "...same structure as citation analysis..." }
+  }
+}
+```
+
+**Frontend usage for hover tooltips:**
+```javascript
+// Fetch once when page loads
+const lookupRes = await api.get(`/editorial/document/${documentId}/reference-lookup`);
+const lookupMap = lookupRes.data.lookupMap;
+
+// When hovering over a citation span
+document.querySelectorAll('[data-citation]').forEach(el => {
+  el.addEventListener('mouseenter', (e) => {
+    const num = e.target.dataset.citation;
+    const refText = lookupMap[num];
+    if (refText) {
+      showTooltip(e.target, refText);
+    } else {
+      showTooltip(e.target, 'No matching reference found');
+    }
+  });
+});
+```
+
+### 4. Get Citation Analysis (existing)
 
 ```
 GET /api/v1/citation/document/:documentId
@@ -144,20 +263,25 @@ Authorization: Bearer <token>
 
 ## Frontend Implementation Plan
 
-### Step 1: Fetch Document Content + Analysis
+### Step 1: Fetch Document Content + Validation Data
 
-Call both endpoints in parallel when the page loads:
+Call all three endpoints in parallel when the page loads:
 
 ```javascript
-const [analysisRes, textRes] = await Promise.all([
-  api.get(`/citation/document/${documentId}`),
-  api.get(`/editorial/document/${documentId}/text`)
+const [textRes, validationRes, lookupRes] = await Promise.all([
+  api.get(`/editorial/document/${documentId}/text`),
+  api.get(`/editorial/document/${documentId}/validate-citations`),
+  api.get(`/editorial/document/${documentId}/reference-lookup`)
 ]);
-const analysis = analysisRes.data;
 const { fullHtml, fullText } = textRes.data;
+const validation = validationRes.data;    // issues, referenceLookup, summary
+const lookupMap = lookupRes.data.lookupMap; // { "1": "full reference text...", ... }
 ```
 
-**Important:** Prefer `fullHtml` over `fullText`. The HTML preserves the original Word document formatting (headings, bold, italic, tables, lists, etc.). Only fall back to `fullText` if `fullHtml` is `null` (older documents uploaded before HTML support). In that case, prompt the user to re-upload the DOCX via the regenerate-html endpoint (see Section 1b above).
+**Important:**
+- Prefer `fullHtml` over `fullText`. The HTML preserves the original Word document formatting (headings, bold, italic, tables, lists, superscripts, subscripts, etc.). Only fall back to `fullText` if `fullHtml` is `null` (older documents uploaded before HTML support). In that case, prompt the user to re-upload the DOCX via the regenerate-html endpoint (see Section 1b above).
+- The `validate-citations` endpoint returns pre-built issue objects ready for the right panel, plus a `referenceLookup` map.
+- The `reference-lookup` endpoint returns the same lookup map (use either one — `validate-citations` includes it for convenience).
 
 ### Step 2: Render Editor Panel (Left Side)
 
@@ -418,7 +542,85 @@ When user clicks **Dismiss**:
 - "Accept All Fixes" — accepts first fix option for all pending issues
 - "Dismiss All" — dismisses all pending issues
 
-### Step 6: Optional — Citation Click Interaction
+### Step 6: Hover Tooltips — Show Reference on Citation Hover
+
+When the user hovers over a highlighted citation (e.g., `[1]`), display a tooltip showing the full reference text from the bottom of the document.
+
+**Implementation:**
+```javascript
+// Use the referenceLookup from the validate-citations response
+const lookupMap = validation.referenceLookup;
+
+function setupHoverTooltips(containerEl) {
+  containerEl.querySelectorAll('[data-citation]').forEach(el => {
+    el.addEventListener('mouseenter', (e) => {
+      const num = e.target.dataset.citation;
+      const refText = lookupMap[num];
+      showTooltip(e.target, refText || 'No matching reference found');
+    });
+    el.addEventListener('mouseleave', () => {
+      hideTooltip();
+    });
+  });
+}
+
+function showTooltip(anchorEl, text) {
+  let tooltip = document.getElementById('citation-tooltip');
+  if (!tooltip) {
+    tooltip = document.createElement('div');
+    tooltip.id = 'citation-tooltip';
+    tooltip.className = 'citation-tooltip';
+    document.body.appendChild(tooltip);
+  }
+  tooltip.textContent = text;
+  tooltip.style.display = 'block';
+  const rect = anchorEl.getBoundingClientRect();
+  tooltip.style.left = `${rect.left}px`;
+  tooltip.style.top = `${rect.bottom + 6}px`;
+}
+
+function hideTooltip() {
+  const tooltip = document.getElementById('citation-tooltip');
+  if (tooltip) tooltip.style.display = 'none';
+}
+```
+
+### Step 7: "Run Validation" Button
+
+Add a button in the toolbar/header area that triggers citation validation on demand:
+
+```javascript
+async function handleRunValidation(documentId) {
+  setLoading(true);
+  const res = await api.get(`/editorial/document/${documentId}/validate-citations`);
+  const validation = res.data;
+
+  // Update issue cards
+  renderIssueCards(validation.issues);
+
+  // Update citation highlights based on new validation data
+  const orphanNumbers = new Set(
+    validation.issues
+      .filter(i => i.type === 'CITATION_WITHOUT_REFERENCE')
+      .flatMap(i => i.citationNumbers)
+  );
+  updateCitationHighlights(orphanNumbers);
+
+  // Update hover tooltips
+  lookupMap = validation.referenceLookup;
+
+  // Show summary
+  showValidationSummary(validation.summary);
+  setLoading(false);
+}
+```
+
+**Summary bar** above the issues panel:
+```
+Matched: 11/15 | Duplicates: 2 | Orphaned: 2 | Uncited refs: 1
+```
+
+### Step 8: Citation Click Interaction
 
 When user clicks a highlighted citation in the editor:
 - Scroll the issues panel to the corresponding issue card
@@ -471,6 +673,53 @@ When user clicks an issue card:
 /* Fix option radio buttons */
 .fix-option { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 4px; cursor: pointer; }
 .fix-option.selected { border-color: #3dd68c; background: rgba(61, 214, 140, 0.1); }
+
+/* Hover tooltip for citations */
+.citation-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 450px;
+  padding: 10px 14px;
+  background: #1a1a2e;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  pointer-events: none;
+  display: none;
+}
+
+/* Citation hover cursor */
+.citation-matched, .citation-issue { cursor: pointer; }
+.citation-matched:hover { background: rgba(61, 214, 140, 0.3); }
+.citation-issue:hover { background: rgba(255, 107, 107, 0.3); }
+
+/* Validation summary bar */
+.validation-summary {
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  background: #f0f4ff;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.validation-summary .stat { font-weight: 600; }
+.validation-summary .stat.error { color: #e53e3e; }
+.validation-summary .stat.success { color: #38a169; }
+
+/* Run Validation button */
+.btn-validate {
+  padding: 8px 16px;
+  background: #4a7aff;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-validate:hover { background: #3b6ae0; }
 ```
 
 ---
@@ -479,13 +728,16 @@ When user clicks an issue card:
 
 | Area | What to Do |
 |------|-----------|
-| **New API call** | Fetch `GET /api/v1/editorial/document/:documentId/text` — returns both `fullHtml` and `fullText` |
-| **Left panel** | Render `fullHtml` as styled document (like Word). Fall back to `fullText` with line numbers only if `fullHtml` is null |
-| **Citation highlights** | Use DOM TreeWalker to inject highlight spans into HTML text nodes without breaking markup |
-| **Backfill** | If `fullHtml` is null, prompt user to re-upload DOCX via `POST .../regenerate-html` |
-| **Right panel** | Expanded issue cards with fix options built from citation analysis data |
+| **Text endpoint** | `GET /api/v1/editorial/document/:documentId/text` — returns `fullHtml` (styled) and `fullText` (plain) |
+| **Validate endpoint (NEW)** | `GET /api/v1/editorial/document/:documentId/validate-citations` — returns issues, referenceLookup map, and summary counts |
+| **Reference lookup (NEW)** | `GET /api/v1/editorial/document/:documentId/reference-lookup` — returns citation-number-to-reference-text map for hover tooltips |
+| **Left panel** | Render `fullHtml` as styled document (like Word) with h1/h2/bold/italic preserved. Fall back to `fullText` only if null |
+| **Citation highlights** | DOM TreeWalker to inject highlight spans into HTML text nodes. Green = matched, Red = orphaned |
+| **Hover tooltips** | On citation hover, show full reference text from `referenceLookup` map in a tooltip |
+| **Run Validation button** | Triggers `validate-citations` endpoint, updates issue cards and highlights |
+| **Right panel** | Issue cards from `validate-citations` response (pre-built with type, severity, citationNumbers) |
 | **Issue cards** | Severity icon, title, detail, radio-button fix options, Accept/Dismiss buttons |
 | **Bulk actions** | "Accept All" and "Dismiss All" buttons at top of issues list |
-| **Interactions** | Click citation in editor → scroll to issue; click issue → scroll to citation |
+| **Interactions** | Click citation → scroll to issue; click issue → scroll to citation |
 | **Allowed HTML tags** | h1-h6, p, br, hr, strong, b, em, i, u, s, del, ins, sup, sub, span, ul, ol, li, table/thead/tbody/tfoot/tr/th/td/caption, blockquote, pre, code, a, img, figure, figcaption |
 | **Embedded images** | `img` tags may use `data:` URIs for images embedded in the DOCX — render them inline |
