@@ -231,10 +231,17 @@ export class EditorialOverviewController {
         return;
       }
 
-      const document = await prisma.editorialDocument.findFirst({
+      let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { fullText: true },
+        select: { id: true, fullText: true },
       });
+
+      if (!document) {
+        document = await prisma.editorialDocument.findFirst({
+          where: { jobId: documentId, tenantId },
+          select: { id: true, fullText: true },
+        });
+      }
 
       if (!document) {
         res.status(404).json({ success: false, error: 'Document not found' });
@@ -243,7 +250,7 @@ export class EditorialOverviewController {
 
       res.json({
         success: true,
-        data: { fullText: document.fullText || null },
+        data: { documentId: document.id, fullText: document.fullText || null },
       });
     } catch (error) {
       logger.error('[Editorial Overview] getDocumentText failed', error instanceof Error ? error : undefined);
