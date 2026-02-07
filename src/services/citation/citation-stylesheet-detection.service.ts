@@ -778,6 +778,7 @@ export class CitationStylesheetDetectionService {
         fileSize,
         storagePath: '',
         fullText: parsed.text,
+        fullHtml: parsed.html || null,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,
