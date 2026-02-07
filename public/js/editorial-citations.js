@@ -6,8 +6,9 @@ const state = {
   analysis: null,
   documentText: null,
   issues: [],
-  activeTab: 'sequence',
+  activeTab: 'all',
   decisions: {},
+  selectedFixId: {},
 };
 
 function getDocumentIdFromUrl() {
@@ -25,24 +26,7 @@ async function api(path, opts = {}) {
     state.token = null;
     localStorage.removeItem('ninja_token');
     showAuth();
-    throw new Error('Session expired — please sign in again');
-  }
-  const data = await res.json();
-  if (!res.ok || !data.success) throw new Error(data.error?.message || data.error || 'Request failed');
-  return data.data;
-}
-
-async function apiRaw(path, opts = {}) {
-  if (state.token) {
-    opts.headers = opts.headers || {};
-    opts.headers['Authorization'] = `Bearer ${state.token}`;
-  }
-  const res = await fetch(`${API_BASE}${path}`, opts);
-  if (res.status === 401) {
-    state.token = null;
-    localStorage.removeItem('ninja_token');
-    showAuth();
-    throw new Error('Session expired — please sign in again');
+    throw new Error('Session expired');
   }
   const data = await res.json();
   if (!res.ok || !data.success) throw new Error(data.error?.message || data.error || 'Request failed');
@@ -142,7 +126,6 @@ async function handleLogin(e) {
   e.preventDefault();
   const email = document.getElementById('login-email').value;
   const password = document.getElementById('login-password').value;
-
   try {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
@@ -154,11 +137,8 @@ async function handleLogin(e) {
     state.token = data.data?.token || data.token;
     localStorage.setItem('ninja_token', state.token);
     showApp();
-    if (state.documentId) {
-      await runAnalysis();
-    } else {
-      renderNoDocument();
-    }
+    if (state.documentId) await runAnalysis();
+    else renderNoDocument();
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -169,7 +149,6 @@ async function handleRegister(e) {
   const name = document.getElementById('reg-name').value;
   const email = document.getElementById('reg-email').value;
   const password = document.getElementById('reg-password').value;
-
   try {
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: 'POST',
@@ -182,24 +161,19 @@ async function handleRegister(e) {
     localStorage.setItem('ninja_token', state.token);
     toast('Account created successfully', 'success');
     showApp();
-    if (state.documentId) {
-      await runAnalysis();
-    } else {
-      renderNoDocument();
-    }
+    if (state.documentId) await runAnalysis();
+    else renderNoDocument();
   } catch (err) {
     toast(err.message, 'error');
   }
 }
 
 function renderNoDocument() {
-  const docBody = document.querySelector('#doc-panel .panel-body');
-  const issBody = document.querySelector('#issues-panel .panel-body');
-  docBody.innerHTML = `<div class="empty-state">
+  document.querySelector('#doc-panel .panel-body').innerHTML = `<div class="empty-state">
     <h3>No Document Selected</h3>
-    <p>Use the "Upload New" button to upload a document for citation analysis, or navigate here from the editorial overview.</p>
+    <p>Use "Upload New" to upload a document for citation analysis.</p>
   </div>`;
-  issBody.innerHTML = `<div class="empty-state">
+  document.querySelector('#issues-panel .panel-body').innerHTML = `<div class="empty-state">
     <h3>No Analysis</h3>
     <p>Upload a document to get started</p>
   </div>`;
@@ -209,27 +183,25 @@ async function runAnalysis() {
   if (!state.documentId) return;
   showLoading('doc-panel');
   showLoading('issues-panel');
-
   document.getElementById('doc-info').textContent = `Document: ${state.documentId.slice(0, 8)}...`;
 
   try {
     const [analysis, textData] = await Promise.all([
       api(`/citation/document/${state.documentId}`),
-      api(`/editorial/document/${state.documentId}/text`).catch(() => ({ fullText: null })),
+      api(`/editorial/document/${state.documentId}/text`).catch(() => null),
     ]);
-
     state.analysis = analysis;
     state.documentText = textData?.fullText || null;
     buildIssuesFromAnalysis();
+    state.activeTab = state.issues.length > 0 ? 'all' : 'references';
     renderDocumentPanel();
     renderIssuesPanel();
   } catch (err) {
     toast('Analysis failed: ' + err.message, 'error');
-    const docBody = document.querySelector('#doc-panel .panel-body');
-    docBody.innerHTML = `<div class="empty-state">
+    document.querySelector('#doc-panel .panel-body').innerHTML = `<div class="empty-state">
       <h3>Analysis Failed</h3>
       <p>${escapeHtml(err.message)}</p>
-      <p style="margin-top:12px">Try uploading the document using the "Upload New" button.</p>
+      <p style="margin-top:12px">Try uploading the document using "Upload New".</p>
     </div>`;
   } finally {
     hideLoading('doc-panel');
@@ -255,18 +227,16 @@ async function handleFileSelect(file) {
     toast('Unsupported file type. Use PDF, DOCX, TXT, or EPUB.', 'error');
     return;
   }
-
   const progressDiv = document.getElementById('upload-progress');
   const progressFill = document.getElementById('progress-fill');
   const statusText = document.getElementById('upload-status');
   progressDiv.classList.remove('hidden');
   progressFill.style.width = '30%';
-  statusText.textContent = `Uploading ${escapeHtml(file.name)}...`;
+  statusText.textContent = `Uploading ${file.name}...`;
 
   try {
     const formData = new FormData();
     formData.append('file', file);
-
     progressFill.style.width = '50%';
     statusText.textContent = 'Analyzing citations...';
 
@@ -275,37 +245,35 @@ async function handleFileSelect(file) {
       headers: state.token ? { 'Authorization': `Bearer ${state.token}` } : {},
       body: formData,
     });
-
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error?.message || 'Upload failed');
 
     progressFill.style.width = '100%';
     statusText.textContent = 'Analysis complete!';
-
     const result = data.data;
+
     if (result.documentId) {
       state.documentId = result.documentId;
       window.history.pushState({}, '', `/editorial/citations/${result.documentId}`);
       state.analysis = result;
-      state.documentText = null;
+      state.decisions = {};
+      state.selectedFixId = {};
+      try {
+        const textData = await api(`/editorial/document/${result.documentId}/text`);
+        state.documentText = textData?.fullText || null;
+      } catch { state.documentText = null; }
       buildIssuesFromAnalysis();
+      state.activeTab = state.issues.length > 0 ? 'all' : 'references';
       renderDocumentPanel();
       renderIssuesPanel();
       document.getElementById('doc-info').textContent = `Document: ${escapeHtml(file.name)}`;
       toast('Document analyzed successfully', 'success');
-    } else {
-      state.analysis = result;
-      buildIssuesFromAnalysis();
-      renderDocumentPanel();
-      renderIssuesPanel();
-      toast('Analysis complete', 'success');
     }
-
-    setTimeout(hideUploadModal, 800);
+    setTimeout(hideUploadModal, 600);
   } catch (err) {
     toast('Upload failed: ' + err.message, 'error');
     progressFill.style.width = '0%';
-    statusText.textContent = 'Failed — try again';
+    statusText.textContent = 'Failed';
   }
 }
 
@@ -315,57 +283,49 @@ function buildIssuesFromAnalysis() {
   if (!a) return;
 
   const seq = a.sequenceAnalysis;
-  if (seq && !seq.isSequential) {
+  if (seq) {
     if (seq.missingNumbers?.length > 0) {
       issues.push({
-        id: 'seq-missing',
-        category: 'sequence',
-        severity: 'error',
+        id: 'seq-missing', category: 'sequence', severity: 'error',
         title: `${seq.missingNumbers.length} missing citation number(s)`,
-        detail: `Expected continuous sequence from ${seq.expectedRange?.start} to ${seq.expectedRange?.end}. Missing: ${seq.missingNumbers.map(n => `[${n}]`).join(', ')}`,
+        detail: `Expected continuous sequence ${seq.expectedRange?.start}-${seq.expectedRange?.end}. Missing: ${seq.missingNumbers.map(n => '[' + n + ']').join(', ')}`,
         fixes: [
-          { id: 'renumber', label: 'Renumber citations', desc: 'Renumber all citations sequentially to close gaps' },
-          { id: 'add-missing', label: 'Flag for manual review', desc: 'Mark missing numbers for manual insertion' },
+          { id: 'renumber', label: 'Renumber citations sequentially', desc: 'Close gaps by renumbering all citations' },
+          { id: 'flag', label: 'Flag for manual review', desc: 'Mark missing numbers for manual insertion' },
         ],
       });
     }
     if (seq.gaps?.length > 0) {
       seq.gaps.forEach((gap, i) => {
         issues.push({
-          id: `seq-gap-${i}`,
-          category: 'sequence',
-          severity: 'warning',
-          title: `Gap in sequence: [${gap.from}] to [${gap.to}]`,
-          detail: `Jump from citation [${gap.from}] to [${gap.to}], skipping ${gap.to - gap.from - 1} number(s).`,
+          id: `seq-gap-${i}`, category: 'sequence', severity: 'warning',
+          title: `Gap: [${gap.from}] to [${gap.to}]`,
+          detail: `Jump from [${gap.from}] to [${gap.to}], skipping ${gap.to - gap.from - 1} number(s).`,
           fixes: [
-            { id: 'renumber', label: 'Renumber to close gap', desc: 'Shift subsequent citations to fill the gap' },
-            { id: 'ignore', label: 'Ignore', desc: 'No action needed — intentional gap' },
+            { id: 'renumber', label: 'Renumber to close gap', desc: 'Shift subsequent citations' },
+            { id: 'ignore', label: 'Ignore', desc: 'Intentional gap' },
           ],
         });
       });
     }
     if (seq.duplicates?.length > 0) {
       issues.push({
-        id: 'seq-dups',
-        category: 'sequence',
-        severity: 'error',
+        id: 'seq-dups', category: 'sequence', severity: 'error',
         title: `${seq.duplicates.length} duplicate citation number(s)`,
-        detail: `Duplicated numbers: ${seq.duplicates.map(n => `[${n}]`).join(', ')}`,
+        detail: `Duplicated: ${seq.duplicates.map(n => '[' + n + ']').join(', ')}`,
         fixes: [
-          { id: 'deduplicate', label: 'Deduplicate', desc: 'Assign unique numbers to duplicate citations' },
-          { id: 'review', label: 'Review manually', desc: 'These may be intentional reuses' },
+          { id: 'deduplicate', label: 'Deduplicate', desc: 'Assign unique numbers' },
+          { id: 'review', label: 'Review manually', desc: 'May be intentional reuses' },
         ],
       });
     }
     if (seq.outOfOrder?.length > 0) {
       issues.push({
-        id: 'seq-order',
-        category: 'sequence',
-        severity: 'warning',
+        id: 'seq-order', category: 'sequence', severity: 'warning',
         title: `${seq.outOfOrder.length} citation(s) out of order`,
-        detail: `Citation numbers appearing out of sequential order.`,
+        detail: 'Citation numbers appear out of sequential order in the text.',
         fixes: [
-          { id: 'reorder', label: 'Reorder citations', desc: 'Sort citations by first appearance' },
+          { id: 'reorder', label: 'Reorder by first appearance', desc: 'Renumber based on order in text' },
           { id: 'ignore', label: 'Ignore', desc: 'Order may be intentional' },
         ],
       });
@@ -376,16 +336,15 @@ function buildIssuesFromAnalysis() {
   if (xref) {
     if (xref.citationsWithoutReference?.length > 0) {
       xref.citationsWithoutReference.forEach(cit => {
+        const num = cit.number || '?';
         issues.push({
-          id: `xref-orphan-cit-${cit.number || cit.citationId}`,
-          category: 'crossref',
-          severity: 'error',
-          title: `Citation [${cit.number || '?'}] has no matching reference`,
-          detail: `Body citation "${escapeHtml(cit.text || '')}" does not match any entry in the reference list.`,
+          id: `xref-orphan-${num}`, category: 'crossref', severity: 'error',
+          title: `Citation [${num}] has no matching reference`,
+          detail: `"${escapeHtml((cit.text || '').slice(0, 100))}" is not found in the reference list.`,
           fixes: [
-            { id: 'add-ref', label: 'Add reference entry', desc: 'Create a reference list entry for this citation' },
-            { id: 'remove-cit', label: 'Remove citation', desc: 'Delete this citation from the body text' },
-            { id: 'flag', label: 'Flag for review', desc: 'Mark for manual resolution' },
+            { id: 'add-ref', label: 'Add reference entry', desc: 'Create a reference list entry' },
+            { id: 'remove-cit', label: 'Remove citation', desc: 'Delete from body text' },
+            { id: 'flag', label: 'Flag for review', desc: 'Mark for manual check' },
           ],
         });
       });
@@ -393,14 +352,12 @@ function buildIssuesFromAnalysis() {
     if (xref.referencesWithoutCitation?.length > 0) {
       const count = xref.referencesWithoutCitation.length;
       issues.push({
-        id: 'xref-uncited-refs',
-        category: 'crossref',
-        severity: 'warning',
+        id: 'xref-uncited', category: 'crossref', severity: 'warning',
         title: `${count} reference(s) not cited in body`,
-        detail: `${count} entries in the reference list are not cited anywhere in the document body. First few: ${xref.referencesWithoutCitation.slice(0, 5).map(r => escapeHtml((r.text || '').slice(0, 60))).join('; ')}`,
+        detail: `These reference entries have no matching in-text citation: ${xref.referencesWithoutCitation.slice(0, 3).map(r => escapeHtml((r.text || '').slice(0, 50))).join('; ')}${count > 3 ? '...' : ''}`,
         fixes: [
-          { id: 'remove-uncited', label: 'Remove uncited references', desc: 'Delete reference entries that have no corresponding citation' },
-          { id: 'keep', label: 'Keep all', desc: 'References may be intentionally included (e.g. further reading)' },
+          { id: 'remove-uncited', label: 'Remove uncited references', desc: 'Delete entries without citations' },
+          { id: 'keep', label: 'Keep all', desc: 'May be further reading' },
           { id: 'flag', label: 'Flag for review', desc: 'Mark for editorial review' },
         ],
       });
@@ -415,7 +372,7 @@ function renderDocumentPanel() {
   const a = state.analysis;
 
   if (!state.documentText && !a) {
-    body.innerHTML = `<div class="empty-state"><h3>No Document</h3><p>Upload a document to get started</p></div>`;
+    body.innerHTML = '<div class="empty-state"><h3>No Document</h3><p>Upload a document to get started</p></div>';
     return;
   }
 
@@ -426,9 +383,9 @@ function renderDocumentPanel() {
     const confPct = Math.round(s.confidence * 100);
     const confColor = confPct >= 70 ? 'var(--green)' : confPct >= 40 ? 'var(--yellow)' : 'var(--red)';
     html += `<div class="style-badge">
-      <span class="style-name">${escapeHtml(s.styleName)}</span>
+      <span class="style-name">${escapeHtml(s.styleName || s.styleCode || 'Unknown')}</span>
       <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%;background:${confColor}"></div></div>
-      <span style="font-size:12px;color:var(--text-muted)">${confPct}%</span>
+      <span style="font-size:12px;color:var(--text-muted)">${confPct}% confidence</span>
     </div>`;
   }
 
@@ -437,45 +394,68 @@ function renderDocumentPanel() {
     html += `<div class="stat-chip"><span class="count">${a.citations?.totalCount || 0}</span> citations</div>`;
     html += `<div class="stat-chip"><span class="count">${a.referenceList?.totalEntries || 0}</span> references</div>`;
     html += `<div class="stat-chip"><span class="count">${a.crossReference?.matched || 0}</span> matched</div>`;
-    const issueCount = state.issues.length;
-    if (issueCount > 0) {
-      html += `<div class="stat-chip" style="color:var(--red)"><span class="count" style="color:var(--red)">${issueCount}</span> issues</div>`;
+    if (state.issues.length > 0) {
+      html += `<div class="stat-chip issue-chip"><span class="count" style="color:var(--red)">${state.issues.length}</span> issues</div>`;
     }
     html += '</div>';
   }
 
   if (state.documentText) {
-    const highlighted = highlightCitations(state.documentText);
-    html += `<div class="document-text-wrapper"><div class="document-text">${highlighted}</div></div>`;
+    html += renderEditorView(state.documentText);
+  } else if (a?.citations?.items?.length > 0) {
+    html += '<div class="section-label" style="padding:12px 16px 4px">Detected Citations</div>';
+    html += '<div class="citation-list">';
+    a.citations.items.forEach((cit, i) => {
+      const hasRef = !state.issues.find(iss => iss.id === `xref-orphan-${cit.number || i}`);
+      html += `<div class="citation-item ${hasRef ? 'matched' : 'orphan'}">
+        <span class="cit-num">[${cit.number || i + 1}]</span>
+        <span class="cit-text">${escapeHtml((cit.text || cit.rawText || '').slice(0, 120))}</span>
+        <span class="cit-status">${hasRef ? 'Matched' : 'No ref'}</span>
+      </div>`;
+    });
+    html += '</div>';
   } else {
-    html += `<div class="document-text" style="color:var(--text-muted);padding:20px;">
-      Document source text is not available for inline display.\n\nThe analysis results and detected issues are shown in the panel on the right.
-      ${a?.detectedStyle?.evidence?.length ? '\n\nDetection evidence:\n' + a.detectedStyle.evidence.map(e => '  - ' + escapeHtml(e)).join('\n') : ''}
+    html += `<div class="empty-state" style="padding:40px 20px">
+      <p>Document source text not available for inline display.</p>
+      <p style="margin-top:8px">Analysis results and issues are shown in the right panel.</p>
     </div>`;
   }
 
   body.innerHTML = html;
 }
 
-function highlightCitations(text) {
+function renderEditorView(text) {
+  const lines = text.split('\n');
   const a = state.analysis;
-  if (!a) return escapeHtml(text);
-
   const matchedNums = new Set();
-  const xref = a.crossReference;
-  if (xref) {
-    const orphanNums = new Set((xref.citationsWithoutReference || []).map(c => c.number));
-    for (let i = 1; i <= (a.sequenceAnalysis?.expectedRange?.end || 0); i++) {
+  if (a?.crossReference) {
+    const orphanNums = new Set((a.crossReference.citationsWithoutReference || []).map(c => c.number));
+    for (let i = 1; i <= (a.sequenceAnalysis?.expectedRange?.end || 999); i++) {
       if (!orphanNums.has(i)) matchedNums.add(i);
     }
   }
 
-  const escaped = escapeHtml(text);
-  return escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
-    const n = parseInt(num, 10);
-    const cls = matchedNums.has(n) ? 'matched' : 'issue';
-    return `<span class="citation-highlight ${cls}" data-cit-num="${n}">${match}</span>`;
+  let lineNumsHtml = '';
+  let contentHtml = '';
+  lines.forEach((line, idx) => {
+    const lineNum = idx + 1;
+    lineNumsHtml += `<div class="ln">${lineNum}</div>`;
+    const escaped = escapeHtml(line);
+    const highlighted = escaped.replace(/\[(\d{1,4})\]/g, (match, num) => {
+      const n = parseInt(num, 10);
+      const cls = matchedNums.has(n) ? 'matched' : 'issue';
+      return `<span class="citation-highlight ${cls}" data-cit-num="${n}" title="Citation [${n}] — ${cls === 'matched' ? 'has reference' : 'no matching reference'}">${match}</span>`;
+    });
+    const alsoHighlightAuthorDate = highlighted.replace(/\(([A-Z][a-z]+(?:\s(?:et\s+al\.?|&amp;\s+[A-Z][a-z]+))?(?:,?\s*\d{4}[a-z]?))\)/g, (match) => {
+      return `<span class="citation-highlight matched" title="Author-date citation">${match}</span>`;
+    });
+    contentHtml += `<div class="editor-line" data-line="${lineNum}">${alsoHighlightAuthorDate || '&nbsp;'}</div>`;
   });
+
+  return `<div class="editor-wrapper">
+    <div class="editor-gutter">${lineNumsHtml}</div>
+    <div class="editor-content">${contentHtml}</div>
+  </div>`;
 }
 
 function escapeHtml(str) {
@@ -495,16 +475,12 @@ function renderIssuesPanel() {
 
   const seqIssues = state.issues.filter(i => i.category === 'sequence');
   const xrefIssues = state.issues.filter(i => i.category === 'crossref');
+  const allIssues = state.issues;
   const refEntries = a.referenceList?.entries || [];
 
-  let html = '';
-
-  html += `<div class="issue-tabs">
-    <button class="issue-tab ${state.activeTab === 'sequence' ? 'active' : ''}" data-tab="sequence">
-      Sequence <span class="badge">${seqIssues.length}</span>
-    </button>
-    <button class="issue-tab ${state.activeTab === 'crossref' ? 'active' : ''}" data-tab="crossref">
-      Cross-Ref <span class="badge">${xrefIssues.length}</span>
+  let html = `<div class="issue-tabs">
+    <button class="issue-tab ${state.activeTab === 'all' ? 'active' : ''}" data-tab="all">
+      All Issues <span class="badge">${allIssues.length}</span>
     </button>
     <button class="issue-tab ${state.activeTab === 'references' ? 'active' : ''}" data-tab="references">
       References <span class="badge">${refEntries.length}</span>
@@ -514,21 +490,19 @@ function renderIssuesPanel() {
     </button>
   </div>`;
 
-  html += `<div id="tab-sequence" class="issue-list ${state.activeTab !== 'sequence' ? 'hidden' : ''}">`;
-  if (seqIssues.length === 0) {
-    html += '<div class="empty-state"><h3>No Sequence Issues</h3><p>Citations are in proper sequence</p></div>';
+  html += `<div id="tab-all" class="issue-list ${state.activeTab !== 'all' ? 'hidden' : ''}">`;
+  if (allIssues.length === 0) {
+    html += '<div class="empty-state"><h3>No Issues Found</h3><p>All citations and references look good.</p></div>';
   } else {
-    html += renderBulkActions('sequence');
-    seqIssues.forEach(issue => { html += renderIssueCard(issue); });
-  }
-  html += '</div>';
-
-  html += `<div id="tab-crossref" class="issue-list ${state.activeTab !== 'crossref' ? 'hidden' : ''}">`;
-  if (xrefIssues.length === 0) {
-    html += '<div class="empty-state"><h3>No Cross-Reference Issues</h3><p>All citations match their references</p></div>';
-  } else {
-    html += renderBulkActions('crossref');
-    xrefIssues.forEach(issue => { html += renderIssueCard(issue); });
+    const pending = allIssues.filter(i => !state.decisions[i.id]).length;
+    if (pending > 0) {
+      html += `<div class="bulk-actions">
+        <span style="font-size:12px;color:var(--text-muted)">${pending} issue(s) pending</span>
+        <button class="btn btn-sm btn-success" onclick="bulkAccept('all')">Accept All Fixes</button>
+        <button class="btn btn-sm btn-outline" onclick="bulkReject('all')">Dismiss All</button>
+      </div>`;
+    }
+    allIssues.forEach(issue => { html += renderIssueCard(issue); });
   }
   html += '</div>';
 
@@ -556,38 +530,15 @@ function renderIssuesPanel() {
   body.querySelectorAll('.issue-tab').forEach(tab => {
     tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
-
-  body.querySelectorAll('.issue-card-header').forEach(header => {
-    header.addEventListener('click', () => toggleCard(header.closest('.issue-card')));
-  });
-
   body.querySelectorAll('.fix-option').forEach(opt => {
     opt.addEventListener('click', () => selectFix(opt));
   });
-
   body.querySelectorAll('[data-action="accept"]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      acceptIssue(btn.dataset.issueId);
-    });
+    btn.addEventListener('click', () => acceptIssue(btn.dataset.issueId));
   });
-
   body.querySelectorAll('[data-action="reject"]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      rejectIssue(btn.dataset.issueId);
-    });
+    btn.addEventListener('click', () => rejectIssue(btn.dataset.issueId));
   });
-}
-
-function renderBulkActions(category) {
-  const issues = state.issues.filter(i => i.category === category);
-  const pending = issues.filter(i => !state.decisions[i.id]);
-  if (pending.length === 0) return '';
-  return `<div class="bulk-actions">
-    <button class="btn btn-sm btn-success" onclick="bulkAccept('${escapeHtml(category)}')">Accept All (${pending.length})</button>
-    <button class="btn btn-sm btn-outline" onclick="bulkReject('${escapeHtml(category)}')">Dismiss All</button>
-  </div>`;
 }
 
 function renderIssueCard(issue) {
@@ -595,45 +546,51 @@ function renderIssueCard(issue) {
   const statusClass = decision === 'accepted' ? 'accepted' : decision === 'rejected' ? 'rejected' : '';
   const statusBadge = decision === 'accepted' ? '<span class="accepted-badge">Accepted</span>' :
                       decision === 'rejected' ? '<span class="rejected-badge">Dismissed</span>' : '';
+  const sevIcon = issue.severity === 'error' ? 'E' : 'W';
+  const sevColor = issue.severity === 'error' ? 'var(--red)' : 'var(--yellow)';
 
-  let html = `<div class="issue-card ${statusClass}" data-issue-id="${escapeHtml(issue.id)}">
+  let html = `<div class="issue-card expanded ${statusClass}" data-issue-id="${escapeHtml(issue.id)}">
     <div class="issue-card-header">
-      <div class="issue-severity ${issue.severity}"></div>
+      <div class="sev-icon" style="background:${sevColor}">${sevIcon}</div>
       <div style="flex:1">
         <div class="issue-title">${escapeHtml(issue.title)} ${statusBadge}</div>
+        <div class="issue-detail">${issue.detail}</div>
       </div>
-    </div>
-    <div class="issue-card-body">
-      <div class="issue-detail">${issue.detail}</div>`;
+    </div>`;
 
   if (!decision) {
-    html += '<div class="section-label">Fix Options</div>';
-    issue.fixes.forEach(fix => {
-      html += `<div class="fix-option" data-fix-id="${escapeHtml(fix.id)}" data-issue-id="${escapeHtml(issue.id)}">
-        <div class="fix-label">${escapeHtml(fix.label)}</div>
-        <div class="fix-desc">${escapeHtml(fix.desc)}</div>
+    html += '<div class="issue-card-body">';
+    html += '<div class="fix-options-label">Suggested Fixes:</div>';
+    issue.fixes.forEach((fix, idx) => {
+      const isSelected = (state.selectedFixId[issue.id] || issue.fixes[0].id) === fix.id;
+      html += `<div class="fix-option ${isSelected ? 'selected' : ''}" data-fix-id="${escapeHtml(fix.id)}" data-issue-id="${escapeHtml(issue.id)}">
+        <div class="fix-radio">${isSelected ? '<div class="fix-radio-dot"></div>' : ''}</div>
+        <div>
+          <div class="fix-label">${escapeHtml(fix.label)}</div>
+          <div class="fix-desc">${escapeHtml(fix.desc)}</div>
+        </div>
       </div>`;
     });
-
-    html += `<div class="issue-actions" style="margin-top:10px">
+    html += `<div class="issue-actions">
       <button class="btn btn-sm btn-success" data-action="accept" data-issue-id="${escapeHtml(issue.id)}">Accept Fix</button>
       <button class="btn btn-sm btn-outline" data-action="reject" data-issue-id="${escapeHtml(issue.id)}">Dismiss</button>
     </div>`;
+    html += '</div>';
   }
 
-  html += '</div></div>';
+  html += '</div>';
   return html;
 }
 
 function renderRefTable(entries) {
-  if (entries.length === 0) return '<div class="empty-state"><p>No reference entries</p></div>';
-
+  if (!entries || entries.length === 0) return '<div class="empty-state"><p>No reference entries found</p></div>';
   let html = '<table class="ref-table"><thead><tr><th>#</th><th>Status</th><th>Reference Text</th></tr></thead><tbody>';
   entries.forEach(entry => {
+    const num = entry.number || (entry.index != null ? entry.index + 1 : '?');
     html += `<tr>
-      <td>${entry.number || entry.index + 1}</td>
-      <td><span class="match-dot ${entry.hasMatch ? 'yes' : 'no'}"></span></td>
-      <td>${escapeHtml((entry.text || '').slice(0, 120))}</td>
+      <td>${num}</td>
+      <td><span class="match-dot ${entry.hasMatch ? 'yes' : 'no'}"></span> ${entry.hasMatch ? 'Cited' : 'Uncited'}</td>
+      <td>${escapeHtml((entry.text || '').slice(0, 150))}</td>
     </tr>`;
   });
   html += '</tbody></table>';
@@ -645,22 +602,19 @@ function switchTab(tab) {
   renderIssuesPanel();
 }
 
-function toggleCard(card) {
-  card.classList.toggle('expanded');
-}
-
 function selectFix(opt) {
-  opt.closest('.issue-card-body').querySelectorAll('.fix-option').forEach(o => o.classList.remove('selected'));
-  opt.classList.add('selected');
+  const issueId = opt.dataset.issueId;
+  const fixId = opt.dataset.fixId;
+  state.selectedFixId[issueId] = fixId;
+  renderIssuesPanel();
 }
 
 function acceptIssue(issueId) {
-  const card = document.querySelector(`[data-issue-id="${issueId}"]`);
-  const selectedFix = card?.querySelector('.fix-option.selected');
-  const fixId = selectedFix?.dataset.fixId || 'default';
+  const fixId = state.selectedFixId[issueId] || state.issues.find(i => i.id === issueId)?.fixes[0]?.id || 'default';
   state.decisions[issueId] = 'accepted';
-  toast(`Issue accepted — fix: ${fixId}`, 'success');
+  toast(`Fix accepted: ${fixId}`, 'success');
   renderIssuesPanel();
+  renderDocumentPanel();
 }
 
 function rejectIssue(issueId) {
@@ -670,23 +624,26 @@ function rejectIssue(issueId) {
 }
 
 function bulkAccept(category) {
-  state.issues.filter(i => i.category === category && !state.decisions[i.id]).forEach(issue => {
+  const targets = category === 'all' ? state.issues : state.issues.filter(i => i.category === category);
+  targets.filter(i => !state.decisions[i.id]).forEach(issue => {
     state.decisions[issue.id] = 'accepted';
   });
-  toast(`All ${category} issues accepted`, 'success');
+  toast(`All issues accepted`, 'success');
   renderIssuesPanel();
+  renderDocumentPanel();
 }
 
 function bulkReject(category) {
-  state.issues.filter(i => i.category === category && !state.decisions[i.id]).forEach(issue => {
+  const targets = category === 'all' ? state.issues : state.issues.filter(i => i.category === category);
+  targets.filter(i => !state.decisions[i.id]).forEach(issue => {
     state.decisions[issue.id] = 'rejected';
   });
-  toast(`All ${category} issues dismissed`, 'info');
+  toast('All issues dismissed', 'info');
   renderIssuesPanel();
 }
 
 function requestConversion(styleCode) {
-  toast(`Conversion to ${styleCode} requested — this feature is coming soon`, 'info');
+  toast(`Conversion to ${styleCode} requested — coming soon`, 'info');
 }
 
 document.addEventListener('DOMContentLoaded', init);

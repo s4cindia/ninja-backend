@@ -536,3 +536,169 @@ body {
 
 .accepted-badge { background: var(--green-dim); color: var(--green); }
 .rejected-badge { background: var(--red-dim); color: var(--red); }
+
+.editor-wrapper {
+  display: flex;
+  height: 100%;
+  overflow: auto;
+}
+
+.editor-gutter {
+  padding: 12px 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  flex-shrink: 0;
+  min-width: 44px;
+}
+
+.editor-gutter .ln {
+  padding: 0 10px 0 8px;
+  text-align: right;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.editor-content {
+  flex: 1;
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+
+.editor-line {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0 4px;
+  border-left: 2px solid transparent;
+}
+
+.editor-line:hover {
+  background: var(--surface-2);
+  border-left-color: var(--accent);
+}
+
+.sev-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.issue-card-header {
+  gap: 10px;
+}
+
+.issue-card-header .issue-detail {
+  margin-bottom: 0;
+  margin-top: 4px;
+}
+
+.fix-options-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.fix-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.fix-radio {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fix-option.selected .fix-radio {
+  border-color: var(--green);
+}
+
+.fix-radio-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.issue-actions {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.citation-list {
+  padding: 8px 16px;
+}
+
+.citation-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.citation-item.orphan {
+  border-color: var(--red);
+  border-left: 3px solid var(--red);
+}
+
+.citation-item.matched {
+  border-left: 3px solid var(--green);
+}
+
+.cit-num {
+  font-weight: 700;
+  font-family: 'SF Mono', monospace;
+  min-width: 36px;
+}
+
+.cit-text {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cit-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.citation-item.matched .cit-status { background: var(--green-dim); color: var(--green); }
+.citation-item.orphan .cit-status { background: var(--red-dim); color: var(--red); }
+
+.issue-chip { color: var(--red); }
