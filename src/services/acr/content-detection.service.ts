@@ -25,10 +25,11 @@ interface ContentAnalysis {
   hasInteractiveElements: boolean;
   hasNavigationBlocks: boolean;
   hasDataTables: boolean;
-  hasJavaScript: boolean; // NEW: Custom JavaScript detected
-  hasTimedContent: boolean; // NEW: setTimeout/setInterval detected
-  hasAutoPlayingMedia: boolean; // NEW: autoplay attribute detected
-  hasMotionHandlers: boolean; // NEW: motion/gesture event listeners detected
+  hasJavaScript: boolean;
+  hasExternalUrls: boolean;
+  externalUrlCount: number;
+  hasAudioFiles: boolean;
+  hasVideoFiles: boolean;
   documentType: string;
   fileCount: number;
   scannedFiles: number;
@@ -78,6 +79,13 @@ class ContentDetectionService {
     const filesToAnalyze = htmlFiles.slice(0, 50);
     const scanCoverage = htmlFiles.length > 0 ? filesToAnalyze.length / htmlFiles.length : 1;
 
+    // Check manifest for media files
+    const allFiles = Object.keys(zip.files);
+    const audioExtensions = ['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.flac'];
+    const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
+    const hasAudioFiles = allFiles.some(f => audioExtensions.some(ext => f.toLowerCase().endsWith(ext)));
+    const hasVideoFiles = allFiles.some(f => videoExtensions.some(ext => f.toLowerCase().endsWith(ext)));
+
     const analysis: ContentAnalysis = {
       hasAudio: false,
       hasVideo: false,
@@ -87,9 +95,10 @@ class ContentDetectionService {
       hasNavigationBlocks: false,
       hasDataTables: false,
       hasJavaScript: false,
-      hasTimedContent: false,
-      hasAutoPlayingMedia: false,
-      hasMotionHandlers: false,
+      hasExternalUrls: false,
+      externalUrlCount: 0,
+      hasAudioFiles,
+      hasVideoFiles,
       documentType: 'text',
       fileCount: htmlFiles.length,
       scannedFiles: filesToAnalyze.length,
@@ -97,6 +106,7 @@ class ContentDetectionService {
     };
 
     logger.debug(`[Content Detection] Analyzing ${filesToAnalyze.length} of ${htmlFiles.length} HTML files (${Math.round(scanCoverage * 100)}% coverage)`);
+    logger.debug(`[Content Detection] Manifest check: audioFiles=${hasAudioFiles}, videoFiles=${hasVideoFiles}`);
 
     for (const fileName of filesToAnalyze) {
       try {
@@ -151,43 +161,19 @@ class ContentDetectionService {
           }
         }
 
-        // Check for JavaScript (custom scripts)
+        // Check for JavaScript
         if ($('script').length > 0) {
-          // Exclude common libraries/frameworks, focus on custom scripts
-          const scripts = $('script');
-          scripts.each((_, elem) => {
-            const $script = $(elem);
-            const src = $script.attr('src') || '';
-            const scriptContent = $script.html() || '';
-
-            // If there's inline JavaScript or custom script files
-            if (scriptContent.trim().length > 0 || (src && !src.includes('jquery') && !src.includes('epub'))) {
-              analysis.hasJavaScript = true;
-            }
-          });
+          analysis.hasJavaScript = true;
         }
 
-        // Check for timed content (setTimeout, setInterval)
-        const fullContent = $.html();
-        if (fullContent.includes('setTimeout') || fullContent.includes('setInterval') ||
-            fullContent.includes('setTime') || fullContent.includes('timer')) {
-          analysis.hasTimedContent = true;
-        }
-
-        // Check for auto-playing media
-        if ($('audio[autoplay], video[autoplay]').length > 0) {
-          analysis.hasAutoPlayingMedia = true;
-        }
-
-        // Check for motion/gesture handlers
-        if ($('[ontouchmove], [ondevicemotion], [ondeviceorientation]').length > 0) {
-          analysis.hasMotionHandlers = true;
-        }
-        // Check for motion-related event listeners in script content
-        if (fullContent.includes('devicemotion') || fullContent.includes('deviceorientation') ||
-            fullContent.includes('touchmove') || fullContent.includes('gesturestart')) {
-          analysis.hasMotionHandlers = true;
-        }
+        // Check for external URLs (potential embedded media) - comprehensive element check
+        $('a[href], iframe[src], embed[src], object[data], audio[src], video[src], source[src], link[href], script[src], img[src]').each((_, elem) => {
+          const url = $(elem).attr('href') || $(elem).attr('src') || $(elem).attr('data') || '';
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            analysis.hasExternalUrls = true;
+            analysis.externalUrlCount++;
+          }
+        });
       } catch (error) {
         logger.warn(`[Content Detection] Failed to parse file ${fileName}, skipping`, error instanceof Error ? error : undefined);
         continue;
@@ -195,13 +181,12 @@ class ContentDetectionService {
     }
 
     // Determine document type
-    if (analysis.hasAudio || analysis.hasVideo || analysis.hasIframes || analysis.hasAutoPlayingMedia) {
+    if (analysis.hasAudio || analysis.hasVideo || analysis.hasIframes) {
       analysis.documentType = 'multimedia';
-    } else if (analysis.hasForms || analysis.hasInteractiveElements || analysis.hasJavaScript ||
-               analysis.hasTimedContent || analysis.hasMotionHandlers) {
+    } else if (analysis.hasForms || analysis.hasInteractiveElements) {
       analysis.documentType = 'interactive';
     } else {
-      analysis.documentType = 'static';
+      analysis.documentType = 'text';
     }
 
     return analysis;
@@ -226,18 +211,6 @@ class ContentDetectionService {
     // Interactive change criteria (3.2.x)
     suggestions.push(...this.analyzeChangeCriteria(analysis));
 
-    // NEW: Keyboard trap (2.1.2) - requires JavaScript
-    suggestions.push(this.analyzeKeyboardTrap(analysis));
-
-    // NEW: Timing criteria (2.2.x) - require timed/auto-playing content
-    suggestions.push(...this.analyzeTimingCriteria(analysis));
-
-    // NEW: Pointer/Motion criteria (2.5.x) - require JavaScript/motion handlers
-    suggestions.push(...this.analyzePointerMotionCriteria(analysis));
-
-    // NEW: Status messages (4.1.3) - requires JavaScript
-    suggestions.push(this.analyzeStatusMessages(analysis));
-
     return suggestions;
   }
 
@@ -261,50 +234,86 @@ class ContentDetectionService {
     return rationale;
   }
 
+  // Calculate confidence using spec formula (additive/subtractive factors)
+  private calculateSpecConfidence(analysis: ContentAnalysis, hasRelevantElements: boolean, hasRelevantFiles: boolean): number {
+    // Base confidence = 50%
+    let confidence = 50;
+    
+    // Positive factors (add)
+    if (!hasRelevantFiles) confidence += 15;  // No relevant file types in manifest
+    if (!hasRelevantElements) confidence += 15;  // No relevant HTML elements
+    if (analysis.documentType === 'text') confidence += 10;  // Text-only document
+    if (!analysis.hasExternalUrls) confidence += 10;  // No external media references
+    
+    // Negative factors (subtract)
+    if (analysis.hasExternalUrls) confidence -= 20;  // External URLs found
+    if (analysis.hasJavaScript) confidence -= 15;  // JavaScript present
+    if (analysis.hasIframes) confidence -= 10;  // Iframe elements present
+    
+    // Maximum 95% (always leave room for edge cases)
+    return Math.min(95, Math.max(0, confidence));
+  }
+
   // Analyze multimedia criteria (1.2.1 - 1.2.5)
   private analyzeMultimediaCriteria(analysis: ContentAnalysis): ApplicabilitySuggestion {
     const detectionChecks: DetectionCheck[] = [
       {
-        check: 'No <audio> tags found',
-        result: analysis.hasAudio ? 'fail' : 'pass'
+        check: 'Audio file presence',
+        result: analysis.hasAudioFiles ? 'fail' : 'pass',
+        details: analysis.hasAudioFiles ? 'Audio files found in manifest' : 'No .mp3, .wav, .ogg, or .aac files found in manifest'
       },
       {
-        check: 'No <video> tags found',
-        result: analysis.hasVideo ? 'fail' : 'pass'
+        check: 'Video file presence',
+        result: analysis.hasVideoFiles ? 'fail' : 'pass',
+        details: analysis.hasVideoFiles ? 'Video files found in manifest' : 'No .mp4, .webm, .mov, or .avi files found in manifest'
       },
       {
-        check: 'No <iframe> tags found',
-        result: analysis.hasIframes ? 'fail' : 'pass',
-        details: analysis.hasIframes ? 'Could be embedded media' : undefined
+        check: 'Embedded media elements',
+        result: (analysis.hasAudio || analysis.hasVideo) ? 'fail' : 'pass',
+        details: (analysis.hasAudio || analysis.hasVideo) ? '<audio> or <video> HTML elements detected' : 'No <audio> or <video> HTML elements detected'
+      },
+      {
+        check: 'External media references',
+        result: analysis.hasExternalUrls ? 'warning' : 'pass',
+        details: analysis.hasExternalUrls ? `Found ${analysis.externalUrlCount} external URLs - manual verification recommended` : 'No external media references found'
       }
     ];
 
-    const hasMedia = analysis.hasAudio || analysis.hasVideo;
-    const hasIframes = analysis.hasIframes;
+    const hasMediaElements = analysis.hasAudio || analysis.hasVideo;
+    const hasMediaFiles = analysis.hasAudioFiles || analysis.hasVideoFiles;
+    const hasMedia = hasMediaElements || hasMediaFiles;
 
     let confidence: number;
     let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
     let rationale: string;
     const edgeCases: string[] = [];
 
-    if (!hasMedia && !hasIframes) {
-      // High confidence N/A
-      const baseConfidence = 98;
-      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
+    if (!hasMedia && !analysis.hasIframes) {
+      // Calculate confidence using spec formula
+      confidence = this.calculateSpecConfidence(analysis, hasMediaElements, hasMediaFiles);
+      confidence = this.adjustConfidenceForCoverage(confidence, analysis.scanCoverage);
       suggestedStatus = 'not_applicable';
-      const baseRationale = `Scan found no multimedia content in ${analysis.scannedFiles} EPUB files. No <audio>, <video>, or <iframe> tags detected. Multimedia criteria (1.2.1-1.2.5) do not apply to this text-only document.`;
+      const baseRationale = `No audio-only or video-only prerecorded content was detected in this EPUB. The publication contains only text and static images.`;
       rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else if (hasIframes && !hasMedia) {
+      
+      // Add edge cases based on analysis
+      if (analysis.hasJavaScript) {
+        edgeCases.push('JavaScript-loaded media content cannot be analyzed statically');
+      }
+      if (analysis.hasExternalUrls) {
+        edgeCases.push('External embedded media players may not be detected');
+      }
+    } else if (analysis.hasIframes && !hasMedia) {
       // Medium confidence - iframes could be media
-      const baseConfidence = 60;
-      confidence = this.adjustConfidenceForCoverage(baseConfidence, analysis.scanCoverage);
+      confidence = this.calculateSpecConfidence(analysis, hasMediaElements, hasMediaFiles);
+      confidence = this.adjustConfidenceForCoverage(confidence, analysis.scanCoverage);
       suggestedStatus = 'uncertain';
       const baseRationale = 'Found <iframe> elements which could contain embedded audio/video. Manual inspection required to determine if multimedia criteria apply.';
       rationale = this.addPartialScanWarning(baseRationale, analysis);
       edgeCases.push('Iframes detected - may contain external media');
     } else {
       // Media detected - definitely applicable
-      confidence = 98;
+      confidence = 95;
       suggestedStatus = 'applicable';
       rationale = 'Audio and/or video content detected. Multimedia criteria (1.2.1-1.2.5) are applicable.';
     }
@@ -498,272 +507,6 @@ class ContentDetectionService {
     });
 
     return suggestions;
-  }
-
-  // Analyze keyboard trap criterion (2.1.2) - requires custom JavaScript widgets
-  private analyzeKeyboardTrap(analysis: ContentAnalysis): ApplicabilitySuggestion {
-    let confidence: number;
-    let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
-    let rationale: string;
-
-    const detectionChecks: DetectionCheck[] = [
-      {
-        check: 'JavaScript Detection',
-        result: analysis.hasJavaScript ? 'fail' : 'pass',
-        details: analysis.hasJavaScript
-          ? 'Custom JavaScript detected - keyboard traps are possible'
-          : 'No custom JavaScript detected'
-      },
-      {
-        check: 'Interactive Elements',
-        result: analysis.hasInteractiveElements ? 'fail' : 'pass',
-        details: analysis.hasInteractiveElements
-          ? 'Interactive elements found - may require keyboard trap testing'
-          : 'No complex interactive elements detected'
-      }
-    ];
-
-    if (!analysis.hasJavaScript && !analysis.hasInteractiveElements) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No custom JavaScript or complex interactive widgets detected. Keyboard traps are unlikely in static EPUB content. Reading systems handle standard navigation.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Custom JavaScript or interactive widgets detected. Manual keyboard navigation testing required to ensure no focus traps.';
-    }
-
-    return {
-      criterionId: '2.1.2',
-      suggestedStatus,
-      confidence,
-      detectionChecks,
-      rationale,
-      edgeCases: analysis.hasInteractiveElements
-        ? ['Forms with custom widgets may trap focus if not properly implemented']
-        : []
-    };
-  }
-
-  // Analyze timing criteria (2.2.1, 2.2.2)
-  private analyzeTimingCriteria(analysis: ContentAnalysis): ApplicabilitySuggestion[] {
-    const suggestions: ApplicabilitySuggestion[] = [];
-    let confidence: number;
-    let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
-    let rationale: string;
-
-    // 2.2.1 Timing Adjustable
-    const timingDetectionChecks: DetectionCheck[] = [
-      {
-        check: 'Timed Content Detection',
-        result: analysis.hasTimedContent ? 'fail' : 'pass',
-        details: analysis.hasTimedContent
-          ? 'Time-based functionality detected (setTimeout/setInterval)'
-          : 'No time-based functionality detected'
-      }
-    ];
-
-    if (!analysis.hasTimedContent) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No time-based functionality detected. Static EPUB content does not have time limits.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Time-based functionality detected. Verify users can control, extend, or disable time limits.';
-    }
-
-    suggestions.push({
-      criterionId: '2.2.1',
-      suggestedStatus,
-      confidence,
-      detectionChecks: timingDetectionChecks,
-      rationale,
-      edgeCases: analysis.hasTimedContent
-        ? ['Timed quizzes or assessments must allow users to extend time limits']
-        : []
-    });
-
-    // 2.2.2 Pause, Stop, Hide
-    const autoPlayDetectionChecks: DetectionCheck[] = [
-      {
-        check: 'Auto-playing Media Detection',
-        result: analysis.hasAutoPlayingMedia ? 'fail' : 'pass',
-        details: analysis.hasAutoPlayingMedia
-          ? 'Auto-playing audio or video detected'
-          : 'No auto-playing media detected'
-      },
-      {
-        check: 'Timed Content Detection',
-        result: analysis.hasTimedContent ? 'fail' : 'pass',
-        details: analysis.hasTimedContent
-          ? 'Auto-updating content may be present'
-          : 'No auto-updating content detected'
-      }
-    ];
-
-    if (!analysis.hasAutoPlayingMedia && !analysis.hasTimedContent) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No auto-playing media or auto-updating content detected. Static EPUB content does not require pause controls.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Auto-playing or auto-updating content detected. Verify users can pause, stop, or hide such content.';
-    }
-
-    suggestions.push({
-      criterionId: '2.2.2',
-      suggestedStatus,
-      confidence,
-      detectionChecks: autoPlayDetectionChecks,
-      rationale,
-      edgeCases: analysis.hasAutoPlayingMedia
-        ? ['Auto-playing media should have accessible pause/stop controls']
-        : []
-    });
-
-    return suggestions;
-  }
-
-  // Analyze pointer/motion criteria (2.5.1, 2.5.2, 2.5.4)
-  private analyzePointerMotionCriteria(analysis: ContentAnalysis): ApplicabilitySuggestion[] {
-    const suggestions: ApplicabilitySuggestion[] = [];
-
-    // 2.5.1 Pointer Gestures & 2.5.2 Pointer Cancellation
-    const pointerDetectionChecks: DetectionCheck[] = [
-      {
-        check: 'JavaScript Detection',
-        result: analysis.hasJavaScript ? 'fail' : 'pass',
-        details: analysis.hasJavaScript
-          ? 'Custom JavaScript detected - pointer interactions possible'
-          : 'No custom JavaScript detected'
-      },
-      {
-        check: 'Interactive Elements',
-        result: analysis.hasInteractiveElements ? 'fail' : 'pass',
-        details: analysis.hasInteractiveElements
-          ? 'Interactive elements may have pointer handlers'
-          : 'No complex interactive elements'
-      }
-    ];
-
-    let confidence: number;
-    let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
-    let rationale: string;
-
-    if (!analysis.hasJavaScript && !analysis.hasInteractiveElements) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No custom JavaScript or complex interactions detected. Static EPUB content relies on reading system gestures, not custom pointer gestures.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Custom JavaScript or interactive elements detected. Manual testing required for pointer gesture alternatives.';
-    }
-
-    suggestions.push({
-      criterionId: '2.5.1',
-      suggestedStatus,
-      confidence,
-      detectionChecks: [...pointerDetectionChecks],
-      rationale,
-      edgeCases: []
-    });
-
-    suggestions.push({
-      criterionId: '2.5.2',
-      suggestedStatus,
-      confidence,
-      detectionChecks: [...pointerDetectionChecks],
-      rationale,
-      edgeCases: []
-    });
-
-    // 2.5.4 Motion Actuation
-    const motionDetectionChecks: DetectionCheck[] = [
-      {
-        check: 'Motion Handler Detection',
-        result: analysis.hasMotionHandlers ? 'fail' : 'pass',
-        details: analysis.hasMotionHandlers
-          ? 'Device motion/orientation handlers detected'
-          : 'No motion handlers detected'
-      }
-    ];
-
-    if (!analysis.hasMotionHandlers) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No device motion or orientation handlers detected. Static EPUB content does not use motion actuation.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Motion handlers detected. Verify alternative input methods exist for motion-triggered functionality.';
-    }
-
-    suggestions.push({
-      criterionId: '2.5.4',
-      suggestedStatus,
-      confidence,
-      detectionChecks: motionDetectionChecks,
-      rationale,
-      edgeCases: analysis.hasMotionHandlers
-        ? ['Interactive children\'s books may use device shaking or tilting']
-        : []
-    });
-
-    return suggestions;
-  }
-
-  // Analyze status messages criterion (4.1.3)
-  private analyzeStatusMessages(analysis: ContentAnalysis): ApplicabilitySuggestion {
-    let confidence: number;
-    let suggestedStatus: 'not_applicable' | 'applicable' | 'uncertain';
-    let rationale: string;
-
-    const detectionChecks: DetectionCheck[] = [
-      {
-        check: 'JavaScript Detection',
-        result: analysis.hasJavaScript ? 'fail' : 'pass',
-        details: analysis.hasJavaScript
-          ? 'Custom JavaScript detected - dynamic status messages possible'
-          : 'No custom JavaScript detected'
-      },
-      {
-        check: 'Interactive Elements',
-        result: analysis.hasInteractiveElements ? 'fail' : 'pass',
-        details: analysis.hasInteractiveElements
-          ? 'Interactive elements may provide status updates'
-          : 'No interactive elements'
-      }
-    ];
-
-    if (!analysis.hasJavaScript && !analysis.hasInteractiveElements) {
-      confidence = this.adjustConfidenceForCoverage(95, analysis.scanCoverage);
-      suggestedStatus = 'not_applicable';
-      const baseRationale = 'No custom JavaScript or dynamic interactions detected. Static EPUB content does not display dynamic status messages.';
-      rationale = this.addPartialScanWarning(baseRationale, analysis);
-    } else {
-      confidence = 90;
-      suggestedStatus = 'applicable';
-      rationale = 'Custom JavaScript or interactive elements detected. Manual testing required to ensure status messages are announced properly.';
-    }
-
-    return {
-      criterionId: '4.1.3',
-      suggestedStatus,
-      confidence,
-      detectionChecks,
-      rationale,
-      edgeCases: analysis.hasJavaScript
-        ? ['Quiz feedback and form validation messages must be announced to screen readers']
-        : []
-    };
   }
 }
 

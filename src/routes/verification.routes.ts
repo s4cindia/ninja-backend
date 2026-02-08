@@ -17,4 +17,7 @@ router.get('/:jobId/can-finalize', verificationController.canFinalize.bind(verif
 router.post('/:itemId/submit', verificationController.submitVerification.bind(verificationController));
 router.post('/bulk', verificationController.bulkVerify.bind(verificationController));
 
+// New endpoint per spec: POST /verification/submit (accepts criterionId + jobId in body)
+router.post('/submit', verificationController.submitCriterionVerification.bind(verificationController));
+
 export default router;

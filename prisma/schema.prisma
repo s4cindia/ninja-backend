@@ -7,66 +7,245 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Artifact {
-  id        String   @id
-  jobId     String
-  fileId    String?
-  type      String
-  name      String?
-  data      Json
-  size      Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime
-  File      File?    @relation(fields: [fileId], references: [id])
-  Job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+model Tenant {
+  id        String    @id @default(uuid())
+  name      String
+  slug      String    @unique
+  settings  Json      @default("{}")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
-  @@index([fileId])
-  @@index([jobId])
-  @@index([jobId, type])
+  users            User[]
+  jobs             Job[]
+  products         Product[]
+  batches          Batch[]
+  editorialDocs    EditorialDocument[]
+  houseStyleRules  HouseStyleRule[]
+  editorialReports EditorialReport[]
 }
 
-model Feedback {
-  id                 String               @id
-  tenantId           String
-  userId             String?
-  userEmail          String?
-  type               FeedbackType
-  rating             Int?
-  comment            String
-  context            Json?
-  status             FeedbackStatus       @default(NEW)
-  metadata           Json?
-  response           String?
-  respondedBy        String?
-  respondedAt        DateTime?
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime
-  FeedbackAttachment FeedbackAttachment[]
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  firstName String
+  lastName  String
+  role      UserRole  @default(USER)
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
 
-  @@index([createdAt])
-  @@index([status])
+  jobs                Job[]
+  feedbacks           Feedback[]
+  feedbackAttachments FeedbackAttachment[] @relation("AttachmentUploader")
+  acrJobs             AcrJob[]
+  acrCriterionReviews AcrCriterionReview[] @relation("CriterionReviewer")
+  batches             Batch[]
+
   @@index([tenantId])
-  @@index([type])
-  @@index([userId])
+  @@index([email])
 }
 
-model FeedbackAttachment {
-  id           String   @id
-  feedbackId   String
-  filename     String
-  originalName String
-  mimeType     String
-  size         Int
-  uploadedById String?
-  createdAt    DateTime @default(now())
-  Feedback     Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
-  User         User?    @relation(fields: [uploadedById], references: [id])
+enum UserRole {
+  ADMIN
+  USER
+  VIEWER
+}
 
-  @@index([feedbackId])
+model Product {
+  id             String           @id @default(uuid())
+  tenantId       String
+  tenant         Tenant           @relation(fields: [tenantId], references: [id])
+  title          String
+  isbn           String?
+  format         DocumentFormat
+  status         ComplianceStatus @default(NOT_ASSESSED)
+  lastAssessedAt DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  deletedAt      DateTime?
+
+  jobs  Job[]
+  vpats Vpat[]
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+enum DocumentFormat {
+  PDF
+  EPUB
+}
+
+enum ComplianceStatus {
+  COMPLIANT
+  NEEDS_ATTENTION
+  NON_COMPLIANT
+  NOT_ASSESSED
+}
+
+model Job {
+  id                String    @id @default(uuid())
+  tenantId          String
+  tenant            Tenant    @relation(fields: [tenantId], references: [id])
+  userId            String
+  user              User      @relation(fields: [userId], references: [id])
+  productId         String?
+  product           Product?  @relation(fields: [productId], references: [id])
+  type              JobType
+  status            JobStatus @default(QUEUED)
+  priority          Int       @default(0)
+  input             Json
+  output            Json?
+  error             String?
+  progress          Int       @default(0)
+  tokensUsed        Int       @default(0)
+  costInr           Float     @default(0)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  batchSourceJobIds String[]  @default([])
+  isBatchAcr        Boolean   @default(false)
+
+  validationResults  ValidationResult[]
+  artifacts          Artifact[]
+  remediationChanges RemediationChange[]
+  comparisonReport   ComparisonReport?
+  editorialDocument  EditorialDocument?
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([isBatchAcr])
+}
+
+model AcrVersion {
+  id        String   @id @default(uuid())
+  acrId     String
+  version   Int
+  createdAt DateTime @default(now())
+  createdBy String
+  changeLog Json
+  snapshot  Json
+
+  @@unique([acrId, version])
+  @@index([acrId])
+  @@index([createdAt])
+}
+
+enum JobType {
+  PDF_ACCESSIBILITY
+  EPUB_ACCESSIBILITY
+  VPAT_GENERATION
+  ALT_TEXT_GENERATION
+  METADATA_EXTRACTION
+  BATCH_VALIDATION
+  ACR_WORKFLOW
+  PLAGIARISM_CHECK
+  CITATION_VALIDATION
+  STYLE_VALIDATION
+  EDITORIAL_FULL
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ValidationResult {
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  category  String
+  checkType String
+  passed    Boolean
+  score     Float?
+  details   Json
+  createdAt DateTime @default(now())
+
+  issues Issue[]
+
+  @@index([jobId])
+  @@index([category])
+}
+
+model Issue {
+  id                 String           @id @default(uuid())
+  validationResultId String
+  validationResult   ValidationResult @relation(fields: [validationResultId], references: [id])
+  severity           IssueSeverity
+  wcagCriteria       String?
+  description        String
+  location           String?
+  suggestion         String?
+  autoFixable        Boolean          @default(false)
+  quickFixable       Boolean          @default(false)
+  confidence         Float?           @default(0.5)
+  fixType            String?
+  code               String?
+  filePath           String?
+  status             IssueStatus      @default(PENDING)
+  fixedAt            DateTime?
+  fixedBy            String?
+  remediationMethod  String?          // 'auto' | 'quick-fix' | 'manual'
+  remediationTaskId  String?          // Links to the remediation task that fixed this issue
+  createdAt          DateTime         @default(now())
+
+  @@index([validationResultId])
+  @@index([severity])
+  @@index([confidence])
+  @@index([status])
+}
+
+enum IssueStatus {
+  PENDING
+  FIXED
+  REMEDIATED
+  VERIFIED
+  SKIPPED
+  FAILED
+}
+
+enum IssueSeverity {
+  CRITICAL
+  MAJOR
+  MINOR
+  INFO
+}
+
+model Vpat {
+  id          String     @id @default(uuid())
+  productId   String
+  product     Product    @relation(fields: [productId], references: [id])
+  version     String
+  standard    String     @default("WCAG 2.1 AA")
+  status      VpatStatus @default(DRAFT)
+  content     Json
+  generatedAt DateTime   @default(now())
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([productId])
+}
+
+enum VpatStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+  ARCHIVED
 }
 
 model File {
-  id           String      @id
+  id           String      @id @default(uuid())
   tenantId     String
   filename     String
   originalName String
@@ -79,16 +258,30 @@ model File {
   metadata     Json?
   latestJobId  String?
   createdAt    DateTime    @default(now())
-  updatedAt    DateTime
+  updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
-  Artifact     Artifact[]
 
-  @@index([status])
+  artifacts Artifact[]
+
   @@index([tenantId])
+  @@index([status])
+}
+
+enum FileStatus {
+  PENDING_UPLOAD
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  ERROR
+}
+
+enum StorageType {
+  LOCAL
+  S3
 }
 
 model GeneratedAltText {
-  id          String    @id
+  id          String    @id @default(uuid())
   imageId     String
   jobId       String
   shortAlt    String
@@ -101,63 +294,15 @@ model GeneratedAltText {
   approvedBy  String?
   approvedAt  DateTime?
   createdAt   DateTime  @default(now())
-  updatedAt   DateTime
+  updatedAt   DateTime  @updatedAt
 
-  @@index([imageId])
   @@index([jobId])
+  @@index([imageId])
   @@index([status])
-}
-
-model Issue {
-  id                 String           @id
-  validationResultId String
-  severity           IssueSeverity
-  wcagCriteria       String?
-  description        String
-  location           String?
-  suggestion         String?
-  autoFixable        Boolean          @default(false)
-  createdAt          DateTime         @default(now())
-  ValidationResult   ValidationResult @relation(fields: [validationResultId], references: [id])
-
-  @@index([severity])
-  @@index([validationResultId])
-}
-
-model Job {
-  id                String             @id
-  tenantId          String
-  userId            String
-  productId         String?
-  type              JobType
-  status            JobStatus          @default(QUEUED)
-  priority          Int                @default(0)
-  input             Json
-  output            Json?
-  error             String?
-  progress          Int                @default(0)
-  tokensUsed        Int                @default(0)
-  costInr           Float              @default(0)
-  startedAt         DateTime?
-  completedAt       DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime
-  isBatchAcr        Boolean            @default(false)
-  batchSourceJobIds String[]           @default([])
-  Artifact          Artifact[]
-  Product           Product?           @relation(fields: [productId], references: [id])
-  Tenant            Tenant             @relation(fields: [tenantId], references: [id])
-  User              User               @relation(fields: [userId], references: [id])
-  ValidationResult  ValidationResult[]
-
-  @@index([createdAt])
-  @@index([status])
-  @@index([tenantId])
-  @@index([userId])
 }
 
 model LongDescription {
-  id         String    @id
+  id         String    @id @default(uuid())
   imageId    String
   jobId      String
   altTextId  String?
@@ -172,197 +317,11 @@ model LongDescription {
   approvedAt DateTime?
   aiModel    String
   createdAt  DateTime  @default(now())
-  updatedAt  DateTime
+  updatedAt  DateTime  @updatedAt
 
-  @@index([altTextId])
+  @@index([jobId])
   @@index([imageId])
-  @@index([jobId])
-}
-
-model Product {
-  id             String           @id
-  tenantId       String
-  title          String
-  isbn           String?
-  format         DocumentFormat
-  status         ComplianceStatus @default(NOT_ASSESSED)
-  lastAssessedAt DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime
-  deletedAt      DateTime?
-  Job            Job[]
-  Tenant         Tenant           @relation(fields: [tenantId], references: [id])
-  Vpat           Vpat[]
-
-  @@index([status])
-  @@index([tenantId])
-}
-
-model Tenant {
-  id        String    @id
-  name      String
-  slug      String    @unique
-  settings  Json      @default("{}")
-  createdAt DateTime  @default(now())
-  updatedAt DateTime
-  deletedAt DateTime?
-  Job       Job[]
-  Product   Product[]
-  User      User[]
-}
-
-model User {
-  id                 String               @id
-  email              String               @unique
-  password           String
-  firstName          String
-  lastName           String
-  role               UserRole             @default(USER)
-  tenantId           String
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime
-  deletedAt          DateTime?
-  FeedbackAttachment FeedbackAttachment[]
-  Job                Job[]
-  Tenant             Tenant               @relation(fields: [tenantId], references: [id])
-
-  @@index([email])
-  @@index([tenantId])
-}
-
-model ValidationResult {
-  id        String   @id
-  jobId     String
-  category  String
-  checkType String
-  passed    Boolean
-  score     Float?
-  details   Json
-  createdAt DateTime @default(now())
-  Issue     Issue[]
-  Job       Job      @relation(fields: [jobId], references: [id])
-
-  @@index([category])
-  @@index([jobId])
-}
-
-model Vpat {
-  id          String     @id
-  productId   String
-  version     String
-  standard    String     @default("WCAG 2.1 AA")
-  status      VpatStatus @default(DRAFT)
-  content     Json
-  generatedAt DateTime   @default(now())
-  publishedAt DateTime?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime
-  Product     Product    @relation(fields: [productId], references: [id])
-
-  @@index([productId])
-}
-
-model AcrJob {
-  id                 String               @id
-  jobId              String
-  tenantId           String
-  userId             String
-  edition            String               @default("VPAT2.5-INT")
-  documentTitle      String?
-  status             String               @default("in_progress") // 'in_progress', 'ready_for_review', 'reviewed', 'approved', 'exported'
-  // NEW: Report metadata
-  executiveSummary   String?
-  conformanceLevel   String? // 'Level A', 'Level AA', 'Level AAA', 'Partial', 'Non-conformant'
-  documentType       String? // 'static', 'interactive', 'multimedia'
-  totalCriteria      Int                  @default(0)
-  applicableCriteria Int                  @default(0)
-  passedCriteria     Int                  @default(0)
-  failedCriteria     Int                  @default(0)
-  naCriteria         Int                  @default(0)
-  // Approval tracking
-  approvedBy         String?
-  approvedAt         DateTime?
-  // Timestamps
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  criteria           AcrCriterionReview[]
-
-  @@index([jobId])
-  @@index([tenantId])
-  @@index([userId])
-  @@index([status])
-}
-
-model AcrCriterionReview {
-  id                 String               @id
-  acrJobId           String
-  criterionId        String
-  criterionNumber    String
-  criterionName      String
-  level              String?
-  confidence         Int                  @default(0)
-  aiStatus           String?
-  evidence           Json?
-  conformanceLevel   String?
-  reviewerNotes      String?
-  reviewedAt         DateTime?
-  reviewedBy         String?
-  // NEW: Carry forward verification data
-  verificationStatus String? // 'verified_pass', 'verified_fail', 'verified_partial', 'deferred'
-  verificationMethod String? // 'NVDA', 'JAWS', 'Manual Review', etc.
-  verificationNotes  String? // Notes from human verification
-  isNotApplicable    Boolean              @default(false)
-  naReason           String? // N/A rationale (AI or manual)
-  naSuggestionData   Json? // Full N/A suggestion from AI
-  // Tracking
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  acrJob             AcrJob               @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
-  changeLogs         CriterionChangeLog[]
-
-  @@index([acrJobId])
-  @@index([criterionId])
-  @@index([acrJobId, criterionId])
-}
-
-// NEW: Audit trail for criterion changes
-model CriterionChangeLog {
-  id                String             @id
-  criterionReviewId String
-  jobId             String
-  criterionId       String
-  changedBy         String
-  changeType        String // 'status_change', 'remarks_update', 'na_toggle', 'verification_import'
-  previousValue     Json?
-  newValue          Json?
-  reason            String?
-  createdAt         DateTime           @default(now())
-  criterionReview   AcrCriterionReview @relation(fields: [criterionReviewId], references: [id], onDelete: Cascade)
-
-  @@index([criterionReviewId])
-  @@index([jobId])
-  @@index([criterionId])
-  @@index([createdAt])
-}
-
-enum ComplianceStatus {
-  COMPLIANT
-  NEEDS_ATTENTION
-  NON_COMPLIANT
-  NOT_ASSESSED
-}
-
-enum DocumentFormat {
-  PDF
-  EPUB
-}
-
-enum FeedbackStatus {
-  NEW
-  REVIEWED
-  IN_PROGRESS
-  RESOLVED
-  DISMISSED
+  @@index([altTextId])
 }
 
 enum FeedbackType {
@@ -375,22 +334,280 @@ enum FeedbackType {
   FEATURE_REQUEST
 }
 
-enum FileStatus {
-  PENDING_UPLOAD
-  UPLOADED
-  PROCESSING
-  PROCESSED
-  ERROR
+enum FeedbackStatus {
+  NEW
+  REVIEWED
+  IN_PROGRESS
+  RESOLVED
+  DISMISSED
 }
 
-enum IssueSeverity {
-  CRITICAL
-  MAJOR
-  MINOR
-  INFO
+model Feedback {
+  id          String         @id @default(uuid())
+  tenantId    String
+  userId      String?
+  user        User?          @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  userEmail   String?
+  type        FeedbackType
+  rating      Int?
+  comment     String
+  context     Json?
+  status      FeedbackStatus @default(NEW)
+  metadata    Json?
+  response    String?
+  respondedBy String?
+  respondedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  attachments FeedbackAttachment[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
 }
 
-enum JobStatus {
+model FeedbackAttachment {
+  id           String   @id @default(uuid())
+  feedbackId   String
+  feedback     Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  uploadedById String?
+  uploadedBy   User?    @relation("AttachmentUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([feedbackId])
+}
+
+model Artifact {
+  id        String   @id @default(cuid())
+  jobId     String
+  fileId    String?
+  type      String
+  name      String?
+  data      Json
+  size      Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  job  Job   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  file File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@index([fileId])
+  @@index([jobId, type])
+}
+
+enum ChangeStatus {
+  APPLIED
+  REJECTED
+  REVERTED
+  FAILED
+  SKIPPED
+}
+
+model RemediationChange {
+  id            String       @id @default(uuid())
+  jobId         String
+  job           Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  taskId        String?
+  changeNumber  Int
+  issueId       String?
+  ruleId        String?
+  filePath      String
+  elementXPath  String?
+  lineNumber    Int?
+  changeType    String
+  description   String
+  beforeContent String?      @db.Text
+  afterContent  String?      @db.Text
+  contextBefore String?      @db.Text
+  contextAfter  String?      @db.Text
+  severity      String?
+  wcagCriteria  String?
+  wcagLevel     String?
+  status        ChangeStatus @default(APPLIED)
+  appliedAt     DateTime     @default(now())
+  appliedBy     String?
+
+  @@unique([jobId, changeNumber])
+  @@index([jobId])
+  @@index([status])
+}
+
+model ComparisonReport {
+  id            String   @id @default(uuid())
+  jobId         String   @unique
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  totalChanges  Int
+  appliedCount  Int
+  rejectedCount Int
+  skippedCount  Int
+  failedCount   Int
+  reportData    Json?
+  pdfUrl        String?
+  generatedAt   DateTime @default(now())
+  generatedBy   String?
+
+  @@index([jobId])
+}
+
+model AcrJob {
+  id            String   @id @default(uuid())
+  jobId         String
+  tenantId      String
+  userId        String
+  edition       String
+  status        String   @default("in_progress")
+  documentTitle String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user     User                 @relation(fields: [userId], references: [id])
+  criteria AcrCriterionReview[]
+
+  @@unique([tenantId, jobId])
+  @@index([jobId])
+  @@index([userId])
+  @@index([tenantId])
+}
+
+model AcrCriterionReview {
+  id               String    @id @default(uuid())
+  acrJobId         String
+  criterionId      String
+  criterionNumber  String
+  criterionName    String
+  level            String
+  confidence       Int       @default(0)
+  aiStatus         String
+  evidence         Json?
+  conformanceLevel String?
+  reviewerNotes    String?   @db.Text
+  reviewedAt       DateTime?
+  reviewedBy       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  acrJob   AcrJob @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
+  reviewer User?  @relation("CriterionReviewer", fields: [reviewedBy], references: [id])
+
+  @@unique([acrJobId, criterionId])
+  @@index([acrJobId])
+}
+
+// ============================================
+// BATCH PROCESSING MODELS
+// ============================================
+
+model Batch {
+  id       String @id @default(uuid())
+  tenantId String
+  userId   String
+  name     String
+
+  status BatchStatus @default(DRAFT)
+
+  // Progress Tracking
+  totalFiles      Int @default(0)
+  filesUploaded   Int @default(0)
+  filesAudited    Int @default(0)
+  filesPlanned    Int @default(0)
+  filesRemediated Int @default(0)
+  filesFailed     Int @default(0)
+
+  // Summary Statistics
+  totalIssuesFound  Int @default(0)
+  autoFixedIssues   Int @default(0)
+  quickFixIssues    Int @default(0)
+  quickFixesApplied Int @default(0)
+  manualIssues      Int @default(0)
+  escalatedToManual Int @default(0)
+
+  // ACR Generation Metadata
+  acrGenerated   Boolean   @default(false)
+  acrMode        String?
+  acrWorkflowIds String[]
+  acrGeneratedAt DateTime?
+
+  // Relationships
+  files  BatchFile[]
+  tenant Tenant      @relation(fields: [tenantId], references: [id])
+  user   User        @relation(fields: [userId], references: [id])
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([tenantId, status])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model BatchFile {
+  id      String @id @default(uuid())
+  batchId String
+  batch   Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  // File Info
+  fileName     String
+  originalName String
+  fileSize     Int
+  mimeType     String @default("application/epub+zip")
+  storagePath  String
+  storageType  String @default("S3")
+
+  // Processing Status
+  status BatchFileStatus @default(UPLOADED)
+
+  // Job References
+  auditJobId String?
+  planJobId  String?
+
+  // Audit Results
+  auditScore  Int?
+  issuesFound Int?
+
+  // Plan Analysis
+  issuesAutoFix  Int?
+  issuesQuickFix Int?
+  issuesManual   Int?
+
+  // Remediation Results
+  issuesAutoFixed   Int?
+  quickFixesApplied Int  @default(0)
+  remainingQuickFix Int?
+  remainingManual   Int?
+  escalatedToManual Int  @default(0)
+
+  // File Paths
+  remediatedFilePath   String?
+  comparisonReportPath String?
+
+  // Error Handling
+  error        String?
+  errorDetails Json?
+
+  // Timestamps
+  uploadedAt             DateTime  @default(now())
+  auditStartedAt         DateTime?
+  auditCompletedAt       DateTime?
+  planCreatedAt          DateTime?
+  remediationStartedAt   DateTime?
+  remediationCompletedAt DateTime?
+
+  @@index([batchId])
+  @@index([status])
+}
+
+enum BatchStatus {
+  DRAFT
   QUEUED
   PROCESSING
   COMPLETED
@@ -398,30 +615,468 @@ enum JobStatus {
   CANCELLED
 }
 
-enum JobType {
-  PDF_ACCESSIBILITY
-  EPUB_ACCESSIBILITY
-  VPAT_GENERATION
-  ALT_TEXT_GENERATION
-  METADATA_EXTRACTION
-  BATCH_VALIDATION
-  ACR_WORKFLOW
+enum BatchFileStatus {
+  UPLOADED
+  AUDITING
+  AUDITED
+  PLANNING
+  PLANNED
+  REMEDIATING
+  REMEDIATED
+  FAILED
+  SKIPPED
 }
 
-enum StorageType {
-  LOCAL
-  S3
+// ============================================
+// EDITORIAL SERVICES MODELS
+// ============================================
+
+model EditorialDocument {
+  id           String      @id @default(uuid())
+  tenantId     String
+  jobId        String      @unique
+  fileName     String
+  originalName String
+  mimeType     String
+  fileSize     Int
+  storagePath  String
+  storageType  StorageType @default(S3)
+
+  fullText   String? @db.Text
+  wordCount  Int     @default(0)
+  pageCount  Int?
+  chunkCount Int     @default(0)
+
+  title    String?
+  authors  String[]
+  language String?
+
+  status   EditorialDocStatus @default(UPLOADED)
+  parsedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job               Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chunks            EditorialTextChunk[]
+  citations         Citation[]
+  styleViolations   StyleViolation[]
+  plagiarismMatches PlagiarismMatch[]
+  references        Reference[]
+  editorialReports  EditorialReport[]
+
+  @@index([tenantId])
+  @@index([jobId])
+  @@index([status])
 }
 
-enum UserRole {
-  ADMIN
-  USER
-  VIEWER
+enum EditorialDocStatus {
+  UPLOADED
+  PARSING
+  PARSED
+  ANALYZING
+  COMPLETED
+  FAILED
 }
 
-enum VpatStatus {
-  DRAFT
-  REVIEW
-  PUBLISHED
-  ARCHIVED
+model EditorialTextChunk {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  chunkIndex Int
+  text       String @db.Text
+  wordCount  Int
+
+  startOffset    Int
+  endOffset      Int
+  pageNumber     Int?
+  paragraphIndex Int?
+  chapterTitle   String?
+
+  embedding      Float[] @default([])
+  embeddingModel String?
+
+  createdAt DateTime @default(now())
+
+  plagiarismMatches PlagiarismMatch[] @relation("SourceChunk")
+  matchedBy         PlagiarismMatch[] @relation("MatchedChunk")
+
+  @@unique([documentId, chunkIndex])
+  @@index([documentId])
+}
+
+model Citation {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  rawText       String
+  citationType  CitationType
+  detectedStyle CitationStyle?
+
+  pageNumber     Int?
+  paragraphIndex Int?
+  startOffset    Int
+  endOffset      Int
+
+  confidence Float @default(0)
+
+  isValid          Boolean?
+  validationErrors String[]
+
+  referenceId String?
+  reference   Reference? @relation(fields: [referenceId], references: [id])
+
+  // CONSTRAINT NOTE: Prisma doesn't support composite FKs.
+  // When setting primaryComponentId, MUST use CitationValidationService.setPrimaryComponent()
+  // to ensure the component belongs to THIS citation, not a different one.
+  // See: src/services/shared/citation-validation.service.ts
+  primaryComponentId String?            @unique
+  primaryComponent   CitationComponent? @relation("PrimaryCitation", fields: [primaryComponentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  components  CitationComponent[]  @relation("CitationComponents")
+  validations CitationValidation[]
+
+  @@index([documentId])
+  @@index([citationType])
+  @@index([referenceId])
+}
+
+enum CitationType {
+  PARENTHETICAL
+  NARRATIVE
+  FOOTNOTE
+  ENDNOTE
+  NUMERIC
+  UNKNOWN
+}
+
+enum CitationStyle {
+  APA
+  MLA
+  CHICAGO
+  VANCOUVER
+  HARVARD
+  IEEE
+  UNKNOWN
+}
+
+model CitationComponent {
+  id         String   @id @default(uuid())
+  citationId String
+  citation   Citation @relation("CitationComponents", fields: [citationId], references: [id], onDelete: Cascade)
+
+  authors    String[]
+  year       String?
+  title      String?
+  source     String?
+  volume     String?
+  issue      String?
+  pages      String?
+  doi        String?
+  url        String?
+  accessDate String?
+  publisher  String?
+  edition    String?
+
+  sourceType SourceType?
+
+  fieldConfidence Json?
+
+  doiVerified  Boolean?
+  urlValid     Boolean?
+  urlCheckedAt DateTime?
+
+  parseVariant String?
+  confidence   Float   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  primaryForCitation Citation? @relation("PrimaryCitation")
+
+  @@index([citationId])
+  @@index([doi])
+}
+
+enum SourceType {
+  JOURNAL_ARTICLE
+  BOOK
+  BOOK_CHAPTER
+  CONFERENCE_PAPER
+  WEBSITE
+  THESIS
+  REPORT
+  NEWSPAPER
+  MAGAZINE
+  PATENT
+  LEGAL
+  PERSONAL_COMMUNICATION
+  UNKNOWN
+}
+
+model Reference {
+  id         String @id @default(uuid())
+  documentId String
+
+  rawText       String  @db.Text
+  formattedText String? @db.Text
+
+  refNumber Int?
+
+  authors    String[]
+  year       String?
+  title      String?
+  source     String?
+  doi        String?
+  url        String?
+  sourceType SourceType?
+
+  isComplete    Boolean  @default(false)
+  missingFields String[]
+  formatErrors  String[]
+
+  crossrefData Json?
+  pubmedData   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  citations         Citation[]
+
+  @@index([documentId])
+  @@index([doi])
+}
+
+model CitationValidation {
+  id         String   @id @default(uuid())
+  citationId String
+  citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
+
+  targetStyle CitationStyle
+
+  isValid  Boolean
+  errors   Json
+  warnings Json?
+
+  suggestedText String?
+
+  createdAt DateTime @default(now())
+
+  @@index([citationId])
+}
+
+model PlagiarismMatch {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  sourceChunkId String
+  sourceChunk   EditorialTextChunk @relation("SourceChunk", fields: [sourceChunkId], references: [id])
+
+  matchedChunkId String?
+  matchedChunk   EditorialTextChunk? @relation("MatchedChunk", fields: [matchedChunkId], references: [id])
+
+  externalSource String?
+  externalUrl    String?
+  externalTitle  String?
+
+  matchType       PlagiarismMatchType
+  similarityScore Float
+
+  classification PlagiarismClassification
+  confidence     Float
+  aiReasoning    String?                  @db.Text
+
+  sourceText  String @db.Text
+  matchedText String @db.Text
+
+  status      MatchReviewStatus @default(PENDING)
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  reviewNotes String?
+
+  createdAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([sourceChunkId])
+  @@index([matchType])
+  @@index([classification])
+  @@index([status])
+}
+
+enum PlagiarismMatchType {
+  INTERNAL
+  SELF_PLAGIARISM
+  EXTERNAL_WEB
+  EXTERNAL_ACADEMIC
+  EXTERNAL_PUBLISHER
+}
+
+enum PlagiarismClassification {
+  VERBATIM_COPY
+  PARAPHRASED
+  COMMON_PHRASE
+  PROPERLY_CITED
+  COINCIDENTAL
+  NEEDS_REVIEW
+}
+
+enum MatchReviewStatus {
+  PENDING
+  CONFIRMED_PLAGIARISM
+  FALSE_POSITIVE
+  PROPERLY_ATTRIBUTED
+  DISMISSED
+}
+
+model StyleViolation {
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  styleGuide    StyleGuideType
+  ruleId        String?
+  ruleReference String?
+
+  category    StyleCategory
+  severity    StyleSeverity
+  title       String
+  description String
+
+  pageNumber     Int?
+  paragraphIndex Int?
+  startOffset    Int
+  endOffset      Int
+
+  originalText  String
+  suggestedText String?
+
+  status        ViolationStatus @default(PENDING)
+  fixedAt       DateTime?
+  fixedBy       String?
+  ignoredReason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([styleGuide])
+  @@index([category])
+  @@index([severity])
+  @@index([status])
+}
+
+enum StyleGuideType {
+  CHICAGO
+  APA
+  MLA
+  AP
+  CUSTOM
+}
+
+enum StyleCategory {
+  PUNCTUATION
+  CAPITALIZATION
+  NUMBERS
+  ABBREVIATIONS
+  HYPHENATION
+  SPELLING
+  GRAMMAR
+  TERMINOLOGY
+  FORMATTING
+  CITATIONS
+  OTHER
+}
+
+enum StyleSeverity {
+  ERROR
+  WARNING
+  SUGGESTION
+}
+
+enum ViolationStatus {
+  PENDING
+  FIXED
+  IGNORED
+  WONT_FIX
+}
+
+model HouseStyleRule {
+  id       String @id @default(uuid())
+  tenantId String
+
+  name        String
+  description String?
+  category    StyleCategory
+
+  ruleType      HouseRuleType
+  pattern       String?
+  preferredTerm String?
+  avoidTerms    String[]
+
+  severity StyleSeverity @default(WARNING)
+  isActive Boolean       @default(true)
+
+  baseStyleGuide StyleGuideType?
+  overridesRule  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([category])
+  @@index([isActive])
+}
+
+enum HouseRuleType {
+  TERMINOLOGY
+  PATTERN
+  CAPITALIZATION
+  PUNCTUATION
+}
+
+model EditorialReport {
+  id         String @id @default(uuid())
+  documentId String
+  tenantId   String
+
+  reportType EditorialReportType
+  format     ReportFormat
+
+  summary Json
+
+  content  Json?
+  filePath String?
+
+  generatedAt DateTime @default(now())
+  generatedBy String?
+
+  editorialDocument EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([tenantId])
+  @@index([reportType])
+}
+
+enum EditorialReportType {
+  PLAGIARISM
+  CITATION
+  STYLE
+  FULL_EDITORIAL
+}
+
+enum ReportFormat {
+  JSON
+  PDF
+  DOCX
 }

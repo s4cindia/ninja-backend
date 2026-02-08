@@ -5,6 +5,20 @@ import { SKIP_AUTO_ROLE_TYPES, getAriaRoleForEpubType } from '../../config/epub-
 
 const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
 
+/**
+ * @deprecated Do not use for write paths - breaks XHTML well-formedness.
+ * Only use for UI/diff display where human-readable text is needed.
+ */
+function decodeCheerioHtmlForDisplay(html: string): string {
+  return html
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 function isTextFile(filePath: string): boolean {
   return EPUB_TEXT_FILE_EXTENSIONS.some(ext => filePath.toLowerCase().endsWith(ext));
 }
@@ -133,7 +147,22 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
       const attrName = keyAttrMatch[1];
       const attrValue = keyAttrMatch[2];
 
-      if (foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue)) {
+      let matched = foundTag.includes(`${attrName}=`) && foundTag.includes(attrValue);
+      
+      if (!matched && attrName === 'src') {
+        const basename = attrValue.split('/').pop() || attrValue;
+        const foundSrcMatch = foundTag.match(/src\s*=\s*["']([^"']+)["']/);
+        if (foundSrcMatch) {
+          const foundSrc = foundSrcMatch[1];
+          const foundBasename = foundSrc.split('/').pop() || foundSrc;
+          if (basename === foundBasename) {
+            matched = true;
+            logger.info(`Matched by basename: ${basename}`);
+          }
+        }
+      }
+
+      if (matched) {
         logger.info(`Tag pattern matched: "${foundTag.substring(0, 80)}..."`);
 
         const newTagMatch = newContent.match(/<(\w+)([^>]*)>/);
@@ -147,7 +176,16 @@ function tryTagPatternMatch(content: string, oldContent: string, newContent: str
 
         const foundAttrsMatch = foundTag.match(/<\w+\s*([\s\S]*?)>/);
         const foundAttrs = foundAttrsMatch ? foundAttrsMatch[1] : '';
-        const newAttrs = newTagMatch[2];
+        let newAttrs = newTagMatch[2];
+        
+        if (attrName === 'src') {
+          const foundSrcMatch = foundTag.match(/src\s*=\s*["']([^"']+)["']/);
+          if (foundSrcMatch) {
+            const originalSrc = foundSrcMatch[1];
+            newAttrs = newAttrs.replace(/src\s*=\s*["'][^"']+["']/, `src="${originalSrc}"`);
+          }
+        }
+        
         const mergedTag = mergeTagAttributes(tagName, foundAttrs, newAttrs);
 
         logger.info(`Merged tag preserving attributes: "${mergedTag}"`);
@@ -1610,7 +1648,7 @@ class EPUBModifierService {
       }
 
       const content = await file.async('string');
-      const before = content.substring(0, 200);
+      const before = content;
       let modified = content;
       let changeApplied = false;
 
@@ -1805,13 +1843,22 @@ class EPUBModifierService {
         zip.file(actualPath, modified);
         modifiedFiles.push(actualPath);
 
+        // Truncate before/after to prevent storing full file contents in DB
+        const maxSnippetLength = 500;
+        const truncatedBefore = before.length > maxSnippetLength 
+          ? before.substring(0, maxSnippetLength) + '... [truncated]' 
+          : before;
+        const truncatedAfter = modified.length > maxSnippetLength 
+          ? modified.substring(0, maxSnippetLength) + '... [truncated]' 
+          : modified;
+          
         results.push({
           success: true,
           filePath: actualPath,
           modificationType: change.type,
           description: change.description || `Applied ${change.type} operation`,
-          before,
-          after: modified.substring(0, 200),
+          before: truncatedBefore,
+          after: truncatedAfter,
         });
 
         logger.info(`Quick fix modified file: ${actualPath}`);

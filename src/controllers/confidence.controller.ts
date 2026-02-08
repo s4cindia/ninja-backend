@@ -1,11 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import { confidenceAnalyzerService, ValidationResultInput } from '../services/acr/confidence-analyzer.service';
 import { acrGeneratorService, AcrEdition } from '../services/acr/acr-generator.service';
-import { AuditIssueInput, wcagIssueMapperService, FixedModification } from '../services/acr/wcag-issue-mapper.service';
+import { AuditIssueInput, wcagIssueMapperService, RULE_TO_CRITERIA_MAP } from '../services/acr/wcag-issue-mapper.service';
 import { contentDetectionService, ApplicabilitySuggestion } from '../services/acr/content-detection.service';
-import { fileStorageService } from '../services/storage/file-storage.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Helper to check if a rule maps to any WCAG criterion
+function mapsToWcagCriteria(ruleId: string): boolean {
+  const criteria = RULE_TO_CRITERIA_MAP[ruleId];
+  return criteria !== undefined && criteria.length > 0;
+}
 
 export class ConfidenceController {
   async getConfidenceSummary(req: Request, res: Response, next: NextFunction) {
@@ -23,14 +30,14 @@ export class ConfidenceController {
       const userId = req.user?.id;
       
       const job = await prisma.job.findFirst({
-        where: {
+        where: { 
           id: jobId,
           userId: userId,
         },
         include: {
-          ValidationResult: {
+          validationResults: {
             include: {
-              Issue: true
+              issues: true
             }
           }
         }
@@ -46,10 +53,10 @@ export class ConfidenceController {
 
       let summary;
 
-      if (job.ValidationResult && job.ValidationResult.length > 0) {
+      if (job.validationResults && job.validationResults.length > 0) {
         const criteriaMap = new Map<string, ValidationResultInput>();
-
-        for (const result of job.ValidationResult) {
+        
+        for (const result of job.validationResults) {
           const details = result.details as Record<string, unknown> | null;
           
           if (details && typeof details === 'object') {
@@ -182,7 +189,7 @@ export class ConfidenceController {
       const job = await prisma.job.findFirst({
         where: {
           id: jobId,
-          userId: userId
+          tenant: { users: { some: { id: userId } } }
         }
       });
 
@@ -229,9 +236,256 @@ export class ConfidenceController {
         }
       }
       
-      const outputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
+      const allOutputIssues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as OutputIssue[];
 
-      logger.debug(`[Confidence] Issues from job.output: ${outputIssues.length}`);
+      logger.debug(`[Confidence] Issues from job.output: ${allOutputIssues.length}`);
+
+      // Check BATCH_VALIDATION job for completed/fixed tasks to categorize issues
+      const sourceJobId = job.type === 'ACR_WORKFLOW' 
+        ? (job.input as { sourceJobId?: string })?.sourceJobId 
+        : jobId;
+      
+      interface RemediationTaskInfo {
+        issueCode?: string;
+        location?: string;
+        status?: string;
+        completedAt?: string;
+        resolvedAt?: string;
+        remediationMethod?: string;
+        completionMethod?: 'auto' | 'manual' | 'verified';
+        description?: string;
+        resolution?: string;
+        notes?: string;
+        resolvedBy?: string;
+        resolvedLocation?: string;
+        resolvedFiles?: string[];
+        context?: string;
+        html?: string;
+        element?: string;
+      }
+      
+      // Key by issueCode + location to avoid marking all same-code issues as remediated
+      let completedTasksMap = new Map<string, RemediationTaskInfo>();
+      let failedTasksMap = new Map<string, RemediationTaskInfo>();
+      let skippedTasksMap = new Map<string, RemediationTaskInfo>();
+      
+      // Helper to safely coerce location to string (declare early for reuse)
+      const toLocationStringInner = (loc: unknown): string => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (typeof loc === 'object') {
+          try { return JSON.stringify(loc); } catch { return ''; }
+        }
+        return String(loc);
+      };
+      
+      // Helper to normalize remediationInfo values to conform to frontend enums
+      // status -> [completed, fixed, failed, skipped]
+      // method -> [auto, manual, automated]
+      const normalizeRemediationInfo = (info: RemediationTaskInfo | undefined, fallbackStatus?: string) => {
+        if (!info) return undefined;
+        
+        // Normalize status: map variations to canonical values
+        const rawStatus = info.status || fallbackStatus || 'completed';
+        let normalizedStatus: 'completed' | 'fixed' | 'failed' | 'skipped';
+        if (rawStatus === 'auto-fixed' || rawStatus === 'verified') {
+          normalizedStatus = 'completed';
+        } else if (['completed', 'fixed', 'failed', 'skipped'].includes(rawStatus)) {
+          normalizedStatus = rawStatus as 'completed' | 'fixed' | 'failed' | 'skipped';
+        } else {
+          normalizedStatus = 'completed'; // safe default
+        }
+        
+        // Normalize method: map variations to canonical values
+        const rawMethod = info.completionMethod || info.remediationMethod || 'automated';
+        let normalizedMethod: 'auto' | 'manual' | 'automated';
+        if (rawMethod === 'auto-fixed' || rawMethod === 'auto') {
+          normalizedMethod = 'auto';
+        } else if (rawMethod === 'verified' || rawMethod === 'manual') {
+          normalizedMethod = 'manual';
+        } else if (rawMethod === 'automated') {
+          normalizedMethod = 'automated';
+        } else {
+          normalizedMethod = 'automated'; // safe default
+        }
+        
+        const statusAppropriateDefault = (normalizedStatus === 'completed' || normalizedStatus === 'fixed')
+          ? 'Fixed during remediation'
+          : 'Remediation not completed';
+        
+        return {
+          status: normalizedStatus,
+          method: normalizedMethod,
+          completedAt: info.resolvedAt || info.completedAt,
+          description: info.resolution || info.description || statusAppropriateDefault,
+          html: info.html,
+          details: {
+            notes: info.notes,
+            resolvedBy: info.resolvedBy,
+            resolvedLocation: info.resolvedLocation,
+            resolvedFiles: info.resolvedFiles,
+            context: info.context,
+            element: info.element,
+          }
+        };
+      };
+      
+      if (sourceJobId) {
+        const batchValidationJob = await prisma.job.findFirst({
+          where: {
+            type: 'BATCH_VALIDATION',
+            input: {
+              path: ['sourceJobId'],
+              equals: sourceJobId,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (batchValidationJob?.output) {
+          const batchOutput = batchValidationJob.output as { tasks?: Array<RemediationTaskInfo> };
+          
+          if (batchOutput.tasks) {
+            for (const task of batchOutput.tasks) {
+              if (task.issueCode) {
+                const taskLocationStr = toLocationStringInner(task.location);
+                const key = taskLocationStr ? `${task.issueCode}::${taskLocationStr}` : task.issueCode;
+                
+                if (task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed') {
+                  completedTasksMap.set(key, task);
+                } else if (task.status === 'failed') {
+                  failedTasksMap.set(key, task);
+                } else if (task.status === 'skipped') {
+                  skippedTasksMap.set(key, task);
+                }
+              }
+            }
+            logger.info(`[Confidence] Found ${completedTasksMap.size} fixed, ${failedTasksMap.size} failed, ${skippedTasksMap.size} skipped tasks from BATCH_VALIDATION`);
+          }
+        }
+      }
+
+      // Helper to safely coerce location to string (duplicate for scope)
+      const toLocationString = (loc: unknown): string => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (typeof loc === 'object') {
+          try { return JSON.stringify(loc); } catch { return ''; }
+        }
+        return String(loc);
+      };
+
+      // Separate issues into: WCAG-mapped (pending/remediated) vs Other Issues (non-WCAG)
+      // Also track failed/skipped Other Issues
+      type OtherIssueStatus = 'pending' | 'fixed' | 'failed' | 'skipped';
+      type WcagIssueWithMeta = OutputIssue & { taskStatus?: OtherIssueStatus; remediationInfo?: RemediationTaskInfo };
+      const pendingIssues: WcagIssueWithMeta[] = [];
+      const remediatedIssues: Array<OutputIssue & { remediationInfo?: RemediationTaskInfo }> = [];
+      const otherIssuesWithStatus: Array<OutputIssue & { taskStatus: OtherIssueStatus; remediationInfo?: RemediationTaskInfo }> = [];
+      
+      for (const issue of allOutputIssues) {
+        const issueCode = issue.ruleId || issue.code || '';
+        // Normalize issue location to string
+        const issueLocation = toLocationString(issue.filePath || issue.location);
+        
+        // Check if this issue maps to WCAG criteria
+        const isWcagMapped = mapsToWcagCriteria(issueCode);
+        
+        // Build lookup keys
+        const specificKey = issueCode && issueLocation ? `${issueCode}::${issueLocation}` : null;
+        
+        // Check in order: completed, failed, skipped
+        let matchedKey: string | null = null;
+        let taskStatus: OtherIssueStatus = 'pending';
+        let taskInfo: RemediationTaskInfo | undefined;
+        
+        // Check for completed/fixed tasks
+        if (specificKey && completedTasksMap.has(specificKey)) {
+          matchedKey = specificKey;
+          taskStatus = 'fixed';
+          taskInfo = completedTasksMap.get(matchedKey);
+        } else if (issueCode && completedTasksMap.has(issueCode)) {
+          const storedTask = completedTasksMap.get(issueCode);
+          const storedTaskLocation = toLocationString(storedTask?.location);
+          if (!storedTaskLocation || !issueLocation) {
+            matchedKey = issueCode;
+            taskStatus = 'fixed';
+            taskInfo = storedTask;
+          }
+        }
+        
+        // Check for failed tasks (if not already matched)
+        if (!matchedKey) {
+          if (specificKey && failedTasksMap.has(specificKey)) {
+            matchedKey = specificKey;
+            taskStatus = 'failed';
+            taskInfo = failedTasksMap.get(matchedKey);
+          } else if (issueCode && failedTasksMap.has(issueCode)) {
+            const storedTask = failedTasksMap.get(issueCode);
+            const storedTaskLocation = toLocationString(storedTask?.location);
+            if (!storedTaskLocation || !issueLocation) {
+              matchedKey = issueCode;
+              taskStatus = 'failed';
+              taskInfo = storedTask;
+            }
+          }
+        }
+        
+        // Check for skipped tasks (if not already matched)
+        if (!matchedKey) {
+          if (specificKey && skippedTasksMap.has(specificKey)) {
+            matchedKey = specificKey;
+            taskStatus = 'skipped';
+            taskInfo = skippedTasksMap.get(matchedKey);
+          } else if (issueCode && skippedTasksMap.has(issueCode)) {
+            const storedTask = skippedTasksMap.get(issueCode);
+            const storedTaskLocation = toLocationString(storedTask?.location);
+            if (!storedTaskLocation || !issueLocation) {
+              matchedKey = issueCode;
+              taskStatus = 'skipped';
+              taskInfo = storedTask;
+            }
+          }
+        }
+        
+        if (isWcagMapped) {
+          if (taskStatus === 'fixed' && matchedKey) {
+            remediatedIssues.push({ ...issue, remediationInfo: taskInfo });
+            completedTasksMap.delete(matchedKey);
+          } else if (taskStatus === 'failed' || taskStatus === 'skipped') {
+            // Preserve remediation attempt details for failed/skipped WCAG issues
+            pendingIssues.push({ ...issue, taskStatus, remediationInfo: taskInfo });
+            if (matchedKey) {
+              failedTasksMap.delete(matchedKey);
+              skippedTasksMap.delete(matchedKey);
+            }
+          } else {
+            // Truly pending (no remediation attempt)
+            pendingIssues.push({ ...issue, taskStatus: 'pending' });
+          }
+        } else {
+          otherIssuesWithStatus.push({ ...issue, taskStatus, remediationInfo: taskInfo });
+          // Clean up from maps
+          if (matchedKey) {
+            completedTasksMap.delete(matchedKey);
+            failedTasksMap.delete(matchedKey);
+            skippedTasksMap.delete(matchedKey);
+          }
+        }
+      }
+      
+      // Separate Other Issues by status for counting
+      const pendingOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'pending');
+      const remediatedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'fixed');
+      const failedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'failed');
+      const skippedOtherIssues = otherIssuesWithStatus.filter(i => i.taskStatus === 'skipped');
+      
+      const outputIssues = pendingIssues;
+      
+      logger.info(`[Confidence] WCAG issues: ${pendingIssues.length} pending, ${remediatedIssues.length} remediated`);
+      logger.info(`[Confidence] Other issues: ${pendingOtherIssues.length} pending, ${remediatedOtherIssues.length} remediated`);
+
+      logger.info(`[Confidence] After categorizing: ${pendingIssues.length} pending issues, ${remediatedIssues.length} remediated`);
 
       const auditIssues: AuditIssueInput[] = outputIssues.map((issue, idx) => {
         const ruleId = issue.ruleId || issue.code || 'unknown';
@@ -248,127 +502,269 @@ export class ConfidenceController {
       logger.debug(`[Confidence] Total issues extracted: ${auditIssues.length}`);
       logger.debug(`[Confidence] Rule IDs: ${auditIssues.map(i => i.ruleId).join(', ')}`);
 
-      // Run content detection to get N/A suggestions
-      let naSuggestions: ApplicabilitySuggestion[] = [];
-      try {
-        const jobInput = job.input as Record<string, unknown> | null;
-        const jobOutput = job.output as Record<string, unknown> | null;
-
-        // Try input first (for direct uploads), then output (for ACR workflow jobs)
-        const epubFileName = (jobInput?.fileName || jobOutput?.fileName) as string | undefined;
-
-        // For ACR workflow jobs, file is stored under source job ID
-        const sourceJobId = (jobInput?.sourceJobId || jobOutput?.sourceJobId) as string | undefined;
-        const fileJobId = sourceJobId || jobId;
-
-        if (epubFileName) {
-          logger.info(`[Confidence] Running content detection on EPUB: ${epubFileName} (using job ID: ${fileJobId})`);
-          const epubBuffer = await fileStorageService.getFile(fileJobId, epubFileName);
-
-          if (epubBuffer) {
-            naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
-            logger.info(`[Confidence] Content detection generated ${naSuggestions.length} N/A suggestions`);
-          } else {
-            logger.warn(`[Confidence] EPUB file not found in storage: ${epubFileName} (job ID: ${fileJobId})`);
-          }
-        } else {
-          logger.debug('[Confidence] No epubFileName in job input or output, skipping content detection');
-        }
-      } catch (error) {
-        logger.error('[Confidence] Content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
-        naSuggestions = [];
-      }
-
-      // Extract fixed issues from autoRemediation.modifications BEFORE analyzing
-      const modifications = (auditOutput?.autoRemediation as Record<string, unknown>)?.modifications as FixedModification[] | undefined;
-
-      const fixedModifications = modifications?.filter(m => m.success !== false) || [];
-      logger.debug(`[Confidence] Found ${fixedModifications.length} fixed modifications from autoRemediation`);
-
-      // Map fixed issues to WCAG criteria
-      const fixedIssuesMap = wcagIssueMapperService.mapFixedIssuesToCriteria(
-        fixedModifications,
-        auditIssues
-      );
-      logger.info(`[Confidence] Mapped fixed issues to ${fixedIssuesMap.size} criteria`);
-
-      // Filter out fixed issues BEFORE passing to confidence analysis
-      const remainingAuditIssues = auditIssues.filter(issue => {
-        const issueCode = issue.ruleId || 'unknown';
-        const isFixed = fixedModifications.some(mod =>
-          mod.issueCode === issueCode ||
-          mod.ruleId === issueCode ||
-          (mod.issueCode && issueCode.includes(mod.issueCode))
-        );
-        return !isFixed;
-      });
-
-      logger.info(`[Confidence] Filtered issues: ${auditIssues.length} total, ${remainingAuditIssues.length} remaining after removing fixed`);
-
-      // Generate confidence analysis with REMAINING issues only, but include fixed issues and N/A suggestions
       const confidenceAnalysis = await acrGeneratorService.generateConfidenceAnalysis(
         editionCode,
-        remainingAuditIssues,
-        fixedIssuesMap,
-        naSuggestions
+        auditIssues
       );
 
-      // Add remaining count to each criterion
-      const enhancedAnalysis = confidenceAnalysis.map(criterion => {
-        const remainingIssues = criterion.relatedIssues || [];
-        const remainingCount = remainingIssues.length;
+      // Get N/A suggestions from content detection if EPUB file is available
+      let naSuggestions: ApplicabilitySuggestion[] = [];
+      const jobInput = job.input as { fileName?: string; sourceJobId?: string } | null;
+      const epubStoragePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+      
+      // For ACR_WORKFLOW jobs, get fileName from source job's output
+      let epubFileName = jobInput?.fileName;
+      let epubJobId = sourceJobId || jobId;
+      
+      if (!epubFileName && sourceJobId) {
+        // Fetch source job to get fileName
+        const sourceJobForEpub = await prisma.job.findUnique({
+          where: { id: sourceJobId },
+          select: { output: true }
+        });
+        if (sourceJobForEpub) {
+          const sourceOutput = sourceJobForEpub.output as { fileName?: string } | null;
+          epubFileName = sourceOutput?.fileName;
+          epubJobId = sourceJobId;
+          logger.info(`[Confidence] ACR_WORKFLOW: Using fileName from source job: ${epubFileName}`);
+        }
+      }
+      
+      const epubFilePath = epubFileName 
+        ? path.join(epubStoragePath, epubJobId, path.basename(epubFileName))
+        : null;
+      
+      if (epubFilePath && fs.existsSync(epubFilePath)) {
+        try {
+          logger.info(`[Confidence] Running content detection on: ${epubFilePath}`);
+          const epubBuffer = fs.readFileSync(epubFilePath);
+          naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
+          logger.info(`[Confidence] Content detection generated ${naSuggestions.length} N/A suggestions`);
+        } catch (error) {
+          logger.warn(`[Confidence] Content detection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      } else {
+        logger.debug(`[Confidence] No EPUB file found for content detection at: ${epubFilePath}`);
+      }
 
-        logger.debug(`[Confidence] Criterion ${criterion.criterionId}: ${remainingCount} remaining, ${criterion.fixedCount || 0} fixed, confidence=${criterion.confidenceScore}`);
+      // Helper to match N/A suggestion to criterion
+      const findNaSuggestion = (criterionId: string): ApplicabilitySuggestion | undefined => {
+        return naSuggestions.find(s => {
+          if (s.criterionId === criterionId) return true;
+          // Match group patterns (e.g., "1.2.x" matches "1.2.1", "1.2.2", etc.)
+          if (s.criterionId.endsWith('.x')) {
+            const prefix = s.criterionId.slice(0, -2);
+            return criterionId.startsWith(prefix + '.');
+          }
+          return false;
+        });
+      };
 
+      const criteriaWithIssues = confidenceAnalysis.filter(c => (c.issueCount || 0) > 0);
+      logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
+      criteriaWithIssues.forEach(c => {
+        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.issueCount} issues, status=${c.status}, confidence=${c.confidenceScore}`);
+      });
+
+      // Format remediated issues for response (normalize filePath to string)
+      const formattedRemediatedIssues = remediatedIssues.map(issue => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
         return {
-          ...criterion,
-          remainingCount,
-          issueCount: remainingCount
+          id: issue.id,
+          code: issue.ruleId || issue.code,
+          message: issue.message || issue.description,
+          severity: issue.impact || issue.severity,
+          filePath: normalizedFilePath,
+          status: 'remediated',
+          remediationInfo: normalizeRemediationInfo(issue.remediationInfo)
         };
       });
 
-      // Only count criteria with REMAINING issues, not fixed ones
-      const criteriaWithIssues = enhancedAnalysis.filter(c => (c.issueCount || 0) > 0);
-      logger.info(`[Confidence] Criteria with issues: ${criteriaWithIssues.length}`);
-      criteriaWithIssues.forEach(c => {
-        logger.info(`[Confidence] Criterion ${c.criterionId}: ${c.fixedCount || 0} fixed, ${c.issueCount} remaining, status=${c.status}, confidence=${c.confidenceScore}`);
+      // Map remediated issues to their WCAG criteria (normalize filePath to string)
+      const remediatedAuditIssues: AuditIssueInput[] = remediatedIssues.map((issue, idx) => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        return {
+          id: issue.id || `remediated-${idx}`,
+          ruleId: issue.ruleId || issue.code || 'unknown',
+          message: issue.message || issue.description || '',
+          impact: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          filePath: normalizedFilePath
+        };
       });
+      
+      const remediatedIssueMapping = wcagIssueMapperService.mapIssuesToCriteria(remediatedAuditIssues);
+      logger.info(`[Confidence] Mapped remediated issues to ${remediatedIssueMapping.size} criteria`);
 
-      const summary = {
-        totalCriteria: enhancedAnalysis.length,
-        notApplicableCriteria: enhancedAnalysis.filter(c => c.isNotApplicable).length,
-        // Exclude N/A from pass/fail counts
-        passingCriteria: enhancedAnalysis.filter(c =>
-          !c.isNotApplicable && c.status === 'pass'
-        ).length,
-        failingCriteria: enhancedAnalysis.filter(c =>
-          !c.isNotApplicable && c.status === 'fail'
-        ).length,
-        needsReviewCriteria: enhancedAnalysis.filter(c =>
-          !c.isNotApplicable && c.status === 'needs_review'
-        ).length,
-        criteriaWithIssuesCount: criteriaWithIssues.length,
-        totalIssues: enhancedAnalysis
-          .filter(c => !c.isNotApplicable)
-          .reduce((sum, c) => sum + (c.issueCount || 0), 0),
-        // Average confidence excludes N/A
-        averageConfidence: (() => {
-          const applicableCriteria = enhancedAnalysis.filter(c => !c.isNotApplicable);
-          return applicableCriteria.length > 0
-            ? Math.round((applicableCriteria.reduce((sum, c) => sum + c.confidenceScore, 0) / applicableCriteria.length) * 100) / 100
-            : 0;
-        })()
+      // Build keyed lookup for formattedRemediatedIssues using normalized code + filePath
+      const remediatedLookup = new Map<string, typeof formattedRemediatedIssues[0]>();
+      for (const r of formattedRemediatedIssues) {
+        const normalizedPath = toLocationString(r.filePath);
+        const key = normalizedPath ? `${r.code}::${normalizedPath}` : r.code;
+        if (key) remediatedLookup.set(key, r);
+      }
+
+      // Enhance criteria with needsVerification, remediationSummary, and recalculated confidence
+      const enhancedCriteria = confidenceAnalysis.map(criterion => {
+        const criterionRemediatedIssues = remediatedIssueMapping.get(criterion.criterionId) || [];
+        const pendingCount = criterion.issueCount || 0;
+        const fixedCount = criterionRemediatedIssues.length;
+        const totalIssues = pendingCount + fixedCount;
+        const allFixed = pendingCount === 0 && fixedCount > 0;
+        
+        // Get latest fixedAt timestamp from remediated issues
+        let latestFixedAt: string | undefined;
+        const mappedRemediatedIssues = criterionRemediatedIssues.map(issue => {
+          const normalizedPath = toLocationString(issue.filePath);
+          const specificKey = normalizedPath ? `${issue.ruleId}::${normalizedPath}` : issue.ruleId;
+          const fullInfo = remediatedLookup.get(specificKey) || remediatedLookup.get(issue.ruleId);
+          
+          if (fullInfo?.remediationInfo?.completedAt) {
+            if (!latestFixedAt || fullInfo.remediationInfo.completedAt > latestFixedAt) {
+              latestFixedAt = fullInfo.remediationInfo.completedAt;
+            }
+          }
+          
+          return {
+            ...issue,
+            status: 'remediated',
+            remediationInfo: fullInfo?.remediationInfo
+          };
+        });
+        
+        // Use automationCapability as base confidence if available, otherwise use confidenceScore
+        // automationCapability reflects the criterion's actual automation level (0-100)
+        const automationCapability = criterion.automationCapability ?? (
+          criterion.confidenceScore <= 1 
+            ? criterion.confidenceScore * 100 
+            : criterion.confidenceScore
+        );
+        
+        // Manual-required criteria (automationCapability = 0) always stay at 0% confidence
+        if (automationCapability === 0) {
+          // Don't recalculate - keep at 0 with not_applicable status
+          return {
+            ...criterion,
+            confidenceScore: 0,
+            status: 'not_applicable',
+            needsVerification: true,
+            requiresManualVerification: true,
+            automationCapability: 0,
+            remediationSummary: fixedCount > 0 ? {
+              totalIssues,
+              fixedIssues: fixedCount,
+              remainingIssues: pendingCount,
+              fixedAt: latestFixedAt
+            } : undefined,
+            remediatedIssues: mappedRemediatedIssues,
+            remediatedCount: fixedCount,
+            naSuggestion: undefined
+          };
+        }
+        
+        let recalculatedConfidence = automationCapability;
+        
+        if (totalIssues > 0 && fixedCount > 0) {
+          const fixRatio = fixedCount / totalIssues;
+          if (fixRatio === 1.0) {
+            // All issues fixed - confidence capped by automation capability
+            recalculatedConfidence = Math.min(95, automationCapability);
+          } else {
+            // Partial fix: scale based on fix ratio, capped by automation capability
+            const partialConfidence = Math.round(40 + (fixRatio * 40));
+            recalculatedConfidence = Math.min(partialConfidence, automationCapability);
+          }
+        }
+        
+        // Compute updatedStatus first: 'pass' if all issues were fixed (and there were issues to fix)
+        const updatedStatus = allFixed ? 'pass' : criterion.status;
+        
+        // Derive needsVerification from updatedStatus for consistency
+        // needsVerification = true only when there are unresolved issues or status requires review
+        const hasRemainingIssues = pendingCount > 0;
+        const needsVerification = hasRemainingIssues || updatedStatus === 'needs_review';
+        
+        // Get N/A suggestion for this criterion
+        const naSuggestion = findNaSuggestion(criterion.criterionId);
+        
+        return {
+          ...criterion,
+          confidenceScore: Math.round(recalculatedConfidence),
+          status: updatedStatus,
+          needsVerification,
+          requiresManualVerification: criterion.requiresManualVerification ?? false,
+          automationCapability,
+          remediationSummary: fixedCount > 0 ? {
+            totalIssues,
+            fixedIssues: fixedCount,
+            remainingIssues: pendingCount,
+            fixedAt: latestFixedAt
+          } : undefined,
+          remediatedIssues: mappedRemediatedIssues,
+          remediatedCount: fixedCount,
+          naSuggestion: naSuggestion ? {
+            suggestedStatus: naSuggestion.suggestedStatus,
+            confidence: naSuggestion.confidence,
+            rationale: naSuggestion.rationale,
+            detectionChecks: naSuggestion.detectionChecks,
+            edgeCases: naSuggestion.edgeCases
+          } : undefined
+        };
+      });
+      
+      // Format Other Issues for response with all status types
+      const formatOtherIssue = (issue: OutputIssue & { taskStatus: OtherIssueStatus; remediationInfo?: RemediationTaskInfo }) => {
+        const normalizedFilePath = toLocationString(issue.filePath || issue.location);
+        const hasRemediationAttempt = issue.taskStatus !== 'pending';
+        return {
+          code: issue.ruleId || issue.code,
+          severity: (issue.impact || issue.severity || 'moderate') as 'critical' | 'serious' | 'moderate' | 'minor',
+          message: issue.message || issue.description || '',
+          location: normalizedFilePath,
+          status: issue.taskStatus,
+          remediationInfo: hasRemediationAttempt ? normalizeRemediationInfo(issue.remediationInfo, issue.taskStatus) : undefined
+        };
+      };
+      
+      const formattedOtherIssues = {
+        count: otherIssuesWithStatus.length,
+        pendingCount: pendingOtherIssues.length,
+        fixedCount: remediatedOtherIssues.length,
+        failedCount: failedOtherIssues.length,
+        skippedCount: skippedOtherIssues.length,
+        issues: otherIssuesWithStatus.map(formatOtherIssue)
       };
 
-      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}`);
+      const summary = {
+        totalCriteria: enhancedCriteria.length,
+        passingCriteria: enhancedCriteria.filter(c => c.status === 'pass').length,
+        failingCriteria: enhancedCriteria.filter(c => c.status === 'fail').length,
+        needsReviewCriteria: enhancedCriteria.filter(c => c.status === 'needs_review').length,
+        notApplicableCriteria: enhancedCriteria.filter(c => c.status === 'not_applicable').length,
+        criteriaWithIssuesCount: criteriaWithIssues.length,
+        totalIssues: auditIssues.length,
+        remediatedIssuesCount: remediatedIssues.length,
+        averageConfidence: enhancedCriteria.length > 0
+          ? Math.round((enhancedCriteria.reduce((sum, c) => sum + c.confidenceScore, 0) / enhancedCriteria.length) * 100) / 100
+          : 0
+      };
 
+      logger.info(`[Confidence] Summary: total=${summary.totalCriteria}, pass=${summary.passingCriteria}, fail=${summary.failingCriteria}, needsReview=${summary.needsReviewCriteria}, criteriaWithIssues=${summary.criteriaWithIssuesCount}, totalIssues=${summary.totalIssues}, remediated=${summary.remediatedIssuesCount}`);
+      logger.info(`[Confidence] Other Issues: count=${formattedOtherIssues.count}, pending=${formattedOtherIssues.pendingCount}, fixed=${formattedOtherIssues.fixedCount}`);
+      
+      // Prevent caching to ensure fresh naSuggestion data
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      
       res.json({
         success: true,
         data: {
           jobId,
           edition: editionCode,
           summary,
-          criteria: enhancedAnalysis
+          criteria: enhancedCriteria,
+          remediatedIssues: formattedRemediatedIssues,
+          otherIssues: formattedOtherIssues
         }
       });
     } catch (error) {

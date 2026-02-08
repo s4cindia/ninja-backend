@@ -2,16 +2,21 @@ import { Request, Response, NextFunction } from 'express';
 import { humanVerificationService, SubmitVerificationInput, VerificationStatus, RelatedIssue } from '../services/acr/human-verification.service';
 import { ConfidenceLevel } from '../services/acr/confidence-analyzer.service';
 import { acrAnalysisService } from '../services/acr/acr-analysis.service';
-import { acrGeneratorService } from '../services/acr/acr-generator.service';
-import { contentDetectionService } from '../services/acr/content-detection.service';
-import { fileStorageService } from '../services/storage/file-storage.service';
-import prisma from '../lib/prisma';
 import { z } from 'zod';
 import { logger } from '../lib/logger';
 
 const SubmitVerificationSchema = z.object({
   status: z.enum(['PENDING', 'VERIFIED_PASS', 'VERIFIED_FAIL', 'VERIFIED_PARTIAL', 'DEFERRED']),
   method: z.string().min(1),
+  notes: z.string().optional().default('')
+});
+
+// Schema for the new submit endpoint (POST /verification/submit per spec)
+const SubmitCriterionVerificationSchema = z.object({
+  criterionId: z.string().min(1),
+  jobId: z.string().uuid(),
+  status: z.enum(['not_applicable', 'pass', 'fail', 'partial', 'pending']),
+  method: z.enum(['ai_suggested', 'manual_review', 'automated', 'quick_accept']),
   notes: z.string().optional().default('')
 });
 
@@ -58,46 +63,12 @@ export class VerificationController {
       try {
         logger.info(`[Verification] Enriching queue for job ${jobId} with ${queue.items.length} items`);
         const analysis = await acrAnalysisService.getAnalysisForJob(jobId, undefined, forceRefresh);
-
-        // Fetch job for content detection
-        const job = await prisma.job.findUnique({ where: { id: jobId } });
-        if (!job) throw new Error('Job not found for enrichment');
-
-        // Run content detection for N/A suggestions
-        const jobInput = job.input as Record<string, unknown> | null;
-        const jobOutput = job.output as Record<string, unknown> | null;
-        const epubFileName = (jobInput?.fileName || jobOutput?.fileName) as string | undefined;
-        const sourceJobId = (jobInput?.sourceJobId || jobOutput?.sourceJobId) as string | undefined;
-        const fileJobId = sourceJobId || jobId;
-
-        let naSuggestionsMap = new Map<string, any>();
-
-        if (epubFileName) {
-          try {
-            logger.info(`[Verification] Running content detection on EPUB: ${epubFileName} (using job ID: ${fileJobId})`);
-            const epubBuffer = await fileStorageService.getFile(fileJobId, epubFileName);
-
-            if (epubBuffer) {
-              const naSuggestions = await contentDetectionService.analyzeEPUBContent(epubBuffer);
-              logger.info(`[Verification] Content detection generated ${naSuggestions.length} N/A suggestions`);
-
-              // Map suggestions by criterion ID
-              for (const suggestion of naSuggestions) {
-                naSuggestionsMap.set(suggestion.criterionId, suggestion);
-              }
-            } else {
-              logger.warn(`[Verification] EPUB file not found in storage: ${epubFileName} (job ID: ${fileJobId})`);
-            }
-          } catch (error) {
-            logger.error('[Verification] Content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
-          }
-        }
-
+        
         if (analysis?.criteria) {
           logger.info(`[Verification] Found ${analysis.criteria.length} criteria in analysis`);
-
-          // Create a map of criterion ID to issues and N/A suggestions
-          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[]; confidence?: number; naSuggestion?: any }>();
+          
+          // Create a map of criterion ID to issues
+          const criteriaIssuesMap = new Map<string, { relatedIssues?: RelatedIssue[]; fixedIssues?: RelatedIssue[]; confidence?: number }>();
           
           let criteriaWithIssues = 0;
           for (const criterion of analysis.criteria) {
@@ -109,9 +80,6 @@ export class VerificationController {
               logger.debug(`[Verification] Criterion ${criterion.id}: ${relatedCount} remaining, ${fixedCount} fixed, confidence=${criterion.confidence}`);
             }
             
-            // Get N/A suggestion from content detection
-            const naSuggestion = naSuggestionsMap.get(criterion.id);
-
             criteriaIssuesMap.set(criterion.id, {
               relatedIssues: criterion.relatedIssues?.map((issue) => ({
                 code: issue.ruleId,
@@ -127,27 +95,18 @@ export class VerificationController {
                 location: issue.location || issue.filePath,
                 status: 'fixed'
               })),
-              confidence: criterion.confidence,
-              naSuggestion
+              confidence: criterion.confidence
             });
           }
           logger.debug(`[Verification] Total criteria with issues: ${criteriaWithIssues}`);
           
           // Enrich queue items with issues
           let enrichedCount = 0;
-          let naCount = 0;
           for (const item of queue.items) {
             const issueData = criteriaIssuesMap.get(item.criterionId);
             if (issueData) {
               item.relatedIssues = issueData.relatedIssues;
               item.fixedIssues = issueData.fixedIssues;
-              item.naSuggestion = issueData.naSuggestion;
-
-              if (issueData.naSuggestion) {
-                naCount++;
-                logger.debug(`[Verification] Added N/A suggestion to ${item.criterionId}: ${issueData.naSuggestion.suggestedStatus} (${Math.round(issueData.naSuggestion.confidence * 100)}%)`);
-              }
-
               if (issueData.relatedIssues?.length || issueData.fixedIssues?.length) {
                 enrichedCount++;
                 logger.debug(`[Verification] Enriched ${item.criterionId}: ${issueData.relatedIssues?.length || 0} remaining, ${issueData.fixedIssues?.length || 0} fixed`);
@@ -158,7 +117,6 @@ export class VerificationController {
               }
             }
           }
-          logger.info(`[Verification] Enriched ${enrichedCount} queue items with issues, ${naCount} with N/A suggestions`);
           logger.debug(`[Verification] Enriched ${enrichedCount} queue items with issue data`);
           
           // Log a sample enriched item for frontend debugging
@@ -402,6 +360,86 @@ export class VerificationController {
         res.status(400).json({
           success: false,
           error: {
+            message: 'Validation failed',
+            details: error.issues
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  }
+  // POST /verification/submit - Submit verification for a criterion (per spec format)
+  async submitCriterionVerification(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as Request & { user?: { id: string; email?: string } }).user?.id || 'anonymous';
+      const userEmail = (req as Request & { user?: { email?: string } }).user?.email || 'unknown';
+
+      const validatedData = SubmitCriterionVerificationSchema.parse(req.body);
+      
+      logger.info(`[Verification] Submit criterion verification: criterionId=${validatedData.criterionId}, jobId=${validatedData.jobId}, status=${validatedData.status}, method=${validatedData.method}`);
+
+      // Map status to internal format
+      const statusMap: Record<string, VerificationStatus> = {
+        'not_applicable': 'NOT_APPLICABLE',  // N/A has dedicated status for proper handling
+        'pass': 'VERIFIED_PASS',
+        'fail': 'VERIFIED_FAIL',
+        'partial': 'VERIFIED_PARTIAL',
+        'pending': 'PENDING'
+      };
+
+      const verification: SubmitVerificationInput = {
+        status: statusMap[validatedData.status] || 'PENDING',
+        method: validatedData.method,
+        notes: validatedData.notes
+      };
+
+      // Find the verification queue item by criterionId and jobId
+      const queue = await humanVerificationService.getQueueFromJob(validatedData.jobId);
+      const queueItem = queue.items.find(item => item.criterionId === validatedData.criterionId);
+
+      if (!queueItem) {
+        res.status(404).json({
+          success: false,
+          error: { 
+            code: 'NOT_FOUND_QUEUE_ITEM',
+            message: `Verification item not found for criterion ${validatedData.criterionId} in job ${validatedData.jobId}` 
+          }
+        });
+        return;
+      }
+
+      const record = await humanVerificationService.submitVerification(queueItem.id, verification, userId);
+
+      if (!record) {
+        res.status(404).json({
+          success: false,
+          error: { 
+            code: 'VERIFICATION_NOT_SUBMITTED',
+            message: 'Failed to submit verification' 
+          }
+        });
+        return;
+      }
+
+      res.status(201).json({
+        success: true,
+        data: {
+          criterionId: validatedData.criterionId,
+          jobId: validatedData.jobId,
+          status: validatedData.status,
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: userEmail,
+          method: validatedData.method,
+          notes: validatedData.notes
+        }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
             message: 'Validation failed',
             details: error.issues
           }

@@ -502,6 +502,58 @@ class RemediationService {
         if (options?.resolvedFiles) {
           task.resolvedFiles = options.resolvedFiles;
         }
+
+        // Update corresponding Issue record status to REMEDIATED
+        if (status === 'completed' && task.issueCode) {
+          const planInput = planJob.input as any;
+          const sourceJobId = planInput?.sourceJobId;
+          
+          if (sourceJobId && tx.validationResult) {
+            // Find all validation results for this job
+            const validationResults = await tx.validationResult.findMany({
+              where: { jobId: sourceJobId },
+            });
+
+            for (const validationResult of validationResults) {
+              // Build location matching condition - check both filePath and location fields
+              // since task.location may match either field depending on how the issue was stored
+              const locationConditions: any[] = [];
+              if (task.location) {
+                locationConditions.push(
+                  { filePath: task.location },
+                  { location: task.location }
+                );
+              }
+
+              // Update Issue records matching this task's issue code and location
+              const updateResult = await tx.issue.updateMany({
+                where: {
+                  validationResultId: validationResult.id,
+                  code: task.issueCode,
+                  status: 'PENDING',
+                  ...(locationConditions.length > 0 ? { OR: locationConditions } : {}),
+                },
+                data: {
+                  status: 'REMEDIATED',
+                  fixedAt: new Date(),
+                  fixedBy: resolvedBy || 'system',
+                  remediationMethod: options?.completionMethod || 'quick-fix',
+                  remediationTaskId: task.id,
+                },
+              });
+              
+              if (updateResult.count > 0) {
+                logger.info(`Updated ${updateResult.count} Issue(s) to REMEDIATED for code ${task.issueCode}`, {
+                  jobId,
+                  taskId,
+                  issueCode: task.issueCode,
+                  location: task.location,
+                  validationResultId: validationResult.id,
+                });
+              }
+            }
+          }
+        }
       }
 
       const updatedTally = createTally(plan.tasks as unknown as Record<string, unknown>[], 'in_progress');
@@ -902,12 +954,10 @@ class RemediationService {
       throw new Error('Remediation plan not found');
     }
 
-    // Transfer ALL tasks (both pending and completed) to ACR
-    // ACR workflow needs to know what was remediated and what still needs verification
-    const pendingTasks = plan.tasks;
+    const pendingTasks = plan.tasks.filter(t => t.status === 'pending');
 
     if (pendingTasks.length === 0) {
-      throw new Error('No tasks found to transfer. Please complete remediation first.');
+      throw new Error('No pending tasks to transfer. All tasks are already completed.');
     }
 
     const originalJob = await prisma.job.findFirst({
@@ -1036,7 +1086,6 @@ class RemediationService {
 
     const acrJob = await prisma.job.create({
       data: {
-        id: nanoid(),
         tenantId: originalJob.tenantId,
         userId: originalJob.userId,
         type: 'ACR_WORKFLOW',
@@ -1044,7 +1093,6 @@ class RemediationService {
         input: { sourceJobId: jobId, sourceType: 'remediation' },
         output: JSON.parse(JSON.stringify(acrWorkflow)),
         startedAt: new Date(),
-        updatedAt: new Date(),
       },
     });
 
@@ -1052,7 +1100,6 @@ class RemediationService {
     try {
       const acrJobRecord = await prisma.acrJob.create({
         data: {
-          id: nanoid(),
           jobId: acrJob.id,
           tenantId: originalJob.tenantId,
           userId: originalJob.userId,
@@ -1076,7 +1123,6 @@ class RemediationService {
       for (const criterionId of wcagCriteriaSet) {
         await prisma.acrCriterionReview.create({
           data: {
-            id: nanoid(),
             acrJobId: acrJobRecord.id,
             criterionId,
             criterionNumber: criterionId,

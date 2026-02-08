@@ -1,16 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
-import {
-  AttributionTag,
-  ATTRIBUTION_MARKERS,
+import { 
+  AttributionTag, 
+  ATTRIBUTION_MARKERS, 
   LEGAL_DISCLAIMER,
   TOOL_VERSION,
   AI_MODEL_INFO,
-  generateFooterDisclaimer
+  generateFooterDisclaimer 
 } from './attribution.service';
 import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
-import { confidenceAnalyzerService } from './confidence-analyzer.service';
-import { ApplicabilitySuggestion } from './content-detection.service';
+import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
 export type AcrEdition = 
   | 'VPAT2.5-508'
@@ -225,7 +224,9 @@ class AcrGeneratorService {
           remarks = `What works: ${remarks} Limitations: Some elements require manual remediation.`;
         }
       } else if (!remarks) {
-        if (verification?.status === 'VERIFIED_PASS') {
+        if (verification?.status === 'NOT_APPLICABLE') {
+          remarks = `This criterion does not apply to the evaluated content. ${verification.notes || 'No relevant content detected.'}`;
+        } else if (verification?.status === 'VERIFIED_PASS') {
           remarks = `Criterion evaluation confirmed through human verification.`;
         } else if (verification?.status === 'VERIFIED_FAIL') {
           remarks = `Reason: Human verification identified non-compliance issues requiring remediation.`;
@@ -536,69 +537,50 @@ class AcrGeneratorService {
 
   async generateConfidenceAnalysis(
     edition: AcrEdition,
-    auditIssues: AuditIssueInput[],
-    fixedIssuesMap?: Map<string, RemediatedIssue[]>,
-    naSuggestions?: ApplicabilitySuggestion[]
+    auditIssues: AuditIssueInput[]
   ): Promise<CriterionConfidenceWithIssues[]> {
     logger.info(`[ACR Generator] Starting analysis with ${auditIssues.length} issues`);
     logger.debug(`[ACR Generator] Issue rule IDs: ${JSON.stringify(auditIssues.map(i => i.ruleId))}`);
 
-    // Get criteria for edition and filter to only A and AA levels (exclude AAA)
-    const allCriteria = await this.getCriteriaForEdition(edition);
-    const criteria = allCriteria.filter(c => c.level === 'A' || c.level === 'AA');
-    logger.info(`[ACR Generator] Filtered to ${criteria.length} criteria (A and AA only, excluding AAA)`);
-
+    const criteria = await this.getCriteriaForEdition(edition);
     const issueMapping = wcagIssueMapperService.mapIssuesToCriteria(auditIssues);
 
     logger.debug(`[ACR Generator] Issue mapping size: ${issueMapping.size}`);
     logger.debug(`[ACR Generator] Mapped criteria: ${JSON.stringify(Array.from(issueMapping.keys()))}`);
-    if (fixedIssuesMap) {
-      logger.debug(`[ACR Generator] Fixed issues mapping size: ${fixedIssuesMap.size}`);
-    }
 
     const results: CriterionConfidenceWithIssues[] = criteria.map(criterion => {
       const relatedIssues = issueMapping.get(criterion.id) || [];
-      const fixedIssues = fixedIssuesMap?.get(criterion.id) || [];
-
-      // Find N/A suggestion for this criterion
-      const naSuggestion = this.findNaSuggestion(criterion.id, naSuggestions);
-
-      // Determine if criterion is N/A based on suggestion (high confidence threshold)
-      const isNotApplicable = naSuggestion?.suggestedStatus === 'not_applicable'
-                              && naSuggestion.confidence >= 0.8;  // 80% confidence threshold
-
-      const naReason = isNotApplicable ? naSuggestion?.rationale : undefined;
-
-      // Skip confidence calculation if N/A (or set to 100% pass)
-      const status = isNotApplicable
-        ? 'not_applicable'
-        : this.determineStatus(relatedIssues);
-
-      const confidenceScore = isNotApplicable
-        ? 1.0  // 100% confidence for N/A
-        : this.calculateConfidence(criterion.id, relatedIssues);
-
-      const remarks = isNotApplicable
-        ? `Not applicable: ${naReason}`
-        : this.generateConfidenceRemarks(criterion, relatedIssues);
-
+      
+      // Get automation capability for this criterion
+      const automationCapability = ConfidenceAnalyzerService.getCriterionConfidence(criterion.id);
+      const requiresManualVerification = ConfidenceAnalyzerService.requiresManualVerification(criterion.id);
+      
+      // Manual-required criteria get 0% confidence and not_applicable status
+      if (automationCapability === 0) {
+        return {
+          criterionId: criterion.id,
+          name: criterion.name,
+          level: criterion.level,
+          status: 'not_applicable' as const,
+          confidenceScore: 0,
+          remarks: 'This criterion requires manual human verification. Automated tools cannot fully evaluate semantic meaning, keyboard workflows, or content quality.',
+          relatedIssues,
+          issueCount: relatedIssues.length,
+          hasIssues: relatedIssues.length > 0,
+          requiresManualVerification: true,
+          automationCapability: 0
+        };
+      }
+      
+      const status = this.determineStatus(relatedIssues);
+      // Use automation capability as confidence base, capped appropriately
+      // baseConfidence is 0-1, automationCapability is 0-100, normalize to 0-100
+      const baseConfidence = this.calculateConfidence(relatedIssues);
+      const confidenceScore = Math.min(baseConfidence * 100, automationCapability);
+      const remarks = this.generateConfidenceRemarks(criterion, relatedIssues);
       const hasIssues = relatedIssues.length > 0;
 
-      // Get base automation capability (doesn't change with issues)
-      const confidenceAssessment = confidenceAnalyzerService.analyzeConfidence(criterion.id);
-      const automationCapability = confidenceAssessment.confidencePercentage / 100;
-
-      // Generate findings and recommendation
-      const findings = isNotApplicable
-        ? [`Criterion not applicable: ${naReason}`]
-        : this.generateFindings(criterion, relatedIssues, fixedIssues);
-
-      const recommendation = isNotApplicable
-        ? 'No action required - criterion does not apply to this content'
-        : this.generateRecommendation(criterion, relatedIssues, confidenceScore);
-
       return {
-        id: criterion.id,  // Add id field for frontend compatibility
         criterionId: criterion.id,
         name: criterion.name,
         level: criterion.level,
@@ -608,23 +590,9 @@ class AcrGeneratorService {
         relatedIssues,
         issueCount: relatedIssues.length,
         hasIssues,
-        fixedIssues: fixedIssues.length > 0 ? fixedIssues : undefined,
-        fixedCount: fixedIssues.length,
-        requiresManualVerification: automationCapability === 0,
-        automationCapability,
-        findings,
-        recommendation,
-        isNotApplicable,
-        naReason,
-        naSuggestion: naSuggestion || undefined
+        requiresManualVerification,
+        automationCapability
       };
-    });
-
-    // Log N/A criteria
-    const naCriteria = results.filter(r => r.isNotApplicable);
-    logger.info(`[ACR Generator] ${naCriteria.length} criteria marked as N/A`);
-    naCriteria.forEach(c => {
-      logger.debug(`[ACR Generator] N/A: ${c.criterionId} - ${c.naReason}`);
     });
 
     return results;
@@ -647,20 +615,11 @@ class AcrGeneratorService {
     return 'needs_review';
   }
 
-  private calculateConfidence(criterionId: string, issues: IssueMapping[]): number {
-    // Get the predefined automation capability for this criterion
-    const confidenceAssessment = confidenceAnalyzerService.analyzeConfidence(criterionId);
-    const baseConfidence = confidenceAssessment.confidencePercentage / 100; // Convert to 0-1 scale
-
-    logger.debug(`[ACR Generator] Criterion ${criterionId}: baseConfidence=${baseConfidence} (${confidenceAssessment.confidencePercentage}%), issues=${issues.length}`);
-
-    // If no issues detected, return the criterion's base automation capability
+  private calculateConfidence(issues: IssueMapping[]): number {
     if (issues.length === 0) {
-      logger.debug(`[ACR Generator] Criterion ${criterionId}: No issues, returning base confidence ${baseConfidence}`);
-      return baseConfidence;
+      return 0.95;
     }
 
-    // If issues exist, cap confidence by both severity AND automation capability
     const impactWeights: Record<string, number> = {
       critical: 0.4,
       serious: 0.6,
@@ -668,16 +627,12 @@ class AcrGeneratorService {
       minor: 0.85
     };
 
-    const severityBasedConfidence = issues.reduce((min, issue) => {
+    const lowestConfidence = issues.reduce((min, issue) => {
       const weight = impactWeights[issue.impact] || 0.7;
       return Math.min(min, weight);
     }, 1.0);
 
-    const finalConfidence = Math.round(Math.min(baseConfidence, severityBasedConfidence) * 100) / 100;
-    logger.debug(`[ACR Generator] Criterion ${criterionId}: With issues, severityBased=${severityBasedConfidence}, final=${finalConfidence}`);
-
-    // Return the lower of: base capability OR severity impact
-    return finalConfidence;
+    return Math.round(lowestConfidence * 100) / 100;
   }
 
   private generateConfidenceRemarks(criterion: AcrCriterion, issues: IssueMapping[]): string {
@@ -696,97 +651,6 @@ class AcrGeneratorService {
 
     return `Found ${issues.length} issue(s) (${parts.join(', ')}) related to ${criterion.name}. Manual review recommended.`;
   }
-
-  private generateFindings(
-    criterion: AcrCriterion,
-    issues: IssueMapping[],
-    fixedIssues: RemediatedIssue[]
-  ): string[] {
-    const findings: string[] = [];
-
-    if (issues.length === 0 && fixedIssues.length === 0) {
-      findings.push(`No issues detected for ${criterion.name}`);
-    }
-
-    if (fixedIssues.length > 0) {
-      findings.push(`${fixedIssues.length} issue(s) were successfully remediated`);
-    }
-
-    if (issues.length > 0) {
-      findings.push(`${issues.length} issue(s) require attention`);
-      const criticalCount = issues.filter(i => i.impact === 'critical').length;
-      const seriousCount = issues.filter(i => i.impact === 'serious').length;
-
-      if (criticalCount > 0) {
-        findings.push(`${criticalCount} critical severity issue(s) found`);
-      }
-      if (seriousCount > 0) {
-        findings.push(`${seriousCount} serious severity issue(s) found`);
-      }
-    }
-
-    return findings;
-  }
-
-  private generateRecommendation(
-    criterion: AcrCriterion,
-    issues: IssueMapping[],
-    confidence: number
-  ): string {
-    if (confidence === 0) {
-      return 'Manual review required - this criterion cannot be fully automated';
-    }
-
-    if (issues.length > 0) {
-      const hasCritical = issues.some(i => i.impact === 'critical');
-      if (hasCritical) {
-        return 'Fix critical issues immediately and re-test';
-      }
-      return 'Fix identified issues and re-test';
-    }
-
-    if (confidence >= 0.9) {
-      return 'Continue to maintain compliance';
-    }
-
-    if (confidence >= 0.7) {
-      return 'Recommended: Manual verification of key elements';
-    }
-
-    return 'Manual review strongly recommended';
-  }
-
-  private findNaSuggestion(
-    criterionId: string,
-    naSuggestions?: ApplicabilitySuggestion[]
-  ): ApplicabilitySuggestion | undefined {
-    if (!naSuggestions || naSuggestions.length === 0) return undefined;
-
-    return naSuggestions.find(s => {
-      // Exact match
-      if (s.criterionId === criterionId) return true;
-
-      // Group match (e.g., "1.2.x" matches "1.2.1", "1.2.2")
-      if (s.criterionId.endsWith('.x')) {
-        const prefix = s.criterionId.slice(0, -2);
-        return criterionId.startsWith(prefix + '.');
-      }
-
-      return false;
-    });
-  }
-}
-
-export interface RemediatedIssue {
-  ruleId: string;
-  message: string;
-  filePath: string;
-  remediationInfo: {
-    status: 'REMEDIATED';
-    method: 'autofix' | 'quickfix' | 'manual';
-    description: string;
-    completedAt: string;
-  };
 }
 
 export interface CriterionConfidenceWithIssues {
@@ -799,16 +663,8 @@ export interface CriterionConfidenceWithIssues {
   relatedIssues?: IssueMapping[];
   issueCount?: number;
   hasIssues: boolean;
-  fixedIssues?: RemediatedIssue[];
-  fixedCount?: number;
-  // New fields from spec
-  requiresManualVerification: boolean;
-  automationCapability: number;
-  findings: string[];
-  recommendation: string;
-  isNotApplicable: boolean;
-  naReason?: string;
-  naSuggestion?: ApplicabilitySuggestion;
+  requiresManualVerification?: boolean;
+  automationCapability?: number;
 }
 
 export const acrGeneratorService = new AcrGeneratorService();

@@ -7,7 +7,8 @@ export type VerificationStatus =
   | 'VERIFIED_PASS'
   | 'VERIFIED_FAIL'
   | 'VERIFIED_PARTIAL'
-  | 'DEFERRED';
+  | 'DEFERRED'
+  | 'NOT_APPLICABLE';
 
 export interface VerificationRecord {
   id: string;
@@ -47,6 +48,7 @@ export interface VerificationQueue {
   pendingItems: number;
   verifiedItems: number;
   deferredItems: number;
+  notApplicableItems: number;
   canFinalize: boolean;
   blockers: string[];
   items: VerificationQueueItem[];
@@ -144,6 +146,7 @@ class HumanVerificationService {
       i.status === 'VERIFIED_PARTIAL'
     ).length;
     const deferredItems = items.filter(i => i.status === 'DEFERRED').length;
+    const notApplicableItems = items.filter(i => i.status === 'NOT_APPLICABLE').length;
 
     const finalizeCheck = await this.canFinalizeAcr(jobId);
 
@@ -153,6 +156,7 @@ class HumanVerificationService {
       pendingItems,
       verifiedItems,
       deferredItems,
+      notApplicableItems,
       canFinalize: finalizeCheck.canFinalize,
       blockers: finalizeCheck.blockers,
       items
@@ -169,9 +173,9 @@ class HumanVerificationService {
       const job = await prisma.job.findUnique({
         where: { id: jobId },
         include: {
-          ValidationResult: {
+          validationResults: {
             include: {
-              Issue: true
+              issues: true
             }
           }
         }
@@ -200,7 +204,7 @@ class HumanVerificationService {
       const criteriaSet = new Set<string>();
       const criteriaResults = new Map<string, { passed: boolean; automatedResult: string; resultId: string }>();
 
-      for (const result of job.ValidationResult) {
+      for (const result of job.validationResults) {
         const checkTypeToCriteria: Record<string, string> = {
           'alt-text': '1.1.1',
           'color-contrast': '1.4.3',
@@ -221,7 +225,7 @@ class HumanVerificationService {
           });
         }
 
-        for (const issue of result.Issue) {
+        for (const issue of result.issues) {
           if (issue.wcagCriteria) {
             criteriaSet.add(issue.wcagCriteria);
             criteriaResults.set(issue.wcagCriteria, {

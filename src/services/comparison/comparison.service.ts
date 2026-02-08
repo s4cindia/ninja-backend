@@ -8,6 +8,25 @@ import {
   PaginationInfo,
 } from '../../types/comparison.types';
 
+function decodeHtmlEntities(str: string | null): string | null {
+  if (!str) return str;
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function decodeChangeContent<T extends { beforeContent?: string | null; afterContent?: string | null }>(change: T): T {
+  return {
+    ...change,
+    beforeContent: decodeHtmlEntities(change.beforeContent ?? null),
+    afterContent: decodeHtmlEntities(change.afterContent ?? null),
+  };
+}
+
 export class ComparisonService {
   constructor(private prisma: PrismaClient) {}
 
@@ -72,7 +91,7 @@ export class ComparisonService {
       bySeverity,
       byWcag,
       pagination: paginationInfo,
-      changes,
+      changes: changes.map(decodeChangeContent),
     };
   }
 
@@ -89,7 +108,7 @@ export class ComparisonService {
       throw new Error('Change does not belong to this job');
     }
 
-    return change;
+    return decodeChangeContent(change);
   }
 
   async getChangesByFilter(
@@ -165,7 +184,7 @@ export class ComparisonService {
         total: totalChanges,
         pages: Math.ceil(totalChanges / limit),
       },
-      changes,
+      changes: changes.map(decodeChangeContent),
     };
   }
 

@@ -5,6 +5,7 @@ import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
 import { contentDetectionService, ApplicabilitySuggestion } from './content-detection.service';
 import { fileStorageService } from '../storage/file-storage.service';
+import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
 // Derive WCAG-mapped codes from RULE_TO_CRITERIA_MAP (only rules with non-empty mappings)
 const WCAG_MAPPED_CODES = new Set(
@@ -92,6 +93,8 @@ export interface CriterionAnalysis {
   fixedCount?: number;
   remainingCount?: number;
   naSuggestion?: ApplicabilitySuggestion;
+  requiresManualVerification?: boolean;
+  automationCapability?: number;
 }
 
 export interface AcrAnalysis {
@@ -107,11 +110,21 @@ export interface AcrAnalysis {
   };
   otherIssues?: {
     count: number;
+    pendingCount?: number;
+    fixedCount?: number;
+    failedCount?: number;
+    skippedCount?: number;
     issues: Array<{
       code: string;
       message: string;
       severity: string;
       location?: string;
+      status?: 'pending' | 'fixed' | 'failed' | 'skipped';
+      remediationInfo?: {
+        description?: string;
+        fixedAt?: string;
+        fixType?: 'auto' | 'manual';
+      };
     }>;
   };
 }
@@ -207,17 +220,40 @@ function analyzeWcagCriteria(
 
     logger.info(`[ACR Analysis] Criterion ${criterion.id}: ${fixedIssues.length}/${totalIssues} issues fixed, ${remainingIssues.length} remaining`);
 
-    if (totalIssues === 0) {
+    // Get base confidence for this criterion (0%, 60-89%, or 90%+)
+    const baseConfidence = ConfidenceAnalyzerService.getCriterionConfidence(criterion.id);
+    const requiresManualVerification = ConfidenceAnalyzerService.requiresManualVerification(criterion.id);
+
+    if (baseConfidence === 0) {
+      // MANUAL_REQUIRED criteria - cannot be fully automated
+      // Use 'not_applicable' status with 0 confidence to indicate manual review needed
+      status = 'not_applicable';
+      confidence = 0;
+      findings = [
+        'This criterion requires manual human verification',
+        'Automated tools cannot fully evaluate semantic meaning, keyboard workflows, or content quality'
+      ];
+      recommendation = 'Manual review required - schedule accessibility testing with real users';
+
+    } else if (totalIssues === 0) {
+      // No issues detected - use base confidence
       status = 'supports';
-      confidence = 75;
+      confidence = baseConfidence;
       findings = ['No accessibility issues detected for this criterion'];
       recommendation = 'Continue to maintain compliance with this criterion';
+
     } else if (remainingIssues.length === 0) {
-      // All issues were fixed!
+      // All issues remediated - confidence limited by automation capability
       status = 'supports';
-      confidence = 95;
+      confidence = Math.min(95, baseConfidence);
       findings = [`All ${totalIssues} issue(s) have been remediated`];
-      recommendation = 'All issues have been resolved - excellent work!';
+      recommendation = 'All detected issues have been resolved - excellent work!';
+
+      // Add caveat for medium-confidence criteria
+      if (baseConfidence < 90) {
+        findings.push(`Note: This criterion has ${baseConfidence}% automation confidence - consider manual spot-checking`);
+      }
+
     } else {
       // Determine status based on REMAINING issues only (not all issues)
       const criticalCount = remainingIssues.filter(i => i.severity === 'critical').length;
@@ -228,43 +264,46 @@ function analyzeWcagCriteria(
         !i.severity || !KNOWN_SEVERITIES.includes(i.severity)
       ).length;
 
+      let severityConfidence: number;
+
       if (criticalCount > 0) {
         status = 'does_not_support';
-        confidence = 90;
+        severityConfidence = 90;
         recommendation = `${criticalCount} critical issue(s) must be resolved for compliance`;
       } else if (seriousCount > 0) {
         status = 'partially_supports';
-        confidence = 80;
+        severityConfidence = 80;
         recommendation = `${seriousCount} serious issue(s) should be addressed to improve compliance`;
       } else if (moderateCount > 0) {
         status = 'partially_supports';
-        confidence = 70;
-        recommendation = `${moderateCount} moderate issue(s) may affect some users`;
+        severityConfidence = 70;
+        recommendation = `${moderateCount} moderate issue(s) detected - address to strengthen compliance`;
       } else if (unknownCount > 0) {
         status = 'partially_supports';
-        confidence = 60;
-        recommendation = 'Issues with unknown severity require manual review';
+        severityConfidence = 60;
+        recommendation = `${unknownCount} issue(s) with unknown severity - investigate and categorize`;
       } else if (minorCount > 0) {
         status = 'supports';
-        confidence = 85;
-        recommendation = `${minorCount} minor issue(s) detected but overall compliance is maintained`;
+        severityConfidence = 85;
+        recommendation = `${minorCount} minor issue(s) detected - low priority fixes`;
       } else {
         status = 'supports';
-        confidence = 85;
+        severityConfidence = 85;
         recommendation = 'Issues detected but overall compliance is maintained';
       }
 
+      // Final confidence is capped by both severity AND criterion automation capability
+      confidence = Math.min(severityConfidence, baseConfidence);
+
       // Include fixed issues in findings
       const fixedFindings = fixedIssues.length > 0
-        ? [`✓ ${fixedIssues.length} issue(s) have been fixed`]
+        ? [`${fixedIssues.length} issue(s) have been fixed`]
         : [];
 
-      const remainingFindings = remainingIssues.map(issue =>
-        `${(issue.severity || 'ISSUE').toUpperCase()}: ${
-          issue.message || issue.description ||
-          (issue.code ? `Issue code: ${issue.code}` : 'Unspecified accessibility issue')
-        }`
-      ).slice(0, 4);
+      const remainingFindings = [
+        `${remainingIssues.length} of ${totalIssues} issue(s) still need attention`,
+        `Breakdown: ${criticalCount} critical, ${seriousCount} serious, ${moderateCount} moderate, ${minorCount} minor`
+      ];
 
       findings = [...fixedFindings, ...remainingFindings];
     }
@@ -341,6 +380,8 @@ function analyzeWcagCriteria(
       fixedCount: fixedIssuesList!.length,
       remainingCount: remainingIssuesList!.length,
       naSuggestion: naSuggestion || undefined,
+      requiresManualVerification,
+      automationCapability: baseConfidence,
     });
   }
 
@@ -403,7 +444,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   }
 
   let issues: AuditIssue[] = [];
-  let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string }> = [];
+  let otherIssuesData: Array<{ code: string; message: string; severity: string; location?: string; status?: 'pending' | 'fixed' | 'failed' | 'skipped'; remediationInfo?: { description?: string; fixedAt?: string; fixType?: 'auto' | 'manual' } }> = [];
   let remediationChanges: RemediationChange[] = [];
 
   if (job.type === 'ACR_WORKFLOW') {
@@ -450,12 +491,33 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
               }));
 
             const otherTasks = allTasks.filter(task => !task.wcagCriteria);
-            otherIssuesData = otherTasks.map(task => ({
-              code: task.issueCode || 'UNKNOWN',
-              message: task.issueMessage || 'No description',
-              severity: task.severity || 'unknown',
-              location: task.location,
-            }));
+            otherIssuesData = otherTasks.map(task => {
+              const isFixed = task.status === 'completed' || task.status === 'auto-fixed' || task.status === 'fixed';
+              const isFailed = task.status === 'failed';
+              const isSkipped = task.status === 'skipped';
+              const status: 'pending' | 'fixed' | 'failed' | 'skipped' = isFixed ? 'fixed' : isFailed ? 'failed' : isSkipped ? 'skipped' : 'pending';
+              
+              // Derive fixType from task metadata if available, otherwise omit
+              const taskFixType = (task as any).fixType || (task as any).remediationType || (task as any).completionMethod;
+              const fixType: 'auto' | 'manual' | undefined = taskFixType === 'auto' || taskFixType === 'automated' || task.status === 'auto-fixed'
+                ? 'auto'
+                : taskFixType === 'manual' || taskFixType === 'verified'
+                  ? 'manual'
+                  : undefined;
+              
+              return {
+                code: task.issueCode || 'UNKNOWN',
+                message: task.issueMessage || 'No description',
+                severity: task.severity || 'unknown',
+                location: task.location,
+                status,
+                remediationInfo: isFixed ? {
+                  description: 'Fixed during remediation',
+                  fixedAt: task.completedAt,
+                  ...(fixType && { fixType }),
+                } : undefined,
+              };
+            });
 
             logger.info(`[ACR Analysis] Filtered to ${issues.length} WCAG-mapped issues, ${otherTasks.length} other issues`);
           }
@@ -466,40 +528,67 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           // DEBUG: Log source output keys to understand structure
           logger.info(`[ACR DEBUG] Source output keys: ${Object.keys(sourceOutput || {})}`);
 
-          // Check if there's remediation info - can be in remediationPlan.tasks OR autoRemediation.modifications
-          const remPlan = sourceOutput?.remediationPlan as { tasks?: Array<{ issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> } | undefined;
-          const autoRem = sourceOutput?.autoRemediation as { modifications?: Array<{ issueCode?: string; success?: boolean; description?: string }> } | undefined;
-          
-          if (remPlan?.tasks) {
-            logger.info(`[ACR DEBUG] Found remediationPlan with ${remPlan.tasks.length} tasks`);
+          // Check remediation status from BATCH_VALIDATION job (where task statuses are tracked)
+          // This is where quick fixes and auto-remediation update task status
+          const batchValidationJob = await prisma.job.findFirst({
+            where: {
+              type: 'BATCH_VALIDATION',
+              input: {
+                path: ['sourceJobId'],
+                equals: sourceJobId,
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          if (batchValidationJob?.output) {
+            const batchOutput = batchValidationJob.output as { tasks?: Array<{ id?: string; issueCode?: string; status?: string; completedAt?: string; wcagCriteria?: string | string[] }> };
             
-            // Build remediationChanges from remediation plan tasks
-            const fixedTasks = remPlan.tasks.filter(task =>
-              task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
-            );
+            if (batchOutput.tasks && batchOutput.tasks.length > 0) {
+              logger.info(`[ACR DEBUG] Found BATCH_VALIDATION job ${batchValidationJob.id} with ${batchOutput.tasks.length} tasks`);
+              
+              // Build remediationChanges from completed/fixed tasks
+              const fixedTasks = batchOutput.tasks.filter(task =>
+                task.status === 'fixed' || task.status === 'completed' || task.status === 'auto-fixed'
+              );
 
-            remediationChanges = fixedTasks.map(task => ({
-              issueCode: task.issueCode,
-              status: task.status,
-              fixedAt: task.completedAt || new Date().toISOString(),
-            }));
+              remediationChanges = fixedTasks.map(task => ({
+                issueCode: task.issueCode,
+                status: task.status,
+                fixedAt: task.completedAt || new Date().toISOString(),
+              }));
 
-            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from remediationPlan`);
-          } else if (autoRem?.modifications) {
+              logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed tasks from BATCH_VALIDATION job`);
+            }
+          }
+          
+          // Also check autoRemediation in source job (for auto-fixes that ran)
+          const autoRem = sourceOutput?.autoRemediation as { modifications?: Array<{ issueCode?: string; success?: boolean; description?: string }> } | undefined;
+          if (autoRem?.modifications) {
             logger.info(`[ACR DEBUG] Found autoRemediation with ${autoRem.modifications.length} modifications`);
             
-            // Build remediationChanges from successful auto-remediation modifications
+            // Add successful auto-remediation modifications to remediationChanges
             const successfulMods = autoRem.modifications.filter(mod => mod.success === true);
             
-            remediationChanges = successfulMods.map(mod => ({
+            const autoChanges = successfulMods.map(mod => ({
               issueCode: mod.issueCode,
               status: 'auto-fixed',
               fixedAt: (sourceOutput?.autoRemediation as { completedAt?: string })?.completedAt || new Date().toISOString(),
             }));
 
-            logger.info(`[ACR Analysis] Found ${remediationChanges.length} fixed modifications from autoRemediation`);
-          } else {
-            logger.info(`[ACR DEBUG] No remediationPlan or autoRemediation found in source output`);
+            // Merge without duplicates (by issueCode)
+            const existingCodes = new Set(remediationChanges.map(c => c.issueCode));
+            for (const change of autoChanges) {
+              if (!existingCodes.has(change.issueCode)) {
+                remediationChanges.push(change);
+              }
+            }
+
+            logger.info(`[ACR Analysis] Total ${remediationChanges.length} fixed tasks after including autoRemediation`);
+          }
+          
+          if (remediationChanges.length === 0) {
+            logger.info(`[ACR DEBUG] No completed remediation tasks found`);
           }
 
           // NOTE: combinedIssues don't have wcagCriteria property - that mapping happens in analyzeWcagCriteria
@@ -514,6 +603,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
             message: issue.message || issue.description || 'No description',
             severity: issue.severity || 'unknown',
             location: issue.location,
+            status: 'pending' as const,
           }));
 
           logger.info(`[ACR Analysis] Passing ${issues.length} issues to analyzer, ${otherIssues.length} non-WCAG issues`);
@@ -550,6 +640,7 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
           message: c.description || 'No description',
           severity: c.severity || 'unknown',
           location: c.location,
+          status: 'pending' as const,
         }));
 
         logger.info(`[ACR Analysis] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
@@ -604,8 +695,17 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
   };
 
   if (otherIssuesData && otherIssuesData.length > 0) {
+    const pendingCount = otherIssuesData.filter(i => i.status === 'pending' || !i.status).length;
+    const fixedCount = otherIssuesData.filter(i => i.status === 'fixed').length;
+    const failedCount = otherIssuesData.filter(i => i.status === 'failed').length;
+    const skippedCount = otherIssuesData.filter(i => i.status === 'skipped').length;
+    
     analysis.otherIssues = {
       count: otherIssuesData.length,
+      pendingCount,
+      fixedCount,
+      failedCount,
+      skippedCount,
       issues: otherIssuesData,
     };
   }
