@@ -81,7 +81,7 @@ export const errorHandler = (
     error: {
       message: error.message,
       code: error.code,
-      ...((error as any).details && { details: (error as any).details }),
+      ...((error as Record<string, unknown>).details && { details: (error as Record<string, unknown>).details }),
       ...(config.nodeEnv === 'development' && { stack: err.stack }),
     },
   };

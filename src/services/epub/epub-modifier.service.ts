@@ -5,21 +5,7 @@ import { SKIP_AUTO_ROLE_TYPES, getAriaRoleForEpubType } from '../../config/epub-
 
 const EPUB_TEXT_FILE_EXTENSIONS = ['.opf', '.xhtml', '.html', '.htm', '.xml', '.ncx', '.css', '.smil', '.svg'];
 
-/**
- * @deprecated Do not use for write paths - breaks XHTML well-formedness.
- * Only use for UI/diff display where human-readable text is needed.
- */
-function decodeCheerioHtmlForDisplay(html: string): string {
-  return html
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
-}
-
-function isTextFile(filePath: string): boolean {
+function isTextFile(filePath: string): boolean{
   return EPUB_TEXT_FILE_EXTENSIONS.some(ext => filePath.toLowerCase().endsWith(ext));
 }
 

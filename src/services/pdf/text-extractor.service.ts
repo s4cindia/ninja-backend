@@ -237,10 +237,10 @@ class TextExtractorService {
   }
 
   private processTextItem(
-    item: any,
+    item: Record<string, unknown>,
     pageNumber: number,
     viewport: pdfjsLib.PageViewport,
-    commonFonts: Map<string, any>
+    commonFonts: Map<string, unknown>
   ): TextItem | null {
     const text = item.str;
     if (!text.trim()) return null;

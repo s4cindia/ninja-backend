@@ -36,7 +36,7 @@ export interface ComparisonData {
   bySeverity: Record<string, ChangeSummaryByCategory>;
   byWcag: Record<string, ChangeSummaryByCategory>;
   pagination?: PaginationInfo;
-  changes: any[];
+  changes: Array<Record<string, unknown>>;
 }
 
 export interface ComparisonFilters {

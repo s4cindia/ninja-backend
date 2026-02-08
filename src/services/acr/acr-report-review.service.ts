@@ -270,9 +270,9 @@ class AcrReportReviewService {
   /**
    * Helper: Enrich report data with WCAG info and user names
    */
-  private async enrichReportData(acrJob: any) {
+  private async enrichReportData(acrJob: Record<string, unknown>) {
     // Fetch user data for reviewedBy fields
-    const userIds = [...new Set(acrJob.criteria.map((c: any) => c.reviewedBy).filter(Boolean))] as string[];
+    const userIds = [...new Set((acrJob.criteria as Array<Record<string, unknown>>).map((c: Record<string, unknown>) => c.reviewedBy).filter(Boolean))] as string[];
     const users = userIds.length > 0
       ? await prisma.user.findMany({
           where: { id: { in: userIds } },
@@ -286,9 +286,9 @@ class AcrReportReviewService {
     );
 
     // Enrich criteria
-    const applicableCriteria = acrJob.criteria
-      .filter((c: any) => !c.isNotApplicable)
-      .map((c: any) => {
+    const applicableCriteria = (acrJob.criteria as Array<Record<string, unknown>>)
+      .filter((c: Record<string, unknown>) => !c.isNotApplicable)
+      .map((c: Record<string, unknown>) => {
         const wcagCriterion = wcagCriteriaService.getCriteriaById(c.criterionId);
         return {
           ...c,
@@ -298,9 +298,9 @@ class AcrReportReviewService {
         };
       });
 
-    const naCriteria = acrJob.criteria
-      .filter((c: any) => c.isNotApplicable)
-      .map((c: any) => {
+    const naCriteria = (acrJob.criteria as Array<Record<string, unknown>>)
+      .filter((c: Record<string, unknown>) => c.isNotApplicable)
+      .map((c: Record<string, unknown>) => {
         const wcagCriterion = wcagCriteriaService.getCriteriaById(c.criterionId);
         return {
           ...c,
@@ -646,11 +646,11 @@ class AcrReportReviewService {
   /**
    * Detect document type from job data
    */
-  private detectDocumentType(job: any): string {
+  private detectDocumentType(job: Record<string, unknown>): string {
     if (!job) return 'Not Specified';
 
-    const input = job.input as Record<string, any> | null;
-    const output = job.output as Record<string, any> | null;
+    const input = job.input as Record<string, unknown> | null;
+    const output = job.output as Record<string, unknown> | null;
 
     // Check file name or MIME type
     const fileName = input?.fileName || output?.fileName || '';
@@ -686,10 +686,6 @@ class AcrReportReviewService {
     const conformancePercentage = applicableCount > 0
       ? Math.round((passedCount / applicableCount) * 100)
       : 0;
-
-    // Count by WCAG level
-    const levelA = verificationData.filter(v => !v.isNotApplicable && v.criterionId?.startsWith('1.') || v.criterionId?.startsWith('2.')).length;
-    const levelAA = verificationData.filter(v => !v.isNotApplicable && v.criterionId?.startsWith('3.') || v.criterionId?.startsWith('4.')).length;
 
     let summary = `## Accessibility Conformance Assessment\n\n`;
     summary += `This ${documentType} document has been comprehensively evaluated against WCAG 2.1 accessibility standards. `;

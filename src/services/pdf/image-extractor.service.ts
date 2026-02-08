@@ -222,7 +222,7 @@ class ImageExtractorService {
   }
 
   private extractImagePlacements(
-    operatorList: any,
+    operatorList: Record<string, unknown>,
     viewport: pdfjsLib.PageViewport
   ): ImagePlacement[] {
     const placements: ImagePlacement[] = [];
@@ -404,7 +404,7 @@ class ImageExtractorService {
   }
 
   private resolveXObjectFromK(
-    k: any,
+    k: Record<string, unknown>,
     parsedPdf: ParsedPDF,
     targetPageRef: PDFRef | null
   ): string | undefined {
@@ -495,7 +495,7 @@ class ImageExtractorService {
   }
 
   private processKids(
-    kids: any,
+    kids: Record<string, unknown>,
     parsedPdf: ParsedPDF,
     targetPageRef: PDFRef | null,
     results: StructureTreeImageInfo[]

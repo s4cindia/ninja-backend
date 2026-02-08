@@ -18,7 +18,7 @@ export class AcrReportReviewController {
   async initializeReport(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
-      const { edition, verificationData, documentTitle, documentType: _documentType } = req.body;
+      const { edition, verificationData, documentTitle } = req.body;
       const userId = req.user?.id || 'system';
       const tenantId = req.user?.tenantId || 'default';
 

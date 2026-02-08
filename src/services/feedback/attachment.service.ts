@@ -76,7 +76,7 @@ export class FeedbackAttachmentService {
     return false;
   }
 
-  private async canDeleteAttachment(attachmentId: string, userId: string): Promise<{ allowed: boolean; attachment?: any }> {
+  private async canDeleteAttachment(attachmentId: string, userId: string): Promise<{ allowed: boolean; attachment?: Record<string, unknown> }> {
     const attachment = await this.prisma.feedbackAttachment.findUnique({
       where: { id: attachmentId },
       include: { feedback: { select: { userId: true, tenantId: true } } },

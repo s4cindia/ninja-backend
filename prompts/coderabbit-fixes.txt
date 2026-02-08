@@ -1,116 +1,143 @@
-In `@docs/acr-confidence-categories-explained.md`:
-- Around line 43-54: Several fenced code blocks containing the ASCII diagram and
-calculation blocks (for example the block starting with
-"┌─────────────────────────────────────────────────┐") are missing language
-identifiers; add the language tag "text" to each opening triple-backtick (e.g.,
-change ``` to ```text) for every diagram/calculation fenced block in the
-document so MD040 is satisfied and the blocks are treated as plain text.
+In @.github/workflows/deploy-backend-production.yml:
+- Line 1: The file's first line "name: Deploy Backend to Production" currently
+has CRLF line endings which YAMLlint rejects; re-save the workflow file using LF
+line endings (Unix style) so the top-level "name: Deploy Backend to Production"
+line and the rest of the YAML use LF only, then commit the updated file to
+eliminate CI lint failures.
 
-In `@docs/ai-analysis-to-human-verification-integration.md`:
-- Around line 128-156: The fenced ASCII diagram blocks in the document trigger
-MD040 because they lack a language identifier; update each diagram fence (the
-triple-backtick blocks that contain the box characters like
-"┌─────────────────────────────────────────────────────┐" through
-"└─────────────────────────────────────────────────────┘") to include a language
-tag by changing ``` to ```text so the diagrams are explicitly labeled as text;
-apply this to the shown block and the other diagram blocks called out in the
-comment (the remaining blocks in the same file) to satisfy the linter.
+In
+`@attached_assets/Pasted-Create-feedback-collection-service-for-capturing-user-f_1766213675184.txt`:
+- Around line 355-372: getById, updateStatus and getJobFeedback currently call
+feedbackService methods without verifying tenant ownership; update the
+controller calls to pass req.user.tenantId (and req.user.id where appropriate)
+and modify the corresponding service methods (e.g., feedbackService.getFeedback,
+feedbackService.updateStatus, feedbackService.getJobFeedback) to include
+tenantId in their query/filter so returned/updated feedback is scoped to that
+tenant. Ensure the service queries use tenantId equality in their WHERE/filter
+clause (and optionally userId when the operation should be user-scoped) and
+return 404/throw when no matching tenant-scoped record is found.
+- Around line 384-407: In the list handler, validate and sanitize pagination
+inputs before calling feedbackService.listFeedback: parse page/limit from
+req.query using integer conversion, treat NaN or values < 1 as 1, clamp limit to
+a sensible max (e.g., 100), and ensure page is at least 1; then pass the
+sanitized Number(page) and Number(limit) to feedbackService.listFeedback so
+totalPages and pagination calculations cannot become Infinity or negative. Use
+the existing variables page and limit in the list function and apply these
+guards immediately prior to the feedbackService.listFeedback call.
+- Around line 143-186: The listFeedback implementation loads all USER_FEEDBACK
+jobs into memory then filters/paginates, which won't scale; update listFeedback
+to push filters and pagination into the database by converting the in-memory
+predicates into a prisma query: build a where object starting with { type:
+'USER_FEEDBACK', ...(filters.tenantId && { tenantId: ... }), ...(filters.userId
+&& { userId: ... }) } and add conditions for feedback fields by using Prisma
+JSON filters on job.output (or switch to a dedicated feedback table) so you can
+use prisma.job.findMany({ where, orderBy: { createdAt: 'desc' }, skip: offset,
+take: limit }) and prisma.job.count({ where }) to get total; keep function name
+listFeedback and return the same PaginatedResult shape.
 
-In `@docs/epub-remediation-bug/BACKEND-PHASE2-COMPLETE.md`:
-- Around line 43-49: Several fenced code blocks containing plain log output
-(e.g., the block beginning with "[Landmark Validation] Found 81 content files to
-validate" and other similar log blocks that include lines like "[Landmark
-Validation] Main landmark found in Chapter01.xhtml" and "[Landmark Validation]
-Added role=\"banner\" to 00_cover.xhtml") and command blocks should include
-explicit language identifiers to satisfy markdownlint; update those
-triple-backtick fences to use ```text for plain output blocks and ```bash for
-command/terminal blocks (apply the same change to the other affected blocks
-containing similar log lines and command samples referenced in the review).
-- Around line 214-217: Update the compound adjective in the bullet that
-currently reads "Zero breaking changes - backward compatible" by replacing
-"backward compatible" with "backward-compatible" so the line reads "Zero
-breaking changes - backward-compatible"; locate the bullet in the
-BACKEND-PHASE2-COMPLETE.md content where that exact phrase appears and make the
-hyphenation change.
+In
+`@attached_assets/Pasted-Fix-CI-CD-pipeline-failure-integration-tests-should-not_1765511985483.txt`:
+- Around line 8-55: Replace the try/catch + console.warn pattern by using
+Vitest's conditional skipping so tests clearly show as skipped when the API
+isn't required: use the existing REQUIRE_API and API_BASE_URL symbols to choose
+the test runner (e.g. const suite = REQUIRE_API ? describe : describe.skip; then
+call suite('Health API', ...) or alternatively use REQUIRE_API ? describe(...) :
+describe.skip(...)) and remove the per-test try/catch blocks and console.warns
+so assertions always run when the suite executes and failures surface normally.
 
-In `@docs/epub-remediation-bug/CODE-REVIEW.md`:
-- Around line 124-174: Two unlabeled fenced code blocks in the CODE-REVIEW.md
-doc are triggering MD040; find the two occurrences of triple-backtick blocks
-that lack a language tag (the ones inside the "Suggested fix" snippet showing
-the plus/minus example and the unlabeled example blocks near Issue 3.x) and
-change their opening fence from ``` to ```text so they include the "text"
-language identifier; this keeps markdownlint happy while preserving the existing
-block contents.
+In
+`@attached_assets/Pasted-Fix-remaining-CodeRabbit-review-issues-in-feedback-cont_1766235661865.txt`:
+- Line 70: The assignment const limit = Number(req.query.limit) || 10 can
+produce NaN which will bypass later range checks; update the handler where limit
+is parsed (the const limit declaration that reads Number(req.query.limit)) to
+explicitly parse and validate: convert req.query.limit to a number, check isNaN
+and fallback to the default (10) if invalid, then apply the existing min/max
+range validation against that sanitized value; reference the same variable name
+limit and the use of req.query.limit so you change the exact parsing logic where
+limit is declared.
 
-In `@docs/epub-remediation-bug/epub-remediation-bug-analysis.md`:
-- Around line 154-172: Update the fenced flow blocks to include the language
-identifier "text": replace the opening triple backticks ("```") for the short
-flow block starting with "1. Audit EPUB → Find issues" and for the "Correct
-Flow" block (the multi-line flow starting "1. Audit EPUB → Find issues (scan ALL
-files)") with "```text" so both flow diagrams are marked as plain text; ensure
-you update the matching closing backticks remain unchanged and apply the same
-change to the similar block referenced around lines 162-171.
+In
+`@attached_assets/Pasted-Fix-security-and-performance-issues-from-CodeRabbit-Cod_1766234493609.txt`:
+- Around line 46-73: The code currently performs prisma.feedback.update then
+checks updated.tenantId, causing a TOCTOU vulnerability; instead perform the
+tenant check atomically by including tenantId in the update query (or use
+updateMany) so the DB enforces ownership: replace prisma.feedback.update(...)
+with either prisma.feedback.updateMany({ where: { id, tenantId }, data: {
+status, ...(response && { response, respondedBy, respondedAt: new Date() }) } })
+and then verify the count (>0) to return the updated record or throw a clear
+"Feedback not found or unauthorized" error, or if you have a composite unique
+constraint use the composite where (e.g., where: { id_tenantId: { id, tenantId }
+}) with prisma.feedback.update; remove the post-update tenant check against
+updated.tenantId and adjust P2025 handling accordingly.
 
-In `@docs/epub-remediation-bug/FINAL-SUMMARY.md`:
-- Around line 70-81: The fenced code blocks in the FINAL-SUMMARY are missing
-language identifiers; update each block that shows file diffs or log/output to
-include an appropriate language label (e.g., use "text" for plain listings,
-"bash" for shell output, or "json" where relevant). Specifically, add language
-identifiers to the blocks that mention src/services/epub/epub-audit.service.ts
-(including calculateCoverage() and categorizeFiles() and the updated
-EpubAuditResult interface), src/services/epub/remediation.service.ts (landmark
-validation integration), and src/services/epub/epub-modifier.service.ts
-(validateAndFixLandmarks()), and apply the same change to the other referenced
-ranges (84-93, 96-109, 127-139, 216-231) so all fenced blocks consistently
-include the correct language tag.
+In
+`@attached_assets/Pasted-Fix-the-two-remaining-CodeRabbit-issues-that-were-not-c_1765508056328.txt`:
+- Around line 1-139: Update the ESM/CommonJS alignment: change the "module"
+setting in tsconfig.json from "commonjs" to "ES2022" and add "type": "module" to
+package.json (or if you prefer keeping CommonJS, instead change package.json to
+"type": "commonjs") so both module systems match; after updating, rebuild and
+run tests/lint to verify the other changes (recalculateResultForFilteredIssues,
+validateHeadings, validateReadingOrder, validateLanguage) still work with the
+new module format.
 
-In `@docs/epub-remediation-bug/IMPLEMENTATION-STATUS.md`:
-- Around line 246-249: The fenced code block in IMPLEMENTATION-STATUS.md is
-missing a language specifier (MD040); update the triple-backtick fence that
-wraps "Read docs/epub-remediation-bug/FRONTEND-IMPLEMENTATION-PROMPT.md Then
-implement all frontend tasks (`#3`, `#4`, `#5`, `#6`)" to include a language token such
-as "text" (e.g., ```text) so the block becomes a proper fenced code block with a
-language specifier.
+In `@US-PDF-2.2.txt`:
+- Around line 84-87: PdfStructureValidator references types from a non-existent
+feature/pdf-validators branch; fix by either creating that branch (and provide
+the exact commit SHA/tag to reference) or updating imports to an existing
+module. Locate usages of PdfStructureValidator, PdfAltTextValidator,
+PdfContrastValidator, and PdfTableValidator and update their type imports to
+point to a shared types module (e.g., create/export validator types from a new
+shared package or common/types module) as a fallback; if you plan to create the
+branch, add the commit SHA/tag in the import docs and CI, otherwise refactor the
+code to import the types from the new shared location and remove any
+branch-dependent import paths.
+- Around line 44-47: Update the Gemini integration spec to mandate
+production-grade resilience for the existing gemini.service.ts implementation:
+require exponential backoff with jitter for retries (replace any fixed-delay
+retry in functions handling Gemini calls), enforce multi-dimensional rate
+limiting tracking both requests-per-minute (RPM) and tokens-per-minute (TPM)
+budgets (not just request counts), specify per-request timeouts/deadlines (e.g.,
+30s max) and how to surface timeout errors, define quota exhaustion handling
+that distinguishes transient per-minute throttling (retry with backoff) from
+per-day quota exhaustion (fail fast and surface a clear error), describe
+graceful fallback behavior when Gemini is unavailable (degrade to simpler local
+analysis or mark audit as partially completed), and add cost-throttling controls
+such as batch operation limits and token budget caps to prevent runaway billing;
+reference the existing retry logic in gemini.service.ts as the place to
+implement these behaviors and include links to Google’s Gemini rate-limiting
+best practices for implementers.
 
-In `@docs/epub-remediation-bug/README.md`:
-- Around line 71-91: The markdown has unlabeled fenced code blocks (the "Phase
-1/2/3/4" diagrams and other blocks noted) causing MD040 warnings; update each
-fenced block by adding an appropriate language identifier (e.g., use text for
-diagrams, bash for command examples) so the opening fences become
-triple-backticks with the language (e.g., ```text) for the blocks around the
-Phase sections and the other ranges mentioned (blocks at the shown snippets and
-at the other locations referenced).
+In `@US-PDF-2.4-IMPLEMENTATION.md`:
+- Around line 224-246: Add a language identifier to the two fenced code blocks
+under the "Good Data Table" and "Layout Table (Should be Artifact)" headings:
+modify the opening fences so they read ```text instead of plain ```, i.e.,
+update the fence that precedes the block starting "Table (5×3)" and the fence
+that precedes the block starting "Table (1×5) - Single column layout" to include
+"text" as the language.
 
-In `@src/controllers/epub.controller.ts`:
-- Around line 700-718: The response payload from the re-audit endpoint omits the
-error fields required by the controller contract; update the res.json call that
-returns { success, message, data, rawResult } to include an error object and
-errorCode when result contains error information (use result.error and
-result.errorCode or derive from result.status/code), ensuring the top-level
-shape follows success:boolean, data?:object, error?:object,
-errorCode?:string|number; modify the branch that builds the response (where
-result, isFullyCompliant, message are computed) to attach error: result.error ||
-null and errorCode: result.errorCode || undefined (or map existing result
-fields) so backward-compatible consumers receive the error and errorCode fields.
-
-In `@src/services/epub/epub-audit.service.ts`:
-- Around line 689-717: In calculateCoverage, stop returning a hardcoded 100 and
-compute percentage dynamically using totalFiles and filesScanned (both derived
-from contentFiles.length / filesScanned) with a zero-file guard to avoid
-division by zero — e.g., if totalFiles === 0 set percentage to 0 otherwise
-percentage = Math.round((filesScanned / totalFiles) * 100); update the returned
-object (in calculateCoverage) to use this computed percentage and keep
-fileCategories from categorizeFiles(contentFiles).
-
-In `@src/services/epub/epub-modifier.service.ts`:
-- Around line 2218-2387: The function validateAndFixLandmarks currently returns
-an object shape that doesn't match the declared Promise<ModificationResult> and
-pushes change objects with a modificationType property not present on
-FileChange; define a new interface LandmarkValidationResult (e.g., { buffer:
-Buffer; changes: LandmarkFileChange[]; success: boolean; error?: string }) and a
-LandmarkFileChange type that includes modificationType, filePath, description,
-oldContent?, content?; update the validateAndFixLandmarks signature to return
-Promise<LandmarkValidationResult>, change the local changes array to be
-LandmarkFileChange[], and ensure all returned/assigned objects match these new
-types (replace references to ModificationResult/FileChange in this module for
-this function).
+In `@US-PDF-2.4.txt`:
+- Line 61: Update the test plan for pdf-table.validator.test.ts to replace
+"various table scenarios" with an explicit list of test cases: include
+well-formed data tables (tagged, headers, scope attributes), tables missing
+Table tags (critical), data tables without headers (serious), headers present
+but missing scope attributes (moderate), tables without summaries/captions
+(minor), layout tables marked as artifacts and layout tables not marked as
+artifacts, complex id/headers association tests, irregular structures
+(mismatched row lengths), edge cases (empty tables, nested tables, merged cells,
+tables spanning pages), and ensure separate tests cover each Matterhorn
+checkpoint (15-001 through 15-005) and each relevant WCAG criterion (1.3.1,
+1.3.2); enumerate these scenarios in the test file header and create one test
+case per scenario in pdf-table.validator.test.ts so coverage is explicit and
+traceable.
+- Around line 7-60: Update the checkpoint mappings and PDF-specific guidance:
+replace the incorrect Matterhorn mappings with the actual definitions for 15-001
+through 15-005 (15-001 header row cell not tagged; 15-002 header column cell not
+tagged; 15-003 TH missing scope when headers/IDs are required; 15-004 content
+tagged as a table though not row/column-organized; 15-005 ambiguous data cell
+header determination), remove any reference to HTML/ARIA role="presentation" and
+instead state the PDF mechanism (/Artifact marking) for presentation-only
+tables, and add the missing edge cases (merged/spanning cells, nested tables,
+tables split across pages, complex headers requiring headers/IDs associations);
+ensure the text references PdfStructureValidator and the existing structure
+analyzer table-detection logic and include updated suggestions for mapping these
+checks to WCAG 1.3.1/1.3.2 and the appropriate severity levels.

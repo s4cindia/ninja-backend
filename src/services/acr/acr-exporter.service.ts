@@ -231,7 +231,7 @@ async function exportToDocx(
   ];
   
   // Add Products Evaluated section for batch ACRs (DOCX)
-  const batchInfoDocx = (acr as any).batchInfo;
+  const batchInfoDocx = (acr as Record<string, unknown>).batchInfo;
   if (batchInfoDocx && batchInfoDocx.documentList && batchInfoDocx.documentList.length > 0) {
     children.push(new Paragraph({
       children: [new TextRun({ text: 'Products Evaluated', bold: true, size: 28 })],
@@ -374,7 +374,7 @@ async function exportToPdf(
   yPosition -= 15;
 
   // Add Products Evaluated section for batch ACRs
-  const batchInfo = (acr as any).batchInfo;
+  const batchInfo = (acr as Record<string, unknown>).batchInfo;
   if (batchInfo && batchInfo.documentList && batchInfo.documentList.length > 0) {
     page.drawText('Products Evaluated', { x: margin, y: yPosition, size: 14, font: helveticaBold });
     yPosition -= 18;

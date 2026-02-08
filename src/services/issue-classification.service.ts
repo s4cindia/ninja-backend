@@ -32,7 +32,7 @@ export class IssueClassificationService {
     issueCode: string, 
     filePath: string, 
     location: string, 
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<IssueContext> {
     const context: IssueContext = {};
 
@@ -52,7 +52,7 @@ export class IssueClassificationService {
   }
 
   private async analyzeTableStructure(
-    zip: any, 
+    zip: Record<string, unknown>, 
     filePath: string, 
     _location: string
   ): Promise<'simple' | 'complex'> {
@@ -95,7 +95,7 @@ export class IssueClassificationService {
   }
 
   private async analyzeImageType(
-    zip: any, 
+    zip: Record<string, unknown>, 
     filePath: string, 
     _location: string
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
@@ -163,7 +163,7 @@ export class IssueClassificationService {
     severity: string,
     filePath: string,
     location: string,
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<{
     confidence: number;
     fixType: FixClassification;
