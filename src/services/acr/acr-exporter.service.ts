@@ -25,10 +25,16 @@ export interface BrandingOptions {
   footerText?: string;
 }
 
+export interface ProductInfo {
+  vendorName?: string;
+  contactEmail?: string;
+}
+
 export interface ExportOptions {
   format: ExportFormat;
   includeMethodology: boolean;
   includeAttribution: boolean;
+  productInfo?: ProductInfo;
   branding?: BrandingOptions;
 }
 

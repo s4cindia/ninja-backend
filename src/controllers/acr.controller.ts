@@ -302,10 +302,15 @@ export class AcrController {
       const ExportOptionsSchema = z.object({
         format: z.enum(['docx', 'pdf', 'html']),
         includeMethodology: z.boolean().default(true),
-        includeAttribution: z.boolean().default(true),
+        includeAttributionTags: z.boolean().default(true),
+        includeLegalDisclaimer: z.boolean().default(true),
+        productInfo: z.object({
+          vendorName: z.string().optional(),
+          contactEmail: z.string().email().optional()
+        }).optional(),
         branding: z.object({
           companyName: z.string().optional(),
-          logoUrl: z.string().url().optional(),
+          logoUrl: z.string().optional(),
           primaryColor: z.string().optional(),
           footerText: z.string().optional()
         }).optional()
@@ -325,7 +330,8 @@ export class AcrController {
       const exportOptions: ExportOptions = {
         format: validatedData.options.format as ExportFormat,
         includeMethodology: validatedData.options.includeMethodology,
-        includeAttribution: validatedData.options.includeAttribution,
+        includeAttribution: validatedData.options.includeAttributionTags,
+        productInfo: validatedData.options.productInfo,
         branding: validatedData.options.branding
       };
 
@@ -377,17 +383,72 @@ export class AcrController {
               
               // Build criteria - first try AcrCriterionReview, then fallback to Job output
               let criteriaForExport: AcrCriterion[] = [];
-              
+
               if (acrJobWithCriteria.criteria.length > 0) {
+                // Fetch criterion names from generator service for missing names
+                const edition = (acrJobWithCriteria.edition as AcrEdition) || 'VPAT2.5-INT';
+                const allCriteriaDefinitions = await acrGeneratorService.getCriteriaForEdition(edition);
+                const criterionNamesMap = new Map<string, string>();
+                allCriteriaDefinitions.forEach(def => {
+                  criterionNamesMap.set(def.id, def.name);
+                });
+                logger.info(`[Export] Loaded ${criterionNamesMap.size} criterion definitions for edition ${edition}`);
+
                 // Use database-stored criteria reviews
-                criteriaForExport = acrJobWithCriteria.criteria.map(c => ({
-                  id: c.criterionNumber,
-                  criterionId: c.criterionId,
-                  name: c.criterionName,
-                  level: c.level as 'A' | 'AA' | 'AAA',
-                  conformanceLevel: (c.conformanceLevel || c.aiStatus || 'Not Applicable') as 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable',
-                  remarks: c.reviewerNotes || ''
-                }));
+                criteriaForExport = acrJobWithCriteria.criteria
+                  .map(c => {
+                    // Map verification status to conformance level
+                    let conformanceLevel: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' = 'Not Applicable';
+
+                    if (c.isNotApplicable) {
+                      conformanceLevel = 'Not Applicable';
+                    } else if (c.verificationStatus) {
+                      const statusMap: Record<string, typeof conformanceLevel> = {
+                        'verified_pass': 'Supports',
+                        'verified_partial': 'Partially Supports',
+                        'verified_fail': 'Does Not Support',
+                        'not_applicable': 'Not Applicable'
+                      };
+                      conformanceLevel = statusMap[c.verificationStatus] || 'Not Applicable';
+                    } else if (c.conformanceLevel) {
+                      conformanceLevel = c.conformanceLevel as typeof conformanceLevel;
+                    }
+
+                    // Build remarks - use verification notes for applicable, N/A reason for not applicable
+                    let remarks = '';
+                    if (c.isNotApplicable && c.naReason) {
+                      remarks = `Not Applicable: ${c.naReason}`;
+                    } else if (c.verificationNotes) {
+                      remarks = c.verificationNotes;
+                    } else if (c.reviewerNotes) {
+                      remarks = c.reviewerNotes;
+                    }
+
+                    // Get criterion name from database or fallback to definition map
+                    const criterionName = c.criterionName ||
+                                         criterionNamesMap.get(c.criterionId) ||
+                                         criterionNamesMap.get(c.criterionNumber) ||
+                                         c.criterionNumber;
+
+                    return {
+                      id: c.criterionNumber,
+                      criterionId: c.criterionId,
+                      name: criterionName,
+                      level: (c.level || 'A') as 'A' | 'AA' | 'AAA',
+                      conformanceLevel,
+                      remarks
+                    };
+                  })
+                  .sort((a, b) => {
+                    // Sort by criterion number (1.1.1, 1.1.2, etc.)
+                    const aNum = a.id.split('.').map(n => parseInt(n, 10));
+                    const bNum = b.id.split('.').map(n => parseInt(n, 10));
+                    for (let i = 0; i < Math.max(aNum.length, bNum.length); i++) {
+                      const diff = (aNum[i] || 0) - (bNum[i] || 0);
+                      if (diff !== 0) return diff;
+                    }
+                    return 0;
+                  });
               } else if (origJobOutput?.acrAnalysis) {
                 // Fallback to Job output acrAnalysis.criteria
                 const acrAnalysis = origJobOutput.acrAnalysis as { criteria?: Array<{
@@ -604,8 +665,9 @@ export class AcrController {
           name: providedProductInfo.name || documentTitle,
           version: providedProductInfo.version || '1.0.0',
           description: providedProductInfo.description || 'Accessibility Conformance Report',
-          vendor: providedProductInfo.vendor || 'S4Carlisle',
-          contactEmail: providedProductInfo.contactEmail || 'accessibility@s4carlisle.com',
+          // Use export-time overrides if provided, else use original productInfo, else use defaults
+          vendor: exportOptions.productInfo?.vendorName || providedProductInfo.vendor || 'S4Carlisle',
+          contactEmail: exportOptions.productInfo?.contactEmail || providedProductInfo.contactEmail || 'accessibility@s4carlisle.com',
           evaluationDate: providedProductInfo.evaluationDate || sourceJob.createdAt
         },
         evaluationMethods: [

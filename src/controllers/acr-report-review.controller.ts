@@ -47,6 +47,31 @@ export class AcrReportReviewController {
   }
 
   /**
+   * DELETE /api/v1/acr/report/:jobId
+   * Delete existing report to allow re-initialization with fresh data
+   */
+  async deleteReport(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      logger.info(`[ACR Report Review API] Deleting report for job ${jobId}`);
+
+      const result = await acrReportReviewService.deleteReport(jobId);
+
+      return res.json({
+        success: true,
+        data: result
+      });
+    } catch (error) {
+      logger.error('[ACR Report Review API] Failed to delete report', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete report'
+      });
+    }
+  }
+
+  /**
    * GET /api/v1/acr/report/:jobId
    * Get complete report data for Review & Edit page
    * Returns pre-populated data from verification
@@ -198,6 +223,64 @@ export class AcrReportReviewController {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to approve report'
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/acr/report/:jobId/versions
+   * List all draft versions for a job
+   */
+  async listVersions(req: Request, res: Response) {
+    try {
+      const { jobId } = req.params;
+
+      logger.info(`[ACR Report Review API] Listing versions for job ${jobId}`);
+
+      const versions = await acrReportReviewService.listReportVersions(jobId);
+
+      return res.json({
+        success: true,
+        data: versions
+      });
+    } catch (error) {
+      logger.error('[ACR Report Review API] Failed to list versions', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to list versions'
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/acr/report/version/:acrJobId
+   * Get specific report version by acrJobId
+   */
+  async getReportVersion(req: Request, res: Response) {
+    try {
+      const { acrJobId } = req.params;
+
+      logger.info(`[ACR Report Review API] Fetching version ${acrJobId}`);
+
+      const version = await acrReportReviewService.getReportVersion(acrJobId);
+
+      return res.json({
+        success: true,
+        data: version
+      });
+    } catch (error) {
+      logger.error('[ACR Report Review API] Failed to fetch version', error instanceof Error ? error : undefined);
+
+      if (error instanceof Error && error.message.includes('not found')) {
+        return res.status(404).json({
+          success: false,
+          error: error.message
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch version'
       });
     }
   }

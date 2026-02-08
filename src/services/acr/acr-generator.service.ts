@@ -598,6 +598,7 @@ class AcrGeneratorService {
         : this.generateRecommendation(criterion, relatedIssues, confidenceScore);
 
       return {
+        id: criterion.id,  // Add id field for frontend compatibility
         criterionId: criterion.id,
         name: criterion.name,
         level: criterion.level,

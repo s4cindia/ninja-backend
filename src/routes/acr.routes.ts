@@ -70,6 +70,15 @@ router.post('/report/:jobId/initialize', acrReportReviewController.initializeRep
 // Get complete report for Review & Edit page (pre-populated from verification)
 router.get('/report/:jobId', acrReportReviewController.getReport.bind(acrReportReviewController));
 
+// Delete ALL versions of report (use for cleanup only - versioning preserves history)
+router.delete('/report/:jobId', acrReportReviewController.deleteReport.bind(acrReportReviewController));
+
+// List all draft versions for a job
+router.get('/report/:jobId/versions', acrReportReviewController.listVersions.bind(acrReportReviewController));
+
+// Get specific report version by acrJobId
+router.get('/report/version/:acrJobId', acrReportReviewController.getReportVersion.bind(acrReportReviewController));
+
 // Update single criterion (minimal editing)
 router.patch('/report/:acrJobId/criteria/:criterionId', acrReportReviewController.updateCriterion.bind(acrReportReviewController));
 
