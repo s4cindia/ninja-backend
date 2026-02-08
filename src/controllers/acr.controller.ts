@@ -398,12 +398,13 @@ export class AcrController {
                 criteriaForExport = acrJobWithCriteria.criteria
                   .map(c => {
                     // Map verification status to conformance level
-                    let conformanceLevel: 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable' = 'Not Applicable';
+                    type ConformanceLevel = 'Supports' | 'Partially Supports' | 'Does Not Support' | 'Not Applicable';
+                    let conformanceLevel: ConformanceLevel = 'Not Applicable';
 
                     if (c.isNotApplicable) {
                       conformanceLevel = 'Not Applicable';
                     } else if (c.verificationStatus) {
-                      const statusMap: Record<string, typeof conformanceLevel> = {
+                      const statusMap: Record<string, ConformanceLevel> = {
                         'verified_pass': 'Supports',
                         'verified_partial': 'Partially Supports',
                         'verified_fail': 'Does Not Support',
@@ -411,7 +412,7 @@ export class AcrController {
                       };
                       conformanceLevel = statusMap[c.verificationStatus] || 'Not Applicable';
                     } else if (c.conformanceLevel) {
-                      conformanceLevel = c.conformanceLevel as typeof conformanceLevel;
+                      conformanceLevel = c.conformanceLevel as ConformanceLevel;
                     }
 
                     // Build remarks - use verification notes for applicable, N/A reason for not applicable
