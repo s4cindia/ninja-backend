@@ -287,7 +287,7 @@ export class FeedbackAttachmentService {
     });
 
     try {
-      await this.deleteFromStorage(filename);
+      await this.deleteFromStorage(String(filename));
     } catch (storageError) {
       const errorMsg = storageError instanceof Error ? storageError.message : String(storageError);
       logger.warn(`Failed to delete file from storage after DB deletion: ${filename} - ${errorMsg}`);

@@ -1,5 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString, PDFRef, PDFNumber } from 'pdf-lib';
+import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString, PDFRef, PDFNumber, PDFObject } from 'pdf-lib';
 import sharp from 'sharp';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 
@@ -230,10 +230,13 @@ class ImageExtractorService {
     
     const transformStack: number[][] = [];
     let currentTransform = [1, 0, 0, 1, 0, 0];
-    
-    for (let i = 0; i < operatorList.fnArray.length; i++) {
-      const fn = operatorList.fnArray[i];
-      const args = operatorList.argsArray[i];
+
+    const fnArray = operatorList.fnArray as unknown[];
+    const argsArray = operatorList.argsArray as unknown[][];
+
+    for (let i = 0; i < fnArray.length; i++) {
+      const fn = fnArray[i];
+      const args = argsArray[i];
       
       if (fn === OPS.save) {
         transformStack.push([...currentTransform]);
@@ -242,7 +245,7 @@ class ImageExtractorService {
           currentTransform = transformStack.pop()!;
         }
       } else if (fn === OPS.transform) {
-        currentTransform = this.multiplyTransforms(currentTransform, args);
+        currentTransform = this.multiplyTransforms(currentTransform, args as number[]);
       } else if (fn === OPS.paintImageXObject) {
         const xObjectName = args[0] as string;
         const [a, b, c, d, e, f] = currentTransform;
@@ -404,25 +407,25 @@ class ImageExtractorService {
   }
 
   private resolveXObjectFromK(
-    k: Record<string, unknown>,
+    k: PDFObject | undefined,
     parsedPdf: ParsedPDF,
     targetPageRef: PDFRef | null
   ): string | undefined {
     if (!k) return undefined;
-    
-    const resolved = parsedPdf.pdfLibDoc.context.lookup(k);
-    
+
+    const resolved = parsedPdf.pdfLibDoc.context.lookup(k as any);
+
     if (resolved instanceof PDFDict) {
       const type = resolved.get(PDFName.of('Type'));
       if (type?.toString() === '/OBJR') {
         const pg = resolved.get(PDFName.of('Pg'));
         if (targetPageRef && pg) {
-          const pgResolved = parsedPdf.pdfLibDoc.context.lookup(pg);
-          if (pgResolved !== parsedPdf.pdfLibDoc.context.lookup(targetPageRef)) {
+          const pgResolved = parsedPdf.pdfLibDoc.context.lookup(pg as any);
+          if (pgResolved !== parsedPdf.pdfLibDoc.context.lookup(targetPageRef as any)) {
             return undefined;
           }
         }
-        
+
         const obj = resolved.get(PDFName.of('Obj'));
         if (obj && obj instanceof PDFRef) {
           const xObjectName = this.findXObjectNameByRef(parsedPdf, targetPageRef, obj);
@@ -431,7 +434,7 @@ class ImageExtractorService {
           }
         }
       }
-      
+
       const name = resolved.get(PDFName.of('Name'));
       if (name) {
         return name.toString().replace('/', '');
@@ -495,19 +498,19 @@ class ImageExtractorService {
   }
 
   private processKids(
-    kids: Record<string, unknown>,
+    kids: PDFObject | undefined,
     parsedPdf: ParsedPDF,
     targetPageRef: PDFRef | null,
     results: StructureTreeImageInfo[]
   ): void {
     if (!kids) return;
-    
-    const resolved = parsedPdf.pdfLibDoc.context.lookup(kids);
-    
+
+    const resolved = parsedPdf.pdfLibDoc.context.lookup(kids as any);
+
     if (resolved instanceof PDFArray) {
       for (let i = 0; i < resolved.size(); i++) {
         const kid = resolved.get(i);
-        const kidResolved = parsedPdf.pdfLibDoc.context.lookup(kid);
+        const kidResolved = parsedPdf.pdfLibDoc.context.lookup(kid as any);
         if (kidResolved instanceof PDFDict) {
           this.traverseStructureTree(kidResolved, parsedPdf, targetPageRef, results);
         }

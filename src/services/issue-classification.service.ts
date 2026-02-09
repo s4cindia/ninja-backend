@@ -58,8 +58,9 @@ export class IssueClassificationService {
   ): Promise<'simple' | 'complex'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipAny = zip as any;
+      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'simple';
       }
@@ -95,14 +96,15 @@ export class IssueClassificationService {
   }
 
   private async analyzeImageType(
-    zip: Record<string, unknown>, 
-    filePath: string, 
+    zip: Record<string, unknown>,
+    filePath: string,
     _location: string
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipAny = zip as any;
+      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'content';
       }

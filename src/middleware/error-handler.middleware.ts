@@ -81,8 +81,8 @@ export const errorHandler = (
     error: {
       message: error.message,
       code: error.code,
-      ...((error as Record<string, unknown>).details && { details: (error as Record<string, unknown>).details }),
-      ...(config.nodeEnv === 'development' && { stack: err.stack }),
+      ...((error as unknown as Record<string, unknown>).details ? { details: (error as unknown as Record<string, unknown>).details } : {}),
+      ...(config.nodeEnv === 'development' ? { stack: err.stack } : {}),
     },
   };
 

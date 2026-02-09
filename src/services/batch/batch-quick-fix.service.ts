@@ -178,7 +178,7 @@ class BatchQuickFixService {
                       ...autoRemediation,
                       modifications: [...modifications, ...newModifications],
                     },
-                  },
+                  } as any,
                 },
               });
 

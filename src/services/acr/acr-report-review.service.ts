@@ -31,6 +31,7 @@ interface CriterionUpdateData {
   conformanceLevel?: string;
   isNotApplicable?: boolean;
   naReason?: string;
+  [key: string]: string | boolean | undefined; // Add index signature for type compatibility
 }
 
 interface ReportMetadataUpdate {
@@ -87,9 +88,7 @@ class AcrReportReviewService {
           documentType,
           executiveSummary,
           status: 'ready_for_review', // Coming from verification
-          totalCriteria: verificationData.length,
-          applicableCriteria: verificationData.filter(v => !v.isNotApplicable).length,
-          naCriteria: verificationData.filter(v => v.isNotApplicable).length
+          totalCriteria: verificationData.length
         },
         include: { criteria: true }
       });
@@ -133,6 +132,7 @@ class AcrReportReviewService {
       where: { acrJobId, criterionId }
     });
 
+    const reviewedAt = new Date();
     const criterionData = {
       verificationStatus,
       verificationMethod,
@@ -141,8 +141,13 @@ class AcrReportReviewService {
       naReason,
       naSuggestionData: naSuggestion ? JSON.parse(JSON.stringify(naSuggestion)) : null,
       confidence: confidence || 0, // Store confidence (0-100 scale)
-      reviewedAt: new Date(),
+      reviewedAt,
       reviewedBy: userId
+    };
+
+    const criterionDataForLog = {
+      ...criterionData,
+      reviewedAt: reviewedAt.toISOString()
     };
 
     if (existing) {
@@ -153,7 +158,7 @@ class AcrReportReviewService {
       });
 
       // Log the import
-      await this.logChange(updated.id, updated.acrJobId, criterionId, userId, 'verification_import', null, criterionData);
+      await this.logChange(updated.id, updated.acrJobId, criterionId, userId, 'verification_import', null, criterionDataForLog);
 
       return updated;
     } else {
@@ -167,12 +172,13 @@ class AcrReportReviewService {
           criterionNumber: criterionId,
           criterionName: wcagCriterion?.name || '',
           level: wcagCriterion?.level || 'A',
+          aiStatus: 'pending', // Add required field
           ...criterionData
         }
       });
 
       // Log the import
-      await this.logChange(created.id, created.acrJobId, criterionId, userId, 'verification_import', null, criterionData);
+      await this.logChange(created.id, created.acrJobId, criterionId, userId, 'verification_import', null, criterionDataForLog);
 
       return created;
     }
@@ -194,10 +200,6 @@ class AcrReportReviewService {
         updatedAt: true,
         status: true,
         totalCriteria: true,
-        applicableCriteria: true,
-        passedCriteria: true,
-        failedCriteria: true,
-        naCriteria: true,
         documentType: true,
         approvedBy: true,
         approvedAt: true
@@ -289,24 +291,24 @@ class AcrReportReviewService {
     const applicableCriteria = (acrJob.criteria as Array<Record<string, unknown>>)
       .filter((c: Record<string, unknown>) => !c.isNotApplicable)
       .map((c: Record<string, unknown>) => {
-        const wcagCriterion = wcagCriteriaService.getCriteriaById(c.criterionId);
+        const wcagCriterion = wcagCriteriaService.getCriteriaById(String(c.criterionId));
         return {
           ...c,
           criterionName: c.criterionName || wcagCriterion?.name || '',
           level: c.level || wcagCriterion?.level || 'A',
-          reviewerName: c.reviewedBy ? userMap.get(c.reviewedBy) || c.reviewedBy : undefined
+          reviewerName: c.reviewedBy ? userMap.get(String(c.reviewedBy)) || String(c.reviewedBy) : undefined
         };
       });
 
     const naCriteria = (acrJob.criteria as Array<Record<string, unknown>>)
       .filter((c: Record<string, unknown>) => c.isNotApplicable)
       .map((c: Record<string, unknown>) => {
-        const wcagCriterion = wcagCriteriaService.getCriteriaById(c.criterionId);
+        const wcagCriterion = wcagCriteriaService.getCriteriaById(String(c.criterionId));
         return {
           ...c,
           criterionName: c.criterionName || wcagCriterion?.name || '',
           level: c.level || wcagCriterion?.level || 'A',
-          reviewerName: c.reviewedBy ? userMap.get(c.reviewedBy) || c.reviewedBy : undefined
+          reviewerName: c.reviewedBy ? userMap.get(String(c.reviewedBy)) || String(c.reviewedBy) : undefined
         };
       });
 
@@ -534,11 +536,7 @@ class AcrReportReviewService {
     await prisma.acrJob.update({
       where: { id: acrJobId },
       data: {
-        totalCriteria: acrJob.criteria.length,
-        applicableCriteria: applicableCriteria.length,
-        naCriteria: naCriteria.length,
-        passedCriteria,
-        failedCriteria
+        totalCriteria: acrJob.criteria.length
       }
     });
   }
@@ -559,14 +557,12 @@ class AcrReportReviewService {
     await prisma.criterionChangeLog.create({
       data: {
         id: uuidv4(),
-        criterionReviewId,
-        jobId,
+        acrJobId: jobId,
         criterionId,
+        fieldName: changeType,
         changedBy,
-        changeType,
         previousValue: previousValue ? JSON.parse(JSON.stringify(previousValue)) : null,
-        newValue: JSON.parse(JSON.stringify(newValue)),
-        reason
+        newValue: JSON.parse(JSON.stringify(newValue))
       }
     });
   }
@@ -575,13 +571,16 @@ class AcrReportReviewService {
    * Determine change type from update data
    */
   private determineChangeType(previousValue: Prisma.JsonValue | null, newValue: Prisma.JsonValue): string {
-    if (newValue.isNotApplicable !== undefined && previousValue.isNotApplicable !== newValue.isNotApplicable) {
+    const newObj = newValue as Record<string, unknown>;
+    const prevObj = (previousValue as Record<string, unknown>) || {};
+
+    if (newObj.isNotApplicable !== undefined && prevObj.isNotApplicable !== newObj.isNotApplicable) {
       return 'na_toggle';
     }
-    if (newValue.verificationStatus && previousValue.verificationStatus !== newValue.verificationStatus) {
+    if (newObj.verificationStatus && prevObj.verificationStatus !== newObj.verificationStatus) {
       return 'status_change';
     }
-    if (newValue.verificationNotes || newValue.reviewerNotes) {
+    if (newObj.verificationNotes || newObj.reviewerNotes) {
       return 'remarks_update';
     }
     return 'general_update';
@@ -600,8 +599,11 @@ class AcrReportReviewService {
     }
 
     const history = await prisma.criterionChangeLog.findMany({
-      where: { criterionReviewId: criterion.id },
-      orderBy: { createdAt: 'desc' }
+      where: {
+        acrJobId: criterion.acrJobId,
+        criterionId: criterion.criterionId
+      },
+      orderBy: { changedAt: 'desc' }
     });
 
     return history;
@@ -646,23 +648,23 @@ class AcrReportReviewService {
   /**
    * Detect document type from job data
    */
-  private detectDocumentType(job: Record<string, unknown>): string {
+  private detectDocumentType(job: Record<string, unknown> | null): string {
     if (!job) return 'Not Specified';
 
     const input = job.input as Record<string, unknown> | null;
     const output = job.output as Record<string, unknown> | null;
 
     // Check file name or MIME type
-    const fileName = input?.fileName || output?.fileName || '';
-    const mimeType = input?.mimeType || '';
+    const fileName = String(input?.fileName || output?.fileName || '');
+    const mimeType = String(input?.mimeType || '');
 
-    if (fileName.toLowerCase().endsWith('.epub') || mimeType.includes('epub')) {
+    if (fileName.toLowerCase().endsWith('.epub') || mimeType.toLowerCase().includes('epub')) {
       return 'EPUB';
     }
-    if (fileName.toLowerCase().endsWith('.pdf') || mimeType.includes('pdf')) {
+    if (fileName.toLowerCase().endsWith('.pdf') || mimeType.toLowerCase().includes('pdf')) {
       return 'PDF';
     }
-    if (fileName.toLowerCase().match(/\.(html?|htm)$/i) || mimeType.includes('html')) {
+    if (fileName.toLowerCase().match(/\.(html?|htm)$/i) || mimeType.toLowerCase().includes('html')) {
       return 'HTML';
     }
 
