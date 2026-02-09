@@ -5,14 +5,12 @@
  * and tracking all modifications for comparison and verification
  */
 
-import { nanoid } from 'nanoid';
 import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { pdfModifierService, ModificationResult } from './pdf-modifier.service';
 import { pdfRemediationService } from './pdf-remediation.service';
 import { pdfVerificationService, VerificationResult } from './pdf-verification.service';
 import type {
-  RemediationPlan,
   RemediationTask,
   TaskStatus,
 } from '../../types/pdf-remediation.types';
@@ -389,8 +387,8 @@ class PdfAutoRemediationService {
    * Handler: Add image alt text (requires user input)
    */
   private async handleAddImageAltText(
-    doc: PDFDocument,
-    data: Record<string, unknown>
+    _doc: PDFDocument,
+    _data: Record<string, unknown>
   ): Promise<ModificationResult> {
     // This is a placeholder - actual implementation requires PDF structure manipulation
     // which is complex and may need additional libraries or tools

@@ -155,7 +155,6 @@ export class PdfModifierService {
   async addLanguage(doc: PDFDocument, lang: string = 'en'): Promise<ModificationResult> {
     try {
       const catalog = doc.catalog;
-      const context = doc.context;
 
       // Get current language if exists
       const currentLang = catalog.get(PDFName.of('Lang'));
@@ -190,9 +189,6 @@ export class PdfModifierService {
    */
   async addTitle(doc: PDFDocument, title: string): Promise<ModificationResult> {
     try {
-      // Get info dictionary
-      const infoDict = doc.getInfoDict();
-
       // Get current title if exists
       const currentTitle = doc.getTitle();
       const before = currentTitle || 'Not set';

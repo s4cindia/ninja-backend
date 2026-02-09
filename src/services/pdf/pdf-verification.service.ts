@@ -150,7 +150,7 @@ class PdfVerificationService {
   private async verifyTask(
     pdfBuffer: Buffer,
     task: RemediationTask,
-    fileName: string
+    _fileName: string
   ): Promise<TaskVerificationResult> {
     logger.debug(`[PDF Verification] Verifying task ${task.id}: ${task.issueCode}`);
 
