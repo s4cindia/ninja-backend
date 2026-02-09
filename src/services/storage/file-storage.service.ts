@@ -80,17 +80,45 @@ class FileStorageService {
       const sanitizedFileName = path.basename(fileName);
       const ext = path.extname(sanitizedFileName);
       const baseName = sanitizedFileName.slice(0, -ext.length);
-      
+
       const remediatedFileName = baseName.endsWith('_remediated')
         ? sanitizedFileName
         : `${baseName}_remediated${ext}`;
-      
+
       const filePath = path.join(STORAGE_BASE, jobId, 'remediated', remediatedFileName);
       return await fs.readFile(filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Download file from URL or file path
+   * For now, supports local file paths. Can be extended to support S3/HTTP URLs.
+   */
+  async downloadFile(fileUrlOrPath: string): Promise<Buffer> {
+    try {
+      // If it's a local path, read directly
+      if (!fileUrlOrPath.startsWith('http')) {
+        // Handle both absolute and relative paths
+        const filePath = fileUrlOrPath.startsWith('/')
+          ? fileUrlOrPath
+          : path.join(STORAGE_BASE, fileUrlOrPath);
+
+        const buffer = await fs.readFile(filePath);
+        logger.info(`Downloaded file from ${filePath}`);
+        return buffer;
+      }
+
+      // TODO: Add S3/HTTP support when needed
+      throw new Error('HTTP/S3 URL download not yet implemented');
+    } catch (error) {
+      logger.error(`Failed to download file from ${fileUrlOrPath}`, {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       throw error;
     }
   }

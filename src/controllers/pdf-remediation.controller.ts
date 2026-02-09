@@ -8,6 +8,9 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
+import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
+import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
+import { fileStorageService } from '../services/storage/file-storage.service';
 
 export class PdfRemediationController {
   /**
@@ -61,17 +64,12 @@ export class PdfRemediationController {
         });
       }
 
-      // TODO: Call remediation service to create plan
-      // This will be implemented in BE-T1 task
-      // const plan = await pdfRemediationService.createPlan(jobId);
+      // Create remediation plan
+      const plan = await pdfRemediationService.createRemediationPlan(jobId);
 
-      // Placeholder response
-      return res.status(501).json({
-        success: false,
-        error: {
-          code: 'NOT_IMPLEMENTED',
-          message: 'PDF remediation service not yet implemented (BE-T1 pending)',
-        },
+      return res.status(201).json({
+        success: true,
+        data: plan,
       });
     } catch (error) {
       logger.error('Failed to create remediation plan', {
@@ -129,17 +127,12 @@ export class PdfRemediationController {
         });
       }
 
-      // TODO: Retrieve plan from database
-      // This will be implemented in BE-T1 task
-      // const plan = await pdfRemediationService.getPlan(jobId);
+      // Retrieve remediation plan
+      const plan = await pdfRemediationService.getRemediationPlan(jobId);
 
-      // Placeholder response
-      return res.status(501).json({
-        success: false,
-        error: {
-          code: 'NOT_IMPLEMENTED',
-          message: 'PDF remediation service not yet implemented (BE-T1 pending)',
-        },
+      return res.status(200).json({
+        success: true,
+        data: plan,
       });
     } catch (error) {
       logger.error('Failed to retrieve remediation plan', {
@@ -198,29 +191,23 @@ export class PdfRemediationController {
         });
       }
 
-      // TODO: Update task status in database
-      // This will be implemented in BE-T1 task
-      // const result = await pdfRemediationService.updateTaskStatus(
-      //   jobId,
-      //   taskId,
-      //   { status, errorMessage, notes }
-      // );
+      // Update task status
+      const result = await pdfRemediationService.updateTaskStatus(
+        jobId,
+        taskId,
+        { status, errorMessage, notes }
+      );
 
-      logger.info('Task status update requested', {
+      logger.info('Task status updated successfully', {
         jobId,
         taskId,
         status,
-        hasErrorMessage: !!errorMessage,
-        hasNotes: !!notes,
+        completionPercentage: result.summary.completionPercentage,
       });
 
-      // Placeholder response
-      return res.status(501).json({
-        success: false,
-        error: {
-          code: 'NOT_IMPLEMENTED',
-          message: 'PDF remediation service not yet implemented (BE-T1 pending)',
-        },
+      return res.status(200).json({
+        success: true,
+        data: result,
       });
     } catch (error) {
       logger.error('Failed to update task status', {
@@ -234,6 +221,136 @@ export class PdfRemediationController {
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to update task status',
+        },
+      });
+    }
+  }
+
+  /**
+   * Execute auto-remediation for a job
+   * POST /api/v1/pdf/:jobId/remediation/execute
+   *
+   * @param req - Authenticated request with jobId param
+   * @param res - Express response
+   */
+  async executeAutoRemediation(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authentication required',
+          },
+        });
+      }
+
+      // Verify job exists and belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found or access denied',
+          },
+        });
+      }
+
+      // Verify job is a PDF audit job
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_JOB_TYPE',
+            message: 'Job is not a PDF accessibility audit',
+          },
+        });
+      }
+
+      // Get original PDF from storage
+      const jobInput = job.input as { fileName?: string; fileUrl?: string };
+      const fileName = jobInput?.fileName || 'document.pdf';
+      const fileUrl = jobInput?.fileUrl;
+
+      if (!fileUrl) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_FILE',
+            message: 'Original PDF file URL not found',
+          },
+        });
+      }
+
+      // Download PDF from storage
+      logger.info(`[PDF Remediation] Downloading PDF from ${fileUrl}`);
+      const pdfBuffer = await fileStorageService.downloadFile(fileUrl);
+
+      // Execute auto-remediation
+      const result = await pdfAutoRemediationService.runAutoRemediation(
+        pdfBuffer,
+        jobId,
+        fileName
+      );
+
+      // If successful and we have a remediated PDF, save it to storage
+      if (result.success && result.remediatedPdfBuffer) {
+        const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
+        const remediatedFileUrl = await fileStorageService.saveRemediatedFile(
+          jobId,
+          remediatedFileName,
+          result.remediatedPdfBuffer
+        );
+
+        logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
+
+        // Update job output with remediated file URL
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...(job.output as Record<string, unknown>),
+              remediatedFileUrl,
+              remediationResult: result,
+            },
+            updatedAt: new Date(),
+          },
+        });
+
+        return res.status(200).json({
+          success: true,
+          data: {
+            ...result,
+            remediatedFileUrl,
+          },
+        });
+      }
+
+      return res.status(200).json({
+        success: result.success,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('Failed to execute auto-remediation', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to execute auto-remediation',
         },
       });
     }

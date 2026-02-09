@@ -66,4 +66,18 @@ router.patch(
   (req, res) => pdfRemediationController.updateTaskStatus(req, res)
 );
 
+/**
+ * POST /api/v1/pdf/:jobId/remediation/execute
+ * Execute auto-remediation for all auto-fixable tasks
+ *
+ * @param jobId - PDF audit job ID
+ * @returns AutoRemediationResult with modifications and remediated PDF URL
+ */
+router.post(
+  '/:jobId/remediation/execute',
+  authenticate,
+  authorizeJob,
+  (req, res) => pdfRemediationController.executeAutoRemediation(req, res)
+);
+
 export default router;
