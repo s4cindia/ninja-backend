@@ -10,6 +10,7 @@ import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { pdfModifierService, ModificationResult } from './pdf-modifier.service';
 import { pdfRemediationService } from './pdf-remediation.service';
+import { pdfVerificationService, VerificationResult } from './pdf-verification.service';
 import type {
   RemediationPlan,
   RemediationTask,
@@ -39,6 +40,7 @@ export interface AutoRemediationResult {
   modifications: ModificationResult[];
   remediatedPdfBuffer?: Buffer;
   backupPath?: string;
+  verification?: VerificationResult;
   error?: string;
 }
 
@@ -216,6 +218,20 @@ class PdfAutoRemediationService {
         throw new Error(`Modified PDF validation failed: ${validation.errors.join(', ')}`);
       }
 
+      // 9. Verify remediation by checking if fixes were applied
+      logger.info('[Auto-Remediation] Running verification checks');
+      result.verification = await pdfVerificationService.verifyRemediation(
+        result.remediatedPdfBuffer,
+        jobId,
+        fileName
+      );
+
+      logger.info('[Auto-Remediation] Verification complete', {
+        verified: result.verification.verifiedFixed,
+        stillBroken: result.verification.stillBroken,
+        unverified: result.verification.unverified,
+      });
+
       result.success = true;
 
       logger.info(`[Auto-Remediation] Completed for job ${jobId}`, {
@@ -223,6 +239,7 @@ class PdfAutoRemediationService {
         completed: result.completedTasks,
         failed: result.failedTasks,
         skipped: result.skippedTasks,
+        verified: result.verification.verifiedFixed,
       });
     } catch (error) {
       result.success = false;
