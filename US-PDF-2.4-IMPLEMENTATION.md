@@ -222,7 +222,7 @@ npm test pdf-table.validator.test.ts
 ## Table Structure Examples
 
 ### Good Data Table
-```
+```text
 Table (5×3)
 ├── TR
 │   ├── TH scope="col" (Column 1)
@@ -236,7 +236,7 @@ Table (5×3)
 ```
 
 ### Layout Table (Should be Artifact)
-```
+```text
 Table (1×5) - Single column layout
 ├── TR
 │   └── TD (Content block 1)
