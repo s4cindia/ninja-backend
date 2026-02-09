@@ -8,7 +8,7 @@ export async function processVpatJob(
   const { productId } = job.data;
   const jobId = job.id || job.name;
 
-  console.log(`📄 Starting VPAT generation for product: ${productId}`);
+  console.error(`📄 Starting VPAT generation for product: ${productId}`);
 
   const stages = [
     { progress: 10, message: 'Loading product data' },
@@ -23,7 +23,7 @@ export async function processVpatJob(
     await new Promise((resolve) => setTimeout(resolve, 500));
     await job.updateProgress(stage.progress);
     await queueService.updateJobProgress(jobId, stage.progress);
-    console.log(`  📍 ${stage.message}`);
+    console.error(`  📍 ${stage.message}`);
   }
 
   return {

@@ -1,10 +1,20 @@
 import { Request, Response } from 'express';
+import { nanoid } from 'nanoid';
 import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 export const getPresignedUploadUrl = async (req: Request, res: Response) => {
   try {
+    // Check if S3 is enabled for development
+    const useS3 = process.env.USE_S3 !== 'false';
+    if (!useS3) {
+      return res.status(500).json({
+        success: false,
+        error: 'S3 not configured - use direct upload instead'
+      });
+    }
+
     const { fileName, contentType, fileSize } = req.body;
     const tenantId = req.user?.tenantId;
 
@@ -36,6 +46,7 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
 
     const file = await prisma.file.create({
       data: {
+        id: nanoid(),
         tenantId,
         filename: fileName,
         originalName: fileName,
@@ -45,6 +56,7 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
         status: 'PENDING_UPLOAD',
         storagePath: result.fileKey,
         storageType: 'S3',
+        updatedAt: new Date(),
       },
     });
 

@@ -498,7 +498,8 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
               const status: 'pending' | 'fixed' | 'failed' | 'skipped' = isFixed ? 'fixed' : isFailed ? 'failed' : isSkipped ? 'skipped' : 'pending';
               
               // Derive fixType from task metadata if available, otherwise omit
-              const taskFixType = (task as any).fixType || (task as any).remediationType || (task as any).completionMethod;
+              const taskRecord = task as Record<string, unknown>;
+              const taskFixType = taskRecord.fixType || taskRecord.remediationType || taskRecord.completionMethod;
               const fixType: 'auto' | 'manual' | undefined = taskFixType === 'auto' || taskFixType === 'automated' || task.status === 'auto-fixed'
                 ? 'auto'
                 : taskFixType === 'manual' || taskFixType === 'verified'

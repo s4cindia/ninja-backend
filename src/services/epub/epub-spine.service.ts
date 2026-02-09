@@ -62,7 +62,7 @@ class EPUBSpineService {
       const now = Date.now();
       for (const [key, value] of this.cache.entries()) {
         if (now - value.timestamp > this.CACHE_TTL) {
-          console.log(`[EPUBSpineService] Evicting expired cache entry: ${key}`);
+          console.error(`[EPUBSpineService] Evicting expired cache entry: ${key}`);
           this.cache.delete(key);
         }
       }
@@ -79,7 +79,7 @@ class EPUBSpineService {
     this.cache.delete(originalKey);
     this.cache.delete(remediatedKey);
     
-    console.log(`[EPUBSpineService] Cache cleared for job ${jobId} (original: ${hadOriginal}, remediated: ${hadRemediated})`);
+    console.error(`[EPUBSpineService] Cache cleared for job ${jobId} (original: ${hadOriginal}, remediated: ${hadRemediated})`);
   }
 
   private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
@@ -87,11 +87,11 @@ class EPUBSpineService {
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[EPUBSpineService] Using cached EPUB for ${cacheKey} (age: ${Math.round((Date.now() - cached.timestamp) / 1000)}s)`);
+      console.error(`[EPUBSpineService] Using cached EPUB for ${cacheKey} (age: ${Math.round((Date.now() - cached.timestamp) / 1000)}s)`);
       return cached.zip;
     }
 
-    console.log(`[EPUBSpineService] Loading ${version} EPUB from file system for job ${jobId} (cache miss or expired)`);
+    console.error(`[EPUBSpineService] Loading ${version} EPUB from file system for job ${jobId} (cache miss or expired)`);
     
     const job = await prisma.job.findUnique({
       where: { id: jobId }
@@ -133,7 +133,7 @@ class EPUBSpineService {
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[EPUBSpineService] Using cached EPUB metadata for ${cacheKey}`);
+      console.error(`[EPUBSpineService] Using cached EPUB metadata for ${cacheKey}`);
       return { zip: cached.zip, opfPath: cached.opfPath, fileName: cached.fileName };
     }
 
@@ -478,12 +478,12 @@ class EPUBSpineService {
 
     const spineItems = await this.getSpineItems(jobId);
 
-    console.log('[DEBUG] Change file path:', change.filePath);
-    console.log('[DEBUG] Available spine items:');
+    console.error('[DEBUG] Change file path:', change.filePath);
+    console.error('[DEBUG] Available spine items:');
     spineItems.forEach(item => {
-      console.log(`  - ${item.id}: ${item.href}`);
-      console.log(`    Exact match: ${item.href === change.filePath}`);
-      console.log(`    Ends with: ${item.href.endsWith(change.filePath)}`);
+      console.error(`  - ${item.id}: ${item.href}`);
+      console.error(`    Exact match: ${item.href === change.filePath}`);
+      console.error(`    Ends with: ${item.href.endsWith(change.filePath)}`);
     });
 
     const matchedItem = spineItems.find(item =>

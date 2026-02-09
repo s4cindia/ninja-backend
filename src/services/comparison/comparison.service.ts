@@ -115,7 +115,7 @@ export class ComparisonService {
     jobId: string,
     filters: ComparisonFilters
   ): Promise<ComparisonData> {
-    const where: any = { jobId };
+    const where: Record<string, unknown> = { jobId };
 
     if (filters.changeType) {
       where.changeType = filters.changeType;

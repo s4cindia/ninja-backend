@@ -1,0 +1,6 @@
+# Force LF line endings for shell scripts
+*.sh text eol=lf
+
+# Force LF for GitHub Actions workflows
+.github/workflows/*.yml text eol=lf
+.github/workflows/*.yaml text eol=lf

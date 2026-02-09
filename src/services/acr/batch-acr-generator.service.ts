@@ -12,18 +12,6 @@ import {
   InvalidAcrOptionsError,
 } from '../../types/batch-acr.types';
 
-interface _TaskWithSource {
-  id: string;
-  issueCode: string;
-  issueMessage: string;
-  severity: string;
-  location?: string;
-  status: string;
-  wcagCriteria?: string | string[];
-  jobId: string;
-  fileName: string;
-}
-
 interface PerEpubDetail {
   fileName: string;
   jobId: string;

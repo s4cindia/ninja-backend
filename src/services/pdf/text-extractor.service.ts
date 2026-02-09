@@ -237,23 +237,23 @@ class TextExtractorService {
   }
 
   private processTextItem(
-    item: any,
+    item: Record<string, unknown>,
     pageNumber: number,
     viewport: pdfjsLib.PageViewport,
-    commonFonts: Map<string, any>
+    commonFonts: Map<string, unknown>
   ): TextItem | null {
-    const text = item.str;
-    if (!text.trim()) return null;
+    const text = item.str as unknown;
+    if (typeof text !== 'string' || !text.trim()) return null;
 
-    const transform = item.transform || [1, 0, 0, 1, 0, 0];
+    const transform = (item.transform as number[]) || [1, 0, 0, 1, 0, 0];
     const fontSize = Math.abs(transform[0]) || 12;
     const x = transform[4];
     const y = viewport.height - transform[5];
-    const width = item.width || text.length * fontSize * 0.6;
+    const width = (item.width as number) || text.length * fontSize * 0.6;
     const height = fontSize;
 
-    const fontName = item.fontName || 'unknown';
-    const fontInfo = commonFonts.get(fontName) || {};
+    const fontName = String(item.fontName || 'unknown');
+    const fontInfo = (commonFonts.get(fontName) as any) || {};
     const isBold = fontInfo.bold || /bold/i.test(fontName);
     const isItalic = fontInfo.italic || /italic|oblique/i.test(fontName);
 

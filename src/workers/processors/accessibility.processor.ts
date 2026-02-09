@@ -8,7 +8,7 @@ export async function processAccessibilityJob(
   const { type, fileId } = job.data;
   const jobId = job.id || job.name;
 
-  console.log(`🔍 Starting ${type} validation for file: ${fileId}`);
+  console.error(`🔍 Starting ${type} validation for file: ${fileId}`);
 
   await job.updateProgress(10);
   await queueService.updateJobProgress(jobId, 10);
@@ -115,6 +115,6 @@ async function simulateProcessing(
     await new Promise((resolve) => setTimeout(resolve, 500));
     await job.updateProgress(stage.progress);
     await queueService.updateJobProgress(jobId, stage.progress);
-    console.log(`  📍 ${stage.message}`);
+    console.error(`  📍 ${stage.message}`);
   }
 }

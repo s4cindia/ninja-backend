@@ -250,7 +250,6 @@ export class DocumentParser {
 
           fullText += chapterText + '\n\n';
           currentOffset += chapterText.length + 2;
-          _paragraphIndex++;
         }
       } catch (error) {
         logger.warn(`[DocumentParser] Failed to parse EPUB item: ${item.href}`, error instanceof Error ? error : undefined);

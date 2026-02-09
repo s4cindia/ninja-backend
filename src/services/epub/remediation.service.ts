@@ -517,7 +517,7 @@ class RemediationService {
             for (const validationResult of validationResults) {
               // Build location matching condition - check both filePath and location fields
               // since task.location may match either field depending on how the issue was stored
-              const locationConditions: any[] = [];
+              const locationConditions: Array<Record<string, unknown>> = [];
               if (task.location) {
                 locationConditions.push(
                   { filePath: task.location },
