@@ -1,0 +1,68 @@
+# CodeRabbit Configuration for Ninja Backend
+language: en-US
+early_access: true
+enable_free_tier: true
+
+reviews:
+  auto_review:
+    enabled: true
+    drafts: false
+
+  request_changes_workflow: true
+
+  high_level_summary: true
+
+  poem: false
+
+  review_status: true
+
+  collapse_walkthrough: false
+
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/coverage/**"
+    - "!**/*.md"
+    - "!**/prisma/migrations/**"
+
+  path_instructions:
+    - path: "src/controllers/**/*.ts"
+      instructions: |
+        - Check for proper error handling
+        - Verify request validation using Zod schemas
+        - Ensure authentication and authorization
+        - Check for consistent API response format
+
+    - path: "src/services/**/*.ts"
+      instructions: |
+        - Verify business logic separation
+        - Check for proper error handling
+        - Ensure TypeScript strict mode compliance
+        - Verify Prisma transaction usage where needed
+
+    - path: "tests/**/*.ts"
+      instructions: |
+        - Verify test coverage for critical paths
+        - Check for proper mocking
+        - Ensure tests are isolated and independent
+
+    - path: "prisma/schema.prisma"
+      instructions: |
+        - Verify indexes for performance
+        - Check for proper cascading deletes
+        - Ensure proper relations
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
+
+  opt_out: false
+
+tone_instructions: |
+  - Be concise and professional
+  - Focus on security, performance, and maintainability
+  - Suggest improvements for TypeScript best practices
+  - Highlight potential bugs or edge cases

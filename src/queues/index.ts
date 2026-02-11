@@ -11,7 +11,7 @@ export const QUEUE_NAMES = {
   BATCH_PROCESSING: 'batch-processing',
 } as const;
 
-export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
+export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 
 export const JOB_TYPES = {
   PDF_ACCESSIBILITY: 'PDF_ACCESSIBILITY',
@@ -23,11 +23,12 @@ export const JOB_TYPES = {
   ACR_WORKFLOW: 'ACR_WORKFLOW',
   PLAGIARISM_CHECK: 'PLAGIARISM_CHECK',
   CITATION_VALIDATION: 'CITATION_VALIDATION',
+  CITATION_DETECTION: 'CITATION_DETECTION',
   STYLE_VALIDATION: 'STYLE_VALIDATION',
   EDITORIAL_FULL: 'EDITORIAL_FULL',
 } as const;
 
-export type JobType = typeof JOB_TYPES[keyof typeof JOB_TYPES];
+export type JobType = (typeof JOB_TYPES)[keyof typeof JOB_TYPES];
 
 export interface JobData {
   type: JobType;
@@ -87,20 +88,20 @@ interface BullMQConnectionOptions {
 
 function getBullMQConnection(): BullMQConnectionOptions | null {
   const redisUrl = getRedisUrl();
-  
+
   if (!redisUrl) {
     return null;
   }
 
   const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
   let connectionUrl = redisUrl;
-  
+
   if (redisUrl.startsWith('rediss://')) {
     connectionUrl = redisUrl.replace('rediss://', 'redis://');
   }
 
   const url = new URL(connectionUrl);
-  
+
   const options: BullMQConnectionOptions = {
     host: url.hostname,
     port: parseInt(url.port || '6379', 10),
@@ -147,7 +148,7 @@ let _initialized = false;
 
 function ensureQueuesInitialized(): void {
   if (_initialized) return;
-  
+
   if (!isRedisConfigured()) {
     logger.warn('⚠️  Redis not configured - queues will not be available');
     return;
@@ -159,25 +160,22 @@ function ensureQueuesInitialized(): void {
     return;
   }
 
-  _accessibilityQueue = new Queue<JobData, JobResult>(
-    QUEUE_NAMES.ACCESSIBILITY,
-    { connection, defaultJobOptions }
-  );
+  _accessibilityQueue = new Queue<JobData, JobResult>(QUEUE_NAMES.ACCESSIBILITY, {
+    connection,
+    defaultJobOptions,
+  });
 
-  _vpatQueue = new Queue<JobData, JobResult>(
-    QUEUE_NAMES.VPAT,
-    { connection, defaultJobOptions }
-  );
+  _vpatQueue = new Queue<JobData, JobResult>(QUEUE_NAMES.VPAT, { connection, defaultJobOptions });
 
-  _fileProcessingQueue = new Queue<JobData, JobResult>(
-    QUEUE_NAMES.FILE_PROCESSING,
-    { connection, defaultJobOptions }
-  );
+  _fileProcessingQueue = new Queue<JobData, JobResult>(QUEUE_NAMES.FILE_PROCESSING, {
+    connection,
+    defaultJobOptions,
+  });
 
-  _batchQueue = new Queue<BatchJobData, BatchJobResult>(
-    QUEUE_NAMES.BATCH_REMEDIATION,
-    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 } }
-  );
+  _batchQueue = new Queue<BatchJobData, BatchJobResult>(QUEUE_NAMES.BATCH_REMEDIATION, {
+    connection,
+    defaultJobOptions: { ...defaultJobOptions, attempts: 1 },
+  });
 
   _batchProcessingQueue = new Queue<BatchProcessingJobData, BatchProcessingJobResult>(
     QUEUE_NAMES.BATCH_PROCESSING,
@@ -241,7 +239,10 @@ export function getBatchQueue(): Queue<BatchJobData, BatchJobResult> | null {
   return _batchQueue;
 }
 
-export function getBatchProcessingQueue(): Queue<BatchProcessingJobData, BatchProcessingJobResult> | null {
+export function getBatchProcessingQueue(): Queue<
+  BatchProcessingJobData,
+  BatchProcessingJobResult
+> | null {
   ensureQueuesInitialized();
   return _batchProcessingQueue;
 }
@@ -280,7 +281,7 @@ export async function closeQueues(): Promise<void> {
   if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
 
   await Promise.all(closePromises);
-  
+
   _accessibilityQueue = null;
   _vpatQueue = null;
   _fileProcessingQueue = null;

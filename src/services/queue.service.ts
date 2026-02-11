@@ -1,12 +1,12 @@
 import { Queue } from 'bullmq';
 import { Prisma, JobStatus } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { 
-  getAccessibilityQueue, 
-  getVpatQueue, 
+import {
+  getAccessibilityQueue,
+  getVpatQueue,
   getFileProcessingQueue,
   areQueuesAvailable,
-  JobData, 
+  JobData,
   JobResult,
   JOB_TYPES,
   JobType,
@@ -47,6 +47,7 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
     case JOB_TYPES.ACR_WORKFLOW:
     case JOB_TYPES.PLAGIARISM_CHECK:
     case JOB_TYPES.CITATION_VALIDATION:
+    case JOB_TYPES.CITATION_DETECTION:
     case JOB_TYPES.STYLE_VALIDATION:
     case JOB_TYPES.EDITORIAL_FULL:
       return null;
@@ -96,12 +97,16 @@ export class QueueService {
       if (!queue) {
         await prisma.job.update({
           where: { id: dbJob.id },
-          data: { 
+          data: {
             status: 'CANCELLED',
-            output: { message: `Queue processor not yet implemented for job type: ${type}. Job requires dedicated queue implementation.` } as Prisma.InputJsonValue,
+            output: {
+              message: `Queue processor not yet implemented for job type: ${type}. Job requires dedicated queue implementation.`,
+            } as Prisma.InputJsonValue,
           },
         });
-        logger.warn(`📋 Job ${dbJob.id} created with CANCELLED status - no queue processor for: ${type}`);
+        logger.warn(
+          `📋 Job ${dbJob.id} created with CANCELLED status - no queue processor for: ${type}`
+        );
         return dbJob.id;
       }
       await queue.add(type, jobData, {
@@ -154,7 +159,10 @@ export class QueueService {
     }
 
     if (job.status === 'COMPLETED' || job.status === 'FAILED') {
-      throw AppError.badRequest('Cannot cancel completed or failed job', ErrorCodes.JOB_CANNOT_CANCEL);
+      throw AppError.badRequest(
+        'Cannot cancel completed or failed job',
+        ErrorCodes.JOB_CANNOT_CANCEL
+      );
     }
 
     await prisma.job.update({
@@ -185,7 +193,7 @@ export class QueueService {
   }
 
   async updateJobStatus(
-    jobId: string, 
+    jobId: string,
     status: 'PROCESSING' | 'COMPLETED' | 'FAILED',
     data?: { output?: Record<string, unknown>; error?: string }
   ): Promise<void> {
