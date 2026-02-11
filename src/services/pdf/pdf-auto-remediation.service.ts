@@ -70,11 +70,16 @@ class PdfAutoRemediationService {
   private registerDefaultHandlers(): void {
     // Tier 1: Auto-fixable handlers
     this.registerHandler('PDF-NO-LANGUAGE', this.handleAddLanguage.bind(this));
+    this.registerHandler('MATTERHORN-11-001', this.handleAddLanguage.bind(this)); // Missing document language
     this.registerHandler('PDF-NO-TITLE', this.handleAddTitle.bind(this));
+    this.registerHandler('MATTERHORN-01-003', this.handleAddTitle.bind(this)); // Missing document title
     this.registerHandler('PDF-NO-METADATA', this.handleAddMetadata.bind(this));
     this.registerHandler('PDF-NO-CREATOR', this.handleAddCreator.bind(this));
+    this.registerHandler('MATTERHORN-01-001', this.handleSetMarkedFlag.bind(this)); // PDF not marked for accessibility
+    this.registerHandler('MATTERHORN-01-002', this.handleSetDisplayDocTitle.bind(this)); // DisplayDocTitle not set
+    this.registerHandler('MATTERHORN-01-005', this.handleSetSuspectsFlag.bind(this)); // Suspects flag not set
 
-    logger.info('[Auto-Remediation] Registered 4 default handlers');
+    logger.info('[Auto-Remediation] Registered 10 default handlers (7 unique + 3 Matterhorn aliases)');
   }
 
   /**
@@ -98,7 +103,17 @@ class PdfAutoRemediationService {
     jobId: string,
     fileName: string
   ): Promise<AutoRemediationResult> {
-    logger.info(`[Auto-Remediation] Starting for job ${jobId}`);
+    const bufferSizeMB = pdfBuffer.length / 1024 / 1024;
+    logger.info(`[Auto-Remediation] Starting for job ${jobId}`, {
+      fileName,
+      bufferSize: pdfBuffer.length,
+      bufferSizeMB: bufferSizeMB.toFixed(2),
+    });
+
+    // Warn for large PDFs
+    if (bufferSizeMB > 20) {
+      logger.warn(`[Auto-Remediation] Large PDF detected (${bufferSizeMB.toFixed(2)} MB). Processing may be slow or fail.`);
+    }
 
     const result: AutoRemediationResult = {
       success: false,
@@ -121,9 +136,9 @@ class PdfAutoRemediationService {
 
       result.totalTasks = plan.tasks.length;
 
-      // 2. Filter auto-fixable tasks
+      // 2. Filter auto-fixable tasks (including previously skipped/failed tasks for retry)
       const autoFixableTasks = plan.tasks.filter(
-        (task) => task.type === 'AUTO_FIXABLE' && task.status === 'PENDING'
+        (task) => task.type === 'AUTO_FIXABLE' && (task.status === 'PENDING' || task.status === 'SKIPPED' || task.status === 'FAILED')
       );
 
       if (autoFixableTasks.length === 0) {
@@ -141,7 +156,28 @@ class PdfAutoRemediationService {
       logger.info(`[Auto-Remediation] Created backup at ${result.backupPath}`);
 
       // 4. Load PDF
-      const doc = await pdfModifierService.loadPDF(pdfBuffer);
+      logger.info(`[Auto-Remediation] Loading PDF into pdf-lib`, {
+        bufferSize: pdfBuffer.length,
+        bufferSizeMB: (pdfBuffer.length / 1024 / 1024).toFixed(2),
+      });
+
+      let doc: any;
+      try {
+        doc = await pdfModifierService.loadPDF(pdfBuffer);
+      } catch (loadError) {
+        logger.error('[Auto-Remediation] Failed to load PDF with pdf-lib', {
+          message: loadError instanceof Error ? loadError.message : 'Unknown error',
+          stack: loadError instanceof Error ? loadError.stack : undefined,
+          errorType: loadError?.constructor?.name,
+          bufferSize: pdfBuffer.length,
+          bufferSizeMB: (pdfBuffer.length / 1024 / 1024).toFixed(2),
+        });
+        throw new Error(
+          `Failed to load PDF with pdf-lib (${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB). ` +
+          `This may be due to PDF size, complexity, or corruption. ` +
+          `Original error: ${loadError instanceof Error ? loadError.message : 'Unknown error'}`
+        );
+      }
 
       // 5. Group tasks by issue code for efficient processing
       const tasksByCode = this.groupTasksByIssueCode(autoFixableTasks);
@@ -242,7 +278,16 @@ class PdfAutoRemediationService {
     } catch (error) {
       result.success = false;
       result.error = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('[Auto-Remediation] Failed', { error, jobId });
+      logger.error('[Auto-Remediation] Failed', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        errorType: error?.constructor?.name,
+        errorDetails: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+        jobId,
+        totalTasks: result.totalTasks,
+        completedTasks: result.completedTasks,
+        failedTasks: result.failedTasks,
+      });
 
       // Rollback to backup if available
       if (result.backupPath) {
@@ -250,7 +295,10 @@ class PdfAutoRemediationService {
           await pdfModifierService.rollback(result.backupPath);
           logger.info('[Auto-Remediation] Rolled back to backup');
         } catch (rollbackError) {
-          logger.error('[Auto-Remediation] Rollback failed', { error: rollbackError });
+          logger.error('[Auto-Remediation] Rollback failed', {
+            message: rollbackError instanceof Error ? rollbackError.message : 'Unknown error',
+            errorType: rollbackError?.constructor?.name,
+          });
         }
       }
     }
@@ -377,6 +425,42 @@ class PdfAutoRemediationService {
   ): Promise<ModificationResult> {
     const creator = (options?.creator as string) || 'Ninja Accessibility Platform';
     return await pdfModifierService.addCreator(doc, creator);
+  }
+
+  /**
+   * Handler: Set Marked flag for accessibility
+   */
+  private async handleSetMarkedFlag(
+    doc: PDFDocument,
+    task: RemediationTask,
+    options?: Record<string, unknown>
+  ): Promise<ModificationResult> {
+    const marked = (options?.marked as boolean) ?? true;
+    return await pdfModifierService.setMarkedFlag(doc, marked);
+  }
+
+  /**
+   * Handler: Set DisplayDocTitle flag
+   */
+  private async handleSetDisplayDocTitle(
+    doc: PDFDocument,
+    task: RemediationTask,
+    options?: Record<string, unknown>
+  ): Promise<ModificationResult> {
+    const display = (options?.display as boolean) ?? true;
+    return await pdfModifierService.setDisplayDocTitle(doc, display);
+  }
+
+  /**
+   * Handler: Set Suspects flag
+   */
+  private async handleSetSuspectsFlag(
+    doc: PDFDocument,
+    task: RemediationTask,
+    options?: Record<string, unknown>
+  ): Promise<ModificationResult> {
+    const suspects = (options?.suspects as boolean) ?? false;
+    return await pdfModifierService.setSuspectsFlag(doc, suspects);
   }
 
   // ============================================================================

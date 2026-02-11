@@ -129,6 +129,8 @@ export interface PdfParseResult {
   pages: PdfPage[];
   structureTree?: PdfStructureNode[];
   isTagged: boolean;
+  /** Low-level parsed PDF for validators - must be closed after use */
+  parsedPdf?: ParsedPDF;
 }
 
 /**
@@ -196,14 +198,16 @@ class PdfComprehensiveParserService {
       // Extract comprehensive content
       const result = await this.extractComprehensiveContent(parsedPdf);
 
+      // Include parsedPdf for validators to use
+      // NOTE: Caller is responsible for closing parsedPdf after validation
+      result.parsedPdf = parsedPdf;
+
       logger.info(`[PdfComprehensiveParser] Parse complete: ${result.pages.length} pages, tagged=${result.isTagged}`);
 
       return result;
     } catch (error) {
       logger.error(`[PdfComprehensiveParser] Parse buffer failed:`, error);
-      throw error;
-    } finally {
-      // Always cleanup PDF handle, even if extraction fails
+      // Only close on error - success case leaves it open for validators
       if (parsedPdf) {
         try {
           await pdfParserService.close(parsedPdf);
@@ -211,6 +215,7 @@ class PdfComprehensiveParserService {
           logger.warn('[PdfComprehensiveParser] Failed to close PDF handle:', closeError);
         }
       }
+      throw error;
     }
   }
 

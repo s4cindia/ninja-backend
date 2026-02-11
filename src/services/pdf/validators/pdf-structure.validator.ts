@@ -153,6 +153,7 @@ class PDFStructureValidator {
         location: 'Document',
         suggestion: 'Add structural tags to the PDF document. Tagged PDFs are essential for accessibility as they provide semantic structure for assistive technologies.',
         category: 'structure',
+        pageNumber: 1,
       }));
     }
 
@@ -167,6 +168,7 @@ class PDFStructureValidator {
         location: 'Document',
         suggestion: 'Review and fix the tag structure. The Suspects flag indicates potential tagging problems.',
         category: 'structure',
+        pageNumber: 1,
       }));
     }
 
@@ -187,6 +189,7 @@ class PDFStructureValidator {
         location: 'Document metadata',
         suggestion: 'Set the document language in the PDF metadata (e.g., "en" for English, "es" for Spanish).',
         category: 'language',
+        pageNumber: 1,
       }));
     }
 
@@ -201,6 +204,7 @@ class PDFStructureValidator {
         location: 'Document metadata',
         suggestion: 'Add a descriptive title to the PDF document metadata.',
         category: 'metadata',
+        pageNumber: 1,
       }));
     }
 
@@ -252,6 +256,7 @@ class PDFStructureValidator {
         location: issue.location,
         suggestion: this.getHeadingSuggestion(issue.type),
         category: 'headings',
+        pageNumber: issue.pageNumber || 1,
       }));
     }
 
@@ -298,6 +303,7 @@ class PDFStructureValidator {
         location: 'Document',
         suggestion: 'Ensure the document has a logical reading order. Use tagged PDF structure to define the correct reading sequence.',
         category: 'reading-order',
+        pageNumber: 1,
       }));
     }
 
@@ -333,6 +339,7 @@ class PDFStructureValidator {
         location: issue.location || `Page ${issue.pageNumber}`,
         suggestion,
         category: 'reading-order',
+        pageNumber: issue.pageNumber,
       }));
     }
 
@@ -382,6 +389,7 @@ class PDFStructureValidator {
         location: 'Document',
         suggestion: 'Tag the PDF and mark lists with proper structure tags (L, LI, Lbl, LBody).',
         category: 'lists',
+        pageNumber: 1,
       }));
     }
 
@@ -397,6 +405,7 @@ class PDFStructureValidator {
           location: `Page ${list.pageNumber}`,
           suggestion: 'Ensure list is marked with proper tags: L (list), LI (list item), Lbl (label), LBody (body).',
           category: 'lists',
+          pageNumber: list.pageNumber,
         }));
       }
     }
@@ -425,6 +434,7 @@ class PDFStructureValidator {
           location: `Page ${table.pageNumber}, Table ${table.id}`,
           suggestion: 'Ensure table has proper structure with Table, TR, TH, and TD tags. Add headers to identify row/column relationships.',
           category: 'tables',
+          pageNumber: table.pageNumber,
         }));
       }
 
@@ -453,6 +463,7 @@ class PDFStructureValidator {
           location: `Page ${table.pageNumber}, Table ${table.id}`,
           suggestion: 'Add TH (header) tags to identify row and column headers. For complex tables, add a summary describing the table structure.',
           category: 'tables',
+          pageNumber: table.pageNumber,
         }));
       }
     }

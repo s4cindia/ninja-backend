@@ -32,7 +32,7 @@ export const fixTypeSchema = z.enum([
  */
 export const createRemediationPlanSchema = {
   params: z.object({
-    jobId: z.string().uuid('Invalid job ID format'),
+    jobId: z.string().min(1, 'Job ID is required'),
   }),
 };
 
@@ -42,7 +42,7 @@ export const createRemediationPlanSchema = {
  */
 export const getRemediationPlanSchema = {
   params: z.object({
-    jobId: z.string().uuid('Invalid job ID format'),
+    jobId: z.string().min(1, 'Job ID is required'),
   }),
 };
 
@@ -52,7 +52,7 @@ export const getRemediationPlanSchema = {
  */
 export const updateTaskStatusSchema = {
   params: z.object({
-    jobId: z.string().uuid('Invalid job ID format'),
+    jobId: z.string().min(1, 'Job ID is required'),
     taskId: z.string().min(1, 'Task ID is required'),
   }),
   body: z.object({
@@ -68,7 +68,7 @@ export const updateTaskStatusSchema = {
  */
 export const filterTasksSchema = {
   params: z.object({
-    jobId: z.string().uuid('Invalid job ID format'),
+    jobId: z.string().min(1, 'Job ID is required'),
   }),
   query: z.object({
     type: fixTypeSchema.optional(),

@@ -278,23 +278,44 @@ export class PdfRemediationController {
       }
 
       // Get original PDF from storage
-      const jobInput = job.input as { fileName?: string; fileUrl?: string };
+      const jobInput = job.input as { fileName?: string; fileUrl?: string; size?: number };
       const fileName = jobInput?.fileName || 'document.pdf';
-      const fileUrl = jobInput?.fileUrl;
 
-      if (!fileUrl) {
+      // Try to get file from storage using jobId (primary method)
+      logger.info(`[PDF Remediation] Loading PDF for job ${jobId}, fileName: ${fileName}`);
+      let pdfBuffer: Buffer | null = null;
+
+      try {
+        // Files are stored by jobId, not URL
+        pdfBuffer = await fileStorageService.getFile(jobId, fileName);
+      } catch (storageError) {
+        logger.error(`[PDF Remediation] Error loading from storage:`, storageError);
+      }
+
+      // Fallback: try fileUrl if getFile returned null or failed
+      if (!pdfBuffer) {
+        const fileUrl = jobInput?.fileUrl;
+        if (fileUrl) {
+          logger.info(`[PDF Remediation] Fallback: Downloading from ${fileUrl}`);
+          try {
+            pdfBuffer = await fileStorageService.downloadFile(fileUrl);
+          } catch (downloadError) {
+            logger.error(`[PDF Remediation] Download failed:`, downloadError);
+          }
+        }
+      }
+
+      // If we still don't have a buffer, return error
+      if (!pdfBuffer) {
+        logger.error(`[PDF Remediation] Could not find file for job ${jobId}`);
         return res.status(400).json({
           success: false,
           error: {
             code: 'MISSING_FILE',
-            message: 'Original PDF file URL not found',
+            message: 'Original PDF file not found in storage',
           },
         });
       }
-
-      // Download PDF from storage
-      logger.info(`[PDF Remediation] Downloading PDF from ${fileUrl}`);
-      const pdfBuffer = await fileStorageService.downloadFile(fileUrl);
 
       // Execute auto-remediation
       const result = await pdfAutoRemediationService.runAutoRemediation(

@@ -23,6 +23,7 @@ export interface HeadingHierarchy {
     severity: 'critical' | 'major' | 'minor';
     description: string;
     location: string;
+    pageNumber?: number;
     wcagCriterion: string;
   }>;
 }
@@ -259,6 +260,7 @@ class StructureAnalyzerService {
         severity: 'major',
         description: 'Document has no H1 heading. Every document should have a main heading.',
         location: 'Document',
+        pageNumber: 1,
         wcagCriterion: '1.3.1',
       });
     }
@@ -269,6 +271,7 @@ class StructureAnalyzerService {
         severity: 'minor',
         description: `Document has ${h1Count} H1 headings. Consider using only one main heading.`,
         location: 'Document',
+        pageNumber: 1,
         wcagCriterion: '1.3.1',
       });
     }
@@ -287,6 +290,7 @@ class StructureAnalyzerService {
           severity: 'major',
           description: `Heading level skipped from H${previousLevel} to H${heading.level}: "${heading.text.substring(0, 50)}..."`,
           location: `Page ${heading.pageNumber}`,
+          pageNumber: heading.pageNumber,
           wcagCriterion: '1.3.1',
         });
       }

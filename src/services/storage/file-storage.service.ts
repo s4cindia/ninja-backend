@@ -30,12 +30,28 @@ class FileStorageService {
     try {
       const sanitizedFileName = path.basename(fileName);
       const filePath = path.join(STORAGE_BASE, jobId, sanitizedFileName);
-      
+
       const buffer = await fs.readFile(filePath);
       return buffer;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
+      }
+      throw error;
+    }
+  }
+
+  async getFilePath(jobId: string, fileName: string): Promise<string> {
+    const sanitizedFileName = path.basename(fileName);
+    const filePath = path.join(STORAGE_BASE, jobId, sanitizedFileName);
+
+    // Verify file exists
+    try {
+      await fs.access(filePath);
+      return path.resolve(filePath); // Return absolute path for sendFile
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`File not found: ${fileName}`);
       }
       throw error;
     }

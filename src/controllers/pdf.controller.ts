@@ -1,9 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
+import { nanoid } from 'nanoid';
 import { validateFilePath } from '../utils/path-validator';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
 import { imageExtractorService } from '../services/pdf/image-extractor.service';
 import { structureAnalyzerService } from '../services/pdf/structure-analyzer.service';
+import { pdfAuditService } from '../services/pdf/pdf-audit.service';
+import { fileStorageService } from '../services/storage/file-storage.service';
+import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -487,6 +493,267 @@ export class PdfController {
       }
     } catch (error) {
       next(error);
+    }
+  }
+
+  async auditFromBuffer(req: AuthenticatedRequest, res: Response) {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    let jobId: string | undefined;
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No PDF file uploaded',
+        });
+      }
+
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      const job = await prisma.job.create({
+        data: {
+          id: nanoid(),
+          tenantId,
+          userId,
+          type: 'PDF_ACCESSIBILITY',
+          status: 'PROCESSING',
+          input: {
+            fileName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            size: req.file.size,
+          },
+          startedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      jobId = job.id;
+
+      await fileStorageService.saveFile(job.id, req.file.originalname, req.file.buffer);
+
+      const result = await pdfAuditService.runAuditFromBuffer(
+        req.file.buffer,
+        job.id,
+        req.file.originalname
+      );
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: {
+            fileName: req.file.originalname,
+            auditReport: result,
+            scanLevel: 'basic', // Default to basic scan
+          } as any,
+        },
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          fileName: req.file.originalname,
+          auditReport: result,
+        },
+      });
+    } catch (error) {
+      logger.error('PDF audit from buffer failed:', error instanceof Error ? error : undefined);
+
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            output: {
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+          },
+        }).catch(updateError => {
+          logger.error('Failed to update job status to FAILED:', updateError instanceof Error ? updateError : undefined);
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to audit PDF',
+      });
+    }
+  }
+
+  async reScanJob(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const { scanLevel = 'comprehensive', customValidators } = req.body;
+      const job = (req as any).job;
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
+
+      // Validate scan level
+      if (!['basic', 'comprehensive', 'custom'].includes(scanLevel)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid scan level. Must be basic, comprehensive, or custom',
+        });
+      }
+
+      // Get the original file
+      const fileName = job.input?.fileName || 'document.pdf';
+      const buffer = await fileStorageService.getFile(jobId, fileName);
+
+      if (!buffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'PDF file not found',
+        });
+      }
+
+      // Update job to processing
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'PROCESSING',
+          startedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+      // Re-run audit with new scan level
+      logger.info(`[reScanJob] Starting audit for job ${jobId} with scan level: ${scanLevel}`);
+      const result = await pdfAuditService.runAuditFromBuffer(
+        buffer,
+        jobId,
+        fileName,
+        scanLevel,
+        customValidators
+      );
+      logger.info(`[reScanJob] Audit completed for job ${jobId}. Updating database to COMPLETED...`);
+
+      // Update job with new results
+      const updatedJob = await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: {
+            fileName,
+            auditReport: result,
+            scanLevel,
+          } as any,
+        },
+      });
+      logger.info(`[reScanJob] Database updated for job ${jobId}. Status: ${updatedJob.status}`);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          jobId,
+          scanLevel,
+          auditReport: result,
+        },
+      });
+    } catch (error) {
+      logger.error('PDF re-scan failed:', error instanceof Error ? error : undefined);
+
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to re-scan PDF',
+      });
+    }
+  }
+
+  async getAuditResult(req: Request, res: Response) {
+    try {
+      const job = (req as any).job;
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied',
+        });
+      }
+
+      if (job.status !== 'COMPLETED') {
+        return res.json({
+          success: true,
+          data: {
+            status: job.status,
+            message: job.status === 'PROCESSING' ? 'Audit in progress' : 'Audit not started',
+          },
+        });
+      }
+
+      const input = job.input as Record<string, unknown> | null;
+      const output = job.output as Record<string, unknown> | null;
+      const auditReport = output?.auditReport as Record<string, unknown> | undefined;
+
+      // Extract additional data from metadata and job
+      if (auditReport) {
+        const metadata = auditReport.metadata as Record<string, unknown> | undefined;
+        const matterhornSummary = metadata?.matterhornSummary;
+
+        // Extract page count from metadata
+        const pageCount = (metadata?.pageCount as number) || (auditReport.pageCount as number) || 1;
+
+        // Debug: Log sample issues to check if pageNumber is present
+        const issues = auditReport.issues as Array<Record<string, unknown>> | undefined;
+        if (issues && issues.length > 0) {
+          console.log('[DEBUG] Total issues:', issues.length);
+          console.log('[DEBUG] First issue:', JSON.stringify(issues[0], null, 2));
+
+          // Find and log an alt-text issue
+          const altTextIssue = issues.find(i => i.source === 'pdf-alttext');
+          if (altTextIssue) {
+            console.log('[DEBUG] Sample alt-text issue:', JSON.stringify(altTextIssue, null, 2));
+          }
+
+          // Find and log a table issue
+          const tableIssue = issues.find(i => i.source === 'pdf-table');
+          if (tableIssue) {
+            console.log('[DEBUG] Sample table issue:', JSON.stringify(tableIssue, null, 2));
+          }
+        }
+
+        return res.json({
+          success: true,
+          data: {
+            id: job.id,
+            jobId: job.id,
+            fileName: input?.fileName || output?.fileName || auditReport.fileName || 'Unknown',
+            fileSize: input?.size || 0,
+            pageCount,
+            status: 'completed',
+            createdAt: job.createdAt,
+            completedAt: job.completedAt,
+            scanLevel: output?.scanLevel || 'basic', // Include scan level
+            ...auditReport,
+            matterhornSummary,
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: auditReport,
+      });
+    } catch (error) {
+      logger.error('Failed to get PDF audit result:', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve audit result',
+      });
     }
   }
 }

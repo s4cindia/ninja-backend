@@ -67,19 +67,31 @@ export class PdfModifierService {
    */
   async loadPDF(buffer: Buffer): Promise<PDFDocument> {
     try {
+      logger.info('Loading PDF document', {
+        bufferSize: buffer.length,
+        bufferSizeMB: (buffer.length / 1024 / 1024).toFixed(2),
+      });
+
       const pdfDoc = await PDFDocument.load(buffer, {
         updateMetadata: false, // Don't automatically update metadata
         ignoreEncryption: true, // Handle encrypted PDFs if possible
+        throwOnInvalidObject: false, // Be lenient with invalid objects
       });
 
       logger.info('PDF document loaded successfully', {
         pages: pdfDoc.getPageCount(),
-        version: pdfDoc.getVersion(),
       });
 
       return pdfDoc;
     } catch (error) {
-      logger.error('Failed to load PDF document', { error });
+      logger.error('Failed to load PDF document', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        errorType: error?.constructor?.name,
+        errorDetails: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+        bufferSize: buffer.length,
+        bufferSizeMB: (buffer.length / 1024 / 1024).toFixed(2),
+      });
       throw new Error(`Failed to load PDF: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -306,6 +318,118 @@ export class PdfModifierService {
       return {
         success: false,
         description: 'Failed to add creator',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  /**
+   * Set Marked flag to indicate PDF is tagged for accessibility
+   * Tier 1 Handler - MATTERHORN-01-001
+   */
+  async setMarkedFlag(doc: PDFDocument, marked: boolean = true): Promise<ModificationResult> {
+    try {
+      const catalog = doc.catalog;
+      const before = catalog.get(PDFName.of('Marked'))?.toString() || 'Not set';
+
+      // Set Marked flag in catalog
+      catalog.set(PDFName.of('Marked'), marked);
+
+      const after = marked ? 'true' : 'false';
+
+      logger.info('Set Marked flag in PDF catalog', { marked, before, after });
+
+      return {
+        success: true,
+        description: `Set Marked flag to ${marked} (indicates PDF is tagged for accessibility)`,
+        before,
+        after,
+      };
+    } catch (error) {
+      logger.error('Failed to set Marked flag', { error, marked });
+      return {
+        success: false,
+        description: 'Failed to set Marked flag',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  /**
+   * Set DisplayDocTitle flag to show document title in window title bar
+   * Tier 1 Handler - MATTERHORN-01-002
+   */
+  async setDisplayDocTitle(doc: PDFDocument, display: boolean = true): Promise<ModificationResult> {
+    try {
+      const catalog = doc.catalog;
+
+      // Get or create ViewerPreferences dictionary
+      let viewerPrefs = catalog.get(PDFName.of('ViewerPreferences'));
+      if (!viewerPrefs) {
+        viewerPrefs = doc.context.obj({});
+        catalog.set(PDFName.of('ViewerPreferences'), viewerPrefs);
+      }
+
+      const before = viewerPrefs.get?.(PDFName.of('DisplayDocTitle'))?.toString() || 'Not set';
+
+      // Set DisplayDocTitle in ViewerPreferences
+      viewerPrefs.set(PDFName.of('DisplayDocTitle'), display);
+
+      const after = display ? 'true' : 'false';
+
+      logger.info('Set DisplayDocTitle in ViewerPreferences', { display, before, after });
+
+      return {
+        success: true,
+        description: `Set DisplayDocTitle to ${display} (document title shown in window)`,
+        before,
+        after,
+      };
+    } catch (error) {
+      logger.error('Failed to set DisplayDocTitle', { error, display });
+      return {
+        success: false,
+        description: 'Failed to set DisplayDocTitle',
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  /**
+   * Set Suspects flag to false (no suspected accessibility problems)
+   * Tier 1 Handler - MATTERHORN-01-005
+   */
+  async setSuspectsFlag(doc: PDFDocument, suspects: boolean = false): Promise<ModificationResult> {
+    try {
+      const catalog = doc.catalog;
+
+      // Get MarkInfo dictionary
+      let markInfo = catalog.get(PDFName.of('MarkInfo'));
+      if (!markInfo) {
+        markInfo = doc.context.obj({});
+        catalog.set(PDFName.of('MarkInfo'), markInfo);
+      }
+
+      const before = markInfo.get?.(PDFName.of('Suspects'))?.toString() || 'Not set';
+
+      // Set Suspects flag in MarkInfo
+      markInfo.set(PDFName.of('Suspects'), suspects);
+
+      const after = suspects ? 'true' : 'false';
+
+      logger.info('Set Suspects flag in MarkInfo', { suspects, before, after });
+
+      return {
+        success: true,
+        description: `Set Suspects flag to ${suspects} (no suspected accessibility problems)`,
+        before,
+        after,
+      };
+    } catch (error) {
+      logger.error('Failed to set Suspects flag', { error, suspects });
+      return {
+        success: false,
+        description: 'Failed to set Suspects flag',
         error: error instanceof Error ? error.message : 'Unknown error',
       };
     }

@@ -39,20 +39,9 @@ class PdfRemediationService {
   async createRemediationPlan(jobId: string): Promise<RemediationPlan> {
     logger.info(`[PDF Remediation] Creating remediation plan for job ${jobId}`);
 
-    // Fetch job with validation results
+    // Fetch job
     const job = await prisma.job.findUnique({
       where: { id: jobId },
-      include: {
-        validationResults: {
-          include: {
-            issues: {
-              where: {
-                status: 'PENDING', // Only include unresolved issues
-              },
-            },
-          },
-        },
-      },
     });
 
     if (!job) {
@@ -67,32 +56,37 @@ class PdfRemediationService {
       throw new Error(`Job ${jobId} has not completed yet`);
     }
 
-    // Extract all issues from validation results
-    const allIssues = job.validationResults.flatMap((vr) => vr.issues);
+    // Extract issues from job output (PDF audits store results in JSON)
+    const output = job.output as Record<string, unknown>;
+    const auditReport = output?.auditReport as Record<string, unknown>;
+    const issuesArray = auditReport?.issues as Array<Record<string, unknown>>;
 
-    if (allIssues.length === 0) {
+    if (!issuesArray || issuesArray.length === 0) {
       logger.warn(`[PDF Remediation] No issues found for job ${jobId}`);
     }
 
+    const allIssues = issuesArray || [];
     logger.info(`[PDF Remediation] Found ${allIssues.length} issues to remediate`);
 
     // Classify issues by fix type
     const classified = await this.classifyIssues(allIssues);
 
     // Create remediation tasks
-    const tasks: RemediationTask[] = allIssues.map((issue) => {
+    const tasks: RemediationTask[] = allIssues.map((issue, index) => {
       const fixType = this.getFixTypeForIssue(issue);
+      // Use issue.id if it exists, otherwise generate one based on index
+      const issueId = (issue.id as string) || `issue-${index}`;
 
       return {
         id: `task-${nanoid(8)}`,
-        issueId: issue.id,
-        issueCode: issue.code || 'UNKNOWN',
-        description: issue.description,
-        severity: this.mapIssueSeverity(issue.severity),
+        issueId,
+        issueCode: (issue.code as string) || 'UNKNOWN',
+        description: (issue.message as string) || (issue.description as string) || 'No description',
+        severity: this.mapIssueSeverity((issue.severity as string) || 'MINOR'),
         type: fixType,
         status: 'PENDING',
-        filePath: issue.filePath || undefined,
-        location: issue.location || undefined,
+        filePath: (issue.filePath as string) || undefined,
+        location: (issue.location as string) || undefined,
       };
     });
 
@@ -179,8 +173,30 @@ class PdfRemediationService {
     // Ensure dates are Date objects
     plan.createdAt = new Date(plan.createdAt);
 
+    // Recalculate counts based on current task statuses
+    const pendingAutoFixable = plan.tasks.filter(
+      (task) => task.type === 'AUTO_FIXABLE' && task.status === 'PENDING'
+    ).length;
+    const completedAutoFixable = plan.tasks.filter(
+      (task) => task.type === 'AUTO_FIXABLE' && task.status === 'COMPLETED'
+    ).length;
+    const pendingQuickFix = plan.tasks.filter(
+      (task) => task.type === 'QUICK_FIX' && task.status === 'PENDING'
+    ).length;
+    const pendingManual = plan.tasks.filter(
+      (task) => task.type === 'MANUAL' && task.status === 'PENDING'
+    ).length;
+
+    // Update counts to show only pending tasks (not completed ones)
+    plan.autoFixableCount = pendingAutoFixable;
+    plan.quickFixCount = pendingQuickFix;
+    plan.manualFixCount = pendingManual;
+
+    // Add completed count for display
+    (plan as any).completedAutoFixCount = completedAutoFixable;
+
     logger.info(
-      `[PDF Remediation] Retrieved plan with ${plan.totalIssues} tasks`
+      `[PDF Remediation] Retrieved plan with ${plan.totalIssues} tasks (${pendingAutoFixable} auto-fixable, ${completedAutoFixable} completed)`
     );
 
     return plan;
@@ -280,25 +296,41 @@ class PdfRemediationService {
         },
       });
 
-      // Update corresponding Issue record if task completed
+      // Update corresponding Issue record if task completed (only for jobs with DB issues)
       if (request.status === 'COMPLETED') {
-        await tx.issue.updateMany({
-          where: {
-            id: task.issueId,
-            status: 'PENDING',
-          },
-          data: {
-            status: 'REMEDIATED',
-            fixedAt: new Date(),
-            fixedBy: 'user',
-            remediationMethod: this.getRemediationMethod(task.type),
-            remediationTaskId: taskId,
-          },
-        });
+        // Try to update issue in database, but don't fail if it doesn't exist
+        // (PDF jobs store issues in JSON, not in Issue table)
+        try {
+          const updateResult = await tx.issue.updateMany({
+            where: {
+              id: task.issueId,
+              status: 'PENDING',
+            },
+            data: {
+              status: 'REMEDIATED',
+              fixedAt: new Date(),
+              fixedBy: 'user',
+              remediationMethod: this.getRemediationMethod(task.type),
+              remediationTaskId: taskId,
+            },
+          });
 
-        logger.info(
-          `[PDF Remediation] Marked issue ${task.issueId} as REMEDIATED`
-        );
+          if (updateResult.count > 0) {
+            logger.info(
+              `[PDF Remediation] Marked issue ${task.issueId} as REMEDIATED in database`
+            );
+          } else {
+            logger.info(
+              `[PDF Remediation] Task ${taskId} completed (issue ${task.issueId} stored in JSON only)`
+            );
+          }
+        } catch (issueUpdateError) {
+          // Silently ignore errors (schema mismatch or issue doesn't exist in DB)
+          logger.debug(
+            `[PDF Remediation] Could not update Issue table for ${task.issueId} (expected for PDF jobs)`,
+            { error: issueUpdateError instanceof Error ? issueUpdateError.message : 'Unknown error' }
+          );
+        }
       }
 
       // Calculate summary
