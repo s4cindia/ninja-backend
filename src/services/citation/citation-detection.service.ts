@@ -8,6 +8,8 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
+import { AppError } from '../../utils/app-error';
+import { ErrorCodes } from '../../utils/error-codes';
 import {
   DetectedCitation,
   DetectionResult,
@@ -40,7 +42,9 @@ export class CitationDetectionService {
   ): Promise<DetectionResult> {
     const startTime = Date.now();
 
-    logger.info(`[Citation Detection] Starting from S3 for file=${fileName}, s3Key=${fileS3Key || 'N/A'}, presignedUrl=${presignedUrl ? 'provided' : 'N/A'}`);
+    logger.info(
+      `[Citation Detection] Starting from S3 for file=${fileName}, s3Key=${fileS3Key || 'N/A'}, presignedUrl=${presignedUrl ? 'provided' : 'N/A'}`
+    );
 
     try {
       // 1. Create Job record first
@@ -60,36 +64,85 @@ export class CitationDetectionService {
       // 2. Fetch file from S3 key or presigned URL
       let fileBuffer: Buffer;
       if (fileS3Key) {
-        fileBuffer = await s3Service.getFileBuffer(fileS3Key);
+        try {
+          fileBuffer = await s3Service.getFileBuffer(fileS3Key);
+        } catch (error) {
+          logger.error(
+            '[Citation Detection] Failed to fetch file from S3',
+            error instanceof Error ? error : undefined
+          );
+          throw AppError.internal(
+            'Unable to download file from storage. Please try uploading again.',
+            ErrorCodes.FILE_DOWNLOAD_FAILED
+          );
+        }
       } else if (presignedUrl) {
         const FETCH_TIMEOUT_MS = 10000;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        
+
         try {
           const response = await fetch(presignedUrl, { signal: controller.signal });
           if (!response.ok) {
-            throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+            throw AppError.badRequest(
+              `Unable to download file (HTTP ${response.status}). Please try uploading again.`,
+              ErrorCodes.FILE_DOWNLOAD_FAILED
+            );
           }
           const arrayBuffer = await response.arrayBuffer();
           fileBuffer = Buffer.from(arrayBuffer);
         } catch (fetchError) {
+          clearTimeout(timeoutId);
           if (controller.signal.aborted) {
-            throw new Error(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`);
+            throw AppError.badRequest(
+              'File download timed out after 10 seconds. Please check your connection and try again.',
+              ErrorCodes.FILE_DOWNLOAD_FAILED
+            );
           }
-          throw fetchError;
+          if (fetchError instanceof AppError) {
+            throw fetchError;
+          }
+          logger.error(
+            '[Citation Detection] Presigned URL fetch failed',
+            fetchError instanceof Error ? fetchError : undefined
+          );
+          throw AppError.internal(
+            'Unable to download file. Please try again.',
+            ErrorCodes.FILE_DOWNLOAD_FAILED
+          );
         } finally {
           clearTimeout(timeoutId);
         }
       } else {
-        throw new Error('Either fileS3Key or presignedUrl is required');
+        throw AppError.badRequest(
+          'File source not provided. Please upload a file.',
+          ErrorCodes.VALIDATION_ERROR
+        );
       }
       const actualSize = fileSize ?? fileBuffer.length;
       logger.info(`[Citation Detection] Fetched file: ${actualSize} bytes`);
 
       // 3. Parse document to extract text
-      const parsed = await documentParser.parse(fileBuffer, fileName);
-      logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
+      let parsed;
+      try {
+        parsed = await documentParser.parse(fileBuffer, fileName);
+        logger.info(
+          `[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`
+        );
+      } catch (error) {
+        logger.error(
+          '[Citation Detection] Document parsing failed',
+          error instanceof Error ? error : undefined
+        );
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { status: 'FAILED', error: 'Document parsing failed', completedAt: new Date() },
+        });
+        throw AppError.unprocessable(
+          'Unable to parse document. The file may be corrupted or in an unsupported format.',
+          ErrorCodes.CITATION_PARSE_FAILED
+        );
+      }
 
       // 4. Create or update EditorialDocument record
       const editorialDoc = await this.createEditorialDocument(
@@ -101,8 +154,28 @@ export class CitationDetectionService {
       );
 
       // 5. Detect citations using AI
-      const extractedCitations = await editorialAi.detectCitations(parsed.text);
-      logger.info(`[Citation Detection] AI found ${extractedCitations.length} citations`);
+      let extractedCitations;
+      try {
+        extractedCitations = await editorialAi.detectCitations(parsed.text);
+        logger.info(`[Citation Detection] AI found ${extractedCitations.length} citations`);
+      } catch (error) {
+        logger.error(
+          '[Citation Detection] AI detection failed',
+          error instanceof Error ? error : undefined
+        );
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            status: 'FAILED',
+            error: 'AI citation detection failed',
+            completedAt: new Date(),
+          },
+        });
+        throw AppError.internal(
+          'Citation detection service is temporarily unavailable. Please try again in a few moments.',
+          ErrorCodes.CITATION_DETECTION_FAILED
+        );
+      }
 
       // 6. Store citations in database
       const citations = await this.storeCitations(editorialDoc.id, extractedCitations);
@@ -124,20 +197,41 @@ export class CitationDetectionService {
       });
 
       // 9. Build and return result
-      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime, fileName);
+      const result = this.buildDetectionResult(
+        editorialDoc.id,
+        jobId,
+        citations,
+        startTime,
+        fileName
+      );
 
-      logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
+      logger.info(
+        `[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`
+      );
       return result;
-
     } catch (error) {
-      logger.error('[Citation Detection] Failed', error instanceof Error ? error : undefined);
-      throw error;
+      // If it's already an AppError, just rethrow it
+      if (error instanceof AppError) {
+        throw error;
+      }
+
+      // Log unexpected errors
+      logger.error(
+        '[Citation Detection] Unexpected error',
+        error instanceof Error ? error : undefined
+      );
+
+      // Return a generic error message for unexpected errors
+      throw AppError.internal(
+        'An unexpected error occurred during citation detection. Please try again or contact support if the problem persists.',
+        ErrorCodes.CITATION_DETECTION_FAILED
+      );
     }
   }
 
   /**
    * Detect citations directly from a buffer (for multipart uploads)
-   * 
+   *
    * @param tenantId - Tenant ID
    * @param userId - User ID
    * @param fileBuffer - File buffer from multipart upload
@@ -152,7 +246,9 @@ export class CitationDetectionService {
   ): Promise<DetectionResult> {
     const startTime = Date.now();
 
-    logger.info(`[Citation Detection] Starting from buffer for file=${fileName}, size=${fileBuffer.length}`);
+    logger.info(
+      `[Citation Detection] Starting from buffer for file=${fileName}, size=${fileBuffer.length}`
+    );
 
     try {
       // 1. Create Job record first
@@ -170,7 +266,9 @@ export class CitationDetectionService {
 
       // 2. Parse document to extract text
       const parsed = await documentParser.parse(fileBuffer, fileName);
-      logger.info(`[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
+      logger.info(
+        `[Citation Detection] Parsed document: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`
+      );
 
       // 3. Create or update EditorialDocument record
       const editorialDoc = await this.createEditorialDocument(
@@ -205,13 +303,23 @@ export class CitationDetectionService {
       });
 
       // 8. Build and return result
-      const result = this.buildDetectionResult(editorialDoc.id, jobId, citations, startTime, fileName);
+      const result = this.buildDetectionResult(
+        editorialDoc.id,
+        jobId,
+        citations,
+        startTime,
+        fileName
+      );
 
-      logger.info(`[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`);
+      logger.info(
+        `[Citation Detection] Completed: ${result.totalCount} citations in ${result.processingTimeMs}ms`
+      );
       return result;
-
     } catch (error) {
-      logger.error('[Citation Detection] Failed from buffer', error instanceof Error ? error : undefined);
+      logger.error(
+        '[Citation Detection] Failed from buffer',
+        error instanceof Error ? error : undefined
+      );
       throw error;
     }
   }
@@ -221,16 +329,19 @@ export class CitationDetectionService {
    * @param documentId - Document ID
    * @param tenantId - Optional tenant ID for cross-tenant protection
    */
-  async getDetectionResults(documentId: string, tenantId?: string): Promise<DetectionResult | null> {
+  async getDetectionResults(
+    documentId: string,
+    tenantId?: string
+  ): Promise<DetectionResult | null> {
     const doc = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
       include: {
         citations: {
           orderBy: { startOffset: 'asc' },
           include: {
-            primaryComponent: { select: { confidence: true } }
-          }
-        }
+            primaryComponent: { select: { confidence: true } },
+          },
+        },
       },
     });
 
@@ -242,7 +353,13 @@ export class CitationDetectionService {
     }
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(documentId, doc.jobId, citations, Date.now(), doc.originalName || doc.fileName);
+    return this.buildDetectionResult(
+      documentId,
+      doc.jobId,
+      citations,
+      Date.now(),
+      doc.originalName || doc.fileName
+    );
   }
 
   /**
@@ -250,7 +367,10 @@ export class CitationDetectionService {
    * @param jobId - Job ID
    * @param tenantId - Optional tenant ID for cross-tenant protection
    */
-  async getDetectionResultsByJob(jobId: string, tenantId?: string): Promise<DetectionResult | null> {
+  async getDetectionResultsByJob(
+    jobId: string,
+    tenantId?: string
+  ): Promise<DetectionResult | null> {
     const doc = await prisma.editorialDocument.findFirst({
       where: {
         jobId,
@@ -260,16 +380,22 @@ export class CitationDetectionService {
         citations: {
           orderBy: { startOffset: 'asc' },
           include: {
-            primaryComponent: { select: { confidence: true } }
-          }
-        }
+            primaryComponent: { select: { confidence: true } },
+          },
+        },
       },
     });
 
     if (!doc) return null;
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(doc.id, jobId, citations, Date.now(), doc.originalName || doc.fileName);
+    return this.buildDetectionResult(
+      doc.id,
+      jobId,
+      citations,
+      Date.now(),
+      doc.originalName || doc.fileName
+    );
   }
 
   /**
@@ -308,16 +434,22 @@ export class CitationDetectionService {
         citations: {
           orderBy: { startOffset: 'asc' },
           include: {
-            primaryComponent: { select: { confidence: true } }
-          }
-        }
+            primaryComponent: { select: { confidence: true } },
+          },
+        },
       },
     });
 
     if (!doc) return null;
 
     const citations = this.mapCitationsToDetected(doc.citations);
-    return this.buildDetectionResult(doc.id, jobId, citations, Date.now(), doc.originalName || doc.fileName);
+    return this.buildDetectionResult(
+      doc.id,
+      jobId,
+      citations,
+      Date.now(),
+      doc.originalName || doc.fileName
+    );
   }
 
   /**
@@ -349,39 +481,48 @@ export class CitationDetectionService {
     // Detect citations FIRST (before any DB mutations)
     const extractedCitations = await editorialAi.detectCitations(doc.fullText);
 
-    const citations = await prisma.$transaction(async (tx) => {
-      await tx.citation.deleteMany({
-        where: { documentId },
-      });
+    const citations = await prisma.$transaction(
+      async tx => {
+        await tx.citation.deleteMany({
+          where: { documentId },
+        });
 
-      const stored = await Promise.all(
-        extractedCitations.map(async (extracted) => {
-          return tx.citation.create({
-            data: {
-              documentId,
-              rawText: extracted.text,
-              startOffset: extracted.location.startOffset,
-              endOffset: extracted.location.endOffset,
-              pageNumber: extracted.location.pageNumber || null,
-              paragraphIndex: extracted.location.paragraphIndex,
-              citationType: mapToCitationType(extracted.type),
-              detectedStyle: mapToCitationStyle(extracted.style),
-              sectionContext: mapToSectionContext(extracted.sectionContext) as 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN',
-              confidence: extracted.confidence / 100,
-              isValid: null,
-              validationErrors: [],
-            },
-          });
-        })
-      );
+        const stored = await Promise.all(
+          extractedCitations.map(async extracted => {
+            return tx.citation.create({
+              data: {
+                documentId,
+                rawText: extracted.text,
+                startOffset: extracted.location.startOffset,
+                endOffset: extracted.location.endOffset,
+                pageNumber: extracted.location.pageNumber || null,
+                paragraphIndex: extracted.location.paragraphIndex,
+                citationType: mapToCitationType(extracted.type),
+                detectedStyle: mapToCitationStyle(extracted.style),
+                sectionContext: mapToSectionContext(extracted.sectionContext) as
+                  | 'BODY'
+                  | 'REFERENCES'
+                  | 'FOOTNOTES'
+                  | 'ENDNOTES'
+                  | 'ABSTRACT'
+                  | 'UNKNOWN',
+                confidence: extracted.confidence / 100,
+                isValid: null,
+                validationErrors: [],
+              },
+            });
+          })
+        );
 
-      await tx.editorialDocument.update({
-        where: { id: documentId },
-        data: { status: EditorialDocStatus.PARSED },
-      });
+        await tx.editorialDocument.update({
+          where: { id: documentId },
+          data: { status: EditorialDocStatus.PARSED },
+        });
 
-      return stored;
-    }, { timeout: 30000 });
+        return stored;
+      },
+      { timeout: 30000 }
+    );
 
     // Map to DetectedCitation with parsing status
     const mappedCitations = citations.map(c => ({
@@ -391,7 +532,13 @@ export class CitationDetectionService {
       parseConfidence: null as number | null, // Newly re-detected, no components yet
     }));
 
-    return this.buildDetectionResult(documentId, doc.jobId, mappedCitations, startTime, doc.originalName || doc.fileName);
+    return this.buildDetectionResult(
+      documentId,
+      doc.jobId,
+      mappedCitations,
+      startTime,
+      doc.originalName || doc.fileName
+    );
   }
 
   /**
@@ -467,7 +614,13 @@ export class CitationDetectionService {
             rawText: extracted.text,
             citationType: mapToCitationType(extracted.type),
             detectedStyle: mapToCitationStyle(extracted.style),
-            sectionContext: mapToSectionContext(extracted.sectionContext) as 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN',
+            sectionContext: mapToSectionContext(extracted.sectionContext) as
+              | 'BODY'
+              | 'REFERENCES'
+              | 'FOOTNOTES'
+              | 'ENDNOTES'
+              | 'ABSTRACT'
+              | 'UNKNOWN',
             pageNumber: extracted.location.pageNumber || null,
             paragraphIndex: extracted.location.paragraphIndex,
             startOffset: extracted.location.startOffset,
@@ -493,8 +646,10 @@ export class CitationDetectionService {
           parseConfidence: null,
         });
       } catch (error) {
-        logger.warn(`[Citation Detection] Failed to store citation: documentId=${documentId}, offsets=${extracted.location.startOffset}-${extracted.location.endOffset}`,
-          error instanceof Error ? error : undefined);
+        logger.warn(
+          `[Citation Detection] Failed to store citation: documentId=${documentId}, offsets=${extracted.location.startOffset}-${extracted.location.endOffset}`,
+          error instanceof Error ? error : undefined
+        );
       }
     }
 
@@ -504,20 +659,22 @@ export class CitationDetectionService {
   /**
    * Map Prisma Citation records to DetectedCitation interface
    */
-  private mapCitationsToDetected(citations: Array<{
-    id: string;
-    rawText: string;
-    citationType: string;
-    detectedStyle: string | null;
-    pageNumber: number | null;
-    paragraphIndex: number | null;
-    startOffset: number;
-    endOffset: number;
-    confidence: number;
-    primaryComponentId: string | null;
-    primaryComponent?: { confidence: number } | null;
-  }>): DetectedCitation[] {
-    return citations.map((c) => ({
+  private mapCitationsToDetected(
+    citations: Array<{
+      id: string;
+      rawText: string;
+      citationType: string;
+      detectedStyle: string | null;
+      pageNumber: number | null;
+      paragraphIndex: number | null;
+      startOffset: number;
+      endOffset: number;
+      confidence: number;
+      primaryComponentId: string | null;
+      primaryComponent?: { confidence: number } | null;
+    }>
+  ): DetectedCitation[] {
+    return citations.map(c => ({
       id: c.id,
       rawText: c.rawText,
       citationType: c.citationType as DetectedCitation['citationType'],
