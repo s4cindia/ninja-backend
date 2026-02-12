@@ -366,16 +366,25 @@ src/
 1. **Create feature branch:**
    ```bash
    git checkout main && git pull && git checkout -b feature/feature-name
+   ```
 
-2. Develop in Replit using prompts provided by Claude
-3. Commit and push:
-git add .
-git commit -m "feat: description"
-git push -u origin feature/feature-name
-4. Create PR:
-gh pr create --title "feat: Title" --body "Description"
-5. Address CodeRabbit review comments
-6. Merge to main triggers deployment to staging
+2. **Develop in Replit** using prompts provided by Claude
+
+3. **Commit and push:**
+   ```bash
+   git add .
+   git commit -m "feat: description"
+   git push -u origin feature/feature-name
+   ```
+
+4. **Create PR:**
+   ```bash
+   gh pr create --title "feat: Title" --body "Description"
+   ```
+
+5. **Address CodeRabbit review comments**
+
+6. **Merge to main** triggers deployment to staging
 
 Commit Message Convention
 
