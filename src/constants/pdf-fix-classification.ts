@@ -31,29 +31,11 @@ export const AUTO_FIXABLE_CODES = new Set([
  *
  * These require content decisions but don't need external PDF editing tools
  */
-export const QUICK_FIXABLE_CODES = new Set([
-  // Legacy codes (from stub validators)
-  'PDF-IMAGE-NO-ALT',       // Images missing alt text
-  'PDF-TABLE-NO-HEADERS',   // Tables missing header definitions
-  'PDF-FORM-NO-LABEL',      // Form fields missing labels
-  'PDF-LINK-NO-TEXT',       // Links with no descriptive text
-  'PDF-FIGURE-NO-CAPTION',  // Figures missing captions
-
-  // Actual validator codes - Alt Text
-  'MATTERHORN-13-002',      // Image without alt text
-  'MATTERHORN-13-003',      // Insufficient alt text
-  'ALT-TEXT-QUALITY',       // Alt text quality issues
-  'ALT-TEXT-REDUNDANT-PREFIX', // Redundant prefix in alt text
-
-  // Table issues that can be fixed with guided input
-  'TABLE-MISSING-SUMMARY',  // Table missing summary/caption
-  'TABLE-MISSING-HEADERS',  // Table missing header definitions
-  'MATTERHORN-15-002',      // Table without TH cells
-  'MATTERHORN-15-003',      // Table header not marked
-
-  // Link and form issues
-  'MATTERHORN-17-001',      // Link without text
-  'MATTERHORN-19-006',      // Form field missing label
+export const QUICK_FIXABLE_CODES = new Set<string>([
+  // CURRENTLY EMPTY - Will be populated when quick-fix handlers are built
+  // Quick-fix requires guided workflows that don't need external PDF editors
+  // For Phase 2, only metadata fixes (language, title, metadata, creator) are supported via auto-fix
+  // Future phases may add: alt text workflow, form label workflow, etc.
 ]);
 
 /**
@@ -85,6 +67,10 @@ export const MANUAL_CODES = new Set([
   'TABLE-INACCESSIBLE',     // Table not properly structured
   'TABLE-COMPLEX-STRUCTURE', // Complex table structure
   'MATTERHORN-15-005',      // Table structure issues
+  'TABLE-MISSING-SUMMARY',  // Table missing summary/caption - MOVED FROM QUICK_FIXABLE
+  'TABLE-MISSING-HEADERS',  // Table missing header definitions - MOVED FROM QUICK_FIXABLE
+  'MATTERHORN-15-002',      // Table without TH cells - MOVED FROM QUICK_FIXABLE
+  'MATTERHORN-15-003',      // Table header not marked - MOVED FROM QUICK_FIXABLE
 
   // List structure issues
   'LIST-NOT-TAGGED',        // Lists in untagged PDF
@@ -93,6 +79,19 @@ export const MANUAL_CODES = new Set([
   // Contrast and visual issues
   'PDF-LOW-CONTRAST',       // Color contrast failures
   'CONTRAST-FAIL',          // Contrast ratio too low
+
+  // Content issues requiring manual editing (moved from QUICK_FIXABLE)
+  'PDF-IMAGE-NO-ALT',       // Images missing alt text
+  'PDF-TABLE-NO-HEADERS',   // Tables missing header definitions
+  'PDF-FORM-NO-LABEL',      // Form fields missing labels
+  'PDF-LINK-NO-TEXT',       // Links with no descriptive text
+  'PDF-FIGURE-NO-CAPTION',  // Figures missing captions
+  'MATTERHORN-13-002',      // Image without alt text
+  'MATTERHORN-13-003',      // Insufficient alt text
+  'ALT-TEXT-QUALITY',       // Alt text quality issues
+  'ALT-TEXT-REDUNDANT-PREFIX', // Redundant prefix in alt text
+  'MATTERHORN-17-001',      // Link without text
+  'MATTERHORN-19-006',      // Form field missing label
 ]);
 
 /**
