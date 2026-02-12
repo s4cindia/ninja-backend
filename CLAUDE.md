@@ -475,11 +475,14 @@ model ComparisonReport {
   generatedAt     DateTime @default(now())
 }
 
-Staging Database
+### Staging Database
 
-- Host: ep-falling-hall-a16iblwt-pooler.ap-southeast-1.aws.neon.tech
-- Database: neondb
-- Credentials: Stored in Bitwarden and AWS Secrets Manager
+**Connection details are stored securely:**
+- Database credentials and connection strings are stored in **Bitwarden** (team vault) and **AWS Secrets Manager**
+- Never commit database URLs or credentials to git
+- Access staging database connection info from:
+  - Bitwarden: Search for "Ninja Staging Database"
+  - AWS Secrets Manager: `ninja/staging/database`
 
 ---
 Testing Patterns
