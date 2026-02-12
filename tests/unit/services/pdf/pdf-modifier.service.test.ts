@@ -270,6 +270,7 @@ describe('PdfModifierService', () => {
       expect(PDFDocument.load).toHaveBeenCalledWith(mockBuffer, {
         updateMetadata: false,
         ignoreEncryption: true,
+        throwOnInvalidObject: false,
       });
     });
 

@@ -336,7 +336,7 @@ export class PdfRemediationController {
         logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
 
         // Sanitize result by removing Buffer and converting to plain JSON
-        const { remediatedPdfBuffer, ...sanitizedResult } = result;
+        const { remediatedPdfBuffer: _remediatedPdfBuffer, ...sanitizedResult } = result;
 
         // Convert to plain JSON to ensure compatibility with Prisma Json type
         const remediationResultJson = JSON.parse(JSON.stringify(sanitizedResult));

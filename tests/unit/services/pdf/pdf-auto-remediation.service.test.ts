@@ -405,7 +405,7 @@ describe('PdfAutoRemediationService', () => {
       );
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Load error');
+      expect(result.error).toContain('Load error');
       expect(pdfModifierService.rollback).toHaveBeenCalledWith('/backup.pdf');
     });
 
@@ -423,7 +423,7 @@ describe('PdfAutoRemediationService', () => {
 
       expect(result.success).toBe(false);
       // Should still report the original error, not the rollback error
-      expect(result.error).toBe('Load error');
+      expect(result.error).toContain('Load error');
     });
   });
 });

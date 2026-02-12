@@ -505,14 +505,24 @@ export class PdfController {
       if (!req.file) {
         return res.status(400).json({
           success: false,
-          error: 'No PDF file uploaded',
+          data: {},
+          error: {
+            code: 'PDF_FILE_MISSING',
+            message: 'No PDF file uploaded',
+            details: 'Request must include a PDF file in multipart/form-data format',
+          },
         });
       }
 
       if (!tenantId || !userId) {
         return res.status(401).json({
           success: false,
-          error: 'Authentication required',
+          data: {},
+          error: {
+            code: 'AUTHENTICATION_REQUIRED',
+            message: 'Authentication required',
+            details: 'Valid tenant and user credentials are required',
+          },
         });
       }
 
@@ -581,9 +591,15 @@ export class PdfController {
         });
       }
 
+      const errorMessage = error instanceof Error ? error.message : 'Failed to audit PDF';
       return res.status(500).json({
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to audit PDF',
+        data: {},
+        error: {
+          code: 'PDF_AUDIT_FAILED',
+          message: errorMessage,
+          details: error instanceof Error ? error.stack : undefined,
+        },
       });
     }
   }
