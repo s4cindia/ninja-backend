@@ -34,7 +34,7 @@ fi
 
 # For push commands, also check if targeting main/master (catches "git push origin HEAD:main" style bypasses)
 if echo "$COMMAND" | grep -q "^git push"; then
-  if echo "$COMMAND" | grep -qE '(:|refs/heads/|/)(main|master)(\s|$)'; then
+  if echo "$COMMAND" | grep -qE '(:|[[:space:]]|refs/heads/|/)(main|master)([[:space:]]|$)'; then
     cat >&2 <<EOF
 🚫 Direct pushes to 'main' or 'master' are not allowed.
 
