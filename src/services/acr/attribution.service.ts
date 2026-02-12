@@ -77,6 +77,8 @@ export function determineAttributionTag(
   verificationStatus?: VerificationStatus,
   isAiGenerated?: boolean
 ): AttributionTag {
+  // NOT_APPLICABLE is not treated as human verified - it's a determination that
+  // the criterion doesn't apply, not a verification of compliance
   if (verificationStatus === 'VERIFIED_PASS' || 
       verificationStatus === 'VERIFIED_FAIL' || 
       verificationStatus === 'VERIFIED_PARTIAL') {

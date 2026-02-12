@@ -72,9 +72,9 @@ class TokenCounterService {
     };
     
     this.usageRecords.push(record);
-    
-    console.log(`[AI Usage] Tenant: ${tenantId}, Op: ${operation}, Tokens: ${usage.totalTokens}, Cost: $${cost.totalCost.toFixed(6)}`);
-    
+
+    console.error(`[AI Usage] Tenant: ${tenantId}, Op: ${operation}, Tokens: ${usage.totalTokens}, Cost: $${cost.totalCost.toFixed(6)}`);
+
     return record;
   }
 

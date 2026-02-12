@@ -5,14 +5,13 @@
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { geminiService, GeminiOptions } from '../ai/gemini.service';
+import { geminiService } from '../ai/gemini.service';
 import { aiConfig } from '../../config/ai.config';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 import type {
   TextChunk,
   EmbeddingResult,
-  PlagiarismClassification,
   ClassificationResult,
   ExtractedCitation,
   ParsedCitation,

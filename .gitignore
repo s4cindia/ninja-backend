@@ -109,6 +109,9 @@ bower_components
 web_modules/
 .lock-wscript
 
+# Prompts (working files)
+prompts/*.txt
+
 # Uploads (keep .gitkeep)
 data/uploads/*
 !data/uploads/.gitkeep
@@ -127,3 +130,14 @@ attached_assets/
 
 # Generated export files
 exports/
+.claude/
+lint errors/
+prompts/
+
+# Local temporary files
+.backup/
+IMPLEMENTATION_SUMMARY.md
+
+# EPUB storage (persistent)
+data/epub-storage/*
+!data/epub-storage/.gitkeep

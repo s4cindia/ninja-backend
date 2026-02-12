@@ -245,8 +245,11 @@ class FeedbackService {
     respondedBy?: string
   ): Promise<PrismaFeedback> {
     try {
-      const updated = await prisma.feedback.update({
-        where: { id },
+      const result = await prisma.feedback.updateMany({
+        where: {
+          id,
+          tenantId,
+        },
         data: {
           status,
           ...(response && {
@@ -256,11 +259,19 @@ class FeedbackService {
           }),
         },
       });
-      
-      if (updated.tenantId !== tenantId) {
+
+      if (result.count === 0) {
+        throw new Error('Feedback not found or unauthorized');
+      }
+
+      const updated = await prisma.feedback.findUnique({
+        where: { id },
+      });
+
+      if (!updated) {
         throw new Error('Feedback not found');
       }
-      
+
       logger.info(`Feedback ${id} status updated to ${status}`);
       return updated;
     } catch (error) {

@@ -249,6 +249,31 @@ const MEDIUM_CONFIDENCE_CRITERIA: Record<string, { percentage: number; reason: s
 };
 
 class ConfidenceAnalyzerService {
+  /**
+   * Static method to get the base confidence percentage for a criterion.
+   * Returns 0 for manual-required criteria, the defined percentage for high/medium,
+   * or 50 (LOW) for criteria without specific definitions.
+   */
+  static getCriterionConfidence(criterionId: string): number {
+    if (ALWAYS_MANUAL_CRITERIA[criterionId]) {
+      return 0; // Manual verification required
+    }
+    if (HIGH_CONFIDENCE_CRITERIA[criterionId]) {
+      return HIGH_CONFIDENCE_CRITERIA[criterionId].percentage;
+    }
+    if (MEDIUM_CONFIDENCE_CRITERIA[criterionId]) {
+      return MEDIUM_CONFIDENCE_CRITERIA[criterionId].percentage;
+    }
+    return 50; // Default LOW confidence
+  }
+
+  /**
+   * Static method to check if a criterion requires manual verification.
+   */
+  static requiresManualVerification(criterionId: string): boolean {
+    return !!ALWAYS_MANUAL_CRITERIA[criterionId];
+  }
+
   analyzeConfidence(criterionId: string, _validationResult?: ValidationResultInput): ConfidenceAssessment {
     const wcagCriterion = this.getWcagCriterionName(criterionId);
 
@@ -393,4 +418,5 @@ class ConfidenceAnalyzerService {
   }
 }
 
+export { ConfidenceAnalyzerService };
 export const confidenceAnalyzerService = new ConfidenceAnalyzerService();

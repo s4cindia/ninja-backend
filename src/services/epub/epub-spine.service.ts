@@ -15,6 +15,7 @@ export interface SpineItem {
 export interface SpineItemContent {
   spineItem: SpineItem;
   html: string;
+  sourceHtml: string;
   css: string[];
   baseHref: string;
 }
@@ -61,11 +62,24 @@ class EPUBSpineService {
       const now = Date.now();
       for (const [key, value] of this.cache.entries()) {
         if (now - value.timestamp > this.CACHE_TTL) {
-          console.log(`[EPUBSpineService] Evicting expired cache entry: ${key}`);
+          console.error(`[EPUBSpineService] Evicting expired cache entry: ${key}`);
           this.cache.delete(key);
         }
       }
     }, 60000);
+  }
+
+  clearCache(jobId: string): void {
+    const originalKey = `${jobId}-original`;
+    const remediatedKey = `${jobId}-remediated`;
+    
+    const hadOriginal = this.cache.has(originalKey);
+    const hadRemediated = this.cache.has(remediatedKey);
+    
+    this.cache.delete(originalKey);
+    this.cache.delete(remediatedKey);
+    
+    console.error(`[EPUBSpineService] Cache cleared for job ${jobId} (original: ${hadOriginal}, remediated: ${hadRemediated})`);
   }
 
   private async loadEPUB(jobId: string, version: 'original' | 'remediated'): Promise<JSZip> {
@@ -73,11 +87,11 @@ class EPUBSpineService {
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[EPUBSpineService] Using cached EPUB for ${cacheKey}`);
+      console.error(`[EPUBSpineService] Using cached EPUB for ${cacheKey} (age: ${Math.round((Date.now() - cached.timestamp) / 1000)}s)`);
       return cached.zip;
     }
 
-    console.log(`[EPUBSpineService] Loading EPUB from file system for ${cacheKey}`);
+    console.error(`[EPUBSpineService] Loading ${version} EPUB from file system for job ${jobId} (cache miss or expired)`);
     
     const job = await prisma.job.findUnique({
       where: { id: jobId }
@@ -119,7 +133,7 @@ class EPUBSpineService {
 
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      console.log(`[EPUBSpineService] Using cached EPUB metadata for ${cacheKey}`);
+      console.error(`[EPUBSpineService] Using cached EPUB metadata for ${cacheKey}`);
       return { zip: cached.zip, opfPath: cached.opfPath, fileName: cached.fileName };
     }
 
@@ -217,6 +231,56 @@ class EPUBSpineService {
     return path.posix.normalize(path.posix.join(dir, to));
   }
 
+  private readonly MAX_INLINE_IMAGE_SIZE = 2 * 1024 * 1024; // 2MB max per image
+
+  private async inlineImages(zip: JSZip, html: string, basePath: string): Promise<string> {
+    const mimeTypes: Record<string, string> = {
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      svg: 'image/svg+xml',
+      webp: 'image/webp',
+    };
+
+    const imgRegex = /<img([^>]*)\bsrc\s*=\s*["']([^"']+)["']([^>]*)>/gi;
+    let result = html;
+    const matches = [...html.matchAll(imgRegex)];
+    
+    for (const match of matches) {
+      const fullMatch = match[0];
+      const beforeSrc = match[1];
+      const src = match[2];
+      const afterSrc = match[3];
+      
+      if (src.startsWith('data:')) continue;
+      
+      const fullPath = this.resolvePath(basePath, src);
+      const entry = zip.file(fullPath);
+      
+      if (entry) {
+        try {
+          const buffer = await entry.async('nodebuffer');
+          
+          if (buffer.length > this.MAX_INLINE_IMAGE_SIZE) {
+            console.warn(`[EPUBSpineService] Skipping large image ${src} (${buffer.length} bytes)`);
+            continue;
+          }
+          
+          const ext = src.split('.').pop()?.toLowerCase() || '';
+          const mime = mimeTypes[ext] || 'image/png';
+          const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
+          const newTag = `<img${beforeSrc}src="${dataUri}"${afterSrc}>`;
+          result = result.replace(fullMatch, newTag);
+        } catch (err) {
+          console.warn(`[EPUBSpineService] Failed to inline image ${src}:`, err);
+        }
+      }
+    }
+
+    return result;
+  }
+
   private xpathToCssSelector(xpath: string): string | undefined {
     if (!xpath.startsWith('/')) return undefined;
 
@@ -279,12 +343,14 @@ class EPUBSpineService {
       throw new Error(`HTML file not found: ${spineItem.href}`);
     }
 
-    const html = await htmlFile.async('text');
+    const rawHtml = await htmlFile.async('text');
+    const html = await this.inlineImages(zip, rawHtml, spineItem.href);
     const css = await this.extractStyles(zip, spineItem.href, html);
 
     return {
       spineItem,
       html,
+      sourceHtml: rawHtml,
       css,
       baseHref: path.posix.dirname(spineItem.href)
     };
@@ -412,12 +478,12 @@ class EPUBSpineService {
 
     const spineItems = await this.getSpineItems(jobId);
 
-    console.log('[DEBUG] Change file path:', change.filePath);
-    console.log('[DEBUG] Available spine items:');
+    console.error('[DEBUG] Change file path:', change.filePath);
+    console.error('[DEBUG] Available spine items:');
     spineItems.forEach(item => {
-      console.log(`  - ${item.id}: ${item.href}`);
-      console.log(`    Exact match: ${item.href === change.filePath}`);
-      console.log(`    Ends with: ${item.href.endsWith(change.filePath)}`);
+      console.error(`  - ${item.id}: ${item.href}`);
+      console.error(`    Exact match: ${item.href === change.filePath}`);
+      console.error(`    Ends with: ${item.href.endsWith(change.filePath)}`);
     });
 
     const matchedItem = spineItems.find(item =>

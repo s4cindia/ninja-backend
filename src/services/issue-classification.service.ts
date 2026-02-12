@@ -32,7 +32,7 @@ export class IssueClassificationService {
     issueCode: string, 
     filePath: string, 
     location: string, 
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<IssueContext> {
     const context: IssueContext = {};
 
@@ -52,14 +52,15 @@ export class IssueClassificationService {
   }
 
   private async analyzeTableStructure(
-    zip: any, 
+    zip: Record<string, unknown>, 
     filePath: string, 
     _location: string
   ): Promise<'simple' | 'complex'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipAny = zip as any;
+      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'simple';
       }
@@ -95,14 +96,15 @@ export class IssueClassificationService {
   }
 
   private async analyzeImageType(
-    zip: any, 
-    filePath: string, 
+    zip: Record<string, unknown>,
+    filePath: string,
     _location: string
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipAny = zip as any;
+      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'content';
       }
@@ -163,7 +165,7 @@ export class IssueClassificationService {
     severity: string,
     filePath: string,
     location: string,
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<{
     confidence: number;
     fixType: FixClassification;

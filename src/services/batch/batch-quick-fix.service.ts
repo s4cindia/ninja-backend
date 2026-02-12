@@ -14,7 +14,7 @@ class BatchQuickFixService {
   /**
    * Apply quick-fixes to all files in a batch
    */
-  async applyQuickFixes(batchId: string, tenantId: string, userId: string): Promise<QuickFixResult> {
+  async applyQuickFixes(batchId: string, tenantId: string, _userId: string): Promise<QuickFixResult> {
     logger.info(`[Batch ${batchId}] Starting batch quick-fix application`);
 
     const batch = await prisma.batch.findFirst({
@@ -129,6 +129,7 @@ class BatchQuickFixService {
 
         // Apply quick-fixes using remediation service
         let fixedCount = 0;
+        const fixedTasks: Array<{ id: string; issueCode: string }> = [];
         for (const task of quickFixTasks) {
           try {
             await remediationService.updateTaskStatus(
@@ -140,8 +141,51 @@ class BatchQuickFixService {
               { completionMethod: 'auto' }
             );
             fixedCount++;
+            fixedTasks.push({ id: task.id, issueCode: task.issueCode });
           } catch (taskError) {
             logger.warn(`[Batch ${batchId}] Failed to apply task ${task.id}: ${taskError}`);
+          }
+        }
+
+        // Update job output to include batch quick-fix modifications in autoRemediation
+        if (fixedTasks.length > 0) {
+          try {
+            const job = await prisma.job.findUnique({
+              where: { id: file.auditJobId },
+            });
+
+            if (job && job.output) {
+              const output = job.output as Record<string, unknown>;
+              const autoRemediation = (output.autoRemediation as Record<string, unknown>) || {};
+              const modifications = (autoRemediation.modifications as Array<unknown>) || [];
+
+              // Add batch quick-fix modifications
+              const newModifications = fixedTasks.map(task => ({
+                issueCode: task.issueCode,
+                success: true,
+                method: 'batch-quick-fix',
+                appliedAt: new Date().toISOString(),
+                taskId: task.id,
+              }));
+
+              // Update job output with new modifications
+              await prisma.job.update({
+                where: { id: file.auditJobId },
+                data: {
+                  output: {
+                    ...output,
+                    autoRemediation: {
+                      ...autoRemediation,
+                      modifications: [...modifications, ...newModifications],
+                    },
+                  } as any,
+                },
+              });
+
+              logger.info(`[Batch ${batchId}] Added ${newModifications.length} batch quick-fix modifications to job output`);
+            }
+          } catch (updateError) {
+            logger.warn(`[Batch ${batchId}] Failed to update job output with batch quick-fix modifications: ${updateError}`);
           }
         }
 
