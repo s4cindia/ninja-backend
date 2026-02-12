@@ -28,9 +28,11 @@ export class PdfRemediationController {
       if (!tenantId) {
         return res.status(401).json({
           success: false,
+          data: {},
           error: {
             code: 'UNAUTHORIZED',
             message: 'Authentication required',
+            details: null,
           },
         });
       }
@@ -46,9 +48,11 @@ export class PdfRemediationController {
       if (!job) {
         return res.status(404).json({
           success: false,
+          data: {},
           error: {
             code: 'JOB_NOT_FOUND',
             message: 'Job not found or access denied',
+            details: null,
           },
         });
       }
@@ -57,9 +61,11 @@ export class PdfRemediationController {
       if (job.type !== 'PDF_ACCESSIBILITY') {
         return res.status(400).json({
           success: false,
+          data: {},
           error: {
             code: 'INVALID_JOB_TYPE',
             message: 'Job is not a PDF accessibility audit',
+            details: null,
           },
         });
       }
@@ -70,6 +76,11 @@ export class PdfRemediationController {
       return res.status(201).json({
         success: true,
         data: plan,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
       });
     } catch (error) {
       logger.error('Failed to create remediation plan', {
@@ -79,9 +90,11 @@ export class PdfRemediationController {
 
       return res.status(500).json({
         success: false,
+        data: {},
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to create remediation plan',
+          details: null,
         },
       });
     }
@@ -102,9 +115,11 @@ export class PdfRemediationController {
       if (!tenantId) {
         return res.status(401).json({
           success: false,
+          data: {},
           error: {
             code: 'UNAUTHORIZED',
             message: 'Authentication required',
+            details: null,
           },
         });
       }
@@ -120,9 +135,11 @@ export class PdfRemediationController {
       if (!job) {
         return res.status(404).json({
           success: false,
+          data: {},
           error: {
             code: 'JOB_NOT_FOUND',
             message: 'Job not found or access denied',
+            details: null,
           },
         });
       }
@@ -133,6 +150,11 @@ export class PdfRemediationController {
       return res.status(200).json({
         success: true,
         data: plan,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
       });
     } catch (error) {
       logger.error('Failed to retrieve remediation plan', {
@@ -142,9 +164,11 @@ export class PdfRemediationController {
 
       return res.status(500).json({
         success: false,
+        data: {},
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to retrieve remediation plan',
+          details: null,
         },
       });
     }
@@ -166,9 +190,11 @@ export class PdfRemediationController {
       if (!tenantId) {
         return res.status(401).json({
           success: false,
+          data: {},
           error: {
             code: 'UNAUTHORIZED',
             message: 'Authentication required',
+            details: null,
           },
         });
       }
@@ -184,9 +210,11 @@ export class PdfRemediationController {
       if (!job) {
         return res.status(404).json({
           success: false,
+          data: {},
           error: {
             code: 'JOB_NOT_FOUND',
             message: 'Job not found or access denied',
+            details: null,
           },
         });
       }
@@ -208,6 +236,11 @@ export class PdfRemediationController {
       return res.status(200).json({
         success: true,
         data: result,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
       });
     } catch (error) {
       logger.error('Failed to update task status', {
@@ -218,9 +251,11 @@ export class PdfRemediationController {
 
       return res.status(500).json({
         success: false,
+        data: {},
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to update task status',
+          details: null,
         },
       });
     }
@@ -241,9 +276,11 @@ export class PdfRemediationController {
       if (!tenantId) {
         return res.status(401).json({
           success: false,
+          data: {},
           error: {
             code: 'UNAUTHORIZED',
             message: 'Authentication required',
+            details: null,
           },
         });
       }
@@ -259,9 +296,11 @@ export class PdfRemediationController {
       if (!job) {
         return res.status(404).json({
           success: false,
+          data: {},
           error: {
             code: 'JOB_NOT_FOUND',
             message: 'Job not found or access denied',
+            details: null,
           },
         });
       }
@@ -270,9 +309,11 @@ export class PdfRemediationController {
       if (job.type !== 'PDF_ACCESSIBILITY') {
         return res.status(400).json({
           success: false,
+          data: {},
           error: {
             code: 'INVALID_JOB_TYPE',
             message: 'Job is not a PDF accessibility audit',
+            details: null,
           },
         });
       }
@@ -310,9 +351,11 @@ export class PdfRemediationController {
         logger.error(`[PDF Remediation] Could not find file for job ${jobId}`);
         return res.status(400).json({
           success: false,
+          data: {},
           error: {
             code: 'MISSING_FILE',
             message: 'Original PDF file not found in storage',
+            details: null,
           },
         });
       }
@@ -324,6 +367,9 @@ export class PdfRemediationController {
         fileName
       );
 
+      // Sanitize result by removing Buffer and converting to plain JSON
+      const { remediatedPdfBuffer: _remediatedPdfBuffer, ...sanitizedResult } = result;
+
       // If successful and we have a remediated PDF, save it to storage
       if (result.success && result.remediatedPdfBuffer) {
         const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
@@ -334,9 +380,6 @@ export class PdfRemediationController {
         );
 
         logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
-
-        // Sanitize result by removing Buffer and converting to plain JSON
-        const { remediatedPdfBuffer: _remediatedPdfBuffer, ...sanitizedResult } = result;
 
         // Convert to plain JSON to ensure compatibility with Prisma Json type
         const remediationResultJson = JSON.parse(JSON.stringify(sanitizedResult));
@@ -357,15 +400,25 @@ export class PdfRemediationController {
         return res.status(200).json({
           success: true,
           data: {
-            ...result,
+            ...sanitizedResult,
             remediatedFileUrl,
+          },
+          error: {
+            code: null,
+            message: null,
+            details: null,
           },
         });
       }
 
       return res.status(200).json({
         success: result.success,
-        data: result,
+        data: sanitizedResult,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
       });
     } catch (error) {
       logger.error('Failed to execute auto-remediation', {
@@ -375,9 +428,11 @@ export class PdfRemediationController {
 
       return res.status(500).json({
         success: false,
+        data: {},
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to execute auto-remediation',
+          details: null,
         },
       });
     }

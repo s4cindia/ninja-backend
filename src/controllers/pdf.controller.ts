@@ -613,7 +613,12 @@ export class PdfController {
       if (!job) {
         return res.status(404).json({
           success: false,
-          error: 'Job not found or access denied',
+          data: null,
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found or access denied',
+            details: null,
+          },
         });
       }
 
@@ -683,9 +688,32 @@ export class PdfController {
     } catch (error) {
       logger.error('PDF re-scan failed:', error instanceof Error ? error : undefined);
 
+      // Mark job as FAILED before returning error
+      const jobId = req.params.jobId;
+      if (jobId) {
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            output: {
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+          },
+        }).catch(updateError => {
+          logger.error('Failed to update job status to FAILED:', updateError);
+        });
+      }
+
+      const errorMessage = error instanceof Error ? error.message : 'Failed to re-scan PDF';
       return res.status(500).json({
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to re-scan PDF',
+        data: {},
+        error: {
+          code: 'PDF_RESCAN_FAILED',
+          message: errorMessage,
+          details: error instanceof Error ? error.stack : null,
+        },
       });
     }
   }
@@ -697,7 +725,12 @@ export class PdfController {
       if (!job) {
         return res.status(404).json({
           success: false,
-          error: 'Job not found or access denied',
+          data: null,
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found or access denied',
+            details: null,
+          },
         });
       }
 
@@ -760,15 +793,34 @@ export class PdfController {
         });
       }
 
+      // Check if job is COMPLETED but auditReport is missing
+      if (job.status === 'COMPLETED' && !auditReport) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'AUDIT_REPORT_NOT_FOUND',
+            message: 'Audit report not found for completed job',
+            details: null,
+          },
+        });
+      }
+
       return res.json({
         success: true,
         data: auditReport,
       });
     } catch (error) {
-      logger.error('Failed to get PDF audit result:', error instanceof Error ? error : undefined);
+      logger.error('Failed to get PDF audit result:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to retrieve audit result';
       return res.status(500).json({
         success: false,
-        error: 'Failed to retrieve audit result',
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: errorMessage,
+          details: error instanceof Error ? error.stack : null,
+        },
       });
     }
   }
