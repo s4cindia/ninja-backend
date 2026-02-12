@@ -742,4 +742,4 @@ Related Documentation
 - ./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md - User documentation
 
 ---
-Last updated: January 14, 2026
+Last updated: February 12, 2026
