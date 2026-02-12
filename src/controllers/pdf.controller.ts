@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { nanoid } from 'nanoid';
+import { Prisma } from '@prisma/client';
 import { validateFilePath } from '../utils/path-validator';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
@@ -10,6 +11,7 @@ import { fileStorageService } from '../services/storage/file-storage.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
+import { reScanJobSchema } from '../schemas/pdf.schemas';
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -557,11 +559,11 @@ export class PdfController {
         data: {
           status: 'COMPLETED',
           completedAt: new Date(),
-          output: {
+          output: JSON.parse(JSON.stringify({
             fileName: req.file.originalname,
             auditReport: result,
             scanLevel: 'basic', // Default to basic scan
-          } as any,
+          })) as Prisma.InputJsonObject,
         },
       });
 
@@ -577,18 +579,20 @@ export class PdfController {
       logger.error('PDF audit from buffer failed:', error instanceof Error ? error : undefined);
 
       if (jobId) {
-        await prisma.job.update({
-          where: { id: jobId },
-          data: {
-            status: 'FAILED',
-            completedAt: new Date(),
-            output: {
-              error: error instanceof Error ? error.message : 'Unknown error',
+        try {
+          await prisma.job.update({
+            where: { id: jobId },
+            data: {
+              status: 'FAILED',
+              completedAt: new Date(),
+              output: {
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
             },
-          },
-        }).catch(updateError => {
+          });
+        } catch (updateError) {
           logger.error('Failed to update job status to FAILED:', updateError instanceof Error ? updateError : undefined);
-        });
+        }
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Failed to audit PDF';
@@ -606,14 +610,48 @@ export class PdfController {
 
   async reScanJob(req: AuthenticatedRequest, res: Response) {
     try {
+      // Validate request with Zod schema
+      const validationResult = reScanJobSchema.body.safeParse(req.body);
+      if (!validationResult.success) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid request',
+            details: validationResult.error.issues,
+          },
+        });
+      }
+
       const { jobId } = req.params;
-      const { scanLevel = 'comprehensive', customValidators } = req.body;
-      const job = (req as any).job;
+      const { scanLevel, customValidators } = validationResult.data;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authentication required',
+            details: null,
+          },
+        });
+      }
+
+      // Verify job exists and belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+      });
 
       if (!job) {
         return res.status(404).json({
           success: false,
-          data: null,
+          data: {},
           error: {
             code: 'JOB_NOT_FOUND',
             message: 'Job not found or access denied',
@@ -622,16 +660,9 @@ export class PdfController {
         });
       }
 
-      // Validate scan level
-      if (!['basic', 'comprehensive', 'custom'].includes(scanLevel)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid scan level. Must be basic, comprehensive, or custom',
-        });
-      }
-
       // Get the original file
-      const fileName = job.input?.fileName || 'document.pdf';
+      const jobInput = job.input as { fileName?: string } | null;
+      const fileName = jobInput?.fileName || 'document.pdf';
       const buffer = await fileStorageService.getFile(jobId, fileName);
 
       if (!buffer) {
@@ -668,11 +699,11 @@ export class PdfController {
         data: {
           status: 'COMPLETED',
           completedAt: new Date(),
-          output: {
+          output: JSON.parse(JSON.stringify({
             fileName,
             auditReport: result,
             scanLevel,
-          } as any,
+          })) as Prisma.InputJsonObject,
         },
       });
       logger.info(`[reScanJob] Database updated for job ${jobId}. Status: ${updatedJob.status}`);
@@ -691,18 +722,20 @@ export class PdfController {
       // Mark job as FAILED before returning error
       const jobId = req.params.jobId;
       if (jobId) {
-        await prisma.job.update({
-          where: { id: jobId },
-          data: {
-            status: 'FAILED',
-            completedAt: new Date(),
-            output: {
-              error: error instanceof Error ? error.message : 'Unknown error',
+        try {
+          await prisma.job.update({
+            where: { id: jobId },
+            data: {
+              status: 'FAILED',
+              completedAt: new Date(),
+              output: {
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
             },
-          },
-        }).catch(updateError => {
-          logger.error('Failed to update job status to FAILED:', updateError);
-        });
+          });
+        } catch (updateError) {
+          logger.error('Failed to update job status to FAILED:', updateError instanceof Error ? updateError : undefined);
+        }
       }
 
       const errorMessage = error instanceof Error ? error.message : 'Failed to re-scan PDF';

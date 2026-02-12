@@ -389,7 +389,7 @@ export class PdfRemediationController {
           where: { id: jobId },
           data: {
             output: {
-              ...(job.output as Record<string, unknown>),
+              ...((job.output as Record<string, unknown> | null) ?? {}),
               remediatedFileUrl,
               remediationResult: remediationResultJson,
             },
