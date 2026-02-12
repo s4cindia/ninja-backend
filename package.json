@@ -4,8 +4,8 @@
   "description": "Ninja Platform API Server",
   "main": "dist/index.js",
   "scripts": {
-    "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "start": "node --max-old-space-size=8192 dist/index.js",
+    "dev": "ts-node-dev --respawn --transpile-only --inspect --max-old-space-size=8192 src/index.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
@@ -80,6 +80,7 @@
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "@vitest/coverage-v8": "^4.0.15",
+    "cross-env": "^10.1.0",
     "eslint": "^9.39.1",
     "supertest": "^7.1.4",
     "ts-node-dev": "^2.0.0",

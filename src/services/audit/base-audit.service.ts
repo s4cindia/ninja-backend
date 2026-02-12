@@ -27,6 +27,7 @@ export interface AuditIssue {
   category?: string;
   element?: string;
   context?: string;
+  pageNumber?: number;
 }
 
 /**

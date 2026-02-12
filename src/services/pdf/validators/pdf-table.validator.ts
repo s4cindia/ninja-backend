@@ -211,6 +211,7 @@ class PDFTableValidator {
         category: 'table-structure',
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
+        pageNumber: table.pageNumber,
       }));
     }
 
@@ -227,6 +228,7 @@ class PDFTableValidator {
         category: 'table-headers',
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
+        pageNumber: table.pageNumber,
       }));
     }
 
@@ -244,6 +246,7 @@ class PDFTableValidator {
           category: 'table-headers',
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
+          pageNumber: table.pageNumber,
         }));
       } else if (!table.hasHeaderRow && table.hasHeaderColumn) {
         issues.push(this.createIssue({
@@ -257,6 +260,7 @@ class PDFTableValidator {
           category: 'table-headers',
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
+          pageNumber: table.pageNumber,
         }));
       }
     }
@@ -281,6 +285,7 @@ class PDFTableValidator {
           category: 'table-headers',
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
+          pageNumber: table.pageNumber,
         }));
       }
     }
@@ -298,6 +303,7 @@ class PDFTableValidator {
         category: 'table-structure',
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
+        pageNumber: table.pageNumber,
       }));
     }
 
@@ -315,6 +321,7 @@ class PDFTableValidator {
           category: 'table-summary',
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
+          pageNumber: table.pageNumber,
         }));
       }
     }
@@ -341,6 +348,7 @@ class PDFTableValidator {
         category: 'table-structure',
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
+        pageNumber: table.pageNumber,
       }));
     }
 
@@ -380,6 +388,7 @@ class PDFTableValidator {
         category: 'layout-table',
         element: table.id,
         context: `Table dimensions: ${tableDimensions}, Detection confidence: ${Math.round(layoutDetection.confidence * 100)}%`,
+        pageNumber: table.pageNumber,
       }));
     }
 
