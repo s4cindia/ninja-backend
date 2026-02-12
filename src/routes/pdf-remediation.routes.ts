@@ -13,6 +13,8 @@ import {
   createRemediationPlanSchema,
   getRemediationPlanSchema,
   updateTaskStatusSchema,
+  previewFixSchema,
+  quickFixRequestSchema,
 } from '../schemas/pdf-remediation.schemas';
 
 const router = Router();
@@ -78,6 +80,42 @@ router.post(
   authenticate,
   authorizeJob,
   (req, res) => pdfRemediationController.executeAutoRemediation(req, res)
+);
+
+/**
+ * GET /api/v1/pdf/:jobId/remediation/preview/:issueId
+ * Preview what will change before applying a fix
+ *
+ * @param jobId - PDF audit job ID
+ * @param issueId - Issue ID to preview fix for
+ * @query field - Field to fix (language, title, metadata, creator)
+ * @query value - Proposed value
+ * @returns Preview of current vs proposed value
+ */
+router.get(
+  '/:jobId/remediation/preview/:issueId',
+  authenticate,
+  authorizeJob,
+  validate(previewFixSchema),
+  (req, res) => pdfRemediationController.previewFix(req, res)
+);
+
+/**
+ * POST /api/v1/pdf/:jobId/remediation/quick-fix/:issueId
+ * Apply a quick fix to a specific issue
+ *
+ * @param jobId - PDF audit job ID
+ * @param issueId - Issue ID to fix
+ * @body field - Field to fix
+ * @body value - New value
+ * @returns Modified PDF URL and modification details
+ */
+router.post(
+  '/:jobId/remediation/quick-fix/:issueId',
+  authenticate,
+  authorizeJob,
+  validate(quickFixRequestSchema),
+  (req, res) => pdfRemediationController.applyQuickFix(req, res)
 );
 
 export default router;

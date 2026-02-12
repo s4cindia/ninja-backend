@@ -87,6 +87,38 @@ export const executeAutoRemediationSchema = {
 };
 
 /**
+ * Schema for quick-fix request
+ * POST /api/v1/pdf/:jobId/remediation/quick-fix/:issueId
+ */
+export const quickFixRequestSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+    issueId: z.string().min(1, 'Issue ID is required'),
+  }),
+  body: z.object({
+    // Field being fixed (language, title, metadata, creator)
+    field: z.enum(['language', 'title', 'metadata', 'creator']),
+    // New value (not required for metadata which is boolean)
+    value: z.string().optional(),
+  }),
+};
+
+/**
+ * Schema for preview request
+ * GET /api/v1/pdf/:jobId/remediation/preview/:issueId
+ */
+export const previewFixSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+    issueId: z.string().min(1, 'Issue ID is required'),
+  }),
+  query: z.object({
+    field: z.enum(['language', 'title', 'metadata', 'creator']),
+    value: z.string().optional(),
+  }),
+};
+
+/**
  * Type exports for use in controllers
  */
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
@@ -96,3 +128,7 @@ export type GetRemediationPlanParams = z.infer<typeof getRemediationPlanSchema['
 export type UpdateTaskStatusParams = z.infer<typeof updateTaskStatusSchema['params']>;
 export type UpdateTaskStatusBody = z.infer<typeof updateTaskStatusSchema['body']>;
 export type FilterTasksQuery = z.infer<typeof filterTasksSchema['query']>;
+export type QuickFixRequestParams = z.infer<typeof quickFixRequestSchema['params']>;
+export type QuickFixRequestBody = z.infer<typeof quickFixRequestSchema['body']>;
+export type PreviewFixParams = z.infer<typeof previewFixSchema['params']>;
+export type PreviewFixQuery = z.infer<typeof previewFixSchema['query']>;
