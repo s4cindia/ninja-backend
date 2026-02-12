@@ -16,6 +16,7 @@ fi
 
 BRANCH=$(git branch --show-current 2>/dev/null)
 
+# Check if current branch is main/master
 if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
   cat >&2 <<EOF
 🚫 Direct commits to '$BRANCH' are not allowed.
@@ -29,6 +30,26 @@ Or if you have uncommitted changes:
   git stash pop
 EOF
   exit 2
+fi
+
+# For push commands, also check if targeting main/master (catches "git push origin HEAD:main" style bypasses)
+if echo "$COMMAND" | grep -q "^git push"; then
+  if echo "$COMMAND" | grep -qE '(:|refs/heads/|/)(main|master)(\s|$)'; then
+    cat >&2 <<EOF
+🚫 Direct pushes to 'main' or 'master' are not allowed.
+
+Detected push target in command: $COMMAND
+
+Please create a feature branch first:
+  git checkout -b feature/your-feature-name
+
+Or if you have uncommitted changes:
+  git stash
+  git checkout -b feature/your-feature-name
+  git stash pop
+EOF
+    exit 2
+  fi
 fi
 
 exit 0

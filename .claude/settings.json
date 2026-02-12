@@ -42,7 +42,7 @@
           },
           {
             "type": "command",
-            "command": "node -e \"const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const f=d.tool_input?.file_path||''; if(f.startsWith('/tmp/')||f.startsWith('/home/')) { console.error('❌ Error: Use Windows paths (C:\\\\\\\\Users\\\\\\\\...), not Linux paths (/tmp/, /home/)'); process.exit(2); }\""
+            "command": "node -e \"const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const f=d.tool_input?.file_path||''; if(f.startsWith('/')||f.startsWith('~')) { console.error('❌ Error: Use Windows paths (C:\\\\\\\\Users\\\\\\\\...), not Linux paths (/tmp/, /home/)'); process.exit(2); }\""
           }
         ]
       }

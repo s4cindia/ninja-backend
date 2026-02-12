@@ -48,7 +48,7 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 - **Implementation Style:** Provide **Replit prompts** instead of direct file edits
 - **Repositories:**
   - **Frontend:** `ninja-frontend` → Replit workspace at `C:\Users\avrve\projects\ninja-frontend`
-  - **Backend:** `ninja` → Replit workspace at `C:\Users\avrve\projects\ninja`
+  - **Backend:** `ninja-backend` → Replit workspace at `C:\Users\avrve\projects\ninja-backend`
 - **Testing:** Changes are tested in Replit before committing
 - **Version Control:** Changes committed from Replit workspaces to GitHub
 
@@ -137,7 +137,7 @@ Before committing any bug fix or feature:
 
 1. **Run relevant unit tests:**
    ```bash
-   npm test -- --related
+   npx vitest related --run
    ```
 
 2. **Run type checking:**
