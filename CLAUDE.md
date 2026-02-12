@@ -61,6 +61,108 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 
 ---
 
+## Windows Development Environment
+
+This project runs on **Windows with MSYS bash**. Always account for Windows-specific considerations:
+
+- **Paths:** Always use Windows-style paths (e.g., `C:\Users\...`) not Linux paths (e.g., `/tmp/`)
+- **File Encoding:** Be aware of UTF-8 BOM and UTF-16 encoding issues when editing files created by PowerShell
+- **Shell Scripts:** When writing shell scripts or hooks, account for MSYS path translation quirks
+- **Line Endings:** Windows uses CRLF (`\r\n`), Linux uses LF (`\n`) - git typically handles this automatically
+
+---
+
+## Project Structure
+
+### Multi-Repository Workspace
+
+The workspace contains multiple repositories:
+- **`ninja-backend`** - Express.js REST API at `C:\Users\avrve\projects\ninja-backend`
+- **`ninja-frontend`** - React + Vite SPA at `C:\Users\avrve\projects\ninja-frontend`
+
+### Critical Rules
+
+- **Always confirm which repo/directory you're working in before making changes**
+- The frontend dev server runs from the workspace directory, not necessarily the git root
+- **Never make changes in the frontend repo when working on a backend task (or vice versa) without explicit user approval**
+- Check `pwd` and `git status` before starting work to verify location
+
+---
+
+## Workflow Rules
+
+### Before Starting Implementation
+
+1. **Read the full prompt/spec file before starting implementation**
+2. Do not begin coding until you've confirmed you have all required context
+3. When the user provides PR review comments, wait for ALL rounds of comments before starting implementation unless told otherwise
+4. **Stay focused on the assigned task** - do not drift to adjacent features or improvements without explicit approval
+
+### During Implementation
+
+- If unsure about scope, ask for clarification before proceeding
+- When working across multiple files, group related changes into logical commits
+- Test changes locally before committing
+- Run lint and typecheck before pushing
+
+---
+
+## API & Integration Conventions
+
+### Backend API Patterns
+
+- **Base Path:** All API routes include `/api/v1` prefix - always include the full path when constructing URLs
+- **Example:** `https://api.example.com/api/v1/jobs/:id` (not `/jobs/:id`)
+
+### Common CI Failure Patterns
+
+When fixing CI errors, check for these most common issues:
+1. **TypeScript type errors** - missing types, incorrect type annotations
+2. **Invalid component prop values** - e.g., button variants that don't exist in the component definition
+3. **Lint warnings** - unused imports, console.logs, etc.
+4. **Test failures** - especially path handling on Windows vs POSIX
+
+---
+
+## Testing & Validation
+
+### Pre-Commit Checklist
+
+Before committing any bug fix or feature:
+
+1. **Run relevant unit tests:**
+   ```bash
+   npm test -- --related
+   ```
+
+2. **Run type checking:**
+   ```bash
+   npm run typecheck
+   ```
+
+3. **Run linter:**
+   ```bash
+   npm run lint
+   ```
+
+4. **Only commit if all three pass**
+
+### Windows-Specific Testing
+
+- When fixing tests on Windows, verify path handling works for both Windows and POSIX paths
+- Test with both forward slashes and backslashes where applicable
+- Be mindful of case-sensitivity differences (Windows is case-insensitive, Linux is case-sensitive)
+
+### Local CI Validation
+
+To catch CI failures before pushing:
+```bash
+# Run the full CI check locally
+npm run typecheck && npm run lint && npm test
+```
+
+---
+
 ## Visual Comparison Feature (Active Development)
 
 ### Feature Overview
