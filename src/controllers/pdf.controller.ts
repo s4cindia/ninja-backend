@@ -610,22 +610,36 @@ export class PdfController {
 
   async reScanJob(req: AuthenticatedRequest, res: Response) {
     try {
-      // Validate request with Zod schema
-      const validationResult = reScanJobSchema.body.safeParse(req.body);
-      if (!validationResult.success) {
+      // Validate route params
+      const paramsValidation = reScanJobSchema.params.safeParse(req.params);
+      if (!paramsValidation.success) {
         return res.status(400).json({
           success: false,
           data: {},
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Invalid request',
-            details: validationResult.error.issues,
+            message: 'Invalid request parameters',
+            details: paramsValidation.error.issues,
           },
         });
       }
 
-      const { jobId } = req.params;
-      const { scanLevel, customValidators } = validationResult.data;
+      // Validate request body
+      const bodyValidation = reScanJobSchema.body.safeParse(req.body);
+      if (!bodyValidation.success) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid request body',
+            details: bodyValidation.error.issues,
+          },
+        });
+      }
+
+      const { jobId } = paramsValidation.data;
+      const { scanLevel, customValidators } = bodyValidation.data;
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
@@ -753,7 +767,7 @@ export class PdfController {
 
   async getAuditResult(req: Request, res: Response) {
     try {
-      const job = (req as any).job;
+      const job = req.job;
 
       if (!job) {
         return res.status(404).json({

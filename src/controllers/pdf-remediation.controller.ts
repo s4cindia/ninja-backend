@@ -230,7 +230,7 @@ export class PdfRemediationController {
         jobId,
         taskId,
         status,
-        completionPercentage: result.summary.completionPercentage,
+        completionPercentage: result.summary?.completionPercentage ?? 0,
       });
 
       return res.status(200).json({
