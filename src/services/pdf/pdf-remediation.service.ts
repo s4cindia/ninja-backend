@@ -5,6 +5,7 @@
  */
 
 import { nanoid } from 'nanoid';
+import { PrismaClient } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { classifyIssueType } from '../../constants/pdf-fix-classification';
@@ -30,6 +31,8 @@ interface ClassifiedIssues {
  * PDF Remediation Service
  */
 class PdfRemediationService {
+  constructor(private readonly prisma: PrismaClient) {}
+
   /**
    * Creates a remediation plan for a PDF job
    *
@@ -40,7 +43,7 @@ class PdfRemediationService {
     logger.info(`[PDF Remediation] Creating remediation plan for job ${jobId}`);
 
     // Fetch job
-    const job = await prisma.job.findUnique({
+    const job = await this.prisma.job.findUnique({
       where: { id: jobId },
     });
 
@@ -120,7 +123,7 @@ class PdfRemediationService {
     };
 
     // Store plan in database as BATCH_VALIDATION job
-    await prisma.job.create({
+    await this.prisma.job.create({
       data: {
         id: nanoid(),
         tenantId: job.tenantId,
@@ -153,7 +156,7 @@ class PdfRemediationService {
   async getRemediationPlan(jobId: string): Promise<RemediationPlan> {
     logger.info(`[PDF Remediation] Retrieving plan for job ${jobId}`);
 
-    const planJob = await prisma.job.findFirst({
+    const planJob = await this.prisma.job.findFirst({
       where: {
         type: 'BATCH_VALIDATION',
         input: {
@@ -256,7 +259,7 @@ class PdfRemediationService {
       `[PDF Remediation] Updating task ${taskId} status to ${request.status}`
     );
 
-    return await prisma.$transaction(async (tx) => {
+    return await this.prisma.$transaction(async (tx) => {
       // Find the plan job
       const planJob = await tx.job.findFirst({
         where: {
@@ -365,6 +368,9 @@ class PdfRemediationService {
    * @returns Plan severity string
    */
   private mapIssueSeverity(severity: string): string {
+    // Normalize to uppercase for consistent lookup
+    const normalizedSeverity = severity.toUpperCase();
+
     const map: Record<string, string> = {
       CRITICAL: 'critical',
       MAJOR: 'serious',
@@ -372,7 +378,7 @@ class PdfRemediationService {
       INFO: 'minor',
     };
 
-    return map[severity] || 'moderate';
+    return map[normalizedSeverity] || 'moderate';
   }
 
   /**
@@ -413,10 +419,22 @@ class PdfRemediationService {
     };
 
     for (const task of plan.tasks) {
-      // Count by status
-      const status = task.status.toLowerCase() as keyof typeof byStatus;
-      if (status in byStatus) {
-        byStatus[status]++;
+      // Count by status - normalize status strings to match byStatus keys
+      let normalizedStatus = task.status.toLowerCase().replace(/[_-]/g, '');
+
+      // Map common variants to byStatus keys
+      const statusMap: Record<string, keyof typeof byStatus> = {
+        'inprogress': 'inProgress',
+        'notstarted': 'pending',  // map notStarted/NOT_STARTED to pending
+        'pending': 'pending',
+        'completed': 'completed',
+        'failed': 'failed',
+        'skipped': 'skipped',
+      };
+
+      const mappedStatus = statusMap[normalizedStatus];
+      if (mappedStatus && mappedStatus in byStatus) {
+        byStatus[mappedStatus]++;
       }
 
       // Count by type
@@ -449,4 +467,4 @@ class PdfRemediationService {
 }
 
 // Export singleton instance
-export const pdfRemediationService = new PdfRemediationService();
+export const pdfRemediationService = new PdfRemediationService(prisma);

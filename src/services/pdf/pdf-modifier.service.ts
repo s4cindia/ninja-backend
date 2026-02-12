@@ -5,7 +5,7 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../../lib/logger';
@@ -151,7 +151,7 @@ export class PdfModifierService {
         result.warnings.push(`Large PDF file: ${sizeMB.toFixed(2)} MB`);
       }
 
-      logger.info('PDF validation complete', result);
+      logger.info('PDF validation complete', { valid: result.valid, errors: result.errors.length, warnings: result.warnings.length });
     } catch (error) {
       result.valid = false;
       result.errors.push(`Validation error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -247,7 +247,13 @@ export class PdfModifierService {
       if (metadata?.title) doc.setTitle(metadata.title);
       if (metadata?.author) doc.setAuthor(metadata.author);
       if (metadata?.subject) doc.setSubject(metadata.subject);
-      if (metadata?.keywords) doc.setKeywords(metadata.keywords);
+      if (metadata?.keywords) {
+        // Convert keywords string to array (split by comma, semicolon, or wrap single string)
+        const keywordsArray = metadata.keywords.includes(',') || metadata.keywords.includes(';')
+          ? metadata.keywords.split(/[,;]/).map(k => k.trim()).filter(k => k.length > 0)
+          : [metadata.keywords];
+        doc.setKeywords(keywordsArray);
+      }
       if (metadata?.creator) doc.setCreator(metadata.creator);
       if (metadata?.producer) doc.setProducer(metadata.producer);
 
@@ -330,14 +336,22 @@ export class PdfModifierService {
   async setMarkedFlag(doc: PDFDocument, marked: boolean = true): Promise<ModificationResult> {
     try {
       const catalog = doc.catalog;
-      const before = catalog.get(PDFName.of('Marked'))?.toString() || 'Not set';
 
-      // Set Marked flag in catalog
-      catalog.set(PDFName.of('Marked'), marked);
+      // Get or create MarkInfo dictionary
+      let markInfo = catalog.get(PDFName.of('MarkInfo'));
+      if (!markInfo || !(markInfo instanceof PDFDict)) {
+        markInfo = doc.context.obj({});
+        catalog.set(PDFName.of('MarkInfo'), markInfo);
+      }
+
+      const before = (markInfo as PDFDict).get(PDFName.of('Marked'))?.toString() || 'Not set';
+
+      // Set Marked flag in MarkInfo dictionary
+      (markInfo as PDFDict).set(PDFName.of('Marked'), marked ? PDFBool.True : PDFBool.False);
 
       const after = marked ? 'true' : 'false';
 
-      logger.info('Set Marked flag in PDF catalog', { marked, before, after });
+      logger.info('Set Marked flag in MarkInfo dictionary', { marked, before, after });
 
       return {
         success: true,
@@ -365,15 +379,15 @@ export class PdfModifierService {
 
       // Get or create ViewerPreferences dictionary
       let viewerPrefs = catalog.get(PDFName.of('ViewerPreferences'));
-      if (!viewerPrefs) {
+      if (!viewerPrefs || !(viewerPrefs instanceof PDFDict)) {
         viewerPrefs = doc.context.obj({});
         catalog.set(PDFName.of('ViewerPreferences'), viewerPrefs);
       }
 
-      const before = viewerPrefs.get?.(PDFName.of('DisplayDocTitle'))?.toString() || 'Not set';
+      const before = (viewerPrefs as PDFDict).get(PDFName.of('DisplayDocTitle'))?.toString() || 'Not set';
 
       // Set DisplayDocTitle in ViewerPreferences
-      viewerPrefs.set(PDFName.of('DisplayDocTitle'), display);
+      (viewerPrefs as PDFDict).set(PDFName.of('DisplayDocTitle'), display ? PDFBool.True : PDFBool.False);
 
       const after = display ? 'true' : 'false';
 
@@ -403,17 +417,17 @@ export class PdfModifierService {
     try {
       const catalog = doc.catalog;
 
-      // Get MarkInfo dictionary
+      // Get or create MarkInfo dictionary
       let markInfo = catalog.get(PDFName.of('MarkInfo'));
-      if (!markInfo) {
+      if (!markInfo || !(markInfo instanceof PDFDict)) {
         markInfo = doc.context.obj({});
         catalog.set(PDFName.of('MarkInfo'), markInfo);
       }
 
-      const before = markInfo.get?.(PDFName.of('Suspects'))?.toString() || 'Not set';
+      const before = (markInfo as PDFDict).get(PDFName.of('Suspects'))?.toString() || 'Not set';
 
       // Set Suspects flag in MarkInfo
-      markInfo.set(PDFName.of('Suspects'), suspects);
+      (markInfo as PDFDict).set(PDFName.of('Suspects'), suspects ? PDFBool.True : PDFBool.False);
 
       const after = suspects ? 'true' : 'false';
 

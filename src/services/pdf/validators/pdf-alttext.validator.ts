@@ -182,7 +182,7 @@ class PDFAltTextValidator {
         element: image.id,
         pageNumber: image.pageNumber,
       });
-      console.log('[DEBUG] Created issue with pageNumber:', issue.pageNumber, 'for image on page', image.pageNumber);
+      logger.debug(`[DEBUG] Created issue with pageNumber: ${issue.pageNumber} for image on page ${image.pageNumber}`);
       issues.push(issue);
       return issues;
     }

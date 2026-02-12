@@ -77,6 +77,16 @@ export const filterTasksSchema = {
 };
 
 /**
+ * Schema for executing auto-remediation
+ * POST /api/v1/pdf/:jobId/remediation/execute
+ */
+export const executeAutoRemediationSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+  }),
+};
+
+/**
  * Type exports for use in controllers
  */
 export type TaskStatus = z.infer<typeof taskStatusSchema>;

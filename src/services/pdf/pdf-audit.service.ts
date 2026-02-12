@@ -378,16 +378,16 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
    * Generate audit report
    *
    * @param validation - Validation result
-   * @param parsed - Parsed PDF data
    * @param jobId - Job ID
    * @param fileName - File name
+   * @param parsed - Parsed PDF data (optional)
    * @returns Complete audit report
    */
   protected async generateReport(
     validation: PdfValidationResult,
-    parsed: PdfParseResult,
     jobId: string,
-    fileName: string
+    fileName: string,
+    parsed?: PdfParseResult
   ): Promise<AuditReport> {
     logger.info(`[PdfAudit] Generating report for ${fileName}...`);
 
@@ -399,7 +399,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     // Debug: Check if pageNumber is present in issues
     const sampleAltTextIssue = validation.issues.find(i => i.source === 'pdf-alttext');
     if (sampleAltTextIssue) {
-      console.log('[DEBUG] Sample alt-text issue BEFORE report creation:', JSON.stringify(sampleAltTextIssue, null, 2));
+      logger.debug(`[DEBUG] Sample alt-text issue BEFORE report creation: ${JSON.stringify(sampleAltTextIssue, null, 2)}`);
     }
 
     const report: AuditReport = {
@@ -412,7 +412,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       wcagMappings,
       metadata: {
         validator: 'PDF Accessibility Audit',
-        pageCount: parsed.metadata.pageCount,
+        pageCount: parsed?.metadata.pageCount || 1,
         categorizedIssues: {
           structure: validation.structureIssues.length,
           altText: validation.altTextIssues.length,
@@ -710,7 +710,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
       // Generate report
       logger.info(`[PdfAudit] Generating report...`);
-      const report = await this.generateReport(validation, parsed, jobId, fileName);
+      const report = await this.generateReport(validation, jobId, fileName, parsed);
       logger.info(`[PdfAudit] Audit complete - Score: ${report.score}, Issues: ${report.issues.length}`);
 
       return report;

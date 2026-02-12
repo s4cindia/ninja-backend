@@ -120,12 +120,21 @@ class FileStorageService {
       // If it's a local path, read directly
       if (!fileUrlOrPath.startsWith('http')) {
         // Handle both absolute and relative paths
-        const filePath = fileUrlOrPath.startsWith('/')
+        let candidatePath = fileUrlOrPath.startsWith('/')
           ? fileUrlOrPath
           : path.join(STORAGE_BASE, fileUrlOrPath);
 
-        const buffer = await fs.readFile(filePath);
-        logger.info(`Downloaded file from ${filePath}`);
+        // Resolve to absolute path to prevent path traversal
+        const resolvedPath = path.resolve(candidatePath);
+        const resolvedBase = path.resolve(STORAGE_BASE);
+
+        // Validate that resolved path is inside STORAGE_BASE
+        if (!resolvedPath.startsWith(resolvedBase + path.sep) && resolvedPath !== resolvedBase) {
+          throw new Error('Path traversal attempt detected - access denied');
+        }
+
+        const buffer = await fs.readFile(resolvedPath);
+        logger.info(`Downloaded file from ${resolvedPath}`);
         return buffer;
       }
 

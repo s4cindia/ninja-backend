@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import { JobStatus, PrismaClient } from '@prisma/client';
 import { pdfRemediationService } from './pdf-remediation.service';
 import type { RemediationTask } from '../../types/pdf-remediation.types';
 
@@ -42,6 +43,8 @@ export interface VerificationResult {
  * PDF Verification Service
  */
 class PdfVerificationService {
+  constructor(private readonly prisma: PrismaClient) {}
+
   /**
    * Verify remediation by re-auditing the PDF
    *
@@ -324,7 +327,7 @@ class PdfVerificationService {
     logger.info(`[PDF Verification] Triggering re-audit for job ${originalJobId}`);
 
     // Get original job details
-    const originalJob = await prisma.job.findUnique({
+    const originalJob = await this.prisma.job.findUnique({
       where: { id: originalJobId },
     });
 
@@ -333,13 +336,13 @@ class PdfVerificationService {
     }
 
     // Create new job for re-audit
-    const reAuditJob = await prisma.job.create({
+    const reAuditJob = await this.prisma.job.create({
       data: {
         id: nanoid(),
         tenantId: originalJob.tenantId,
         userId: originalJob.userId,
         type: 'PDF_ACCESSIBILITY',
-        status: 'PENDING',
+        status: JobStatus.QUEUED,
         input: {
           fileName: fileName.replace('.pdf', '_remediated.pdf'),
           originalJobId,
@@ -358,4 +361,4 @@ class PdfVerificationService {
 }
 
 // Export singleton instance
-export const pdfVerificationService = new PdfVerificationService();
+export const pdfVerificationService = new PdfVerificationService(prisma);

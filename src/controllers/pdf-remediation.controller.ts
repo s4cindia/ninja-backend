@@ -335,6 +335,12 @@ export class PdfRemediationController {
 
         logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
 
+        // Sanitize result by removing Buffer and converting to plain JSON
+        const { remediatedPdfBuffer, ...sanitizedResult } = result;
+
+        // Convert to plain JSON to ensure compatibility with Prisma Json type
+        const remediationResultJson = JSON.parse(JSON.stringify(sanitizedResult));
+
         // Update job output with remediated file URL
         await prisma.job.update({
           where: { id: jobId },
@@ -342,7 +348,7 @@ export class PdfRemediationController {
             output: {
               ...(job.output as Record<string, unknown>),
               remediatedFileUrl,
-              remediationResult: result,
+              remediationResult: remediationResultJson,
             },
             updatedAt: new Date(),
           },

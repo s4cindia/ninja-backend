@@ -710,19 +710,19 @@ export class PdfController {
         // Debug: Log sample issues to check if pageNumber is present
         const issues = auditReport.issues as Array<Record<string, unknown>> | undefined;
         if (issues && issues.length > 0) {
-          console.log('[DEBUG] Total issues:', issues.length);
-          console.log('[DEBUG] First issue:', JSON.stringify(issues[0], null, 2));
+          logger.debug(`[DEBUG] Total issues: ${issues.length}`);
+          logger.debug(`[DEBUG] First issue: ${JSON.stringify(issues[0], null, 2)}`);
 
           // Find and log an alt-text issue
           const altTextIssue = issues.find(i => i.source === 'pdf-alttext');
           if (altTextIssue) {
-            console.log('[DEBUG] Sample alt-text issue:', JSON.stringify(altTextIssue, null, 2));
+            logger.debug(`[DEBUG] Sample alt-text issue: ${JSON.stringify(altTextIssue, null, 2)}`);
           }
 
           // Find and log a table issue
           const tableIssue = issues.find(i => i.source === 'pdf-table');
           if (tableIssue) {
-            console.log('[DEBUG] Sample table issue:', JSON.stringify(tableIssue, null, 2));
+            logger.debug(`[DEBUG] Sample table issue: ${JSON.stringify(tableIssue, null, 2)}`);
           }
         }
 

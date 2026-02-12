@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
+import { pdfModifierService, type ModificationResult } from '../../../../src/services/pdf/pdf-modifier.service';
 import { PDFDocument, PDFName } from 'pdf-lib';
 import * as fs from 'fs/promises';
 
