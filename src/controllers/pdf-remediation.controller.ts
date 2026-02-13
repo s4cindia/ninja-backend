@@ -466,6 +466,14 @@ export class PdfRemediationController {
         });
       }
 
+      // Title field requires a non-empty value
+      if (field === 'title' && (typeof value !== 'string' || value.trim() === '')) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Title value is required and cannot be empty' },
+        });
+      }
+
       if (!tenantId) {
         return res.status(401).json({
           success: false,
@@ -482,6 +490,14 @@ export class PdfRemediationController {
         return res.status(404).json({
           success: false,
           error: { message: 'Job not found' },
+        });
+      }
+
+      // Ensure this is a PDF job
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Job is not a PDF accessibility job' },
         });
       }
 
@@ -606,6 +622,14 @@ export class PdfRemediationController {
         return res.status(404).json({
           success: false,
           error: { message: 'Job not found' },
+        });
+      }
+
+      // Ensure this is a PDF job
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Job is not a PDF accessibility job' },
         });
       }
 
