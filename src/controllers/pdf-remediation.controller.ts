@@ -677,15 +677,17 @@ export class PdfRemediationController {
         case 'language':
           result = await pdfModifierService.addLanguage(pdfDoc, value || 'en-US');
           break;
-        case 'title':
-          if (!value) {
+        case 'title': {
+          const trimmed = value?.toString().trim();
+          if (!trimmed || trimmed.length === 0) {
             return res.status(400).json({
               success: false,
-              error: { message: 'Title value is required' },
+              error: { message: 'Title value is required and cannot be empty' },
             });
           }
-          result = await pdfModifierService.addTitle(pdfDoc, value);
+          result = await pdfModifierService.addTitle(pdfDoc, trimmed);
           break;
+        }
         case 'metadata':
           result = await pdfModifierService.addMetadata(pdfDoc);
           break;
