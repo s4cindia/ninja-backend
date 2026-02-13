@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { nanoid } from 'nanoid';
-import { Prisma } from '@prisma/client';
+import { Prisma, FileStatus } from '@prisma/client';
+import fs from 'fs/promises';
 import { validateFilePath } from '../utils/path-validator';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
@@ -8,6 +9,7 @@ import { imageExtractorService } from '../services/pdf/image-extractor.service';
 import { structureAnalyzerService } from '../services/pdf/structure-analyzer.service';
 import { pdfAuditService } from '../services/pdf/pdf-audit.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
@@ -870,6 +872,191 @@ export class PdfController {
         },
       });
     }
+  }
+
+  async auditFromFileId(req: AuthenticatedRequest, res: Response) {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.id;
+    const { fileId } = req.body;
+    let previousFileStatus: FileStatus | null = null;
+
+    try {
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required',
+        });
+      }
+
+      if (!fileId) {
+        return res.status(400).json({
+          success: false,
+          error: 'fileId is required',
+        });
+      }
+
+      // Atomically update file status from UPLOADED to PROCESSING
+      const atomicUpdate = await prisma.file.updateMany({
+        where: {
+          id: fileId,
+          tenantId,
+          status: 'UPLOADED',
+        },
+        data: { status: 'PROCESSING' },
+      });
+
+      if (atomicUpdate.count === 0) {
+        const existingFile = await prisma.file.findFirst({
+          where: { id: fileId, tenantId },
+        });
+
+        if (!existingFile) {
+          return res.status(404).json({
+            success: false,
+            error: 'File not found',
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: `File not ready for processing. Status: ${existingFile.status}`,
+        });
+      }
+
+      previousFileStatus = FileStatus.UPLOADED;
+
+      const fileRecord = await prisma.file.findUnique({
+        where: { id: fileId },
+      });
+
+      if (!fileRecord) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: FileStatus.UPLOADED },
+        }).catch(() => {});
+        return res.status(500).json({
+          success: false,
+          error: 'File record not found after update',
+        });
+      }
+
+      const job = await prisma.job.create({
+        data: {
+          id: nanoid(),
+          tenantId,
+          userId,
+          type: 'PDF_ACCESSIBILITY',
+          status: 'QUEUED',
+          input: {
+            fileId: fileRecord.id,
+            fileName: fileRecord.originalName,
+            mimeType: fileRecord.mimeType,
+            size: fileRecord.size,
+            storageType: fileRecord.storageType,
+            storagePath: fileRecord.storagePath,
+          },
+          updatedAt: new Date(),
+        },
+      });
+
+      res.status(202).json({
+        success: true,
+        data: {
+          jobId: job.id,
+          status: 'QUEUED',
+          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
+        },
+      });
+
+      processPdfAuditInBackground(job.id, fileRecord).catch((error) => {
+        logger.error(`Background PDF audit failed for job ${job.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      });
+
+    } catch (error) {
+      logger.error(`PDF audit from fileId failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      // Roll back file status when request handler fails
+      if (previousFileStatus) {
+        await prisma.file.update({
+          where: { id: fileId },
+          data: { status: previousFileStatus },
+        }).catch(() => {});
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: 'PDF audit failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+}
+
+async function processPdfAuditInBackground(
+  jobId: string,
+  file: { id: string; originalName: string; storageType: string; storagePath: string | null; path: string | null }
+): Promise<void> {
+  try {
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: 'PROCESSING', startedAt: new Date() },
+    });
+
+    // Get file buffer with proper null checks
+    let fileBuffer: Buffer;
+    if (file.storageType === 'S3' && file.storagePath) {
+      logger.info(`Background: Fetching PDF from S3: ${file.storagePath}`);
+      fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+    } else if (file.path) {
+      logger.info(`Background: Reading PDF from local path: ${file.path}`);
+      fileBuffer = await fs.readFile(file.path);
+    } else {
+      throw new Error('No valid file path available (neither S3 nor local)');
+    }
+
+    await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
+
+    const result = await pdfAuditService.runAuditFromBuffer(
+      fileBuffer,
+      jobId,
+      file.originalName
+    );
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'COMPLETED',
+        output: JSON.parse(JSON.stringify({
+          fileName: file.originalName,
+          auditReport: result,
+          scanLevel: 'basic',
+        })) as Prisma.InputJsonObject,
+        completedAt: new Date(),
+      },
+    });
+
+    await prisma.file.update({
+      where: { id: file.id },
+      data: { status: FileStatus.PROCESSED },
+    });
+
+    logger.info(`Background PDF audit completed for job ${jobId}`);
+  } catch (error) {
+    logger.error(`PDF audit processing failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'FAILED',
+        error: error instanceof Error ? error.message : 'Unknown error',
+        completedAt: new Date(),
+      },
+    }).catch(() => {});
+
+    await prisma.file.update({
+      where: { id: file.id },
+      data: { status: FileStatus.ERROR },
+    }).catch(() => {});
   }
 }
 

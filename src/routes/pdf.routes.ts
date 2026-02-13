@@ -101,6 +101,25 @@ router.post(
 );
 
 /**
+ * POST /pdf/audit-file
+ * Audit a PDF file from an existing file ID
+ *
+ * Used for two-step upload flow:
+ * 1. Upload file to S3 (via presigned URL or /files/upload)
+ * 2. Call this endpoint with fileId to start audit
+ *
+ * @body fileId - File ID from previous upload
+ * @returns { jobId, status, message }
+ */
+router.post('/audit-file', authenticate, async (req, res, next) => {
+  try {
+    return await pdfController.auditFromFileId(req as any, res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * POST /pdf/job/:jobId/re-scan
  * Re-run audit with different scan level
  *
