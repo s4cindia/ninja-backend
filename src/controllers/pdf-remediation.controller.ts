@@ -11,7 +11,7 @@ import prisma from '../lib/prisma';
 import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
-import { PDFName } from 'pdf-lib';
+import { PDFName, PDFDict } from 'pdf-lib';
 
 export class PdfRemediationController {
   /**
@@ -526,7 +526,7 @@ export class PdfRemediationController {
         case 'metadata': {
           // Read current MarkInfo from catalog
           const markInfo = pdfDoc.catalog.get(PDFName.of('MarkInfo'));
-          if (markInfo) {
+          if (markInfo instanceof PDFDict) {
             const marked = markInfo.get(PDFName.of('Marked'));
             currentValue = marked ? `Marked: ${marked.toString()}` : 'MarkInfo present but Marked not set';
           } else {
