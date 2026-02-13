@@ -28,9 +28,13 @@ describe('PdfModifierService', () => {
     const mockContext = {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       obj: vi.fn((nameOrObj: any) => {
-        // If it's an object (like {Marked: true}), return it wrapped
+        // If it's an object (like {Marked: true}), return a PDFDict-like object with set method
         if (typeof nameOrObj === 'object') {
-          return nameOrObj;
+          return {
+            ...nameOrObj,
+            set: vi.fn(),
+            get: vi.fn(),
+          };
         }
         // If it's a string, return PDFName
         return PDFName.of(nameOrObj);

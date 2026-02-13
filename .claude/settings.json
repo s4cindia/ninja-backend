@@ -53,11 +53,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR && echo '🔍 Running TypeScript check...' && npx tsc --noEmit 2>&1 | head -20 || true"
+            "command": "bash -o pipefail -c \"cd $CLAUDE_PROJECT_DIR && echo '🔍 Running TypeScript check...' && npx tsc --noEmit 2>&1 | head -20\""
           },
           {
             "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR && echo '🔍 Running lint check...' && npm run lint 2>&1 | head -20 || true"
+            "command": "bash -o pipefail -c \"cd $CLAUDE_PROJECT_DIR && echo '🔍 Running lint check...' && npm run lint 2>&1 | head -20\""
           }
         ]
       }
