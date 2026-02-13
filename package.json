@@ -12,7 +12,8 @@
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src/ tests/ --max-warnings 60"
+    "lint": "eslint src/ tests/ --max-warnings 60",
+    "status": "bash .claude/bin/ninja-status.sh"
   },
   "keywords": [
     "ninja",
