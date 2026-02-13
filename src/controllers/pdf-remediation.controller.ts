@@ -523,10 +523,18 @@ export class PdfRemediationController {
           currentValue = pdfDoc.getCreator() || null;
           proposedValue = proposedValue || 'Ninja Accessibility Tool';
           break;
-        case 'metadata':
-          currentValue = 'Not set';
+        case 'metadata': {
+          // Read current MarkInfo from catalog
+          const markInfo = pdfDoc.catalog.get(PDFName.of('MarkInfo'));
+          if (markInfo) {
+            const marked = markInfo.get(PDFName.of('Marked'));
+            currentValue = marked ? `Marked: ${marked.toString()}` : 'MarkInfo present but Marked not set';
+          } else {
+            currentValue = 'Not set';
+          }
           proposedValue = 'Marked: true';
           break;
+        }
       }
 
       logger.info(`[PDF Remediation] Previewing ${field} fix for issue ${issueId}`);
@@ -636,9 +644,11 @@ export class PdfRemediationController {
         case 'metadata':
           result = await pdfModifierService.addMetadata(pdfDoc);
           break;
-        case 'creator':
-          result = await pdfModifierService.addCreator(pdfDoc, value);
+        case 'creator': {
+          const creatorValue = value || 'Ninja Accessibility Tool';
+          result = await pdfModifierService.addCreator(pdfDoc, creatorValue);
           break;
+        }
         default:
           return res.status(400).json({
             success: false,
