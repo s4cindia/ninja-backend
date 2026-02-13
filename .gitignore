@@ -137,6 +137,7 @@ prompts/
 # Local temporary files
 .backup/
 IMPLEMENTATION_SUMMARY.md
+tmp/
 
 # EPUB storage (persistent)
 data/epub-storage/*
