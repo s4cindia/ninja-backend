@@ -258,12 +258,20 @@ export class PdfModifierService {
       if (metadata?.producer) doc.setProducer(metadata.producer);
 
       // Set marked flag for PDF/UA compliance
+      // IMPORTANT: Only set MarkInfo.Marked if a real tag tree exists
       if (metadata?.marked !== undefined) {
         const catalog = doc.catalog;
-        const markInfo = catalog.context.obj({
-          Marked: metadata.marked,
-        });
-        catalog.set(PDFName.of('MarkInfo'), markInfo);
+
+        // Preserve existing MarkInfo dictionary and merge new values
+        let markInfo = catalog.get(PDFName.of('MarkInfo'));
+        if (!markInfo || !(markInfo instanceof PDFDict)) {
+          // Create new MarkInfo only if none exists
+          markInfo = doc.context.obj({});
+          catalog.set(PDFName.of('MarkInfo'), markInfo);
+        }
+
+        // Update only the Marked field, preserving other fields like Suspects, UserProperties
+        (markInfo as PDFDict).set(PDFName.of('Marked'), metadata.marked ? PDFBool.True : PDFBool.False);
       }
 
       const after: Record<string, string> = {
