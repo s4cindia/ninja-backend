@@ -58,7 +58,7 @@ export interface ValidationResult {
 export class PdfModifierService {
   private backupDir: string;
 
-  constructor(backupDir: string = './tmp/pdf-backups') {
+  constructor(backupDir: string = '/tmp/pdf-backups') {
     this.backupDir = backupDir;
   }
 
