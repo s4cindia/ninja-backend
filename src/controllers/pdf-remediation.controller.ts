@@ -10,8 +10,10 @@ import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
 import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
+import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { PDFName, PDFDict } from 'pdf-lib';
+import path from 'path';
 
 export class PdfRemediationController {
   /**
@@ -449,6 +451,21 @@ export class PdfRemediationController {
       const { field, value } = req.query;
       const tenantId = req.user?.tenantId;
 
+      // Validate query parameters
+      if (typeof field !== 'string' || !['language', 'title', 'creator', 'metadata'].includes(field)) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Invalid or missing field parameter' },
+        });
+      }
+
+      if (value !== undefined && typeof value !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'Invalid value parameter' },
+        });
+      }
+
       if (!tenantId) {
         return res.status(401).json({
           success: false,
@@ -505,11 +522,10 @@ export class PdfRemediationController {
       }
 
       // Load PDF and get current value
-      const { pdfModifierService } = await import('../services/pdf/pdf-modifier.service');
       const pdfDoc = await pdfModifierService.loadPDF(pdfBuffer);
 
       let currentValue: string | null = null;
-      let proposedValue: string = value as string || '';
+      let proposedValue: string = value || '';
 
       switch (field) {
         case 'language':
@@ -535,6 +551,12 @@ export class PdfRemediationController {
           proposedValue = 'Marked: true';
           break;
         }
+        default:
+          logger.error(`[PDF Remediation] Unknown field: ${field}`);
+          return res.status(400).json({
+            success: false,
+            error: { message: `Unknown field: ${field}` },
+          });
       }
 
       logger.info(`[PDF Remediation] Previewing ${field} fix for issue ${issueId}`);
@@ -624,7 +646,6 @@ export class PdfRemediationController {
       }
 
       // Load PDF and apply fix
-      const { pdfModifierService } = await import('../services/pdf/pdf-modifier.service');
       const pdfDoc = await pdfModifierService.loadPDF(pdfBuffer);
 
       let result;
@@ -666,8 +687,9 @@ export class PdfRemediationController {
       // Save modified PDF
       const modifiedBuffer = await pdfModifierService.savePDF(pdfDoc);
 
-      // Save to storage using saveRemediatedFile
-      const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
+      // Save to storage using saveRemediatedFile - handle extension reliably
+      const parsed = path.parse(fileName);
+      const remediatedFileName = `${parsed.name}_remediated${parsed.ext || '.pdf'}`;
       const remediatedFileUrl = await fileStorageService.saveRemediatedFile(
         jobId,
         remediatedFileName,
