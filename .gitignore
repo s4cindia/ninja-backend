@@ -1,5 +1,5 @@
 # Claude Code
-.claude/
+.claude/*
 !.claude/settings.json
 !.claude/bin/
 !.claude/hooks/
