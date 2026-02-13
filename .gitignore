@@ -1,3 +1,10 @@
+# Claude Code
+.claude/
+!.claude/settings.json
+!.claude/bin/
+!.claude/hooks/
+.claude/.enable-status
+
 # Dependencies
 node_modules/
 jspm_packages/
@@ -130,7 +137,6 @@ attached_assets/
 
 # Generated export files
 exports/
-.claude/
 lint errors/
 prompts/
 
