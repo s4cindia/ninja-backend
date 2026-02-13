@@ -10,6 +10,7 @@ import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { pdfController } from '../controllers/pdf.controller';
+import { fileStorageService } from '../services/storage/file-storage.service';
 
 const router = Router();
 
@@ -62,10 +63,10 @@ const uploadLimiter = rateLimit({
  * Upload and audit a PDF file
  *
  * Accepts multipart/form-data with PDF file
- * Creates job record and queues audit
+ * Creates job record and runs audit
  *
  * @body file - PDF file (multipart/form-data)
- * @returns { jobId, status: 'queued' }
+ * @returns { jobId, fileName, auditReport }
  */
 router.post(
   '/audit-upload',
@@ -92,21 +93,64 @@ router.post(
         });
       }
 
-      // TODO: Integrate with PdfAuditService when implemented (US-PDF-1.2)
-      // For now, return stub response
-      res.status(501).json({
-        success: false,
-        error: {
-          message: 'PDF audit service not yet implemented',
-          code: 'NOT_IMPLEMENTED',
-          details: 'The PDF audit orchestration service (US-PDF-1.2) is pending implementation',
-        },
-      });
+      return await pdfController.auditFromBuffer(req as any, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
-      // Future implementation:
-      // const userId = (req as any).user.id;
-      // const result = await pdfAuditController.auditFromBuffer(req.file.buffer, userId, req.file.originalname);
-      // res.json({ success: true, data: result });
+/**
+ * POST /pdf/job/:jobId/re-scan
+ * Re-run audit with different scan level
+ *
+ * @param jobId - Job ID
+ * @body scanLevel - 'basic' | 'comprehensive' | 'custom'
+ * @body customValidators - Optional array of validators (for custom scan)
+ * @returns { success: true, jobId, scanLevel }
+ */
+router.post(
+  '/job/:jobId/re-scan',
+  authenticate,
+  authorizeJob,
+  async (req, res, next) => {
+    try {
+      return await pdfController.reScanJob(req as any, res);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /pdf/job/:jobId/file
+ * Get the PDF file for preview
+ *
+ * @param jobId - Job ID
+ * @returns PDF file stream
+ */
+router.get(
+  '/job/:jobId/file',
+  authenticate,
+  authorizeJob,
+  async (req, res, next) => {
+    try {
+      const { jobId } = req.params;
+      const job = (req as { job: { id: string; input: { fileName?: string } } }).job;
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found',
+        });
+      }
+
+      const fileName = (job.input as { fileName?: string })?.fileName || 'document.pdf';
+      const filePath = await fileStorageService.getFilePath(jobId, fileName);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+      res.sendFile(filePath);
     } catch (error) {
       next(error);
     }
@@ -125,7 +169,7 @@ router.get(
   authenticate,
   authorizeJob,
   async (req, res, next) => {
-    try {
+    try{
       // TODO: Implement job status retrieval
       res.status(501).json({
         success: false,
@@ -155,27 +199,7 @@ router.get(
   '/job/:jobId/audit/result',
   authenticate,
   authorizeJob,
-  async (req, res, next) => {
-    try {
-      // TODO: Implement audit result retrieval
-      res.status(501).json({
-        success: false,
-        error: {
-          message: 'Audit result endpoint not yet implemented',
-          code: 'NOT_IMPLEMENTED',
-        },
-      });
-
-      // Future implementation:
-      // const result = await pdfAuditController.getAuditResult(req.params.jobId);
-      // if (result.status === 'processing') {
-      //   return res.status(202).json({ success: true, data: { status: 'processing' } });
-      // }
-      // res.json({ success: true, data: result });
-    } catch (error) {
-      next(error);
-    }
-  }
+  (req, res) => pdfController.getAuditResult(req, res)
 );
 
 /**

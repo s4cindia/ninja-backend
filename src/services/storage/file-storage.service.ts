@@ -30,12 +30,28 @@ class FileStorageService {
     try {
       const sanitizedFileName = path.basename(fileName);
       const filePath = path.join(STORAGE_BASE, jobId, sanitizedFileName);
-      
+
       const buffer = await fs.readFile(filePath);
       return buffer;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
+      }
+      throw error;
+    }
+  }
+
+  async getFilePath(jobId: string, fileName: string): Promise<string> {
+    const sanitizedFileName = path.basename(fileName);
+    const filePath = path.join(STORAGE_BASE, jobId, sanitizedFileName);
+
+    // Verify file exists
+    try {
+      await fs.access(filePath);
+      return path.resolve(filePath); // Return absolute path for sendFile
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`File not found: ${fileName}`);
       }
       throw error;
     }
@@ -80,17 +96,54 @@ class FileStorageService {
       const sanitizedFileName = path.basename(fileName);
       const ext = path.extname(sanitizedFileName);
       const baseName = sanitizedFileName.slice(0, -ext.length);
-      
+
       const remediatedFileName = baseName.endsWith('_remediated')
         ? sanitizedFileName
         : `${baseName}_remediated${ext}`;
-      
+
       const filePath = path.join(STORAGE_BASE, jobId, 'remediated', remediatedFileName);
       return await fs.readFile(filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return null;
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Download file from URL or file path
+   * For now, supports local file paths. Can be extended to support S3/HTTP URLs.
+   */
+  async downloadFile(fileUrlOrPath: string): Promise<Buffer> {
+    try {
+      // If it's a local path, read directly
+      if (!fileUrlOrPath.startsWith('http')) {
+        // Handle both absolute and relative paths
+        let candidatePath = fileUrlOrPath.startsWith('/')
+          ? fileUrlOrPath
+          : path.join(STORAGE_BASE, fileUrlOrPath);
+
+        // Resolve to absolute path to prevent path traversal
+        const resolvedPath = path.resolve(candidatePath);
+        const resolvedBase = path.resolve(STORAGE_BASE);
+
+        // Validate that resolved path is inside STORAGE_BASE
+        if (!resolvedPath.startsWith(resolvedBase + path.sep) && resolvedPath !== resolvedBase) {
+          throw new Error('Path traversal attempt detected - access denied');
+        }
+
+        const buffer = await fs.readFile(resolvedPath);
+        logger.info(`Downloaded file from ${resolvedPath}`);
+        return buffer;
+      }
+
+      // TODO: Add S3/HTTP support when needed
+      throw new Error('HTTP/S3 URL download not yet implemented');
+    } catch (error) {
+      logger.error(`Failed to download file from ${fileUrlOrPath}`, {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       throw error;
     }
   }

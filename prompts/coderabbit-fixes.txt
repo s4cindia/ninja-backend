@@ -1,143 +1,37 @@
-In @.github/workflows/deploy-backend-production.yml:
-- Line 1: The file's first line "name: Deploy Backend to Production" currently
-has CRLF line endings which YAMLlint rejects; re-save the workflow file using LF
-line endings (Unix style) so the top-level "name: Deploy Backend to Production"
-line and the rest of the YAML use LF only, then commit the updated file to
-eliminate CI lint failures.
+In @.claude/hooks/branch-protection.sh:
+- Around line 12-31: The hook only checks the current branch (BRANCH) so pushes
+like `git push origin HEAD:main` bypass it; update the check for git push to
+parse push targets in COMMAND and reject any push that targets main/master
+(e.g., detect patterns like :main, :master, refs/heads/main, refs/heads/master,
+or explicit remote/branch targets ending in /main or /master). Specifically, in
+the block that inspects COMMAND and BRANCH, add a regex test against "$COMMAND"
+for push-target patterns (e.g., grep -qE '(:|refs/heads/|/)(main|master)(\s|$)')
+and if matched, print the same error and exit non-zero instead of relying solely
+on BRANCH; keep existing BRANCH check for local pushes as well.
 
-In
-`@attached_assets/Pasted-Create-feedback-collection-service-for-capturing-user-f_1766213675184.txt`:
-- Around line 355-372: getById, updateStatus and getJobFeedback currently call
-feedbackService methods without verifying tenant ownership; update the
-controller calls to pass req.user.tenantId (and req.user.id where appropriate)
-and modify the corresponding service methods (e.g., feedbackService.getFeedback,
-feedbackService.updateStatus, feedbackService.getJobFeedback) to include
-tenantId in their query/filter so returned/updated feedback is scoped to that
-tenant. Ensure the service queries use tenantId equality in their WHERE/filter
-clause (and optionally userId when the operation should be user-scoped) and
-return 404/throw when no matching tenant-scoped record is found.
-- Around line 384-407: In the list handler, validate and sanitize pagination
-inputs before calling feedbackService.listFeedback: parse page/limit from
-req.query using integer conversion, treat NaN or values < 1 as 1, clamp limit to
-a sensible max (e.g., 100), and ensure page is at least 1; then pass the
-sanitized Number(page) and Number(limit) to feedbackService.listFeedback so
-totalPages and pagination calculations cannot become Infinity or negative. Use
-the existing variables page and limit in the list function and apply these
-guards immediately prior to the feedbackService.listFeedback call.
-- Around line 143-186: The listFeedback implementation loads all USER_FEEDBACK
-jobs into memory then filters/paginates, which won't scale; update listFeedback
-to push filters and pagination into the database by converting the in-memory
-predicates into a prisma query: build a where object starting with { type:
-'USER_FEEDBACK', ...(filters.tenantId && { tenantId: ... }), ...(filters.userId
-&& { userId: ... }) } and add conditions for feedback fields by using Prisma
-JSON filters on job.output (or switch to a dedicated feedback table) so you can
-use prisma.job.findMany({ where, orderBy: { createdAt: 'desc' }, skip: offset,
-take: limit }) and prisma.job.count({ where }) to get total; keep function name
-listFeedback and return the same PaginatedResult shape.
+In @.claude/settings.json:
+- Around line 44-46: Update the inline node -e Windows-path guard in the command
+(the part that defines variable f) so it rejects any POSIX-style absolute or
+home paths by checking whether f starts with a forward slash or tilde instead of
+only checking for /tmp/ and /home/; replace the current condition that uses
+f.startsWith('/tmp/') || f.startsWith('/home/') with a check that f starts with
+'/' or '~' and keep the existing error message and exit code behavior.
 
-In
-`@attached_assets/Pasted-Fix-CI-CD-pipeline-failure-integration-tests-should-not_1765511985483.txt`:
-- Around line 8-55: Replace the try/catch + console.warn pattern by using
-Vitest's conditional skipping so tests clearly show as skipped when the API
-isn't required: use the existing REQUIRE_API and API_BASE_URL symbols to choose
-the test runner (e.g. const suite = REQUIRE_API ? describe : describe.skip; then
-call suite('Health API', ...) or alternatively use REQUIRE_API ? describe(...) :
-describe.skip(...)) and remove the per-test try/catch blocks and console.warns
-so assertions always run when the suite executes and failures surface normally.
-
-In
-`@attached_assets/Pasted-Fix-remaining-CodeRabbit-review-issues-in-feedback-cont_1766235661865.txt`:
-- Line 70: The assignment const limit = Number(req.query.limit) || 10 can
-produce NaN which will bypass later range checks; update the handler where limit
-is parsed (the const limit declaration that reads Number(req.query.limit)) to
-explicitly parse and validate: convert req.query.limit to a number, check isNaN
-and fallback to the default (10) if invalid, then apply the existing min/max
-range validation against that sanitized value; reference the same variable name
-limit and the use of req.query.limit so you change the exact parsing logic where
-limit is declared.
-
-In
-`@attached_assets/Pasted-Fix-security-and-performance-issues-from-CodeRabbit-Cod_1766234493609.txt`:
-- Around line 46-73: The code currently performs prisma.feedback.update then
-checks updated.tenantId, causing a TOCTOU vulnerability; instead perform the
-tenant check atomically by including tenantId in the update query (or use
-updateMany) so the DB enforces ownership: replace prisma.feedback.update(...)
-with either prisma.feedback.updateMany({ where: { id, tenantId }, data: {
-status, ...(response && { response, respondedBy, respondedAt: new Date() }) } })
-and then verify the count (>0) to return the updated record or throw a clear
-"Feedback not found or unauthorized" error, or if you have a composite unique
-constraint use the composite where (e.g., where: { id_tenantId: { id, tenantId }
-}) with prisma.feedback.update; remove the post-update tenant check against
-updated.tenantId and adjust P2025 handling accordingly.
-
-In
-`@attached_assets/Pasted-Fix-the-two-remaining-CodeRabbit-issues-that-were-not-c_1765508056328.txt`:
-- Around line 1-139: Update the ESM/CommonJS alignment: change the "module"
-setting in tsconfig.json from "commonjs" to "ES2022" and add "type": "module" to
-package.json (or if you prefer keeping CommonJS, instead change package.json to
-"type": "commonjs") so both module systems match; after updating, rebuild and
-run tests/lint to verify the other changes (recalculateResultForFilteredIssues,
-validateHeadings, validateReadingOrder, validateLanguage) still work with the
-new module format.
-
-In `@US-PDF-2.2.txt`:
-- Around line 84-87: PdfStructureValidator references types from a non-existent
-feature/pdf-validators branch; fix by either creating that branch (and provide
-the exact commit SHA/tag to reference) or updating imports to an existing
-module. Locate usages of PdfStructureValidator, PdfAltTextValidator,
-PdfContrastValidator, and PdfTableValidator and update their type imports to
-point to a shared types module (e.g., create/export validator types from a new
-shared package or common/types module) as a fallback; if you plan to create the
-branch, add the commit SHA/tag in the import docs and CI, otherwise refactor the
-code to import the types from the new shared location and remove any
-branch-dependent import paths.
-- Around line 44-47: Update the Gemini integration spec to mandate
-production-grade resilience for the existing gemini.service.ts implementation:
-require exponential backoff with jitter for retries (replace any fixed-delay
-retry in functions handling Gemini calls), enforce multi-dimensional rate
-limiting tracking both requests-per-minute (RPM) and tokens-per-minute (TPM)
-budgets (not just request counts), specify per-request timeouts/deadlines (e.g.,
-30s max) and how to surface timeout errors, define quota exhaustion handling
-that distinguishes transient per-minute throttling (retry with backoff) from
-per-day quota exhaustion (fail fast and surface a clear error), describe
-graceful fallback behavior when Gemini is unavailable (degrade to simpler local
-analysis or mark audit as partially completed), and add cost-throttling controls
-such as batch operation limits and token budget caps to prevent runaway billing;
-reference the existing retry logic in gemini.service.ts as the place to
-implement these behaviors and include links to Google’s Gemini rate-limiting
-best practices for implementers.
-
-In `@US-PDF-2.4-IMPLEMENTATION.md`:
-- Around line 224-246: Add a language identifier to the two fenced code blocks
-under the "Good Data Table" and "Layout Table (Should be Artifact)" headings:
-modify the opening fences so they read ```text instead of plain ```, i.e.,
-update the fence that precedes the block starting "Table (5×3)" and the fence
-that precedes the block starting "Table (1×5) - Single column layout" to include
-"text" as the language.
-
-In `@US-PDF-2.4.txt`:
-- Line 61: Update the test plan for pdf-table.validator.test.ts to replace
-"various table scenarios" with an explicit list of test cases: include
-well-formed data tables (tagged, headers, scope attributes), tables missing
-Table tags (critical), data tables without headers (serious), headers present
-but missing scope attributes (moderate), tables without summaries/captions
-(minor), layout tables marked as artifacts and layout tables not marked as
-artifacts, complex id/headers association tests, irregular structures
-(mismatched row lengths), edge cases (empty tables, nested tables, merged cells,
-tables spanning pages), and ensure separate tests cover each Matterhorn
-checkpoint (15-001 through 15-005) and each relevant WCAG criterion (1.3.1,
-1.3.2); enumerate these scenarios in the test file header and create one test
-case per scenario in pdf-table.validator.test.ts so coverage is explicit and
-traceable.
-- Around line 7-60: Update the checkpoint mappings and PDF-specific guidance:
-replace the incorrect Matterhorn mappings with the actual definitions for 15-001
-through 15-005 (15-001 header row cell not tagged; 15-002 header column cell not
-tagged; 15-003 TH missing scope when headers/IDs are required; 15-004 content
-tagged as a table though not row/column-organized; 15-005 ambiguous data cell
-header determination), remove any reference to HTML/ARIA role="presentation" and
-instead state the PDF mechanism (/Artifact marking) for presentation-only
-tables, and add the missing edge cases (merged/spanning cells, nested tables,
-tables split across pages, complex headers requiring headers/IDs associations);
-ensure the text references PdfStructureValidator and the existing structure
-analyzer table-detection logic and include updated suggestions for mapping these
-checks to WCAG 1.3.1/1.3.2 and the appropriate severity levels.
+In `@CLAUDE.md`:
+- Around line 79-82: Update the inconsistent backend repo name/path in the
+document by choosing one canonical name (either "ninja" or "ninja-backend") and
+replacing the other occurrence so both the "Development Environment" block and
+the "The workspace contains multiple repositories" section reference the same
+repo name and path; specifically edit the text that currently reads
+`ninja-backend` at the repositories list or the earlier reference to `ninja` so
+both show the identical identifier and filesystem path (e.g., `ninja-backend` at
+C:\Users\avrve\projects\ninja-backend or `ninja` at
+C:\Users\avrve\projects\ninja), and ensure any README or workspace mentions in
+the same file are updated to match the chosen canonical name.
+- Around line 133-136: The CLI example uses the incorrect "npm test --
+--related" invocation; replace that instruction to call the Vitest subcommand
+directly by updating the text that currently shows "npm test -- --related" to
+instruct users to run the vitest related command (e.g., "npx vitest related
+<path/to/changed/file>") or add an npm script named something like
+"test:related" that runs "vitest related --run" and reference that script
+instead of the broken npm test form.

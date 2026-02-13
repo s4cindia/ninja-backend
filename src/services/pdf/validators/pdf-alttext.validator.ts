@@ -168,7 +168,7 @@ class PDFAltTextValidator {
 
     // Check if image has alt text
     if (!image.altText) {
-      issues.push(this.createIssue({
+      const issue = this.createIssue({
         source: 'pdf-alttext',
         severity: 'critical',
         code: 'MATTERHORN-13-002',
@@ -180,7 +180,10 @@ class PDFAltTextValidator {
           : 'Add descriptive alternative text to the image. Alt text should convey the same information as the image.',
         category: 'alt-text',
         element: image.id,
-      }));
+        pageNumber: image.pageNumber,
+      });
+      logger.debug(`[DEBUG] Created issue with pageNumber: ${issue.pageNumber} for image on page ${image.pageNumber}`);
+      issues.push(issue);
       return issues;
     }
 
@@ -200,6 +203,7 @@ class PDFAltTextValidator {
         category: 'alt-text',
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
+        pageNumber: image.pageNumber,
       }));
     }
 
@@ -218,6 +222,7 @@ class PDFAltTextValidator {
         category: 'alt-text',
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
+        pageNumber: image.pageNumber,
       }));
     }
 
@@ -234,6 +239,7 @@ class PDFAltTextValidator {
         category: 'alt-text',
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
+        pageNumber: image.pageNumber,
       }));
     }
 

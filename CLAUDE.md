@@ -48,7 +48,7 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 - **Implementation Style:** Provide **Replit prompts** instead of direct file edits
 - **Repositories:**
   - **Frontend:** `ninja-frontend` → Replit workspace at `C:\Users\avrve\projects\ninja-frontend`
-  - **Backend:** `ninja` → Replit workspace at `C:\Users\avrve\projects\ninja`
+  - **Backend:** `ninja-backend` → Replit workspace at `C:\Users\avrve\projects\ninja-backend`
 - **Testing:** Changes are tested in Replit before committing
 - **Version Control:** Changes committed from Replit workspaces to GitHub
 
@@ -63,6 +63,108 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 - Include file paths, line numbers, and exact code snippets
 - Provide testing instructions after each change
 - Group related changes logically
+
+---
+
+## Windows Development Environment
+
+This project runs on **Windows with MSYS bash**. Always account for Windows-specific considerations:
+
+- **Paths:** Always use Windows-style paths (e.g., `C:\Users\...`) not Linux paths (e.g., `/tmp/`)
+- **File Encoding:** Be aware of UTF-8 BOM and UTF-16 encoding issues when editing files created by PowerShell
+- **Shell Scripts:** When writing shell scripts or hooks, account for MSYS path translation quirks
+- **Line Endings:** Windows uses CRLF (`\r\n`), Linux uses LF (`\n`) - git typically handles this automatically
+
+---
+
+## Project Structure
+
+### Multi-Repository Workspace
+
+The workspace contains multiple repositories:
+- **`ninja-backend`** - Express.js REST API at `C:\Users\avrve\projects\ninja-backend`
+- **`ninja-frontend`** - React + Vite SPA at `C:\Users\avrve\projects\ninja-frontend`
+
+### Critical Rules
+
+- **Always confirm which repo/directory you're working in before making changes**
+- The frontend dev server runs from the workspace directory, not necessarily the git root
+- **Never make changes in the frontend repo when working on a backend task (or vice versa) without explicit user approval**
+- Check `pwd` and `git status` before starting work to verify location
+
+---
+
+## Workflow Rules
+
+### Before Starting Implementation
+
+1. **Read the full prompt/spec file before starting implementation**
+2. Do not begin coding until you've confirmed you have all required context
+3. When the user provides PR review comments, wait for ALL rounds of comments before starting implementation unless told otherwise
+4. **Stay focused on the assigned task** - do not drift to adjacent features or improvements without explicit approval
+
+### During Implementation
+
+- If unsure about scope, ask for clarification before proceeding
+- When working across multiple files, group related changes into logical commits
+- Test changes locally before committing
+- Run lint and typecheck before pushing
+
+---
+
+## API & Integration Conventions
+
+### Backend API Patterns
+
+- **Base Path:** All API routes include `/api/v1` prefix - always include the full path when constructing URLs
+- **Example:** `https://api.example.com/api/v1/jobs/:id` (not `/jobs/:id`)
+
+### Common CI Failure Patterns
+
+When fixing CI errors, check for these most common issues:
+1. **TypeScript type errors** - missing types, incorrect type annotations
+2. **Invalid component prop values** - e.g., button variants that don't exist in the component definition
+3. **Lint warnings** - unused imports, console.logs, etc.
+4. **Test failures** - especially path handling on Windows vs POSIX
+
+---
+
+## Testing & Validation
+
+### Pre-Commit Checklist
+
+Before committing any bug fix or feature:
+
+1. **Run relevant unit tests:**
+   ```bash
+   npx vitest related --run
+   ```
+
+2. **Run type checking:**
+   ```bash
+   npm run typecheck
+   ```
+
+3. **Run linter:**
+   ```bash
+   npm run lint
+   ```
+
+4. **Only commit if all three pass**
+
+### Windows-Specific Testing
+
+- When fixing tests on Windows, verify path handling works for both Windows and POSIX paths
+- Test with both forward slashes and backslashes where applicable
+- Be mindful of case-sensitivity differences (Windows is case-insensitive, Linux is case-sensitive)
+
+### Local CI Validation
+
+To catch CI failures before pushing:
+```bash
+# Run the full CI check locally
+npm run typecheck && npm run lint && npm test
+```
 
 ---
 
@@ -264,16 +366,25 @@ src/
 1. **Create feature branch:**
    ```bash
    git checkout main && git pull && git checkout -b feature/feature-name
+   ```
 
-2. Develop in Replit using prompts provided by Claude
-3. Commit and push:
-git add .
-git commit -m "feat: description"
-git push -u origin feature/feature-name
-4. Create PR:
-gh pr create --title "feat: Title" --body "Description"
-5. Address CodeRabbit review comments
-6. Merge to main triggers deployment to staging
+2. **Develop in Replit** using prompts provided by Claude
+
+3. **Commit and push:**
+   ```bash
+   git add .
+   git commit -m "feat: description"
+   git push -u origin feature/feature-name
+   ```
+
+4. **Create PR:**
+   ```bash
+   gh pr create --title "feat: Title" --body "Description"
+   ```
+
+5. **Address CodeRabbit review comments**
+
+6. **Merge to main** triggers deployment to staging
 
 Commit Message Convention
 
@@ -364,11 +475,14 @@ model ComparisonReport {
   generatedAt     DateTime @default(now())
 }
 
-Staging Database
+### Staging Database
 
-- Host: ep-falling-hall-a16iblwt-pooler.ap-southeast-1.aws.neon.tech
-- Database: neondb
-- Credentials: Stored in Bitwarden and AWS Secrets Manager
+**Connection details are stored securely:**
+- Database credentials and connection strings are stored in **Bitwarden** (team vault) and **AWS Secrets Manager**
+- Never commit database URLs or credentials to git
+- Access staging database connection info from:
+  - Bitwarden: Search for "Ninja Staging Database"
+  - AWS Secrets Manager: `ninja/staging/database`
 
 ---
 Testing Patterns
@@ -628,4 +742,4 @@ Related Documentation
 - ./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md - User documentation
 
 ---
-Last updated: January 14, 2026
+Last updated: February 12, 2026
