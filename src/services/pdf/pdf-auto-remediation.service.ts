@@ -72,6 +72,7 @@ class PdfAutoRemediationService {
     this.registerHandler('PDF-NO-LANGUAGE', this.handleAddLanguage.bind(this));
     this.registerHandler('MATTERHORN-11-001', this.handleAddLanguage.bind(this)); // Missing document language
     this.registerHandler('PDF-NO-TITLE', this.handleAddTitle.bind(this));
+    this.registerHandler('WCAG-2.4.2', this.handleAddTitle.bind(this)); // Document title is not present in metadata
     this.registerHandler('MATTERHORN-01-003', this.handleAddTitle.bind(this)); // Missing document title
     this.registerHandler('PDF-NO-METADATA', this.handleAddMetadata.bind(this));
     this.registerHandler('PDF-NO-CREATOR', this.handleAddCreator.bind(this));
@@ -79,7 +80,7 @@ class PdfAutoRemediationService {
     this.registerHandler('MATTERHORN-01-002', this.handleSetDisplayDocTitle.bind(this)); // DisplayDocTitle not set
     this.registerHandler('MATTERHORN-01-005', this.handleSetSuspectsFlag.bind(this)); // Suspects flag not set
 
-    logger.info('[Auto-Remediation] Registered 10 default handlers (7 unique + 3 Matterhorn aliases)');
+    logger.info('[Auto-Remediation] Registered 11 default handlers (7 unique + 4 WCAG/Matterhorn aliases)');
   }
 
   /**
