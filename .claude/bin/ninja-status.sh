@@ -36,13 +36,19 @@ if [ -d "prisma/migrations" ] && command -v npx >/dev/null 2>&1; then
 fi
 
 # 4. Detect work context from changed files
-#    Cascade: uncommitted → staged → last commit → nothing
+#    Cascade: uncommitted → staged → last commit → modified files
+#    Only fall back if previous command produced no output (not just on failure)
 echo ""
-changed=$(git diff --name-only HEAD 2>/dev/null || \
-          git diff --cached --name-only 2>/dev/null || \
-          git diff --name-only HEAD~1 2>/dev/null || \
-          git ls-files -m 2>/dev/null || \
-          echo "")
+changed=$(git diff --name-only HEAD 2>/dev/null)
+if [ -z "$changed" ]; then
+    changed=$(git diff --cached --name-only 2>/dev/null)
+fi
+if [ -z "$changed" ]; then
+    changed=$(git diff --name-only HEAD~1 2>/dev/null)
+fi
+if [ -z "$changed" ]; then
+    changed=$(git ls-files -m 2>/dev/null)
+fi
 
 if [ -z "$changed" ]; then
     echo "💡 No recent changes detected. Docs: docs/INDEX.md"
