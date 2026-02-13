@@ -125,10 +125,54 @@ git ninja-status
 
 A lightweight hook can display one-line status when you start a Claude Code session. **This is opt-in and disabled by default.**
 
+### Understanding the Session-Start Hook
+
+#### What "Session Start" Means
+
+Every time you launch Claude Code (open the CLI and start a conversation), the **SessionStart hook** runs automatically BEFORE Claude responds to you.
+
+**Example:**
+```bash
+# You open your terminal and type:
+$ claude code
+
+# If SessionStart hook is enabled, it runs first:
+🥷 ninja-backend | 📍 feature/sprint-3 | 📝 5 uncommitted | Full status: npm run status
+
+# Then Claude responds:
+Claude: Hello! How can I help you today?
+```
+
+#### Two-Layer Opt-In Design
+
+**Why Two Layers?**
+
+The hook uses a two-layer design to balance team consistency with individual preference:
+
+**Layer 1: Repository Configuration (Team-Wide)**
+- Hook script exists in `.claude/hooks/session-start.sh` (committed to git)
+- Hook configuration in `.claude/settings.json` (committed to git)
+- Available for all team members
+
+**Layer 2: Personal Opt-In File (Individual Choice)**
+- Hook script checks for `.claude/.enable-status` file
+- If file doesn't exist → hook exits silently (no output)
+- If file exists → hook displays one-line status
+- **File is NOT committed to git** (in `.gitignore`)
+
+This means:
+- ✅ Script is in the repo (everyone has access)
+- ✅ Each developer chooses whether to enable it
+- ✅ No merge conflicts over preferences
+- ✅ No forced behavior on the team
+
 ### Enable (Per Developer, Per Repo)
+
+Each developer can enable the hook independently:
 
 ```bash
 # In the repo where you want automatic status:
+cd ninja-backend
 touch .claude/.enable-status
 ```
 
@@ -147,6 +191,123 @@ When enabled, you'll see:
 ```bash
 rm .claude/.enable-status
 ```
+
+### Personal Preference Examples
+
+#### Developer Alice: Wants auto-status in backend only
+
+```bash
+cd ninja-backend
+touch .claude/.enable-status     # ✅ Enabled here
+
+cd ../ninja-frontend
+# No .enable-status file         # ❌ Disabled here
+```
+
+**Alice's backend sessions:**
+```bash
+$ claude code
+🥷 ninja-backend | 📍 main | 📝 2 uncommitted | Full status: npm run status
+Claude: Hello!
+```
+
+**Alice's frontend sessions:**
+```bash
+$ claude code
+Claude: Hello!
+```
+
+#### Developer Bob: Doesn't want auto-status anywhere
+
+```bash
+# Bob simply never creates .claude/.enable-status
+# All his sessions start immediately without status
+```
+
+**Bob's sessions (all repos):**
+```bash
+$ claude code
+Claude: Hello!
+```
+
+#### Developer Carol: Wants it everywhere
+
+```bash
+cd ninja-backend
+touch .claude/.enable-status
+
+cd ../ninja-frontend
+touch .claude/.enable-status
+```
+
+**Carol's sessions (all repos):**
+```bash
+$ claude code
+🥷 ninja-backend | 📍 main | Full status: npm run status
+Claude: Hello!
+```
+
+### Comparison: Manual vs Automatic
+
+#### Full Status (Manual - Always Available)
+
+```bash
+$ npm run status
+
+🥷 Ninja Backend Status
+────────────────────────
+📦 Repo: ninja-backend
+📍 Branch: feature/sprint-3
+   Last: 9954b86 fix: propagate quality check hook failures
+✅ PostgreSQL: Running
+✅ Redis: Running
+
+💡 Database work detected
+   📄 docs/DATABASE.md
+   ⚠️  Review migration SQL before deploying!
+
+🏃 Active sprint branch: sprint-3
+📝 Uncommitted changes: 5 file(s)
+────────────────────────
+```
+
+**When to use:** When you want comprehensive details about your environment
+
+#### Session-Start Hook (Automatic - Opt-In)
+
+```bash
+$ claude code
+
+🥷 ninja-backend | 📍 feature/sprint-3 | 📝 5 uncommitted | Full status: npm run status
+
+Claude: Hello! How can I help?
+```
+
+**When to use:** Quick context reminder at session start without running a command
+
+**Key difference:** Session-start shows a one-line summary and reminds you that `npm run status` is available for full details.
+
+### Recommendation for New Users
+
+1. **Try the full status first:**
+   ```bash
+   npm run status
+   ```
+
+2. **If you like it, try the auto-status:**
+   ```bash
+   touch .claude/.enable-status
+   claude code  # See if you like the automatic reminder
+   ```
+
+3. **Keep or disable based on preference:**
+   ```bash
+   # Like it? Keep the file
+   # Don't like it? Remove it:
+   rm .claude/.enable-status
+   ```
+
+4. **No pressure either way** - Both approaches give you access to context, just different UX
 
 ## Developer Benefits
 
