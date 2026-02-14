@@ -4,7 +4,7 @@
 
 Frontend CloudFront domain (`https://dhi5xqbewozlg.cloudfront.net`) cannot access backend API (`https://d1ruc3qmc844x9.cloudfront.net`) due to CORS policy errors:
 
-```
+```text
 Access to XMLHttpRequest at 'https://d1ruc3qmc844x9.cloudfront.net/api/v1/jobs/...'
 from origin 'https://dhi5xqbewozlg.cloudfront.net' has been blocked by CORS policy:
 Response to preflight request doesn't pass access control check:
@@ -64,7 +64,7 @@ aws cloudfront create-invalidation \
 2. Reload the frontend page
 3. Look for the API request
 4. Check Response Headers - you should now see:
-   ```
+   ```text
    Access-Control-Allow-Origin: https://dhi5xqbewozlg.cloudfront.net
    Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
    Access-Control-Allow-Headers: Content-Type, Authorization, ...
