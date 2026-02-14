@@ -69,7 +69,7 @@ describe('PDFStructureValidator', () => {
       expect(result.issues.length).toBeGreaterThan(0);
       expect(result.summary.critical).toBe(1);
 
-      const taggedIssue = result.issues.find(i => i.code === 'MATTERHORN-01-003');
+      const taggedIssue = result.issues.find(i => i.code === 'PDF-UNTAGGED');
       expect(taggedIssue).toBeDefined();
       expect(taggedIssue?.severity).toBe('critical');
       expect(taggedIssue?.message).toContain('not tagged');

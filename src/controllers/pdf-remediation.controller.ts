@@ -791,41 +791,77 @@ export class PdfRemediationController {
         return;
       }
 
-      // Get remediated file path from job output
-      const output = job.output as Record<string, unknown>;
-      let remediatedFilePath: string | undefined;
+      // Verify job type is PDF_ACCESSIBILITY
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_JOB_TYPE',
+            message: 'Job is not a PDF accessibility job',
+          },
+        });
+        return;
+      }
 
+      // Define canonical base directory for security
+      const baseDir = path.resolve(process.env.UPLOAD_DIR || './data/epub-storage');
+      const output = job.output as Record<string, unknown>;
+      let remediatedFilePath: string;
+
+      // Get remediated file path with path traversal protection
       if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
-        remediatedFilePath = output.remediatedFileUrl;
-        } else {
+        // Resolve the path and verify it's within baseDir
+        remediatedFilePath = path.resolve(baseDir, output.remediatedFileUrl);
+
+        if (!remediatedFilePath.startsWith(baseDir)) {
+          logger.warn('Path traversal attempt detected', {
+            jobId,
+            requestedPath: output.remediatedFileUrl,
+            resolvedPath: remediatedFilePath,
+            baseDir,
+          });
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_PATH',
+              message: 'Invalid file path',
+            },
+          });
+          return;
+        }
+      } else {
         // Fallback: construct path from job data
         const input = job.input as { fileName?: string };
         const fileName = input?.fileName || 'document.pdf';
         const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
         remediatedFilePath = path.join(
-          process.env.UPLOAD_DIR || './data/epub-storage',
+          baseDir,
           jobId,
           'remediated',
           remediatedFileName
         );
       }
 
-      if (!remediatedFilePath) {
-        res.status(404).json({
-          success: false,
-          error: {
-            code: 'FILE_NOT_FOUND',
-            message: 'Remediated PDF not found',
-          },
-        });
-        return;
+      // Check if file exists before attempting to read
+      const fs = await import('fs/promises');
+      try {
+        await fs.stat(remediatedFilePath);
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') {
+          logger.info('Remediated PDF not found', { jobId, path: remediatedFilePath });
+          res.status(404).json({
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Remediated PDF not found',
+            },
+          });
+          return;
+        }
+        throw statError;
       }
 
-      // Normalize path for Windows
-      remediatedFilePath = remediatedFilePath.replace(/\\/g, '/');
-
       // Read file and send as response
-      const fs = await import('fs/promises');
       const fileBuffer = await fs.readFile(remediatedFilePath);
 
       const input = job.input as { fileName?: string };
