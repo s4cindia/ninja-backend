@@ -449,7 +449,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
     // Matterhorn 01: Tagged PDF
     const untaggedIssues = validation.structureIssues.filter(
-      i => i.code === 'MATTERHORN-01-003' || i.code === 'MATTERHORN-01-004' || i.code === 'PDF-UNTAGGED'
+      i => i.code === 'MATTERHORN-01-004' || i.code === 'PDF-UNTAGGED'
     );
     const isTagged = untaggedIssues.length === 0;
     results.push({

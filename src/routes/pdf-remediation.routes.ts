@@ -118,4 +118,18 @@ router.post(
   (req, res) => pdfRemediationController.applyQuickFix(req, res)
 );
 
+/**
+ * GET /api/v1/pdf/:jobId/remediation/download
+ * Download the remediated PDF file
+ *
+ * @param jobId - PDF audit job ID
+ * @returns Remediated PDF file as attachment
+ */
+router.get(
+  '/:jobId/remediation/download',
+  authenticate,
+  authorizeJob,
+  (req, res) => pdfRemediationController.downloadRemediatedPdf(req, res)
+);
+
 export default router;

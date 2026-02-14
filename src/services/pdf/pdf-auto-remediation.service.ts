@@ -10,6 +10,7 @@ import { logger } from '../../lib/logger';
 import { pdfModifierService, ModificationResult } from './pdf-modifier.service';
 import { pdfRemediationService } from './pdf-remediation.service';
 import { pdfVerificationService, VerificationResult } from './pdf-verification.service';
+import { AUTO_FIXABLE_CODES, MANUAL_CODES } from '../../constants/pdf-fix-classification';
 import type {
   RemediationTask,
   TaskStatus,
@@ -62,6 +63,7 @@ class PdfAutoRemediationService {
 
   constructor() {
     this.registerDefaultHandlers();
+    this.validateHandlerCoverage();
   }
 
   /**
@@ -69,18 +71,25 @@ class PdfAutoRemediationService {
    */
   private registerDefaultHandlers(): void {
     // Tier 1: Auto-fixable handlers
+
+    // Document language
     this.registerHandler('PDF-NO-LANGUAGE', this.handleAddLanguage.bind(this));
     this.registerHandler('MATTERHORN-11-001', this.handleAddLanguage.bind(this)); // Missing document language
+
+    // Document title
     this.registerHandler('PDF-NO-TITLE', this.handleAddTitle.bind(this));
-    this.registerHandler('WCAG-2.4.2', this.handleAddTitle.bind(this)); // Document title is not present in metadata
-    this.registerHandler('MATTERHORN-01-003', this.handleAddTitle.bind(this)); // Missing document title
-    this.registerHandler('PDF-NO-METADATA', this.handleAddMetadata.bind(this));
+    this.registerHandler('WCAG-2.4.2', this.handleAddTitle.bind(this)); // Document title not present in metadata
+    this.registerHandler('MATTERHORN-01-003', this.handleAddTitle.bind(this)); // Document title missing
+
+    // Creator/Author
     this.registerHandler('PDF-NO-CREATOR', this.handleAddCreator.bind(this));
+
+    // PDF/UA flags
     this.registerHandler('MATTERHORN-01-001', this.handleSetMarkedFlag.bind(this)); // PDF not marked for accessibility
     this.registerHandler('MATTERHORN-01-002', this.handleSetDisplayDocTitle.bind(this)); // DisplayDocTitle not set
     this.registerHandler('MATTERHORN-01-005', this.handleSetSuspectsFlag.bind(this)); // Suspects flag not set
 
-    logger.info('[Auto-Remediation] Registered 10 default handlers (7 unique + 3 aliases)');
+    logger.info('[Auto-Remediation] Registered 9 handlers (6 unique + 3 aliases)');
   }
 
   /**
@@ -89,6 +98,51 @@ class PdfAutoRemediationService {
   registerHandler(issueCode: string, handler: RemediationHandler): void {
     this.handlers.set(issueCode, handler);
     logger.debug(`[Auto-Remediation] Registered handler for ${issueCode}`);
+  }
+
+  /**
+   * Validate that all AUTO_FIXABLE codes have registered handlers
+   *
+   * Logs warnings for any missing handlers to help catch configuration errors
+   */
+  private validateHandlerCoverage(): void {
+    const missingHandlers: string[] = [];
+    const incorrectHandlers: string[] = [];
+
+    // Check for AUTO_FIXABLE codes without handlers
+    for (const code of AUTO_FIXABLE_CODES) {
+      if (!this.handlers.has(code)) {
+        missingHandlers.push(code);
+      }
+    }
+
+    // Check for handlers registered for MANUAL codes
+    for (const code of MANUAL_CODES) {
+      if (this.handlers.has(code)) {
+        incorrectHandlers.push(code);
+      }
+    }
+
+    // Log validation results
+    if (missingHandlers.length > 0) {
+      logger.warn(
+        `[Auto-Remediation] ⚠️  Missing handlers for AUTO_FIXABLE codes: ${missingHandlers.join(', ')}`
+      );
+      logger.warn('[Auto-Remediation] These issues will be skipped during auto-fix');
+    }
+
+    if (incorrectHandlers.length > 0) {
+      logger.warn(
+        `[Auto-Remediation] ⚠️  Handlers registered for MANUAL codes: ${incorrectHandlers.join(', ')}`
+      );
+      logger.warn('[Auto-Remediation] These codes should not have handlers or should be reclassified');
+    }
+
+    if (missingHandlers.length === 0 && incorrectHandlers.length === 0) {
+      logger.info(
+        `[Auto-Remediation] ✓ Handler coverage validated: ${this.handlers.size} handlers for ${AUTO_FIXABLE_CODES.size} AUTO_FIXABLE codes`
+      );
+    }
   }
 
   /**

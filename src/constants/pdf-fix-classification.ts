@@ -16,12 +16,16 @@ export const AUTO_FIXABLE_CODES = new Set([
   'PDF-NO-LANGUAGE',        // Missing document language
   'PDF-NO-TITLE',           // Missing document title
   'PDF-NO-CREATOR',         // Missing creator metadata
-  'PDF-EMPTY-HEADING',      // Empty heading tags
-  'PDF-REDUNDANT-TAG',      // Redundant structure tags
 
-  // Actual validator codes
+  // Actual validator codes - Document metadata
   'MATTERHORN-11-001',      // Document language not specified
+  'MATTERHORN-01-003',      // Document title missing
   'WCAG-2.4.2',             // Document title not present
+
+  // Actual validator codes - PDF/UA flags
+  'MATTERHORN-01-001',      // PDF not marked for accessibility (Marked flag)
+  'MATTERHORN-01-002',      // DisplayDocTitle not set
+  'MATTERHORN-01-005',      // Suspects flag not set correctly
 ]);
 
 /**
@@ -49,13 +53,14 @@ export const MANUAL_CODES = new Set([
   'PDF-CONTRAST-FAIL',      // Color contrast failures
   'PDF-MISSING-STRUCTURE',  // Missing structural tags
   'PDF-NESTED-STRUCTURE',   // Incorrect tag nesting
+  'PDF-EMPTY-HEADING',      // Empty heading tags - requires structure manipulation
+  'PDF-REDUNDANT-TAG',      // Redundant structure tags - requires tag tree editing
 
   // Metadata issues requiring tag tree creation
   'PDF-NO-METADATA',        // Missing MarkInfo - requires actual tag tree, not just flag
   'MATTERHORN-07-001',      // Metadata missing - requires StructTreeRoot creation
 
   // Actual validator codes - Structure
-  'MATTERHORN-01-003',      // PDF not tagged
   'MATTERHORN-01-004',      // Suspect tag structure
   'MATTERHORN-09-004',      // Reading order not logical
 
