@@ -327,42 +327,10 @@ class PdfRemediationService {
 
       logger.info(`[PDF Remediation] Plan job ${planJob.id} updated in database at ${updatedJob.updatedAt}`);
 
-      // Update corresponding Issue record if task completed (only for jobs with DB issues)
-      if (request.status === 'COMPLETED') {
-        // Try to update issue in database, but don't fail if it doesn't exist
-        // (PDF jobs store issues in JSON, not in Issue table)
-        try {
-          const updateResult = await tx.issue.updateMany({
-            where: {
-              id: task.issueId,
-              status: 'PENDING',
-            },
-            data: {
-              status: 'REMEDIATED',
-              fixedAt: new Date(),
-              fixedBy: 'user',
-              remediationMethod: this.getRemediationMethod(task.type),
-              remediationTaskId: taskId,
-            },
-          });
-
-          if (updateResult.count > 0) {
-            logger.info(
-              `[PDF Remediation] Marked issue ${task.issueId} as REMEDIATED in database`
-            );
-          } else {
-            logger.info(
-              `[PDF Remediation] Task ${taskId} completed (issue ${task.issueId} stored in JSON only)`
-            );
-          }
-        } catch (issueUpdateError) {
-          // Silently ignore errors (schema mismatch or issue doesn't exist in DB)
-          logger.debug(
-            `[PDF Remediation] Could not update Issue table for ${task.issueId} (expected for PDF jobs)`,
-            { error: issueUpdateError instanceof Error ? issueUpdateError.message : 'Unknown error' }
-          );
-        }
-      }
+      // NOTE: PDF jobs store all task/issue data in the plan JSON, not in the Issue table.
+      // EPUB jobs use the Issue table with a different schema (no 'status' column).
+      // Attempting to update Issue.status causes a PostgreSQL transaction abort,
+      // rolling back the task status update above. So we skip Issue table updates entirely.
 
       // Calculate summary
       const summary = this.calculateSummary(plan);
