@@ -4622,7 +4622,7 @@ export class CitationManagementController {
 
         // Match superscript Unicode characters
         const oldSuperscript = oldNumToSuperscript(oldNum);
-        const newSuperscript = numToSuperscriptHtml(newNum);
+        const _newSuperscript = numToSuperscriptHtml(newNum);
         updatedHtml = updatedHtml.replace(new RegExp(oldSuperscript, 'g'), `${placeholder}SUP${newNum}`);
 
         // Match <sup>N</sup> HTML tags
@@ -4982,7 +4982,7 @@ export class CitationManagementController {
     const mapping = new Map<number, number>();
 
     for (const aiRef of aiRefs) {
-      const aiText = aiRef.rawText || '';
+      const _aiText = aiRef.rawText || '';
       const aiAuthors = aiRef.components?.authors || [];
       const aiYear = aiRef.components?.year || '';
       const aiTitle = aiRef.components?.title || '';

@@ -1,6 +1,6 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { geminiService } from '../ai/gemini.service';
+import { claudeService } from '../ai/claude.service';
 import { editorialAi } from '../shared';
 import { crossRefService, EnrichedMetadata } from './crossref.service';
 import { styleRulesService } from './style-rules.service';
@@ -329,8 +329,8 @@ Return a JSON object:
 }`;
 
     try {
-      const response = await geminiService.generateText(prompt, {
-        model: 'flash',
+      const response = await claudeService.generateText(prompt, {
+        model: 'haiku',
         temperature: 0.2
       });
 

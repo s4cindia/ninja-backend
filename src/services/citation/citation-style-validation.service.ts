@@ -1,6 +1,6 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { geminiService } from '../ai/gemini.service';
+import { claudeService } from '../ai/claude.service';
 import { styleRulesService } from './style-rules.service';
 import { AppError } from '../../utils/app-error';
 
@@ -181,9 +181,9 @@ Return an empty array [] if no violations found.
 Return ONLY valid JSON array, no other text.`;
 
     try {
-      const response = await geminiService.generateText(prompt, {
+      const response = await claudeService.generateText(prompt, {
         temperature: 0.1,
-        maxOutputTokens: 2048
+        maxTokens: 2048
       });
 
       // Strip markdown code blocks if present

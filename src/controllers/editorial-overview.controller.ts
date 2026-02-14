@@ -276,7 +276,40 @@ export class EditorialOverviewController {
             }
           }
 
-          const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers };
+          // Get reference link status (citationIds) from database
+          const referenceLinkStatus = new Map<number, string[]>();
+          const referenceAuthorStatus = new Map<string, { citationIds: string[]; year?: string }>();
+          const refEntries = await prisma.referenceListEntry.findMany({
+            where: { documentId: document.id },
+            select: { sortKey: true, citationIds: true, authors: true, year: true }
+          });
+          for (const entry of refEntries) {
+            const refNum = parseInt(entry.sortKey, 10);
+            if (!isNaN(refNum)) {
+              referenceLinkStatus.set(refNum, entry.citationIds);
+            }
+            // Also build author-based lookup for APA-style references
+            const authors = entry.authors as string[];
+            if (authors && authors.length > 0) {
+              // Extract first author's last name
+              const firstAuthor = authors[0];
+              let lastName = firstAuthor;
+              if (firstAuthor.includes(',')) {
+                lastName = firstAuthor.split(',')[0].trim();
+              } else {
+                const parts = firstAuthor.split(/\s+/);
+                lastName = parts[0]; // First word is usually last name in "LastName, F." format
+              }
+              referenceAuthorStatus.set(lastName.toLowerCase(), {
+                citationIds: entry.citationIds,
+                year: entry.year || undefined
+              });
+              logger.debug(`[Editorial Overview] Author lookup: ${lastName.toLowerCase()} -> ${entry.citationIds.length} citations`);
+            }
+          }
+          logger.info(`[Editorial Overview] Reference link status: ${referenceLinkStatus.size} by number, ${referenceAuthorStatus.size} by author, ${Array.from(referenceLinkStatus.values()).filter(ids => ids.length > 0).length} linked`);
+
+          const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers, referenceLinkStatus, referenceAuthorStatus };
           highlightedHtml = highlightCitationsInHtml(document.fullHtml, highlightData);
         }
       } catch (hlError) {
