@@ -792,7 +792,9 @@ export class PdfRemediationController {
       }
 
       // Verify job type is PDF_ACCESSIBILITY
+      logger.info('[PDF Download] Job type check', { jobId, jobType: job.type });
       if (job.type !== 'PDF_ACCESSIBILITY') {
+        logger.warn('[PDF Download] Invalid job type', { jobId, jobType: job.type });
         res.status(400).json({
           success: false,
           error: {
@@ -806,7 +808,16 @@ export class PdfRemediationController {
       // Define canonical base directory for security
       // Use EPUB_STORAGE_PATH to match file-storage.service.ts
       const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || process.env.UPLOAD_DIR || './data/epub-storage');
+      logger.info('[PDF Download] Base directory resolved', { baseDir, jobId });
+
       const output = job.output as Record<string, unknown>;
+      logger.info('[PDF Download] Job output', {
+        jobId,
+        hasOutput: !!output,
+        hasRemediatedFileUrl: !!(output?.remediatedFileUrl),
+        remediatedFileUrl: output?.remediatedFileUrl
+      });
+
       let remediatedFilePath: string;
 
       // Get remediated file path with path traversal protection
@@ -827,12 +838,29 @@ export class PdfRemediationController {
         const normalizedFilePath = path.normalize(remediatedFilePath);
         const relative = path.relative(normalizedBaseDir, normalizedFilePath);
 
+        logger.info('[PDF Download] Path validation check', {
+          jobId,
+          requestedPath,
+          isAbsolute,
+          normalizedBaseDir,
+          normalizedFilePath,
+          relativePath: relative,
+          pathSep: path.sep,
+        });
+
         // Check if path escapes baseDir
         const isOutsideBaseDir = relative !== '' &&
           (relative.split(path.sep)[0] === '..' || relative.startsWith('..' + path.sep));
 
+        logger.info('[PDF Download] Path containment result', {
+          jobId,
+          isOutsideBaseDir,
+          firstSegment: relative.split(path.sep)[0],
+          startsWithDotDot: relative.startsWith('..' + path.sep),
+        });
+
         if (isOutsideBaseDir) {
-          logger.warn('Path traversal attempt detected', {
+          logger.warn('[PDF Download] Path traversal attempt detected', {
             jobId,
             requestedPath,
             resolvedPath: normalizedFilePath,
