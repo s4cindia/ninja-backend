@@ -806,9 +806,14 @@ export class PdfRemediationController {
       }
 
       // Define canonical base directory for security
-      // Use EPUB_STORAGE_PATH to match file-storage.service.ts
-      const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || process.env.UPLOAD_DIR || './data/epub-storage');
-      logger.info('[PDF Download] Base directory resolved', { baseDir, jobId });
+      // MUST match file-storage.service.ts exactly: EPUB_STORAGE_PATH || '/tmp/epub-storage'
+      const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage');
+      logger.info('[PDF Download] Base directory resolved', {
+        baseDir,
+        jobId,
+        epubStoragePath: process.env.EPUB_STORAGE_PATH,
+        usingDefault: !process.env.EPUB_STORAGE_PATH
+      });
 
       const output = job.output as Record<string, unknown>;
       logger.info('[PDF Download] Job output', {
