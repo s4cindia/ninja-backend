@@ -89,7 +89,7 @@ class PdfAutoRemediationService {
     this.registerHandler('MATTERHORN-01-002', this.handleSetDisplayDocTitle.bind(this)); // DisplayDocTitle not set
     this.registerHandler('MATTERHORN-01-005', this.handleSetSuspectsFlag.bind(this)); // Suspects flag not set
 
-    logger.info('[Auto-Remediation] Registered 10 handlers (6 unique + 4 WCAG/Matterhorn aliases)');
+    logger.info('[Auto-Remediation] Registered 9 handlers (6 unique + 3 aliases)');
   }
 
   /**
