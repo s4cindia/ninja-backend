@@ -302,14 +302,18 @@ class PdfRemediationService {
       // Update task status
       task.status = request.status;
 
+      logger.info(`[PDF Remediation] Task ${taskId} status changed from ${plan.tasks[taskIndex].status} to ${request.status} in memory`);
+
       // Update plan in database
-      await tx.job.update({
+      const updatedJob = await tx.job.update({
         where: { id: planJob.id },
         data: {
           output: JSON.parse(JSON.stringify(plan)),
           updatedAt: new Date(),
         },
       });
+
+      logger.info(`[PDF Remediation] Plan job ${planJob.id} updated in database at ${updatedJob.updatedAt}`);
 
       // Update corresponding Issue record if task completed (only for jobs with DB issues)
       if (request.status === 'COMPLETED') {
