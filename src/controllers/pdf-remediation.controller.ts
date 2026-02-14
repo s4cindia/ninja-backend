@@ -811,56 +811,42 @@ export class PdfRemediationController {
 
       // Get remediated file path with path traversal protection
       if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
-        // If the path is already absolute, verify it's within baseDir
-        // Otherwise, resolve it relative to baseDir
         const requestedPath = output.remediatedFileUrl;
         const isAbsolute = path.isAbsolute(requestedPath);
 
+        // Resolve and normalize the path
         if (isAbsolute) {
-          // Normalize both paths for comparison (handle Windows path differences)
           remediatedFilePath = path.normalize(requestedPath);
-          const normalizedBaseDir = path.normalize(baseDir);
-
-          if (!remediatedFilePath.startsWith(normalizedBaseDir)) {
-            logger.warn('Path traversal attempt detected (absolute path outside baseDir)', {
-              jobId,
-              requestedPath,
-              resolvedPath: remediatedFilePath,
-              baseDir: normalizedBaseDir,
-            });
-            res.status(400).json({
-              success: false,
-              error: {
-                code: 'INVALID_PATH',
-                message: 'Invalid file path',
-              },
-            });
-            return;
-          }
         } else {
-          // Relative path - resolve against baseDir
           remediatedFilePath = path.resolve(baseDir, requestedPath);
+        }
 
-          // Verify the resolved path is still within baseDir
-          const normalizedResolved = path.normalize(remediatedFilePath);
-          const normalizedBaseDir = path.normalize(baseDir);
+        // Use path.relative to check if the file is within baseDir
+        // If relative path starts with '..', the file is outside baseDir
+        const normalizedBaseDir = path.normalize(baseDir);
+        const normalizedFilePath = path.normalize(remediatedFilePath);
+        const relative = path.relative(normalizedBaseDir, normalizedFilePath);
 
-          if (!normalizedResolved.startsWith(normalizedBaseDir)) {
-            logger.warn('Path traversal attempt detected (relative path escapes baseDir)', {
-              jobId,
-              requestedPath,
-              resolvedPath: normalizedResolved,
-              baseDir: normalizedBaseDir,
-            });
-            res.status(400).json({
-              success: false,
-              error: {
-                code: 'INVALID_PATH',
-                message: 'Invalid file path',
-              },
-            });
-            return;
-          }
+        // Check if path escapes baseDir
+        const isOutsideBaseDir = relative !== '' &&
+          (relative.split(path.sep)[0] === '..' || relative.startsWith('..' + path.sep));
+
+        if (isOutsideBaseDir) {
+          logger.warn('Path traversal attempt detected', {
+            jobId,
+            requestedPath,
+            resolvedPath: normalizedFilePath,
+            baseDir: normalizedBaseDir,
+            relativePath: relative,
+          });
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_PATH',
+              message: 'Invalid file path',
+            },
+          });
+          return;
         }
       } else {
         // Fallback: construct path from job data
