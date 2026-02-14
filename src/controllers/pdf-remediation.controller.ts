@@ -804,30 +804,63 @@ export class PdfRemediationController {
       }
 
       // Define canonical base directory for security
-      const baseDir = path.resolve(process.env.UPLOAD_DIR || './data/epub-storage');
+      // Use EPUB_STORAGE_PATH to match file-storage.service.ts
+      const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || process.env.UPLOAD_DIR || './data/epub-storage');
       const output = job.output as Record<string, unknown>;
       let remediatedFilePath: string;
 
       // Get remediated file path with path traversal protection
       if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
-        // Resolve the path and verify it's within baseDir
-        remediatedFilePath = path.resolve(baseDir, output.remediatedFileUrl);
+        // If the path is already absolute, verify it's within baseDir
+        // Otherwise, resolve it relative to baseDir
+        const requestedPath = output.remediatedFileUrl;
+        const isAbsolute = path.isAbsolute(requestedPath);
 
-        if (!remediatedFilePath.startsWith(baseDir)) {
-          logger.warn('Path traversal attempt detected', {
-            jobId,
-            requestedPath: output.remediatedFileUrl,
-            resolvedPath: remediatedFilePath,
-            baseDir,
-          });
-          res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_PATH',
-              message: 'Invalid file path',
-            },
-          });
-          return;
+        if (isAbsolute) {
+          // Normalize both paths for comparison (handle Windows path differences)
+          remediatedFilePath = path.normalize(requestedPath);
+          const normalizedBaseDir = path.normalize(baseDir);
+
+          if (!remediatedFilePath.startsWith(normalizedBaseDir)) {
+            logger.warn('Path traversal attempt detected (absolute path outside baseDir)', {
+              jobId,
+              requestedPath,
+              resolvedPath: remediatedFilePath,
+              baseDir: normalizedBaseDir,
+            });
+            res.status(400).json({
+              success: false,
+              error: {
+                code: 'INVALID_PATH',
+                message: 'Invalid file path',
+              },
+            });
+            return;
+          }
+        } else {
+          // Relative path - resolve against baseDir
+          remediatedFilePath = path.resolve(baseDir, requestedPath);
+
+          // Verify the resolved path is still within baseDir
+          const normalizedResolved = path.normalize(remediatedFilePath);
+          const normalizedBaseDir = path.normalize(baseDir);
+
+          if (!normalizedResolved.startsWith(normalizedBaseDir)) {
+            logger.warn('Path traversal attempt detected (relative path escapes baseDir)', {
+              jobId,
+              requestedPath,
+              resolvedPath: normalizedResolved,
+              baseDir: normalizedBaseDir,
+            });
+            res.status(400).json({
+              success: false,
+              error: {
+                code: 'INVALID_PATH',
+                message: 'Invalid file path',
+              },
+            });
+            return;
+          }
         }
       } else {
         // Fallback: construct path from job data
