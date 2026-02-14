@@ -116,6 +116,17 @@ export const feedbackController = {
 
       const tenantId = req.user?.tenantId;
 
+      let parsedPage = Number(page);
+      if (isNaN(parsedPage) || parsedPage < 1) {
+        parsedPage = 1;
+      }
+
+      let parsedLimit = Number(limit);
+      if (isNaN(parsedLimit) || parsedLimit < 1) {
+        parsedLimit = 20;
+      }
+      parsedLimit = Math.min(parsedLimit, 100);
+
       const result = await feedbackService.listFeedback(
         {
           type: type ? FeedbackService.toFeedbackType(type as string) : undefined,
@@ -124,8 +135,8 @@ export const feedbackController = {
           jobId: jobId as string | undefined,
           tenantId,
         },
-        Number(page),
-        Number(limit)
+        parsedPage,
+        parsedLimit
       );
 
       return res.json({

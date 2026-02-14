@@ -172,7 +172,14 @@ export async function determineConformance(
   }
 
   if (autoResult.wouldBeSupports && humanVerification) {
-    if (humanVerification.status === 'VERIFIED_PASS') {
+    if (humanVerification.status === 'NOT_APPLICABLE') {
+      return {
+        level: 'Not Applicable',
+        remarks: `This criterion does not apply to the evaluated content. ${humanVerification.notes || 'No relevant content was detected that would require evaluation against this criterion.'}`,
+        requiresHumanConfirmation: false,
+        warningFlags: []
+      };
+    } else if (humanVerification.status === 'VERIFIED_PASS') {
       return {
         level: 'Supports',
         remarks: `${autoResult.passCount} of ${autoResult.totalCount} items passed automated validation. Human verification confirmed compliance on ${humanVerification.verifiedAt.toISOString().split('T')[0]}.`,

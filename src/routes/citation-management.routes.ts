@@ -1,0 +1,231 @@
+/**
+ * Citation Management Routes
+ * Comprehensive citation tool API
+ */
+
+import { Router } from 'express';
+import multer from 'multer';
+import { authenticate } from '../middleware/auth.middleware';
+import { citationManagementController } from '../controllers/citation-management.controller';
+
+const router = Router();
+
+// Configure multer for DOCX uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // DOCX
+    ];
+
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only DOCX files are allowed'));
+    }
+  },
+});
+
+// ============================================
+// DEBUG ENDPOINT (no auth required for testing)
+// ============================================
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/export-debug
+ * Debug endpoint to check document state before export (NO AUTH for testing)
+ */
+router.get(
+  '/document/:documentId/export-debug',
+  citationManagementController.exportDebug.bind(citationManagementController)
+);
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/debug-style-conversion
+ * Debug endpoint to test style conversion and verify formattedApa is saved (NO AUTH for testing)
+ */
+router.post(
+  '/document/:documentId/debug-style-conversion',
+  citationManagementController.debugStyleConversion.bind(citationManagementController)
+);
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/reanalyze
+ * Re-analyze document with auto-resequencing (NO AUTH for testing)
+ * Clears existing citations/references and re-runs analysis
+ */
+router.post(
+  '/document/:documentId/reanalyze',
+  citationManagementController.reanalyze.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/preview-debug
+ * Debug preview endpoint (NO AUTH for testing)
+ */
+router.get(
+  '/document/:documentId/preview-debug',
+  citationManagementController.previewChanges.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/export-debug-docx
+ * Debug export endpoint (NO AUTH for testing)
+ */
+router.get(
+  '/document/:documentId/export-debug-docx',
+  citationManagementController.exportDocument.bind(citationManagementController)
+);
+
+// All other routes require authentication
+router.use(authenticate);
+
+// ============================================
+// DOCUMENT MANAGEMENT
+// ============================================
+
+/**
+ * POST /api/v1/citation-management/upload
+ * Upload DOCX and start AI analysis
+ */
+router.post(
+  '/upload',
+  upload.single('file'),
+  citationManagementController.upload.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/analysis
+ * Get complete citation analysis results
+ */
+router.get(
+  '/document/:documentId/analysis',
+  citationManagementController.getAnalysis.bind(citationManagementController)
+);
+
+// ============================================
+// REFERENCE MANAGEMENT
+// ============================================
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/reorder
+ * Reorder references and auto-update in-text citations
+ *
+ * Body:
+ * - referenceId: string (for single move)
+ * - newPosition: number (for single move)
+ * - sortBy: 'alphabetical' | 'year' | 'appearance' (for batch sort)
+ */
+router.post(
+  '/document/:documentId/reorder',
+  citationManagementController.reorderReferences.bind(citationManagementController)
+);
+
+/**
+ * DELETE /api/v1/citation-management/document/:documentId/reference/:referenceId
+ * Delete a reference and renumber remaining references
+ * - Citations that pointed to the deleted reference become orphaned (shown in red)
+ * - All remaining citations are renumbered automatically
+ */
+router.delete(
+  '/document/:documentId/reference/:referenceId',
+  citationManagementController.deleteReference.bind(citationManagementController)
+);
+
+/**
+ * PATCH /api/v1/citation-management/document/:documentId/reference/:referenceId
+ * Edit a reference (author, year, title, etc.)
+ * - For author-year citations: Updates inline citations when author/year changes
+ *
+ * Body:
+ * - authors?: string[] (list of author names)
+ * - year?: string (publication year)
+ * - title?: string
+ * - journalName?: string
+ * - volume?: string
+ * - issue?: string
+ * - pages?: string
+ * - doi?: string
+ * - url?: string
+ * - publisher?: string
+ */
+router.patch(
+  '/document/:documentId/reference/:referenceId',
+  citationManagementController.editReference.bind(citationManagementController)
+);
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/resequence
+ * Resequence references by first appearance order in text
+ * - References are reordered to match citation appearance order
+ * - All in-text citations are updated with new numbers
+ * - Reference list is sorted to match new numbering
+ */
+router.post(
+  '/document/:documentId/resequence',
+  citationManagementController.resequenceByAppearance.bind(citationManagementController)
+);
+
+// ============================================
+// FORMAT CONVERSION
+// ============================================
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/convert-style
+ * Convert citation style
+ *
+ * Body:
+ * - targetStyle: 'APA' | 'MLA' | 'Chicago' | 'Vancouver' | 'IEEE' | 'Harvard' | 'AMA'
+ */
+router.post(
+  '/document/:documentId/convert-style',
+  citationManagementController.convertStyle.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/styles
+ * Get list of supported citation styles
+ */
+router.get(
+  '/styles',
+  citationManagementController.getStyles.bind(citationManagementController)
+);
+
+// ============================================
+// DOI VALIDATION
+// ============================================
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/validate-dois
+ * Validate all DOIs in references
+ */
+router.post(
+  '/document/:documentId/validate-dois',
+  citationManagementController.validateDOIs.bind(citationManagementController)
+);
+
+// ============================================
+// PREVIEW & EXPORT
+// ============================================
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/preview
+ * Preview changes that will be applied on export (JSON response for frontend)
+ */
+router.get(
+  '/document/:documentId/preview',
+  citationManagementController.previewChanges.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/document/:documentId/export
+ * Export modified DOCX with preserved formatting
+ */
+router.get(
+  '/document/:documentId/export',
+  citationManagementController.exportDocument.bind(citationManagementController)
+);
+
+export default router;

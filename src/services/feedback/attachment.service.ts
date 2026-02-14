@@ -76,7 +76,7 @@ export class FeedbackAttachmentService {
     return false;
   }
 
-  private async canDeleteAttachment(attachmentId: string, userId: string): Promise<{ allowed: boolean; attachment?: any }> {
+  private async canDeleteAttachment(attachmentId: string, userId: string): Promise<{ allowed: boolean; attachment?: Record<string, unknown> }> {
     const attachment = await this.prisma.feedbackAttachment.findUnique({
       where: { id: attachmentId },
       include: { feedback: { select: { userId: true, tenantId: true } } },
@@ -287,7 +287,7 @@ export class FeedbackAttachmentService {
     });
 
     try {
-      await this.deleteFromStorage(filename);
+      await this.deleteFromStorage(String(filename));
     } catch (storageError) {
       const errorMsg = storageError instanceof Error ? storageError.message : String(storageError);
       logger.warn(`Failed to delete file from storage after DB deletion: ${filename} - ${errorMsg}`);

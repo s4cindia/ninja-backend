@@ -20,48 +20,18 @@ export interface DetectedCitation {
   paragraphIndex: number | null;
   startOffset: number;
   endOffset: number;
-  confidence: number;
-  sectionContext?: string;
-  primaryComponentId: string | null;
-  isParsed: boolean;
-  parseConfidence: number | null;
+  confidence: number; // 0-1 normalized
 }
 
 /** Detection result summary for a document */
 export interface DetectionResult {
   documentId: string;
   jobId: string;
-  filename?: string;
   citations: DetectedCitation[];
   totalCount: number;
   byType: Record<string, number>;
   byStyle: Record<string, number>;
   processingTimeMs: number;
-  validation?: ValidationSummary;
-}
-
-/** Validation summary included in detection result when styleCode is provided */
-export interface ValidationSummary {
-  styleCode: string;
-  styleName: string;
-  totalCitations: number;
-  validCitations: number;
-  citationsWithErrors: number;
-  citationsWithWarnings: number;
-  errorCount: number;
-  warningCount: number;
-  violations: Array<{
-    citationId: string;
-    citationText: string;
-    violationType: string;
-    ruleReference: string;
-    ruleName: string;
-    explanation: string;
-    originalText: string;
-    suggestedFix: string;
-    correctedCitation: string;
-    severity: 'error' | 'warning' | 'info';
-  }>;
 }
 
 /** Input for detection operation */
@@ -73,66 +43,6 @@ export interface DetectionInput {
   fileSize?: number;
   fileS3Key?: string;
   presignedUrl?: string;
-}
-
-// ============================================
-// STYLESHEET DETECTION TYPES
-// ============================================
-
-export interface StylesheetAnalysisResult {
-  documentId: string;
-  jobId: string;
-  filename?: string;
-  processingTimeMs: number;
-  detectedStyle: {
-    styleCode: string;
-    styleName: string;
-    confidence: number;
-    citationFormat: 'numeric-bracket' | 'author-date' | 'footnote' | 'mixed' | 'unknown';
-    evidence: string[];
-  };
-  sequenceAnalysis: SequenceAnalysis;
-  crossReference: CrossReferenceAnalysis;
-  referenceList: {
-    totalEntries: number;
-    entries: ReferenceListSummaryEntry[];
-  };
-  citations: {
-    totalCount: number;
-    inBody: number;
-    inReferences: number;
-    items: DetectedCitation[];
-  };
-  conversionOptions: string[];
-  validation?: ValidationSummary;
-}
-
-export interface SequenceAnalysis {
-  isSequential: boolean;
-  totalNumbers: number;
-  expectedRange: { start: number; end: number } | null;
-  missingNumbers: number[];
-  duplicateNumbers: number[];
-  outOfOrderNumbers: number[];
-  gaps: Array<{ after: number; before: number }>;
-  summary: string;
-}
-
-export interface CrossReferenceAnalysis {
-  totalBodyCitations: number;
-  totalReferenceEntries: number;
-  matched: number;
-  citationsWithoutReference: Array<{ number: number | null; text: string; citationId: string }>;
-  referencesWithoutCitation: Array<{ number: number | null; text: string; entryIndex: number }>;
-  summary: string;
-}
-
-export interface ReferenceListSummaryEntry {
-  index: number;
-  number: number | null;
-  text: string;
-  matchedCitationIds: string[];
-  hasMatch: boolean;
 }
 
 // ============================================
@@ -191,16 +101,6 @@ export interface BulkParseResult {
   results: ParsedCitationResult[];
   errors: Array<{ citationId: string; error: string }>;
   processingTimeMs: number;
-  // Enhanced fields for frontend updates
-  averageConfidence: number;        // Average confidence across all parsed citations (0-1)
-  message: string;                  // Completion status message
-  stats: {
-    total: number;
-    parsed: number;
-    unparsed: number;
-    byType: Record<string, number>;
-    byStyle: Record<string, number>;
-  };
 }
 
 /** Citation with its primary/latest parsed component */
@@ -237,27 +137,8 @@ export const CITATION_TYPE_MAP: Record<string, CitationType> = {
   footnote: 'FOOTNOTE',
   endnote: 'ENDNOTE',
   numeric: 'NUMERIC',
-  reference: 'REFERENCE',
   // Fallback handled in code
 };
-
-/** Map AI response section context string to Prisma SectionContext enum */
-export const SECTION_CONTEXT_MAP: Record<string, string> = {
-  body: 'BODY',
-  references: 'REFERENCES',
-  bibliography: 'REFERENCES',
-  footnotes: 'FOOTNOTES',
-  endnotes: 'ENDNOTES',
-  abstract: 'ABSTRACT',
-  // Fallback handled in code
-};
-
-/** Safely map string to SectionContext with fallback */
-export function mapToSectionContext(value: string | undefined | null): string {
-  if (!value) return 'UNKNOWN';
-  const normalized = value.toLowerCase().trim();
-  return SECTION_CONTEXT_MAP[normalized] || 'UNKNOWN';
-}
 
 /** Map AI response style string to Prisma CitationStyle enum */
 export const CITATION_STYLE_MAP: Record<string, CitationStyle> = {

@@ -138,6 +138,21 @@ model AcrVersion {
   @@index([createdAt])
 }
 
+model CriterionChangeLog {
+  id            String   @id @default(uuid())
+  acrJobId      String
+  criterionId   String
+  fieldName     String
+  previousValue Json?
+  newValue      Json?
+  changedBy     String
+  changedAt     DateTime @default(now())
+
+  @@index([acrJobId])
+  @@index([criterionId])
+  @@index([changedAt])
+}
+
 enum JobType {
   PDF_ACCESSIBILITY
   EPUB_ACCESSIBILITY
@@ -196,6 +211,8 @@ model Issue {
   status             IssueStatus      @default(PENDING)
   fixedAt            DateTime?
   fixedBy            String?
+  remediationMethod  String?          // 'auto' | 'quick-fix' | 'manual'
+  remediationTaskId  String?          // Links to the remediation task that fixed this issue
   createdAt          DateTime         @default(now())
 
   @@index([validationResultId])
@@ -207,6 +224,8 @@ model Issue {
 enum IssueStatus {
   PENDING
   FIXED
+  REMEDIATED
+  VERIFIED
   SKIPPED
   FAILED
 }
@@ -455,15 +474,21 @@ model ComparisonReport {
 }
 
 model AcrJob {
-  id            String   @id @default(uuid())
-  jobId         String
-  tenantId      String
-  userId        String
-  edition       String
-  status        String   @default("in_progress")
-  documentTitle String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id               String    @id @default(uuid())
+  jobId            String
+  tenantId         String
+  userId           String
+  edition          String
+  status           String    @default("in_progress")
+  documentTitle    String?
+  documentType     String?
+  totalCriteria    Int?
+  executiveSummary String?   @db.Text
+  conformanceLevel String?
+  approvedBy       String?
+  approvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   user     User                 @relation(fields: [userId], references: [id])
   criteria AcrCriterionReview[]
@@ -475,21 +500,27 @@ model AcrJob {
 }
 
 model AcrCriterionReview {
-  id               String    @id @default(uuid())
-  acrJobId         String
-  criterionId      String
-  criterionNumber  String
-  criterionName    String
-  level            String
-  confidence       Int       @default(0)
-  aiStatus         String
-  evidence         Json?
-  conformanceLevel String?
-  reviewerNotes    String?   @db.Text
-  reviewedAt       DateTime?
-  reviewedBy       String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  acrJobId           String
+  criterionId        String
+  criterionNumber    String
+  criterionName      String
+  level              String
+  confidence         Int       @default(0)
+  aiStatus           String
+  evidence           Json?
+  conformanceLevel   String?
+  reviewerNotes      String?   @db.Text
+  reviewedAt         DateTime?
+  reviewedBy         String?
+  isNotApplicable    Boolean   @default(false)
+  naReason           String?   @db.Text
+  naSuggestionData   Json?
+  verificationStatus String?
+  verificationMethod String?
+  verificationNotes  String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   acrJob   AcrJob @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
   reviewer User?  @relation("CriterionReviewer", fields: [reviewedBy], references: [id])

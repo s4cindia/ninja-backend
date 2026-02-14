@@ -57,9 +57,11 @@ export class EpubContentService {
       }
 
       const contentType = this.getContentType(entry.entryName);
-      
+
       const isBinary = contentType.startsWith('image/') ||
-                       contentType === 'application/octet-stream';
+                       contentType.startsWith('font/') ||
+                       contentType === 'application/octet-stream' ||
+                       contentType === 'application/vnd.ms-fontobject';
 
       let content: string;
       let finalContentType: string;
@@ -98,6 +100,12 @@ export class EpubContentService {
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
       '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.otf': 'font/otf',
+      '.eot': 'application/vnd.ms-fontobject',
       '.ncx': 'application/x-dtbncx+xml',
       '.opf': 'application/oebps-package+xml',
     };

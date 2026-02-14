@@ -149,33 +149,6 @@ export class CitationParsingService {
       }
     }
 
-    // Calculate average confidence from newly parsed results
-    const confidences = results.map(r => r.confidence);
-    const averageConfidence = confidences.length > 0
-      ? confidences.reduce((a, b) => a + b, 0) / confidences.length
-      : 0;
-
-    // Build completion message
-    const totalParsedNow = skippedCount + results.length;
-    const unparsedRemaining = allCitations.length - totalParsedNow;
-    let message: string;
-    if (errors.length === 0 && unparsedRemaining === 0) {
-      message = `All ${allCitations.length} citations parsed successfully`;
-    } else if (errors.length > 0) {
-      message = `Parsed ${results.length} citations with ${errors.length} errors`;
-    } else {
-      message = `Parsed ${results.length} citations (${skippedCount} already parsed)`;
-    }
-
-    // Build updated stats
-    const byType: Record<string, number> = {};
-    const byStyle: Record<string, number> = {};
-    for (const c of allCitations) {
-      byType[c.citationType] = (byType[c.citationType] || 0) + 1;
-      const style = c.detectedStyle || 'UNKNOWN';
-      byStyle[style] = (byStyle[style] || 0) + 1;
-    }
-
     const bulkResult: BulkParseResult = {
       documentId,
       totalCitations: allCitations.length,
@@ -185,15 +158,6 @@ export class CitationParsingService {
       results,
       errors,
       processingTimeMs: Date.now() - startTime,
-      averageConfidence: Math.round(averageConfidence * 100) / 100, // Round to 2 decimals
-      message,
-      stats: {
-        total: allCitations.length,
-        parsed: totalParsedNow,
-        unparsed: unparsedRemaining,
-        byType,
-        byStyle,
-      },
     };
 
     logger.info(`[Citation Parsing] Bulk complete: ${bulkResult.parsed} parsed, ${bulkResult.skipped} skipped, ${bulkResult.failed} failed in ${bulkResult.processingTimeMs}ms`);

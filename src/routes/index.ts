@@ -24,7 +24,7 @@ import uploadRoutes from "./upload.routes";
 import comparisonRoutes from "./comparison.routes";
 import batchRoutes from "./batch.routes";
 import citationRoutes from "../services/citation/citation.routes";
-import editorialRoutes from "./editorial.routes";
+import pdfRemediationRoutes from "./pdf-remediation.routes";
 
 const router = Router();
 
@@ -102,6 +102,6 @@ router.use("/uploads", uploadRoutes);
 router.use("/jobs/:jobId/comparison", comparisonRoutes);
 router.use("/batch", batchRoutes);
 router.use("/citation", citationRoutes);
-router.use("/editorial", editorialRoutes);
+router.use("/pdf", pdfRemediationRoutes);
 
 export default router;

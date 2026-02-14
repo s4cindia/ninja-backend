@@ -183,7 +183,7 @@ class PdfStructureValidatorService {
       const score = this.calculateScore(allIssues, totalChecks, passed);
       const duration = Date.now() - startTime;
 
-      console.log(`Structure validation completed in ${duration}ms - Score: ${score}/100`);
+      console.error(`Structure validation completed in ${duration}ms - Score: ${score}/100`);
 
       return {
         isValid: failed === 0,
@@ -300,7 +300,7 @@ class PdfStructureValidatorService {
       const result = validateAltText(allImages, context);
 
       const duration = Date.now() - startTime;
-      console.log(`Alt text validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
+      console.error(`Alt text validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
 
       return result;
     } finally {
@@ -350,7 +350,7 @@ class PdfStructureValidatorService {
       const result = validateContrast(textColorInfos, context);
 
       const duration = Date.now() - startTime;
-      console.log(`Contrast validation completed in ${duration}ms - ${result.passing} passing, ${result.failing} failing`);
+      console.error(`Contrast validation completed in ${duration}ms - ${result.passing} passing, ${result.failing} failing`);
 
       return result;
     } finally {
@@ -388,7 +388,7 @@ class PdfStructureValidatorService {
       const result = validateTables(structureResult.tables, context);
 
       const duration = Date.now() - startTime;
-      console.log(`Table validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
+      console.error(`Table validation completed in ${duration}ms - Compliance: ${result.compliancePercentage}%`);
 
       return result;
     } finally {
