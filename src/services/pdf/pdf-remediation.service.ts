@@ -177,6 +177,14 @@ class PdfRemediationService {
     plan.createdAt = new Date(plan.createdAt);
 
     // Recalculate counts based on current task statuses
+    // Debug: Log all AUTO_FIXABLE tasks with their statuses
+    const autoFixableTasks = plan.tasks.filter((task) => task.type === 'AUTO_FIXABLE');
+    logger.info(
+      `[PDF Remediation] AUTO_FIXABLE tasks: ${JSON.stringify(
+        autoFixableTasks.map((t) => ({ id: t.id, status: t.status, type: t.type }))
+      )}`
+    );
+
     const pendingAutoFixable = plan.tasks.filter(
       (task) => task.type === 'AUTO_FIXABLE' && task.status === 'PENDING'
     ).length;
@@ -189,6 +197,10 @@ class PdfRemediationService {
     const pendingManual = plan.tasks.filter(
       (task) => task.type === 'MANUAL' && task.status === 'PENDING'
     ).length;
+
+    logger.info(
+      `[PDF Remediation] Task counts: pending=${pendingAutoFixable}, completed=${completedAutoFixable}, total_auto=${autoFixableTasks.length}`
+    );
 
     // Update counts to show only pending tasks (not completed ones)
     plan.autoFixableCount = pendingAutoFixable;
