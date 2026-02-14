@@ -804,21 +804,40 @@ export class PdfRemediationController {
       }
 
       // Define canonical base directory for security
-      const baseDir = path.resolve(process.env.UPLOAD_DIR || './data/epub-storage');
+      // Use EPUB_STORAGE_PATH to match file-storage.service.ts
+      const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || process.env.UPLOAD_DIR || './data/epub-storage');
       const output = job.output as Record<string, unknown>;
       let remediatedFilePath: string;
 
       // Get remediated file path with path traversal protection
       if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
-        // Resolve the path and verify it's within baseDir
-        remediatedFilePath = path.resolve(baseDir, output.remediatedFileUrl);
+        const requestedPath = output.remediatedFileUrl;
+        const isAbsolute = path.isAbsolute(requestedPath);
 
-        if (!remediatedFilePath.startsWith(baseDir)) {
+        // Resolve and normalize the path
+        if (isAbsolute) {
+          remediatedFilePath = path.normalize(requestedPath);
+        } else {
+          remediatedFilePath = path.resolve(baseDir, requestedPath);
+        }
+
+        // Use path.relative to check if the file is within baseDir
+        // If relative path starts with '..', the file is outside baseDir
+        const normalizedBaseDir = path.normalize(baseDir);
+        const normalizedFilePath = path.normalize(remediatedFilePath);
+        const relative = path.relative(normalizedBaseDir, normalizedFilePath);
+
+        // Check if path escapes baseDir
+        const isOutsideBaseDir = relative !== '' &&
+          (relative.split(path.sep)[0] === '..' || relative.startsWith('..' + path.sep));
+
+        if (isOutsideBaseDir) {
           logger.warn('Path traversal attempt detected', {
             jobId,
-            requestedPath: output.remediatedFileUrl,
-            resolvedPath: remediatedFilePath,
-            baseDir,
+            requestedPath,
+            resolvedPath: normalizedFilePath,
+            baseDir: normalizedBaseDir,
+            relativePath: relative,
           });
           res.status(400).json({
             success: false,
