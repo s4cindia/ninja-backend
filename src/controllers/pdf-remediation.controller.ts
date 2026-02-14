@@ -12,6 +12,7 @@ import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { PDFName, PDFDict } from 'pdf-lib';
 import path from 'path';
 
@@ -932,6 +933,151 @@ export class PdfRemediationController {
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to download remediated PDF',
+        },
+      });
+    }
+  }
+
+  /**
+   * Re-audit a remediated PDF and compare with original results
+   * POST /api/v1/pdf/:jobId/remediation/re-audit
+   *
+   * @param req - Request with uploaded remediated PDF file
+   * @param res - Response with comparison results
+   */
+  async reauditPdf(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authentication required',
+            details: null,
+          },
+        });
+      }
+
+      // Verify job exists and belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found or access denied',
+            details: null,
+          },
+        });
+      }
+
+      // Verify job is a PDF audit job
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_JOB_TYPE',
+            message: 'Job is not a PDF accessibility audit',
+            details: null,
+          },
+        });
+      }
+
+      // Verify file was uploaded
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'MISSING_FILE',
+            message: 'No file uploaded',
+            details: null,
+          },
+        });
+      }
+
+      // Validate PDF magic bytes
+      const buffer = req.file.buffer;
+      const magicBytes = buffer.slice(0, 5).toString('ascii');
+
+      if (!magicBytes.startsWith('%PDF-')) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_PDF',
+            message: 'Invalid PDF file: file does not contain PDF magic bytes',
+            details: null,
+          },
+        });
+      }
+
+      // Run re-audit and comparison
+      logger.info(`[Re-Audit] Starting for job ${jobId}`, {
+        fileName: req.file.originalname,
+        fileSize: buffer.length,
+      });
+
+      const comparisonResult = await pdfReauditService.reauditAndCompare(
+        jobId,
+        buffer,
+        req.file.originalname
+      );
+
+      // Update job output with comparison data
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...((job.output as Record<string, unknown> | null) ?? {}),
+            reauditComparison: JSON.parse(JSON.stringify(comparisonResult)),
+            lastReauditAt: new Date().toISOString(),
+          },
+          updatedAt: new Date(),
+        },
+      });
+
+      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+        resolvedCount: comparisonResult.metrics.resolvedCount,
+        remainingCount: comparisonResult.metrics.remainingCount,
+        regressionCount: comparisonResult.metrics.regressionCount,
+        resolutionRate: comparisonResult.metrics.resolutionRate,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: comparisonResult,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to re-audit PDF', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to re-audit PDF',
+          details: null,
         },
       });
     }
