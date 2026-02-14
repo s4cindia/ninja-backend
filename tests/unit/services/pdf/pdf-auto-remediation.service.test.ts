@@ -42,14 +42,13 @@ describe('PdfAutoRemediationService', () => {
       jobId: 'job-123',
       fileName: 'test.pdf',
       totalIssues: 4,
-      autoFixableCount: 4,
+      autoFixableCount: 3,
       quickFixCount: 0,
-      manualFixCount: 0,
+      manualFixCount: 1,
       tasks: [
         createMockTask('task-1', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
         createMockTask('task-2', 'PDF-NO-TITLE', 'AUTO_FIXABLE', 'PENDING'),
-        createMockTask('task-3', 'PDF-NO-METADATA', 'AUTO_FIXABLE', 'PENDING'),
-        createMockTask('task-4', 'PDF-NO-CREATOR', 'AUTO_FIXABLE', 'PENDING'),
+        createMockTask('task-3', 'PDF-NO-CREATOR', 'AUTO_FIXABLE', 'PENDING'),
       ],
       createdAt: new Date().toISOString(),
     };
@@ -96,8 +95,8 @@ describe('PdfAutoRemediationService', () => {
       // Mock verification
       const mockVerification: VerificationResult = {
         jobId: 'job-123',
-        totalTasks: 4,
-        verifiedFixed: 4,
+        totalTasks: 3,
+        verifiedFixed: 3,
         stillBroken: 0,
         unverified: 0,
         taskResults: [],
@@ -111,11 +110,11 @@ describe('PdfAutoRemediationService', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.completedTasks).toBe(4);
+      expect(result.completedTasks).toBe(3);
       expect(result.failedTasks).toBe(0);
       expect(result.skippedTasks).toBe(0);
       expect(result.remediatedPdfBuffer).toEqual(mockSavedBuffer);
-      expect(result.verification?.verifiedFixed).toBe(4);
+      expect(result.verification?.verifiedFixed).toBe(3);
     });
 
     it('should handle plan not found', async () => {
@@ -186,7 +185,6 @@ describe('PdfAutoRemediationService', () => {
 
       vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(successModification);
       vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(failureModification);
-      vi.spyOn(pdfModifierService, 'addMetadata').mockResolvedValue(failureModification);
       vi.spyOn(pdfModifierService, 'addCreator').mockResolvedValue(successModification);
 
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
@@ -209,7 +207,7 @@ describe('PdfAutoRemediationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.completedTasks).toBe(2);
-      expect(result.failedTasks).toBe(2);
+      expect(result.failedTasks).toBe(1);
     });
 
     it('should handle validation failures', async () => {

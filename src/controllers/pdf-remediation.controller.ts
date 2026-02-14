@@ -748,6 +748,142 @@ export class PdfRemediationController {
       });
     }
   }
+
+  /**
+   * Download remediated PDF file
+   * GET /api/v1/pdf/:jobId/remediation/download
+   *
+   * @param req - Authenticated request with jobId param
+   * @param res - Express response
+   */
+  async downloadRemediatedPdf(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authentication required',
+          },
+        });
+        return;
+      }
+
+      // Verify job exists and belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+      });
+
+      if (!job) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found',
+          },
+        });
+        return;
+      }
+
+      // Verify job type is PDF_ACCESSIBILITY
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_JOB_TYPE',
+            message: 'Job is not a PDF accessibility job',
+          },
+        });
+        return;
+      }
+
+      // Define canonical base directory for security
+      const baseDir = path.resolve(process.env.UPLOAD_DIR || './data/epub-storage');
+      const output = job.output as Record<string, unknown>;
+      let remediatedFilePath: string;
+
+      // Get remediated file path with path traversal protection
+      if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
+        // Resolve the path and verify it's within baseDir
+        remediatedFilePath = path.resolve(baseDir, output.remediatedFileUrl);
+
+        if (!remediatedFilePath.startsWith(baseDir)) {
+          logger.warn('Path traversal attempt detected', {
+            jobId,
+            requestedPath: output.remediatedFileUrl,
+            resolvedPath: remediatedFilePath,
+            baseDir,
+          });
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_PATH',
+              message: 'Invalid file path',
+            },
+          });
+          return;
+        }
+      } else {
+        // Fallback: construct path from job data
+        const input = job.input as { fileName?: string };
+        const fileName = input?.fileName || 'document.pdf';
+        const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
+        remediatedFilePath = path.join(
+          baseDir,
+          jobId,
+          'remediated',
+          remediatedFileName
+        );
+      }
+
+      // Check if file exists before attempting to read
+      const fs = await import('fs/promises');
+      try {
+        await fs.stat(remediatedFilePath);
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') {
+          logger.info('Remediated PDF not found', { jobId, path: remediatedFilePath });
+          res.status(404).json({
+            success: false,
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Remediated PDF not found',
+            },
+          });
+          return;
+        }
+        throw statError;
+      }
+
+      // Read file and send as response
+      const fileBuffer = await fs.readFile(remediatedFilePath);
+
+      const input = job.input as { fileName?: string };
+      const downloadFileName = (input?.fileName || 'document.pdf').replace('.pdf', '_remediated.pdf');
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
+      res.setHeader('Content-Length', fileBuffer.length);
+      res.send(fileBuffer);
+
+      logger.info(`[PDF Remediation] Downloaded remediated PDF for job ${jobId}`);
+    } catch (error) {
+      logger.error('Failed to download remediated PDF', { error, jobId: req.params.jobId });
+      res.status(500).json({
+        success: false,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to download remediated PDF',
+        },
+      });
+    }
+  }
 }
 
 // Export singleton instance

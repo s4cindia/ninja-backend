@@ -142,12 +142,12 @@ class PDFStructureValidator {
   ): AuditIssue[] {
     const issues: AuditIssue[] = [];
 
-    // Check if PDF is tagged (Matterhorn 01-003)
+    // Check if PDF is tagged (PDF-UNTAGGED)
     if (!structure.isTaggedPDF) {
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'critical',
-        code: 'MATTERHORN-01-003',
+        code: 'PDF-UNTAGGED',
         message: 'PDF is not tagged',
         wcagCriteria: ['1.3.1'],
         location: 'Document',
