@@ -1,0 +1,1572 @@
+/**
+ * DOCX Processor Service
+ * Handles DOCX parsing and modification while preserving formatting
+ * Supports Track Changes for showing modifications
+ */
+
+import * as mammoth from 'mammoth';
+import * as JSZip from 'jszip';
+import { logger } from '../../lib/logger';
+import { InTextCitation } from './ai-citation-detector.service';
+import { referenceStyleUpdaterService } from './reference-style-updater.service';
+
+export interface DOCXContent {
+  text: string;
+  html: string;
+  rawBuffer: Buffer;
+}
+
+export interface CitationReplacement {
+  citationId: string;
+  oldText: string;
+  newText: string;
+  status?: 'changed' | 'orphaned';
+}
+
+export type CitationChangeType = 'renumber' | 'style_conversion' | 'orphaned';
+
+export interface ReplacementSummary {
+  totalCitations: number;
+  changed: Array<{ from: string; to: string; count: number }>;
+  orphaned: Array<{ text: string; count: number }>;
+  unchanged: number;
+  referencesReordered: number;
+  referencesDeleted: number;
+  swapped: Array<{ refA: string; refB: string }>;
+}
+
+export interface ReferenceEntry {
+  id: string;
+  authors: string[];
+  title?: string;
+  sortKey: string;
+  originalPosition?: number;  // Original position in DOCX before any changes
+  isSwapped?: boolean;        // Was this reference swapped with another
+  swappedWith?: string;       // Name of the reference it was swapped with
+  convertedText?: string;     // Converted format text (for style conversion)
+  originalText?: string;      // Original format text before conversion
+  // Bibliographic details for building complete citations
+  year?: string;
+  journalName?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  doi?: string;
+}
+
+class DOCXProcessorService {
+  /**
+   * Extract text from DOCX file
+   */
+  async extractText(buffer: Buffer): Promise<DOCXContent> {
+    try {
+      logger.info('[DOCX Processor] Extracting text from DOCX');
+      const textResult = await mammoth.extractRawText({ buffer });
+      const htmlResult = await mammoth.convertToHtml({ buffer });
+
+      return {
+        text: textResult.value,
+        html: htmlResult.value,
+        rawBuffer: buffer
+      };
+    } catch (error: any) {
+      logger.error('[DOCX Processor] Failed to extract text:', error.message);
+      throw new Error(`DOCX extraction failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Replace citations with Track Changes enabled
+   * Also updates the References section to reflect reordering/deletions
+   *
+   * @param changedCitations - Array of citation changes with optional changeType
+   *   - changeType 'renumber': Uses cyan highlighting (default)
+   *   - changeType 'style_conversion': Uses green highlighting
+   * @param authorYearRefChanges - Optional selective changes for author-year documents
+   *   - deletedRefTexts: Full reference entry text patterns to strike through
+   *   - editedRefs: Reference entry text replacements {oldText, newText}
+   * @param acceptChanges - If true, apply changes cleanly without Track Changes markup
+   */
+  async replaceCitationsWithTrackChanges(
+    originalBuffer: Buffer,
+    changedCitations: Array<{ oldText: string; newText: string; changeType?: CitationChangeType }>,
+    orphanedCitations: string[],
+    currentReferences?: ReferenceEntry[],  // References in their new order (after reordering/deletion)
+    authorYearRefChanges?: {
+      deletedRefTexts?: string[];  // Full reference entry text to strike through
+      editedRefs?: Array<{ oldText: string; newText: string }>;  // Reference entry text replacements
+    },
+    acceptChanges: boolean = false  // If true, apply changes cleanly without Track Changes markup
+  ): Promise<{ buffer: Buffer; summary: ReplacementSummary }> {
+    try {
+      logger.info(`[DOCX Processor] Processing: ${changedCitations.length} changed, ${orphanedCitations.length} orphaned`);
+
+      const summary: ReplacementSummary = {
+        totalCitations: 0,
+        changed: [],
+        orphaned: [],
+        unchanged: 0,
+        referencesReordered: 0,
+        referencesDeleted: 0,
+        swapped: []
+      };
+
+      const zip = await JSZip.loadAsync(originalBuffer);
+      let documentXML = await zip.file('word/document.xml')?.async('string');
+      if (!documentXML) {
+        throw new Error('Invalid DOCX: word/document.xml not found');
+      }
+
+      // Split document at References section to avoid modifying reference list citations
+      // Look for common References section headers
+      const refPatterns = [
+        /<w:t[^>]*>References<\/w:t>/i,
+        /<w:t[^>]*>Bibliography<\/w:t>/i,
+        /<w:t[^>]*>Works Cited<\/w:t>/i,
+        /<w:t[^>]*>Reference List<\/w:t>/i,
+      ];
+
+      let bodyXML = documentXML;
+      let referencesXML = '';
+      let splitIndex = -1;
+
+      for (const pattern of refPatterns) {
+        const match = documentXML.match(pattern);
+        if (match && match.index !== undefined) {
+          // Find the paragraph containing "References" - go back to find <w:p>
+          const beforeMatch = documentXML.substring(0, match.index);
+          const lastParagraphStart = beforeMatch.lastIndexOf('<w:p');
+          if (lastParagraphStart !== -1) {
+            splitIndex = lastParagraphStart;
+            bodyXML = documentXML.substring(0, splitIndex);
+            referencesXML = documentXML.substring(splitIndex);
+            logger.info(`[DOCX Processor] Found References section at index ${splitIndex}, excluding from processing`);
+            break;
+          }
+        }
+      }
+
+      if (splitIndex === -1) {
+        logger.info('[DOCX Processor] WARNING: No References section found in DOCX - reference style conversion will NOT be applied!');
+        logger.info('[DOCX Processor] Looking for headers: "References", "Bibliography", "Works Cited", "Reference List"');
+      } else {
+        logger.info(`[DOCX Processor] References section found at index ${splitIndex}, referencesXML length: ${referencesXML.length}`);
+      }
+
+      const revisionDate = new Date().toISOString();
+      const author = 'Citation Tool';
+      let revisionId = 1;
+
+      // Deduplicate changes and preserve change type
+      const changeMap = new Map<string, { newText: string; changeType: CitationChangeType }>();
+      for (const { oldText, newText, changeType } of changedCitations) {
+        if (!changeMap.has(oldText)) {
+          changeMap.set(oldText, { newText, changeType: changeType || 'renumber' });
+        }
+      }
+
+      // Deduplicate orphaned (exclude those being changed)
+      const orphanedSet = new Set<string>(orphanedCitations);
+      for (const oldText of changeMap.keys()) {
+        orphanedSet.delete(oldText);
+      }
+
+      // PHASE 1: Replace all citations using a universal approach
+      // This handles ANY document structure by working with the text content directly
+      logger.info('[DOCX Processor] Phase 1: Replacing citations (universal approach)');
+      logger.info(`[DOCX Processor] Processing ${changeMap.size} changed citations`);
+      const placeholders = new Map<string, { type: 'change' | 'orphan'; oldText: string; newText?: string; changeType?: CitationChangeType }>();
+      let phIndex = 0;
+
+      // Process all changed citations using the universal replacer
+      for (const [oldText, { newText, changeType }] of changeMap) {
+        const placeholder = `__PH_CHANGE_${phIndex}__`;
+        placeholders.set(placeholder, { type: 'change', oldText, newText, changeType });
+        phIndex++;
+
+        const result = this.replaceCitationUniversal(bodyXML, oldText, placeholder);
+        bodyXML = result.xml;
+
+        if (result.count > 0) {
+          summary.changed.push({ from: oldText, to: newText, count: result.count });
+          summary.totalCitations += result.count;
+          const typeLabel = changeType === 'style_conversion' ? ' [style]' : '';
+          logger.info(`[DOCX Processor] Changed${typeLabel}: ${oldText} → ${newText} (${result.count}x)`);
+        } else {
+          logger.warn(`[DOCX Processor] No match for "${oldText}"`);
+        }
+      }
+
+      // Orphaned citations - only in bodyXML
+      // Use the universal replacer for consistency (handles citations split across multiple w:t tags)
+      for (const orphanText of orphanedSet) {
+        const placeholder = `__PH_ORPHAN_${phIndex}__`;
+        placeholders.set(placeholder, { type: 'orphan', oldText: orphanText });
+        phIndex++;
+
+        // Use universal replacer to handle citations that may be split across multiple <w:t> tags
+        const result = this.replaceCitationUniversal(bodyXML, orphanText, placeholder);
+        bodyXML = result.xml;
+
+        if (result.count > 0) {
+          summary.orphaned.push({ text: orphanText, count: result.count });
+          summary.totalCitations += result.count;
+          logger.info(`[DOCX Processor] Orphaned: ${orphanText} (${result.count}x)`);
+        } else {
+          logger.warn(`[DOCX Processor] No match for orphaned citation "${orphanText}"`);
+        }
+      }
+
+      // PHASE 2: Replace placeholders with Track Changes markup OR clean replacement
+      if (acceptChanges) {
+        logger.info('[DOCX Processor] Phase 2: Applying CLEAN changes (no Track Changes)');
+      } else {
+        logger.info('[DOCX Processor] Phase 2: Applying Track Changes');
+      }
+
+      for (const [placeholder, info] of placeholders) {
+        const pattern = new RegExp(
+          `<w:t([^>]*)>([^<]*)` + this.escapeRegex(placeholder) + `([^<]*)</w:t>`,
+          'g'
+        );
+
+        let replacement: string;
+
+        if (acceptChanges) {
+          // CLEAN EXPORT: Apply changes directly without Track Changes markup
+          if (info.type === 'change' && info.newText) {
+            const escapedNew = this.escapeXml(info.newText);
+            // Simply replace with the new text
+            replacement = `<w:t$1>$2${escapedNew}$3</w:t>`;
+          } else {
+            // Orphaned citation: remove it entirely (leave empty)
+            replacement = `<w:t$1>$2$3</w:t>`;
+          }
+        } else {
+          // TRACK CHANGES: Show strikethrough (old) + underline (new)
+          if (info.type === 'change' && info.newText) {
+            const escapedOld = this.escapeXml(info.oldText);
+            const escapedNew = this.escapeXml(info.newText);
+
+            // Use different highlight colors based on change type:
+            // - cyan: renumbered citations (default)
+            // - green: style conversion (e.g., "(1)" → "(Smith, 2020)")
+            const highlightColor = info.changeType === 'style_conversion' ? 'green' : 'cyan';
+
+            // Track Changes shows strikethrough (old) + underline (new), plus colored background for new text
+            replacement = `<w:t$1>$2</w:t></w:r>` +
+                          `<w:del w:id="${revisionId}" w:author="${author}" w:date="${revisionDate}">` +
+                          `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${escapedOld}</w:delText></w:r></w:del>` +
+                          `<w:ins w:id="${revisionId + 1}" w:author="${author}" w:date="${revisionDate}">` +
+                          `<w:r><w:rPr><w:highlight w:val="${highlightColor}"/></w:rPr><w:t>${escapedNew}</w:t></w:r></w:ins>` +
+                          `<w:r><w:t>$3</w:t>`;
+            revisionId += 2;
+          } else {
+            const escapedOrphan = this.escapeXml(info.oldText);
+
+            // Use red highlight for orphaned/deleted citations
+            replacement = `<w:t$1>$2</w:t></w:r>` +
+                          `<w:del w:id="${revisionId}" w:author="${author}" w:date="${revisionDate}">` +
+                          `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${escapedOrphan}</w:delText></w:r></w:del>` +
+                          `<w:r><w:t>$3</w:t>`;
+            revisionId++;
+          }
+        }
+
+        bodyXML = bodyXML.replace(pattern, replacement);
+      }
+
+      // Clean up empty elements
+      bodyXML = bodyXML.replace(/<w:r><w:t><\/w:t><\/w:r>/g, '');
+      bodyXML = bodyXML.replace(/<w:t><\/w:t>/g, '');
+
+      // PHASE 2.5: Selective author-year reference section updates (deletions and edits)
+      // This is used for author-year documents instead of full rebuild
+      if (authorYearRefChanges && referencesXML && (authorYearRefChanges.deletedRefTexts?.length || authorYearRefChanges.editedRefs?.length)) {
+        logger.info(`[DOCX Processor] Phase 2.5: Selective author-year reference section updates`);
+        logger.info(`  - Deletions: ${authorYearRefChanges.deletedRefTexts?.length || 0}`);
+        logger.info(`  - Edits: ${authorYearRefChanges.editedRefs?.length || 0}`);
+        logger.info(`  - Accept Changes: ${acceptChanges}`);
+
+        const selectiveResult = this.updateReferenceSectionSelective(
+          referencesXML,
+          authorYearRefChanges.deletedRefTexts || [],
+          authorYearRefChanges.editedRefs || [],
+          author,
+          revisionDate,
+          revisionId,
+          acceptChanges  // Pass acceptChanges flag
+        );
+        referencesXML = selectiveResult.xml;
+        summary.referencesDeleted = selectiveResult.deleted;
+        revisionId = selectiveResult.nextRevisionId;
+        // Mark that we've handled References section selectively
+        logger.info(`[DOCX Processor] Phase 2.5 complete: ${selectiveResult.deleted} deleted, ${selectiveResult.edited} edited`);
+      }
+
+      // PHASE 3: Update References section if reference data provided (full rebuild - for numeric docs)
+      logger.info(`[DOCX Processor] Phase 3 check: currentReferences=${currentReferences?.length || 0}, referencesXML.length=${referencesXML?.length || 0}`);
+
+      if (currentReferences && currentReferences.length > 0 && referencesXML) {
+        logger.info(`[DOCX Processor] Phase 3: Updating References section (${currentReferences.length} refs), acceptChanges=${acceptChanges}`);
+
+        // Log each reference's convertedText
+        currentReferences.forEach((ref, idx) => {
+          logger.info(`[DOCX Processor] Ref ${idx + 1}: convertedText=${ref.convertedText ? `"${ref.convertedText.substring(0, 80)}..."` : 'NONE'}`);
+        });
+
+        const updatedRefsResult = this.updateReferencesSection(referencesXML, currentReferences, author, revisionDate, revisionId, acceptChanges);
+        referencesXML = updatedRefsResult.xml;
+        summary.referencesReordered = updatedRefsResult.reordered;
+        summary.referencesDeleted = updatedRefsResult.deleted;
+        summary.swapped = updatedRefsResult.swapped || [];
+        revisionId = updatedRefsResult.nextRevisionId;
+      } else {
+        logger.warn(`[DOCX Processor] Phase 3 SKIPPED: currentReferences=${currentReferences?.length || 0}, referencesXML.length=${referencesXML?.length || 0}`);
+        if (!referencesXML || referencesXML.length === 0) {
+          logger.warn(`[DOCX Processor] Reason: References section not found in DOCX`);
+        }
+        if (!currentReferences || currentReferences.length === 0) {
+          logger.warn(`[DOCX Processor] Reason: No references provided from database`);
+        }
+      }
+
+      // Recombine body + references section
+      documentXML = bodyXML + referencesXML;
+
+      // Only enable track changes in settings when NOT using clean export
+      if (!acceptChanges) {
+        await this.updateSettingsForTrackChanges(zip);
+      }
+
+      zip.file('word/document.xml', documentXML);
+      const modifiedBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+      });
+
+      const exportType = acceptChanges ? 'clean export' : 'Track Changes';
+      logger.info(`[DOCX Processor] Complete: ${summary.totalCitations} citations (${exportType})`);
+      return { buffer: modifiedBuffer, summary };
+    } catch (error: any) {
+      logger.error(`[DOCX Processor] Failed: ${error.message} ${error.stack}`);
+      throw error;
+    }
+  }
+
+  private escapeXml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  private escapeRegex(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Universal citation replacement that works with any document structure
+   * Handles citations split across multiple XML tags
+   * Supports both numeric citations like "(1)" and author-year citations like "(Smith, 2019)"
+   */
+  private replaceCitationUniversal(xml: string, citation: string, replacement: string): { xml: string; count: number } {
+    let count = 0;
+
+    // Determine if this is an author-year citation or numeric citation
+    // Author-year citations contain letters (e.g., "(Smith, 2019)", "(Marcus & Davis, 2019)")
+    // Numeric citations are just numbers in parentheses (e.g., "(1)", "(2, 3)")
+    const hasLetters = /[a-zA-Z]/.test(citation);
+    const isAuthorYearCitation = hasLetters && /\d{4}/.test(citation);
+
+    // For author-year citations, we need to match the full text
+    // For numeric citations, we extract just the number
+    let searchPattern: string;
+
+    if (isAuthorYearCitation) {
+      // Author-year citation: escape the full text for regex matching
+      // Also handle XML entity encoding (& becomes &amp; in DOCX XML)
+      const xmlEncodedCitation = citation.replace(/&/g, '&amp;');
+      // Create pattern that matches either the original or XML-encoded version
+      if (citation !== xmlEncodedCitation) {
+        searchPattern = `(?:${this.escapeRegex(citation)}|${this.escapeRegex(xmlEncodedCitation)})`;
+        logger.debug(`[DOCX Processor] Author-year citation with ampersand: "${citation}" (also trying "${xmlEncodedCitation}")`);
+      } else {
+        searchPattern = this.escapeRegex(citation);
+        logger.debug(`[DOCX Processor] Author-year citation detected: "${citation}"`);
+      }
+    } else {
+      // Numeric citation: check if it has parentheses or not
+      // Chicago style uses superscript numbers without parentheses: "1", "2", "3"
+      // Vancouver style uses numbers in parentheses: "(1)", "(2)", "(3)"
+      const hasParentheses = /^\s*[\(\[\{]/.test(citation) || /[\)\]\}]\s*$/.test(citation);
+      const numberMatch = citation.match(/\d+/);
+      if (!numberMatch) {
+        return { xml, count: 0 };
+      }
+
+      if (hasParentheses) {
+        // Citation has parentheses/brackets - match the full pattern
+        searchPattern = this.escapeRegex(citation.trim());
+        logger.debug(`[DOCX Processor] Numeric citation with brackets: "${citation}"`);
+      } else {
+        // Chicago-style superscript without parentheses - match just the number
+        // Use the full citation text to match exactly (handles "1", "2, 3", etc.)
+        searchPattern = this.escapeRegex(citation.trim());
+        logger.debug(`[DOCX Processor] Numeric citation (superscript/no brackets): "${citation}"`);
+      }
+    }
+
+    // Strategy: Find sequences of <w:t> tags that together form the citation pattern
+    // Build a map of character positions to XML positions
+
+    // Step 1: Extract all <w:t> content with their positions in the XML
+    interface TextSegment {
+      start: number;  // Start position in XML
+      end: number;    // End position in XML
+      text: string;   // The text content
+      fullMatch: string; // The full <w:t>...</w:t> match
+    }
+
+    const segments: TextSegment[] = [];
+    const textTagRegex = /<w:t([^>]*)>([^<]*)<\/w:t>/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = textTagRegex.exec(xml)) !== null) {
+      segments.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        text: match[2],
+        fullMatch: match[0]
+      });
+    }
+
+    // Step 2: Build combined text and track which segment each character belongs to
+    let combinedText = '';
+    const charToSegment: { segmentIndex: number; charIndex: number }[] = [];
+
+    for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+      const seg = segments[segIdx];
+      for (let charIdx = 0; charIdx < seg.text.length; charIdx++) {
+        charToSegment.push({ segmentIndex: segIdx, charIndex: charIdx });
+        combinedText += seg.text[charIdx];
+      }
+    }
+
+    // Step 3: Find all occurrences of the citation pattern in the combined text
+    const citationPattern = new RegExp(searchPattern, 'g');
+    const matches: { start: number; end: number }[] = [];
+    let citMatch: RegExpExecArray | null;
+
+    while ((citMatch = citationPattern.exec(combinedText)) !== null) {
+      matches.push({
+        start: citMatch.index,
+        end: citMatch.index + citMatch[0].length
+      });
+    }
+
+    if (matches.length === 0) {
+      return { xml, count: 0 };
+    }
+
+    // Step 4: For each match, determine which segments are involved and replace
+    // Process matches in reverse order to preserve positions
+    let modifiedXml = xml;
+
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const m = matches[i];
+
+      // Find the segments involved in this match
+      const startInfo = charToSegment[m.start];
+      const endInfo = charToSegment[m.end - 1];
+
+      if (!startInfo || !endInfo) continue;
+
+      const startSegIdx = startInfo.segmentIndex;
+      const endSegIdx = endInfo.segmentIndex;
+
+      if (startSegIdx === endSegIdx) {
+        // Citation is within a single segment - simple replacement
+        const seg = segments[startSegIdx];
+        const beforeCitation = seg.text.substring(0, startInfo.charIndex);
+        const afterCitation = seg.text.substring(endInfo.charIndex + 1);
+        const newText = beforeCitation + replacement + afterCitation;
+        const newTag = seg.fullMatch.replace(/>([^<]*)</, `>${newText}<`);
+
+        modifiedXml = modifiedXml.substring(0, seg.start) + newTag + modifiedXml.substring(seg.end);
+        count++;
+      } else {
+        // Citation spans multiple segments
+        // Strategy: Put the replacement in the first segment, clear the middle segments,
+        // and adjust the last segment
+
+        const firstSeg = segments[startSegIdx];
+        const lastSeg = segments[endSegIdx];
+
+        // Text before the citation in the first segment
+        const beforeCitation = firstSeg.text.substring(0, startInfo.charIndex);
+        // Text after the citation in the last segment
+        const afterCitation = lastSeg.text.substring(endInfo.charIndex + 1);
+
+        // Build replacement: first segment gets before + replacement, last segment gets after
+        // Middle segments become empty
+
+        // Work backwards to preserve positions
+        // 1. Modify last segment
+        const newLastText = afterCitation;
+        const newLastTag = lastSeg.fullMatch.replace(/>([^<]*)</, `>${newLastText}<`);
+        modifiedXml = modifiedXml.substring(0, lastSeg.start) + newLastTag + modifiedXml.substring(lastSeg.end);
+
+        // 2. Clear middle segments (if any)
+        for (let segIdx = endSegIdx - 1; segIdx > startSegIdx; segIdx--) {
+          const midSeg = segments[segIdx];
+          const newMidTag = midSeg.fullMatch.replace(/>([^<]*)</, `><`);
+          modifiedXml = modifiedXml.substring(0, midSeg.start) + newMidTag + modifiedXml.substring(midSeg.end);
+        }
+
+        // 3. Modify first segment
+        const newFirstText = beforeCitation + replacement;
+        const newFirstTag = firstSeg.fullMatch.replace(/>([^<]*)</, `>${newFirstText}<`);
+        modifiedXml = modifiedXml.substring(0, firstSeg.start) + newFirstTag + modifiedXml.substring(firstSeg.end);
+
+        count++;
+      }
+
+      // Re-parse segments for next iteration (positions have changed)
+      if (i > 0) {
+        segments.length = 0;
+        charToSegment.length = 0;
+        combinedText = '';
+
+        const newTextTagRegex = /<w:t([^>]*)>([^<]*)<\/w:t>/g;
+        while ((match = newTextTagRegex.exec(modifiedXml)) !== null) {
+          segments.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            text: match[2],
+            fullMatch: match[0]
+          });
+        }
+
+        for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+          const seg = segments[segIdx];
+          for (let charIdx = 0; charIdx < seg.text.length; charIdx++) {
+            charToSegment.push({ segmentIndex: segIdx, charIndex: charIdx });
+            combinedText += seg.text[charIdx];
+          }
+        }
+      }
+    }
+
+    return { xml: modifiedXml, count };
+  }
+
+  /**
+   * Add highlight to all text runs in a paragraph
+   * This adds a highlight color to all <w:t> elements
+   */
+  private addHighlightToAllText(paragraphXml: string, color: string): string {
+    // Add highlight to all <w:r> elements that contain <w:t>
+    return paragraphXml.replace(
+      /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g,
+      (match, openTag, content, closeTag) => {
+        // Skip if this run doesn't contain text
+        if (!content.includes('<w:t')) {
+          return match;
+        }
+
+        // Check if <w:rPr> already exists
+        if (content.includes('<w:rPr>')) {
+          // Check if highlight already exists
+          if (content.includes('<w:highlight')) {
+            return match; // Already has highlight, don't modify
+          }
+          // Add highlight to existing rPr
+          const newContent = content.replace(/<w:rPr>/, `<w:rPr><w:highlight w:val="${color}"/>`);
+          return openTag + newContent + closeTag;
+        } else {
+          // Add new rPr with highlight before the text
+          const newContent = content.replace(/(<w:t)/, `<w:rPr><w:highlight w:val="${color}"/></w:rPr>$1`);
+          return openTag + newContent + closeTag;
+        }
+      }
+    );
+  }
+
+  /**
+   * Selective update of References section for author-year documents
+   * Only modifies specific paragraphs that match deleted or edited references
+   * Does NOT rebuild the entire section - leaves other references untouched
+   * @param acceptChanges - If true, apply changes cleanly without Track Changes markup
+   */
+  private updateReferenceSectionSelective(
+    referencesXML: string,
+    deletedRefTexts: string[],
+    editedRefs: Array<{ oldText: string; newText: string }>,
+    author: string,
+    date: string,
+    startRevisionId: number,
+    acceptChanges: boolean = false
+  ): { xml: string; deleted: number; edited: number; nextRevisionId: number } {
+    let revisionId = startRevisionId;
+    let deleted = 0;
+    let edited = 0;
+
+    try {
+      logger.info(`[DOCX Processor] Selective reference update: ${deletedRefTexts.length} deletions, ${editedRefs.length} edits`);
+
+      // Extract all paragraphs from References section
+      const paragraphRegex = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
+      let updatedXML = referencesXML;
+
+      // Helper to extract text from paragraph
+      const extractText = (para: string): string => {
+        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+        return textMatches.map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1')).join('').trim();
+      };
+
+      // Helper to normalize text for matching (remove extra spaces, handle different quote styles)
+      const normalizeText = (text: string): string => {
+        return text.replace(/\s+/g, ' ').replace(/[""'']/g, '"').trim().toLowerCase();
+      };
+
+      // Process each paragraph
+      const paragraphs = updatedXML.match(paragraphRegex) || [];
+
+      // Helper to extract author name from inline citation "(Author, Year)" or full reference "Author. (Year)."
+      const extractAuthorFromCitation = (text: string): string | null => {
+        // Try inline citation format: "(Marcus & Davis, 2019)" or "(Smith, 2020)"
+        const inlineMatch = text.match(/^\(([^,]+?)(?:,|\s*&|\s+et\s+al)/i);
+        if (inlineMatch) {
+          return inlineMatch[1].trim();
+        }
+        // Try inline citation with just year: "(Marcus, 2019)" - author is before the year
+        const simpleInlineMatch = text.match(/^\(([^)]+?),?\s*\d{4}\)/);
+        if (simpleInlineMatch) {
+          const authorPart = simpleInlineMatch[1].replace(/,?\s*\d{4}.*/, '').trim();
+          // Extract first author name (before & or comma indicating second author)
+          const firstAuthor = authorPart.split(/\s*[&,]\s*/)[0];
+          return firstAuthor || authorPart;
+        }
+        // Try citation WITHOUT parentheses: "Bommasani et al., 2021" or "Brown et al., 2020"
+        // This handles author-year citations stored without parentheses in rawText
+        const noParenMatch = text.match(/^([A-Za-z]+)(?:\s+et\s+al\.?)?(?:,|\s*&|\s+)\s*\d{4}/i);
+        if (noParenMatch) {
+          return noParenMatch[1].trim();
+        }
+        // Try full reference format: "Marcus, J., & Davis, K. (2019)."
+        const fullRefMatch = text.match(/^([^(]+)\(/);
+        if (fullRefMatch) {
+          return fullRefMatch[1].trim();
+        }
+        return null;
+      };
+
+      for (const para of paragraphs) {
+        const paraText = extractText(para);
+        const normalizedParaText = normalizeText(paraText);
+
+        // Check for deletions - match by author name pattern (partial match)
+        for (const deleteText of deletedRefTexts) {
+          const authorPart = extractAuthorFromCitation(deleteText);
+          if (authorPart) {
+            const normalizedAuthor = normalizeText(authorPart);
+            logger.info(`[DOCX Processor] Looking for deleted ref author: "${authorPart}" (normalized: "${normalizedAuthor}")`);
+
+            if (normalizedParaText.includes(normalizedAuthor)) {
+              logger.info(`[DOCX Processor] Found deleted reference match: "${paraText.substring(0, 50)}..."`);
+
+              let updatedPara = para;
+
+              if (acceptChanges) {
+                // CLEAN EXPORT: Remove the paragraph entirely
+                updatedXML = updatedXML.replace(para, '');
+                logger.info(`[DOCX Processor] Removed deleted reference (clean export)`);
+              } else {
+                // TRACK CHANGES: Mark paragraph as deleted (strikethrough)
+                updatedPara = updatedPara.replace(/<w:t(\s[^>]*)?>([^<]*)<\/w:t>/g, '<w:delText$1>$2</w:delText>');
+
+                let localRevId = revisionId;
+                updatedPara = updatedPara.replace(
+                  /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g,
+                  (match, openTag, content, closeTag) => {
+                    const newContent = content.replace(/<w:rPr>/, '<w:rPr><w:highlight w:val="red"/>');
+                    const contentWithHighlight = content.includes('<w:rPr>') ? newContent : content.replace(/(<w:delText)/, '<w:rPr><w:highlight w:val="red"/></w:rPr>$1');
+                    const result = `<w:del w:id="${localRevId}" w:author="${author}" w:date="${date}">${openTag}${contentWithHighlight}${closeTag}</w:del>`;
+                    localRevId++;
+                    return result;
+                  }
+                );
+                revisionId = localRevId;
+
+                updatedXML = updatedXML.replace(para, updatedPara);
+              }
+              deleted++;
+              break;
+            }
+          } else {
+            logger.warn(`[DOCX Processor] Could not extract author from deleteText: "${deleteText}"`);
+          }
+        }
+
+        // Check for edits - match by author name pattern
+        for (const editRef of editedRefs) {
+          const authorPart = extractAuthorFromCitation(editRef.oldText);
+          if (authorPart) {
+            const normalizedAuthor = normalizeText(authorPart);
+            logger.info(`[DOCX Processor] Looking for edited ref author: "${authorPart}" (normalized: "${normalizedAuthor}")`);
+
+            if (normalizedParaText.includes(normalizedAuthor)) {
+              logger.info(`[DOCX Processor] Found edited reference match: "${paraText.substring(0, 50)}..."`);
+
+              // For year edits, find the year and replace it with track changes
+              // Handle both formats: "(2019)" or just "2019" in the text
+              const oldYearMatch = editRef.oldText.match(/(\d{4})/);
+              const newYearMatch = editRef.newText.match(/(\d{4})/);
+
+              if (oldYearMatch && newYearMatch && oldYearMatch[1] !== newYearMatch[1]) {
+                const oldYear = oldYearMatch[1];
+                const newYear = newYearMatch[1];
+
+                let updatedPara = para;
+                let replaced = false;
+
+                if (acceptChanges) {
+                  // CLEAN EXPORT: Simply replace the year without Track Changes
+                  const yearRegex = new RegExp(`(${oldYear})`, 'g');
+                  // Replace only the first occurrence (APA year in parens comes first)
+                  updatedPara = updatedPara.replace(yearRegex, newYear);
+                  replaced = updatedPara !== para;
+                  if (replaced) {
+                    updatedXML = updatedXML.replace(para, updatedPara);
+                    edited++;
+                    logger.info(`[DOCX Processor] Replaced year (clean export): ${oldYear} → ${newYear}`);
+                  }
+                } else {
+                  // TRACK CHANGES: Find and replace ONLY the year in parentheses "(YEAR)"
+                  // In APA format, the year in parentheses comes right after authors: "Smith, J. (2019). Title..."
+
+                  // Pattern 1: Year with opening paren in same w:t element: "(2019" or "(2019)"
+                  const yearWithParenRegex = new RegExp(`(<w:t[^>]*>)([^<]*\\()(${oldYear})(\\)?[^<]*)(<\\/w:t>)`);
+
+                  if (yearWithParenRegex.test(updatedPara)) {
+                    updatedPara = updatedPara.replace(yearWithParenRegex, (match, openTag, before, year, after, closeTag) => {
+                      const delId = revisionId++;
+                      const insId = revisionId++;
+                      replaced = true;
+                      return `${openTag}${before}${closeTag}</w:r><w:del w:id="${delId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:delText>${year}</w:delText></w:r></w:del><w:ins w:id="${insId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${newYear}</w:t></w:r></w:ins><w:r>${openTag}${after}${closeTag}`;
+                    });
+                  }
+
+                  // Pattern 2: If paren and year are in separate w:t elements, look for year right after "(</w:t>"
+                  if (!replaced) {
+                    const yearAfterParenRegex = new RegExp(`(\\(<\\/w:t><\\/w:r>)(<w:r[^>]*>)(<w:t[^>]*>)(${oldYear})`);
+                    if (yearAfterParenRegex.test(updatedPara)) {
+                      updatedPara = updatedPara.replace(yearAfterParenRegex, (match, parenClose, rOpen, tOpen, year) => {
+                        const delId = revisionId++;
+                        const insId = revisionId++;
+                        replaced = true;
+                        return `${parenClose}${rOpen}<w:del w:id="${delId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:delText>${year}</w:delText></w:r></w:del><w:ins w:id="${insId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${newYear}</w:t></w:r></w:ins><w:r>${tOpen}`;
+                      });
+                    }
+                  }
+
+                  // Pattern 3: Fallback - replace only the FIRST occurrence of the year (APA year in parens comes first)
+                  if (!replaced) {
+                    const firstYearRegex = new RegExp(`(<w:t[^>]*>)([^<]*)(${oldYear})([^<]*)(<\\/w:t>)`);
+                    if (firstYearRegex.test(updatedPara)) {
+                      updatedPara = updatedPara.replace(firstYearRegex, (match, openTag, before, year, after, closeTag) => {
+                        const delId = revisionId++;
+                        const insId = revisionId++;
+                        replaced = true;
+                        return `${openTag}${before}${closeTag}</w:r><w:del w:id="${delId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:delText>${year}</w:delText></w:r></w:del><w:ins w:id="${insId}" w:author="${author}" w:date="${date}"><w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${newYear}</w:t></w:r></w:ins><w:r>${openTag}${after}${closeTag}`;
+                      });
+                    }
+                  }
+
+                  if (replaced && updatedPara !== para) {
+                    updatedXML = updatedXML.replace(para, updatedPara);
+                    edited++;
+                    logger.info(`[DOCX Processor] Updated year in parentheses: (${oldYear}) → (${newYear})`);
+                  }
+                }
+              }
+              break;
+            }
+          } else {
+            logger.warn(`[DOCX Processor] Could not extract author from editRef.oldText: "${editRef.oldText}"`);
+          }
+        }
+      }
+
+      logger.info(`[DOCX Processor] Selective update complete: ${deleted} deleted, ${edited} edited`);
+      return { xml: updatedXML, deleted, edited, nextRevisionId: revisionId };
+    } catch (error: any) {
+      logger.error(`[DOCX Processor] Selective reference update failed: ${error.message}`);
+      return { xml: referencesXML, deleted: 0, edited: 0, nextRevisionId: revisionId };
+    }
+  }
+
+  /**
+   * Update the References section to reflect reordering and deletions
+   * - PHYSICALLY REORDERS paragraphs to match database order
+   * - Keeps deleted references in their ORIGINAL position (with strikethrough) - unless acceptChanges is true
+   * - Updates reference numbers with Track Changes - unless acceptChanges is true
+   * - Shows swapping visually with yellow highlighting - unless acceptChanges is true
+   * @param acceptChanges - If true, apply changes cleanly without Track Changes markup
+   */
+  private updateReferencesSection(
+    referencesXML: string,
+    currentReferences: ReferenceEntry[],
+    author: string,
+    date: string,
+    startRevisionId: number,
+    acceptChanges: boolean = false
+  ): { xml: string; reordered: number; deleted: number; swapped: Array<{ refA: string; refB: string }>; nextRevisionId: number } {
+    let revisionId = startRevisionId;
+    let reordered = 0;
+    let deleted = 0;
+    const swappedPairs: Array<{ refA: string; refB: string }> = [];
+
+    try {
+      // IMPORTANT: Some documents have content AFTER the References section
+      // (tables, figures, correspondence info, author details, etc.)
+      // We must only process actual reference paragraphs and preserve everything else
+
+      // Find where tables/section breaks start (if any)
+      const tableStartIndex = referencesXML.indexOf('<w:tbl');
+      const sectionBreakIndex = referencesXML.indexOf('<w:sectPr');
+
+      // Determine where reference content ends based on structural elements
+      let structuralEndIndex = referencesXML.length;
+      if (tableStartIndex > 0) {
+        structuralEndIndex = Math.min(structuralEndIndex, tableStartIndex);
+      }
+      if (sectionBreakIndex > 0) {
+        structuralEndIndex = Math.min(structuralEndIndex, sectionBreakIndex);
+      }
+
+      // Extract ALL paragraphs first to analyze them
+      const paragraphRegex = /<w:p[^>]*>[\s\S]*?<\/w:p>/g;
+      const allParagraphs = referencesXML.match(paragraphRegex) || [];
+
+      if (allParagraphs.length <= 1) {
+        logger.info('[DOCX Processor] No reference paragraphs found to update');
+        return { xml: referencesXML, reordered: 0, deleted: 0, swapped: [], nextRevisionId: revisionId };
+      }
+
+      // First paragraph is usually the "References" header
+      const headerParagraph = allParagraphs[0];
+      const candidateParagraphs = allParagraphs.slice(1);
+
+      // Helper to extract text from paragraph
+      const extractText = (para: string): string => {
+        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+        return textMatches.map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1')).join('').trim();
+      };
+
+      // Helper to check if paragraph looks like a reference entry
+      // Handles BOTH numbered (Vancouver: "1. Author...") and unnumbered (APA: "Author Name. Title...")
+      const isReferenceEntry = (text: string): boolean => {
+        // Pattern 1: Numbered references - "1." or "1.\t" or "[1]" etc.
+        if (/^\d+[\.\)\]\t\s]/.test(text) || /^\[\d+\]/.test(text)) {
+          return true;
+        }
+
+        // Pattern 2: Unnumbered references - starts with author name pattern
+        // Author patterns: "LastName Initials." or "LastName, Initials." or "LastName A, LastName B."
+        // Examples: "Edstrom LE, Robson MC" or "Smith, J.A." or "Van der Berg A."
+        if (/^[A-Z][a-z]+(\s+[A-Z]{1,3}[,.]?)+/.test(text)) {
+          // Additional check: should contain year in parentheses or followed by period
+          // or look like a citation with journal info
+          if (/\d{4}/.test(text) || /\.\s+[A-Z]/.test(text)) {
+            return true;
+          }
+        }
+
+        // Pattern 3: Starts with author name followed by period and title
+        // "LastName Initials. Title of article..."
+        if (/^[A-Z][a-z]+\s+[A-Z]{1,3}\./.test(text)) {
+          return true;
+        }
+
+        return false;
+      };
+
+      // Find where actual reference entries end
+      // Stop when we hit content that doesn't look like a reference (Correspondence, Author info, etc.)
+      const refParagraphs: string[] = [];
+      const nonRefParagraphs: string[] = [];
+      let foundNonRef = false;
+
+      for (const para of candidateParagraphs) {
+        // Check if paragraph is before structural elements (tables, etc.)
+        const paraIndex = referencesXML.indexOf(para);
+        if (paraIndex >= structuralEndIndex) {
+          // This paragraph is after tables/section breaks - preserve it
+          nonRefParagraphs.push(para);
+          continue;
+        }
+
+        const text = extractText(para);
+
+        // Skip empty paragraphs
+        if (!text) {
+          if (foundNonRef) {
+            nonRefParagraphs.push(para);
+          } else {
+            refParagraphs.push(para);
+          }
+          continue;
+        }
+
+        // Once we hit non-reference content, everything after is preserved
+        if (foundNonRef) {
+          nonRefParagraphs.push(para);
+          continue;
+        }
+
+        // Check for non-reference markers FIRST (these definitely aren't references)
+        const nonRefMarkers = ['correspondence', 'received:', 'accepted:', 'conflict of interest', 'acknowledgment', 'funding', 'orcid', 'e-mail:', 'email:', 'address:', 'affiliation', 'author contributions'];
+        const lowerText = text.toLowerCase();
+        const isNonRefContent = nonRefMarkers.some(marker => lowerText.includes(marker));
+
+        if (isNonRefContent) {
+          // Definitely non-reference content - stop collecting references
+          foundNonRef = true;
+          nonRefParagraphs.push(para);
+          logger.info(`[DOCX Processor] Found non-reference content: "${text.substring(0, 50)}..." - preserving remaining content`);
+        } else if (isReferenceEntry(text)) {
+          // Looks like a reference entry - add it
+          refParagraphs.push(para);
+          logger.info(`[DOCX Processor] Found reference paragraph: "${text.substring(0, 80)}..."`);
+        } else {
+          // Doesn't match reference patterns but not explicitly non-reference
+          // Could be a continuation or unusual format - include it for safety
+          refParagraphs.push(para);
+          logger.info(`[DOCX Processor] Including ambiguous paragraph as reference: "${text.substring(0, 50)}..."`);
+        }
+      }
+
+      // Build preserved content from non-reference paragraphs and everything after structural elements
+      const lastRefPara = refParagraphs[refParagraphs.length - 1];
+      const lastRefParaEnd = lastRefPara ? referencesXML.indexOf(lastRefPara) + lastRefPara.length : referencesXML.indexOf(headerParagraph) + headerParagraph.length;
+      const preservedContent = referencesXML.substring(lastRefParaEnd);
+
+      logger.info(`[DOCX Processor] Found ${refParagraphs.length} reference paragraphs, ${nonRefParagraphs.length} non-reference paragraphs to preserve`);
+
+      // STEP 1: Build a map of each DOCX paragraph to its matched database reference
+      interface ParagraphInfo {
+        para: string;
+        origNum: number;
+        origIndex: number;
+        refId: string | null;
+        matchedRef: ReferenceEntry | null;
+      }
+
+      const paragraphInfos: ParagraphInfo[] = [];
+      const refIdToParagraphInfo = new Map<string, ParagraphInfo>();
+
+      // Extract original numbers and match to database references
+      for (let paraIdx = 0; paraIdx < refParagraphs.length; paraIdx++) {
+        const para = refParagraphs[paraIdx];
+        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+        const fullText = textMatches
+          .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
+          .join('');
+
+        // Extract original number from paragraph
+        const numMatch = fullText.match(/^(\d+)\./);
+        const origNum = numMatch ? parseInt(numMatch[1]) : paraIdx + 1;
+
+        // Try to match by author name using word boundary
+        let matchedRefId: string | null = null;
+        let matchedRef: ReferenceEntry | null = null;
+        for (const ref of currentReferences) {
+          if (ref.authors && ref.authors[0]) {
+            const authorLastName = ref.authors[0].split(/[,\s]/)[0];
+            const escapedAuthor = authorLastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const authorRegex = new RegExp(`\\b${escapedAuthor}\\b`, 'i');
+            if (authorRegex.test(fullText)) {
+              matchedRefId = ref.id;
+              matchedRef = ref;
+              logger.info(`[DOCX Processor] Matched DOCX para ${origNum} (idx ${paraIdx}) to ref "${ref.authors[0]}" (id: ${ref.id})`);
+              break;
+            }
+          }
+        }
+
+        const info: ParagraphInfo = {
+          para,
+          origNum,
+          origIndex: paraIdx,
+          refId: matchedRefId,
+          matchedRef
+        };
+
+        paragraphInfos.push(info);
+
+        if (matchedRefId) {
+          refIdToParagraphInfo.set(matchedRefId, info);
+        }
+      }
+
+      // STEP 2: Identify deleted paragraphs (in DOCX but not in database)
+      const deletedParagraphs: ParagraphInfo[] = paragraphInfos.filter(info => info.refId === null);
+
+      // STEP 3: Build the NEW order of paragraphs following the DATABASE order
+      // While inserting deleted refs at their original positions
+      const outputParagraphs: {
+        para: string;
+        newNum: number;
+        origNum: number;
+        isDeleted: boolean;
+        isSwapped: boolean;
+        swappedWith?: string;
+        convertedText?: string;  // For style conversion
+      }[] = [];
+
+      // Create a slot for each position
+      // First, we need to figure out the final order
+      // Database order determines where matched refs go
+      // Deleted refs stay at their original positions
+
+      // Build array of new positions
+      let newPosition = 1;
+      const usedOrigPositions = new Set<number>();
+
+      // First pass: place references according to database order
+      for (const ref of currentReferences) {
+        const paraInfo = refIdToParagraphInfo.get(ref.id);
+        if (paraInfo) {
+          // Build complete citation from bibliographic fields if available
+          // This ensures journal name, volume, issue, pages are included
+          let finalConvertedText = ref.convertedText;
+
+          if (ref.journalName || ref.volume || ref.pages) {
+            // We have bibliographic details - build complete citation
+            finalConvertedText = referenceStyleUpdaterService.buildCompleteApaCitation({
+              id: ref.id,
+              authors: ref.authors,
+              year: ref.year,
+              title: ref.title || '',
+              journalName: ref.journalName,
+              volume: ref.volume,
+              issue: ref.issue,
+              pages: ref.pages,
+              doi: ref.doi,
+              formattedApa: ref.convertedText,
+              sortKey: ref.sortKey
+            });
+            logger.info(`[DOCX Processor] Built complete citation for ref ${newPosition}: "${finalConvertedText?.substring(0, 80)}..."`);
+          }
+
+          outputParagraphs.push({
+            para: paraInfo.para,
+            newNum: newPosition,
+            origNum: paraInfo.origNum,
+            isDeleted: false,
+            isSwapped: false,
+            convertedText: finalConvertedText  // Use complete citation with journal details
+          });
+          usedOrigPositions.add(paraInfo.origNum);
+          newPosition++;
+        }
+      }
+
+      // STEP 4: Detect swaps by comparing original vs new positions
+      const detectedSwaps = new Set<string>();
+      for (let i = 0; i < outputParagraphs.length; i++) {
+        const itemA = outputParagraphs[i];
+        for (let j = i + 1; j < outputParagraphs.length; j++) {
+          const itemB = outputParagraphs[j];
+          // If A was at position X and B was at position Y, and now A is at Y and B is at X, it's a swap
+          if (itemA.origNum === itemB.newNum && itemB.origNum === itemA.newNum) {
+            itemA.isSwapped = true;
+            itemB.isSwapped = true;
+
+            // Find author names for swap logging
+            const refA = currentReferences.find(r => {
+              const info = refIdToParagraphInfo.get(r.id);
+              return info && info.origNum === itemA.origNum;
+            });
+            const refB = currentReferences.find(r => {
+              const info = refIdToParagraphInfo.get(r.id);
+              return info && info.origNum === itemB.origNum;
+            });
+
+            itemA.swappedWith = refB?.authors?.[0] || `Ref ${itemB.origNum}`;
+            itemB.swappedWith = refA?.authors?.[0] || `Ref ${itemA.origNum}`;
+
+            const swapKey = [itemA.origNum, itemB.origNum].sort().join('-');
+            if (!detectedSwaps.has(swapKey)) {
+              detectedSwaps.add(swapKey);
+              swappedPairs.push({
+                refA: refA?.authors?.[0] || `Ref ${itemA.origNum}`,
+                refB: refB?.authors?.[0] || `Ref ${itemB.origNum}`
+              });
+              logger.info(`[DOCX Processor] Detected swap: ${itemA.origNum} (${refA?.authors?.[0]}) ↔ ${itemB.origNum} (${refB?.authors?.[0]})`);
+            }
+          }
+        }
+      }
+
+      // STEP 5: Insert deleted paragraphs at their original positions
+      // For clean export (acceptChanges=true), don't include deleted paragraphs at all
+      if (!acceptChanges) {
+        // Sort deleted paragraphs by their original position
+        deletedParagraphs.sort((a, b) => a.origNum - b.origNum);
+
+        for (const delInfo of deletedParagraphs) {
+          // Insert at the original position (0-indexed)
+          const insertIndex = Math.min(delInfo.origNum - 1, outputParagraphs.length);
+          outputParagraphs.splice(insertIndex, 0, {
+            para: delInfo.para,
+            newNum: -1, // Will be marked as deleted
+            origNum: delInfo.origNum,
+            isDeleted: true,
+            isSwapped: false
+          });
+          deleted++;
+        }
+      } else {
+        // Clean export: just count the deleted items
+        deleted = deletedParagraphs.length;
+        logger.info(`[DOCX Processor] Clean export: ${deleted} deleted paragraphs will be omitted`);
+      }
+
+      // STEP 6: Generate the final XML for each paragraph
+      const newRefParagraphs: string[] = [];
+
+      for (const item of outputParagraphs) {
+        let updatedPara = item.para;
+
+        if (item.isDeleted) {
+          if (acceptChanges) {
+            // CLEAN EXPORT: Skip deleted paragraphs entirely (don't add to output)
+            logger.info(`[DOCX Processor] Clean export: skipping deleted paragraph at position ${item.origNum}`);
+            continue;  // Skip this paragraph
+          } else {
+            // TRACK CHANGES: Mark with strikethrough
+            updatedPara = updatedPara.replace(/<w:t(\s[^>]*)?>([^<]*)<\/w:t>/g, '<w:delText$1>$2</w:delText>');
+
+            let localRevId = revisionId;
+            updatedPara = updatedPara.replace(
+              /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g,
+              (match, openTag, content, closeTag) => {
+                const newContent = content.replace(/<w:rPr>/, '<w:rPr><w:highlight w:val="red"/>');
+                const contentWithHighlight = content.includes('<w:rPr>') ? newContent : content.replace(/(<w:delText)/, '<w:rPr><w:highlight w:val="red"/></w:rPr>$1');
+                const result = `<w:del w:id="${localRevId}" w:author="${author}" w:date="${date}">${openTag}${contentWithHighlight}${closeTag}</w:del>`;
+                localRevId++;
+                return result;
+              }
+            );
+            revisionId = localRevId;
+            logger.info(`[DOCX Processor] Marked as deleted (in place): original position ${item.origNum}`);
+          }
+        } else {
+          // Active reference - may need number update and/or swap highlighting
+          const numberPatterns = [
+            { pattern: /(<w:t[^>]*>)\s*(\d+)\.\s*/, format: 'dot' },
+            { pattern: /(<w:t[^>]*>)\s*(\d+)\s+/, format: 'space' },
+            { pattern: /(<w:t[^>]*>)\s*\[(\d+)\]\s*/, format: 'bracket' },
+          ];
+
+          let numberChanged = false;
+
+          for (const { pattern, format } of numberPatterns) {
+            const match = updatedPara.match(pattern);
+            if (match) {
+              const originalNumber = parseInt(match[2]);
+              const newNumber = item.newNum;
+
+              if (originalNumber !== newNumber) {
+                const oldNumStr = format === 'bracket' ? `[${originalNumber}]` : `${originalNumber}.`;
+                const newNumStr = format === 'bracket' ? `[${newNumber}]` : `${newNumber}.`;
+
+                if (acceptChanges) {
+                  // CLEAN EXPORT: Just replace the number directly
+                  updatedPara = updatedPara.replace(pattern, `$1${newNumStr}\t`);
+                  reordered++;
+                  logger.info(`[DOCX Processor] Clean export: Reference number ${originalNumber} → ${newNumber}`);
+                } else {
+                  // TRACK CHANGES: Use del/ins markup
+                  // Use yellow highlight for swapped references
+                  const highlightColor = item.isSwapped ? 'yellow' : 'cyan';
+
+                  updatedPara = updatedPara.replace(pattern, (fullMatch, tagPrefix) => {
+                    let trackChange = `${tagPrefix}</w:t></w:r>` +
+                      `<w:del w:id="${revisionId}" w:author="${author}" w:date="${date}">` +
+                      `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${oldNumStr}\t</w:delText></w:r></w:del>` +
+                      `<w:ins w:id="${revisionId + 1}" w:author="${author}" w:date="${date}">` +
+                      `<w:r><w:rPr><w:highlight w:val="${highlightColor}"/></w:rPr><w:t>${newNumStr}\t</w:t></w:r></w:ins>`;
+
+                    trackChange += `<w:r><w:t>`;
+                    return trackChange;
+                  });
+                  revisionId += 2;
+                  reordered++;
+                  logger.info(`[DOCX Processor] Reference number: ${originalNumber} → ${newNumber}${item.isSwapped ? ' (SWAPPED with ' + item.swappedWith + ')' : ''}`);
+
+                  // If swapped, also highlight the entire reference content with yellow
+                  if (item.isSwapped) {
+                    updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
+                  }
+                }
+                numberChanged = true;
+              } else if (!acceptChanges && item.isSwapped && item.swappedWith) {
+                // Track Changes only: Number stayed the same BUT position was swapped - highlight entire paragraph
+                updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
+                reordered++;
+                logger.info(`[DOCX Processor] Reference ${originalNumber} position swapped with ${item.swappedWith} - highlighted`);
+              } else {
+                // No change needed, just ensure number is correct
+                updatedPara = updatedPara.replace(pattern, `$1${newNumber}.\t`);
+              }
+              break;
+            }
+          }
+
+          // STYLE CONVERSION: If converted text exists, replace the reference content
+          if (item.convertedText) {
+            // Check if this is a numbered or unnumbered reference
+            const paraTextMatches = updatedPara.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+            const paraFullText = paraTextMatches
+              .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
+              .join('').trim();
+            const isNumberedRef = /^\s*\d+[\.\)\]]/.test(paraFullText);
+
+            if (isNumberedRef) {
+              // Use existing method for numbered references
+              updatedPara = this.replaceReferenceContent(updatedPara, item.convertedText, item.newNum, author, date, revisionId, acceptChanges);
+              logger.info(`[DOCX Processor] Applied style conversion for NUMBERED reference ${item.newNum} (acceptChanges=${acceptChanges})`);
+            } else {
+              // Use new method for unnumbered (author-first) references
+              updatedPara = this.replaceUnnumberedReferenceContent(updatedPara, item.convertedText, author, date, revisionId, acceptChanges);
+              logger.info(`[DOCX Processor] Applied style conversion for UNNUMBERED reference ${item.newNum} (acceptChanges=${acceptChanges})`);
+            }
+            if (!acceptChanges) {
+              revisionId += 2;
+            }
+          }
+        }
+
+        newRefParagraphs.push(updatedPara);
+      }
+
+      // Reconstruct References section
+      // Find position of header paragraph in original XML
+      const headerIndex = referencesXML.indexOf(headerParagraph);
+      const beforeHeader = referencesXML.substring(0, headerIndex);
+
+      // Reconstruct: beforeHeader + header + new ref paragraphs + preserved content (correspondence, tables, etc.)
+      const newReferencesXML = beforeHeader + headerParagraph + newRefParagraphs.join('') + preservedContent;
+
+      logger.info(`[DOCX Processor] Reconstructed references section, preserved ${preservedContent.length} chars of non-reference content`);
+
+      logger.info(`[DOCX Processor] References updated: ${reordered} reordered, ${deleted} deleted, ${swappedPairs.length} swaps detected`);
+      logger.info(`[DOCX Processor] Paragraphs physically reordered to match database order`);
+
+      return {
+        xml: newReferencesXML,
+        reordered,
+        deleted,
+        swapped: swappedPairs,
+        nextRevisionId: revisionId
+      };
+    } catch (error: any) {
+      logger.error('[DOCX Processor] Failed to update references section:', error.message);
+      return { xml: referencesXML, reordered: 0, deleted: 0, swapped: [], nextRevisionId: revisionId };
+    }
+  }
+
+
+  /**
+   * Replace reference content with converted style text
+   * Preserves the reference number but replaces the rest of the content
+   * @param acceptChanges - If true, apply changes cleanly without Track Changes markup
+   */
+  private replaceReferenceContent(
+    paragraphXml: string,
+    convertedText: string,
+    refNumber: number,
+    author: string,
+    date: string,
+    revisionId: number,
+    acceptChanges: boolean = false
+  ): string {
+    // Extract all text from the paragraph
+    const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+    const fullText = textMatches
+      .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
+      .join('');
+
+    // Find where the content starts (after the number and period/tab)
+    const contentStartMatch = fullText.match(/^\s*\d+[\.\)\]]\s*/);
+    if (!contentStartMatch) {
+      // No number pattern found, return original
+      return paragraphXml;
+    }
+
+    const numberPart = contentStartMatch[0];
+    const oldContent = fullText.substring(numberPart.length).trim();
+    const newContent = convertedText.trim();
+
+    logger.info(`[DOCX Processor] replaceReferenceContent - Ref ${refNumber}:`);
+    logger.info(`[DOCX Processor]   OLD: "${oldContent.substring(0, 100)}..."`);
+    logger.info(`[DOCX Processor]   NEW: "${newContent.substring(0, 100)}..."`);
+    logger.info(`[DOCX Processor]   SAME: ${oldContent === newContent}`);
+
+    // If content is the same, no change needed
+    if (oldContent === newContent) {
+      logger.info(`[DOCX Processor]   -> Skipping (no change needed)`);
+      return paragraphXml;
+    }
+
+    // Find the first text run after the number and replace with Track Changes
+    // Strategy: Find a <w:t> tag that contains content after the number, wrap in del/ins
+
+    // Simplified approach: Replace all text content after number with Track Changes
+    // Find position of content in the XML
+    let modified = false;
+    let result = paragraphXml;
+
+    // Find text runs with content
+    const runRegex = /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g;
+    let runMatch;
+    let foundNumber = false;
+    let contentRuns: { start: number; end: number; content: string }[] = [];
+
+    while ((runMatch = runRegex.exec(paragraphXml)) !== null) {
+      const runContent = runMatch[2];
+      const textMatch = runContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
+      if (textMatch) {
+        const text = textMatch[1];
+        // Check if this run contains the number
+        if (!foundNumber && /^\s*\d+[\.\)\]]/.test(text)) {
+          foundNumber = true;
+          // This run has the number, content starts after
+          const afterNumMatch = text.match(/^\s*\d+[\.\)\]]\s*(.*)/);
+          if (afterNumMatch && afterNumMatch[1]) {
+            contentRuns.push({
+              start: runMatch.index,
+              end: runMatch.index + runMatch[0].length,
+              content: afterNumMatch[1]
+            });
+          }
+        } else if (foundNumber && text.trim()) {
+          // This is content after the number
+          contentRuns.push({
+            start: runMatch.index,
+            end: runMatch.index + runMatch[0].length,
+            content: text
+          });
+        }
+      }
+    }
+
+    if (contentRuns.length === 0) {
+      return paragraphXml;
+    }
+
+    // We'll replace from the first content run to the last
+    const firstRun = contentRuns[0];
+    const lastRun = contentRuns[contentRuns.length - 1];
+
+    if (acceptChanges) {
+      // CLEAN EXPORT: Replace content directly without Track Changes
+      // Find the number run and replace content directly after it
+      result = paragraphXml.replace(
+        /(<w:r\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\d+[\.\)\]]\s*)([^<]*)(<\/w:t>[\s\S]*?<\/w:r>)/,
+        (match, beforeContent, contentAfterNum, afterTag) => {
+          // Replace content directly
+          return `${beforeContent}${afterTag}<w:r><w:t>${this.escapeXml(newContent)}</w:t></w:r>`;
+        }
+      );
+
+      // If the simple replacement didn't work, try a more aggressive approach
+      if (result === paragraphXml) {
+        const insertPoint = paragraphXml.indexOf('</w:r>', paragraphXml.search(/\d+[\.\)\]]/));
+        if (insertPoint > 0) {
+          result = paragraphXml.substring(0, insertPoint + 6) +
+            `<w:r><w:t>${this.escapeXml(newContent)}</w:t></w:r>` +
+            paragraphXml.substring(insertPoint + 6);
+          logger.info(`[DOCX Processor] Style conversion applied via insertion (clean)`);
+        }
+      }
+    } else {
+      // TRACK CHANGES: Build Track Changes: delete old content, insert new content
+      const trackChangeMarkup =
+        `<w:del w:id="${revisionId}" w:author="${author}" w:date="${date}">` +
+        `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${this.escapeXml(oldContent)}</w:delText></w:r></w:del>` +
+        `<w:ins w:id="${revisionId + 1}" w:author="${author}" w:date="${date}">` +
+        `<w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${this.escapeXml(newContent)}</w:t></w:r></w:ins>`;
+
+      // Find the number run and append Track Changes after it
+      result = paragraphXml.replace(
+        /(<w:r\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\d+[\.\)\]]\s*)([^<]*)(<\/w:t>[\s\S]*?<\/w:r>)/,
+        (match, beforeContent, contentAfterNum, afterTag) => {
+          if (contentAfterNum.trim()) {
+            // Number and some content in same run
+            return `${beforeContent}${afterTag}${trackChangeMarkup}`;
+          }
+          return match;
+        }
+      );
+
+      // If the simple replacement didn't work, try a more aggressive approach
+      if (result === paragraphXml) {
+        // Find the last </w:r> before content and insert Track Changes there
+        const insertPoint = paragraphXml.indexOf('</w:r>', paragraphXml.search(/\d+[\.\)\]]/));
+        if (insertPoint > 0) {
+          result = paragraphXml.substring(0, insertPoint + 6) +
+            trackChangeMarkup +
+            paragraphXml.substring(insertPoint + 6);
+
+          // Remove original content runs (simplified - just mark success)
+          logger.info(`[DOCX Processor] Style conversion applied via insertion`);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Replace ENTIRE reference content for unnumbered references (author-first format)
+   * SEPARATE from replaceReferenceContent to avoid changing existing numbered ref logic
+   * @param acceptChanges - If true, apply changes cleanly without Track Changes markup
+   */
+  private replaceUnnumberedReferenceContent(
+    paragraphXml: string,
+    convertedText: string,
+    author: string,
+    date: string,
+    revisionId: number,
+    acceptChanges: boolean = false
+  ): string {
+    // Extract all text from the paragraph
+    const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+    const fullText = textMatches
+      .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
+      .join('').trim();
+
+    const newContent = convertedText.trim();
+
+    logger.info(`[DOCX Processor] replaceUnnumberedReferenceContent (acceptChanges=${acceptChanges}):`);
+    logger.info(`[DOCX Processor]   OLD: "${fullText.substring(0, 100)}..."`);
+    logger.info(`[DOCX Processor]   NEW: "${newContent.substring(0, 100)}..."`);
+
+    // If content is essentially the same, no change needed
+    if (fullText === newContent) {
+      logger.info(`[DOCX Processor]   -> Skipping (no change needed)`);
+      return paragraphXml;
+    }
+
+    // Extract paragraph properties if any
+    const pPrMatch = paragraphXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+    const pPr = pPrMatch ? pPrMatch[0] : '';
+
+    // Find opening and closing paragraph tags
+    const pOpenMatch = paragraphXml.match(/^<w:p[^>]*>/);
+    const pOpen = pOpenMatch ? pOpenMatch[0] : '<w:p>';
+
+    let result: string;
+
+    if (acceptChanges) {
+      // CLEAN EXPORT: Replace content directly without Track Changes
+      result = `${pOpen}${pPr}<w:r><w:t>${this.escapeXml(newContent)}</w:t></w:r></w:p>`;
+      logger.info(`[DOCX Processor] Unnumbered reference style conversion applied (clean)`);
+    } else {
+      // TRACK CHANGES: Build Track Changes markup
+      const trackChangeMarkup =
+        `<w:del w:id="${revisionId}" w:author="${author}" w:date="${date}">` +
+        `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${this.escapeXml(fullText)}</w:delText></w:r></w:del>` +
+        `<w:ins w:id="${revisionId + 1}" w:author="${author}" w:date="${date}">` +
+        `<w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${this.escapeXml(newContent)}</w:t></w:r></w:ins>`;
+
+      result = `${pOpen}${pPr}${trackChangeMarkup}</w:p>`;
+      logger.info(`[DOCX Processor] Unnumbered reference style conversion applied (track changes)`);
+    }
+
+    return result;
+  }
+
+  private async updateSettingsForTrackChanges(zip: JSZip): Promise<void> {
+    try {
+      let settingsXML = await zip.file('word/settings.xml')?.async('string');
+      if (settingsXML && !settingsXML.includes('<w:trackRevisions')) {
+        settingsXML = settingsXML.replace('</w:settings>', '<w:trackRevisions/></w:settings>');
+        zip.file('word/settings.xml', settingsXML);
+      }
+    } catch (error) {
+      logger.warn('[DOCX Processor] Could not update settings:', error);
+    }
+  }
+
+  /**
+   * Simple replacement without track changes
+   */
+  async replaceCitations(
+    originalBuffer: Buffer,
+    replacements: CitationReplacement[]
+  ): Promise<Buffer> {
+    try {
+      if (replacements.length === 0) return originalBuffer;
+
+      const zip = await JSZip.loadAsync(originalBuffer);
+      let documentXML = await zip.file('word/document.xml')?.async('string');
+      if (!documentXML) throw new Error('Invalid DOCX');
+
+      const changeMap = new Map<string, string>();
+      for (const r of replacements) {
+        if (!changeMap.has(r.oldText)) changeMap.set(r.oldText, r.newText);
+      }
+
+      // Placeholder approach for swaps
+      const placeholders = new Map<string, string>();
+      let idx = 0;
+      for (const [oldText, newText] of changeMap) {
+        const ph = `__CITE_PH_${idx}__`;
+        placeholders.set(ph, newText);
+        const regex = new RegExp(this.escapeRegex(oldText), 'g');
+        documentXML = documentXML.replace(regex, ph);
+        idx++;
+      }
+
+      for (const [ph, newText] of placeholders) {
+        const regex = new RegExp(this.escapeRegex(ph), 'g');
+        documentXML = documentXML.replace(regex, newText);
+      }
+
+      zip.file('word/document.xml', documentXML);
+      return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    } catch (error: any) {
+      logger.error('[DOCX Processor] Failed:', error.message);
+      throw error;
+    }
+  }
+
+  async validateDOCX(buffer: Buffer): Promise<{ valid: boolean; error?: string }> {
+    try {
+      await this.extractText(buffer);
+      return { valid: true };
+    } catch (error: any) {
+      return { valid: false, error: error.message };
+    }
+  }
+
+  async getStatistics(buffer: Buffer): Promise<{ wordCount: number; paragraphCount: number; pageCount: number }> {
+    const content = await this.extractText(buffer);
+    const words = content.text.split(/\s+/).filter(w => w.length > 0);
+    const paragraphs = content.text.split(/\n\n+/);
+    return { wordCount: words.length, paragraphCount: paragraphs.length, pageCount: Math.ceil(words.length / 250) };
+  }
+
+  async updateReferences(originalBuffer: Buffer, newReferences: string[]): Promise<Buffer> {
+    return originalBuffer;
+  }
+}
+
+export const docxProcessorService = new DOCXProcessorService();
