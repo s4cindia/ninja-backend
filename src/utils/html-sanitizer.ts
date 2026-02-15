@@ -58,9 +58,9 @@ export const HTML_SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
     blockquote: ['class'],
     em: ['class'],
   },
-  allowedSchemes: ['http', 'https', 'mailto', 'data'],
+  allowedSchemes: ['http', 'https', 'mailto'],
   allowedSchemesByTag: {
-    img: ['http', 'https', 'data'],
+    img: ['http', 'https', 'data'], // data: URIs only allowed for images
   },
   disallowedTagsMode: 'discard',
 };

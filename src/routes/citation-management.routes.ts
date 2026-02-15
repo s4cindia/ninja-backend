@@ -5,8 +5,25 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { citationManagementController } from '../controllers/citation-management.controller';
+
+// Rate limiter for file uploads: 10 uploads per 15 minutes per user
+const uploadRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 requests per window
+  message: {
+    success: false,
+    error: { code: 'TOO_MANY_UPLOADS', message: 'Too many uploads. Please try again later.' }
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Use user ID if authenticated, otherwise IP
+    return (req as any).user?.id || req.ip || 'unknown';
+  }
+});
 
 const router = Router();
 
@@ -29,8 +46,11 @@ const upload = multer({
   },
 });
 
+// All routes require authentication
+router.use(authenticate);
+
 // ============================================
-// DEBUG ENDPOINTS (disabled in production)
+// DEBUG ENDPOINTS (disabled in production, require auth)
 // ============================================
 
 // Middleware to block debug endpoints in production
@@ -94,9 +114,6 @@ router.get(
   citationManagementController.exportDocument.bind(citationManagementController)
 );
 
-// All other routes require authentication
-router.use(authenticate);
-
 // ============================================
 // DOCUMENT MANAGEMENT
 // ============================================
@@ -104,9 +121,11 @@ router.use(authenticate);
 /**
  * POST /api/v1/citation-management/upload
  * Upload DOCX and start AI analysis
+ * Rate limited: 10 uploads per 15 minutes per user
  */
 router.post(
   '/upload',
+  uploadRateLimiter,
   upload.single('file'),
   citationManagementController.upload.bind(citationManagementController)
 );

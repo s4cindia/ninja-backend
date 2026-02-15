@@ -69,7 +69,13 @@ export class CitationManagementController {
       const uploadDir = path.join(process.cwd(), 'uploads', 'citation-management', tenantId);
       await fs.mkdir(uploadDir, { recursive: true });
 
-      const filename = `${Date.now()}-${file.originalname}`;
+      // Sanitize filename to prevent path traversal attacks
+      const sanitizedOriginalName = file.originalname
+        .replace(/\0/g, '') // Remove null bytes
+        .replace(/[/\\]/g, '_') // Replace path separators
+        .replace(/\.\./g, '_') // Remove parent directory references
+        .slice(0, 200); // Limit length
+      const filename = `${Date.now()}-${sanitizedOriginalName}`;
       const storagePath = path.join(uploadDir, filename);
       await fs.writeFile(storagePath, file.buffer);
 

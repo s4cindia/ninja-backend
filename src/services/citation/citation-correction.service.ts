@@ -2,6 +2,13 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 
+/**
+ * Escape special regex characters in a string for safe use in RegExp
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export interface CorrectionResult {
   validationId: string;
   citationId: string;
@@ -51,9 +58,10 @@ class CitationCorrectionService {
     const correctedText = validation.suggestedFix;
 
     // Calculate the new text once - replaces first occurrence of the violation
-    // Note: Using replace() which only replaces the first match. This is intentional
-    // as each validation targets a specific violation instance.
-    const newRawText = originalText.replace(validation.originalText, correctedText);
+    // Note: Using RegExp with escaped special characters to safely match the original text.
+    // This is intentional as each validation targets a specific violation instance.
+    const escapedOriginal = escapeRegex(validation.originalText);
+    const newRawText = originalText.replace(new RegExp(escapedOriginal), correctedText);
 
     await prisma.citation.update({
       where: { id: validation.citationId },
