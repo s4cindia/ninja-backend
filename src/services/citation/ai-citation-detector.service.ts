@@ -453,7 +453,7 @@ Return ONLY the style name (one word).`;
       refTexts.get(normalized)!.push(ref);
     }
 
-    for (const [text, refs] of refTexts) {
+    for (const [_text, refs] of refTexts) {
       if (refs.length > 1) {
         issues.push({
           type: 'duplicate_reference',
