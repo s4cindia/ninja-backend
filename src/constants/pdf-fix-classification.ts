@@ -24,7 +24,7 @@ export const AUTO_FIXABLE_CODES = new Set([
  * These require content decisions but don't need external PDF editing tools
  */
 export const QUICK_FIXABLE_CODES = new Set<string>([
-  // TEMPORARILY MOVED FROM AUTO_FIXABLE FOR TESTING QUICK-FIX UI
+  // Metadata issues requiring user input for quality/compliance
   // Legacy codes (from stub validators)
   'PDF-NO-LANGUAGE',        // Missing document language - user can specify
   'PDF-NO-TITLE',           // Missing document title - user can specify
