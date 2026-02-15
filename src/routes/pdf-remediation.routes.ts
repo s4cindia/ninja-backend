@@ -5,6 +5,7 @@
  */
 
 import { Router } from 'express';
+import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -15,9 +16,44 @@ import {
   updateTaskStatusSchema,
   previewFixSchema,
   quickFixRequestSchema,
+  reauditRequestSchema,
 } from '../schemas/pdf-remediation.schemas';
+import type { AuthenticatedRequest } from '../types/authenticated-request';
+
+/** Request with multer file upload */
+interface AuthenticatedRequestWithFile extends AuthenticatedRequest {
+  file?: Express.Multer.File;
+}
 
 const router = Router();
+
+// Maximum file size for PDF uploads (100MB)
+const MAX_REAUDIT_FILE_SIZE = 100 * 1024 * 1024;
+
+// Configure multer for PDF uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_REAUDIT_FILE_SIZE,
+  },
+  fileFilter: (_req, file, cb) => {
+    // Accept PDF files
+    const validMimetypes = [
+      'application/pdf',
+      'application/x-pdf',
+      'application/octet-stream',
+    ];
+
+    const isPdfMimetype = validMimetypes.includes(file.mimetype);
+    const isPdfFilename = file.originalname.toLowerCase().endsWith('.pdf');
+
+    if (isPdfMimetype || isPdfFilename) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'));
+    }
+  },
+});
 
 /**
  * POST /api/v1/pdf/:jobId/remediation/plan
@@ -130,6 +166,23 @@ router.get(
   authenticate,
   authorizeJob,
   (req, res) => pdfRemediationController.downloadRemediatedPdf(req, res)
+);
+
+/**
+ * POST /api/v1/pdf/:jobId/remediation/re-audit
+ * Re-audit a remediated PDF and compare with original results
+ *
+ * @param jobId - PDF audit job ID
+ * @body file - Remediated PDF file (multipart/form-data)
+ * @returns Comparison of before/after results
+ */
+router.post(
+  '/:jobId/remediation/re-audit',
+  authenticate,
+  authorizeJob,
+  validate(reauditRequestSchema),
+  upload.single('file'),
+  (req, res) => pdfRemediationController.reauditPdf(req as AuthenticatedRequestWithFile, res)
 );
 
 export default router;

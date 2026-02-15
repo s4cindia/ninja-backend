@@ -177,6 +177,14 @@ class PdfRemediationService {
     plan.createdAt = new Date(plan.createdAt);
 
     // Recalculate counts based on current task statuses
+    // Debug: Log all AUTO_FIXABLE tasks with their statuses
+    const autoFixableTasks = plan.tasks.filter((task) => task.type === 'AUTO_FIXABLE');
+    logger.info(
+      `[PDF Remediation] AUTO_FIXABLE tasks: ${JSON.stringify(
+        autoFixableTasks.map((t) => ({ id: t.id, status: t.status, type: t.type }))
+      )}`
+    );
+
     const pendingAutoFixable = plan.tasks.filter(
       (task) => task.type === 'AUTO_FIXABLE' && task.status === 'PENDING'
     ).length;
@@ -186,17 +194,37 @@ class PdfRemediationService {
     const pendingQuickFix = plan.tasks.filter(
       (task) => task.type === 'QUICK_FIX' && task.status === 'PENDING'
     ).length;
+    const completedQuickFix = plan.tasks.filter(
+      (task) => task.type === 'QUICK_FIX' && task.status === 'COMPLETED'
+    ).length;
     const pendingManual = plan.tasks.filter(
       (task) => task.type === 'MANUAL' && task.status === 'PENDING'
     ).length;
+
+    logger.info(
+      `[PDF Remediation] Task counts: auto(pending=${pendingAutoFixable}, completed=${completedAutoFixable}), quick(pending=${pendingQuickFix}, completed=${completedQuickFix})`
+    );
 
     // Update counts to show only pending tasks (not completed ones)
     plan.autoFixableCount = pendingAutoFixable;
     plan.quickFixCount = pendingQuickFix;
     plan.manualFixCount = pendingManual;
 
-    // Add completed count for display
-    (plan as any).completedAutoFixCount = completedAutoFixable;
+    // Add completed counts for display
+    plan.completedAutoFixCount = completedAutoFixable;
+    plan.completedQuickFixCount = completedQuickFix;
+
+    // Fetch parent job to get remediatedFileUrl
+    const parentJob = await this.prisma.job.findUnique({
+      where: { id: jobId },
+    });
+
+    if (parentJob?.output && typeof parentJob.output === 'object') {
+      const output = parentJob.output as Record<string, unknown>;
+      if (output.remediatedFileUrl) {
+        plan.remediatedFileUrl = output.remediatedFileUrl as string;
+      }
+    }
 
     logger.info(
       `[PDF Remediation] Retrieved plan with ${plan.totalIssues} tasks (${pendingAutoFixable} auto-fixable, ${completedAutoFixable} completed)`
@@ -290,8 +318,10 @@ class PdfRemediationService {
       // Update task status
       task.status = request.status;
 
+      logger.info(`[PDF Remediation] Task ${taskId} status changed from ${plan.tasks[taskIndex].status} to ${request.status} in memory`);
+
       // Update plan in database
-      await tx.job.update({
+      const updatedJob = await tx.job.update({
         where: { id: planJob.id },
         data: {
           output: JSON.parse(JSON.stringify(plan)),
@@ -299,42 +329,12 @@ class PdfRemediationService {
         },
       });
 
-      // Update corresponding Issue record if task completed (only for jobs with DB issues)
-      if (request.status === 'COMPLETED') {
-        // Try to update issue in database, but don't fail if it doesn't exist
-        // (PDF jobs store issues in JSON, not in Issue table)
-        try {
-          const updateResult = await tx.issue.updateMany({
-            where: {
-              id: task.issueId,
-              status: 'PENDING',
-            },
-            data: {
-              status: 'REMEDIATED',
-              fixedAt: new Date(),
-              fixedBy: 'user',
-              remediationMethod: this.getRemediationMethod(task.type),
-              remediationTaskId: taskId,
-            },
-          });
+      logger.info(`[PDF Remediation] Plan job ${planJob.id} updated in database at ${updatedJob.updatedAt}`);
 
-          if (updateResult.count > 0) {
-            logger.info(
-              `[PDF Remediation] Marked issue ${task.issueId} as REMEDIATED in database`
-            );
-          } else {
-            logger.info(
-              `[PDF Remediation] Task ${taskId} completed (issue ${task.issueId} stored in JSON only)`
-            );
-          }
-        } catch (issueUpdateError) {
-          // Silently ignore errors (schema mismatch or issue doesn't exist in DB)
-          logger.debug(
-            `[PDF Remediation] Could not update Issue table for ${task.issueId} (expected for PDF jobs)`,
-            { error: issueUpdateError instanceof Error ? issueUpdateError.message : 'Unknown error' }
-          );
-        }
-      }
+      // NOTE: PDF jobs store all task/issue data in the plan JSON, not in the Issue table.
+      // EPUB jobs use the Issue table with a different schema (no 'status' column).
+      // Attempting to update Issue.status causes a PostgreSQL transaction abort,
+      // rolling back the task status update above. So we skip Issue table updates entirely.
 
       // Calculate summary
       const summary = this.calculateSummary(plan);

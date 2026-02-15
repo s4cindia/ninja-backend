@@ -172,21 +172,32 @@ export class PdfModifierService {
       const currentLang = catalog.get(PDFName.of('Lang'));
       const before = currentLang ? currentLang.toString() : 'Not set';
 
-      // Set language in catalog
-      catalog.set(PDFName.of('Lang'), PDFString.of(lang));
+      // Set language in catalog using public API
+      const langName = PDFName.of('Lang');
+      const langValue = PDFString.of(lang);
 
-      const after = lang;
+      catalog.set(langName, langValue);
 
-      logger.info('Added language to PDF catalog', { lang, before, after });
+      // Verify it was set
+      const verify = catalog.get(langName);
+      logger.info('Language set verification', {
+        lang,
+        before,
+        after: verify ? verify.toString() : 'NOT SET',
+      });
 
       return {
         success: true,
         description: `Set document language to '${lang}'`,
         before,
-        after,
+        after: lang,
       };
     } catch (error) {
-      logger.error('Failed to add language', { error, lang });
+      logger.error('Failed to add language', {
+        error: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : undefined,
+        lang
+      });
       return {
         success: false,
         description: 'Failed to add language',

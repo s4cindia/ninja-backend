@@ -8,10 +8,12 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { PDFName, PDFDict } from 'pdf-lib';
 import path from 'path';
 
@@ -384,18 +386,19 @@ export class PdfRemediationController {
 
         logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
 
-        // Convert to plain JSON to ensure compatibility with Prisma Json type
-        const remediationResultJson = JSON.parse(JSON.stringify(sanitizedResult));
+        // Prisma handles JSON serialization automatically for JSONB columns
 
         // Update job output with remediated file URL
+        // Type assertion needed because Prisma's InputJsonValue is strict,
+        // but the data is valid JSON that Prisma will serialize correctly
         await prisma.job.update({
           where: { id: jobId },
           data: {
             output: {
               ...((job.output as Record<string, unknown> | null) ?? {}),
               remediatedFileUrl,
-              remediationResult: remediationResultJson,
-            },
+              remediationResult: sanitizedResult,
+            } as unknown as Prisma.InputJsonObject,
             updatedAt: new Date(),
           },
         });
@@ -582,8 +585,8 @@ export class PdfRemediationController {
         data: {
           issueId,
           field,
-          currentValue,
-          proposedValue,
+          before: currentValue || '',
+          after: proposedValue,
           message: `Will change ${field} from "${currentValue || '(empty)'}" to "${proposedValue}"`,
         },
       });
@@ -637,25 +640,51 @@ export class PdfRemediationController {
       const jobInput = job.input as { fileName?: string; fileUrl?: string; size?: number };
       const fileName = jobInput?.fileName || 'document.pdf';
 
-      // Try to get file from storage using jobId
-      logger.info(`[PDF Remediation] Loading PDF for quick-fix, job ${jobId}, fileName: ${fileName}`);
-      let pdfBuffer: Buffer | null = null;
+      // Check if a remediated file already exists (from previous quick fixes)
+      const parsed = path.parse(fileName);
+      const remediatedFileName = `${parsed.name}_remediated${parsed.ext || '.pdf'}`;
 
+      logger.info(`[PDF Remediation] Loading PDF for quick-fix, job ${jobId}`);
+      let pdfBuffer: Buffer | null = null;
+      let sourceFile = fileName;
+
+      // Try remediated file first (if exists from previous quick fixes)
+      logger.debug(`[PDF Remediation] Attempting to load remediated file: ${remediatedFileName}`);
       try {
-        pdfBuffer = await fileStorageService.getFile(jobId, fileName);
-      } catch (storageError) {
-        logger.error(`[PDF Remediation] Error loading from storage:`, storageError);
+        // Use getRemediatedFile which looks in the remediated/ subdirectory
+        pdfBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
+        logger.debug(`[PDF Remediation] getRemediatedFile result: ${pdfBuffer ? `Buffer(${pdfBuffer.length} bytes)` : 'null'}`);
+
+        if (pdfBuffer) {
+          sourceFile = remediatedFileName;
+          logger.info(`[PDF Remediation] Loaded existing remediated file: ${remediatedFileName}`);
+        } else {
+          logger.debug(`[PDF Remediation] No remediated file found for ${fileName}`);
+        }
+      } catch (remediatedError) {
+        logger.debug(`[PDF Remediation] Error loading remediated file: ${remediatedError}`);
       }
 
-      // Fallback: try fileUrl if getFile returned null or failed
+      // If no remediated file, try original
       if (!pdfBuffer) {
-        const fileUrl = jobInput?.fileUrl;
-        if (fileUrl) {
-          logger.info(`[PDF Remediation] Fallback: Downloading from ${fileUrl}`);
-          try {
-            pdfBuffer = await fileStorageService.downloadFile(fileUrl);
-          } catch (downloadError) {
-            logger.error(`[PDF Remediation] Download failed:`, downloadError);
+        logger.info(`[PDF Remediation] Loading original file: ${fileName}`);
+
+        try {
+          pdfBuffer = await fileStorageService.getFile(jobId, fileName);
+        } catch (storageError) {
+          logger.error(`[PDF Remediation] Error loading from storage:`, storageError);
+        }
+
+        // Fallback: try fileUrl if getFile returned null or failed
+        if (!pdfBuffer) {
+          const fileUrl = jobInput?.fileUrl;
+          if (fileUrl) {
+            logger.info(`[PDF Remediation] Fallback: Downloading from ${fileUrl}`);
+            try {
+              pdfBuffer = await fileStorageService.downloadFile(fileUrl);
+            } catch (downloadError) {
+              logger.error(`[PDF Remediation] Download failed:`, downloadError);
+            }
           }
         }
       }
@@ -668,6 +697,8 @@ export class PdfRemediationController {
           error: { message: 'PDF file not found in storage' },
         });
       }
+
+      logger.info(`[PDF Remediation] Using file: ${sourceFile}`);
 
       // Load PDF and apply fix
       const pdfDoc = await pdfModifierService.loadPDF(pdfBuffer);
@@ -713,19 +744,117 @@ export class PdfRemediationController {
       // Save modified PDF
       const modifiedBuffer = await pdfModifierService.savePDF(pdfDoc);
 
-      // Save to storage using saveRemediatedFile - handle extension reliably
-      const parsed = path.parse(fileName);
-      const remediatedFileName = `${parsed.name}_remediated${parsed.ext || '.pdf'}`;
+      // Save to storage using saveRemediatedFile
       const remediatedFileUrl = await fileStorageService.saveRemediatedFile(
         jobId,
         remediatedFileName,
         modifiedBuffer
       );
 
-      // Update task status in remediation plan
-      await pdfRemediationService.updateTaskStatus(jobId, issueId, {
-        status: 'COMPLETED',
-        notes: `Quick-fix applied: ${result.description}`,
+      // Wrap all checks and updates in a single transaction with row locking
+      // to prevent TOCTOU race conditions in concurrent quick-fix operations
+      await prisma.$transaction(async (tx) => {
+        // Step 1: Lock the plan job row using SELECT FOR UPDATE
+        // This prevents concurrent modifications until transaction commits
+        const planJobId = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM "Job"
+          WHERE type = 'BATCH_VALIDATION'
+            AND input->>'sourceJobId' = ${jobId}
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+          FOR UPDATE
+        `;
+
+        if (!planJobId || planJobId.length === 0) {
+          logger.error(`[PDF Remediation] Plan job not found for ${jobId}`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Remediation plan not found' },
+          });
+        }
+
+        // Step 2: Read the locked plan job
+        const planJob = await tx.job.findUnique({
+          where: { id: planJobId[0].id },
+        });
+
+        if (!planJob || !planJob.output) {
+          logger.error(`[PDF Remediation] Plan output not found`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Remediation plan data not found' },
+          });
+        }
+
+        const planData = planJob.output as unknown as {
+          tasks: Array<{
+            id: string;
+            issueId: string;
+            status: string;
+            type: string;
+          }>;
+        };
+
+        // Step 3: Find the requested task
+        const task = planData.tasks.find(t => t.issueId === issueId);
+
+        if (!task) {
+          logger.error(`[PDF Remediation] Task not found for issue ${issueId}`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Task not found for this issue' },
+          });
+        }
+
+        // Step 4: Check for concurrent quick-fix operations (inside locked transaction)
+        // This eliminates the TOCTOU vulnerability
+        const inProgressTask = planData.tasks.find(t =>
+          t.status === 'IN_PROGRESS' &&
+          t.type === 'QUICK_FIX' &&
+          t.id !== task.id
+        );
+
+        if (inProgressTask) {
+          logger.warn(`[PDF Remediation] Concurrent quick-fix detected`, {
+            requestedTask: task.id,
+            inProgressTask: inProgressTask.id,
+          });
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'CONCURRENT_FIX',
+              message: 'Another quick fix is in progress. Please wait and try again.',
+              details: { inProgressIssue: inProgressTask.issueId },
+            },
+          });
+        }
+
+        // Step 5: Update task status in remediation plan
+        const taskIndex = planData.tasks.findIndex(t => t.id === task.id);
+
+        if (taskIndex !== -1) {
+          planData.tasks[taskIndex].status = 'COMPLETED';
+
+          await tx.job.update({
+            where: { id: planJob.id },
+            data: {
+              output: JSON.parse(JSON.stringify(planData)),
+              updatedAt: new Date(),
+            },
+          });
+        }
+
+        // Update parent job output with remediated file URL
+        const currentOutput = (job.output as Record<string, unknown>) || {};
+        await tx.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...currentOutput,
+              remediatedFileUrl,
+            },
+          },
+        });
       });
 
       logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}`, { result });
@@ -932,6 +1061,179 @@ export class PdfRemediationController {
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to download remediated PDF',
+        },
+      });
+    }
+  }
+
+  /**
+   * Re-audit a remediated PDF and compare with original results
+   * POST /api/v1/pdf/:jobId/remediation/re-audit
+   *
+   * @param req - Request with uploaded remediated PDF file
+   * @param res - Response with comparison results
+   */
+  async reauditPdf(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authentication required',
+            details: null,
+          },
+        });
+      }
+
+      // Verify job exists and belongs to user's tenant
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+        },
+      });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found or access denied',
+            details: null,
+          },
+        });
+      }
+
+      // Verify job is a PDF audit job
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_JOB_TYPE',
+            message: 'Job is not a PDF accessibility audit',
+            details: null,
+          },
+        });
+      }
+
+      // Verify file was uploaded
+      if (!req.file || req.file.size === 0) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_FILE',
+            message: 'No file uploaded or file is empty',
+            details: null,
+          },
+        });
+      }
+
+      // Validate file size (100MB limit, matching multer config)
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+      if (req.file.size > MAX_FILE_SIZE) {
+        return res.status(413).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: 'File exceeds 100MB limit',
+            details: { maxSize: MAX_FILE_SIZE, actualSize: req.file.size },
+          },
+        });
+      }
+
+      // Validate PDF magic bytes
+      const buffer = req.file.buffer;
+      const magicBytes = buffer.slice(0, 5).toString('ascii');
+
+      logger.info(`[Re-Audit] File validation`, {
+        fileName: req.file.originalname,
+        fileSize: buffer.length,
+        mimeType: req.file.mimetype,
+        magicBytes,
+      });
+
+      if (!magicBytes.startsWith('%PDF-')) {
+        logger.error(`[Re-Audit] Invalid PDF magic bytes`, {
+          expected: '%PDF-',
+          received: magicBytes,
+        });
+
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_PDF',
+            message: 'Invalid PDF file: file does not contain PDF magic bytes',
+            details: null,
+          },
+        });
+      }
+
+      // Run re-audit and comparison
+      logger.info(`[Re-Audit] Starting for job ${jobId}`, {
+        fileName: req.file.originalname,
+        fileSize: buffer.length,
+      });
+
+      const comparisonResult = await pdfReauditService.reauditAndCompare(
+        jobId,
+        buffer,
+        req.file.originalname
+      );
+
+      // Update job output with comparison data
+      // Type assertion needed because Prisma's InputJsonValue is strict,
+      // but the data is valid JSON that Prisma will serialize correctly
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...((job.output as Record<string, unknown> | null) ?? {}),
+            reauditComparison: comparisonResult,
+            lastReauditAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonObject,
+          updatedAt: new Date(),
+        },
+      });
+
+      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+        resolvedCount: comparisonResult.metrics.resolvedCount,
+        remainingCount: comparisonResult.metrics.remainingCount,
+        regressionCount: comparisonResult.metrics.regressionCount,
+        resolutionRate: comparisonResult.metrics.resolutionRate,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: comparisonResult,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to re-audit PDF', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to re-audit PDF',
+          details: null,
         },
       });
     }
