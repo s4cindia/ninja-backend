@@ -751,70 +751,97 @@ export class PdfRemediationController {
         modifiedBuffer
       );
 
-      // Get remediation plan and find task by issue ID
-      const plan = await pdfRemediationService.getRemediationPlan(jobId);
-      const task = plan.tasks.find(t => t.issueId === issueId);
-
-      if (!task) {
-        logger.error(`[PDF Remediation] Task not found for issue ${issueId}`);
-        return res.status(404).json({
-          success: false,
-          error: { message: 'Task not found for this issue' },
-        });
-      }
-
-      // Check for concurrent quick-fix operations to prevent race conditions
-      const inProgressTask = plan.tasks.find(t =>
-        t.status === 'IN_PROGRESS' &&
-        t.type === 'QUICK_FIX' &&
-        t.id !== task.id
-      );
-
-      if (inProgressTask) {
-        logger.warn(`[PDF Remediation] Concurrent quick-fix detected`, {
-          requestedTask: task.id,
-          inProgressTask: inProgressTask.id,
-        });
-        return res.status(409).json({
-          success: false,
-          error: {
-            code: 'CONCURRENT_FIX',
-            message: 'Another quick fix is in progress. Please wait and try again.',
-            details: { inProgressIssue: inProgressTask.issueId },
-          },
-        });
-      }
-
-      // Wrap both task status update and parent job update in a single transaction
-      // to ensure atomicity and data consistency
+      // Wrap all checks and updates in a single transaction with row locking
+      // to prevent TOCTOU race conditions in concurrent quick-fix operations
       await prisma.$transaction(async (tx) => {
-        // Update task status in remediation plan
-        const planJob = await tx.job.findFirst({
-          where: {
-            type: 'BATCH_VALIDATION',
-            input: {
-              path: ['sourceJobId'],
-              equals: jobId,
-            },
-          },
-          orderBy: { createdAt: 'desc' },
+        // Step 1: Lock the plan job row using SELECT FOR UPDATE
+        // This prevents concurrent modifications until transaction commits
+        const planJobId = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM "Job"
+          WHERE type = 'BATCH_VALIDATION'
+            AND input->>'sourceJobId' = ${jobId}
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+          FOR UPDATE
+        `;
+
+        if (!planJobId || planJobId.length === 0) {
+          logger.error(`[PDF Remediation] Plan job not found for ${jobId}`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Remediation plan not found' },
+          });
+        }
+
+        // Step 2: Read the locked plan job
+        const planJob = await tx.job.findUnique({
+          where: { id: planJobId[0].id },
         });
 
-        if (planJob && planJob.output) {
-          const planData = planJob.output as unknown as typeof plan;
-          const taskIndex = planData.tasks.findIndex(t => t.id === task.id);
+        if (!planJob || !planJob.output) {
+          logger.error(`[PDF Remediation] Plan output not found`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Remediation plan data not found' },
+          });
+        }
 
-          if (taskIndex !== -1) {
-            planData.tasks[taskIndex].status = 'COMPLETED';
+        const planData = planJob.output as unknown as {
+          tasks: Array<{
+            id: string;
+            issueId: string;
+            status: string;
+            type: string;
+          }>;
+        };
 
-            await tx.job.update({
-              where: { id: planJob.id },
-              data: {
-                output: JSON.parse(JSON.stringify(planData)),
-                updatedAt: new Date(),
-              },
-            });
-          }
+        // Step 3: Find the requested task
+        const task = planData.tasks.find(t => t.issueId === issueId);
+
+        if (!task) {
+          logger.error(`[PDF Remediation] Task not found for issue ${issueId}`);
+          return res.status(404).json({
+            success: false,
+            error: { message: 'Task not found for this issue' },
+          });
+        }
+
+        // Step 4: Check for concurrent quick-fix operations (inside locked transaction)
+        // This eliminates the TOCTOU vulnerability
+        const inProgressTask = planData.tasks.find(t =>
+          t.status === 'IN_PROGRESS' &&
+          t.type === 'QUICK_FIX' &&
+          t.id !== task.id
+        );
+
+        if (inProgressTask) {
+          logger.warn(`[PDF Remediation] Concurrent quick-fix detected`, {
+            requestedTask: task.id,
+            inProgressTask: inProgressTask.id,
+          });
+          return res.status(409).json({
+            success: false,
+            error: {
+              code: 'CONCURRENT_FIX',
+              message: 'Another quick fix is in progress. Please wait and try again.',
+              details: { inProgressIssue: inProgressTask.issueId },
+            },
+          });
+        }
+
+        // Step 5: Update task status in remediation plan
+        const taskIndex = planData.tasks.findIndex(t => t.id === task.id);
+
+        if (taskIndex !== -1) {
+          planData.tasks[taskIndex].status = 'COMPLETED';
+
+          await tx.job.update({
+            where: { id: planJob.id },
+            data: {
+              output: JSON.parse(JSON.stringify(planData)),
+              updatedAt: new Date(),
+            },
+          });
         }
 
         // Update parent job output with remediated file URL
@@ -830,7 +857,7 @@ export class PdfRemediationController {
         });
       });
 
-      logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}, task ${task.id}`, { result });
+      logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}`, { result });
 
       return res.json({
         success: true,

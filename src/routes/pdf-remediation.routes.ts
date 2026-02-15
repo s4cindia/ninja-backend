@@ -16,6 +16,7 @@ import {
   updateTaskStatusSchema,
   previewFixSchema,
   quickFixRequestSchema,
+  reauditRequestSchema,
 } from '../schemas/pdf-remediation.schemas';
 import type { AuthenticatedRequest } from '../types/authenticated-request';
 
@@ -179,6 +180,7 @@ router.post(
   '/:jobId/remediation/re-audit',
   authenticate,
   authorizeJob,
+  validate(reauditRequestSchema),
   upload.single('file'),
   (req, res) => pdfRemediationController.reauditPdf(req as AuthenticatedRequestWithFile, res)
 );
