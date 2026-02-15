@@ -169,22 +169,23 @@ Document:
 ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
 
     try {
-      const citations = await claudeService.generateJSON(prompt, {
+      const citationsRaw = await claudeService.generateJSON(prompt, {
         model: 'sonnet',
         temperature: 0.1,
         maxTokens: 16384
       });
-      return citations.map((c: { text?: string; paragraph?: number; startChar?: number; type?: string; format?: string; style?: string; confidence?: number }, idx: number) => ({
+      const citations = Array.isArray(citationsRaw) ? citationsRaw : [];
+      return citations.map((c: { text?: string; paragraph?: number; startChar?: number; type?: string; format?: string; style?: string; confidence?: number; numbers?: number[]; context?: string }, idx: number) => ({
         id: `citation-${idx + 1}`,
-        text: c.text,
+        text: c.text || '',
         position: {
           paragraph: c.paragraph || 0,
           sentence: 0,
           startChar: c.startChar || 0,
           endChar: (c.startChar || 0) + (c.text?.length || 0)
         },
-        type: c.type || 'numeric',
-        format: c.format || 'bracket',
+        type: (c.type || 'numeric') as 'numeric' | 'author-year' | 'footnote' | 'superscript',
+        format: (c.format || 'bracket') as 'bracket' | 'parenthesis' | 'superscript',
         numbers: c.numbers || [],
         context: c.context || ''
       }));
@@ -238,12 +239,13 @@ Document text:
 ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
 
     try {
-      const refs = await claudeService.generateJSON(prompt, {
+      const refsRaw = await claudeService.generateJSON(prompt, {
         model: 'sonnet',
         temperature: 0.1,
         maxTokens: 16384
       });
-      return refs.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string }, idx: number) => ({
+      const refs = Array.isArray(refsRaw) ? refsRaw : [];
+      return refs.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, idx: number) => ({
         id: `ref-${r.number || idx + 1}`,
         number: r.number || idx + 1,
         rawText: r.rawText || '',

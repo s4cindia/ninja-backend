@@ -423,7 +423,7 @@ Return ONLY a JSON array with NO additional text:
       logger.info(`[Format Converter] Original references count: ${references.length}`);
 
       // Map by index to ensure correct matching (AI should return refs in same order)
-      return converted.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, index: number) => {
+      return converted.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, index: number) => {
         // Use index-based matching first (most reliable)
         // Fall back to number-based if AI provides explicit numbers
         const originalRef = references[index] || references[(r.number || index + 1) - 1];

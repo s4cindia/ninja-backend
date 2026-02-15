@@ -187,7 +187,7 @@ export class AcrService {
           level: criterion.level,
           confidence: analysis.confidence,
           aiStatus: analysis.status,
-          evidence: analysis.evidence || undefined,
+          evidence: analysis.evidence ? JSON.parse(JSON.stringify(analysis.evidence)) : undefined,
         },
       });
 
@@ -664,7 +664,8 @@ export class AcrService {
     }
 
     const issuesByCode = issues.reduce((acc, issue) => {
-      acc[issue.code] = (acc[issue.code] || 0) + 1;
+      const code = issue.code || 'unknown';
+      acc[code] = (acc[code] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
 

@@ -991,8 +991,11 @@ model CitationChange {
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
+  /// Links to specific Citation when change affects a single citation.
+  /// NULL for document-wide changes (STYLE_CONVERSION, RESEQUENCE, REFERENCE_STYLE_CONVERSION)
+  /// that affect multiple citations or only reference entries.
   citationId String?
-  changeType String // "correction", "format", "revert"
+  changeType String // "correction", "format", "revert", "RENUMBER", "STYLE_CONVERSION", "RESEQUENCE", etc.
 
   beforeText String
   afterText  String
@@ -1012,8 +1015,15 @@ model ReferenceListEntry {
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  // DEPRECATED: Use citationLinks relation instead for proper FK constraints
-  // This field will be removed in a future migration after code is updated
+  /// @deprecated Use `citationLinks` relation instead for proper FK constraints.
+  /// This field stores citation IDs as a denormalized array for backward compatibility.
+  /// Migration plan:
+  /// 1. Update all code to read from citationLinks relation
+  /// 2. Update all code to write to both citationIds AND citationLinks
+  /// 3. Run data migration to sync existing citationIds to citationLinks
+  /// 4. Remove writes to citationIds, keep reads for fallback
+  /// 5. Remove citationIds field after verification
+  /// TODO: Track progress in TECHNICAL-DEBT.md
   citationIds String[]
   sortKey     String
 

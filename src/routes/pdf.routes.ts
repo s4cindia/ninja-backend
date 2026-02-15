@@ -14,7 +14,7 @@ import { fileStorageService } from '../services/storage/file-storage.service';
 
 // Extended request type for authenticated routes with file
 interface AuthenticatedRequest extends Request {
-  user?: { id: string; tenantId: string };
+  user?: { id: string; tenantId: string; email: string; role: string };
   file?: Express.Multer.File;
 }
 

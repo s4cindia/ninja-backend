@@ -47,6 +47,7 @@ export interface DocumentStructure {
 
 export interface ParsedDocument {
   text: string;
+  html?: string;
   chunks: TextChunk[];
   metadata: DocumentMetadata;
   structure: DocumentStructure;

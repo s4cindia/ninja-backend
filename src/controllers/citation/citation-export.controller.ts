@@ -280,7 +280,7 @@ export class CitationExportController {
         success: true,
         data: {
           referenceId: reference.id,
-          originalText: reference.formattedApa || reference.rawText,
+          originalText: reference.formattedApa || reference.title,
           targetStyle,
           components: {
             authors: reference.authors,

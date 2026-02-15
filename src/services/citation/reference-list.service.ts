@@ -141,14 +141,14 @@ class ReferenceListService {
 
     if (aiResult.entries && aiResult.entries.length > 0) {
       for (const aiEntry of aiResult.entries) {
-        const validCitationIds = (aiEntry.citationIds || []).filter(id =>
+        const validCitationIds = (aiEntry.citationIds || []).filter((id: string) =>
           citations.some(c => c.id === id)
         );
         if (validCitationIds.length === 0) {
           validCitationIds.push(citations[0]?.id || 'unknown');
         }
 
-        const authors = (aiEntry.authors || []).map(a => {
+        const authors = (aiEntry.authors || []).map((a: { firstName?: string; lastName?: string }) => {
           let lastName = a.lastName || '';
           let firstName = a.firstName || undefined;
           if ((!lastName || lastName === 'Unknown') && firstName && firstName !== 'Unknown') {
@@ -159,7 +159,7 @@ class ReferenceListService {
             lastName = '';
           }
           return { firstName, lastName: lastName || 'Unknown' };
-        }).filter(a => a.lastName && a.lastName !== 'Unknown');
+        }).filter((a: { lastName: string }) => a.lastName && a.lastName !== 'Unknown');
 
         let enrichmentSource = 'ai';
         let enrichmentConfidence = aiEntry.confidence || 0.7;
@@ -191,7 +191,7 @@ class ReferenceListService {
         const sortKey = this.generateSortKey({
           authors,
           year: aiEntry.year,
-          title: aiEntry.title,
+          title: aiEntry.title || '',
         });
 
         const formattedColumn = this.getFormattedColumn(styleCode);
@@ -330,7 +330,7 @@ Return a JSON object:
 }`;
 
     try {
-      const response = await claudeService.generateText(prompt, {
+      const response = await claudeService.generate(prompt, {
         model: 'haiku',
         temperature: 0.2
       });

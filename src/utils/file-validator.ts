@@ -307,7 +307,8 @@ export async function validateMagicBytesFromStream(
       highWaterMark: maxBytesNeeded
     });
 
-    stream.on('data', (chunk: Buffer) => {
+    stream.on('data', (data: Buffer | string) => {
+      const chunk = typeof data === 'string' ? Buffer.from(data) : data;
       chunks.push(chunk);
     });
 

@@ -41,6 +41,7 @@ export interface ExtractedCitation {
   text: string;
   type: 'parenthetical' | 'narrative' | 'footnote' | 'endnote';
   style: 'APA' | 'MLA' | 'Chicago' | 'Vancouver' | 'unknown';
+  sectionContext?: 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN';
   location: {
     pageNumber?: number;
     paragraphIndex: number;

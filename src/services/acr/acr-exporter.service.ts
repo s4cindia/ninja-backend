@@ -257,7 +257,7 @@ async function exportToDocx(
         const detailParts = [];
         if (doc.status) detailParts.push(`Status: ${doc.status}`);
         if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
-        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        if ((doc as unknown as Record<string, unknown>).score) detailParts.push(`Score: ${(doc as unknown as Record<string, unknown>).score}`);
         const detailText = detailParts.join(' | ');
         children.push(new Paragraph({ children: [new TextRun({ text: `   ${detailText}`, italics: true, size: 18 })] }));
       }
@@ -400,7 +400,7 @@ async function exportToPdf(
         const detailParts = [];
         if (doc.status) detailParts.push(`Status: ${doc.status}`);
         if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
-        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        if ((doc as unknown as Record<string, unknown>).score) detailParts.push(`Score: ${(doc as unknown as Record<string, unknown>).score}`);
         const detailText = detailParts.join(' | ');
         page.drawText(detailText, { x: margin + 25, y: yPosition, size: 8, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
         yPosition -= lineHeight;

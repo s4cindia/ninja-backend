@@ -1,11 +1,6 @@
 /**
  * Citation Upload Controller
- * Handles document upload and analysis operations
- *
- * Endpoints:
- * - POST /upload - Upload and analyze DOCX
- * - POST /document/:documentId/reanalyze - Re-analyze document
- * - GET /document/:documentId/analysis - Get analysis results
+ * Handles document upload and initial analysis
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -14,10 +9,13 @@ import { logger } from '../../lib/logger';
 import { aiCitationDetectorService } from '../../services/citation/ai-citation-detector.service';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 
+const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
 export class CitationUploadController {
   /**
-   * POST /api/v1/citation-management/upload
-   * Upload DOCX and start AI analysis
+   * POST /api/v1/citation/upload
+   * Upload and analyze DOCX document
    */
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -32,9 +30,44 @@ export class CitationUploadController {
         return;
       }
 
-      logger.info(`[CitationUpload] Upload: ${file.originalname}`);
+      // Security: Strict file validation
+      if (!ALLOWED_MIMES.includes(file.mimetype)) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_TYPE', message: 'Only DOCX files are allowed' }
+        });
+        return;
+      }
 
-      // Validate DOCX
+      const fileExt = file.originalname.toLowerCase().split('.').pop();
+      if (fileExt !== 'docx') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_EXTENSION', message: 'File must have .docx extension' }
+        });
+        return;
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds 50MB limit' }
+        });
+        return;
+      }
+
+      // Validate ZIP magic bytes (DOCX is a ZIP file)
+      if (file.buffer.length < 4 || file.buffer.readUInt32LE(0) !== 0x04034B50) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_STRUCTURE', message: 'Invalid DOCX file structure' }
+        });
+        return;
+      }
+
+      logger.info(`[Citation Upload] Processing: ${file.originalname}`);
+
+      // Validate DOCX content structure
       const validation = await docxProcessorService.validateDOCX(file.buffer);
       if (!validation.valid) {
         res.status(400).json({
@@ -44,11 +77,11 @@ export class CitationUploadController {
         return;
       }
 
-      // Extract text
+      // Extract text and statistics
       const content = await docxProcessorService.extractText(file.buffer);
       const stats = await docxProcessorService.getStatistics(file.buffer);
 
-      // Create Job
+      // Create job
       const job = await prisma.job.create({
         data: {
           tenantId,
@@ -71,7 +104,6 @@ export class CitationUploadController {
       const uploadDir = path.join(process.cwd(), 'uploads', 'citation-management', tenantId);
       await fs.mkdir(uploadDir, { recursive: true });
 
-      // Sanitize filename
       const sanitizedOriginalName = file.originalname
         .replace(/\0/g, '')
         .replace(/[/\\]/g, '_')
@@ -80,6 +112,8 @@ export class CitationUploadController {
       const filename = `${Date.now()}-${sanitizedOriginalName}`;
       const storagePath = path.join(uploadDir, filename);
       await fs.writeFile(storagePath, file.buffer);
+
+      logger.info(`[Citation Upload] Saved DOCX to ${storagePath}`);
 
       // Create document record
       const document = await prisma.editorialDocument.create({
@@ -101,16 +135,22 @@ export class CitationUploadController {
       });
 
       // Run AI analysis
+      logger.info(`[Citation Upload] Starting analysis for ${document.id}`);
       await this.analyzeDocument(document.id, content.text);
 
-      // Get final counts
+      // Get final results
       const finalDoc = await prisma.editorialDocument.findUnique({
         where: { id: document.id },
         include: { citations: true }
       });
-
       const finalRefs = await prisma.referenceListEntry.count({
         where: { documentId: document.id }
+      });
+
+      // Update job status
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { status: 'COMPLETED', completedAt: new Date() }
       });
 
       res.json({
@@ -127,14 +167,14 @@ export class CitationUploadController {
         }
       });
     } catch (error) {
-      logger.error('[CitationUpload] Upload failed:', error);
+      logger.error('[Citation Upload] Upload failed:', error);
       next(error);
     }
   }
 
   /**
-   * POST /api/v1/citation-management/document/:documentId/reanalyze
-   * Re-analyze document
+   * POST /api/v1/citation/document/:documentId/reanalyze
+   * Re-run analysis on existing document
    */
   async reanalyze(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -142,8 +182,7 @@ export class CitationUploadController {
       const { tenantId } = req.user!;
 
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
-        select: { id: true, fullText: true, originalName: true }
+        where: { id: documentId, tenantId }
       });
 
       if (!document) {
@@ -153,196 +192,77 @@ export class CitationUploadController {
         });
         return;
       }
-
-      if (!document.fullText) {
-        res.status(400).json({
-          success: false,
-          error: { code: 'NO_TEXT', message: 'Document has no text content' }
-        });
-        return;
-      }
-
-      logger.info(`[CitationUpload] Re-analyzing document ${documentId}`);
 
       // Clear existing data
       await prisma.citation.deleteMany({ where: { documentId } });
       await prisma.referenceListEntry.deleteMany({ where: { documentId } });
-      await prisma.citationChange.deleteMany({ where: { documentId } });
 
-      // Re-run analysis
-      await this.analyzeDocument(documentId, document.fullText);
+      // Re-analyze
+      await this.analyzeDocument(documentId, document.fullText || '');
 
-      const citations = await prisma.citation.count({ where: { documentId } });
-      const references = await prisma.referenceListEntry.count({ where: { documentId } });
+      const citationCount = await prisma.citation.count({ where: { documentId } });
+      const refCount = await prisma.referenceListEntry.count({ where: { documentId } });
 
       res.json({
         success: true,
         data: {
           documentId,
-          message: 'Document re-analyzed with auto-resequencing',
-          citationsFound: citations,
-          referencesFound: references
+          citationsFound: citationCount,
+          referencesFound: refCount
         }
       });
     } catch (error) {
-      logger.error('[CitationUpload] Re-analyze failed:', error);
+      logger.error('[Citation Upload] Reanalyze failed:', error);
       next(error);
     }
   }
 
   /**
-   * GET /api/v1/citation-management/document/:documentId/analysis
-   * Get complete citation analysis
-   */
-  async getAnalysis(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const { documentId } = req.params;
-      const { tenantId } = req.user!;
-
-      const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
-        include: {
-          citations: { include: { reference: true } },
-          job: true
-        }
-      });
-
-      if (!document) {
-        res.status(404).json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: 'Document not found' }
-        });
-        return;
-      }
-
-      const references = await prisma.referenceListEntry.findMany({
-        where: { documentId },
-        orderBy: { sortKey: 'asc' }
-      });
-
-      // Get style conversions
-      const refStyleConversions = await prisma.citationChange.findMany({
-        where: {
-          documentId,
-          changeType: 'REFERENCE_STYLE_CONVERSION',
-          isReverted: false
-        }
-      });
-
-      const refIdToConvertedText = new Map<string, string>();
-      for (const change of refStyleConversions) {
-        if (change.citationId && change.afterText) {
-          refIdToConvertedText.set(change.citationId, change.afterText);
-        }
-      }
-
-      // Build citation-to-reference mapping
-      const citationToRefMap = new Map<string, number>();
-      references.forEach((ref, index) => {
-        const refNumber = parseInt(ref.sortKey) || (index + 1);
-        ref.citationIds.forEach(citationId => {
-          citationToRefMap.set(citationId, refNumber);
-        });
-      });
-
-      res.json({
-        success: true,
-        data: {
-          document: {
-            id: document.id,
-            filename: document.originalName,
-            status: document.status,
-            wordCount: document.wordCount,
-            pageCount: document.pageCount,
-            fullText: document.fullText,
-            fullHtml: document.fullHtml,
-            statistics: {
-              totalCitations: document.citations?.length || 0,
-              totalReferences: references.length
-            }
-          },
-          citations: (document.citations || []).map(c => ({
-            ...c,
-            referenceNumber: citationToRefMap.get(c.id) || null
-          })),
-          references: references.map((r, index) => {
-            const refNumber = parseInt(r.sortKey) || (index + 1);
-            const convertedText = refIdToConvertedText.get(r.id);
-            return {
-              id: r.id,
-              position: refNumber,
-              number: refNumber,
-              rawText: convertedText || r.formattedApa || `${(r.authors as string[])?.join(', ') || 'Unknown'} (${r.year || 'n.d.'}). ${r.title || 'Untitled'}`,
-              authors: r.authors,
-              year: r.year,
-              title: r.title,
-              journal: r.journalName,
-              volume: r.volume,
-              issue: r.issue,
-              pages: r.pages,
-              doi: r.doi,
-              url: r.url,
-              publisher: r.publisher,
-              citationCount: r.citationIds.length
-            };
-          }),
-          detectedStyle: document.referenceListStyle || 'APA'
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Analyze document citations using AI
+   * Internal: Run AI analysis on document text
    */
   private async analyzeDocument(documentId: string, documentText: string): Promise<void> {
     try {
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { status: 'ANALYZING' }
-      });
-
-      // Run AI analysis
       const analysis = await aiCitationDetectorService.analyzeDocument(documentText);
 
-      logger.info(`[CitationUpload] AI detected ${analysis.inTextCitations.length} citations, ${analysis.references.length} references`);
+      logger.info(`[Citation Upload] AI detected ${analysis.inTextCitations.length} citations, ${analysis.references.length} references`);
 
       // Store citations
-      if (analysis.inTextCitations.length > 0) {
-        await prisma.citation.createMany({
-          data: analysis.inTextCitations.map((c, index) => ({
+      for (const citation of analysis.inTextCitations) {
+        await prisma.citation.create({
+          data: {
             documentId,
-            rawText: c.text || `[${index + 1}]`,
-            citationType: c.type === 'numeric' ? 'NUMERIC' : 'AUTHOR_YEAR',
-            startOffset: c.position?.startChar || 0,
-            endOffset: c.position?.endChar || 0,
-            paragraphIndex: c.position?.paragraph || 0
-          }))
+            rawText: citation.text || '',
+            citationType: citation.type === 'numeric' ? 'NUMERIC' : 'PARENTHETICAL',
+            startOffset: citation.position?.startChar || 0,
+            endOffset: citation.position?.endChar || 0,
+            paragraphIndex: citation.position?.paragraph || 0,
+            confidence: 0.8
+          }
         });
       }
 
       // Store references
-      if (analysis.references.length > 0) {
-        await prisma.referenceListEntry.createMany({
-          data: analysis.references.map((r, index) => ({
+      for (let i = 0; i < analysis.references.length; i++) {
+        const ref = analysis.references[i];
+        await prisma.referenceListEntry.create({
+          data: {
             documentId,
-            sortKey: String(index + 1).padStart(4, '0'),
-            rawText: r.text || '',
-            formattedApa: r.text || '',
-            authors: r.components?.authors || [],
-            year: r.components?.year || null,
-            title: r.components?.title || null,
-            journalName: r.components?.journal || null,
-            volume: r.components?.volume || null,
-            issue: r.components?.issue || null,
-            pages: r.components?.pages || null,
-            doi: r.components?.doi || null,
-            url: r.components?.url || null,
-            publisher: r.components?.publisher || null,
-            citationIds: []
-          }))
+            sortKey: String(i + 1).padStart(4, '0'),
+            authors: ref.components?.authors || [],
+            year: ref.components?.year || null,
+            title: ref.components?.title || 'Untitled',
+            sourceType: 'journal',
+            journalName: ref.components?.journal || null,
+            volume: ref.components?.volume || null,
+            issue: ref.components?.issue || null,
+            pages: ref.components?.pages || null,
+            doi: ref.components?.doi || null,
+            url: ref.components?.url || null,
+            publisher: ref.components?.publisher || null,
+            citationIds: [],
+            enrichmentSource: 'ai',
+            enrichmentConfidence: 0.8
+          }
         });
       }
 
@@ -350,20 +270,12 @@ export class CitationUploadController {
       await prisma.editorialDocument.update({
         where: { id: documentId },
         data: {
-          status: 'COMPLETED',
+          status: 'PARSED',
           referenceListStyle: analysis.detectedStyle || 'Unknown'
         }
       });
-
-      logger.info(`[CitationUpload] Analysis complete for document ${documentId}`);
     } catch (error) {
-      logger.error(`[CitationUpload] Analysis failed for ${documentId}:`, error);
-
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { status: 'FAILED' }
-      });
-
+      logger.error(`[Citation Upload] Analysis failed for ${documentId}:`, error);
       throw error;
     }
   }

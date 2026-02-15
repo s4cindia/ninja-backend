@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
+import { AppError } from '../../utils/app-error';
 import {
   DetectedCitation,
   StylesheetAnalysisResult,
@@ -109,13 +110,13 @@ export class CitationStylesheetDetectionService {
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       try {
         const response = await fetch(presignedUrl, { signal: controller.signal });
-        if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+        if (!response.ok) throw AppError.badRequest(`Failed to fetch: ${response.status}`, 'FETCH_FAILED');
         fileBuffer = Buffer.from(await response.arrayBuffer());
       } finally {
         clearTimeout(timeoutId);
       }
     } else {
-      throw new Error('Either fileS3Key or presignedUrl is required');
+      throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
     }
 
     const parsed = await documentParser.parse(fileBuffer, fileName);
@@ -198,7 +199,7 @@ export class CitationStylesheetDetectionService {
     originalProcessingTime?: number
   ): Promise<StylesheetAnalysisResult> {
 
-    const styleInfo = editorialAi.detectCitationStyleFromText(fullText);
+    const styleInfo = await editorialAi.detectCitationStyleFromText(fullText);
 
     let inferredStyle = styleInfo.style;
     let confidence = 0;
@@ -227,20 +228,22 @@ export class CitationStylesheetDetectionService {
     }
 
     if (evidence.length === 0) {
+      const numericCount = styleInfo.numericCount || 0;
+      const authorDateCount = styleInfo.authorDateCount || 0;
       if (inferredStyle === 'numeric-bracket') {
-        confidence = Math.min(0.95, 0.5 + styleInfo.numericCount * 0.03);
-        evidence.push(`Found ${styleInfo.numericCount} numeric bracket citations [N]`);
+        confidence = Math.min(0.95, 0.5 + numericCount * 0.03);
+        evidence.push(`Found ${numericCount} numeric bracket citations [N]`);
         if (styleInfo.hasReferenceSection) {
           evidence.push('Document contains a numbered reference list');
           confidence = Math.min(0.98, confidence + 0.1);
         }
       } else if (inferredStyle === 'author-date') {
-        confidence = Math.min(0.90, 0.5 + styleInfo.authorDateCount * 0.03);
-        evidence.push(`Found ${styleInfo.authorDateCount} author-date citations (Author, Year)`);
+        confidence = Math.min(0.90, 0.5 + authorDateCount * 0.03);
+        evidence.push(`Found ${authorDateCount} author-date citations (Author, Year)`);
         if (styleInfo.hasReferenceSection) evidence.push('Document contains an alphabetical reference list');
       } else if (inferredStyle === 'mixed') {
         confidence = 0.5;
-        evidence.push(`Found ${styleInfo.numericCount} numeric and ${styleInfo.authorDateCount} author-date citations`);
+        evidence.push(`Found ${numericCount} numeric and ${authorDateCount} author-date citations`);
         evidence.push('Document uses mixed citation styles');
       } else {
         confidence = 0.2;
@@ -271,7 +274,7 @@ export class CitationStylesheetDetectionService {
         startOffset: c.startOffset,
         endOffset: c.endOffset,
         confidence: c.confidence,
-        sectionContext: c.sectionContext || 'BODY',
+        sectionContext: (c.sectionContext || 'BODY') as DetectedCitation['sectionContext'],
         primaryComponentId: c.primaryComponentId,
         isParsed: !!c.primaryComponentId,
         parseConfidence: c.primaryComponent?.confidence ?? null,
@@ -315,7 +318,7 @@ export class CitationStylesheetDetectionService {
     const crossReference = this.analyzeCrossReferences(bodyCitations, referenceEntries);
 
     const unmatchedRefIndices = new Set(
-      crossReference.referencesWithoutCitation.map(r => r.entryIndex)
+      crossReference.referencesWithoutCitation.map((r: { entryIndex: number }) => r.entryIndex)
     );
     const refListSummary: ReferenceListSummaryEntry[] = referenceEntries.map((entry, index) => {
       const hasMatch = !unmatchedRefIndices.has(index);

@@ -181,7 +181,7 @@ Return an empty array [] if no violations found.
 Return ONLY valid JSON array, no other text.`;
 
     try {
-      const response = await claudeService.generateText(prompt, {
+      const response = await claudeService.generate(prompt, {
         temperature: 0.1,
         maxTokens: 2048
       });

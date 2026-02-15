@@ -7,8 +7,75 @@
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { logger } from '../../lib/logger';
+import { AppError } from '../../utils/app-error';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
+
+// Security constants for DOCX processing
+const SECURITY_LIMITS = {
+  MAX_DOCX_SIZE: 100 * 1024 * 1024, // 100MB max DOCX file size
+  MAX_XML_SIZE: 50 * 1024 * 1024,   // 50MB max XML content size
+  MAX_ZIP_ENTRIES: 1000,             // Max files in DOCX archive
+  MAX_ELEMENT_DEPTH: 100,            // Max XML nesting depth
+};
+
+/**
+ * Sanitize XML content to prevent XXE (XML External Entity) attacks
+ * Removes DOCTYPE declarations, entity definitions, and external references
+ */
+function sanitizeXML(xml: string): string {
+  if (!xml || typeof xml !== 'string') {
+    return '';
+  }
+
+  // Remove DOCTYPE declarations (prevents XXE entity expansion)
+  let sanitized = xml.replace(/<!DOCTYPE[^>]*>/gi, '');
+
+  // Remove entity declarations (prevents entity expansion attacks)
+  sanitized = sanitized.replace(/<!ENTITY[^>]*>/gi, '');
+
+  // Remove processing instructions that could be malicious
+  sanitized = sanitized.replace(/<\?xml-stylesheet[^?]*\?>/gi, '');
+
+  // Remove SYSTEM and PUBLIC entity references
+  sanitized = sanitized.replace(/SYSTEM\s+["'][^"']*["']/gi, '');
+  sanitized = sanitized.replace(/PUBLIC\s+["'][^"']*["']\s+["'][^"']*["']/gi, '');
+
+  // Remove parameter entity references
+  sanitized = sanitized.replace(/%[a-zA-Z0-9_]+;/g, '');
+
+  return sanitized;
+}
+
+/**
+ * Validate DOCX structure for security
+ * @param zip - JSZip instance (using any for type compatibility with JSZip versions)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function validateDOCXStructure(zip: any): { valid: boolean; error?: string } {
+  // Check required DOCX files exist
+  const requiredFiles = ['word/document.xml', '[Content_Types].xml'];
+  for (const file of requiredFiles) {
+    if (!zip.file(file)) {
+      return { valid: false, error: `Missing required file: ${file}` };
+    }
+  }
+
+  // Check number of entries (prevent zip bomb)
+  const entryCount = Object.keys(zip.files).length;
+  if (entryCount > SECURITY_LIMITS.MAX_ZIP_ENTRIES) {
+    return { valid: false, error: `Too many files in archive: ${entryCount} (max: ${SECURITY_LIMITS.MAX_ZIP_ENTRIES})` };
+  }
+
+  // Validate file paths (prevent path traversal)
+  for (const path of Object.keys(zip.files)) {
+    if (path.includes('..') || path.startsWith('/') || path.includes('://')) {
+      return { valid: false, error: `Invalid file path detected: ${path}` };
+    }
+  }
+
+  return { valid: true };
+}
 
 export interface DOCXContent {
   text: string;
@@ -72,7 +139,7 @@ class DOCXProcessorService {
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       logger.error('[DOCX Processor] Failed to extract text:', errorMessage);
-      throw new Error(`DOCX extraction failed: ${errorMessage}`);
+      throw AppError.unprocessable(`DOCX extraction failed: ${errorMessage}`, 'DOCX_EXTRACTION_FAILED');
     }
   }
 
@@ -102,6 +169,11 @@ class DOCXProcessorService {
     try {
       logger.info(`[DOCX Processor] Processing: ${changedCitations.length} changed, ${orphanedCitations.length} orphaned`);
 
+      // Security: Check buffer size
+      if (originalBuffer.length > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+        throw AppError.badRequest(`DOCX file too large: ${originalBuffer.length} bytes (max: ${SECURITY_LIMITS.MAX_DOCX_SIZE})`, 'FILE_TOO_LARGE');
+      }
+
       const summary: ReplacementSummary = {
         totalCitations: 0,
         changed: [],
@@ -113,10 +185,23 @@ class DOCXProcessorService {
       };
 
       const zip = await JSZip.loadAsync(originalBuffer);
+
+      // Security: Validate DOCX structure
+      const structureValidation = validateDOCXStructure(zip);
+      if (!structureValidation.valid) {
+        throw AppError.badRequest(`Invalid DOCX structure: ${structureValidation.error}`, 'INVALID_DOCX_STRUCTURE');
+      }
+
       let documentXML = await zip.file('word/document.xml')?.async('string');
       if (!documentXML) {
-        throw new Error('Invalid DOCX: word/document.xml not found');
+        throw AppError.badRequest('Invalid DOCX: word/document.xml not found', 'INVALID_DOCX_STRUCTURE');
       }
+
+      // Security: Check XML size and sanitize to prevent XXE attacks
+      if (documentXML.length > SECURITY_LIMITS.MAX_XML_SIZE) {
+        throw AppError.badRequest(`XML content too large: ${documentXML.length} bytes (max: ${SECURITY_LIMITS.MAX_XML_SIZE})`, 'XML_TOO_LARGE');
+      }
+      documentXML = sanitizeXML(documentXML);
 
       // Split document at References section to avoid modifying reference list citations
       // Look for common References section headers
@@ -955,7 +1040,8 @@ class DOCXProcessorService {
 
       // Build preserved content from non-reference paragraphs and everything after structural elements
       const lastRefPara = refParagraphs[refParagraphs.length - 1];
-      const lastRefParaEnd = lastRefPara ? referencesXML.indexOf(lastRefPara) + lastRefPara.length : referencesXML.indexOf(headerParagraph) + headerParagraph.length;
+      const headerParaStr = headerParagraph || '';
+      const lastRefParaEnd = lastRefPara ? referencesXML.indexOf(lastRefPara) + lastRefPara.length : referencesXML.indexOf(headerParaStr) + headerParaStr.length;
       const preservedContent = referencesXML.substring(lastRefParaEnd);
 
       logger.info(`[DOCX Processor] Found ${refParagraphs.length} reference paragraphs, ${nonRefParagraphs.length} non-reference paragraphs to preserve`);
@@ -1259,7 +1345,8 @@ class DOCXProcessorService {
 
       // Reconstruct References section
       // Find position of header paragraph in original XML
-      const headerIndex = referencesXML.indexOf(headerParagraph);
+      const headerParaForIndex = headerParagraph || '';
+      const headerIndex = referencesXML.indexOf(headerParaForIndex);
       const beforeHeader = referencesXML.substring(0, headerIndex);
 
       // Reconstruct: beforeHeader + header + new ref paragraphs + preserved content (correspondence, tables, etc.)
@@ -1491,12 +1578,17 @@ class DOCXProcessorService {
     return result;
   }
 
-  private async updateSettingsForTrackChanges(zip: JSZip): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async updateSettingsForTrackChanges(zip: any): Promise<void> {
     try {
       let settingsXML = await zip.file('word/settings.xml')?.async('string');
-      if (settingsXML && !settingsXML.includes('<w:trackRevisions')) {
-        settingsXML = settingsXML.replace('</w:settings>', '<w:trackRevisions/></w:settings>');
-        zip.file('word/settings.xml', settingsXML);
+      if (settingsXML) {
+        // Security: Sanitize XML to prevent XXE attacks
+        settingsXML = sanitizeXML(settingsXML);
+        if (!settingsXML.includes('<w:trackRevisions')) {
+          settingsXML = settingsXML.replace('</w:settings>', '<w:trackRevisions/></w:settings>');
+          zip.file('word/settings.xml', settingsXML);
+        }
       }
     } catch (error) {
       logger.warn('[DOCX Processor] Could not update settings:', error);
@@ -1513,9 +1605,24 @@ class DOCXProcessorService {
     try {
       if (replacements.length === 0) return originalBuffer;
 
+      // Security: Check buffer size
+      if (originalBuffer.length > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+        throw AppError.badRequest(`DOCX file too large: ${originalBuffer.length} bytes`, 'FILE_TOO_LARGE');
+      }
+
       const zip = await JSZip.loadAsync(originalBuffer);
+
+      // Security: Validate DOCX structure
+      const structureValidation = validateDOCXStructure(zip);
+      if (!structureValidation.valid) {
+        throw AppError.badRequest(`Invalid DOCX structure: ${structureValidation.error}`, 'INVALID_DOCX_STRUCTURE');
+      }
+
       let documentXML = await zip.file('word/document.xml')?.async('string');
-      if (!documentXML) throw new Error('Invalid DOCX');
+      if (!documentXML) throw AppError.badRequest('Invalid DOCX: word/document.xml not found', 'INVALID_DOCX_STRUCTURE');
+
+      // Security: Sanitize XML to prevent XXE attacks
+      documentXML = sanitizeXML(documentXML);
 
       const changeMap = new Map<string, string>();
       for (const r of replacements) {
@@ -1565,6 +1672,21 @@ class DOCXProcessorService {
   }
 
   async updateReferences(originalBuffer: Buffer, _newReferences: string[]): Promise<Buffer> {
+    return originalBuffer;
+  }
+
+  /**
+   * Apply changes to a DOCX document
+   * @param originalBuffer - The original DOCX buffer
+   * @param changes - Array of changes to apply
+   * @returns Modified DOCX buffer
+   */
+  async applyChanges(
+    originalBuffer: Buffer,
+    _changes: Array<{ type: string; beforeText: string; afterText: string }>
+  ): Promise<Buffer> {
+    // TODO: Implement DOCX change application
+    logger.warn('[DOCXProcessor] applyChanges not fully implemented - returning original buffer');
     return originalBuffer;
   }
 }

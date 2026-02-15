@@ -530,7 +530,7 @@ export class EditorialOverviewController {
           severity: 'error',
           type: 'DUPLICATE_CITATION',
           title: `${seq.duplicateNumbers.length} duplicate in-text citation number(s)`,
-          detail: `Duplicated: ${seq.duplicateNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Duplicated: ${seq.duplicateNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.duplicateNumbers,
         });
       }
@@ -541,7 +541,7 @@ export class EditorialOverviewController {
           severity: 'error',
           type: 'MISSING_CITATION_NUMBER',
           title: `${seq.missingNumbers.length} missing citation number(s) in sequence`,
-          detail: `Missing: ${seq.missingNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Missing: ${seq.missingNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.missingNumbers,
         });
       }
@@ -552,12 +552,12 @@ export class EditorialOverviewController {
           severity: 'warning',
           type: 'OUT_OF_ORDER',
           title: `${seq.outOfOrderNumbers.length} citation(s) appear out of order`,
-          detail: `Out of order: ${seq.outOfOrderNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Out of order: ${seq.outOfOrderNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.outOfOrderNumbers,
         });
       }
 
-      seq.gaps.forEach((gap, i) => {
+      seq.gaps.forEach((gap: { before: number; after: number }, i: number) => {
         issues.push({
           id: `seq-gap-${i}`,
           severity: 'warning',
@@ -568,7 +568,7 @@ export class EditorialOverviewController {
         });
       });
 
-      xref.citationsWithoutReference.forEach(cit => {
+      xref.citationsWithoutReference.forEach((cit: { number: number | null; citationId: string; text: string }) => {
         issues.push({
           id: `xref-orphan-${cit.number || cit.citationId}`,
           severity: 'error',
@@ -579,7 +579,7 @@ export class EditorialOverviewController {
         });
       });
 
-      xref.referencesWithoutCitation.forEach(ref => {
+      xref.referencesWithoutCitation.forEach((ref: { number: number | null; entryIndex: number; text: string }) => {
         issues.push({
           id: `xref-uncited-${ref.number || ref.entryIndex}`,
           severity: 'warning',

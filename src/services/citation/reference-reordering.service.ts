@@ -5,6 +5,7 @@
 
 import { logger } from '../../lib/logger';
 import { ReferenceEntry, InTextCitation } from './ai-citation-detector.service';
+import { AppError } from '../../utils/app-error';
 
 export interface ReorderOperation {
   referenceId: string;
@@ -37,7 +38,7 @@ class ReferenceReorderingService {
 
     const refIndex = references.findIndex(r => r.id === referenceId);
     if (refIndex === -1) {
-      throw new Error(`Reference ${referenceId} not found`);
+      throw AppError.notFound(`Reference ${referenceId} not found`, 'REFERENCE_NOT_FOUND');
     }
 
     // Create new reference array

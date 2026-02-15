@@ -77,13 +77,13 @@ export class ComparisonService {
     };
 
     const input = job.input as Record<string, unknown>;
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,
       fileName,
-      originalFileId: input?.originalFileId,
-      remediatedFileId: input?.remediatedFileId,
+      originalFileId: input?.originalFileId as string | undefined,
+      remediatedFileId: input?.remediatedFileId as string | undefined,
       auditedAt: job.startedAt || undefined,
       remediatedAt: job.completedAt || undefined,
       summary,
@@ -169,7 +169,7 @@ export class ComparisonService {
     });
 
     const input = (job?.input as Record<string, unknown>) || {};
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,

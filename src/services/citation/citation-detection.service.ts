@@ -8,6 +8,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
+import { AppError } from '../../utils/app-error';
 import {
   DetectedCitation,
   DetectionResult,
@@ -43,20 +44,20 @@ export class CitationDetectionService {
         try {
           const response = await fetch(presignedUrl, { signal: controller.signal });
           if (!response.ok) {
-            throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+            throw AppError.badRequest(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`, 'FETCH_FAILED');
           }
           const arrayBuffer = await response.arrayBuffer();
           fileBuffer = Buffer.from(arrayBuffer);
         } catch (fetchError) {
           if (controller.signal.aborted) {
-            throw new Error(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`);
+            throw AppError.serviceUnavailable(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`, 'FETCH_TIMEOUT');
           }
           throw fetchError;
         } finally {
           clearTimeout(timeoutId);
         }
       } else {
-        throw new Error('Either fileS3Key or presignedUrl is required');
+        throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
       }
       const actualSize = fileSize ?? fileBuffer.length;
       logger.info(`[Citation Detection] Fetched file: ${actualSize} bytes`);
@@ -162,15 +163,15 @@ export class CitationDetectionService {
     });
 
     if (!doc) {
-      throw new Error(`Editorial document not found: ${documentId}`);
+      throw AppError.notFound(`Editorial document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (!doc.fullText) {
-      throw new Error(`Document has no extracted text: ${documentId}`);
+      throw AppError.badRequest(`Document has no extracted text: ${documentId}`, 'NO_TEXT_CONTENT');
     }
 
     logger.info(`[Citation Detection] Re-detecting for documentId=${documentId}`);

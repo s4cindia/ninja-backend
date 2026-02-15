@@ -346,7 +346,8 @@ async function checkSuspiciousContentFromStream(
       highWaterMark: memoryConfig.streamChunkSize
     });
 
-    stream.on('data', (chunk: Buffer) => {
+    stream.on('data', (data: Buffer | string) => {
+      const chunk = typeof data === 'string' ? Buffer.from(data) : data;
       if (totalSize < maxCheckSize) {
         const remaining = maxCheckSize - totalSize;
         const toAdd = chunk.subarray(0, Math.min(chunk.length, remaining));

@@ -33,7 +33,9 @@ class ClaudeService {
     if (!this.client) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
       if (!apiKey) {
-        throw AppError.internal('ANTHROPIC_API_KEY is not configured');
+        // Generic error to avoid exposing API configuration details
+        logger.error('[Claude Service] AI service configuration missing');
+        throw AppError.internal('AI service unavailable');
       }
       this.client = new Anthropic({ apiKey });
     }
@@ -106,7 +108,7 @@ class ClaudeService {
       });
 
       const textContent = response.content.find(block => block.type === 'text');
-      const text = textContent && textContent.type === 'text' ? textContent.text : '';
+      const text: string = textContent && textContent.type === 'text' && textContent.text ? textContent.text : '';
 
       const usage = response.usage;
 

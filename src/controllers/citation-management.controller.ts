@@ -30,9 +30,50 @@ export class CitationManagementController {
         return;
       }
 
+      // Security: Strict file validation
+      const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit
+
+      // Validate MIME type
+      if (!ALLOWED_MIMES.includes(file.mimetype)) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_TYPE', message: 'Only DOCX files are allowed' }
+        });
+        return;
+      }
+
+      // Validate file extension
+      const fileExt = file.originalname.toLowerCase().split('.').pop();
+      if (fileExt !== 'docx') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_EXTENSION', message: 'File must have .docx extension' }
+        });
+        return;
+      }
+
+      // Validate file size
+      if (file.size > MAX_FILE_SIZE) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds 50MB limit' }
+        });
+        return;
+      }
+
+      // Validate ZIP magic bytes (DOCX is a ZIP file: PK\x03\x04)
+      if (file.buffer.length < 4 || file.buffer.readUInt32LE(0) !== 0x04034B50) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_STRUCTURE', message: 'Invalid DOCX file structure' }
+        });
+        return;
+      }
+
       logger.info(`[Citation Management] Upload: ${file.originalname}`);
 
-      // Validate DOCX
+      // Validate DOCX content structure
       const validation = await docxProcessorService.validateDOCX(file.buffer);
       if (!validation.valid) {
         res.status(400).json({
@@ -1046,7 +1087,7 @@ export class CitationManagementController {
       }
 
       const document = reference.document;
-      const oldAuthors = reference.authors || [];
+      const oldAuthors = (Array.isArray(reference.authors) ? reference.authors : []) as string[];
       const oldYear = reference.year;
       const newAuthors = updates.authors || oldAuthors;
       const newYear = updates.year || oldYear;
@@ -2723,7 +2764,7 @@ export class CitationManagementController {
               if (originalText !== finalText) {
                 chainedChanges.push({
                   oldText: originalText,
-                  newText: finalText,
+                  newText: finalText as string,
                   changeType: 'renumber' as const
                 });
                 logger.info(`[Citation Management] Chained: "${originalText}" → "${currentText}" → "${finalText}" = "${originalText}" → "${finalText}"`);
@@ -3476,7 +3517,7 @@ export class CitationManagementController {
           newText: styleChange.afterText,
           changeType: 'style',
           isOrphaned: false,
-          referenceNumber: citation?.referenceNumber || null
+          referenceNumber: (citation as Record<string, unknown> | undefined)?.referenceNumber as number | null || null
         });
         logger.debug(`[Citation Management] Preview - Style conversion: "${styleChange.beforeText}" → "${styleChange.afterText}"`);
       }
@@ -3493,7 +3534,7 @@ export class CitationManagementController {
           newText: change.newText,
           changeType: change.changeType,
           isOrphaned: false,
-          referenceNumber: citation?.referenceNumber || null
+          referenceNumber: (citation as Record<string, unknown> | undefined)?.referenceNumber as number | null || null
         });
       }
 
@@ -3544,13 +3585,14 @@ export class CitationManagementController {
         if (processedTexts.has(originalText)) continue;
         processedTexts.add(originalText);
 
+        const refNum = (citation as Record<string, unknown>).referenceNumber as number | null;
         citationPreviews.push({
           id: citation.id,
           originalText: originalText,
           newText: citation.rawText,
           changeType: originalText !== citation.rawText ? 'renumber' : 'unchanged',
-          isOrphaned: citation.referenceNumber === null,
-          referenceNumber: citation.referenceNumber
+          isOrphaned: refNum === null,
+          referenceNumber: refNum
         });
       }
 
@@ -3697,7 +3739,7 @@ export class CitationManagementController {
         document.referenceListEntries.some(ref => ref.formattedApa);
 
       // Try to read the original DOCX and extract reference section
-      interface DocxRef { paraNum: number; firstAuthor: string; text: string }
+      interface DocxRef { paraNum: number; firstAuthor: string | null; text: string }
       let docxInfo: { available: boolean; error?: string; refSectionFound?: boolean; docxReferences?: DocxRef[]; rawParagraphs?: string[] } = { available: false };
       try {
         const fs = await import('fs/promises');
@@ -3788,7 +3830,6 @@ export class CitationManagementController {
           docxInfo = {
             available: true,
             refSectionFound,
-            docxReferenceCount: docxReferences.length,
             docxReferences,
             rawParagraphs // Show raw text of all paragraphs in References section for debugging
           };
@@ -4134,7 +4175,10 @@ export class CitationManagementController {
           const titleMatch = htmlRef.text.match(/\.\s+([^.]+)\./);
 
           return {
+            id: `html-ref-${index}`,
             number: index + 1,
+            rawText: htmlRef.text,
+            citedBy: [],
             text: htmlRef.text,
             components: {
               authors: htmlRef.firstAuthor ? [htmlRef.firstAuthor] : (authorMatch ? [authorMatch[1]] : []),
@@ -4442,8 +4486,8 @@ export class CitationManagementController {
               authors: refAuthors,
               year: refYear,
               title: ref.components.title || 'Untitled',
-              sourceType: ref.components.sourceType || 'journal',
-              journalName: ref.components.journal || ref.components.journalName,
+              sourceType: (ref.components as Record<string, unknown>).sourceType as string || 'journal',
+              journalName: ref.components.journal || (ref.components as Record<string, unknown>).journalName as string || null,
               volume: ref.components.volume,
               issue: ref.components.issue,
               pages: ref.components.pages,
@@ -4517,8 +4561,8 @@ export class CitationManagementController {
               authors: refAuthors,
               year: refYear,
               title: ref.components.title || 'Untitled',
-              sourceType: ref.components.sourceType || 'journal',
-              journalName: ref.components.journal || ref.components.journalName,
+              sourceType: (ref.components as Record<string, unknown>).sourceType as string || 'journal',
+              journalName: ref.components.journal || (ref.components as Record<string, unknown>).journalName as string || null,
               volume: ref.components.volume,
               issue: ref.components.issue,
               pages: ref.components.pages,
@@ -5024,7 +5068,8 @@ export class CitationManagementController {
 
         // Check if first author name appears in HTML ref
         if (aiAuthors.length > 0) {
-          const firstAuthor = typeof aiAuthors[0] === 'string' ? aiAuthors[0] : aiAuthors[0]?.lastName || '';
+          const author0 = aiAuthors[0] as string | { lastName?: string } | undefined;
+          const firstAuthor = typeof author0 === 'string' ? author0 : (author0 as { lastName?: string })?.lastName || '';
           const authorName = firstAuthor.split(/[,\s]/)[0];
           if (authorName && htmlText.toLowerCase().includes(authorName.toLowerCase())) {
             score += 40;

@@ -163,7 +163,7 @@ export class QueueService {
 
     if (areQueuesAvailable()) {
       try {
-        const queue = getQueueForJobType(job.type);
+        const queue = getQueueForJobType(job.type as Parameters<typeof getQueueForJobType>[0]);
         if (queue) {
           const queueJob = await queue.getJob(jobId);
           if (queueJob) {
