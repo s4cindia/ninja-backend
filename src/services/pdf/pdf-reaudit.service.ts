@@ -281,29 +281,32 @@ class PdfReauditService {
       ? (resolvedCount / totalOriginal) * 100
       : 0;
 
-    // Count critical issues
-    const criticalResolved = resolved.filter(i => i.severity === 'critical').length;
-    const criticalRemaining = remaining.filter(i => i.severity === 'critical').length;
-
-    // Calculate severity breakdown
+    // Calculate severity breakdown in a single pass for better performance
     const severityBreakdown = {
-      critical: {
-        resolved: resolved.filter(i => i.severity === 'critical').length,
-        remaining: remaining.filter(i => i.severity === 'critical').length,
-      },
-      serious: {
-        resolved: resolved.filter(i => i.severity === 'serious').length,
-        remaining: remaining.filter(i => i.severity === 'serious').length,
-      },
-      moderate: {
-        resolved: resolved.filter(i => i.severity === 'moderate').length,
-        remaining: remaining.filter(i => i.severity === 'moderate').length,
-      },
-      minor: {
-        resolved: resolved.filter(i => i.severity === 'minor').length,
-        remaining: remaining.filter(i => i.severity === 'minor').length,
-      },
+      critical: { resolved: 0, remaining: 0 },
+      serious: { resolved: 0, remaining: 0 },
+      moderate: { resolved: 0, remaining: 0 },
+      minor: { resolved: 0, remaining: 0 },
     };
+
+    // Single pass through resolved issues
+    for (const issue of resolved) {
+      const severity = issue.severity as keyof typeof severityBreakdown;
+      if (severityBreakdown[severity]) {
+        severityBreakdown[severity].resolved++;
+      }
+    }
+
+    // Single pass through remaining issues
+    for (const issue of remaining) {
+      const severity = issue.severity as keyof typeof severityBreakdown;
+      if (severityBreakdown[severity]) {
+        severityBreakdown[severity].remaining++;
+      }
+    }
+
+    const criticalResolved = severityBreakdown.critical.resolved;
+    const criticalRemaining = severityBreakdown.critical.remaining;
 
     logger.info(
       `[PdfReaudit] Metrics calculated: ` +

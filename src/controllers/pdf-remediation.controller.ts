@@ -8,6 +8,7 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
@@ -385,18 +386,19 @@ export class PdfRemediationController {
 
         logger.info(`[PDF Remediation] Saved remediated PDF to ${remediatedFileUrl}`);
 
-        // Convert to plain JSON to ensure compatibility with Prisma Json type
-        const remediationResultJson = JSON.parse(JSON.stringify(sanitizedResult));
+        // Prisma handles JSON serialization automatically for JSONB columns
 
         // Update job output with remediated file URL
+        // Type assertion needed because Prisma's InputJsonValue is strict,
+        // but the data is valid JSON that Prisma will serialize correctly
         await prisma.job.update({
           where: { id: jobId },
           data: {
             output: {
               ...((job.output as Record<string, unknown> | null) ?? {}),
               remediatedFileUrl,
-              remediationResult: remediationResultJson,
-            },
+              remediationResult: sanitizedResult,
+            } as unknown as Prisma.InputJsonObject,
             updatedAt: new Date(),
           },
         });
@@ -761,22 +763,49 @@ export class PdfRemediationController {
         });
       }
 
-      // Update task status in remediation plan using task ID (not issue ID)
-      await pdfRemediationService.updateTaskStatus(jobId, task.id, {
-        status: 'COMPLETED',
-        notes: `Quick-fix applied: ${result.description}`,
-      });
-
-      // Update parent job output with remediated file URL
-      const currentOutput = (job.output as Record<string, unknown>) || {};
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          output: {
-            ...currentOutput,
-            remediatedFileUrl,
+      // Wrap both task status update and parent job update in a single transaction
+      // to ensure atomicity and data consistency
+      await prisma.$transaction(async (tx) => {
+        // Update task status in remediation plan
+        const planJob = await tx.job.findFirst({
+          where: {
+            type: 'BATCH_VALIDATION',
+            input: {
+              path: ['sourceJobId'],
+              equals: jobId,
+            },
           },
-        },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (planJob && planJob.output) {
+          const planData = planJob.output as unknown as typeof plan;
+          const taskIndex = planData.tasks.findIndex(t => t.id === task.id);
+
+          if (taskIndex !== -1) {
+            planData.tasks[taskIndex].status = 'COMPLETED';
+
+            await tx.job.update({
+              where: { id: planJob.id },
+              data: {
+                output: JSON.parse(JSON.stringify(planData)),
+                updatedAt: new Date(),
+              },
+            });
+          }
+        }
+
+        // Update parent job output with remediated file URL
+        const currentOutput = (job.output as Record<string, unknown>) || {};
+        await tx.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...currentOutput,
+              remediatedFileUrl,
+            },
+          },
+        });
       });
 
       logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}, task ${task.id}`, { result });
@@ -1099,14 +1128,16 @@ export class PdfRemediationController {
       );
 
       // Update job output with comparison data
+      // Type assertion needed because Prisma's InputJsonValue is strict,
+      // but the data is valid JSON that Prisma will serialize correctly
       await prisma.job.update({
         where: { id: jobId },
         data: {
           output: {
             ...((job.output as Record<string, unknown> | null) ?? {}),
-            reauditComparison: JSON.parse(JSON.stringify(comparisonResult)),
+            reauditComparison: comparisonResult,
             lastReauditAt: new Date().toISOString(),
-          },
+          } as unknown as Prisma.InputJsonObject,
           updatedAt: new Date(),
         },
       });

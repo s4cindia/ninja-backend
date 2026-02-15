@@ -17,6 +17,12 @@ import {
   previewFixSchema,
   quickFixRequestSchema,
 } from '../schemas/pdf-remediation.schemas';
+import type { AuthenticatedRequest } from '../types/authenticated-request';
+
+/** Request with multer file upload */
+interface AuthenticatedRequestWithFile extends AuthenticatedRequest {
+  file?: Express.Multer.File;
+}
 
 const router = Router();
 
@@ -171,7 +177,7 @@ router.post(
   authenticate,
   authorizeJob,
   upload.single('file'),
-  (req, res) => pdfRemediationController.reauditPdf(req as any, res)
+  (req, res) => pdfRemediationController.reauditPdf(req as AuthenticatedRequestWithFile, res)
 );
 
 export default router;
