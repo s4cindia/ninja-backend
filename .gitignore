@@ -145,6 +145,15 @@ prompts/
 IMPLEMENTATION_SUMMARY.md
 tmp/
 
+# Debug/test scripts in root (should use /scripts/debug/ instead)
+/check-*.js
+/test-*.js
+/debug-*.js
+/query.js
+/verify-*.js
+/reset-*.js
+/create-test-*.js
+
 # EPUB storage (persistent)
 data/epub-storage/*
 !data/epub-storage/.gitkeep

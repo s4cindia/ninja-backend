@@ -371,7 +371,8 @@ export class PdfRemediationController {
       );
 
       // Sanitize result by removing Buffer and converting to plain JSON
-      const { remediatedPdfBuffer: _remediatedPdfBuffer, ...sanitizedResult } = result;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { remediatedPdfBuffer: _buffer, ...sanitizedResult } = result;
 
       // If successful and we have a remediated PDF, save it to storage
       if (result.success && result.remediatedPdfBuffer) {

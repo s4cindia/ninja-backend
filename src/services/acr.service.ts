@@ -279,7 +279,7 @@ export class AcrService {
       level: c.level,
       confidence: c.confidence,
       status: c.aiStatus,
-      evidence: c.evidence as any,
+      evidence: c.evidence as Record<string, unknown> | null,
       conformanceLevel: c.conformanceLevel,
       remarks: c.reviewerNotes,
       reviewedAt: c.reviewedAt,
@@ -344,7 +344,7 @@ export class AcrService {
       level: c.level,
       confidence: c.confidence,
       status: c.aiStatus,
-      evidence: c.evidence as any,
+      evidence: c.evidence as Record<string, unknown> | null,
       conformanceLevel: c.conformanceLevel,
       remarks: c.reviewerNotes,
       reviewedAt: c.reviewedAt,
@@ -600,7 +600,7 @@ export class AcrService {
             affectedFiles: issue.filePath ? [issue.filePath] : [],
             issueCount: 1,
           })),
-          affectedFiles: relatedIssues.map((i: any) => i.filePath).filter(Boolean),
+          affectedFiles: relatedIssues.map((i: AuditIssue) => i.filePath).filter(Boolean),
           issueCount: relatedIssues.length,
         },
       };
@@ -615,7 +615,7 @@ export class AcrService {
     };
   }
 
-  private findRelatedAuditIssues(criterion: Criterion, auditIssues: any[]) {
+  private findRelatedAuditIssues(criterion: Criterion, auditIssues: AuditIssue[]) {
     const related = [];
 
     for (const issue of auditIssues) {
@@ -627,7 +627,7 @@ export class AcrService {
     return related;
   }
 
-  private isIssueRelatedToCriterion(issue: any, criterion: Criterion) {
+  private isIssueRelatedToCriterion(issue: AuditIssue, criterion: Criterion) {
     const issueCode = issue.code?.toUpperCase() || '';
     const criterionNumber = criterion.number;
 
@@ -658,7 +658,7 @@ export class AcrService {
     return false;
   }
 
-  private generateEvidenceDescription(issues: any[]): string {
+  private generateEvidenceDescription(issues: AuditIssue[]): string {
     if (issues.length === 1) {
       return issues[0].message;
     }
@@ -679,7 +679,7 @@ export class AcrService {
     const criterionNumber = criterion.number;
 
     if (['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.2.6', '1.2.7', '1.2.8', '1.2.9'].includes(criterionNumber)) {
-      const hasMedia = auditResults.manifest?.some((item: any) =>
+      const hasMedia = auditResults.manifest?.some((item: ManifestEntry) =>
         item.mediaType?.includes('audio') || item.mediaType?.includes('video')
       );
       return !hasMedia;
@@ -747,7 +747,7 @@ export class AcrService {
       }
     }
 
-    const input = job.input as any;
+    const input = job.input as { originalName?: string; fileName?: string } | null;
     const fileName = input?.originalName || input?.fileName || 'Unknown Document';
 
     return {

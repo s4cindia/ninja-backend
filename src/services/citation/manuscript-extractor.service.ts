@@ -84,9 +84,10 @@ export class ManuscriptExtractorService {
         wordCount,
         paragraphCount,
       };
-    } catch (error: any) {
-      logger.error(`[ManuscriptExtractor] Extraction failed: ${error.message}`);
-      throw new Error(`Failed to extract manuscript content: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[ManuscriptExtractor] Extraction failed: ${errorMessage}`);
+      throw new Error(`Failed to extract manuscript content: ${errorMessage}`);
     }
   }
 

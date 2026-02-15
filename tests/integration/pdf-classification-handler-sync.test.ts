@@ -3,6 +3,7 @@
  *
  * Ensures that AUTO_FIXABLE codes have registered handlers and vice versa
  */
+/* eslint-disable @typescript-eslint/no-explicit-any, no-console */
 
 import { describe, it, expect } from 'vitest';
 import { AUTO_FIXABLE_CODES, QUICK_FIXABLE_CODES, MANUAL_CODES } from '../../src/constants/pdf-fix-classification';

@@ -196,7 +196,7 @@ class PdfRemediationService {
     plan.manualFixCount = pendingManual;
 
     // Add completed count for display
-    (plan as any).completedAutoFixCount = completedAutoFixable;
+    (plan as { completedAutoFixCount?: number }).completedAutoFixCount = completedAutoFixable;
 
     logger.info(
       `[PDF Remediation] Retrieved plan with ${plan.totalIssues} tasks (${pendingAutoFixable} auto-fixable, ${completedAutoFixable} completed)`

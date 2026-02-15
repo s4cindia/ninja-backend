@@ -15,7 +15,7 @@ export interface ReferenceStyleUpdate {
 
 export interface ReferenceDbFields {
   id: string;
-  authors: any;
+  authors: string[] | { firstName?: string; lastName: string }[];
   year?: string | null;
   title: string;
   journalName?: string | null;
@@ -35,7 +35,7 @@ class ReferenceStyleUpdaterService {
   verifyConversionData(
     dbReferences: Array<{
       id: string;
-      authors: any;
+      authors: string[] | { firstName?: string; lastName: string }[];
       formattedApa: string | null;
       sortKey: string;
     }>

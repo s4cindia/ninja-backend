@@ -13,7 +13,7 @@ import {
   mapToCitationStyle,
   mapToSectionContext,
 } from './citation.types';
-import { styleRulesService as _styleRulesService } from './style-rules.service';
+// styleRulesService reserved for future use
 
 const STYLE_CODE_MAP: Record<string, { code: string; name: string }> = {
   'numeric-bracket': { code: 'vancouver', name: 'Vancouver' },

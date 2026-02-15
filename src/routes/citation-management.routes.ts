@@ -21,7 +21,8 @@ const uploadRateLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Use user ID if authenticated, otherwise IP
-    return (req as any).user?.id || req.ip || 'unknown';
+    const userReq = req as Request & { user?: { id: string } };
+    return userReq.user?.id || req.ip || 'unknown';
   }
 });
 

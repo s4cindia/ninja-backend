@@ -76,7 +76,7 @@ export class ComparisonService {
       pages: Math.ceil(totalChanges / limit),
     };
 
-    const input = job.input as Record<string, any>;
+    const input = job.input as Record<string, unknown>;
     const fileName = input?.fileName || input?.filename || 'Unknown';
 
     return {
@@ -168,7 +168,7 @@ export class ComparisonService {
       select: { input: true },
     });
 
-    const input = (job?.input as Record<string, any>) || {};
+    const input = (job?.input as Record<string, unknown>) || {};
     const fileName = input?.fileName || input?.filename || 'Unknown';
 
     return {

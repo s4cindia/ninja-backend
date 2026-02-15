@@ -505,7 +505,7 @@ class RemediationService {
 
         // Update corresponding Issue record status to REMEDIATED
         if (status === 'completed' && task.issueCode) {
-          const planInput = planJob.input as any;
+          const planInput = planJob.input as { sourceJobId?: string } | null;
           const sourceJobId = planInput?.sourceJobId;
           
           if (sourceJobId && tx.validationResult) {

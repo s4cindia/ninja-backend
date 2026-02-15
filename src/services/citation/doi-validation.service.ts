@@ -67,11 +67,12 @@ class DOIValidationService {
         doi: cleanDOI,
         metadata
       };
-    } catch (error: any) {
-      logger.error(`[DOI Validation] Failed to validate DOI ${doi}:`, error.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[DOI Validation] Failed to validate DOI ${doi}:`, errorMessage);
       return {
         valid: false,
-        error: error.message || 'Failed to validate DOI'
+        error: errorMessage || 'Failed to validate DOI'
       };
     }
   }
@@ -194,7 +195,7 @@ class DOIValidationService {
       const data = response.data.message;
 
       // Parse authors
-      const authors = (data.author || []).map((author: any) => {
+      const authors = (data.author || []).map((author: { family?: string; given?: string; name?: string }) => {
         if (author.family && author.given) {
           return `${author.family}, ${author.given.charAt(0)}.`;
         }
@@ -222,11 +223,13 @@ class DOIValidationService {
         url: data.URL || `https://doi.org/${data.DOI}`,
         type: data.type || 'journal-article'
       };
-    } catch (error: any) {
-      if (error.response?.status === 404) {
+    } catch (error: unknown) {
+      const axiosError = error as { response?: { status?: number }; message?: string };
+      if (axiosError.response?.status === 404) {
         throw new Error('DOI not found in CrossRef database');
       }
-      throw new Error(`Failed to fetch metadata: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to fetch metadata: ${errorMessage}`);
     }
   }
 

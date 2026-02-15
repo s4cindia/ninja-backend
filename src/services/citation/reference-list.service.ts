@@ -1,10 +1,11 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- This service has extensive dynamic typing for citation data structures */
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { claudeService } from '../ai/claude.service';
 import { editorialAi } from '../shared';
 import { crossRefService, EnrichedMetadata } from './crossref.service';
 import { styleRulesService } from './style-rules.service';
-import { citationParsingService as _citationParsingService } from './citation-parsing.service';
+// citationParsingService reserved for future use
 import { AppError } from '../../utils/app-error';
 
 export interface ReferenceEntry {
@@ -178,7 +179,7 @@ class ReferenceListService {
                 })));
               }
             }
-          } catch (_err) {
+          } catch {
             logger.warn(`[Reference List] CrossRef lookup failed for DOI ${aiEntry.doi}`);
           }
         }

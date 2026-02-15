@@ -196,6 +196,7 @@ class ImageExtractorService {
                       imageInfo.dimensions.width >= options.minWidth &&
                       imageInfo.dimensions.height >= options.minHeight) {
                     
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- format comparison requires any cast
                     if (!options.formats || options.formats.includes(imageInfo.format as any)) {
                       images.push(imageInfo);
                     }
@@ -413,6 +414,7 @@ class ImageExtractorService {
   ): string | undefined {
     if (!k) return undefined;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
     const resolved = parsedPdf.pdfLibDoc.context.lookup(k as any);
 
     if (resolved instanceof PDFDict) {
@@ -420,7 +422,9 @@ class ImageExtractorService {
       if (type?.toString() === '/OBJR') {
         const pg = resolved.get(PDFName.of('Pg'));
         if (targetPageRef && pg) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
           const pgResolved = parsedPdf.pdfLibDoc.context.lookup(pg as any);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
           if (pgResolved !== parsedPdf.pdfLibDoc.context.lookup(targetPageRef as any)) {
             return undefined;
           }
@@ -505,11 +509,13 @@ class ImageExtractorService {
   ): void {
     if (!kids) return;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
     const resolved = parsedPdf.pdfLibDoc.context.lookup(kids as any);
 
     if (resolved instanceof PDFArray) {
       for (let i = 0; i < resolved.size(); i++) {
         const kid = resolved.get(i);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
         const kidResolved = parsedPdf.pdfLibDoc.context.lookup(kid as any);
         if (kidResolved instanceof PDFDict) {
           this.traverseStructureTree(kidResolved, parsedPdf, targetPageRef, results);

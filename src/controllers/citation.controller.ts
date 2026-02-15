@@ -181,14 +181,15 @@ export class CitationController {
       });
 
       logger.info(`[CitationController] ✓ Job ${jobId} completed in ${processingTime}s`);
-    } catch (error: any) {
-      logger.error(`[CitationController] Job ${jobId} failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[CitationController] Job ${jobId} failed: ${errorMessage}`);
 
       await prisma.citationJob.update({
         where: { id: jobId },
         data: {
           status: 'FAILED',
-          errorMessage: error.message,
+          errorMessage,
         },
       });
     }
@@ -420,8 +421,8 @@ export class CitationController {
         originalText: ref.originalText,
         convertedText: styleNormalizerService.convertToStyle(
           ref.originalText,
-          ref.metadata as any,
-          targetStyle as any
+          ref.metadata as Record<string, unknown>,
+          targetStyle as string
         ),
       }));
 

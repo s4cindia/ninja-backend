@@ -1,4 +1,4 @@
-import { logger as _logger } from '../../lib/logger';
+// logger available for future debugging
 
 export interface StyleRule {
   id: string;

@@ -216,7 +216,6 @@ export class DocumentParser {
     const chapters: DocumentStructure['chapters'] = [];
     const headings: DocumentStructure['headings'] = [];
     let currentOffset = 0;
-    let _paragraphIndex = 0;
 
     for (const item of spineItems) {
       try {

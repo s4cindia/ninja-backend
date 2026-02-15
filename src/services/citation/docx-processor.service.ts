@@ -7,7 +7,7 @@
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { logger } from '../../lib/logger';
-import { InTextCitation as _InTextCitation } from './ai-citation-detector.service';
+// InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
 export interface DOCXContent {
@@ -69,9 +69,10 @@ class DOCXProcessorService {
         html: htmlResult.value,
         rawBuffer: buffer
       };
-    } catch (error: any) {
-      logger.error('[DOCX Processor] Failed to extract text:', error.message);
-      throw new Error(`DOCX extraction failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('[DOCX Processor] Failed to extract text:', errorMessage);
+      throw new Error(`DOCX extraction failed: ${errorMessage}`);
     }
   }
 
@@ -349,8 +350,10 @@ class DOCXProcessorService {
       const exportType = acceptChanges ? 'clean export' : 'Track Changes';
       logger.info(`[DOCX Processor] Complete: ${summary.totalCitations} citations (${exportType})`);
       return { buffer: modifiedBuffer, summary };
-    } catch (error: any) {
-      logger.error(`[DOCX Processor] Failed: ${error.message} ${error.stack}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : '';
+      logger.error(`[DOCX Processor] Failed: ${errorMessage} ${errorStack}`);
       throw error;
     }
   }
@@ -802,8 +805,9 @@ class DOCXProcessorService {
 
       logger.info(`[DOCX Processor] Selective update complete: ${deleted} deleted, ${edited} edited`);
       return { xml: updatedXML, deleted, edited, nextRevisionId: revisionId };
-    } catch (error: any) {
-      logger.error(`[DOCX Processor] Selective reference update failed: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[DOCX Processor] Selective reference update failed: ${errorMessage}`);
       return { xml: referencesXML, deleted: 0, edited: 0, nextRevisionId: revisionId };
     }
   }
@@ -1173,8 +1177,6 @@ class DOCXProcessorService {
             { pattern: /(<w:t[^>]*>)\s*\[(\d+)\]\s*/, format: 'bracket' },
           ];
 
-          let _numberChanged = false;
-
           for (const { pattern, format } of numberPatterns) {
             const match = updatedPara.match(pattern);
             if (match) {
@@ -1214,7 +1216,7 @@ class DOCXProcessorService {
                     updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
                   }
                 }
-                _numberChanged = true;
+                // Number was successfully changed
               } else if (!acceptChanges && item.isSwapped && item.swappedWith) {
                 // Track Changes only: Number stayed the same BUT position was swapped - highlight entire paragraph
                 updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
@@ -1275,8 +1277,9 @@ class DOCXProcessorService {
         swapped: swappedPairs,
         nextRevisionId: revisionId
       };
-    } catch (error: any) {
-      logger.error('[DOCX Processor] Failed to update references section:', error.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('[DOCX Processor] Failed to update references section:', errorMessage);
       return { xml: referencesXML, reordered: 0, deleted: 0, swapped: [], nextRevisionId: revisionId };
     }
   }
@@ -1329,7 +1332,6 @@ class DOCXProcessorService {
 
     // Simplified approach: Replace all text content after number with Track Changes
     // Find position of content in the XML
-    let _modified = false;
     let result = paragraphXml;
 
     // Find text runs with content
@@ -1369,10 +1371,6 @@ class DOCXProcessorService {
     if (contentRuns.length === 0) {
       return paragraphXml;
     }
-
-    // We'll replace from the first content run to the last
-    const _firstRun = contentRuns[0];
-    const _lastRun = contentRuns[contentRuns.length - 1];
 
     if (acceptChanges) {
       // CLEAN EXPORT: Replace content directly without Track Changes
@@ -1542,8 +1540,9 @@ class DOCXProcessorService {
 
       zip.file('word/document.xml', documentXML);
       return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-    } catch (error: any) {
-      logger.error('[DOCX Processor] Failed:', error.message);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('[DOCX Processor] Failed:', errorMessage);
       throw error;
     }
   }
@@ -1552,8 +1551,9 @@ class DOCXProcessorService {
     try {
       await this.extractText(buffer);
       return { valid: true };
-    } catch (error: any) {
-      return { valid: false, error: error.message };
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return { valid: false, error: errorMessage };
     }
   }
 

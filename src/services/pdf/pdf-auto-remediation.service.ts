@@ -216,7 +216,7 @@ class PdfAutoRemediationService {
         bufferSizeMB: (pdfBuffer.length / 1024 / 1024).toFixed(2),
       });
 
-      let doc: any;
+      let doc: Awaited<ReturnType<typeof pdfModifierService.loadPDF>>;
       try {
         doc = await pdfModifierService.loadPDF(pdfBuffer);
       } catch (loadError) {

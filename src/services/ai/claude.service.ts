@@ -4,7 +4,6 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { aiConfig as _aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
 
@@ -122,25 +121,27 @@ class ClaudeService {
         },
         finishReason: response.stop_reason || 'end_turn'
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('[Claude Service] Generation failed:', error);
 
-      if (error.status === 429) {
+      const apiError = error as { status?: number; message?: string };
+      if (apiError.status === 429) {
         throw AppError.tooManyRequests('Claude API rate limit exceeded');
       }
 
-      if (error.status === 401) {
+      if (apiError.status === 401) {
         throw AppError.internal('Invalid Claude API key');
       }
 
-      throw AppError.internal(`Claude API error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw AppError.internal(`Claude API error: ${errorMessage}`);
     }
   }
 
   /**
    * Generate JSON response with Claude
    */
-  async generateJSON<T = any>(
+  async generateJSON<T = unknown>(
     prompt: string,
     options: ClaudeOptions = {}
   ): Promise<T> {

@@ -6,6 +6,21 @@ export interface CrossRefAuthor {
   suffix?: string;
 }
 
+interface CrossRefWork {
+  author?: CrossRefAuthor[];
+  title?: string[];
+  published?: { 'date-parts'?: number[][] };
+  created?: { 'date-parts'?: number[][] };
+  'container-title'?: string[];
+  volume?: string;
+  issue?: string;
+  page?: string;
+  DOI?: string;
+  URL?: string;
+  publisher?: string;
+  type?: string;
+}
+
 export interface EnrichedMetadata {
   authors: { firstName?: string; lastName: string; suffix?: string }[];
   title: string;
@@ -43,7 +58,7 @@ class CrossRefService {
         return null;
       }
 
-      const data = await response.json() as { message: any };
+      const data = await response.json() as { message: CrossRefWork };
       const work = data.message;
 
       return this.mapCrossRefWork(work);
@@ -67,17 +82,17 @@ class CrossRefService {
         return [];
       }
 
-      const data = await response.json() as { message?: { items?: any[] } };
+      const data = await response.json() as { message?: { items?: CrossRefWork[] } };
       const works = data.message?.items || [];
 
-      return works.map((work: any) => this.mapCrossRefWork(work));
+      return works.map((work: CrossRefWork) => this.mapCrossRefWork(work));
     } catch (error) {
       logger.error('[CrossRef] Search error', error instanceof Error ? error : undefined);
       return [];
     }
   }
 
-  private mapCrossRefWork(work: any): EnrichedMetadata {
+  private mapCrossRefWork(work: CrossRefWork): EnrichedMetadata {
     const authors = (work.author || []).map((a: CrossRefAuthor) => ({
       firstName: a.given,
       lastName: a.family,
@@ -98,7 +113,7 @@ class CrossRefService {
       doi: work.DOI,
       url: work.URL || (work.DOI ? `https://doi.org/${work.DOI}` : undefined),
       publisher: work.publisher,
-      sourceType: this.mapWorkType(work.type),
+      sourceType: this.mapWorkType(work.type || ''),
       source: 'crossref',
       confidence: 0.95
     };

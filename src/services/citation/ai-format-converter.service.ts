@@ -423,7 +423,7 @@ Return ONLY a JSON array with NO additional text:
       logger.info(`[Format Converter] Original references count: ${references.length}`);
 
       // Map by index to ensure correct matching (AI should return refs in same order)
-      return converted.map((r: any, index: number) => {
+      return converted.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, index: number) => {
         // Use index-based matching first (most reliable)
         // Fall back to number-based if AI provides explicit numbers
         const originalRef = references[index] || references[(r.number || index + 1) - 1];
@@ -466,8 +466,9 @@ Return ONLY a JSON array with NO additional text:
           citedBy: originalRef?.citedBy || []
         };
       });
-    } catch (error: any) {
-      logger.error(`[Format Converter] Failed to parse converted references: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Format Converter] Failed to parse converted references: ${errorMessage}`);
       logger.error(`[Format Converter] Response text: ${response.text.substring(0, 500)}`);
       return references;
     }

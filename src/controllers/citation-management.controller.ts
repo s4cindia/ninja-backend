@@ -203,9 +203,10 @@ export class CitationManagementController {
   async getAnalysis(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
+      const { tenantId } = req.user!;
 
-      const document = await prisma.editorialDocument.findUnique({
-        where: { id: documentId },
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
         include: {
           citations: {
             include: {
@@ -357,12 +358,13 @@ export class CitationManagementController {
     try {
       const { documentId } = req.params;
       const { referenceId, newPosition, sortBy } = req.body;
+      const { tenantId } = req.user!;
 
       logger.info(`[Citation Management] Reordering references for ${documentId}`);
 
-      // Get current references and citations
-      const document = await prisma.editorialDocument.findUnique({
-        where: { id: documentId },
+      // Get current references and citations with tenant verification
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
         include: {
           citations: true,
           referenceListEntries: {
@@ -451,7 +453,7 @@ export class CitationManagementController {
         }
       }
 
-      logger.info(`[Citation Management] Reorder mapping: ${[...oldToNewNumber.entries()].map(([o, n]) => `${o}→${n}`).join(', ')}`);
+      logger.debug(`[Citation Management] Reorder mapping: ${[...oldToNewNumber.entries()].map(([o, n]) => `${o}→${n}`).join(', ')}`);
 
       // Update database - use transaction for better performance
       await prisma.$transaction(
@@ -622,10 +624,11 @@ export class CitationManagementController {
   async deleteReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId, referenceId } = req.params;
+      const { tenantId } = req.user!;
 
       logger.info(`[Citation Management] Deleting reference ${referenceId} from document ${documentId}`);
 
-      // Get the reference to delete with all references
+      // Get the reference to delete with all references and verify tenant ownership
       const referenceToDelete = await prisma.referenceListEntry.findUnique({
         where: { id: referenceId },
         include: { document: { include: {
@@ -635,6 +638,15 @@ export class CitationManagementController {
       });
 
       if (!referenceToDelete) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify tenant ownership
+      if (referenceToDelete.document.tenantId !== tenantId) {
         res.status(404).json({
           success: false,
           error: { code: 'NOT_FOUND', message: 'Reference not found' }
@@ -698,9 +710,9 @@ export class CitationManagementController {
       const allCitations = referenceToDelete.document.citations;
 
       // DEBUG: Log all citation types
-      logger.info(`[Citation Management] DEBUG: Total citations: ${allCitations.length}`);
+      logger.debug(`[Citation Management] Total citations: ${allCitations.length}`);
       allCitations.forEach((c, i) => {
-        logger.info(`[Citation Management] DEBUG: Citation[${i}]: type="${c.citationType}", rawText="${c.rawText}"`);
+        logger.debug(`[Citation Management] Citation[${i}]: type="${c.citationType}", rawText="${c.rawText}"`);
       });
 
       for (const citation of allCitations) {
@@ -717,9 +729,9 @@ export class CitationManagementController {
 
         if (!isNumericType && !hasNumericPattern) continue;
 
-        logger.info(`[Citation Management] DEBUG: Processing citation: type="${citation.citationType}", rawText="${citation.rawText}", isNumericType=${isNumericType}, hasNumericPattern=${hasNumericPattern}`);
+        logger.debug(`[Citation Management] Processing citation: type="${citation.citationType}", rawText="${citation.rawText}", isNumericType=${isNumericType}, hasNumericPattern=${hasNumericPattern}`);
         const newRawText = this.updateCitationNumbersWithDeletion(citation.rawText, oldToNewNumber);
-        logger.info(`[Citation Management] DEBUG: After update: "${citation.rawText}" -> "${newRawText}"`);
+        logger.debug(`[Citation Management] After update: "${citation.rawText}" -> "${newRawText}"`);
         if (newRawText !== citation.rawText) {
           citationUpdates.push({
             id: citation.id,
@@ -991,6 +1003,7 @@ export class CitationManagementController {
     try {
       const { documentId, referenceId } = req.params;
       const updates = req.body;
+      const { tenantId } = req.user!;
 
       logger.info(`[Citation Management] Editing reference ${referenceId} in document ${documentId}`);
       logger.info(`[Citation Management] Updates: ${JSON.stringify(updates)}`);
@@ -1008,6 +1021,15 @@ export class CitationManagementController {
       });
 
       if (!reference) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify tenant ownership
+      if (reference.document.tenantId !== tenantId) {
         res.status(404).json({
           success: false,
           error: { code: 'NOT_FOUND', message: 'Reference not found' }
@@ -1359,12 +1381,13 @@ export class CitationManagementController {
   async resequenceByAppearance(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
+      const { tenantId } = req.user!;
 
       logger.info(`[Citation Management] Resequencing references by appearance for ${documentId}`);
 
-      // Get document with citations and references
-      const document = await prisma.editorialDocument.findUnique({
-        where: { id: documentId },
+      // Get document with citations and references with tenant verification
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
         include: {
           citations: {
             orderBy: [
@@ -1410,12 +1433,8 @@ export class CitationManagementController {
         logger.info(`  Position ${tc.position}: reference number ${tc.num}`);
       }
 
-      // Log database citations for comparison
-      logger.info(`[Citation Management] Citations in database order:`);
-      for (let i = 0; i < document.citations.length; i++) {
-        const c = document.citations[i];
-        logger.info(`  [${i}] rawText="${c.rawText}", paragraphIndex=${c.paragraphIndex}, startOffset=${c.startOffset}, type=${c.citationType}`);
-      }
+      // Log database citations for comparison (debug only)
+      logger.debug(`[Citation Management] Citations in database order: ${document.citations.length} total`);
 
       // Use fullText order to determine first appearance of each reference number
       const numberFirstAppearance = new Map<number, { order: number; position: number }>();
@@ -1453,7 +1472,7 @@ export class CitationManagementController {
         oldToNewNumber.set(oldNum, newNum);
       });
 
-      logger.info(`[Citation Management] Number mapping: ${[...oldToNewNumber.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
+      logger.debug(`[Citation Management] Number mapping: ${[...oldToNewNumber.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
 
       // Reorder references: reference at old position N moves to new position based on mapping
       // Create array of references in their new order
@@ -1906,8 +1925,9 @@ export class CitationManagementController {
               afterText: ref.rawText
             });
           }
-        } catch (updateError: any) {
-          logger.error(`[Citation Management] Failed to update ref ${ref.id}: ${updateError.message}`);
+        } catch (updateError: unknown) {
+          const errorMessage = updateError instanceof Error ? updateError.message : 'Unknown error';
+          logger.error(`[Citation Management] Failed to update ref ${ref.id}: ${errorMessage}`);
         }
       }
 
@@ -1941,7 +1961,7 @@ export class CitationManagementController {
 
         // CRITICAL: Actually update the citation rawText in the database
         // Without this, the citations still show the old format
-        const citationUpdatePromises: Promise<any>[] = [];
+        const citationUpdatePromises: Promise<{ id: string; rawText: string }>[] = [];
         for (const conversion of result.citationConversions) {
           // Find all citations with the old text and update them
           const citationsToUpdate = document.citations.filter(c => c.rawText === conversion.oldText);
@@ -2329,7 +2349,7 @@ export class CitationManagementController {
 
       // Log the number mapping for debugging
       logger.info(`[Citation Management] === Final Number Mapping ===`);
-      logger.info(`[Citation Management] Number mapping: ${[...oldToNewNumberMap.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
+      logger.debug(`[Citation Management] Number mapping: ${[...oldToNewNumberMap.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
       logger.info(`[Citation Management] Deleted numbers: ${[...deletedNumbers].join(', ')}`);
 
       // Debug: Show which numbers need to change
@@ -2590,7 +2610,7 @@ export class CitationManagementController {
           for (const change of renumberChangesForChaining) {
             renumberMap.set(change.beforeText, change.afterText);
           }
-          logger.info(`[Citation Management] Using stored RENUMBER changes for chaining: ${[...renumberMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
+          logger.debug(`[Citation Management] Using stored RENUMBER changes for chaining: ${[...renumberMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
 
           // Chain: RESEQUENCE (original→oldDB) + RENUMBER (oldDB→newDB) = (original→newDB)
           const chainedChanges: Array<{ oldText: string; newText: string; changeType?: 'renumber' | 'style_conversion' | 'orphaned' }> = [];
@@ -2639,7 +2659,7 @@ export class CitationManagementController {
           }
 
           changedCitationsWithType = chainedChanges;
-          logger.info(`[Citation Management] Final chained changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+          logger.debug(`[Citation Management] Final chained changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
           logger.info(`[Citation Management] Used RENUMBER beforeTexts: ${[...usedRenumberBeforeTexts].join(', ')}`);
         } else {
           // No non-orphaned RENUMBER changes - use RESEQUENCE changes directly
@@ -2679,7 +2699,7 @@ export class CitationManagementController {
           }
 
           changedCitationsWithType = chainedChanges;
-          logger.info(`[Citation Management] Final RESEQUENCE-only changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+          logger.debug(`[Citation Management] Final RESEQUENCE-only changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
         }
 
         // SKIP dynamic changes path since we've handled all cases above
@@ -2690,7 +2710,7 @@ export class CitationManagementController {
           for (const change of changedCitationsWithType) {
             dynamicMap.set(change.oldText, change.newText);
           }
-          logger.info(`[Citation Management] Dynamic changes to chain: ${[...dynamicMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
+          logger.debug(`[Citation Management] Dynamic changes to chain: ${[...dynamicMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
 
           const chainedChanges: Array<{ oldText: string; newText: string; changeType?: 'renumber' | 'style_conversion' | 'orphaned' }> = [];
 
@@ -2729,7 +2749,7 @@ export class CitationManagementController {
           }
 
           changedCitationsWithType = chainedChanges;
-          logger.info(`[Citation Management] Final chained changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+          logger.debug(`[Citation Management] Final chained changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
         }
       }
 
@@ -3010,13 +3030,13 @@ export class CitationManagementController {
       }
 
       // DEBUG: Log what we're passing to the DOCX processor
-      logger.info(`[Citation Management] DEBUG: Calling replaceCitationsWithTrackChanges with:`);
-      logger.info(`[Citation Management] DEBUG: changedCitationsWithType (${changedCitationsWithType.length}):`);
+      logger.debug(`[Citation Management] Calling replaceCitationsWithTrackChanges with:`);
+      logger.debug(`[Citation Management] changedCitationsWithType (${changedCitationsWithType.length}):`);
       changedCitationsWithType.forEach((c, i) => {
-        logger.info(`[Citation Management] DEBUG:   [${i}] "${c.oldText}" → "${c.newText}" (${c.changeType})`);
+        logger.debug(`[Citation Management]   [${i}] "${c.oldText}" → "${c.newText}" (${c.changeType})`);
       });
-      logger.info(`[Citation Management] DEBUG: orphanedCitations (${orphanedCitations.length}): ${orphanedCitations.join(', ')}`);
-      logger.info(`[Citation Management] DEBUG: referencesToPass: ${referencesToPass ? referencesToPass.length + ' refs' : 'undefined'}`);
+      logger.debug(`[Citation Management] orphanedCitations (${orphanedCitations.length}): ${orphanedCitations.join(', ')}`);
+      logger.debug(`[Citation Management] referencesToPass: ${referencesToPass ? referencesToPass.length + ' refs' : 'undefined'}`);
 
       // Apply replacements with Track Changes enabled (or clean export if acceptChanges is true)
       const { buffer: modifiedBuffer, summary } = await docxProcessorService.replaceCitationsWithTrackChanges(
@@ -3119,7 +3139,7 @@ export class CitationManagementController {
         where: { documentId, changeType: 'REFERENCE_STYLE_CONVERSION', isReverted: false }
       });
 
-      logger.info(`[Citation Management] Preview - RESEQUENCE: ${storedResequenceChanges.length}, RENUMBER: ${storedRenumberChanges.length}, DELETE: ${storedReferenceDeleteChanges.length}, STYLE_CONVERSION: ${storedStyleConversionChanges.length}, REF_STYLE: ${storedReferenceStyleChanges.length}`);
+      logger.debug(`[Citation Management] Preview - RESEQUENCE: ${storedResequenceChanges.length}, RENUMBER: ${storedRenumberChanges.length}, DELETE: ${storedReferenceDeleteChanges.length}, STYLE_CONVERSION: ${storedStyleConversionChanges.length}, REF_STYLE: ${storedReferenceStyleChanges.length}`);
 
       // Use the SAME logic as export to compute changes
       // Step 1: Build oldToNewNumberMap from current citations (same as export)
@@ -3181,8 +3201,8 @@ export class CitationManagementController {
         }
       });
 
-      logger.info(`[Citation Management] Preview - oldToNewNumberMap: ${[...oldToNewNumberMap.entries()].map(([o, n]) => `${o}→${n}`).join(', ')}`);
-      logger.info(`[Citation Management] Preview - deletedNumbers: ${[...deletedNumbers].join(', ')}`);
+      logger.debug(`[Citation Management] Preview - oldToNewNumberMap: ${[...oldToNewNumberMap.entries()].map(([o, n]) => `${o}→${n}`).join(', ')}`);
+      logger.debug(`[Citation Management] Preview - deletedNumbers: ${[...deletedNumbers].join(', ')}`);
 
       // Step 2: Build dynamic changes (current text changes based on number mapping)
       let changedCitationsWithType: Array<{ oldText: string; newText: string; changeType: string }> = [];
@@ -3225,7 +3245,7 @@ export class CitationManagementController {
         }
       }
 
-      logger.info(`[Citation Management] Preview - Dynamic changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+      logger.debug(`[Citation Management] Preview - Dynamic changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
 
       // Step 3: Use stored RENUMBER changes (authoritative) instead of dynamic changes
       // IMPORTANT: After deletion, citation rawText has ALREADY been updated in database,
@@ -3243,14 +3263,14 @@ export class CitationManagementController {
       // If we have RENUMBER records (from deletion/reorder), use them directly
       // This takes precedence over dynamic changes which are computed from already-updated data
       if (renumberChangesForChaining.length > 0) {
-        logger.info(`[Citation Management] Preview - Using stored RENUMBER records (${renumberChangesForChaining.length} non-orphaned)`);
+        logger.debug(`[Citation Management] Preview - Using stored RENUMBER records (${renumberChangesForChaining.length} non-orphaned)`);
 
         // Build map from RENUMBER records (DON'T add to usedRenumberBeforeTexts yet - only when actually used)
         const renumberMap = new Map<string, string>();
         for (const change of renumberChangesForChaining) {
           renumberMap.set(change.beforeText, change.afterText);
         }
-        logger.info(`[Citation Management] Preview - RENUMBER map: ${[...renumberMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
+        logger.debug(`[Citation Management] Preview - RENUMBER map: ${[...renumberMap.entries()].map(([o, n]) => `"${o}"→"${n}"`).join(', ')}`);
 
         // If we have RESEQUENCE changes, chain them with RENUMBER
         if (storedResequenceChanges.length > 0) {
@@ -3266,13 +3286,13 @@ export class CitationManagementController {
               usedRenumberBeforeTexts.add(oldDbText);
               if (originalText !== newDbText) {
                 chainedChanges.push({ oldText: originalText, newText: newDbText, changeType: 'renumber' });
-                logger.info(`[Citation Management] Preview - Chained: "${originalText}" → "${oldDbText}" → "${newDbText}"`);
+                logger.debug(`[Citation Management] Preview - Chained: "${originalText}" → "${oldDbText}" → "${newDbText}"`);
               }
             } else {
               // No RENUMBER for this, use RESEQUENCE directly
               if (originalText !== oldDbText) {
                 chainedChanges.push({ oldText: originalText, newText: oldDbText, changeType: 'renumber' });
-                logger.info(`[Citation Management] Preview - RESEQUENCE only: "${originalText}" → "${oldDbText}"`);
+                logger.debug(`[Citation Management] Preview - RESEQUENCE only: "${originalText}" → "${oldDbText}"`);
               }
             }
           }
@@ -3282,7 +3302,7 @@ export class CitationManagementController {
             if (!usedRenumberBeforeTexts.has(oldText)) {
               if (oldText !== newText) {
                 chainedChanges.push({ oldText, newText, changeType: 'renumber' });
-                logger.info(`[Citation Management] Preview - RENUMBER only: "${oldText}" → "${newText}"`);
+                logger.debug(`[Citation Management] Preview - RENUMBER only: "${oldText}" → "${newText}"`);
               }
               usedRenumberBeforeTexts.add(oldText);
             }
@@ -3296,13 +3316,13 @@ export class CitationManagementController {
             if (oldText !== newText) {
               renumberChanges.push({ oldText, newText, changeType: 'renumber' });
               usedRenumberBeforeTexts.add(oldText);
-              logger.info(`[Citation Management] Preview - RENUMBER (direct): "${oldText}" → "${newText}"`);
+              logger.debug(`[Citation Management] Preview - RENUMBER (direct): "${oldText}" → "${newText}"`);
             }
           }
           changedCitationsWithType = renumberChanges;
         }
 
-        logger.info(`[Citation Management] Preview - Changes from RENUMBER: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+        logger.debug(`[Citation Management] Preview - Changes from RENUMBER: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
       } else if (storedResequenceChanges.length > 0) {
         // RESEQUENCE changes only (no RENUMBER) - use RESEQUENCE directly
         // Check which RESEQUENCE entries are still valid in current DB
@@ -3310,7 +3330,7 @@ export class CitationManagementController {
         document.citations.forEach(c => {
           if (c.rawText) currentDbTexts.add(c.rawText);
         });
-        logger.info(`[Citation Management] Preview - Current DB texts: ${[...currentDbTexts].join(', ')}`);
+        logger.debug(`[Citation Management] Preview - Current DB texts: ${[...currentDbTexts].join(', ')}`);
 
         const chainedChanges: Array<{ oldText: string; newText: string; changeType: string }> = [];
 
@@ -3322,19 +3342,19 @@ export class CitationManagementController {
             // Still valid
             if (originalText !== dbTextAtUpload) {
               chainedChanges.push({ oldText: originalText, newText: dbTextAtUpload, changeType: 'renumber' });
-              logger.info(`[Citation Management] Preview - RESEQUENCE (valid): "${originalText}" → "${dbTextAtUpload}"`);
+              logger.debug(`[Citation Management] Preview - RESEQUENCE (valid): "${originalText}" → "${dbTextAtUpload}"`);
             }
           } else {
             // Orphaned - add to orphanedCitations
             if (!orphanedCitations.includes(originalText)) {
               orphanedCitations.push(originalText);
-              logger.info(`[Citation Management] Preview - RESEQUENCE (orphaned): "${originalText}" → "${dbTextAtUpload}" - marking as orphaned`);
+              logger.debug(`[Citation Management] Preview - RESEQUENCE (orphaned): "${originalText}" → "${dbTextAtUpload}" - marking as orphaned`);
             }
           }
         }
 
         changedCitationsWithType = chainedChanges;
-        logger.info(`[Citation Management] Preview - Final RESEQUENCE-only changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+        logger.debug(`[Citation Management] Preview - Final RESEQUENCE-only changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
       }
 
       // Step 4: Handle orphaned citations from RENUMBER and DELETE changes
@@ -3353,12 +3373,12 @@ export class CitationManagementController {
           validFinalRefs.add(c.rawText);
         }
       });
-      logger.info(`[Citation Management] Preview - Valid final refs: ${[...validFinalRefs].join(', ')}`);
+      logger.debug(`[Citation Management] Preview - Valid final refs: ${[...validFinalRefs].join(', ')}`);
 
       for (const change of storedRenumberChanges) {
         // Skip already-chained RENUMBER changes (same as export)
         if (usedRenumberBeforeTexts.has(change.beforeText)) {
-          logger.info(`[Citation Management] Preview - Skipping already-chained RENUMBER: "${change.beforeText}" → "${change.afterText}"`);
+          logger.debug(`[Citation Management] Preview - Skipping already-chained RENUMBER: "${change.beforeText}" → "${change.afterText}"`);
           continue;
         }
 
@@ -3368,11 +3388,11 @@ export class CitationManagementController {
           const reseqEntry = storedResequenceChanges.find(r => r.afterText === change.beforeText);
           const originalText = reseqEntry ? reseqEntry.beforeText : change.beforeText;
 
-          logger.info(`[Citation Management] Preview - Orphan RENUMBER: DB "${change.beforeText}" → "${change.afterText}", original DOCX: "${originalText}"`);
+          logger.debug(`[Citation Management] Preview - Orphan RENUMBER: DB "${change.beforeText}" → "${change.afterText}", original DOCX: "${originalText}"`);
 
           // Check if this is a valid current DB text (prevent orphan collision)
           if (validFinalRefs.has(change.beforeText) && !reseqEntry) {
-            logger.info(`[Citation Management] Preview - Skipping orphan for valid current ref: "${change.beforeText}"`);
+            logger.debug(`[Citation Management] Preview - Skipping orphan for valid current ref: "${change.beforeText}"`);
             continue;
           }
 
@@ -3383,12 +3403,12 @@ export class CitationManagementController {
           );
           if (existingIdx >= 0) {
             changedCitationsWithType.splice(existingIdx, 1);
-            logger.info(`[Citation Management] Preview - Removed stale entry: "${originalText}" → "${change.beforeText}"`);
+            logger.debug(`[Citation Management] Preview - Removed stale entry: "${originalText}" → "${change.beforeText}"`);
           }
 
           if (!orphanedCitations.includes(originalText)) {
             orphanedCitations.push(originalText);
-            logger.info(`[Citation Management] Preview - Added orphan: "${originalText}"`);
+            logger.debug(`[Citation Management] Preview - Added orphan: "${originalText}"`);
           }
         } else {
           // Regular renumber change (not orphaned)
@@ -3397,7 +3417,7 @@ export class CitationManagementController {
           if (existingIdx >= 0) {
             // Chain the changes: original → current → final
             const existing = changedCitationsWithType[existingIdx];
-            logger.info(`[Citation Management] Preview - Chaining non-orphan RENUMBER: "${existing.oldText}" → "${change.beforeText}" → "${change.afterText}"`);
+            logger.debug(`[Citation Management] Preview - Chaining non-orphan RENUMBER: "${existing.oldText}" → "${change.beforeText}" → "${change.afterText}"`);
             existing.newText = change.afterText;
           } else {
             // No existing change, add as new entry
@@ -3407,7 +3427,7 @@ export class CitationManagementController {
                 newText: change.afterText,
                 changeType: 'renumber'
               });
-              logger.info(`[Citation Management] Preview - Adding non-chained RENUMBER: "${change.beforeText}" → "${change.afterText}"`);
+              logger.debug(`[Citation Management] Preview - Adding non-chained RENUMBER: "${change.beforeText}" → "${change.afterText}"`);
             }
           }
         }
@@ -3424,8 +3444,8 @@ export class CitationManagementController {
       // Filter out no-op changes
       changedCitationsWithType = changedCitationsWithType.filter(c => c.oldText !== c.newText);
 
-      logger.info(`[Citation Management] Preview - Final changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
-      logger.info(`[Citation Management] Preview - Orphaned: ${orphanedCitations.join(', ')}`);
+      logger.debug(`[Citation Management] Preview - Final changes: ${changedCitationsWithType.map(c => `"${c.oldText}"→"${c.newText}"`).join(', ')}`);
+      logger.debug(`[Citation Management] Preview - Orphaned: ${orphanedCitations.join(', ')}`);
 
       // Build preview data
       const citationPreviews: Array<{
@@ -3458,7 +3478,7 @@ export class CitationManagementController {
           isOrphaned: false,
           referenceNumber: citation?.referenceNumber || null
         });
-        logger.info(`[Citation Management] Preview - Style conversion: "${styleChange.beforeText}" → "${styleChange.afterText}"`);
+        logger.debug(`[Citation Management] Preview - Style conversion: "${styleChange.beforeText}" → "${styleChange.afterText}"`);
       }
 
       // Add changed citations (renumber changes) - only for citations not already processed by style conversion
@@ -3574,7 +3594,7 @@ export class CitationManagementController {
           originalText = styleChange.beforeText;
           convertedText = styleChange.afterText;
           hasStyleChange = true;
-          logger.info(`[Citation Management] Preview - Ref ${ref.id} has style change: "${originalText.substring(0, 50)}..." → "${convertedText.substring(0, 50)}..."`);
+          logger.debug(`[Citation Management] Preview - Ref ${ref.id} has style change: "${originalText.substring(0, 50)}..." → "${convertedText.substring(0, 50)}..."`);
         } else {
           // No stored change - use formattedApa or construct from components
           const componentText = `${authors.join(', ')} (${ref.year || 'n.d.'}). ${ref.title || 'Untitled'}`;
@@ -3677,7 +3697,8 @@ export class CitationManagementController {
         document.referenceListEntries.some(ref => ref.formattedApa);
 
       // Try to read the original DOCX and extract reference section
-      let docxInfo: any = { available: false };
+      interface DocxRef { paraNum: number; firstAuthor: string; text: string }
+      let docxInfo: { available: boolean; error?: string; refSectionFound?: boolean; docxReferences?: DocxRef[]; rawParagraphs?: string[] } = { available: false };
       try {
         const fs = await import('fs/promises');
         const path = await import('path');
@@ -3772,8 +3793,9 @@ export class CitationManagementController {
             rawParagraphs // Show raw text of all paragraphs in References section for debugging
           };
         }
-      } catch (docxError: any) {
-        docxInfo = { available: false, error: docxError.message };
+      } catch (docxError: unknown) {
+        const errorMessage = docxError instanceof Error ? docxError.message : 'Unknown error';
+        docxInfo = { available: false, error: errorMessage };
       }
 
       // Build matching preview - how would refs match?
@@ -3784,9 +3806,9 @@ export class CitationManagementController {
           : 'UNKNOWN';
 
         // Try to find matching DOCX reference
-        let matchedDocxRef = null;
+        let matchedDocxRef: DocxRef | undefined = undefined;
         if (docxInfo.available && docxInfo.docxReferences) {
-          matchedDocxRef = docxInfo.docxReferences.find((dr: any) => {
+          matchedDocxRef = docxInfo.docxReferences.find((dr) => {
             if (!dr.firstAuthor) return false;
             return dr.firstAuthor.toLowerCase() === dbAuthorLastName.toLowerCase();
           });
@@ -3826,9 +3848,9 @@ export class CitationManagementController {
             allRefsMatched: matchingPreview.every(m => m.matchStatus === 'MATCHED'),
             unmatchedDbRefs: matchingPreview.filter(m => m.matchStatus === 'NO_MATCH').map(m => m.dbAuthor),
             unmatchedDocxRefs: docxInfo.available && docxInfo.docxReferences
-              ? docxInfo.docxReferences.filter((dr: any) =>
+              ? docxInfo.docxReferences.filter((dr) =>
                   !matchingPreview.some(m => m.matchedDocxPara === dr.paraNum)
-                ).map((dr: any) => `Para ${dr.paraNum}: ${dr.firstAuthor}`)
+                ).map((dr) => `Para ${dr.paraNum}: ${dr.firstAuthor}`)
               : []
           }
         }
@@ -3959,13 +3981,14 @@ export class CitationManagementController {
           });
           saveResults.push({ id: ref.id, success: true });
           logger.info(`[Debug Style Conversion] Saved formattedApa for ${ref.id}`);
-        } catch (saveError: any) {
+        } catch (saveError: unknown) {
+          const errorMessage = saveError instanceof Error ? saveError.message : 'Unknown error';
           saveResults.push({
             id: ref.id,
             success: false,
-            error: saveError.message
+            error: errorMessage
           });
-          logger.error(`[Debug Style Conversion] Failed to save ${ref.id}: ${saveError.message}`);
+          logger.error(`[Debug Style Conversion] Failed to save ${ref.id}: ${errorMessage}`);
         }
       }
 
@@ -4025,8 +4048,9 @@ export class CitationManagementController {
           }
         }
       });
-    } catch (error: any) {
-      logger.error(`[Debug Style Conversion] Error: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Debug Style Conversion] Error: ${errorMessage}`);
       next(error);
     }
   }
@@ -4221,7 +4245,7 @@ export class CitationManagementController {
         }
       }
 
-      logger.info(`[Citation Management] Resequence mapping: ${[...oldToNewNumber.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
+      logger.debug(`[Citation Management] Resequence mapping: ${[...oldToNewNumber.entries()].sort((a, b) => a[0] - b[0]).map(([o, n]) => `${o}→${n}`).join(', ')}`);
 
       // ============================================
       // CREATE CITATION CHANGE RECORDS FOR EXPORT
@@ -4628,7 +4652,6 @@ export class CitationManagementController {
 
         // Match superscript Unicode characters
         const oldSuperscript = oldNumToSuperscript(oldNum);
-        const _newSuperscript = numToSuperscriptHtml(newNum);
         updatedHtml = updatedHtml.replace(new RegExp(oldSuperscript, 'g'), `${placeholder}SUP${newNum}`);
 
         // Match <sup>N</sup> HTML tags
@@ -4982,13 +5005,12 @@ export class CitationManagementController {
    * Returns a mapping of AI reference number to correct document position
    */
   private matchReferencesToHtmlOrder(
-    aiRefs: Array<{ number?: number; rawText?: string; components?: any }>,
+    aiRefs: Array<{ number?: number; rawText?: string; components?: { authors?: string[]; year?: string; title?: string } }>,
     htmlRefs: Array<{ position: number; text: string }>
   ): Map<number, number> {
     const mapping = new Map<number, number>();
 
     for (const aiRef of aiRefs) {
-      const _aiText = aiRef.rawText || '';
       const aiAuthors = aiRef.components?.authors || [];
       const aiYear = aiRef.components?.year || '';
       const aiTitle = aiRef.components?.title || '';

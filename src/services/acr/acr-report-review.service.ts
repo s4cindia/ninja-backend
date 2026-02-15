@@ -522,17 +522,6 @@ class AcrReportReviewService {
 
     if (!acrJob) return;
 
-    const applicableCriteria = acrJob.criteria.filter(c => !c.isNotApplicable);
-    const _naCriteria = acrJob.criteria.filter(c => c.isNotApplicable);
-
-    const _passedCriteria = applicableCriteria.filter(c =>
-      c.verificationStatus === 'verified_pass' || c.conformanceLevel === 'pass'
-    ).length;
-
-    const _failedCriteria = applicableCriteria.filter(c =>
-      c.verificationStatus === 'verified_fail' || c.conformanceLevel === 'fail'
-    ).length;
-
     await prisma.acrJob.update({
       where: { id: acrJobId },
       data: {

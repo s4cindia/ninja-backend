@@ -174,7 +174,7 @@ ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[trunc
         temperature: 0.1,
         maxTokens: 16384
       });
-      return citations.map((c: any, idx: number) => ({
+      return citations.map((c: { text?: string; paragraph?: number; startChar?: number; type?: string; format?: string; style?: string; confidence?: number }, idx: number) => ({
         id: `citation-${idx + 1}`,
         text: c.text,
         position: {
@@ -243,7 +243,7 @@ ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[trunc
         temperature: 0.1,
         maxTokens: 16384
       });
-      return refs.map((r: any, idx: number) => ({
+      return refs.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string }, idx: number) => ({
         id: `ref-${r.number || idx + 1}`,
         number: r.number || idx + 1,
         rawText: r.rawText || '',
@@ -453,7 +453,7 @@ Return ONLY the style name (one word).`;
       refTexts.get(normalized)!.push(ref);
     }
 
-    for (const [_text, refs] of refTexts) {
+    for (const refs of refTexts.values()) {
       if (refs.length > 1) {
         issues.push({
           type: 'duplicate_reference',

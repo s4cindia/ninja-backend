@@ -12,6 +12,12 @@ import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { pdfController } from '../controllers/pdf.controller';
 import { fileStorageService } from '../services/storage/file-storage.service';
 
+// Extended request type for authenticated routes with file
+interface AuthenticatedRequest extends Request {
+  user?: { id: string; tenantId: string };
+  file?: Express.Multer.File;
+}
+
 const router = Router();
 
 // Configure multer for PDF uploads
@@ -93,7 +99,7 @@ router.post(
         });
       }
 
-      return await pdfController.auditFromBuffer(req as any, res);
+      return await pdfController.auditFromBuffer(req as AuthenticatedRequest, res);
     } catch (error) {
       next(error);
     }
@@ -113,7 +119,7 @@ router.post(
  */
 router.post('/audit-file', authenticate, async (req, res, next) => {
   try {
-    return await pdfController.auditFromFileId(req as any, res);
+    return await pdfController.auditFromFileId(req as AuthenticatedRequest, res);
   } catch (error) {
     next(error);
   }
@@ -134,7 +140,7 @@ router.post(
   authorizeJob,
   async (req, res, next) => {
     try {
-      return await pdfController.reScanJob(req as any, res);
+      return await pdfController.reScanJob(req as AuthenticatedRequest, res);
     } catch (error) {
       next(error);
     }
@@ -353,7 +359,7 @@ router.get(
       });
 
       // Future implementation:
-      // const userId = (req as any).user.id;
+      // const userId = (req as AuthenticatedRequest).user.id;
       // const result = await pdfAuditController.listAudits(userId, { page, limit, status });
       // res.json({ success: true, data: result.data, pagination: result.pagination });
     } catch (error) {

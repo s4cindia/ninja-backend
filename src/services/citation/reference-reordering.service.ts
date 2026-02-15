@@ -40,8 +40,6 @@ class ReferenceReorderingService {
       throw new Error(`Reference ${referenceId} not found`);
     }
 
-    const _oldPosition = refIndex + 1;
-
     // Create new reference array
     const reorderedRefs = [...references];
     const [movedRef] = reorderedRefs.splice(refIndex, 1);
