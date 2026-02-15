@@ -5,6 +5,7 @@
  */
 
 import { Router } from 'express';
+import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -18,6 +19,31 @@ import {
 } from '../schemas/pdf-remediation.schemas';
 
 const router = Router();
+
+// Configure multer for PDF uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max file size
+  },
+  fileFilter: (_req, file, cb) => {
+    // Accept PDF files
+    const validMimetypes = [
+      'application/pdf',
+      'application/x-pdf',
+      'application/octet-stream',
+    ];
+
+    const isPdfMimetype = validMimetypes.includes(file.mimetype);
+    const isPdfFilename = file.originalname.toLowerCase().endsWith('.pdf');
+
+    if (isPdfMimetype || isPdfFilename) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'));
+    }
+  },
+});
 
 /**
  * POST /api/v1/pdf/:jobId/remediation/plan
@@ -130,6 +156,22 @@ router.get(
   authenticate,
   authorizeJob,
   (req, res) => pdfRemediationController.downloadRemediatedPdf(req, res)
+);
+
+/**
+ * POST /api/v1/pdf/:jobId/remediation/re-audit
+ * Re-audit a remediated PDF and compare with original results
+ *
+ * @param jobId - PDF audit job ID
+ * @body file - Remediated PDF file (multipart/form-data)
+ * @returns Comparison of before/after results
+ */
+router.post(
+  '/:jobId/remediation/re-audit',
+  authenticate,
+  authorizeJob,
+  upload.single('file'),
+  (req, res) => pdfRemediationController.reauditPdf(req as any, res)
 );
 
 export default router;

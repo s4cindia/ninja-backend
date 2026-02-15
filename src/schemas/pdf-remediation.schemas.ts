@@ -119,6 +119,17 @@ export const previewFixSchema = {
 };
 
 /**
+ * Schema for re-audit request
+ * POST /api/v1/pdf/:jobId/remediation/re-audit
+ */
+export const reauditRequestSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+  }),
+  // File validation is handled by multer, not Zod
+};
+
+/**
  * Type exports for use in controllers
  */
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
@@ -132,3 +143,4 @@ export type QuickFixRequestParams = z.infer<typeof quickFixRequestSchema['params
 export type QuickFixRequestBody = z.infer<typeof quickFixRequestSchema['body']>;
 export type PreviewFixParams = z.infer<typeof previewFixSchema['params']>;
 export type PreviewFixQuery = z.infer<typeof previewFixSchema['query']>;
+export type ReauditRequestParams = z.infer<typeof reauditRequestSchema['params']>;

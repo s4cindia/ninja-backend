@@ -271,11 +271,15 @@ class PdfAutoRemediationService {
 
             // Update status based on result
             const newStatus: TaskStatus = modification.success ? 'COMPLETED' : 'FAILED';
-            await pdfRemediationService.updateTaskStatus(jobId, task.id, {
+            logger.info(`[Auto-Remediation] Attempting to update task ${task.id} to status ${newStatus}`);
+
+            const updateResult = await pdfRemediationService.updateTaskStatus(jobId, task.id, {
               status: newStatus,
               errorMessage: modification.error,
               notes: modification.description,
             });
+
+            logger.info(`[Auto-Remediation] Task ${task.id} status update completed. New status: ${updateResult.task.status}`);
 
             if (modification.success) {
               result.completedTasks++;

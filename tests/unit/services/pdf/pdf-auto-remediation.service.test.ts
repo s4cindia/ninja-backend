@@ -46,9 +46,9 @@ describe('PdfAutoRemediationService', () => {
       quickFixCount: 0,
       manualFixCount: 1,
       tasks: [
-        createMockTask('task-1', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
-        createMockTask('task-2', 'PDF-NO-TITLE', 'AUTO_FIXABLE', 'PENDING'),
-        createMockTask('task-3', 'PDF-NO-CREATOR', 'AUTO_FIXABLE', 'PENDING'),
+        createMockTask('task-1', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING'),
+        createMockTask('task-2', 'MATTERHORN-01-002', 'AUTO_FIXABLE', 'PENDING'),
+        createMockTask('task-3', 'MATTERHORN-01-005', 'AUTO_FIXABLE', 'PENDING'),
       ],
       createdAt: new Date().toISOString(),
     };
@@ -74,10 +74,9 @@ describe('PdfAutoRemediationService', () => {
         success: true,
         description: 'Handler executed successfully',
       };
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addMetadata').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addCreator').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
       // Mock task status updates
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
@@ -183,9 +182,9 @@ describe('PdfAutoRemediationService', () => {
         error: 'Handler error',
       };
 
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(successModification);
-      vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(failureModification);
-      vi.spyOn(pdfModifierService, 'addCreator').mockResolvedValue(successModification);
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(successModification);
+      vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(failureModification);
+      vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(successModification);
 
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
@@ -216,10 +215,9 @@ describe('PdfAutoRemediationService', () => {
       vi.mocked(pdfModifierService.loadPDF).mockResolvedValue(mockPdfDoc);
 
       const mockModification: ModificationResult = { success: true, description: 'Success' };
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addMetadata').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addCreator').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('invalid-pdf'));
@@ -274,7 +272,7 @@ describe('PdfAutoRemediationService', () => {
 
       vi.mocked(pdfModifierService.createBackup).mockResolvedValue('/backup.pdf');
       vi.mocked(pdfModifierService.loadPDF).mockResolvedValue(mockPdfDoc);
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue({
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue({
         success: true,
         description: 'Success',
       });
@@ -311,10 +309,9 @@ describe('PdfAutoRemediationService', () => {
       vi.mocked(pdfModifierService.loadPDF).mockResolvedValue(mockPdfDoc);
 
       const mockModification: ModificationResult = { success: true, description: 'Success' };
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addMetadata').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addCreator').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
@@ -353,8 +350,8 @@ describe('PdfAutoRemediationService', () => {
       vi.mocked(pdfModifierService.loadPDF).mockResolvedValue(mockPdfDoc);
 
       const mockModification: ModificationResult = { success: true, description: 'Success' };
-      vi.spyOn(pdfModifierService, 'addLanguage').mockResolvedValue(mockModification);
-      vi.spyOn(pdfModifierService, 'addTitle').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(mockModification);
+      vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
 
       vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
@@ -375,9 +372,9 @@ describe('PdfAutoRemediationService', () => {
       );
 
       expect(result.completedTasks).toBe(3);
-      // addLanguage should be called twice (for 2 tasks), addTitle once
-      expect(pdfModifierService.addLanguage).toHaveBeenCalledTimes(2);
-      expect(pdfModifierService.addTitle).toHaveBeenCalledTimes(1);
+      // setMarkedFlag should be called twice (for 2 tasks), setDisplayDocTitle once
+      expect(pdfModifierService.setMarkedFlag).toHaveBeenCalledTimes(2);
+      expect(pdfModifierService.setDisplayDocTitle).toHaveBeenCalledTimes(1);
     });
   });
 
