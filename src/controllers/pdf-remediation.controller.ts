@@ -649,20 +649,20 @@ export class PdfRemediationController {
       let sourceFile = fileName;
 
       // Try remediated file first (if exists from previous quick fixes)
-      logger.info(`[PDF Remediation] Attempting to load remediated file: ${remediatedFileName}`);
+      logger.debug(`[PDF Remediation] Attempting to load remediated file: ${remediatedFileName}`);
       try {
         // Use getRemediatedFile which looks in the remediated/ subdirectory
         pdfBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
-        logger.info(`[PDF Remediation] getRemediatedFile result: ${pdfBuffer ? `Buffer(${pdfBuffer.length} bytes)` : 'null'}`);
+        logger.debug(`[PDF Remediation] getRemediatedFile result: ${pdfBuffer ? `Buffer(${pdfBuffer.length} bytes)` : 'null'}`);
 
         if (pdfBuffer) {
           sourceFile = remediatedFileName;
-          logger.info(`[PDF Remediation] ✅ Loaded existing remediated file: ${remediatedFileName}`);
+          logger.info(`[PDF Remediation] Loaded existing remediated file: ${remediatedFileName}`);
         } else {
-          logger.info(`[PDF Remediation] ⚠️  No remediated file found for ${fileName}`);
+          logger.debug(`[PDF Remediation] No remediated file found for ${fileName}`);
         }
       } catch (remediatedError) {
-        logger.info(`[PDF Remediation] ❌ Error loading remediated file: ${remediatedError}`);
+        logger.debug(`[PDF Remediation] Error loading remediated file: ${remediatedError}`);
       }
 
       // If no remediated file, try original
@@ -760,6 +760,28 @@ export class PdfRemediationController {
         return res.status(404).json({
           success: false,
           error: { message: 'Task not found for this issue' },
+        });
+      }
+
+      // Check for concurrent quick-fix operations to prevent race conditions
+      const inProgressTask = plan.tasks.find(t =>
+        t.status === 'IN_PROGRESS' &&
+        t.type === 'QUICK_FIX' &&
+        t.id !== task.id
+      );
+
+      if (inProgressTask) {
+        logger.warn(`[PDF Remediation] Concurrent quick-fix detected`, {
+          requestedTask: task.id,
+          inProgressTask: inProgressTask.id,
+        });
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'CONCURRENT_FIX',
+            message: 'Another quick fix is in progress. Please wait and try again.',
+            details: { inProgressIssue: inProgressTask.issueId },
+          },
         });
       }
 
@@ -1075,14 +1097,28 @@ export class PdfRemediationController {
       }
 
       // Verify file was uploaded
-      if (!req.file) {
+      if (!req.file || req.file.size === 0) {
         return res.status(400).json({
           success: false,
           data: {},
           error: {
-            code: 'MISSING_FILE',
-            message: 'No file uploaded',
+            code: 'INVALID_FILE',
+            message: 'No file uploaded or file is empty',
             details: null,
+          },
+        });
+      }
+
+      // Validate file size (100MB limit, matching multer config)
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+      if (req.file.size > MAX_FILE_SIZE) {
+        return res.status(413).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: 'File exceeds 100MB limit',
+            details: { maxSize: MAX_FILE_SIZE, actualSize: req.file.size },
           },
         });
       }

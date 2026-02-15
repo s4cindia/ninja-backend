@@ -26,11 +26,14 @@ interface AuthenticatedRequestWithFile extends AuthenticatedRequest {
 
 const router = Router();
 
+// Maximum file size for PDF uploads (100MB)
+const MAX_REAUDIT_FILE_SIZE = 100 * 1024 * 1024;
+
 // Configure multer for PDF uploads
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max file size
+    fileSize: MAX_REAUDIT_FILE_SIZE,
   },
   fileFilter: (_req, file, cb) => {
     // Accept PDF files

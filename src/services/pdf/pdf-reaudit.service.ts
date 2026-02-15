@@ -44,7 +44,7 @@ class PdfReauditService {
       });
 
       if (!originalJob) {
-        const error = `Job ${jobId} not found`;
+        const error = `Audit job ${jobId} not found for re-audit`;
         logger.error(`[PdfReaudit] ${error}`);
         return {
           success: false,
@@ -88,11 +88,30 @@ class PdfReauditService {
 
       // Step 2: Run fresh audit on remediated PDF
       logger.info(`[PdfReaudit] Running fresh audit on remediated PDF...`);
-      const reauditReport = await pdfAuditService.runAuditFromBuffer(
-        remediatedPdfBuffer,
-        `${jobId}-reaudit`,
-        fileName
-      );
+      let reauditReport;
+      try {
+        reauditReport = await pdfAuditService.runAuditFromBuffer(
+          remediatedPdfBuffer,
+          `${jobId}-reaudit`,
+          fileName
+        );
+      } catch (auditError) {
+        logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
+        return {
+          success: false,
+          jobId,
+          originalAuditId: jobId,
+          reauditId: '',
+          fileName,
+          comparison: {
+            resolved: [],
+            remaining: [],
+            regressions: [],
+          },
+          metrics: this.getEmptyMetrics(),
+          error: `Re-audit failed: ${auditError instanceof Error ? auditError.message : 'Unknown error'}`,
+        };
+      }
 
       const newIssues = reauditReport.issues;
       logger.info(`[PdfReaudit] Re-audit found ${newIssues.length} issues`);
