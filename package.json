@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ tests/ --max-warnings 120",
-    "status": "bash .claude/bin/ninja-status.sh"
+    "status": "bash .claude/bin/ninja-status.sh",
+    "script:migrate-citation-links": "npx tsx scripts/migrate-citation-links.ts"
   },
   "keywords": [
     "ninja",

@@ -53,13 +53,30 @@
 **Created:** 2025-12-16  
 
 ### TD-005: ESLint Warnings at Threshold (60/60)
-**Priority:** P3  
-**Location:** Multiple files  
-**Issue:** Lint warnings at maximum threshold, no room for new code  
-**Risk:** New code may fail CI checks  
-**Fix:** Reduce warnings by 10-15 (replace console.log with logger, fix unused vars)  
-**Effort:** 2 hours  
-**Created:** 2025-12-16  
+**Priority:** P3
+**Location:** Multiple files
+**Issue:** Lint warnings at maximum threshold, no room for new code
+**Risk:** New code may fail CI checks
+**Fix:** Reduce warnings by 10-15 (replace console.log with logger, fix unused vars)
+**Effort:** 2 hours
+**Created:** 2025-12-16
+
+### TD-006: Deprecated citationIds Array in ReferenceListEntry
+**Priority:** P2
+**Location:** `prisma/schema.prisma:ReferenceListEntry.citationIds`
+**Issue:** `citationIds` String[] field is deprecated; should use `citationLinks` relation for proper FK constraints
+**Risk:** Data inconsistency between citationIds array and ReferenceListEntryCitation junction table
+**Status:** In Progress
+**Migration Plan:**
+1. [x] Schema updated with ReferenceListEntryCitation junction table
+2. [ ] Update all code to read from citationLinks relation
+3. [ ] Update all code to write to both citationIds AND citationLinks
+4. [ ] Run data migration: `npm run script:migrate-citation-links`
+5. [ ] Remove writes to citationIds, keep reads for fallback
+6. [ ] Remove citationIds field after verification
+**Fix:** Run `scripts/migrate-citation-links.ts` to sync existing data
+**Effort:** 4 hours
+**Created:** 2026-02-15
 
 ---
 
