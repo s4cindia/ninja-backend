@@ -140,130 +140,156 @@ class ReferenceListService {
     let manualCount = 0;
 
     if (aiResult.entries && aiResult.entries.length > 0) {
-      for (const aiEntry of aiResult.entries) {
-        const validCitationIds = (aiEntry.citationIds || []).filter((id: string) =>
-          citations.some(c => c.id === id)
-        );
-        if (validCitationIds.length === 0) {
-          validCitationIds.push(citations[0]?.id || 'unknown');
-        }
+      // Process all entries first, then batch insert (fixes N+1 query pattern)
+      const formattedColumn = this.getFormattedColumn(styleCode);
+      const processedEntries: Array<{
+        data: any;
+        authors: any[];
+        formattedText: string;
+      }> = [];
 
-        const authors = (aiEntry.authors || []).map((a: { firstName?: string; lastName?: string }) => {
-          let lastName = a.lastName || '';
-          let firstName = a.firstName || undefined;
-          if ((!lastName || lastName === 'Unknown') && firstName && firstName !== 'Unknown') {
-            lastName = firstName;
-            firstName = undefined;
+      // Process entries with CrossRef lookups in parallel batches
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < aiResult.entries.length; i += BATCH_SIZE) {
+        const batch = aiResult.entries.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map(async (aiEntry) => {
+          const validCitationIds = (aiEntry.citationIds || []).filter((id: string) =>
+            citations.some(c => c.id === id)
+          );
+          if (validCitationIds.length === 0) {
+            validCitationIds.push(citations[0]?.id || 'unknown');
           }
-          if (lastName === 'Unknown') {
-            lastName = '';
-          }
-          return { firstName, lastName: lastName || 'Unknown' };
-        }).filter((a: { lastName: string }) => a.lastName && a.lastName !== 'Unknown');
 
-        let enrichmentSource = 'ai';
-        let enrichmentConfidence = aiEntry.confidence || 0.7;
-
-        if (aiEntry.doi) {
-          try {
-            const crossrefData = await crossRefService.lookupByDoi(aiEntry.doi);
-            if (crossrefData) {
-              enrichmentSource = 'crossref';
-              enrichmentConfidence = Math.max(enrichmentConfidence, crossrefData.confidence);
-              enrichedCount++;
-              if (crossrefData.authors?.length) {
-                authors.length = 0;
-                authors.push(...crossrefData.authors.map(a => ({
-                  firstName: a.firstName || undefined,
-                  lastName: a.lastName || 'Unknown',
-                })));
-              }
+          const authors = (aiEntry.authors || []).map((a: { firstName?: string; lastName?: string }) => {
+            let lastName = a.lastName || '';
+            let firstName = a.firstName || undefined;
+            if ((!lastName || lastName === 'Unknown') && firstName && firstName !== 'Unknown') {
+              lastName = firstName;
+              firstName = undefined;
             }
-          } catch {
-            logger.warn(`[Reference List] CrossRef lookup failed for DOI ${aiEntry.doi}`);
+            if (lastName === 'Unknown') {
+              lastName = '';
+            }
+            return { firstName, lastName: lastName || 'Unknown' };
+          }).filter((a: { lastName: string }) => a.lastName && a.lastName !== 'Unknown');
+
+          let enrichmentSource = 'ai';
+          let enrichmentConfidence = aiEntry.confidence || 0.7;
+          let isEnriched = false;
+
+          if (aiEntry.doi) {
+            try {
+              const crossrefData = await crossRefService.lookupByDoi(aiEntry.doi);
+              if (crossrefData) {
+                enrichmentSource = 'crossref';
+                enrichmentConfidence = Math.max(enrichmentConfidence, crossrefData.confidence);
+                isEnriched = true;
+                if (crossrefData.authors?.length) {
+                  authors.length = 0;
+                  authors.push(...crossrefData.authors.map(a => ({
+                    firstName: a.firstName || undefined,
+                    lastName: a.lastName || 'Unknown',
+                  })));
+                }
+              }
+            } catch {
+              logger.warn(`[Reference List] CrossRef lookup failed for DOI ${aiEntry.doi}`);
+            }
           }
-        }
 
-        if (enrichmentSource !== 'crossref') {
-          manualCount++;
-        }
-
-        const sortKey = this.generateSortKey({
-          authors,
-          year: aiEntry.year,
-          title: aiEntry.title || '',
-        });
-
-        const formattedColumn = this.getFormattedColumn(styleCode);
-        const formattedText = aiEntry.formattedEntry || this.fallbackFormat({
-          authors,
-          year: aiEntry.year,
-          title: aiEntry.title,
-          journalName: aiEntry.journalName,
-          volume: aiEntry.volume,
-          issue: aiEntry.issue,
-          pages: aiEntry.pages,
-          doi: aiEntry.doi,
-        }, styleCode);
-
-        const entry = await prisma.referenceListEntry.create({
-          data: {
-            documentId,
-            citationIds: validCitationIds,
-            sortKey,
-            authors: authors as any,
-            year: aiEntry.year || null,
+          const sortKey = this.generateSortKey({
+            authors,
+            year: aiEntry.year,
             title: aiEntry.title || '',
-            sourceType: aiEntry.sourceType || 'unknown',
-            journalName: aiEntry.journalName || null,
-            volume: aiEntry.volume || null,
-            issue: aiEntry.issue || null,
-            pages: aiEntry.pages || null,
-            publisher: aiEntry.publisher || null,
-            doi: aiEntry.doi || null,
-            url: aiEntry.url || null,
-            enrichmentSource,
-            enrichmentConfidence,
-            [formattedColumn]: formattedText,
-          }
-        });
+          });
 
-        entries.push({
-          ...entry,
-          authors,
-          formattedEntry: formattedText,
-          [formattedColumn]: formattedText,
-        });
+          const formattedText = aiEntry.formattedEntry || this.fallbackFormat({
+            authors,
+            year: aiEntry.year,
+            title: aiEntry.title,
+            journalName: aiEntry.journalName,
+            volume: aiEntry.volume,
+            issue: aiEntry.issue,
+            pages: aiEntry.pages,
+            doi: aiEntry.doi,
+          }, styleCode);
+
+          return {
+            data: {
+              documentId,
+              citationIds: validCitationIds,
+              sortKey,
+              authors: authors as any,
+              year: aiEntry.year || null,
+              title: aiEntry.title || '',
+              sourceType: aiEntry.sourceType || 'unknown',
+              journalName: aiEntry.journalName || null,
+              volume: aiEntry.volume || null,
+              issue: aiEntry.issue || null,
+              pages: aiEntry.pages || null,
+              publisher: aiEntry.publisher || null,
+              doi: aiEntry.doi || null,
+              url: aiEntry.url || null,
+              enrichmentSource,
+              enrichmentConfidence,
+              [formattedColumn]: formattedText,
+            },
+            authors,
+            formattedText,
+            isEnriched,
+          };
+        }));
+
+        processedEntries.push(...batchResults);
+        enrichedCount += batchResults.filter(r => r.isEnriched).length;
+        manualCount += batchResults.filter(r => !r.isEnriched).length;
       }
+
+      // Batch insert all entries using transaction
+      const createdEntries = await prisma.$transaction(
+        processedEntries.map(pe =>
+          prisma.referenceListEntry.create({ data: pe.data })
+        )
+      );
+
+      // Map created entries back with formatted data
+      entries.push(...createdEntries.map((entry, idx) => ({
+        ...entry,
+        authors: processedEntries[idx].authors,
+        formattedEntry: processedEntries[idx].formattedText,
+        [formattedColumn]: processedEntries[idx].formattedText,
+      })));
     } else {
       logger.warn(`[Reference List] AI returned no entries, falling back to citation-based generation`);
-      for (const citation of citations) {
-        const fallbackFormatted = `${citation.rawText}`;
-        const formattedColumn = this.getFormattedColumn(styleCode);
+      const formattedColumn = this.getFormattedColumn(styleCode);
 
-        const entry = await prisma.referenceListEntry.create({
-          data: {
-            documentId,
-            citationIds: [citation.id],
-            sortKey: citation.rawText.substring(0, 30).toLowerCase(),
-            authors: [],
-            year: null,
-            title: citation.rawText,
-            sourceType: 'unknown',
-            enrichmentSource: 'none',
-            enrichmentConfidence: 0.3,
-            [formattedColumn]: fallbackFormatted,
-          }
-        });
+      // Batch insert fallback entries
+      const fallbackData = citations.map(citation => ({
+        documentId,
+        citationIds: [citation.id],
+        sortKey: citation.rawText.substring(0, 30).toLowerCase(),
+        authors: [],
+        year: null,
+        title: citation.rawText,
+        sourceType: 'unknown',
+        enrichmentSource: 'none',
+        enrichmentConfidence: 0.3,
+        [formattedColumn]: citation.rawText,
+      }));
 
-        entries.push({
-          ...entry,
-          authors: [],
-          formattedEntry: fallbackFormatted,
-          [formattedColumn]: fallbackFormatted,
-        });
-        manualCount++;
-      }
+      const createdEntries = await prisma.$transaction(
+        fallbackData.map(data =>
+          prisma.referenceListEntry.create({ data })
+        )
+      );
+
+      entries.push(...createdEntries.map((entry, idx) => ({
+        ...entry,
+        authors: [],
+        formattedEntry: fallbackData[idx][formattedColumn] as string,
+        [formattedColumn]: fallbackData[idx][formattedColumn],
+      })));
+      manualCount = citations.length;
     }
 
     await prisma.editorialDocument.update({
@@ -437,14 +463,35 @@ Return a JSON object:
 
     const formattedColumn = this.getFormattedColumn(styleCode);
 
-    for (const entry of entries) {
-      const existingFormatted = (entry as any)[formattedColumn];
-      if (!existingFormatted) {
-        const formatted = await this.formatReference(entry as any, styleCode);
-        await prisma.referenceListEntry.update({
-          where: { id: entry.id },
-          data: { [formattedColumn]: formatted.formatted }
-        });
+    // Collect entries that need formatting (fixes N+1 query pattern)
+    const entriesToFormat = entries.filter(entry => !(entry as any)[formattedColumn]);
+
+    if (entriesToFormat.length > 0) {
+      // Format all entries in parallel batches
+      const BATCH_SIZE = 5;
+      const updates: Array<{ id: string; formatted: string }> = [];
+
+      for (let i = 0; i < entriesToFormat.length; i += BATCH_SIZE) {
+        const batch = entriesToFormat.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(
+          batch.map(async entry => ({
+            id: entry.id,
+            formatted: (await this.formatReference(entry as any, styleCode)).formatted
+          }))
+        );
+        updates.push(...batchResults);
+      }
+
+      // Batch update all entries in a single transaction
+      if (updates.length > 0) {
+        await prisma.$transaction(
+          updates.map(u =>
+            prisma.referenceListEntry.update({
+              where: { id: u.id },
+              data: { [formattedColumn]: u.formatted }
+            })
+          )
+        );
       }
     }
 

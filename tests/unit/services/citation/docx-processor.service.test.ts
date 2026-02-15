@@ -238,4 +238,40 @@ describe('DOCXProcessorService', () => {
       expect(Buffer.isBuffer(result)).toBe(true);
     });
   });
+
+  describe('Security Validation', () => {
+    it('should reject files exceeding size limit in replaceCitationsWithTrackChanges', async () => {
+      // Create a buffer larger than 50MB limit
+      const largeBuffer = Buffer.alloc(51 * 1024 * 1024);
+
+      // The replaceCitationsWithTrackChanges should throw for oversized files
+      await expect(
+        docxProcessorService.replaceCitationsWithTrackChanges(
+          largeBuffer,
+          [{ oldText: '[1]', newText: '[2]' }],
+          []
+        )
+      ).rejects.toThrow(/too large/);
+    });
+
+    it('should reject non-ZIP files via validateDOCX', async () => {
+      const invalidBuffer = Buffer.from('This is plain text, not a DOCX/ZIP file');
+
+      vi.mocked(mammoth.extractRawText).mockRejectedValue(new Error('Invalid DOCX'));
+
+      const result = await docxProcessorService.validateDOCX(invalidBuffer);
+
+      expect(result.valid).toBe(false);
+    });
+
+    it('should reject empty buffer via validateDOCX', async () => {
+      const emptyBuffer = Buffer.alloc(0);
+
+      vi.mocked(mammoth.extractRawText).mockRejectedValue(new Error('Empty buffer'));
+
+      const result = await docxProcessorService.validateDOCX(emptyBuffer);
+
+      expect(result.valid).toBe(false);
+    });
+  });
 });
