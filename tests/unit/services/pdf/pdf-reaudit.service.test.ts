@@ -4,6 +4,7 @@
  * Unit tests for PDF re-audit and comparison functionality.
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';

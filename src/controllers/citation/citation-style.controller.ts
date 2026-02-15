@@ -11,7 +11,7 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { aiFormatConverterService, CitationStyle } from '../../services/citation/ai-format-converter.service';
+import { CitationStyle } from '../../services/citation/ai-format-converter.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
 
 export class CitationStyleController {
