@@ -55,6 +55,13 @@ export interface CitationAnalysis {
     missingReferences: number;
     unusedReferences: number;
   };
+  /** AI token usage for cost tracking */
+  tokenUsage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    estimatedCostUSD: number;
+  };
 }
 
 export interface CitationIssue {
@@ -70,7 +77,33 @@ export interface CitationIssue {
   referenceId?: string;
 }
 
+// Claude Sonnet 4 pricing (approximate)
+const CLAUDE_PRICING = {
+  inputPer1K: 0.003,   // $3 per 1M input tokens
+  outputPer1K: 0.015,  // $15 per 1M output tokens
+};
+
 class AICitationDetectorService {
+  // Token usage accumulator for the current analysis
+  private tokenUsage = { promptTokens: 0, completionTokens: 0 };
+
+  private resetTokenUsage(): void {
+    this.tokenUsage = { promptTokens: 0, completionTokens: 0 };
+  }
+
+  private accumulateUsage(usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    if (usage) {
+      this.tokenUsage.promptTokens += usage.promptTokens;
+      this.tokenUsage.completionTokens += usage.completionTokens;
+    }
+  }
+
+  private calculateCost(): number {
+    const inputCost = (this.tokenUsage.promptTokens / 1000) * CLAUDE_PRICING.inputPer1K;
+    const outputCost = (this.tokenUsage.completionTokens / 1000) * CLAUDE_PRICING.outputPer1K;
+    return inputCost + outputCost;
+  }
+
   /**
    * Analyze document for citations using AI
    */
@@ -82,6 +115,7 @@ class AICitationDetectorService {
     } = {}
   ): Promise<CitationAnalysis> {
     logger.info('[AI Citation Detector] Starting document analysis');
+    this.resetTokenUsage();
 
     try {
       // Step 1: Detect in-text citations using AI
@@ -111,12 +145,23 @@ class AICitationDetectorService {
       // Step 6: Calculate statistics
       const statistics = this.calculateStatistics(inTextCitations, references, issues);
 
+      // Calculate token usage and cost
+      const totalTokens = this.tokenUsage.promptTokens + this.tokenUsage.completionTokens;
+      const estimatedCostUSD = this.calculateCost();
+      logger.info(`[AI Citation Detector] Token usage: ${totalTokens} total (est. $${estimatedCostUSD.toFixed(4)})`);
+
       return {
         inTextCitations,
         references,
         issues,
         detectedStyle,
-        statistics
+        statistics,
+        tokenUsage: {
+          promptTokens: this.tokenUsage.promptTokens,
+          completionTokens: this.tokenUsage.completionTokens,
+          totalTokens,
+          estimatedCostUSD
+        }
       };
     } catch (error) {
       logger.error('[AI Citation Detector] Analysis failed:', error);
@@ -169,12 +214,13 @@ Document:
 ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
 
     try {
-      const citationsRaw = await claudeService.generateJSON(prompt, {
+      const result = await claudeService.generateJSONWithUsage(prompt, {
         model: 'sonnet',
         temperature: 0.1,
         maxTokens: 16384
       });
-      const citations = Array.isArray(citationsRaw) ? citationsRaw : [];
+      this.accumulateUsage(result.usage);
+      const citations = Array.isArray(result.data) ? result.data : [];
       return citations.map((c: { text?: string; paragraph?: number; startChar?: number; type?: string; format?: string; style?: string; confidence?: number; numbers?: number[]; context?: string }, idx: number) => ({
         id: `citation-${idx + 1}`,
         text: c.text || '',
@@ -239,12 +285,13 @@ Document text:
 ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
 
     try {
-      const refsRaw = await claudeService.generateJSON(prompt, {
+      const result = await claudeService.generateJSONWithUsage(prompt, {
         model: 'sonnet',
         temperature: 0.1,
         maxTokens: 16384
       });
-      const refs = Array.isArray(refsRaw) ? refsRaw : [];
+      this.accumulateUsage(result.usage);
+      const refs = Array.isArray(result.data) ? result.data : [];
       return refs.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, idx: number) => ({
         id: `ref-${r.number || idx + 1}`,
         number: r.number || idx + 1,
@@ -301,6 +348,7 @@ Return ONLY the style name (one word).`;
       temperature: 0.1,
       maxTokens: 50
     });
+    this.accumulateUsage(response.usage);
 
     return response.text.trim();
   }

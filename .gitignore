@@ -158,3 +158,4 @@ tmp/
 data/epub-storage/*
 !data/epub-storage/.gitkeep
 tmp/pdf-backups/
+uploads/

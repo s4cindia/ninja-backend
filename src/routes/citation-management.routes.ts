@@ -10,6 +10,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { citationManagementController } from '../controllers/citation-management.controller';
 
 // Rate limiter for file uploads: 10 uploads per 15 minutes per user
+// Note: All routes require authentication (router.use(authenticate)), so user is always present
 const uploadRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10, // 10 requests per window
@@ -20,9 +21,9 @@ const uploadRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // Use user ID if authenticated, otherwise IP
+    // Use authenticated user ID for rate limiting
     const userReq = req as Request & { user?: { id: string } };
-    return userReq.user?.id || req.ip || 'unknown';
+    return userReq.user?.id || 'unauthenticated'; // Should never be 'unauthenticated' due to auth middleware
   }
 });
 

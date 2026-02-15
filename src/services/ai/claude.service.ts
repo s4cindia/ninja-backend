@@ -203,6 +203,67 @@ class ClaudeService {
   }
 
   /**
+   * Generate JSON response with usage tracking
+   * Returns both the parsed JSON and token usage for cost tracking
+   */
+  async generateJSONWithUsage<T = unknown>(
+    prompt: string,
+    options: ClaudeOptions = {}
+  ): Promise<{ data: T; usage: ClaudeResponse['usage'] }> {
+    const response = await this.generate(prompt, {
+      ...options,
+      systemPrompt: options.systemPrompt || 'You are a helpful AI assistant. Always respond with valid JSON only, no markdown or explanations.'
+    });
+
+    try {
+      let jsonText = response.text.trim();
+
+      // Remove markdown code blocks first
+      if (jsonText.startsWith('```json')) {
+        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '').trim();
+      } else if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/```\n?/g, '').trim();
+      }
+
+      // If the response is a JSON-encoded string (wrapped in quotes with escaped chars)
+      if (jsonText.startsWith('"')) {
+        jsonText = jsonText.slice(1);
+        if (jsonText.endsWith('"')) {
+          jsonText = jsonText.slice(0, -1);
+        }
+        jsonText = jsonText
+          .replace(/\\"/g, '"')
+          .replace(/\\n/g, '\n')
+          .replace(/\\t/g, '\t')
+          .replace(/\\r/g, '\r')
+          .replace(/\\\\/g, '\\');
+      }
+
+      // Try to find JSON array or object if text doesn't start with [ or {
+      if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
+        const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
+        const objectMatch = jsonText.match(/\{[\s\S]*\}/);
+
+        if (arrayMatch) {
+          jsonText = arrayMatch[0];
+        } else if (objectMatch) {
+          jsonText = objectMatch[0];
+        }
+      }
+
+      return {
+        data: JSON.parse(jsonText),
+        usage: response.usage
+      };
+    } catch (parseError) {
+      const preview = response.text.substring(0, 500);
+      logger.error('[Claude Service] Failed to parse JSON. Response preview:', preview);
+      logger.error('[Claude Service] Parse error:', parseError);
+      throw AppError.internal('Failed to parse Claude response as JSON');
+    }
+  }
+
+  /**
    * Check if Claude service is available
    */
   isAvailable(): boolean {

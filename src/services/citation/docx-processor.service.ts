@@ -13,7 +13,7 @@ import { referenceStyleUpdaterService } from './reference-style-updater.service'
 
 // Security constants for DOCX processing
 const SECURITY_LIMITS = {
-  MAX_DOCX_SIZE: 100 * 1024 * 1024, // 100MB max DOCX file size
+  MAX_DOCX_SIZE: 50 * 1024 * 1024,  // 50MB max DOCX file size (matches controller limit)
   MAX_XML_SIZE: 50 * 1024 * 1024,   // 50MB max XML content size
   MAX_ZIP_ENTRIES: 1000,             // Max files in DOCX archive
   MAX_ELEMENT_DEPTH: 100,            // Max XML nesting depth
@@ -73,6 +73,18 @@ function validateDOCXStructure(zip: any): { valid: boolean; error?: string } {
       return { valid: false, error: `Invalid file path detected: ${path}` };
     }
   }
+
+  // Security: Check for macro-enabled content (VBA projects)
+  // Macro-enabled files (.docm) contain vbaProject.bin which could be malicious
+  const dangerousFiles = ['word/vbaProject.bin', 'vbaProject.bin', 'word/vbaData.xml'];
+  for (const dangerousFile of dangerousFiles) {
+    if (zip.file(dangerousFile)) {
+      return { valid: false, error: 'Macro-enabled documents are not allowed for security reasons' };
+    }
+  }
+
+  // Verify ZIP central directory exists (basic structural integrity)
+  // A valid ZIP must have at least the required DOCX files we already checked
 
   return { valid: true };
 }
@@ -138,7 +150,8 @@ class DOCXProcessorService {
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('[DOCX Processor] Failed to extract text:', errorMessage);
+      // Log full error with stack trace for debugging
+      logger.error('[DOCX Processor] Failed to extract text:', error);
       throw AppError.unprocessable(`DOCX extraction failed: ${errorMessage}`, 'DOCX_EXTRACTION_FAILED');
     }
   }
@@ -436,9 +449,8 @@ class DOCXProcessorService {
       logger.info(`[DOCX Processor] Complete: ${summary.totalCitations} citations (${exportType})`);
       return { buffer: modifiedBuffer, summary };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      const errorStack = error instanceof Error ? error.stack : '';
-      logger.error(`[DOCX Processor] Failed: ${errorMessage} ${errorStack}`);
+      // Log full error object with stack trace for debugging
+      logger.error('[DOCX Processor] Failed to replace citations:', error);
       throw error;
     }
   }
@@ -891,8 +903,8 @@ class DOCXProcessorService {
       logger.info(`[DOCX Processor] Selective update complete: ${deleted} deleted, ${edited} edited`);
       return { xml: updatedXML, deleted, edited, nextRevisionId: revisionId };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error(`[DOCX Processor] Selective reference update failed: ${errorMessage}`);
+      // Log full error with stack trace for debugging
+      logger.error('[DOCX Processor] Selective reference update failed:', error);
       return { xml: referencesXML, deleted: 0, edited: 0, nextRevisionId: revisionId };
     }
   }
@@ -1365,8 +1377,8 @@ class DOCXProcessorService {
         nextRevisionId: revisionId
       };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('[DOCX Processor] Failed to update references section:', errorMessage);
+      // Log full error with stack trace for debugging
+      logger.error('[DOCX Processor] Failed to update references section:', error);
       return { xml: referencesXML, reordered: 0, deleted: 0, swapped: [], nextRevisionId: revisionId };
     }
   }
@@ -1648,8 +1660,8 @@ class DOCXProcessorService {
       zip.file('word/document.xml', documentXML);
       return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('[DOCX Processor] Failed:', errorMessage);
+      // Log full error with stack trace for debugging
+      logger.error('[DOCX Processor] Failed to replace style references:', error);
       throw error;
     }
   }
