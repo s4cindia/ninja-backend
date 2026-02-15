@@ -194,12 +194,15 @@ class PdfRemediationService {
     const pendingQuickFix = plan.tasks.filter(
       (task) => task.type === 'QUICK_FIX' && task.status === 'PENDING'
     ).length;
+    const completedQuickFix = plan.tasks.filter(
+      (task) => task.type === 'QUICK_FIX' && task.status === 'COMPLETED'
+    ).length;
     const pendingManual = plan.tasks.filter(
       (task) => task.type === 'MANUAL' && task.status === 'PENDING'
     ).length;
 
     logger.info(
-      `[PDF Remediation] Task counts: pending=${pendingAutoFixable}, completed=${completedAutoFixable}, total_auto=${autoFixableTasks.length}`
+      `[PDF Remediation] Task counts: auto(pending=${pendingAutoFixable}, completed=${completedAutoFixable}), quick(pending=${pendingQuickFix}, completed=${completedQuickFix})`
     );
 
     // Update counts to show only pending tasks (not completed ones)
@@ -207,8 +210,9 @@ class PdfRemediationService {
     plan.quickFixCount = pendingQuickFix;
     plan.manualFixCount = pendingManual;
 
-    // Add completed count for display
+    // Add completed counts for display
     (plan as any).completedAutoFixCount = completedAutoFixable;
+    (plan as any).completedQuickFixCount = completedQuickFix;
 
     // Fetch parent job to get remediatedFileUrl
     const parentJob = await this.prisma.job.findUnique({

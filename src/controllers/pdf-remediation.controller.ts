@@ -583,8 +583,8 @@ export class PdfRemediationController {
         data: {
           issueId,
           field,
-          currentValue,
-          proposedValue,
+          before: currentValue || '',
+          after: proposedValue,
           message: `Will change ${field} from "${currentValue || '(empty)'}" to "${proposedValue}"`,
         },
       });
@@ -638,25 +638,51 @@ export class PdfRemediationController {
       const jobInput = job.input as { fileName?: string; fileUrl?: string; size?: number };
       const fileName = jobInput?.fileName || 'document.pdf';
 
-      // Try to get file from storage using jobId
-      logger.info(`[PDF Remediation] Loading PDF for quick-fix, job ${jobId}, fileName: ${fileName}`);
-      let pdfBuffer: Buffer | null = null;
+      // Check if a remediated file already exists (from previous quick fixes)
+      const parsed = path.parse(fileName);
+      const remediatedFileName = `${parsed.name}_remediated${parsed.ext || '.pdf'}`;
 
+      logger.info(`[PDF Remediation] Loading PDF for quick-fix, job ${jobId}`);
+      let pdfBuffer: Buffer | null = null;
+      let sourceFile = fileName;
+
+      // Try remediated file first (if exists from previous quick fixes)
+      logger.info(`[PDF Remediation] Attempting to load remediated file: ${remediatedFileName}`);
       try {
-        pdfBuffer = await fileStorageService.getFile(jobId, fileName);
-      } catch (storageError) {
-        logger.error(`[PDF Remediation] Error loading from storage:`, storageError);
+        // Use getRemediatedFile which looks in the remediated/ subdirectory
+        pdfBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
+        logger.info(`[PDF Remediation] getRemediatedFile result: ${pdfBuffer ? `Buffer(${pdfBuffer.length} bytes)` : 'null'}`);
+
+        if (pdfBuffer) {
+          sourceFile = remediatedFileName;
+          logger.info(`[PDF Remediation] ✅ Loaded existing remediated file: ${remediatedFileName}`);
+        } else {
+          logger.info(`[PDF Remediation] ⚠️  No remediated file found for ${fileName}`);
+        }
+      } catch (remediatedError) {
+        logger.info(`[PDF Remediation] ❌ Error loading remediated file: ${remediatedError}`);
       }
 
-      // Fallback: try fileUrl if getFile returned null or failed
+      // If no remediated file, try original
       if (!pdfBuffer) {
-        const fileUrl = jobInput?.fileUrl;
-        if (fileUrl) {
-          logger.info(`[PDF Remediation] Fallback: Downloading from ${fileUrl}`);
-          try {
-            pdfBuffer = await fileStorageService.downloadFile(fileUrl);
-          } catch (downloadError) {
-            logger.error(`[PDF Remediation] Download failed:`, downloadError);
+        logger.info(`[PDF Remediation] Loading original file: ${fileName}`);
+
+        try {
+          pdfBuffer = await fileStorageService.getFile(jobId, fileName);
+        } catch (storageError) {
+          logger.error(`[PDF Remediation] Error loading from storage:`, storageError);
+        }
+
+        // Fallback: try fileUrl if getFile returned null or failed
+        if (!pdfBuffer) {
+          const fileUrl = jobInput?.fileUrl;
+          if (fileUrl) {
+            logger.info(`[PDF Remediation] Fallback: Downloading from ${fileUrl}`);
+            try {
+              pdfBuffer = await fileStorageService.downloadFile(fileUrl);
+            } catch (downloadError) {
+              logger.error(`[PDF Remediation] Download failed:`, downloadError);
+            }
           }
         }
       }
@@ -669,6 +695,8 @@ export class PdfRemediationController {
           error: { message: 'PDF file not found in storage' },
         });
       }
+
+      logger.info(`[PDF Remediation] Using file: ${sourceFile}`);
 
       // Load PDF and apply fix
       const pdfDoc = await pdfModifierService.loadPDF(pdfBuffer);
@@ -714,22 +742,44 @@ export class PdfRemediationController {
       // Save modified PDF
       const modifiedBuffer = await pdfModifierService.savePDF(pdfDoc);
 
-      // Save to storage using saveRemediatedFile - handle extension reliably
-      const parsed = path.parse(fileName);
-      const remediatedFileName = `${parsed.name}_remediated${parsed.ext || '.pdf'}`;
+      // Save to storage using saveRemediatedFile
       const remediatedFileUrl = await fileStorageService.saveRemediatedFile(
         jobId,
         remediatedFileName,
         modifiedBuffer
       );
 
-      // Update task status in remediation plan
-      await pdfRemediationService.updateTaskStatus(jobId, issueId, {
+      // Get remediation plan and find task by issue ID
+      const plan = await pdfRemediationService.getRemediationPlan(jobId);
+      const task = plan.tasks.find(t => t.issueId === issueId);
+
+      if (!task) {
+        logger.error(`[PDF Remediation] Task not found for issue ${issueId}`);
+        return res.status(404).json({
+          success: false,
+          error: { message: 'Task not found for this issue' },
+        });
+      }
+
+      // Update task status in remediation plan using task ID (not issue ID)
+      await pdfRemediationService.updateTaskStatus(jobId, task.id, {
         status: 'COMPLETED',
         notes: `Quick-fix applied: ${result.description}`,
       });
 
-      logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}`, { result });
+      // Update parent job output with remediated file URL
+      const currentOutput = (job.output as Record<string, unknown>) || {};
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...currentOutput,
+            remediatedFileUrl,
+          },
+        },
+      });
+
+      logger.info(`[PDF Remediation] Quick-fix applied for issue ${issueId}, task ${task.id}`, { result });
 
       return res.json({
         success: true,

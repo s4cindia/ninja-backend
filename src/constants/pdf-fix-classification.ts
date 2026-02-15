@@ -12,17 +12,7 @@ import { FixType } from '../types/pdf-remediation.types';
  * These are typically metadata-related issues that don't affect content
  */
 export const AUTO_FIXABLE_CODES = new Set([
-  // Legacy codes (from stub validators)
-  'PDF-NO-LANGUAGE',        // Missing document language
-  'PDF-NO-TITLE',           // Missing document title
-  'PDF-NO-CREATOR',         // Missing creator metadata
-
-  // Actual validator codes - Document metadata
-  'MATTERHORN-11-001',      // Document language not specified
-  'MATTERHORN-01-003',      // Document title missing
-  'WCAG-2.4.2',             // Document title not present
-
-  // Actual validator codes - PDF/UA flags
+  // Actual validator codes - PDF/UA flags (fully automatic)
   'MATTERHORN-01-001',      // PDF not marked for accessibility (Marked flag)
   'MATTERHORN-01-002',      // DisplayDocTitle not set
   'MATTERHORN-01-005',      // Suspects flag not set correctly
@@ -34,10 +24,16 @@ export const AUTO_FIXABLE_CODES = new Set([
  * These require content decisions but don't need external PDF editing tools
  */
 export const QUICK_FIXABLE_CODES = new Set<string>([
-  // CURRENTLY EMPTY - Will be populated when quick-fix handlers are built
-  // Quick-fix requires guided workflows that don't need external PDF editors
-  // For Phase 2, only metadata fixes (language, title, metadata, creator) are supported via auto-fix
-  // Future phases may add: alt text workflow, form label workflow, etc.
+  // TEMPORARILY MOVED FROM AUTO_FIXABLE FOR TESTING QUICK-FIX UI
+  // Legacy codes (from stub validators)
+  'PDF-NO-LANGUAGE',        // Missing document language - user can specify
+  'PDF-NO-TITLE',           // Missing document title - user can specify
+  'PDF-NO-CREATOR',         // Missing creator metadata - user can specify
+
+  // Actual validator codes - Document metadata
+  'MATTERHORN-11-001',      // Document language not specified - user can specify
+  'MATTERHORN-01-003',      // Document title missing - user can specify
+  'WCAG-2.4.2',             // Document title not present - user can specify
 ]);
 
 /**
