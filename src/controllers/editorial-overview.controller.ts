@@ -289,17 +289,31 @@ export class EditorialOverviewController {
               referenceLinkStatus.set(refNum, entry.citationIds);
             }
             // Also build author-based lookup for APA-style references
-            const authors = entry.authors as string[];
-            if (authors && authors.length > 0) {
-              // Extract first author's last name
+            // Validate that entry.authors is an array of strings before using
+            const authors = entry.authors;
+            if (Array.isArray(authors) && authors.length > 0) {
               const firstAuthor = authors[0];
-              let lastName = firstAuthor;
+              // Skip invalid author entries
+              if (typeof firstAuthor !== 'string' || !firstAuthor.trim()) {
+                continue;
+              }
+
+              // Extract first author's last name
+              let lastName: string;
               if (firstAuthor.includes(',')) {
+                // "LastName, FirstName" format - take part before comma
                 lastName = firstAuthor.split(',')[0].trim();
               } else {
-                const parts = firstAuthor.split(/\s+/);
-                lastName = parts[0]; // First word is usually last name in "LastName, F." format
+                // "FirstName LastName" format - take last word as last name
+                const parts = firstAuthor.trim().split(/\s+/).filter(p => p.length > 0);
+                lastName = parts.length > 0 ? parts[parts.length - 1] : firstAuthor;
               }
+
+              // Skip if lastName is empty after processing
+              if (!lastName.trim()) {
+                continue;
+              }
+
               referenceAuthorStatus.set(lastName.toLowerCase(), {
                 citationIds: entry.citationIds,
                 year: entry.year || undefined
