@@ -166,27 +166,24 @@ export class PdfModifierService {
    */
   async addLanguage(doc: PDFDocument, lang: string = 'en'): Promise<ModificationResult> {
     try {
-      const context = doc.context;
-      const catalogDict = doc.catalog.dict;
+      const catalog = doc.catalog;
 
       // Get current language if exists
-      const currentLang = catalogDict.get(PDFName.of('Lang'));
+      const currentLang = catalog.get(PDFName.of('Lang'));
       const before = currentLang ? currentLang.toString() : 'Not set';
 
-      // Create a proper PDFString object using PDFString.of()
-      // Then set it directly on the catalog's dictionary
+      // Set language in catalog using public API
       const langName = PDFName.of('Lang');
       const langValue = PDFString.of(lang);
 
-      catalogDict.set(langName, langValue);
+      catalog.set(langName, langValue);
 
       // Verify it was set
-      const verify = catalogDict.get(langName);
+      const verify = catalog.get(langName);
       logger.info('Language set verification', {
         lang,
         before,
         after: verify ? verify.toString() : 'NOT SET',
-        dictHasLang: catalogDict.has(langName)
       });
 
       return {

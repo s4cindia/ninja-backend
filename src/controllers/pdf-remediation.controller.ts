@@ -1067,14 +1067,12 @@ export class PdfRemediationController {
         fileSize: buffer.length,
         mimeType: req.file.mimetype,
         magicBytes,
-        first100Bytes: buffer.slice(0, 100).toString('hex'),
       });
 
       if (!magicBytes.startsWith('%PDF-')) {
         logger.error(`[Re-Audit] Invalid PDF magic bytes`, {
           expected: '%PDF-',
           received: magicBytes,
-          bufferPreview: buffer.slice(0, 50).toString('utf8'),
         });
 
         return res.status(400).json({
