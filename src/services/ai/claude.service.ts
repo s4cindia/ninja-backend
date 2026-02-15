@@ -44,11 +44,11 @@ class ClaudeService {
   private getModelName(options: ClaudeOptions = {}): string {
     const modelType = options.model || 'sonnet';
 
-    // Claude models - use latest aliases for automatic updates
-    const models = {
-      haiku: 'claude-3-5-haiku-latest',        // Fast, cost-effective
-      sonnet: 'claude-sonnet-4-latest',        // Balanced performance (Claude Sonnet 4)
-      opus: 'claude-opus-4-latest'             // Most capable (Claude Opus 4)
+    // Claude models - use explicit dated versions for stability
+    const models: Record<string, string> = {
+      haiku: 'claude-3-5-haiku-20241022',      // Fast, cost-effective
+      sonnet: 'claude-sonnet-4-20250514',      // Balanced performance (Claude Sonnet 4)
+      opus: 'claude-opus-4-20250514'           // Most capable (Claude Opus 4)
     };
 
     return models[modelType] || models.sonnet;

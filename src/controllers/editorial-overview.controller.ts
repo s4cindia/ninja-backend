@@ -159,6 +159,10 @@ export class EditorialOverviewController {
         return;
       }
 
+      // Sanitize pagination params: clamp to minimum 0, cap limit at 100
+      const parsedLimit = Math.min(Math.max(0, parseInt(limit as string) || 20), 100);
+      const parsedOffset = Math.max(0, parseInt(offset as string) || 0);
+
       const where: Record<string, unknown> = { tenantId };
       if (status) where.status = status;
 
@@ -186,8 +190,8 @@ export class EditorialOverviewController {
             },
           },
           orderBy: { createdAt: 'desc' },
-          take: Math.min(parseInt(limit as string) || 20, 100),
-          skip: parseInt(offset as string) || 0,
+          take: parsedLimit,
+          skip: parsedOffset,
         }),
         prisma.editorialDocument.count({ where }),
       ]);
@@ -217,8 +221,8 @@ export class EditorialOverviewController {
             },
           })),
           total,
-          limit: Math.min(parseInt(limit as string) || 20, 100),
-          offset: parseInt(offset as string) || 0,
+          limit: parsedLimit,
+          offset: parsedOffset,
         },
       });
     } catch (error) {

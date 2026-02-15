@@ -153,7 +153,12 @@ export class CitationStylesheetDetectionService {
 
     if (!doc || !doc.fullText) return null;
 
-    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations);
+    // Use original processing time from document timestamps when available
+    const originalProcessingTime = doc.parsedAt && doc.createdAt
+      ? doc.parsedAt.getTime() - doc.createdAt.getTime()
+      : undefined;
+
+    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations, originalProcessingTime);
   }
 
   async getAnalysisByJobId(jobId: string, tenantId: string): Promise<StylesheetAnalysisResult | null> {
@@ -172,7 +177,7 @@ export class CitationStylesheetDetectionService {
   private async runFullAnalysis(
     documentId: string,
     jobId: string,
-    tenantId: string,
+    _tenantId: string,
     fullText: string,
     startTime: number,
     fileName?: string,
@@ -189,7 +194,8 @@ export class CitationStylesheetDetectionService {
       sectionContext: string;
       primaryComponentId: string | null;
       primaryComponent: { confidence: number } | null;
-    }>
+    }>,
+    originalProcessingTime?: number
   ): Promise<StylesheetAnalysisResult> {
 
     const styleInfo = editorialAi.detectCitationStyleFromText(fullText);
@@ -272,7 +278,9 @@ export class CitationStylesheetDetectionService {
       }));
     } else {
       const extractedCitations = await editorialAi.detectCitations(fullText);
-      citations = await this.storeCitations(documentId, extractedCitations);
+      const storeResult = await this.storeCitations(documentId, extractedCitations);
+      citations = storeResult.citations;
+      // Note: storeResult.failures contains any citations that failed to store
     }
 
     const bodyCitations = citations.filter(c =>
@@ -328,12 +336,12 @@ export class CitationStylesheetDetectionService {
       documentId,
       jobId,
       filename: fileName,
-      processingTimeMs: Date.now() - startTime,
+      processingTimeMs: originalProcessingTime ?? (Date.now() - startTime),
       detectedStyle: {
         styleCode: finalStyleCode,
         styleName: finalStyleName,
         confidence,
-        citationFormat: styleInfo.style === 'numeric-superscript' ? 'numeric-bracket' : styleInfo.style,
+        citationFormat: this.deriveCitationFormat(finalStyleCode, inferredStyle),
         evidence,
       },
       sequenceAnalysis,
@@ -721,11 +729,36 @@ export class CitationStylesheetDetectionService {
     return { styleCode: '', styleName: '', confidence: 0 };
   }
 
+  /**
+   * Derive citation format from resolved style code or inferred style
+   */
+  private deriveCitationFormat(finalStyleCode: string, inferredStyle: string): string {
+    // Numeric styles
+    const numericStyles = ['vancouver', 'ieee', 'ama', 'nlm'];
+    if (numericStyles.some(s => finalStyleCode.toLowerCase().includes(s))) {
+      return 'numeric-bracket';
+    }
+
+    // Author-date styles
+    const authorDateStyles = ['apa', 'harvard', 'chicago', 'mla'];
+    if (authorDateStyles.some(s => finalStyleCode.toLowerCase().includes(s))) {
+      return 'author-date';
+    }
+
+    // Fall back to inferred style with mapping
+    if (inferredStyle === 'numeric-superscript') {
+      return 'numeric-bracket';
+    }
+
+    return inferredStyle || 'unknown';
+  }
+
   private async storeCitations(
     documentId: string,
     extractedCitations: Awaited<ReturnType<typeof editorialAi.detectCitations>>
-  ): Promise<DetectedCitation[]> {
+  ): Promise<{ citations: DetectedCitation[]; failures: { text: string; error: string }[] }> {
     const citations: DetectedCitation[] = [];
+    const failures: { text: string; error: string }[] = [];
 
     for (const extracted of extractedCitations) {
       try {
@@ -759,11 +792,33 @@ export class CitationStylesheetDetectionService {
           parseConfidence: null,
         });
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        failures.push({ text: extracted.text.slice(0, 100), error: errorMessage });
         logger.error(`[Stylesheet Detection] Failed to store citation: ${extracted.text.slice(0, 50)}`, error instanceof Error ? error : undefined);
       }
     }
 
-    return citations;
+    if (failures.length > 0) {
+      logger.warn(`[Stylesheet Detection] ${failures.length} citations failed to store out of ${extractedCitations.length} total`);
+    }
+
+    return { citations, failures };
+  }
+
+  /**
+   * Get MIME type from file extension
+   */
+  private getMimeTypeFromExtension(fileName: string): string {
+    const ext = fileName.toLowerCase().split('.').pop() || '';
+    const mimeTypes: Record<string, string> = {
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'doc': 'application/msword',
+      'pdf': 'application/pdf',
+      'txt': 'text/plain',
+      'rtf': 'application/rtf',
+      'odt': 'application/vnd.oasis.opendocument.text',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
   }
 
   private async createEditorialDocument(
@@ -779,13 +834,16 @@ export class CitationStylesheetDetectionService {
 
     if (existing) return existing;
 
+    // Derive MIME type from file extension dynamically
+    const mimeType = this.getMimeTypeFromExtension(fileName);
+
     return prisma.editorialDocument.create({
       data: {
         jobId,
         tenantId,
         fileName,
         originalName: fileName,
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        mimeType,
         fileSize,
         storagePath: '',
         fullText: parsed.text,
