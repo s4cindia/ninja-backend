@@ -4,7 +4,7 @@ import { claudeService } from '../ai/claude.service';
 import { editorialAi } from '../shared';
 import { crossRefService, EnrichedMetadata } from './crossref.service';
 import { styleRulesService } from './style-rules.service';
-import { citationParsingService } from './citation-parsing.service';
+import { citationParsingService as _citationParsingService } from './citation-parsing.service';
 import { AppError } from '../../utils/app-error';
 
 export interface ReferenceEntry {
@@ -178,7 +178,7 @@ class ReferenceListService {
                 })));
               }
             }
-          } catch (err) {
+          } catch (_err) {
             logger.warn(`[Reference List] CrossRef lookup failed for DOI ${aiEntry.doi}`);
           }
         }
@@ -580,7 +580,7 @@ Return a JSON object:
     return columns[styleCode] || 'formattedApa';
   }
 
-  private fallbackFormat(entry: any, styleCode: string): string {
+  private fallbackFormat(entry: any, _styleCode: string): string {
     const rawAuthors = Array.isArray(entry.authors) ? entry.authors : [];
     const validAuthors = rawAuthors.filter((a: any) => {
       if (!a || typeof a !== 'object') return false;

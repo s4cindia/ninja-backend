@@ -7,7 +7,7 @@
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { logger } from '../../lib/logger';
-import { InTextCitation } from './ai-citation-detector.service';
+import { InTextCitation as _InTextCitation } from './ai-citation-detector.service';
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
 export interface DOCXContent {
@@ -1173,7 +1173,7 @@ class DOCXProcessorService {
             { pattern: /(<w:t[^>]*>)\s*\[(\d+)\]\s*/, format: 'bracket' },
           ];
 
-          let numberChanged = false;
+          let _numberChanged = false;
 
           for (const { pattern, format } of numberPatterns) {
             const match = updatedPara.match(pattern);
@@ -1214,7 +1214,7 @@ class DOCXProcessorService {
                     updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
                   }
                 }
-                numberChanged = true;
+                _numberChanged = true;
               } else if (!acceptChanges && item.isSwapped && item.swappedWith) {
                 // Track Changes only: Number stayed the same BUT position was swapped - highlight entire paragraph
                 updatedPara = this.addHighlightToAllText(updatedPara, 'yellow');
@@ -1329,7 +1329,7 @@ class DOCXProcessorService {
 
     // Simplified approach: Replace all text content after number with Track Changes
     // Find position of content in the XML
-    let modified = false;
+    let _modified = false;
     let result = paragraphXml;
 
     // Find text runs with content
@@ -1371,8 +1371,8 @@ class DOCXProcessorService {
     }
 
     // We'll replace from the first content run to the last
-    const firstRun = contentRuns[0];
-    const lastRun = contentRuns[contentRuns.length - 1];
+    const _firstRun = contentRuns[0];
+    const _lastRun = contentRuns[contentRuns.length - 1];
 
     if (acceptChanges) {
       // CLEAN EXPORT: Replace content directly without Track Changes
@@ -1564,7 +1564,7 @@ class DOCXProcessorService {
     return { wordCount: words.length, paragraphCount: paragraphs.length, pageCount: Math.ceil(words.length / 250) };
   }
 
-  async updateReferences(originalBuffer: Buffer, newReferences: string[]): Promise<Buffer> {
+  async updateReferences(originalBuffer: Buffer, _newReferences: string[]): Promise<Buffer> {
     return originalBuffer;
   }
 }

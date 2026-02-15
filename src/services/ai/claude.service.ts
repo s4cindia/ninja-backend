@@ -4,7 +4,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { aiConfig } from '../../config/ai.config';
+import { aiConfig as _aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
 
