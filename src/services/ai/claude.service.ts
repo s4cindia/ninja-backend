@@ -47,8 +47,8 @@ class ClaudeService {
     // Claude models - use latest aliases for automatic updates
     const models = {
       haiku: 'claude-3-5-haiku-latest',        // Fast, cost-effective
-      sonnet: 'claude-sonnet-4-20250514',      // Balanced performance (Claude Sonnet 4)
-      opus: 'claude-opus-4-5-20251101'         // Most capable (Claude Opus 4.5)
+      sonnet: 'claude-sonnet-4-latest',        // Balanced performance (Claude Sonnet 4)
+      opus: 'claude-opus-4-latest'             // Most capable (Claude Opus 4)
     };
 
     return models[modelType] || models.sonnet;

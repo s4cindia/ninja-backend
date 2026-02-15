@@ -10,10 +10,16 @@ export interface CorrectionResult {
   changeId: string;
 }
 
+export interface CorrectionError {
+  validationId: string;
+  error: string;
+}
+
 export interface BatchCorrectionResult {
   correctedCount: number;
   skippedCount: number;
   changes: CorrectionResult[];
+  errors: CorrectionError[];
 }
 
 class CitationCorrectionService {
@@ -44,11 +50,14 @@ class CitationCorrectionService {
     const originalText = validation.citation.rawText;
     const correctedText = validation.suggestedFix;
 
+    // Calculate the new text once - replaces first occurrence of the violation
+    // Note: Using replace() which only replaces the first match. This is intentional
+    // as each validation targets a specific violation instance.
+    const newRawText = originalText.replace(validation.originalText, correctedText);
+
     await prisma.citation.update({
       where: { id: validation.citationId },
-      data: {
-        rawText: originalText.replace(validation.originalText, correctedText)
-      }
+      data: { rawText: newRawText }
     });
 
     const change = await prisma.citationChange.create({
@@ -57,7 +66,7 @@ class CitationCorrectionService {
         citationId: validation.citationId,
         changeType: 'correction',
         beforeText: originalText,
-        afterText: originalText.replace(validation.originalText, correctedText),
+        afterText: newRawText,
         appliedBy: tenantId
       }
     });
@@ -75,7 +84,7 @@ class CitationCorrectionService {
       validationId,
       citationId: validation.citationId,
       originalText,
-      correctedText: originalText.replace(validation.originalText, correctedText),
+      correctedText: newRawText,
       changeId: change.id
     };
   }
@@ -206,22 +215,24 @@ class CitationCorrectionService {
     }
 
     const results: CorrectionResult[] = [];
-    let skippedCount = 0;
+    const errors: CorrectionError[] = [];
 
     for (const validation of validations) {
       try {
         const result = await this.acceptCorrection(validation.id, tenantId);
         results.push(result);
       } catch (error) {
-        logger.warn(`[Correction] Skipped validation ${validation.id}`, error instanceof Error ? error : undefined);
-        skippedCount++;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        logger.warn(`[Correction] Skipped validation ${validation.id}: ${errorMessage}`, error instanceof Error ? error : undefined);
+        errors.push({ validationId: validation.id, error: errorMessage });
       }
     }
 
     return {
       correctedCount: results.length,
-      skippedCount,
-      changes: results
+      skippedCount: errors.length,
+      changes: results,
+      errors
     };
   }
 

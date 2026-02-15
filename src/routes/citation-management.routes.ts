@@ -3,7 +3,7 @@
  * Comprehensive citation tool API
  */
 
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
 import { citationManagementController } from '../controllers/citation-management.controller';
@@ -30,52 +30,67 @@ const upload = multer({
 });
 
 // ============================================
-// DEBUG ENDPOINT (no auth required for testing)
+// DEBUG ENDPOINTS (disabled in production)
 // ============================================
+
+// Middleware to block debug endpoints in production
+const blockInProduction = (_req: Request, res: Response, next: NextFunction) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'DEBUG_DISABLED', message: 'Debug endpoints are disabled in production' }
+    });
+  }
+  next();
+};
 
 /**
  * GET /api/v1/citation-management/document/:documentId/export-debug
- * Debug endpoint to check document state before export (NO AUTH for testing)
+ * Debug endpoint to check document state before export (DEVELOPMENT ONLY)
  */
 router.get(
   '/document/:documentId/export-debug',
+  blockInProduction,
   citationManagementController.exportDebug.bind(citationManagementController)
 );
 
 /**
  * POST /api/v1/citation-management/document/:documentId/debug-style-conversion
- * Debug endpoint to test style conversion and verify formattedApa is saved (NO AUTH for testing)
+ * Debug endpoint to test style conversion (DEVELOPMENT ONLY)
  */
 router.post(
   '/document/:documentId/debug-style-conversion',
+  blockInProduction,
   citationManagementController.debugStyleConversion.bind(citationManagementController)
 );
 
 /**
  * POST /api/v1/citation-management/document/:documentId/reanalyze
- * Re-analyze document with auto-resequencing (NO AUTH for testing)
- * Clears existing citations/references and re-runs analysis
+ * Re-analyze document with auto-resequencing (DEVELOPMENT ONLY)
  */
 router.post(
   '/document/:documentId/reanalyze',
+  blockInProduction,
   citationManagementController.reanalyze.bind(citationManagementController)
 );
 
 /**
  * GET /api/v1/citation-management/document/:documentId/preview-debug
- * Debug preview endpoint (NO AUTH for testing)
+ * Debug preview endpoint (DEVELOPMENT ONLY)
  */
 router.get(
   '/document/:documentId/preview-debug',
+  blockInProduction,
   citationManagementController.previewChanges.bind(citationManagementController)
 );
 
 /**
  * GET /api/v1/citation-management/document/:documentId/export-debug-docx
- * Debug export endpoint (NO AUTH for testing)
+ * Debug export endpoint (DEVELOPMENT ONLY)
  */
 router.get(
   '/document/:documentId/export-debug-docx',
+  blockInProduction,
   citationManagementController.exportDocument.bind(citationManagementController)
 );
 

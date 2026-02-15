@@ -78,37 +78,57 @@ class DOIValidationService {
 
   /**
    * Batch validate DOIs for multiple references
+   * Uses parallel processing with Promise.allSettled for better performance
    */
   async validateReferences(references: ReferenceEntry[]): Promise<ReferenceValidation[]> {
-    logger.info(`[DOI Validation] Validating ${references.length} references`);
+    logger.info(`[DOI Validation] Validating ${references.length} references in parallel`);
 
-    const results: ReferenceValidation[] = [];
+    // Separate references with and without DOIs
+    const refsWithDOI = references.filter(ref => ref.components.doi);
+    const refsWithoutDOI = references.filter(ref => !ref.components.doi);
 
-    for (const ref of references) {
-      if (!ref.components.doi) {
-        results.push({
+    // Process references without DOI immediately
+    const noDoiResults: ReferenceValidation[] = refsWithoutDOI.map(ref => ({
+      referenceId: ref.id,
+      hasValidDOI: false,
+      suggestions: ['No DOI found in reference']
+    }));
+
+    // Validate DOIs in parallel
+    const validationPromises = refsWithDOI.map(async (ref) => {
+      const validation = await this.validateDOI(ref.components.doi!);
+      return { ref, validation };
+    });
+
+    const settledResults = await Promise.allSettled(validationPromises);
+
+    // Process parallel validation results
+    const doiResults: ReferenceValidation[] = settledResults.map((result, index) => {
+      const ref = refsWithDOI[index];
+
+      if (result.status === 'rejected') {
+        logger.warn(`[DOI Validation] Failed for ref ${ref.id}: ${result.reason}`);
+        return {
           referenceId: ref.id,
           hasValidDOI: false,
-          suggestions: ['No DOI found in reference']
-        });
-        continue;
+          suggestions: ['DOI validation failed - service unavailable']
+        };
       }
 
-      const validation = await this.validateDOI(ref.components.doi);
+      const { validation } = result.value;
 
       if (!validation.valid) {
-        results.push({
+        return {
           referenceId: ref.id,
           hasValidDOI: false,
           suggestions: [validation.error || 'Invalid DOI']
-        });
-        continue;
+        };
       }
 
       // Check for discrepancies between reference and DOI metadata
       const discrepancies = this.findDiscrepancies(ref, validation.metadata!);
 
-      results.push({
+      return {
         referenceId: ref.id,
         hasValidDOI: true,
         metadata: validation.metadata,
@@ -116,10 +136,14 @@ class DOIValidationService {
         suggestions: discrepancies.length > 0
           ? ['Metadata mismatch detected - review reference details']
           : undefined
-      });
-    }
+      };
+    });
 
-    return results;
+    // Combine results maintaining original order
+    const resultMap = new Map<string, ReferenceValidation>();
+    [...noDoiResults, ...doiResults].forEach(r => resultMap.set(r.referenceId, r));
+
+    return references.map(ref => resultMap.get(ref.id)!);
   }
 
   /**
