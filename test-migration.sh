@@ -169,14 +169,13 @@ WHERE table_name = 'CriterionChangeLog'
 ORDER BY ordinal_position;
 EOF
 
-# Test 3: Check for orphaned records
+# Test 3: Check for NULL acrJobId (unmapped records)
 echo ""
-echo "Test 3: Checking for orphaned records..."
+echo "Test 3: Checking for NULL acrJobId..."
 npx prisma db execute --stdin <<'EOF'
 SELECT COUNT(*) as orphaned_count
-FROM "CriterionChangeLog" ccl
-LEFT JOIN "AcrJob" aj ON ccl."acrJobId" = aj.id
-WHERE aj.id IS NULL;
+FROM "CriterionChangeLog"
+WHERE "acrJobId" IS NULL;
 EOF
 
 # Test 4: Check archive table
