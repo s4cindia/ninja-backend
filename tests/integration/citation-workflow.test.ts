@@ -20,6 +20,7 @@ vi.mock('../../src/lib/prisma', () => ({
       createMany: vi.fn(),
       deleteMany: vi.fn(),
       count: vi.fn(),
+      update: vi.fn(),
     },
     citation: {
       findMany: vi.fn(),
@@ -69,6 +70,18 @@ vi.mock('../../src/services/citation/doi-validation.service', () => ({
   doiValidationService: {
     validateDOI: vi.fn(),
     validateReferences: vi.fn(),
+  },
+}));
+
+// Hoist mock for AI format converter
+const { mockConvertStyle } = vi.hoisted(() => ({
+  mockConvertStyle: vi.fn(),
+}));
+
+vi.mock('../../src/services/citation/ai-format-converter.service', () => ({
+  CitationStyle: {},
+  aiFormatConverterService: {
+    convertStyle: mockConvertStyle,
   },
 }));
 
@@ -345,6 +358,22 @@ describe('Citation Workflow Integration', () => {
         citations: [],
       } as any);
 
+      // Mock AI format converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [
+          { id: 'ref-1', rawText: 'APA: Smith J.' },
+          { id: 'ref-2', rawText: 'APA: Jones A.' },
+        ],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'APA',
+        changes: [
+          { referenceId: 'ref-1', oldFormat: 'Smith J. Paper title. Journal. 2023;1:1-10.', newFormat: 'APA: Smith J.' },
+          { referenceId: 'ref-2', oldFormat: 'Jones A. Another paper. Journal. 2022;2:20-30.', newFormat: 'APA: Jones A.' },
+        ],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({
         id: 'doc-123',
@@ -670,9 +699,20 @@ describe('Citation Workflow Integration', () => {
         id: 'doc-1',
         tenantId: TENANT_ID,
         referenceListStyle: 'Vancouver',
-        referenceListEntries: [{ id: 'r1', formattedApa: 'Ref 1' }],
+        referenceListEntries: [{ id: 'r1', formattedApa: 'Ref 1', title: 'Title 1' }],
         citations: [],
       } as any);
+
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'r1', rawText: 'APA Ref 1' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'APA',
+        changes: [{ referenceId: 'r1', oldFormat: 'Ref 1', newFormat: 'APA Ref 1' }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({ referenceListStyle: 'APA' } as any);
 

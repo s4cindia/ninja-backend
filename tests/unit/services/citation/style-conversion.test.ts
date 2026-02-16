@@ -6,6 +6,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 
+// Hoist mock function so it's available when vi.mock is hoisted
+const { mockConvertStyle } = vi.hoisted(() => ({
+  mockConvertStyle: vi.fn(),
+}));
+
 // Mock Prisma
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
@@ -31,6 +36,14 @@ vi.mock('../../../../src/lib/logger', () => ({
     error: vi.fn(),
     warn: vi.fn(),
     debug: vi.fn(),
+  },
+}));
+
+// Mock AI Format Converter Service
+vi.mock('../../../../src/services/citation/ai-format-converter.service', () => ({
+  CitationStyle: {},
+  aiFormatConverterService: {
+    convertStyle: mockConvertStyle,
   },
 }));
 
@@ -71,6 +84,15 @@ describe('Citation Style Conversion', () => {
     };
 
     vi.clearAllMocks();
+
+    // Default mock for aiFormatConverterService.convertStyle
+    mockConvertStyle.mockResolvedValue({
+      convertedReferences: [],
+      convertedCitations: [],
+      citationConversions: [],
+      targetStyle: 'APA',
+      changes: [],
+    });
   });
 
   afterEach(() => {
@@ -142,11 +164,21 @@ describe('Citation Style Conversion', () => {
         id: 'doc-123',
         tenantId: TENANT_ID,
         referenceListEntries: [
-          { id: 'ref-1', formattedApa: 'Reference 1', authors: ['Smith'], year: '2023' },
+          { id: 'ref-1', formattedApa: 'Reference 1', authors: ['Smith'], year: '2023', title: 'Title' },
         ],
         citations: [],
       } as any);
 
+      // Mock AI converter to return conversion results
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'ref-1', rawText: 'Converted Reference 1' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: validStyle,
+        changes: [{ referenceId: 'ref-1', oldFormat: 'Reference 1', newFormat: 'Converted Reference 1' }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
@@ -183,6 +215,20 @@ describe('Citation Style Conversion', () => {
         citations: [],
       } as any);
 
+      // Mock AI converter to return conversion results for all references
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: mockReferences.map(r => ({ id: r.id, rawText: `APA: ${r.title}` })),
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'APA',
+        changes: mockReferences.map(r => ({
+          referenceId: r.id,
+          oldFormat: r.formattedApa,
+          newFormat: `APA: ${r.title}`,
+        })),
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({
         referenceListStyle: 'APA',
@@ -223,10 +269,20 @@ describe('Citation Style Conversion', () => {
         id: 'doc-123',
         tenantId: TENANT_ID,
         referenceListStyle: 'APA',
-        referenceListEntries: [{ id: 'ref-1', formattedApa: 'Ref 1' }],
+        referenceListEntries: [{ id: 'ref-1', formattedApa: 'Ref 1', title: 'Title' }],
         citations: [],
       } as any);
 
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'ref-1', rawText: 'Chicago Ref 1' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'Chicago',
+        changes: [{ referenceId: 'ref-1', oldFormat: 'Ref 1', newFormat: 'Chicago Ref 1' }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
@@ -255,6 +311,22 @@ describe('Citation Style Conversion', () => {
         citations: [],
       } as any);
 
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [
+          { id: 'ref-1', rawText: 'MLA 1' },
+          { id: 'ref-2', rawText: 'MLA 2' },
+        ],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'MLA',
+        changes: [
+          { referenceId: 'ref-1', oldFormat: 'Original 1', newFormat: 'MLA 1' },
+          { referenceId: 'ref-2', oldFormat: 'Original 2', newFormat: 'MLA 2' },
+        ],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
@@ -326,12 +398,22 @@ describe('Citation Style Conversion', () => {
         citations: [],
       } as any);
 
+      // Mock AI converter - the service receives "Fallback Title" as rawText
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'ref-1', rawText: 'IEEE Fallback Title' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'IEEE',
+        changes: [{ referenceId: 'ref-1', oldFormat: 'Fallback Title', newFormat: 'IEEE Fallback Title' }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
       await controller.convertStyle(mockReq as Request, mockRes as Response, mockNext);
 
-      // Should use title as fallback
+      // Should use title as fallback (from the conversion result)
       expect(prisma.citationChange.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -354,6 +436,16 @@ describe('Citation Style Conversion', () => {
         citations: [],
       } as any);
 
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'ref-1', rawText: '' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'Harvard',
+        changes: [{ referenceId: 'ref-1', oldFormat: '', newFormat: '' }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
@@ -410,24 +502,43 @@ describe('Citation Style Conversion', () => {
         id: 'doc-123',
         tenantId: TENANT_ID,
         referenceListEntries: [
-          { id: 'ref-1', formattedApa: 'Good reference' },
-          { id: 'ref-2', formattedApa: 'Another reference' },
+          { id: 'ref-1', formattedApa: 'Good reference', title: 'Good' },
+          { id: 'ref-2', formattedApa: 'Another reference', title: 'Another' },
         ],
         citations: [],
       } as any);
 
-      // First succeeds, second fails
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [
+          { id: 'ref-1', rawText: 'APA Good' },
+          { id: 'ref-2', rawText: 'APA Another' },
+        ],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'APA',
+        changes: [
+          { referenceId: 'ref-1', oldFormat: 'Good reference', newFormat: 'APA Good' },
+          { referenceId: 'ref-2', oldFormat: 'Another reference', newFormat: 'APA Another' },
+        ],
+      });
+
+      // First reference update succeeds, second fails
+      vi.mocked(prisma.referenceListEntry.update)
+        .mockResolvedValueOnce({} as any)
+        .mockRejectedValueOnce(new Error('Update failed'));
+
+      // First change record succeeds, second fails due to the update failure
       vi.mocked(prisma.citationChange.create)
         .mockResolvedValueOnce({} as any)
-        .mockRejectedValueOnce(new Error('Insert failed'));
+        .mockResolvedValueOnce({} as any);
 
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
       await controller.convertStyle(mockReq as Request, mockRes as Response, mockNext);
 
       const response = jsonMock.mock.calls[0][0];
-      // Note: Current implementation pushes success result before DB operation,
-      // so failure adds another entry. Results contain both success and failure entries.
+      // Results contain both success and failure entries
       expect(response.data.results.length).toBeGreaterThanOrEqual(2);
       // At least one reference should have failed
       const hasFailedResult = response.data.results.some((r: { success: boolean }) => !r.success);
@@ -460,6 +571,20 @@ describe('Citation Style Conversion', () => {
         citations: [],
       } as any);
 
+      // Mock AI converter
+      mockConvertStyle.mockResolvedValue({
+        convertedReferences: [{ id: 'ref-1', rawText: 'Vancouver formatted ref' }],
+        convertedCitations: [],
+        citationConversions: [],
+        targetStyle: 'Vancouver',
+        changes: [{
+          referenceId: 'ref-1',
+          oldFormat: originalRef.formattedApa,
+          newFormat: 'Vancouver formatted ref',
+        }],
+      });
+
+      vi.mocked(prisma.referenceListEntry.update).mockResolvedValue({} as any);
       vi.mocked(prisma.citationChange.create).mockResolvedValue({} as any);
       vi.mocked(prisma.editorialDocument.update).mockResolvedValue({} as any);
 
