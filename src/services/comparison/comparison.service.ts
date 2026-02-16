@@ -28,6 +28,12 @@ function decodeChangeContent<T extends { beforeContent?: string | null; afterCon
   };
 }
 
+/**
+ * Maximum number of records to return per page
+ * Prevents OOM errors and excessive query times for large result sets
+ */
+const MAX_PAGINATION_LIMIT = 200;
+
 export class ComparisonService {
   constructor(private prisma: PrismaClient) {}
 
@@ -47,7 +53,8 @@ export class ComparisonService {
     }
 
     const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
+    const requestedLimit = pagination?.limit || 50;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
@@ -141,7 +148,8 @@ export class ComparisonService {
     }
 
     const page = filters.page || 1;
-    const limit = filters.limit || 50;
+    const requestedLimit = filters.limit || 50;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([

@@ -4,6 +4,13 @@ import { ComparisonFilters } from '../types/comparison.types';
 import prisma from '../lib/prisma';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 
+/**
+ * Maximum number of records to return per page
+ * Prevents OOM errors and excessive query times for large result sets
+ * Must match MAX_PAGINATION_LIMIT in comparison.service.ts
+ */
+const MAX_PAGINATION_LIMIT = 200;
+
 export class ComparisonController {
   constructor(private comparisonService: ComparisonService) {}
 
@@ -35,7 +42,9 @@ export class ComparisonController {
       const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
       const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
       const page = parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : undefined;
-      const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+      const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, MAX_PAGINATION_LIMIT)
+        : undefined;
 
       const data = await this.comparisonService.getComparison(jobId, { page, limit });
 
@@ -81,6 +90,9 @@ export class ComparisonController {
         return;
       }
 
+      const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
+      const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+
       const filters: ComparisonFilters = {
         changeType: req.query.changeType as string | undefined,
         severity: req.query.severity as string | undefined,
@@ -88,8 +100,10 @@ export class ComparisonController {
         wcagCriteria: req.query.wcagCriteria as string | undefined,
         filePath: req.query.filePath as string | undefined,
         search: req.query.search as string | undefined,
-        page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
-        limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+        page: parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : undefined,
+        limit: parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0
+          ? Math.min(parsedLimit, MAX_PAGINATION_LIMIT)
+          : undefined,
       };
 
       const data = await this.comparisonService.getChangesByFilter(jobId, filters);
