@@ -8,6 +8,7 @@ import {
   PaginationInfo,
 } from '../../types/comparison.types';
 import { logger } from '../../lib/logger';
+import { MAX_PAGINATION_LIMIT, DEFAULT_PAGINATION_LIMIT, MAX_PAGE } from '../../constants/pagination.constants';
 
 function decodeHtmlEntities(str: string | null): string | null {
   if (!str) return str;
@@ -46,9 +47,19 @@ export class ComparisonService {
       throw new Error('Job not found');
     }
 
-    const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
-    const skip = (page - 1) * limit;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(pagination?.page) ? pagination!.page! : 1;
+    const inputLimit = Number.isFinite(pagination?.limit) ? pagination!.limit! : DEFAULT_PAGINATION_LIMIT;
+
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
+
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -71,20 +82,22 @@ export class ComparisonService {
     const byWcag = this.groupByField(allChanges, 'wcagCriteria');
 
     const paginationInfo: PaginationInfo = {
-      page,
+      page: safePage,
       limit,
       total: totalChanges,
       pages: Math.ceil(totalChanges / limit),
     };
 
-    const input = job.input as Record<string, any>;
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = job.input as Record<string, unknown>;
+    const fileName = typeof input?.fileName === 'string' ? input.fileName
+      : typeof input?.filename === 'string' ? input.filename
+      : 'Unknown';
 
     return {
       jobId,
       fileName,
-      originalFileId: input?.originalFileId,
-      remediatedFileId: input?.remediatedFileId,
+      originalFileId: input?.originalFileId as string | undefined,
+      remediatedFileId: input?.remediatedFileId as string | undefined,
       auditedAt: job.startedAt || undefined,
       remediatedAt: job.completedAt || undefined,
       summary,
@@ -140,9 +153,19 @@ export class ComparisonService {
       ];
     }
 
-    const page = filters.page || 1;
-    const limit = filters.limit || 50;
-    const skip = (page - 1) * limit;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(filters.page) ? filters.page! : 1;
+    const inputLimit = Number.isFinite(filters.limit) ? filters.limit! : DEFAULT_PAGINATION_LIMIT;
+
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
+
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -169,8 +192,10 @@ export class ComparisonService {
       select: { input: true },
     });
 
-    const input = (job?.input as Record<string, any>) || {};
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = (job?.input as Record<string, unknown>) || {};
+    const fileName = typeof input?.fileName === 'string' ? input.fileName
+      : typeof input?.filename === 'string' ? input.filename
+      : 'Unknown';
 
     return {
       jobId,
@@ -180,7 +205,7 @@ export class ComparisonService {
       bySeverity,
       byWcag,
       pagination: {
-        page,
+        page: safePage,
         limit,
         total: totalChanges,
         pages: Math.ceil(totalChanges / limit),
