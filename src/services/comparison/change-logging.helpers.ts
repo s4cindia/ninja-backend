@@ -1,3 +1,12 @@
+/**
+ * Maps issue/fix codes to human-readable change types
+ *
+ * @param fixCode - Issue code (e.g., 'EPUB-IMG-001', 'PDF-NO-LANGUAGE', 'MATTERHORN-01-001')
+ * @returns Change type string (e.g., 'add-alt-text', 'add-language', 'set-marked-flag')
+ * @example
+ * mapFixTypeToChangeType('PDF-NO-LANGUAGE') // Returns 'add-language'
+ * mapFixTypeToChangeType('MATTERHORN-01-001') // Returns 'set-marked-flag'
+ */
 export function mapFixTypeToChangeType(fixCode: string): string {
   const mappings: Record<string, string> = {
     // EPUB codes
@@ -36,6 +45,16 @@ export function mapFixTypeToChangeType(fixCode: string): string {
   return mappings[fixCode] || fixCode.toLowerCase().replace(/[_\s]+/g, '-');
 }
 
+/**
+ * Extracts WCAG success criterion number from issue/rule code
+ *
+ * @param ruleId - Issue or rule code
+ * @returns WCAG criterion number (e.g., '1.1.1', '2.4.2', '3.1.1') or undefined
+ * @example
+ * extractWcagCriteria('PDF-NO-LANGUAGE') // Returns '3.1.1'
+ * extractWcagCriteria('MATTERHORN-01-001') // Returns '1.3.1'
+ * extractWcagCriteria('WCAG-2.4.2') // Returns '2.4.2' (extracted from code)
+ */
 export function extractWcagCriteria(ruleId: string): string | undefined {
   const wcagMappings: Record<string, string> = {
     // EPUB codes
@@ -82,6 +101,15 @@ export function extractWcagCriteria(ruleId: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Extracts WCAG conformance level from issue/rule code
+ *
+ * @param ruleId - Issue or rule code
+ * @returns WCAG level ('A', 'AA', or 'AAA'), defaults to 'A' if unknown
+ * @example
+ * extractWcagLevel('EPUB-IMG-001') // Returns 'A'
+ * extractWcagLevel('EPUB-CONTRAST-001') // Returns 'AA'
+ */
 export function extractWcagLevel(ruleId: string): string {
   const levelMappings: Record<string, string> = {
     // EPUB codes
@@ -119,6 +147,32 @@ export function extractWcagLevel(ruleId: string): string {
   return levelMappings[ruleId] || 'A';
 }
 
+/**
+ * Extracts severity level for an issue/rule code
+ *
+ * Severity Classification Rationale:
+ * - CRITICAL: Issues that completely break accessibility or PDF/UA compliance
+ *   - Missing structure tree (MATTERHORN-01-001) - AT cannot navigate
+ *   - Suspect elements (MATTERHORN-01-005) - structural integrity compromised
+ *   - Missing alt text (EPUB-IMG-001) - images invisible to screen readers
+ *
+ * - MAJOR: Issues that significantly impact accessibility but don't prevent usage
+ *   - Missing language (PDF-NO-LANGUAGE) - AT may use wrong pronunciation
+ *   - Missing page title (WCAG-2.4.2) - navigation/orientation issues
+ *   - Structural issues (heading hierarchy, landmarks) - navigation harder
+ *
+ * - MINOR: Issues that improve accessibility but have workarounds
+ *   - DisplayDocTitle preference (MATTERHORN-01-002) - cosmetic
+ *   - Creator metadata (PDF-NO-CREATOR) - informational only
+ *   - Document title (PDF-NO-TITLE) - filename provides fallback
+ *
+ * @param ruleId - Issue or rule code
+ * @returns Severity level ('CRITICAL', 'MAJOR', or 'MINOR'), defaults to 'MAJOR' if unknown
+ * @example
+ * extractSeverity('MATTERHORN-01-001') // Returns 'CRITICAL' - structure required
+ * extractSeverity('PDF-NO-LANGUAGE') // Returns 'MAJOR' - impacts AT
+ * extractSeverity('PDF-NO-TITLE') // Returns 'MINOR' - cosmetic improvement
+ */
 export function extractSeverity(ruleId: string): string {
   const severityMappings: Record<string, string> = {
     // PDF Auto-fixable codes (Critical - these break PDF/UA compliance)
