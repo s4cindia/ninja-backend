@@ -15,12 +15,15 @@ import type {
   RemediationTask,
   TaskStatus,
 } from '../../types/pdf-remediation.types';
-import { comparisonService } from '../comparison';
+import prisma from '../../lib/prisma';
 import {
+  ComparisonService,
   mapFixTypeToChangeType,
   extractWcagCriteria,
   extractWcagLevel,
-} from '../comparison/change-logging.helpers';
+} from '../comparison';
+
+const comparisonService = new ComparisonService(prisma);
 
 /**
  * Handler function type

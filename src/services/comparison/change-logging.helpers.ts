@@ -27,6 +27,7 @@ export function mapFixTypeToChangeType(fixCode: string): string {
     'PDF-NO-LANGUAGE': 'add-language',
     'PDF-NO-TITLE': 'add-title',
     'PDF-NO-CREATOR': 'add-creator',
+    'PDF-NO-METADATA': 'add-metadata',
     'MATTERHORN-11-001': 'add-language',
     'MATTERHORN-01-003': 'add-title',
     'WCAG-2.4.2': 'add-title',
@@ -55,14 +56,15 @@ export function extractWcagCriteria(ruleId: string): string | undefined {
     'COLOR-CONTRAST': '1.4.3',
 
     // PDF Auto-fixable codes
-    'MATTERHORN-01-001': '1.4.2', // Marked flag (PDF/UA requirement)
+    'MATTERHORN-01-001': '1.3.1', // Marked flag (Info and Relationships)
     'MATTERHORN-01-002': '2.4.2', // DisplayDocTitle
-    'MATTERHORN-01-005': '1.4.2', // Suspects flag
+    'MATTERHORN-01-005': '1.3.1', // Suspects flag (Info and Relationships)
 
     // PDF Quick-fix codes
     'PDF-NO-LANGUAGE': '3.1.1',
     'PDF-NO-TITLE': '2.4.2',
     'PDF-NO-CREATOR': '4.1.2',
+    'PDF-NO-METADATA': '1.3.1', // Metadata (Info and Relationships)
     'MATTERHORN-11-001': '3.1.1', // Document language
     'MATTERHORN-01-003': '2.4.2', // Document title
     'WCAG-2.4.2': '2.4.2', // Page titled
@@ -108,6 +110,7 @@ export function extractWcagLevel(ruleId: string): string {
     'PDF-NO-LANGUAGE': 'A',
     'PDF-NO-TITLE': 'A',
     'PDF-NO-CREATOR': 'A',
+    'PDF-NO-METADATA': 'A',
     'MATTERHORN-11-001': 'A', // Document language
     'MATTERHORN-01-003': 'A', // Document title
     'WCAG-2.4.2': 'A', // Page titled

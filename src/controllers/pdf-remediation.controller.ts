@@ -16,12 +16,14 @@ import { fileStorageService } from '../services/storage/file-storage.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { PDFName, PDFDict } from 'pdf-lib';
 import path from 'path';
-import { comparisonService } from '../services/comparison';
 import {
+  ComparisonService,
   mapFixTypeToChangeType,
   extractWcagCriteria,
   extractWcagLevel,
-} from '../services/comparison/change-logging.helpers';
+} from '../services/comparison';
+
+const comparisonService = new ComparisonService(prisma);
 
 export class PdfRemediationController {
   /**
