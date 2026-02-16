@@ -1,10 +1,40 @@
 /**
  * AI-Powered Citation Detection Service
  * Uses Claude AI to detect citations without regex
+ *
+ * Security measures:
+ * - Input size limits (max 100K characters)
+ * - Content sanitization before AI processing
+ * - Prompt injection pattern detection
  */
 
 import { claudeService } from '../ai/claude.service';
 import { logger } from '../../lib/logger';
+
+// ============================================
+// SECURITY CONSTANTS
+// ============================================
+
+/** Maximum document size for AI processing (100KB of text) */
+const MAX_DOCUMENT_SIZE = 100_000;
+
+/** Maximum size sent in a single AI prompt (50KB) */
+const MAX_PROMPT_CONTENT_SIZE = 50_000;
+
+/** Patterns that might indicate prompt injection attempts */
+const INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?)/i,
+  /disregard\s+(all\s+)?(previous|above|prior)/i,
+  /forget\s+(everything|all|your)\s+(instructions?|rules?|training)/i,
+  /you\s+are\s+now\s+(a|an|the)/i,
+  /new\s+instructions?:/i,
+  /system\s*:\s*/i,
+  /\[INST\]/i,
+  /\[\/INST\]/i,
+  /<\|im_start\|>/i,
+  /<\|im_end\|>/i,
+  /```\s*(system|assistant|user)\s*\n/i,
+];
 
 export interface InTextCitation {
   id: string;
@@ -104,8 +134,109 @@ class AICitationDetectorService {
     return inputCost + outputCost;
   }
 
+  // ============================================
+  // INPUT VALIDATION & SANITIZATION
+  // ============================================
+
+  /**
+   * Validate document input before processing
+   * @throws Error if validation fails
+   */
+  private validateInput(documentText: string): void {
+    if (!documentText || typeof documentText !== 'string') {
+      throw new Error('Invalid document: text content is required');
+    }
+
+    if (documentText.length > MAX_DOCUMENT_SIZE) {
+      throw new Error(`Document exceeds maximum size limit of ${MAX_DOCUMENT_SIZE} characters (got ${documentText.length})`);
+    }
+
+    if (documentText.trim().length === 0) {
+      throw new Error('Invalid document: content cannot be empty');
+    }
+  }
+
+  /**
+   * Check for potential prompt injection patterns
+   * @returns Array of detected suspicious patterns
+   */
+  private detectInjectionAttempts(text: string): string[] {
+    const detected: string[] = [];
+
+    for (const pattern of INJECTION_PATTERNS) {
+      const match = text.match(pattern);
+      if (match) {
+        detected.push(match[0]);
+      }
+    }
+
+    return detected;
+  }
+
+  /**
+   * Sanitize document text for safe AI processing
+   * - Removes control characters
+   * - Escapes potential injection patterns
+   * - Truncates to safe size
+   */
+  private sanitizeForAI(text: string, maxLength: number = MAX_PROMPT_CONTENT_SIZE): string {
+    // Check for injection attempts (log but don't block - could be legitimate content)
+    const injectionAttempts = this.detectInjectionAttempts(text);
+    if (injectionAttempts.length > 0) {
+      logger.warn(`[AI Citation Detector] Potential prompt injection patterns detected: ${injectionAttempts.join(', ')}`);
+    }
+
+    let sanitized = text;
+
+    // Remove null bytes and control characters (except newlines and tabs)
+    sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+    // Normalize whitespace (multiple spaces/tabs to single space, preserve newlines)
+    sanitized = sanitized.replace(/[^\S\n]+/g, ' ');
+
+    // Remove excessive consecutive newlines (more than 3)
+    sanitized = sanitized.replace(/\n{4,}/g, '\n\n\n');
+
+    // Escape backticks that might break JSON/code fence parsing
+    sanitized = sanitized.replace(/```/g, '` ` `');
+
+    // Truncate to maximum length, trying to break at word boundary
+    if (sanitized.length > maxLength) {
+      let truncateAt = maxLength;
+      // Find last space within the limit
+      const lastSpace = sanitized.lastIndexOf(' ', maxLength);
+      if (lastSpace > maxLength * 0.8) {
+        truncateAt = lastSpace;
+      }
+      sanitized = sanitized.substring(0, truncateAt);
+      logger.info(`[AI Citation Detector] Document truncated from ${text.length} to ${truncateAt} characters`);
+    }
+
+    return sanitized;
+  }
+
+  /**
+   * Prepare document content for AI prompt
+   * Combines validation, sanitization, and truncation
+   */
+  private prepareDocumentForAI(documentText: string): string {
+    // Validate input
+    this.validateInput(documentText);
+
+    // Sanitize content
+    const sanitized = this.sanitizeForAI(documentText, MAX_PROMPT_CONTENT_SIZE);
+
+    // Add truncation marker if content was shortened
+    const wasTruncated = sanitized.length < documentText.length;
+
+    return wasTruncated ? `${sanitized}\n\n[Document truncated - ${documentText.length - sanitized.length} characters omitted]` : sanitized;
+  }
+
   /**
    * Analyze document for citations using AI
+   * @param documentText - The document text to analyze (max 100K characters)
+   * @param options - Analysis options
+   * @throws Error if document exceeds size limits or fails validation
    */
   async analyzeDocument(
     documentText: string,
@@ -118,18 +249,23 @@ class AICitationDetectorService {
     this.resetTokenUsage();
 
     try {
+      // Validate and sanitize input before processing
+      this.validateInput(documentText);
+      const sanitizedText = this.prepareDocumentForAI(documentText);
+      logger.info(`[AI Citation Detector] Document validated (${documentText.length} chars, sanitized to ${sanitizedText.length} chars)`);
+
       // Step 1: Detect in-text citations using AI
-      const inTextCitations = await this.detectInTextCitations(documentText);
+      const inTextCitations = await this.detectInTextCitations(sanitizedText);
       logger.info(`[AI Citation Detector] Found ${inTextCitations.length} in-text citations`);
 
       // Step 2: Extract reference list using AI
-      const references = await this.extractReferenceList(documentText);
+      const references = await this.extractReferenceList(sanitizedText);
       logger.info(`[AI Citation Detector] Extracted ${references.length} references`);
 
       // Step 3: Detect citation style
       let detectedStyle = 'Unknown';
       if (options.detectStyle !== false) {
-        detectedStyle = await this.detectCitationStyle(documentText, references);
+        detectedStyle = await this.detectCitationStyle(sanitizedText, references);
         logger.info(`[AI Citation Detector] Detected style: ${detectedStyle}`);
       }
 
@@ -171,47 +307,35 @@ class AICitationDetectorService {
 
   /**
    * Detect all in-text citations using AI (NO REGEX)
+   * @param documentText - Pre-sanitized document text
    */
   private async detectInTextCitations(documentText: string): Promise<InTextCitation[]> {
-    const prompt = `Find ALL in-text citations in this document. Return ONLY a JSON array.
+    // Build prompt with clear boundaries to prevent injection
+    const prompt = `TASK: Find ALL in-text citations in the document below. Return ONLY a JSON array.
 
-IGNORE: Superscript numbers immediately after author names (these are affiliations, NOT citations).
+INSTRUCTIONS:
+- IGNORE superscript numbers immediately after author names (these are affiliations, NOT citations)
+- Find NUMERIC citations: [1], [2], [3-5], (1), (2)
+- Find FOOTNOTE citations: superscript numbers ¹ ² ³ at end of sentences
+- Find AUTHOR-YEAR citations: (Smith, 2020), (Smith & Jones, 2020), (Smith et al., 2020)
 
-Find these citation types:
+OUTPUT FORMAT (JSON array only):
+[{"text":"[1,2]","paragraph":1,"startChar":50,"type":"numeric","format":"bracket","numbers":[1,2],"context":"ability [1,2]. However"}]
 
-1. NUMERIC citations (Vancouver, IEEE styles):
-   - Brackets: [1], [2], [3-5], [3–5], [1,2,3], [1,2]
-   - Parentheses: (1), (2), (3-5)
-   - Ranges use hyphen (-) or en-dash (–)
-
-2. SUPERSCRIPT/FOOTNOTE citations (Chicago style):
-   - Superscript numbers at end of sentences: ¹ ² ³ ⁴ ⁵ etc.
-   - These are footnote markers, type="footnote", format="superscript"
-
-3. AUTHOR-YEAR citations (APA, Harvard, Chicago author-date):
-   - Single author: (Smith, 2020), Smith (2020)
-   - Two authors: (Smith & Jones, 2020), (Marcus & Davis, 2019)
-   - Multiple authors: (Smith et al., 2020), (Brown et al., 2020)
-   - Multiple citations separated by semicolon: (Brown et al., 2020; Bommasani et al., 2021)
-   - With page: (Smith, 2020, p. 45)
-
-For each citation provide:
-- text: the exact citation text including parentheses/brackets/superscript
+Fields:
+- text: exact citation text
 - paragraph: paragraph number (1-based)
 - startChar: character position
-- type: "numeric" OR "author-year" OR "footnote"
-- format: "bracket" OR "parenthesis" OR "superscript"
-- numbers: array of reference numbers (for numeric/footnote citations, empty for author-year)
+- type: "numeric" | "author-year" | "footnote"
+- format: "bracket" | "parenthesis" | "superscript"
+- numbers: array of reference numbers (empty for author-year)
 - context: brief surrounding text (max 30 chars)
 
-Return JSON array ONLY. Examples:
-[{"text":"[1,2]","paragraph":1,"startChar":50,"type":"numeric","format":"bracket","numbers":[1,2],"context":"ability [1,2]. However"},
-{"text":"[3–5]","paragraph":1,"startChar":100,"type":"numeric","format":"bracket","numbers":[3,4,5],"context":"consistency [3–5]. Editorial"},
-{"text":"¹","paragraph":1,"startChar":40,"type":"footnote","format":"superscript","numbers":[1],"context":"trust.¹ Structured"},
-{"text":"(Brown et al., 2020; Bommasani et al., 2021)","paragraph":1,"startChar":80,"type":"author-year","format":"parenthesis","numbers":[],"context":"pipelines (Brown et al., 2020; Bommasani et al., 2021). Hybrid"}]
+---BEGIN DOCUMENT---
+${documentText}
+---END DOCUMENT---
 
-Document:
-${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
+Return ONLY the JSON array, no explanations.`;
 
     try {
       const result = await claudeService.generateJSONWithUsage(prompt, {
@@ -243,46 +367,37 @@ ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[trunc
 
   /**
    * Extract reference list using AI (NO REGEX)
+   * @param documentText - Pre-sanitized document text
    */
   private async extractReferenceList(documentText: string): Promise<ReferenceEntry[]> {
-    const prompt = `Extract ALL references from the References/Bibliography section.
+    // Build prompt with clear boundaries to prevent injection
+    const prompt = `TASK: Extract ALL references from the References/Bibliography section. Return ONLY a JSON array.
 
-CRITICAL: Return ONLY a JSON array. NO explanations, NO markdown.
+INSTRUCTIONS:
+- Find the References or Bibliography section in the document
+- Extract each reference with available metadata
+- Return ONLY a JSON array, no explanations
 
-For EACH reference, extract ALL available fields:
-- number: reference number (1, 2, 3...)
-- rawText: complete original reference text
-- authors: array of ALL author names (e.g., ["Smith J", "Jones A", "Brown K"])
+OUTPUT FORMAT:
+[{"number":1,"rawText":"Smith J. Article Title. Journal. 2020;10:123.","authors":["Smith J"],"year":"2020","title":"Article Title","journal":"Journal","volume":"10","pages":"123","doi":"10.1234/ex"}]
+
+Fields to extract (omit if not present):
+- number: reference number
+- rawText: complete reference text
+- authors: array of author names
 - year: publication year
 - title: article/book title
-- journal: journal name (for articles)
-- volume: journal volume
-- issue: journal issue
-- pages: page range (e.g., "123-145")
-- doi: DOI if present (without "doi:" prefix)
+- journal: journal name
+- volume, issue, pages: publication details
+- doi: DOI (without "doi:" prefix)
 - url: URL if present
-- publisher: publisher name (for books)
+- publisher: publisher name
 
-Extract what's available. If a field is not present, omit it or set to null.
+---BEGIN DOCUMENT---
+${documentText}
+---END DOCUMENT---
 
-Example:
-[
-  {
-    "number": 1,
-    "rawText": "Smith J, Jones A. Article Title. Journal Name. 2020;10(2):123-145. doi:10.1234/example",
-    "authors": ["Smith J", "Jones A"],
-    "year": "2020",
-    "title": "Article Title",
-    "journal": "Journal Name",
-    "volume": "10",
-    "issue": "2",
-    "pages": "123-145",
-    "doi": "10.1234/example"
-  }
-]
-
-Document text:
-${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[truncated]' : ''}`;
+Return ONLY the JSON array.`;
 
     try {
       const result = await claudeService.generateJSONWithUsage(prompt, {
@@ -319,27 +434,29 @@ ${documentText.substring(0, 150000)} ${documentText.length > 150000 ? '...[trunc
 
   /**
    * Detect citation style using AI
+   * @param _documentText - Document text (unused, kept for API compatibility)
+   * @param references - Extracted references to analyze
    */
   private async detectCitationStyle(
-    documentText: string,
+    _documentText: string,
     references: ReferenceEntry[]
   ): Promise<string> {
     if (references.length === 0) return 'Unknown';
 
-    const sampleRefs = references.slice(0, 3).map(r => r.rawText).join('\n');
+    // Only use reference text, not raw document content
+    // Sanitize reference text as well
+    const sampleRefs = references
+      .slice(0, 3)
+      .map(r => this.sanitizeForAI(r.rawText, 500))
+      .join('\n');
 
-    const prompt = `Analyze these reference entries and identify the citation style.
+    const prompt = `TASK: Identify the citation style from these reference entries.
 
-References:
+---BEGIN REFERENCES---
 ${sampleRefs}
+---END REFERENCES---
 
-Common styles:
-- APA (American Psychological Association)
-- MLA (Modern Language Association)
-- Chicago
-- Vancouver (numbered)
-- IEEE
-- Harvard
+Possible styles: APA, MLA, Chicago, Vancouver, IEEE, Harvard
 
 Return ONLY the style name (one word).`;
 
@@ -350,7 +467,11 @@ Return ONLY the style name (one word).`;
     });
     this.accumulateUsage(response.usage);
 
-    return response.text.trim();
+    // Sanitize the response - only accept known style names
+    const validStyles = ['APA', 'MLA', 'Chicago', 'Vancouver', 'IEEE', 'Harvard', 'Unknown'];
+    const detectedStyle = response.text.trim().replace(/[^a-zA-Z]/g, '');
+
+    return validStyles.find(s => s.toLowerCase() === detectedStyle.toLowerCase()) || 'Unknown';
   }
 
   /**

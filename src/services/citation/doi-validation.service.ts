@@ -1,11 +1,16 @@
 /**
  * DOI Validation and Metadata Retrieval Service
  * Validates DOIs and retrieves metadata from CrossRef
+ *
+ * Rate limiting:
+ * - Global rate limit: 30 requests/second to CrossRef
+ * - Per-tenant limit: 500 validations/hour, 10000 operations/day
  */
 
 import axios from 'axios';
 import { logger } from '../../lib/logger';
 import { ReferenceEntry } from './ai-citation-detector.service';
+import { crossRefRateLimiter, tenantCitationUsageTracker, RateLimitError } from '../../utils/rate-limiter';
 
 export interface DOIMetadata {
   doi: string;
@@ -78,11 +83,31 @@ class DOIValidationService {
   }
 
   /**
-   * Batch validate DOIs for multiple references
+   * Batch validate DOIs for multiple references with per-tenant rate limiting
    * Uses parallel processing with Promise.allSettled for better performance
+   *
+   * @param references - Array of references to validate
+   * @param tenantId - Optional tenant ID for per-tenant rate limiting
    */
-  async validateReferences(references: ReferenceEntry[]): Promise<ReferenceValidation[]> {
+  async validateReferences(references: ReferenceEntry[], tenantId?: string): Promise<ReferenceValidation[]> {
     logger.info(`[DOI Validation] Validating ${references.length} references in parallel`);
+
+    // Check per-tenant rate limits if tenantId provided
+    if (tenantId) {
+      const canProceed = tenantCitationUsageTracker.canMakeCall(tenantId);
+      if (!canProceed.allowed) {
+        logger.warn(`[DOI Validation] Tenant ${tenantId} rate limited: ${canProceed.reason}`);
+        throw new RateLimitError(
+          canProceed.reason || 'Rate limit exceeded',
+          (canProceed.retryAfter || 60) * 1000
+        );
+      }
+      // Record the batch call
+      tenantCitationUsageTracker.recordCall(tenantId);
+      // Record operations (one per reference with DOI)
+      const operationCount = references.filter(r => r.components.doi).length;
+      tenantCitationUsageTracker.recordTokens(tenantId, operationCount);
+    }
 
     // Separate references with and without DOIs
     const refsWithDOI = references.filter(ref => ref.components.doi);
@@ -182,9 +207,13 @@ class DOIValidationService {
 
   /**
    * Fetch metadata from CrossRef API
+   * Rate limited to prevent API abuse
    */
   private async fetchCrossRefMetadata(doi: string): Promise<DOIMetadata> {
     try {
+      // Apply rate limiting before making request
+      await crossRefRateLimiter.acquire();
+
       const response = await axios.get(`${this.crossrefApiBase}/${doi}`, {
         headers: {
           'User-Agent': 'Ninja-Citation-Tool/1.0 (mailto:support@ninja.com)'

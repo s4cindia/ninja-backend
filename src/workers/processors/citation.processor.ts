@@ -47,10 +47,11 @@ async function processCitationDetection(
       where: { id: documentId },
       select: {
         id: true,
-        fullText: true,
-        fullHtml: true,
         originalName: true,
         jobId: true,
+        documentContent: {
+          select: { fullText: true, fullHtml: true }
+        },
       },
     });
 
@@ -58,7 +59,7 @@ async function processCitationDetection(
       throw new Error(`Document not found: ${documentId}`);
     }
 
-    if (!document.fullText) {
+    if (!document.documentContent?.fullText) {
       throw new Error(`Document has no text content: ${documentId}`);
     }
 
@@ -79,8 +80,8 @@ async function processCitationDetection(
 
     await citationAnalysisService.analyzeDocument(
       documentId,
-      document.fullText,
-      document.fullHtml || undefined,
+      document.documentContent.fullText,
+      document.documentContent.fullHtml || undefined,
       // Progress callback for granular updates
       async (progress: number, message: string) => {
         // Map analysis progress (0-100) to job progress (30-90)

@@ -23,6 +23,9 @@ vi.mock('../../../../src/lib/prisma', () => {
       update: vi.fn(),
       deleteMany: vi.fn(),
     },
+    referenceListEntryCitation: {
+      createMany: vi.fn(),
+    },
     citationStyleGuide: {
       findUnique: vi.fn(),
     },
@@ -98,7 +101,6 @@ describe('ReferenceListService', () => {
         {
           id: 'entry-1',
           documentId: 'doc-1',
-          citationIds: ['cit-1'],
           sortKey: 'smith2023',
           authors: [{ firstName: 'John', lastName: 'Smith' }],
           year: '2023',
@@ -136,7 +138,7 @@ describe('ReferenceListService', () => {
       const mockDocument = {
         id: 'doc-1',
         tenantId: 'tenant-1',
-        fullText: 'Document text with citations.',
+        documentContent: { fullText: 'Document text with citations.' },
         referenceListStyle: 'apa7',
       };
 
@@ -190,7 +192,7 @@ describe('ReferenceListService', () => {
       const mockDocument = {
         id: 'doc-1',
         tenantId: 'tenant-1',
-        fullText: 'Text',
+        documentContent: { fullText: 'Text' },
       };
 
       const mockCitations = [
@@ -222,7 +224,7 @@ describe('ReferenceListService', () => {
     });
 
     it('should enrich entries with CrossRef data when DOI available', async () => {
-      const mockDocument = { id: 'doc-1', tenantId: 'tenant-1', fullText: 'Text' };
+      const mockDocument = { id: 'doc-1', tenantId: 'tenant-1', documentContent: { fullText: 'Text' } };
       const mockCitations = [{ id: 'cit-1', rawText: 'Citation', citationType: 'PARENTHETICAL' }];
       const mockAiResult = {
         entries: [
@@ -316,7 +318,6 @@ describe('ReferenceListService', () => {
         year: '2023',
         title: 'Original Title',
         sortKey: 'smith2023',
-        citationIds: [],
         sourceType: 'journal',
         enrichmentSource: 'ai',
         enrichmentConfidence: 0.8,

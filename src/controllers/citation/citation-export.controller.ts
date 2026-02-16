@@ -13,6 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
+import { AppError } from '../../utils/app-error';
 
 export class CitationExportController {
   /**
@@ -136,15 +137,25 @@ export class CitationExportController {
         orderBy: { appliedAt: 'asc' }
       });
 
-      // Read original DOCX file
+      // Read original DOCX file with path traversal protection
       const fs = await import('fs/promises');
       const path = await import('path');
-      const originalPath = path.join(process.cwd(), 'uploads', document.storagePath);
+      const uploadDir = path.resolve(process.cwd(), 'uploads');
+      const originalPath = path.join(uploadDir, document.storagePath);
 
       let originalBuffer: Buffer;
       try {
-        originalBuffer = await fs.readFile(originalPath);
-      } catch {
+        // Validate path stays within upload directory to prevent path traversal attacks
+        const realPath = await fs.realpath(originalPath);
+        if (!realPath.startsWith(uploadDir)) {
+          logger.error(`[CitationExport] Path traversal attempt detected: ${document.storagePath}`);
+          throw AppError.forbidden('Invalid file path', 'INVALID_PATH');
+        }
+        originalBuffer = await fs.readFile(realPath);
+      } catch (readError) {
+        if (readError instanceof AppError) {
+          throw readError;
+        }
         logger.error(`[CitationExport] Cannot read original file: ${originalPath}`);
         res.status(404).json({
           success: false,

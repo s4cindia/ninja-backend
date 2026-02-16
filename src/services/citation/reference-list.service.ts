@@ -10,7 +10,6 @@ import { AppError } from '../../utils/app-error';
 
 export interface ReferenceEntry {
   id: string;
-  citationIds: string[];
   sortKey: string;
   authors: { firstName?: string; lastName: string; suffix?: string }[];
   year?: string | null;
@@ -83,7 +82,8 @@ class ReferenceListService {
     options: { regenerate?: boolean } = {}
   ): Promise<GeneratedReferenceList> {
     const document = await prisma.editorialDocument.findFirst({
-      where: { id: documentId, tenantId }
+      where: { id: documentId, tenantId },
+      include: { documentContent: true }
     });
 
     if (!document) {
@@ -119,7 +119,7 @@ class ReferenceListService {
 
     await prisma.referenceListEntry.deleteMany({ where: { documentId } });
 
-    const fullText = document.fullText || '';
+    const fullText = document.documentContent?.fullText || '';
     if (!fullText) {
       logger.warn(`[Reference List] No fullText stored for document ${documentId}, falling back to citation-only generation`);
     }
@@ -217,7 +217,6 @@ class ReferenceListService {
           return {
             data: {
               documentId,
-              citationIds: validCitationIds,
               sortKey,
               authors: authors as any,
               year: aiEntry.year || null,
@@ -237,6 +236,7 @@ class ReferenceListService {
             authors,
             formattedText,
             isEnriched,
+            citationIds: validCitationIds, // Store for creating links after entry creation
           };
         }));
 
@@ -252,6 +252,21 @@ class ReferenceListService {
         )
       );
 
+      // Create citation links in junction table
+      const citationLinksToCreate: { referenceListEntryId: string; citationId: string }[] = [];
+      createdEntries.forEach((entry, idx) => {
+        const citationIds = (processedEntries[idx] as any).citationIds || [];
+        for (const citationId of citationIds) {
+          citationLinksToCreate.push({
+            referenceListEntryId: entry.id,
+            citationId,
+          });
+        }
+      });
+      if (citationLinksToCreate.length > 0) {
+        await prisma.referenceListEntryCitation.createMany({ data: citationLinksToCreate });
+      }
+
       // Map created entries back with formatted data
       entries.push(...createdEntries.map((entry, idx) => ({
         ...entry,
@@ -266,10 +281,9 @@ class ReferenceListService {
       // Batch insert fallback entries
       const fallbackData = citations.map(citation => ({
         documentId,
-        citationIds: [citation.id],
         sortKey: citation.rawText.substring(0, 30).toLowerCase(),
-        authors: [],
-        year: null,
+        authors: [] as any[],
+        year: null as string | null,
         title: citation.rawText,
         sourceType: 'unknown',
         enrichmentSource: 'none',
@@ -282,6 +296,15 @@ class ReferenceListService {
           prisma.referenceListEntry.create({ data })
         )
       );
+
+      // Create citation links in junction table
+      const fallbackCitationLinks = createdEntries.map((entry, idx) => ({
+        referenceListEntryId: entry.id,
+        citationId: citations[idx].id,
+      }));
+      if (fallbackCitationLinks.length > 0) {
+        await prisma.referenceListEntryCitation.createMany({ data: fallbackCitationLinks });
+      }
 
       entries.push(...createdEntries.map((entry, idx) => ({
         ...entry,

@@ -13,6 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
+import type { EditReferenceBody } from '../../schemas/citation.schemas';
 
 export class CitationReferenceController {
   /**
@@ -185,7 +186,10 @@ export class CitationReferenceController {
         where: { id: documentId },
         include: {
           citations: true,
-          referenceListEntries: { orderBy: { sortKey: 'asc' } }
+          referenceListEntries: {
+            orderBy: { sortKey: 'asc' },
+            include: { citationLinks: true }
+          }
         }
       });
 
@@ -201,7 +205,7 @@ export class CitationReferenceController {
             position: index + 1,
             number: index + 1,
             rawText: r.formattedApa || `${(r.authors as string[])?.join(', ') || 'Unknown'} (${r.year || 'n.d.'}). ${r.title || 'Untitled'}`,
-            citationCount: r.citationIds.length
+            citationCount: r.citationLinks.length
           }))
         }
       });
@@ -225,6 +229,7 @@ export class CitationReferenceController {
       const referenceToDelete = await prisma.referenceListEntry.findUnique({
         where: { id: referenceId },
         include: {
+          citationLinks: true,
           document: {
             include: {
               referenceListEntries: { orderBy: { sortKey: 'asc' } },
@@ -253,7 +258,7 @@ export class CitationReferenceController {
 
       const allReferences = referenceToDelete.document.referenceListEntries;
       const deletedPosition = parseInt(referenceToDelete.sortKey) || 0;
-      const affectedCitationIds = referenceToDelete.citationIds;
+      const affectedCitationIds = referenceToDelete.citationLinks.map(link => link.citationId);
 
       // Create old-to-new mapping (deleted = null)
       const oldToNewNumber = new Map<number, number | null>();
@@ -269,28 +274,12 @@ export class CitationReferenceController {
         }
       }
 
-      // Delete the reference
-      await prisma.referenceListEntry.delete({ where: { id: referenceId } });
+      // Use already loaded data instead of re-fetching (N+1 prevention)
+      const remainingReferences = allReferences.filter(ref => ref.id !== referenceId);
+      const citations = referenceToDelete.document.citations;
 
-      // Renumber remaining references
-      const remainingReferences = await prisma.referenceListEntry.findMany({
-        where: { documentId },
-        orderBy: { sortKey: 'asc' }
-      });
-
-      await prisma.$transaction(
-        remainingReferences.map((ref, index) =>
-          prisma.referenceListEntry.update({
-            where: { id: ref.id },
-            data: { sortKey: String(index + 1).padStart(4, '0') }
-          })
-        )
-      );
-
-      // Update citation numbers
-      const citations = await prisma.citation.findMany({ where: { documentId } });
+      // Prepare citation updates before database operations
       const citationUpdates: { id: string; newRawText: string }[] = [];
-
       for (const citation of citations) {
         if (citation.citationType !== 'NUMERIC') continue;
         const newRawText = this.updateCitationNumbersWithDeletion(citation.rawText, oldToNewNumber);
@@ -299,16 +288,51 @@ export class CitationReferenceController {
         }
       }
 
-      if (citationUpdates.length > 0) {
-        await prisma.$transaction(
-          citationUpdates.map(update =>
-            prisma.citation.update({
-              where: { id: update.id },
-              data: { rawText: update.newRawText }
-            })
-          )
-        );
+      // Group citation updates by new rawText value for batch operations
+      const citationsByNewText = new Map<string, string[]>();
+      for (const update of citationUpdates) {
+        const ids = citationsByNewText.get(update.newRawText) || [];
+        ids.push(update.id);
+        citationsByNewText.set(update.newRawText, ids);
       }
+
+      // Execute all database operations in a single transaction
+      await prisma.$transaction(async (tx) => {
+        // Delete the reference
+        await tx.referenceListEntry.delete({ where: { id: referenceId } });
+
+        // Batch renumber remaining references using raw SQL for efficiency
+        // This is O(1) instead of O(N) individual updates
+        if (remainingReferences.length > 0) {
+          const caseStatements = remainingReferences
+            .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
+            .join(' ');
+          const refIds = remainingReferences.map(ref => `'${ref.id}'`).join(',');
+
+          await tx.$executeRawUnsafe(`
+            UPDATE "ReferenceListEntry"
+            SET "sortKey" = CASE ${caseStatements} END
+            WHERE id IN (${refIds})
+          `);
+        }
+
+        // Batch update citations grouped by new text value
+        // Uses updateMany for groups with same target value (more efficient than individual updates)
+        for (const [newRawText, ids] of citationsByNewText) {
+          if (ids.length === 1) {
+            await tx.citation.update({
+              where: { id: ids[0] },
+              data: { rawText: newRawText }
+            });
+          } else {
+            // Batch update multiple citations with same new text
+            await tx.citation.updateMany({
+              where: { id: { in: ids } },
+              data: { rawText: newRawText }
+            });
+          }
+        }
+      });
 
       res.json({
         success: true,
@@ -328,11 +352,22 @@ export class CitationReferenceController {
   /**
    * PATCH /api/v1/citation-management/document/:documentId/reference/:referenceId
    * Edit a reference
+   *
+   * Request body is validated by editReferenceSchema middleware:
+   * - authors: string[] (min 1 author if provided)
+   * - year: 4-digit string
+   * - title: string (1-1000 chars)
+   * - journalName: string (1-500 chars)
+   * - volume, issue, pages: string (max 50 chars)
+   * - doi: valid DOI format (10.xxxx/...)
+   * - url: valid URL format
+   * - publisher: string (max 500 chars)
    */
   async editReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId, referenceId } = req.params;
-      const updates = req.body;
+      // Body is pre-validated by editReferenceSchema middleware
+      const updates: EditReferenceBody = req.body;
       const { tenantId } = req.user!;
 
       logger.info(`[CitationReference] Editing reference ${referenceId} in document ${documentId}`);
@@ -369,20 +404,21 @@ export class CitationReferenceController {
         return;
       }
 
-      // Update the reference
+      // Update the reference with validated fields
+      // Note: authors is a JSON field in Prisma, so we need to handle the type appropriately
       const updatedReference = await prisma.referenceListEntry.update({
         where: { id: referenceId },
         data: {
-          authors: updates.authors ?? reference.authors,
-          year: updates.year ?? reference.year,
-          title: updates.title ?? reference.title,
-          journalName: updates.journalName ?? reference.journalName,
-          volume: updates.volume ?? reference.volume,
-          issue: updates.issue ?? reference.issue,
-          pages: updates.pages ?? reference.pages,
-          doi: updates.doi ?? reference.doi,
-          url: updates.url ?? reference.url,
-          publisher: updates.publisher ?? reference.publisher,
+          authors: updates.authors !== undefined ? updates.authors : undefined,
+          year: updates.year !== undefined ? updates.year : undefined,
+          title: updates.title !== undefined ? updates.title : undefined,
+          journalName: updates.journalName !== undefined ? updates.journalName : undefined,
+          volume: updates.volume !== undefined ? updates.volume : undefined,
+          issue: updates.issue !== undefined ? updates.issue : undefined,
+          pages: updates.pages !== undefined ? updates.pages : undefined,
+          doi: updates.doi !== undefined ? (updates.doi || null) : undefined, // Empty string clears DOI
+          url: updates.url !== undefined ? (updates.url || null) : undefined, // Empty string clears URL
+          publisher: updates.publisher !== undefined ? updates.publisher : undefined,
         }
       });
 
@@ -427,7 +463,8 @@ export class CitationReferenceController {
           citations: {
             orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }]
           },
-          referenceListEntries: { orderBy: { sortKey: 'asc' } }
+          referenceListEntries: { orderBy: { sortKey: 'asc' } },
+          documentContent: true
         }
       });
 
@@ -440,7 +477,7 @@ export class CitationReferenceController {
       }
 
       const totalReferences = document.referenceListEntries.length;
-      const fullText = document.fullText || '';
+      const fullText = document.documentContent?.fullText || '';
 
       // Find citations in text
       const citationPattern = /\((\d+)\)|\[(\d+)\]/g;

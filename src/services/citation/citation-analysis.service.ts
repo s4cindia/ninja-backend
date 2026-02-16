@@ -2,15 +2,12 @@
  * Citation Analysis Service
  *
  * Provides citation analysis functionality for use by workers and other services.
- * Wraps the CitationManagementController's analyzeDocument method.
+ * Uses the modular CitationUploadController's analyzeDocument method.
  */
 
-import { CitationManagementController } from '../../controllers/citation-management.controller';
+import { citationUploadController } from '../../controllers/citation';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-
-// Singleton controller instance for service use
-const controller = new CitationManagementController();
 
 export type ProgressCallback = (progress: number, message: string) => Promise<void>;
 
@@ -43,7 +40,7 @@ class CitationAnalysisService {
       }
 
       // Call the controller's analyzeDocument method
-      await controller.analyzeDocument(documentId, documentText, progressCallback);
+      await citationUploadController.analyzeDocument(documentId, documentText, progressCallback);
 
       // Update document status to completed
       await prisma.editorialDocument.update({
@@ -79,14 +76,15 @@ class CitationAnalysisService {
 
     const document = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
-      select: { id: true, fullText: true },
+      select: { id: true, documentContent: { select: { fullText: true } } },
     });
 
     if (!document) {
       throw new Error(`Document not found: ${documentId}`);
     }
 
-    if (!document.fullText) {
+    const fullText = document.documentContent?.fullText;
+    if (!fullText) {
       throw new Error(`Document has no text content: ${documentId}`);
     }
 
@@ -96,7 +94,7 @@ class CitationAnalysisService {
     await prisma.citationChange.deleteMany({ where: { documentId } });
 
     // Re-run analysis
-    await this.analyzeDocument(documentId, document.fullText);
+    await this.analyzeDocument(documentId, fullText);
 
     // Get counts
     const [citationsFound, referencesFound] = await Promise.all([

@@ -242,13 +242,13 @@ export class EditorialOverviewController {
 
       let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { id: true, fullText: true, fullHtml: true },
+        select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
       });
 
       if (!document) {
         document = await prisma.editorialDocument.findFirst({
           where: { jobId: documentId, tenantId },
-          select: { id: true, fullText: true, fullHtml: true },
+          select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
         });
       }
 
@@ -264,7 +264,7 @@ export class EditorialOverviewController {
         const analysis = await citationStylesheetDetectionService.getAnalysisResults(document.id, tenantId)
           || await citationStylesheetDetectionService.getAnalysisByJobId(document.id, tenantId);
 
-        if (analysis && document.fullHtml) {
+        if (analysis && document.documentContent?.fullHtml) {
           const lookupMap: Record<string, string> = {};
           for (const entry of analysis.referenceList.entries) {
             if (entry.number !== null) {
@@ -280,17 +280,18 @@ export class EditorialOverviewController {
             }
           }
 
-          // Get reference link status (citationIds) from database
+          // Get reference link status from citationLinks relation
           const referenceLinkStatus = new Map<number, string[]>();
           const referenceAuthorStatus = new Map<string, { citationIds: string[]; year?: string }>();
           const refEntries = await prisma.referenceListEntry.findMany({
             where: { documentId: document.id },
-            select: { sortKey: true, citationIds: true, authors: true, year: true }
+            select: { sortKey: true, citationLinks: { select: { citationId: true } }, authors: true, year: true }
           });
           for (const entry of refEntries) {
+            const citationIds = entry.citationLinks.map(link => link.citationId);
             const refNum = parseInt(entry.sortKey, 10);
             if (!isNaN(refNum)) {
-              referenceLinkStatus.set(refNum, entry.citationIds);
+              referenceLinkStatus.set(refNum, citationIds);
             }
             // Also build author-based lookup for APA-style references
             // Validate that entry.authors is an array of strings before using
@@ -319,16 +320,16 @@ export class EditorialOverviewController {
               }
 
               referenceAuthorStatus.set(lastName.toLowerCase(), {
-                citationIds: entry.citationIds,
+                citationIds,
                 year: entry.year || undefined
               });
-              logger.debug(`[Editorial Overview] Author lookup: ${lastName.toLowerCase()} -> ${entry.citationIds.length} citations`);
+              logger.debug(`[Editorial Overview] Author lookup: ${lastName.toLowerCase()} -> ${citationIds.length} citations`);
             }
           }
           logger.info(`[Editorial Overview] Reference link status: ${referenceLinkStatus.size} by number, ${referenceAuthorStatus.size} by author, ${Array.from(referenceLinkStatus.values()).filter(ids => ids.length > 0).length} linked`);
 
           const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers, referenceLinkStatus, referenceAuthorStatus };
-          highlightedHtml = highlightCitationsInHtml(document.fullHtml, highlightData);
+          highlightedHtml = highlightCitationsInHtml(document.documentContent!.fullHtml!, highlightData);
         }
       } catch (hlError) {
         logger.warn('[Editorial Overview] Citation highlighting failed, returning plain HTML', hlError instanceof Error ? hlError : undefined);
@@ -339,8 +340,8 @@ export class EditorialOverviewController {
         success: true,
         data: {
           documentId: document.id,
-          fullText: document.fullText || null,
-          fullHtml: highlightedHtml || document.fullHtml || null,
+          fullText: document.documentContent?.fullText || null,
+          fullHtml: highlightedHtml || document.documentContent?.fullHtml || null,
           highlightedHtml,
           referenceLookup,
         },
@@ -395,9 +396,11 @@ export class EditorialOverviewController {
 
       const sanitizedHtml = sanitizeDocumentHtml(result.value);
 
-      await prisma.editorialDocument.update({
-        where: { id: document.id },
-        data: { fullHtml: sanitizedHtml },
+      // Update or create document content
+      await prisma.editorialDocumentContent.upsert({
+        where: { documentId: document.id },
+        update: { fullHtml: sanitizedHtml },
+        create: { documentId: document.id, fullHtml: sanitizedHtml },
       });
 
       logger.info(`[Editorial Overview] Regenerated HTML for document ${document.id} (${result.value.length} chars)`);

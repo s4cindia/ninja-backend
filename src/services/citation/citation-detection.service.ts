@@ -160,6 +160,7 @@ export class CitationDetectionService {
 
     const doc = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
+      include: { documentContent: true },
     });
 
     if (!doc) {
@@ -170,14 +171,15 @@ export class CitationDetectionService {
       throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
-    if (!doc.fullText) {
+    const fullText = doc.documentContent?.fullText;
+    if (!fullText) {
       throw AppError.badRequest(`Document has no extracted text: ${documentId}`, 'NO_TEXT_CONTENT');
     }
 
     logger.info(`[Citation Detection] Re-detecting for documentId=${documentId}`);
 
     // Detect citations FIRST (before any DB mutations)
-    const extractedCitations = await editorialAi.detectCitations(doc.fullText);
+    const extractedCitations = await editorialAi.detectCitations(fullText);
 
     // Perform atomic transaction: delete old, insert new, update status
     const citations = await prisma.$transaction(async (tx) => {
@@ -235,24 +237,40 @@ export class CitationDetectionService {
     });
 
     if (existing) {
-      // Update existing document
-      return prisma.editorialDocument.update({
-        where: { id: existing.id },
-        data: {
-          fullText: parsed.text,
-          wordCount: parsed.metadata.wordCount,
-          pageCount: parsed.metadata.pageCount || null,
-          chunkCount: parsed.chunks.length,
-          title: parsed.metadata.title || null,
-          authors: parsed.metadata.authors || [],
-          language: parsed.metadata.language || null,
-          status: EditorialDocStatus.ANALYZING,
-          parsedAt: new Date(),
-        },
-      });
+      // Update existing document and its content
+      const [updatedDoc] = await prisma.$transaction([
+        prisma.editorialDocument.update({
+          where: { id: existing.id },
+          data: {
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+            chunkCount: parsed.chunks.length,
+            title: parsed.metadata.title || null,
+            authors: parsed.metadata.authors || [],
+            language: parsed.metadata.language || null,
+            status: EditorialDocStatus.ANALYZING,
+            parsedAt: new Date(),
+          },
+        }),
+        prisma.editorialDocumentContent.upsert({
+          where: { documentId: existing.id },
+          update: {
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+          create: {
+            documentId: existing.id,
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        }),
+      ]);
+      return updatedDoc;
     }
 
-    // Create new document
+    // Create new document with content in separate table
     return prisma.editorialDocument.create({
       data: {
         tenantId,
@@ -262,7 +280,6 @@ export class CitationDetectionService {
         mimeType: this.getMimeType(fileName),
         fileSize,
         storagePath: '', // Buffer-based, not stored
-        fullText: parsed.text,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,
@@ -271,6 +288,13 @@ export class CitationDetectionService {
         language: parsed.metadata.language || null,
         status: EditorialDocStatus.ANALYZING,
         parsedAt: new Date(),
+        documentContent: {
+          create: {
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        },
       },
     });
   }

@@ -71,20 +71,51 @@ CREATE INDEX "ReferenceListEntry_documentId_sortKey_idx" ON "ReferenceListEntry"
 -- BatchFile: batch + status (status-filtered batch file queries)
 CREATE INDEX "BatchFile_batchId_status_idx" ON "BatchFile"("batchId", "status");
 
--- Data Migration Note:
--- After this migration, existing code will continue to work with the deprecated
--- fullText/fullHtml columns in EditorialDocument and citationIds array in ReferenceListEntry.
---
--- To migrate existing data to the new tables, run the following after deployment:
---
--- 1. Migrate content to EditorialDocumentContent:
---    INSERT INTO "EditorialDocumentContent" ("id", "documentId", "fullText", "fullHtml", "wordCount", "pageCount", "createdAt", "updatedAt")
---    SELECT gen_random_uuid(), id, "fullText", "fullHtml", "wordCount", "pageCount", "createdAt", "updatedAt"
---    FROM "EditorialDocument"
---    WHERE "fullText" IS NOT NULL OR "fullHtml" IS NOT NULL;
---
--- 2. Migrate citationIds to ReferenceListEntryCitation:
---    INSERT INTO "ReferenceListEntryCitation" ("id", "referenceListEntryId", "citationId", "createdAt")
---    SELECT gen_random_uuid(), r.id, unnest(r."citationIds"), r."createdAt"
---    FROM "ReferenceListEntry" r
---    WHERE array_length(r."citationIds", 1) > 0;
+-- ============================================
+-- DATA MIGRATION (Automated)
+-- ============================================
+-- Migrates existing data from deprecated columns to new normalized tables.
+-- These statements are idempotent and safe to re-run.
+
+-- 1. Migrate content from EditorialDocument to EditorialDocumentContent
+-- Only migrates documents that have content and haven't been migrated yet
+INSERT INTO "EditorialDocumentContent" ("id", "documentId", "fullText", "fullHtml", "wordCount", "pageCount", "createdAt", "updatedAt")
+SELECT
+    gen_random_uuid(),
+    ed.id,
+    ed."fullText",
+    ed."fullHtml",
+    COALESCE(ed."wordCount", 0),
+    ed."pageCount",
+    ed."createdAt",
+    ed."updatedAt"
+FROM "EditorialDocument" ed
+WHERE (ed."fullText" IS NOT NULL OR ed."fullHtml" IS NOT NULL)
+  AND NOT EXISTS (
+    SELECT 1 FROM "EditorialDocumentContent" edc
+    WHERE edc."documentId" = ed.id
+  );
+
+-- 2. Migrate citationIds from ReferenceListEntry to ReferenceListEntryCitation junction table
+-- Only migrates entries that have citationIds and haven't been migrated yet
+-- Uses unnest to expand the array into individual rows
+INSERT INTO "ReferenceListEntryCitation" ("id", "referenceListEntryId", "citationId", "createdAt")
+SELECT
+    gen_random_uuid(),
+    r.id,
+    citation_id,
+    r."createdAt"
+FROM "ReferenceListEntry" r
+CROSS JOIN LATERAL unnest(r."citationIds") AS citation_id
+WHERE r."citationIds" IS NOT NULL
+  AND array_length(r."citationIds", 1) > 0
+  AND NOT EXISTS (
+    SELECT 1 FROM "ReferenceListEntryCitation" rlec
+    WHERE rlec."referenceListEntryId" = r.id
+      AND rlec."citationId" = citation_id
+  );
+
+-- Note: The deprecated columns (fullText, fullHtml in EditorialDocument and
+-- citationIds in ReferenceListEntry) are preserved for backward compatibility.
+-- A separate cleanup migration should be run after verifying all data has been
+-- migrated and application code has been updated to use the new tables.

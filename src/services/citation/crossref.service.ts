@@ -1,4 +1,5 @@
 import { logger } from '../../lib/logger';
+import { crossRefRateLimiter } from '../../utils/rate-limiter';
 
 export interface CrossRefAuthor {
   given?: string;
@@ -44,6 +45,9 @@ class CrossRefService {
 
   async lookupByDoi(doi: string): Promise<EnrichedMetadata | null> {
     try {
+      // Apply rate limiting before making request
+      await crossRefRateLimiter.acquire();
+
       const cleanDoi = doi.replace(/^https?:\/\/doi\.org\//, '');
       const url = `${this.baseUrl}/${encodeURIComponent(cleanDoi)}`;
 
@@ -70,6 +74,9 @@ class CrossRefService {
 
   async search(query: string, limit = 5): Promise<EnrichedMetadata[]> {
     try {
+      // Apply rate limiting before making request
+      await crossRefRateLimiter.acquire();
+
       const url = `${this.baseUrl}?query=${encodeURIComponent(query)}&rows=${limit}`;
 
       const response = await fetch(url, {

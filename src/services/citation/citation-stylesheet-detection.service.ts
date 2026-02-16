@@ -149,17 +149,18 @@ export class CitationStylesheetDetectionService {
           orderBy: { startOffset: 'asc' },
           include: { primaryComponent: { select: { confidence: true } } },
         },
+        documentContent: true,
       },
     });
 
-    if (!doc || !doc.fullText) return null;
+    if (!doc || !doc.documentContent?.fullText) return null;
 
     // Use original processing time from document timestamps when available
     const originalProcessingTime = doc.parsedAt && doc.createdAt
       ? doc.parsedAt.getTime() - doc.createdAt.getTime()
       : undefined;
 
-    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations, originalProcessingTime);
+    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.documentContent.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations, originalProcessingTime);
   }
 
   async getAnalysisByJobId(jobId: string, tenantId: string): Promise<StylesheetAnalysisResult | null> {
@@ -300,7 +301,7 @@ export class CitationStylesheetDetectionService {
       const dbEntries = await prisma.referenceListEntry.findMany({
         where: { documentId },
         orderBy: { sortKey: 'asc' },
-        select: { sortKey: true, title: true, formattedApa: true, citationIds: true },
+        select: { sortKey: true, title: true, formattedApa: true, citationLinks: { select: { citationId: true } } },
       });
       if (dbEntries.length > 0) {
         referenceEntries = dbEntries.map((e, idx) => {
@@ -308,7 +309,7 @@ export class CitationStylesheetDetectionService {
           return {
             number: numMatch ? parseInt(numMatch[1], 10) : idx + 1,
             text: e.formattedApa || e.title || e.sortKey,
-            citationIds: e.citationIds || [],
+            citationIds: e.citationLinks.map(link => link.citationId),
           };
         });
       }
@@ -849,8 +850,6 @@ export class CitationStylesheetDetectionService {
         mimeType,
         fileSize,
         storagePath: '',
-        fullText: parsed.text,
-        fullHtml: parsed.html || null,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,
@@ -859,6 +858,14 @@ export class CitationStylesheetDetectionService {
         language: parsed.metadata.language || null,
         status: EditorialDocStatus.ANALYZING,
         parsedAt: new Date(),
+        documentContent: {
+          create: {
+            fullText: parsed.text,
+            fullHtml: parsed.html || null,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        },
       },
     });
   }

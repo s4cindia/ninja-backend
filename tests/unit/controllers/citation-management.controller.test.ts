@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { CitationManagementController } from '../../../src/controllers/citation-management.controller';
+import { CitationUploadController, CitationReferenceController } from '../../../src/controllers/citation';
 
 // Mock Prisma
 vi.mock('../../../src/lib/prisma', () => ({
@@ -91,7 +91,8 @@ vi.mock('../../../src/lib/logger', () => ({
 import prisma from '../../../src/lib/prisma';
 
 describe('CitationManagementController', () => {
-  let controller: CitationManagementController;
+  let uploadController: CitationUploadController;
+  let referenceController: CitationReferenceController;
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
   let mockNext: NextFunction;
@@ -104,7 +105,8 @@ describe('CitationManagementController', () => {
   const USER_ID = 'user-123';
 
   beforeEach(() => {
-    controller = new CitationManagementController();
+    uploadController = new CitationUploadController();
+    referenceController = new CitationReferenceController();
     jsonMock = vi.fn();
     statusMock = vi.fn().mockReturnValue({ json: jsonMock });
     mockNext = vi.fn();
@@ -148,8 +150,10 @@ describe('CitationManagementController', () => {
           status: 'COMPLETED',
           wordCount: 1000,
           pageCount: 5,
-          fullText: 'Sample text',
-          fullHtml: '<p>Sample text</p>',
+          documentContent: {
+            fullText: 'Sample text',
+            fullHtml: '<p>Sample text</p>',
+          },
           referenceListStyle: 'APA',
           citations: [
             {
@@ -167,7 +171,7 @@ describe('CitationManagementController', () => {
         vi.mocked(prisma.referenceListEntry.findMany).mockResolvedValue([]);
         vi.mocked(prisma.citationChange.findMany).mockResolvedValue([]);
 
-        await controller.getAnalysis(
+        await uploadController.getAnalysis(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -181,9 +185,7 @@ describe('CitationManagementController', () => {
           expect.objectContaining({
             success: true,
             data: expect.objectContaining({
-              document: expect.objectContaining({
-                id: 'doc-123',
-              }),
+              documentId: 'doc-123',
             }),
           })
         );
@@ -196,7 +198,7 @@ describe('CitationManagementController', () => {
         // findFirst with tenantId filter returns null
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.getAnalysis(
+        await uploadController.getAnalysis(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -214,7 +216,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.getAnalysis(
+        await uploadController.getAnalysis(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -236,11 +238,11 @@ describe('CitationManagementController', () => {
           id: 'ref-1',
           documentId: 'doc-123',
           sortKey: '0001',
-          citationIds: ['cit-1'],
+          citationLinks: [{ citationId: 'cit-1' }],
           document: {
             tenantId: TENANT_A,
             referenceListEntries: [
-              { id: 'ref-1', sortKey: '0001', citationIds: ['cit-1'] },
+              { id: 'ref-1', sortKey: '0001', citationLinks: [{ citationId: 'cit-1' }] },
             ],
             citations: [],
           },
@@ -248,7 +250,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
 
-        await controller.deleteReference(
+        await referenceController.deleteReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -273,7 +275,7 @@ describe('CitationManagementController', () => {
           id: 'ref-1',
           documentId: 'doc-123',
           sortKey: '0001',
-          citationIds: [],
+          citationLinks: [],
           document: {
             tenantId: TENANT_B, // Different tenant!
             referenceListEntries: [],
@@ -283,7 +285,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
 
-        await controller.deleteReference(
+        await referenceController.deleteReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -304,7 +306,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(null);
 
-        await controller.deleteReference(
+        await referenceController.deleteReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -330,7 +332,7 @@ describe('CitationManagementController', () => {
           authors: ['Author A'],
           year: '2023',
           title: 'Original Title',
-          citationIds: [],
+          citationLinks: [],
           document: {
             tenantId: TENANT_A,
             referenceListStyle: 'APA',
@@ -340,7 +342,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
 
-        await controller.editReference(
+        await referenceController.editReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -372,7 +374,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
 
-        await controller.editReference(
+        await referenceController.editReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -397,7 +399,7 @@ describe('CitationManagementController', () => {
         // Mock document not found to test the query pattern
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.reorderReferences(
+        await referenceController.reorderReferences(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -418,7 +420,7 @@ describe('CitationManagementController', () => {
         // Document exists but belongs to different tenant
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.reorderReferences(
+        await referenceController.reorderReferences(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -439,7 +441,7 @@ describe('CitationManagementController', () => {
         // Mock document not found to test the query pattern
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.resequenceByAppearance(
+        await referenceController.resequenceByAppearance(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -458,7 +460,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
-        await controller.resequenceByAppearance(
+        await referenceController.resequenceByAppearance(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -488,8 +490,10 @@ describe('CitationManagementController', () => {
           status: 'COMPLETED',
           wordCount: 5000,
           pageCount: 10,
-          fullText: 'Document content with [1] citation.',
-          fullHtml: '<p>Document content with [1] citation.</p>',
+          documentContent: {
+            fullText: 'Document content with [1] citation.',
+            fullHtml: '<p>Document content with [1] citation.</p>',
+          },
           referenceListStyle: 'APA',
           citations: [
             { id: 'cit-1', rawText: '[1]', reference: null },
@@ -500,15 +504,15 @@ describe('CitationManagementController', () => {
         };
 
         const mockReferences = [
-          { id: 'ref-1', sortKey: '0001', citationIds: ['cit-1'], authors: ['Smith'], year: '2023', title: 'Paper 1' },
-          { id: 'ref-2', sortKey: '0002', citationIds: ['cit-2', 'cit-3'], authors: ['Jones'], year: '2022', title: 'Paper 2' },
+          { id: 'ref-1', sortKey: '0001', citationLinks: [{ citationId: 'cit-1' }], authors: ['Smith'], year: '2023', title: 'Paper 1' },
+          { id: 'ref-2', sortKey: '0002', citationLinks: [{ citationId: 'cit-2' }, { citationId: 'cit-3' }], authors: ['Jones'], year: '2022', title: 'Paper 2' },
         ];
 
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(mockDocument as never);
         vi.mocked(prisma.referenceListEntry.findMany).mockResolvedValue(mockReferences as never);
         vi.mocked(prisma.citationChange.findMany).mockResolvedValue([]);
 
-        await controller.getAnalysis(
+        await uploadController.getAnalysis(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -518,11 +522,9 @@ describe('CitationManagementController', () => {
           expect.objectContaining({
             success: true,
             data: expect.objectContaining({
-              document: expect.objectContaining({
-                statistics: {
-                  totalCitations: 3,
-                  totalReferences: 2,
-                },
+              statistics: expect.objectContaining({
+                citationsFound: 3,
+                referencesFound: 2,
               }),
             }),
           })
@@ -539,8 +541,6 @@ describe('CitationManagementController', () => {
           status: 'COMPLETED',
           wordCount: 1000,
           pageCount: 2,
-          fullText: 'Text',
-          fullHtml: '<p>Text</p>',
           referenceListStyle: null, // Numeric style
           citations: [
             { id: 'cit-1', rawText: '(1)', reference: null },
@@ -549,21 +549,23 @@ describe('CitationManagementController', () => {
         };
 
         const mockReferences = [
-          { id: 'ref-1', sortKey: '0001', citationIds: ['cit-1'], formattedApa: 'Author (2023)' },
+          { id: 'ref-1', sortKey: '0001', citationLinks: [{ citationId: 'cit-1' }], formattedApa: 'Author (2023)' },
         ];
 
         vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(mockDocument as never);
         vi.mocked(prisma.referenceListEntry.findMany).mockResolvedValue(mockReferences as never);
         vi.mocked(prisma.citationChange.findMany).mockResolvedValue([]);
 
-        await controller.getAnalysis(
+        await uploadController.getAnalysis(
           mockReq as Request,
           mockRes as Response,
           mockNext
         );
 
         const responseData = jsonMock.mock.calls[0][0];
-        expect(responseData.data.citations[0].referenceNumber).toBe(1);
+        // New format uses referenceId instead of referenceNumber
+        expect(responseData.data.citations[0].id).toBe('cit-1');
+        expect(responseData.data.citations[0].rawText).toBe('(1)');
       });
     });
 
@@ -583,7 +585,7 @@ describe('CitationManagementController', () => {
 
         vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
 
-        await controller.editReference(
+        await referenceController.editReference(
           mockReq as Request,
           mockRes as Response,
           mockNext
@@ -608,7 +610,7 @@ describe('CitationManagementController', () => {
       const error = new Error('Database connection failed');
       vi.mocked(prisma.editorialDocument.findFirst).mockRejectedValue(error);
 
-      await controller.getAnalysis(
+      await uploadController.getAnalysis(
         mockReq as Request,
         mockRes as Response,
         mockNext
@@ -623,7 +625,7 @@ describe('CitationManagementController', () => {
       const error = new Error('Database error');
       vi.mocked(prisma.referenceListEntry.findUnique).mockRejectedValue(error);
 
-      await controller.deleteReference(
+      await referenceController.deleteReference(
         mockReq as Request,
         mockRes as Response,
         mockNext
@@ -639,7 +641,7 @@ describe('CitationManagementController', () => {
       const error = new Error('Update failed');
       vi.mocked(prisma.referenceListEntry.findUnique).mockRejectedValue(error);
 
-      await controller.editReference(
+      await referenceController.editReference(
         mockReq as Request,
         mockRes as Response,
         mockNext

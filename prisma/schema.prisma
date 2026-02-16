@@ -671,10 +671,7 @@ model EditorialDocument {
   storagePath  String
   storageType  StorageType @default(S3)
 
-  // DEPRECATED: Use documentContent relation instead
-  // These fields will be removed in a future migration after code is updated
-  fullText   String? @db.Text
-  fullHtml   String? @db.Text
+  // Content metadata (actual content is in EditorialDocumentContent)
   wordCount  Int     @default(0)
   pageCount  Int?
   chunkCount Int     @default(0)
@@ -1016,17 +1013,7 @@ model ReferenceListEntry {
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  /// @deprecated Use `citationLinks` relation instead for proper FK constraints.
-  /// This field stores citation IDs as a denormalized array for backward compatibility.
-  /// Migration plan:
-  /// 1. Update all code to read from citationLinks relation
-  /// 2. Update all code to write to both citationIds AND citationLinks
-  /// 3. Run data migration to sync existing citationIds to citationLinks
-  /// 4. Remove writes to citationIds, keep reads for fallback
-  /// 5. Remove citationIds field after verification
-  /// TODO: Track progress in TECHNICAL-DEBT.md
-  citationIds String[]
-  sortKey     String
+  sortKey    String
 
   authors    Json
   year       String?

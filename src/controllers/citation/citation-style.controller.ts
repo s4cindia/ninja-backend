@@ -11,7 +11,8 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { CitationStyle } from '../../services/citation/ai-format-converter.service';
+import { CitationStyle, aiFormatConverterService } from '../../services/citation/ai-format-converter.service';
+import { ReferenceEntry, InTextCitation } from '../../services/citation/ai-citation-detector.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
 
 export class CitationStyleController {
@@ -63,7 +64,76 @@ export class CitationStyleController {
         return;
       }
 
-      // Convert each reference
+      // Map Prisma references to service format
+      const serviceReferences: ReferenceEntry[] = references.map((ref, index) => ({
+        id: ref.id,
+        number: index + 1,
+        rawText: ref.formattedApa || ref.title || '',
+        components: {
+          authors: ref.authors as string[] | undefined,
+          year: ref.year ?? undefined,
+          title: ref.title ?? undefined,
+          journal: ref.journalName ?? undefined,
+          volume: ref.volume ?? undefined,
+          issue: ref.issue ?? undefined,
+          pages: ref.pages ?? undefined,
+          doi: ref.doi ?? undefined,
+          url: ref.url ?? undefined,
+          publisher: ref.publisher ?? undefined
+        },
+        detectedStyle: document.referenceListStyle as CitationStyle | undefined,
+        citedBy: []
+      }));
+
+      // Map Prisma citations to service format
+      const serviceCitations: InTextCitation[] = document.citations.map(cit => {
+        // Map Prisma citationType to service type
+        const typeMap: Record<string, 'numeric' | 'author-year' | 'superscript' | 'footnote'> = {
+          'NUMERIC': 'numeric',
+          'PARENTHETICAL': 'author-year',
+          'NARRATIVE': 'author-year',
+          'FOOTNOTE': 'footnote',
+          'ENDNOTE': 'footnote',
+          'REFERENCE': 'numeric',
+          'UNKNOWN': 'numeric'
+        };
+
+        // Infer format from citation text
+        let format: 'bracket' | 'parenthesis' | 'superscript' = 'parenthesis';
+        if (cit.rawText.includes('[')) {
+          format = 'bracket';
+        } else if (/[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(cit.rawText)) {
+          format = 'superscript';
+        }
+
+        // Extract reference numbers from citation text
+        const numberMatches = cit.rawText.match(/\d+/g);
+        const numbers = numberMatches ? numberMatches.map(n => parseInt(n, 10)) : [];
+
+        return {
+          id: cit.id,
+          text: cit.rawText,
+          type: typeMap[cit.citationType] || 'numeric',
+          format,
+          numbers,
+          position: {
+            paragraph: cit.paragraphIndex ?? 0,
+            sentence: 0,
+            startChar: cit.startOffset,
+            endChar: cit.endOffset
+          },
+          context: '' // Context not stored in Prisma Citation model
+        };
+      });
+
+      // Call the AI format converter service
+      const conversionResult = await aiFormatConverterService.convertStyle(
+        serviceReferences,
+        serviceCitations,
+        targetStyle
+      );
+
+      // Build conversion results for response
       const conversionResults: Array<{
         referenceId: string;
         originalText: string;
@@ -72,41 +142,62 @@ export class CitationStyleController {
         error?: string;
       }> = [];
 
-      for (const ref of references) {
+      // Update references in database and track changes
+      for (const change of conversionResult.changes) {
+        const originalRef = references.find(r => r.id === change.referenceId);
+        if (!originalRef) continue;
+
         try {
-          const originalText = ref.formattedApa || ref.title || '';
-          // TODO: Implement convertReference method in aiFormatConverterService
-          // For now, use the original text as converted
-          const converted = originalText;
+          // Update the reference with converted text
+          await prisma.referenceListEntry.update({
+            where: { id: change.referenceId },
+            data: {
+              formattedApa: change.newFormat
+            }
+          });
 
           conversionResults.push({
-            referenceId: ref.id,
-            originalText,
-            convertedText: converted,
+            referenceId: change.referenceId,
+            originalText: change.oldFormat,
+            convertedText: change.newFormat,
             success: true
           });
 
-          // Store conversion change
+          // Store conversion change for track changes
           await prisma.citationChange.create({
             data: {
               documentId,
-              citationId: ref.id,
+              citationId: change.referenceId,
               changeType: 'REFERENCE_STYLE_CONVERSION',
-              beforeText: originalText,
-              afterText: converted,
+              beforeText: change.oldFormat,
+              afterText: change.newFormat,
               appliedBy: 'ai',
               isReverted: false
             }
           });
         } catch (error) {
           conversionResults.push({
-            referenceId: ref.id,
-            originalText: ref.formattedApa || ref.title || '',
+            referenceId: change.referenceId,
+            originalText: change.oldFormat,
             convertedText: '',
             success: false,
             error: error instanceof Error ? error.message : 'Unknown error'
           });
         }
+      }
+
+      // Store in-text citation conversions for track changes
+      for (const citConversion of conversionResult.citationConversions) {
+        await prisma.citationChange.create({
+          data: {
+            documentId,
+            changeType: 'INTEXT_STYLE_CONVERSION',
+            beforeText: citConversion.oldText,
+            afterText: citConversion.newText,
+            appliedBy: 'ai',
+            isReverted: false
+          }
+        });
       }
 
       // Update document style
@@ -124,7 +215,9 @@ export class CitationStyleController {
           targetStyle,
           results: conversionResults,
           totalConverted: successCount,
-          totalFailed: references.length - successCount
+          totalFailed: references.length - successCount,
+          inTextCitationChanges: conversionResult.citationConversions.length,
+          citationConversions: conversionResult.citationConversions
         }
       });
     } catch (error) {

@@ -7,7 +7,20 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
-import { citationManagementController } from '../controllers/citation-management.controller';
+import { validate } from '../middleware/validate.middleware';
+import { citationManagementController } from '../controllers/citation';
+import {
+  documentIdParamSchema,
+  jobIdParamSchema,
+  documentReferenceParamsSchema,
+  reorderReferencesSchema,
+  editReferenceSchema,
+  convertStyleSchema,
+  debugStyleConversionSchema,
+  exportDocumentSchema,
+  previewChangesSchema,
+  validateDoisSchema,
+} from '../schemas/citation.schemas';
 
 // Rate limiter for file uploads: 10 uploads per 15 minutes per user
 // Note: All routes require authentication (router.use(authenticate)), so user is always present
@@ -17,6 +30,24 @@ const uploadRateLimiter = rateLimit({
   message: {
     success: false,
     error: { code: 'TOO_MANY_UPLOADS', message: 'Too many uploads. Please try again later.' }
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Use authenticated user ID for rate limiting
+    const userReq = req as Request & { user?: { id: string } };
+    return userReq.user?.id || 'unauthenticated'; // Should never be 'unauthenticated' due to auth middleware
+  }
+});
+
+// Rate limiter for document exports: 30 exports per 15 minutes per user
+// More generous than uploads since exports are read-only operations
+const exportRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 requests per window
+  message: {
+    success: false,
+    error: { code: 'TOO_MANY_EXPORTS', message: 'Too many export requests. Please try again later.' }
   },
   standardHeaders: true,
   legacyHeaders: false,
@@ -73,6 +104,7 @@ const blockInProduction = (_req: Request, res: Response, next: NextFunction) => 
 router.get(
   '/document/:documentId/export-debug',
   blockInProduction,
+  validate(documentIdParamSchema),
   citationManagementController.exportDebug.bind(citationManagementController)
 );
 
@@ -83,6 +115,7 @@ router.get(
 router.post(
   '/document/:documentId/debug-style-conversion',
   blockInProduction,
+  validate(debugStyleConversionSchema),
   citationManagementController.debugStyleConversion.bind(citationManagementController)
 );
 
@@ -93,6 +126,7 @@ router.post(
 router.post(
   '/document/:documentId/reanalyze',
   blockInProduction,
+  validate(documentIdParamSchema),
   citationManagementController.reanalyze.bind(citationManagementController)
 );
 
@@ -103,6 +137,7 @@ router.post(
 router.get(
   '/document/:documentId/preview-debug',
   blockInProduction,
+  validate(documentIdParamSchema),
   citationManagementController.previewChanges.bind(citationManagementController)
 );
 
@@ -113,6 +148,7 @@ router.get(
 router.get(
   '/document/:documentId/export-debug-docx',
   blockInProduction,
+  validate(exportDocumentSchema),
   citationManagementController.exportDocument.bind(citationManagementController)
 );
 
@@ -147,6 +183,7 @@ router.post(
  */
 router.get(
   '/job/:jobId/status',
+  validate(jobIdParamSchema),
   citationManagementController.getJobStatus.bind(citationManagementController)
 );
 
@@ -156,6 +193,7 @@ router.get(
  */
 router.get(
   '/document/:documentId/analysis',
+  validate(documentIdParamSchema),
   citationManagementController.getAnalysis.bind(citationManagementController)
 );
 
@@ -174,6 +212,7 @@ router.get(
  */
 router.post(
   '/document/:documentId/reorder',
+  validate(reorderReferencesSchema),
   citationManagementController.reorderReferences.bind(citationManagementController)
 );
 
@@ -185,6 +224,7 @@ router.post(
  */
 router.delete(
   '/document/:documentId/reference/:referenceId',
+  validate(documentReferenceParamsSchema),
   citationManagementController.deleteReference.bind(citationManagementController)
 );
 
@@ -207,6 +247,7 @@ router.delete(
  */
 router.patch(
   '/document/:documentId/reference/:referenceId',
+  validate(editReferenceSchema),
   citationManagementController.editReference.bind(citationManagementController)
 );
 
@@ -219,6 +260,7 @@ router.patch(
  */
 router.post(
   '/document/:documentId/resequence',
+  validate(documentIdParamSchema),
   citationManagementController.resequenceByAppearance.bind(citationManagementController)
 );
 
@@ -235,6 +277,7 @@ router.post(
  */
 router.post(
   '/document/:documentId/convert-style',
+  validate(convertStyleSchema),
   citationManagementController.convertStyle.bind(citationManagementController)
 );
 
@@ -254,9 +297,13 @@ router.get(
 /**
  * POST /api/v1/citation-management/document/:documentId/validate-dois
  * Validate all DOIs in references
+ *
+ * Query:
+ * - forceRefresh?: 'true' | 'false' - Force re-validation even if cached
  */
 router.post(
   '/document/:documentId/validate-dois',
+  validate(validateDoisSchema),
   citationManagementController.validateDOIs.bind(citationManagementController)
 );
 
@@ -267,18 +314,29 @@ router.post(
 /**
  * GET /api/v1/citation-management/document/:documentId/preview
  * Preview changes that will be applied on export (JSON response for frontend)
+ *
+ * Query:
+ * - changeType?: 'RENUMBER' | 'REFERENCE_STYLE_CONVERSION' | 'DELETE' | 'INSERT'
+ * - includeReverted?: 'true' | 'false'
  */
 router.get(
   '/document/:documentId/preview',
+  validate(previewChangesSchema),
   citationManagementController.previewChanges.bind(citationManagementController)
 );
 
 /**
  * GET /api/v1/citation-management/document/:documentId/export
  * Export modified DOCX with preserved formatting
+ * Rate limited: 30 exports per 15 minutes per user
+ *
+ * Query:
+ * - acceptChanges: 'true' | 'false' - If true, apply changes cleanly without Track Changes
  */
 router.get(
   '/document/:documentId/export',
+  exportRateLimiter,
+  validate(exportDocumentSchema),
   citationManagementController.exportDocument.bind(citationManagementController)
 );
 
