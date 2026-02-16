@@ -47,8 +47,13 @@ export class ComparisonService {
       throw new Error('Job not found');
     }
 
-    const page = pagination?.page || 1;
-    const requestedLimit = pagination?.limit || DEFAULT_PAGINATION_LIMIT;
+    // Normalize pagination parameters to ensure positive values
+    let page = pagination?.page ?? 1;
+    page = page > 0 ? page : 1;
+
+    let requestedLimit = pagination?.limit ?? DEFAULT_PAGINATION_LIMIT;
+    requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
+
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
@@ -80,7 +85,9 @@ export class ComparisonService {
     };
 
     const input = job.input as Record<string, unknown>;
-    const fileName = (input?.fileName as string) || (input?.filename as string) || 'Unknown';
+    const fileName = typeof input?.fileName === 'string' ? input.fileName
+      : typeof input?.filename === 'string' ? input.filename
+      : 'Unknown';
 
     return {
       jobId,
@@ -142,8 +149,13 @@ export class ComparisonService {
       ];
     }
 
-    const page = filters.page || 1;
-    const requestedLimit = filters.limit || DEFAULT_PAGINATION_LIMIT;
+    // Normalize pagination parameters to ensure positive values
+    let page = filters.page ?? 1;
+    page = page > 0 ? page : 1;
+
+    let requestedLimit = filters.limit ?? DEFAULT_PAGINATION_LIMIT;
+    requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
+
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
@@ -173,7 +185,9 @@ export class ComparisonService {
     });
 
     const input = (job?.input as Record<string, unknown>) || {};
-    const fileName = (input?.fileName as string) || (input?.filename as string) || 'Unknown';
+    const fileName = typeof input?.fileName === 'string' ? input.fileName
+      : typeof input?.filename === 'string' ? input.filename
+      : 'Unknown';
 
     return {
       jobId,

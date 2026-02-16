@@ -23,3 +23,14 @@ export const MAX_PAGINATION_LIMIT = 200;
  * @default 50
  */
 export const DEFAULT_PAGINATION_LIMIT = 50;
+
+/**
+ * Maximum page number allowed to prevent excessive offset calculations
+ *
+ * Prevents performance issues from skip > 2M records (10000 * 200).
+ * For datasets larger than 2M records, consider cursor-based pagination.
+ *
+ * @constant
+ * @default 10000
+ */
+export const MAX_PAGE = 10000;

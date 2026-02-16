@@ -3,7 +3,7 @@ import { ComparisonService } from '../services/comparison';
 import { ComparisonFilters } from '../types/comparison.types';
 import prisma from '../lib/prisma';
 import { AuthenticatedRequest } from '../types/authenticated-request';
-import { MAX_PAGINATION_LIMIT } from '../constants/pagination.constants';
+import { MAX_PAGINATION_LIMIT, MAX_PAGE } from '../constants/pagination.constants';
 import { logger } from '../lib/logger';
 
 export class ComparisonController {
@@ -29,24 +29,37 @@ export class ComparisonController {
    * @returns Validated pagination object with optional page and limit
    *
    * @remarks
-   * - Returns undefined for page/limit if invalid (not a positive finite number)
-   * - Caps limit at MAX_PAGINATION_LIMIT to prevent OOM errors
-   * - Logs a warning when limit is capped for telemetry
+   * - Uses Number() + Number.isInteger() for stricter validation (rejects '10.5', '10e2')
+   * - Returns undefined for page/limit if invalid (not a positive integer)
+   * - Caps page at MAX_PAGE (10000) to prevent excessive offset calculations
+   * - Caps limit at MAX_PAGINATION_LIMIT (200) to prevent OOM errors
+   * - Logs warnings when limits are capped for telemetry/abuse detection
    */
   private validatePagination(
     page?: string,
     limit?: string,
     jobId?: string
   ): { page?: number; limit?: number } {
-    const parsedPage = page ? parseInt(page, 10) : undefined;
-    const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    const parsedPage = page ? Number(page) : undefined;
+    const parsedLimit = limit ? Number(limit) : undefined;
 
-    const validatedPage = parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0
-      ? parsedPage
-      : undefined;
+    let validatedPage: number | undefined = undefined;
+    if (parsedPage !== undefined && Number.isInteger(parsedPage) && parsedPage > 0) {
+      validatedPage = Math.min(parsedPage, MAX_PAGE);
+
+      // Log when page is capped for telemetry/abuse detection
+      if (parsedPage > MAX_PAGE) {
+        logger.warn('Pagination page capped', {
+          requested: parsedPage,
+          applied: MAX_PAGE,
+          maxOffset: (MAX_PAGE - 1) * MAX_PAGINATION_LIMIT,
+          jobId,
+        });
+      }
+    }
 
     let validatedLimit: number | undefined = undefined;
-    if (parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0) {
+    if (parsedLimit !== undefined && Number.isInteger(parsedLimit) && parsedLimit > 0) {
       validatedLimit = Math.min(parsedLimit, MAX_PAGINATION_LIMIT);
 
       // Log when limit is capped for telemetry/abuse detection
