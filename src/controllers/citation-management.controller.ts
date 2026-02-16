@@ -11,6 +11,7 @@ import { referenceReorderingService } from '../services/citation/reference-reord
 import { aiFormatConverterService, CitationStyle } from '../services/citation/ai-format-converter.service';
 import { doiValidationService } from '../services/citation/doi-validation.service';
 import { docxProcessorService, ReferenceEntry } from '../services/citation/docx-processor.service';
+import { citationStorageService } from '../services/citation/citation-storage.service';
 
 export class CitationManagementController {
   /**
@@ -104,23 +105,18 @@ export class CitationManagementController {
         }
       });
 
-      // Save original DOCX file to disk (we need it for export)
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      const uploadDir = path.join(process.cwd(), 'uploads', 'citation-management', tenantId);
-      await fs.mkdir(uploadDir, { recursive: true });
+      // Save original DOCX file to storage (S3 or local fallback)
+      const storageResult = await citationStorageService.uploadFile(
+        tenantId,
+        file.originalname,
+        file.buffer,
+        file.mimetype
+      );
 
-      // Sanitize filename to prevent path traversal attacks
-      const sanitizedOriginalName = file.originalname
-        .replace(/\0/g, '') // Remove null bytes
-        .replace(/[/\\]/g, '_') // Replace path separators
-        .replace(/\.\./g, '_') // Remove parent directory references
-        .slice(0, 200); // Limit length
-      const filename = `${Date.now()}-${sanitizedOriginalName}`;
-      const storagePath = path.join(uploadDir, filename);
-      await fs.writeFile(storagePath, file.buffer);
+      logger.info(`[Citation Management] Saved original DOCX to ${storageResult.storageType}: ${storageResult.storagePath}`);
 
-      logger.info(`[Citation Management] Saved original DOCX to ${storagePath}`);
+      // Extract filename from storage path for database record
+      const storedFileName = storageResult.storagePath.split('/').pop() || file.originalname;
 
       // Create document record with job reference
       const document = await prisma.editorialDocument.create({
@@ -128,11 +124,11 @@ export class CitationManagementController {
           tenantId,
           jobId: job.id,
           originalName: file.originalname,
-          fileName: filename,
+          fileName: storedFileName,
           mimeType: file.mimetype,
           fileSize: file.size,
-          storagePath: `citation-management/${tenantId}/${filename}`,
-          storageType: 'LOCAL',
+          storagePath: storageResult.storagePath,
+          storageType: storageResult.storageType,
           fullText: content.text,
           fullHtml: content.html,
           wordCount: stats.wordCount,
@@ -2535,13 +2531,13 @@ export class CitationManagementController {
         }
       }
 
-      // Load original DOCX file
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      const filePath = path.join(process.cwd(), 'uploads', document.storagePath);
-
-      const originalBuffer = await fs.readFile(filePath);
-      logger.info(`[Citation Management] Loaded original DOCX from ${filePath}`);
+      // Load original DOCX file from storage (S3 or local)
+      const storageType = (document.storageType || 'LOCAL') as 'S3' | 'LOCAL';
+      const originalBuffer = await citationStorageService.getFileBuffer(
+        document.storagePath,
+        storageType
+      );
+      logger.info(`[Citation Management] Loaded original DOCX from ${storageType}: ${document.storagePath}`);
 
       // Prepare reference entries for updating References section
       // Check if style conversion was applied (formattedApa will have the converted text)
@@ -3742,12 +3738,14 @@ export class CitationManagementController {
       interface DocxRef { paraNum: number; firstAuthor: string | null; text: string }
       let docxInfo: { available: boolean; error?: string; refSectionFound?: boolean; docxReferences?: DocxRef[]; rawParagraphs?: string[] } = { available: false };
       try {
-        const fs = await import('fs/promises');
-        const path = await import('path');
         const JSZip = await import('jszip');
 
-        const filePath = path.join(process.cwd(), 'uploads', document.storagePath);
-        const fileBuffer = await fs.readFile(filePath);
+        // Load file from storage (S3 or local)
+        const debugStorageType = (document.storageType || 'LOCAL') as 'S3' | 'LOCAL';
+        const fileBuffer = await citationStorageService.getFileBuffer(
+          document.storagePath,
+          debugStorageType
+        );
 
         const zip = await JSZip.loadAsync(fileBuffer);
         const documentXML = await zip.file('word/document.xml')?.async('string');
