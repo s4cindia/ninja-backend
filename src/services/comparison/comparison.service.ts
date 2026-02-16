@@ -7,6 +7,7 @@ import {
   CreateChangeData,
   PaginationInfo,
 } from '../../types/comparison.types';
+import { logger } from '../../lib/logger';
 
 function decodeHtmlEntities(str: string | null): string | null {
   if (!str) return str;
@@ -250,6 +251,58 @@ export class ComparisonService {
     });
 
     return change;
+  }
+
+  /**
+   * Safely log changes with error handling
+   *
+   * This method wraps logChange() calls with try-catch to prevent logging failures
+   * from breaking remediation workflows. Failed logs are logged but don't throw errors.
+   *
+   * @param changes - Array of change data to log
+   * @param context - Logging context (jobId, source identifier)
+   * @returns Number of successfully logged changes
+   * @example
+   * const successCount = await comparisonService.logChangesSafely(
+   *   [{ jobId, changeType, description, ... }],
+   *   { jobId: 'job-123', source: 'PDF-AutoFix' }
+   * );
+   * logger.info(`Logged ${successCount}/5 changes`);
+   */
+  async logChangesSafely(
+    changes: CreateChangeData[],
+    context: { jobId: string; source: string }
+  ): Promise<number> {
+    let successCount = 0;
+
+    for (const changeData of changes) {
+      try {
+        await this.logChange(changeData);
+        successCount++;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.error(
+          `[${context.source}] Failed to log change for job ${context.jobId}`,
+          {
+            changeType: changeData.changeType,
+            error: errorMessage,
+          }
+        );
+        // Continue processing remaining changes
+      }
+    }
+
+    if (successCount < changes.length) {
+      logger.warn(
+        `[${context.source}] Logged ${successCount}/${changes.length} changes for job ${context.jobId}`
+      );
+    } else {
+      logger.info(
+        `[${context.source}] Successfully logged ${successCount} changes for job ${context.jobId}`
+      );
+    }
+
+    return successCount;
   }
 
   private calculateSummary(
