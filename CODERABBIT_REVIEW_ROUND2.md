@@ -53,6 +53,7 @@ WHERE id IN (
 5. Only keeps `rn = 1`, deletes `rn > 1`
 
 **Test Cases:**
+
 | Scenario | createdAt Values | Old Logic | New Logic |
 |----------|-----------------|-----------|-----------|
 | Different times | `10:00:00`, `10:00:01` | ✅ Works | ✅ Works |
@@ -129,7 +130,7 @@ SELECT * FROM jsonb_populate_record(
 ```
 
 **Archive Table Schema:**
-```
+```text
 CriterionChangeLog_Archive
 ├── id (PRIMARY KEY)          - Unique archive entry ID
 ├── archived_at (TIMESTAMP)   - When was it archived?
@@ -206,6 +207,7 @@ WHERE ccl."acrJobId" = acr."acrJobId";
 ```
 
 **Test Cases:**
+
 | # Reviews for Job | Old Logic | New Logic |
 |-------------------|-----------|-----------|
 | 1 review | ✅ Works (lucky) | ✅ Works |

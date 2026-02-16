@@ -84,8 +84,8 @@ echo ""
 print_step "3" "Creating database backup..."
 
 if command -v pg_dump &> /dev/null; then
-    # Extract connection details from DATABASE_URL
-    DATABASE_URL=$(grep DATABASE_URL .env | cut -d '=' -f2)
+    # Extract connection details from DATABASE_URL (preserves all '=' in connection string)
+    DATABASE_URL=$(grep '^DATABASE_URL=' .env | cut -d '=' -f2- | sed -e 's/^["\x27]//' -e 's/["\x27]$//')
     pg_dump "$DATABASE_URL" > "$BACKUP_FILE"
     print_success "Backup created: $BACKUP_FILE ($(du -h $BACKUP_FILE | cut -f1))"
 else
