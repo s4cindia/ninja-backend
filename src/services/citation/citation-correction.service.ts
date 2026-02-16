@@ -63,29 +63,34 @@ class CitationCorrectionService {
     const escapedOriginal = escapeRegex(validation.originalText);
     const newRawText = originalText.replace(new RegExp(escapedOriginal), correctedText);
 
-    await prisma.citation.update({
-      where: { id: validation.citationId },
-      data: { rawText: newRawText }
-    });
+    // Use transaction to ensure atomicity of citation update + change log + validation update
+    const change = await prisma.$transaction(async (tx) => {
+      await tx.citation.update({
+        where: { id: validation.citationId },
+        data: { rawText: newRawText }
+      });
 
-    const change = await prisma.citationChange.create({
-      data: {
-        documentId: validation.documentId,
-        citationId: validation.citationId,
-        changeType: 'correction',
-        beforeText: originalText,
-        afterText: newRawText,
-        appliedBy: tenantId
-      }
-    });
+      const changeRecord = await tx.citationChange.create({
+        data: {
+          documentId: validation.documentId,
+          citationId: validation.citationId,
+          changeType: 'correction',
+          beforeText: originalText,
+          afterText: newRawText,
+          appliedBy: tenantId
+        }
+      });
 
-    await prisma.citationValidation.update({
-      where: { id: validationId },
-      data: {
-        status: 'accepted',
-        resolvedText: correctedText,
-        resolvedAt: new Date()
-      }
+      await tx.citationValidation.update({
+        where: { id: validationId },
+        data: {
+          status: 'accepted',
+          resolvedText: correctedText,
+          resolvedAt: new Date()
+        }
+      });
+
+      return changeRecord;
     });
 
     return {
@@ -148,29 +153,34 @@ class CitationCorrectionService {
 
     const originalText = validation.citation.rawText;
 
-    await prisma.citation.update({
-      where: { id: validation.citationId },
-      data: { rawText: correctedText }
-    });
+    // Use transaction to ensure atomicity of citation update + change log + validation update
+    const change = await prisma.$transaction(async (tx) => {
+      await tx.citation.update({
+        where: { id: validation.citationId },
+        data: { rawText: correctedText }
+      });
 
-    const change = await prisma.citationChange.create({
-      data: {
-        documentId: validation.documentId,
-        citationId: validation.citationId,
-        changeType: 'correction',
-        beforeText: originalText,
-        afterText: correctedText,
-        appliedBy: tenantId
-      }
-    });
+      const changeRecord = await tx.citationChange.create({
+        data: {
+          documentId: validation.documentId,
+          citationId: validation.citationId,
+          changeType: 'correction',
+          beforeText: originalText,
+          afterText: correctedText,
+          appliedBy: tenantId
+        }
+      });
 
-    await prisma.citationValidation.update({
-      where: { id: validationId },
-      data: {
-        status: 'edited',
-        resolvedText: correctedText,
-        resolvedAt: new Date()
-      }
+      await tx.citationValidation.update({
+        where: { id: validationId },
+        data: {
+          status: 'edited',
+          resolvedText: correctedText,
+          resolvedAt: new Date()
+        }
+      });
+
+      return changeRecord;
     });
 
     return {
@@ -277,19 +287,22 @@ class CitationCorrectionService {
       throw AppError.badRequest('Change already reverted');
     }
 
-    if (change.citationId) {
-      await prisma.citation.update({
-        where: { id: change.citationId },
-        data: { rawText: change.beforeText }
-      });
-    }
-
-    await prisma.citationChange.update({
-      where: { id: changeId },
-      data: {
-        isReverted: true,
-        revertedAt: new Date()
+    // Use transaction to ensure atomicity of citation revert + change status update
+    await prisma.$transaction(async (tx) => {
+      if (change.citationId) {
+        await tx.citation.update({
+          where: { id: change.citationId },
+          data: { rawText: change.beforeText }
+        });
       }
+
+      await tx.citationChange.update({
+        where: { id: changeId },
+        data: {
+          isReverted: true,
+          revertedAt: new Date()
+        }
+      });
     });
   }
 }

@@ -10,6 +10,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import * as path from 'path';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { aiCitationDetectorService } from '../../services/citation/ai-citation-detector.service';
@@ -20,6 +21,13 @@ import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
+/** Type guard to validate authenticated user exists on request */
+function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
+  return req.user !== undefined &&
+         typeof req.user.tenantId === 'string' &&
+         typeof req.user.id === 'string';
+}
+
 export class CitationUploadController {
   /**
    * POST /api/v1/citation/upload
@@ -27,7 +35,14 @@ export class CitationUploadController {
    */
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { tenantId, id: userId } = req.user!;
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+      const { tenantId, id: userId } = req.user;
       const file = req.file;
 
       if (!file) {
@@ -116,8 +131,8 @@ export class CitationUploadController {
 
       logger.info(`[Citation Upload] Saved DOCX to ${storageResult.storageType}: ${storageResult.storagePath}`);
 
-      // Extract filename from storage path for database record
-      const storedFileName = storageResult.storagePath.split('/').pop() || file.originalname;
+      // Extract filename from storage path for database record (cross-platform)
+      const storedFileName = path.basename(storageResult.storagePath) || file.originalname;
 
       // Create document record with content in separate table for performance
       const document = await prisma.editorialDocument.create({
@@ -234,8 +249,15 @@ export class CitationUploadController {
    */
   async reanalyze(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
@@ -282,8 +304,15 @@ export class CitationUploadController {
    */
   async getJobStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
       const { jobId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       const job = await prisma.job.findFirst({
         where: { id: jobId, tenantId },
@@ -364,8 +393,15 @@ export class CitationUploadController {
    */
   async getAnalysis(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },

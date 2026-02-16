@@ -233,7 +233,7 @@ async function createTempFile(buffer: Buffer, prefix: string = 'docx-'): Promise
       try {
         await fs.unlink(filePath);
         logger.debug(`[DOCX Processor] Cleaned up temp file: ${filePath}`);
-      } catch (err) {
+      } catch {
         // Ignore cleanup errors - file may already be deleted
         logger.debug(`[DOCX Processor] Temp file cleanup skipped: ${filePath}`);
       }
@@ -257,6 +257,130 @@ function shouldUseDiskProcessing(bufferSize: number): boolean {
   }
 
   return false;
+}
+
+/**
+ * Memory management constants for segment processing
+ */
+const SEGMENT_LIMITS = {
+  // Maximum segments to process in a single pass (prevents OOM on huge documents)
+  MAX_SEGMENTS_PER_PASS: 50000,
+  // Maximum charToSegment array size (each entry is ~48 bytes on 64-bit)
+  MAX_CHAR_MAP_SIZE: 500000,
+  // Warn threshold for segment count
+  SEGMENT_WARN_THRESHOLD: 20000,
+};
+
+/**
+ * ReDoS-safe regex constants
+ * Uses bounded quantifiers {0,N} instead of unbounded * to prevent catastrophic backtracking
+ */
+const REGEX_LIMITS = {
+  // Maximum attribute length in XML tags (e.g., xml:space="preserve")
+  MAX_ATTR_LENGTH: 500,
+  // Maximum text content length in a single <w:t> tag
+  MAX_TEXT_LENGTH: 10000,
+  // Maximum tag content for complex patterns
+  MAX_TAG_CONTENT: 5000,
+};
+
+/**
+ * Create a fresh safe regex for text tag extraction
+ * Returns a new RegExp instance to avoid shared state issues with global flag
+ */
+function createSafeTextTagRegex(): RegExp {
+  return new RegExp(
+    `<w:t([^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}})>([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})<\\/w:t>`,
+    'g'
+  );
+}
+
+/**
+ * Safe regex execution with match limit to prevent infinite loops on malformed input
+ */
+function safeRegexExec(
+  regex: RegExp,
+  input: string,
+  maxMatches: number = SEGMENT_LIMITS.MAX_SEGMENTS_PER_PASS
+): RegExpExecArray[] {
+  const results: RegExpExecArray[] = [];
+  let match: RegExpExecArray | null;
+  let count = 0;
+
+  // Reset regex state for global patterns
+  regex.lastIndex = 0;
+
+  while ((match = regex.exec(input)) !== null && count < maxMatches) {
+    results.push(match);
+    count++;
+
+    // Prevent infinite loop on zero-width matches
+    if (match.index === regex.lastIndex) {
+      regex.lastIndex++;
+    }
+  }
+
+  if (count >= maxMatches) {
+    logger.warn(`[DOCX Processor] Regex match limit reached (${maxMatches})`);
+  }
+
+  return results;
+}
+
+/**
+ * Safely extract text content from XML paragraph using bounded regex
+ * Prevents ReDoS by limiting attribute and text content lengths
+ */
+function safeExtractParagraphText(paragraphXml: string, maxMatches: number = 1000): string {
+  const regex = createSafeTextTagRegex();
+  const matches = safeRegexExec(regex, paragraphXml, maxMatches);
+  return matches.map(m => m[2] || '').join('').trim();
+}
+
+/**
+ * Create a safe regex pattern for matching specific reference section headers
+ * Uses bounded quantifiers to prevent ReDoS
+ */
+function createSafeHeaderRegex(headerText: string): RegExp {
+  const escaped = headerText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>${escaped}<\\/w:t>`,
+    'i'
+  );
+}
+
+/**
+ * Cleanup JSZip instance to help garbage collection
+ * JSZip holds references to buffers internally that need to be released
+ * @param zip - JSZip instance to cleanup (using any for version compatibility)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function cleanupZip(zip: any): void {
+  if (!zip) return;
+
+  try {
+    // Clear internal file references
+    if (zip.files) {
+      for (const key of Object.keys(zip.files)) {
+        const file = zip.files[key];
+        if (file) {
+          // Clear any cached data
+          if (file._data) {
+            file._data = null;
+          }
+        }
+        delete zip.files[key];
+      }
+    }
+
+    // Clear the root reference
+    if (zip.root) {
+      zip.root = null;
+    }
+  } catch {
+    // Ignore cleanup errors - best effort only
+    logger.debug('[DOCX Processor] JSZip cleanup completed (with some warnings)');
+  }
 }
 
 export interface DOCXContent {
@@ -472,12 +596,12 @@ class DOCXProcessorService {
       documentXML = sanitizeXML(documentXML);
 
       // Split document at References section to avoid modifying reference list citations
-      // Look for common References section headers
+      // Look for common References section headers (using safe bounded regex patterns)
       const refPatterns = [
-        /<w:t[^>]*>References<\/w:t>/i,
-        /<w:t[^>]*>Bibliography<\/w:t>/i,
-        /<w:t[^>]*>Works Cited<\/w:t>/i,
-        /<w:t[^>]*>Reference List<\/w:t>/i,
+        createSafeHeaderRegex('References'),
+        createSafeHeaderRegex('Bibliography'),
+        createSafeHeaderRegex('Works Cited'),
+        createSafeHeaderRegex('Reference List'),
       ];
 
       let bodyXML = documentXML;
@@ -579,8 +703,9 @@ class DOCXProcessorService {
       }
 
       for (const [placeholder, info] of placeholders) {
+        // Use bounded quantifiers to prevent ReDoS on malformed XML
         const pattern = new RegExp(
-          `<w:t([^>]*)>([^<]*)` + this.escapeRegex(placeholder) + `([^<]*)</w:t>`,
+          `<w:t([^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}})>([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})` + this.escapeRegex(placeholder) + `([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})</w:t>`,
           'g'
         );
 
@@ -700,6 +825,12 @@ class DOCXProcessorService {
         compressionOptions: { level: 9 }
       });
 
+      // Memory cleanup: Release JSZip resources and large strings
+      cleanupZip(zip);
+      documentXML = '';
+      bodyXML = '';
+      referencesXML = '';
+
       const exportType = acceptChanges ? 'clean export' : 'Track Changes';
       logger.info(`[DOCX Processor] Complete: ${summary.totalCitations} citations (${exportType})`);
 
@@ -793,29 +924,52 @@ class DOCXProcessorService {
     }
 
     const segments: TextSegment[] = [];
-    const textTagRegex = /<w:t([^>]*)>([^<]*)<\/w:t>/g;
-    let match: RegExpExecArray | null;
+    // Use safe regex with bounded quantifiers to prevent ReDoS on malformed XML
+    const textTagRegex = createSafeTextTagRegex();
 
-    while ((match = textTagRegex.exec(xml)) !== null) {
+    // Use safe regex execution with match limit
+    const textTagMatches = safeRegexExec(textTagRegex, xml, SEGMENT_LIMITS.MAX_SEGMENTS_PER_PASS);
+
+    for (const textMatch of textTagMatches) {
       segments.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        text: match[2],
-        fullMatch: match[0]
+        start: textMatch.index,
+        end: textMatch.index + textMatch[0].length,
+        text: textMatch[2],
+        fullMatch: textMatch[0]
       });
     }
 
+    // Log warning for large documents
+    if (segments.length >= SEGMENT_LIMITS.SEGMENT_WARN_THRESHOLD) {
+      logger.warn(`[DOCX Processor] Large document detected: ${segments.length} text segments`);
+    }
+
     // Step 2: Build combined text and track which segment each character belongs to
-    let combinedText = '';
+    // Use string array and join for better memory efficiency with large documents
+    const textParts: string[] = [];
     const charToSegment: { segmentIndex: number; charIndex: number }[] = [];
+    let totalChars = 0;
 
     for (let segIdx = 0; segIdx < segments.length; segIdx++) {
       const seg = segments[segIdx];
+      textParts.push(seg.text);
+
+      // Memory safety: Limit charToSegment array size
+      if (totalChars + seg.text.length > SEGMENT_LIMITS.MAX_CHAR_MAP_SIZE) {
+        logger.warn(`[DOCX Processor] Character map limit reached at segment ${segIdx}, stopping`);
+        break;
+      }
+
       for (let charIdx = 0; charIdx < seg.text.length; charIdx++) {
         charToSegment.push({ segmentIndex: segIdx, charIndex: charIdx });
-        combinedText += seg.text[charIdx];
+        totalChars++;
       }
     }
+
+    // Join text parts (more memory efficient than string concatenation in loop)
+    const combinedText = textParts.join('');
+    // Clear textParts array to free memory
+    textParts.length = 0;
 
     // Step 3: Find all occurrences of the citation pattern in the combined text
     const citationPattern = new RegExp(searchPattern, 'g');
@@ -897,30 +1051,43 @@ class DOCXProcessorService {
       }
 
       // Re-parse segments for next iteration (positions have changed)
+      // Note: This re-parsing is necessary because XML positions shift after each replacement
       if (i > 0) {
+        // Clear arrays to free memory before rebuilding
         segments.length = 0;
         charToSegment.length = 0;
-        combinedText = '';
 
-        const newTextTagRegex = /<w:t([^>]*)>([^<]*)<\/w:t>/g;
-        while ((match = newTextTagRegex.exec(modifiedXml)) !== null) {
+        // Use safe bounded regex for text tag extraction
+        const newTextTagRegex = createSafeTextTagRegex();
+        const reMatches = safeRegexExec(newTextTagRegex, modifiedXml, SEGMENT_LIMITS.MAX_SEGMENTS_PER_PASS);
+
+        for (const reMatch of reMatches) {
           segments.push({
-            start: match.index,
-            end: match.index + match[0].length,
-            text: match[2],
-            fullMatch: match[0]
+            start: reMatch.index,
+            end: reMatch.index + reMatch[0].length,
+            text: reMatch[2],
+            fullMatch: reMatch[0]
           });
         }
 
+        let reCharCount = 0;
         for (let segIdx = 0; segIdx < segments.length; segIdx++) {
           const seg = segments[segIdx];
+          // Memory safety: Limit charToSegment array during re-parsing
+          if (reCharCount + seg.text.length > SEGMENT_LIMITS.MAX_CHAR_MAP_SIZE) {
+            break;
+          }
           for (let charIdx = 0; charIdx < seg.text.length; charIdx++) {
             charToSegment.push({ segmentIndex: segIdx, charIndex: charIdx });
-            combinedText += seg.text[charIdx];
+            reCharCount++;
           }
         }
       }
     }
+
+    // Memory cleanup: Clear segment arrays before returning
+    segments.length = 0;
+    charToSegment.length = 0;
 
     return { xml: modifiedXml, count };
   }
@@ -983,10 +1150,9 @@ class DOCXProcessorService {
       const paragraphRegex = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
       let updatedXML = referencesXML;
 
-      // Helper to extract text from paragraph
+      // Helper to extract text from paragraph (using safe bounded regex)
       const extractText = (para: string): string => {
-        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-        return textMatches.map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1')).join('').trim();
+        return safeExtractParagraphText(para);
       };
 
       // Helper to normalize text for matching (remove extra spaces, handle different quote styles)
@@ -1109,9 +1275,10 @@ class DOCXProcessorService {
                 } else {
                   // TRACK CHANGES: Find and replace ONLY the year in parentheses "(YEAR)"
                   // In APA format, the year in parentheses comes right after authors: "Smith, J. (2019). Title..."
+                  // Using bounded quantifiers to prevent ReDoS on malformed XML
 
                   // Pattern 1: Year with opening paren in same w:t element: "(2019" or "(2019)"
-                  const yearWithParenRegex = new RegExp(`(<w:t[^>]*>)([^<]*\\()(${oldYear})(\\)?[^<]*)(<\\/w:t>)`);
+                  const yearWithParenRegex = new RegExp(`(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}}\\()(${oldYear})(\\)?[^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})(<\\/w:t>)`);
 
                   if (yearWithParenRegex.test(updatedPara)) {
                     updatedPara = updatedPara.replace(yearWithParenRegex, (match, openTag, before, year, after, closeTag) => {
@@ -1124,7 +1291,7 @@ class DOCXProcessorService {
 
                   // Pattern 2: If paren and year are in separate w:t elements, look for year right after "(</w:t>"
                   if (!replaced) {
-                    const yearAfterParenRegex = new RegExp(`(\\(<\\/w:t><\\/w:r>)(<w:r[^>]*>)(<w:t[^>]*>)(${oldYear})`);
+                    const yearAfterParenRegex = new RegExp(`(\\(<\\/w:t><\\/w:r>)(<w:r[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)(${oldYear})`);
                     if (yearAfterParenRegex.test(updatedPara)) {
                       updatedPara = updatedPara.replace(yearAfterParenRegex, (match, parenClose, rOpen, tOpen, year) => {
                         const delId = revisionId++;
@@ -1137,7 +1304,7 @@ class DOCXProcessorService {
 
                   // Pattern 3: Fallback - replace only the FIRST occurrence of the year (APA year in parens comes first)
                   if (!replaced) {
-                    const firstYearRegex = new RegExp(`(<w:t[^>]*>)([^<]*)(${oldYear})([^<]*)(<\\/w:t>)`);
+                    const firstYearRegex = new RegExp(`(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})(${oldYear})([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})(<\\/w:t>)`);
                     if (firstYearRegex.test(updatedPara)) {
                       updatedPara = updatedPara.replace(firstYearRegex, (match, openTag, before, year, after, closeTag) => {
                         const delId = revisionId++;
@@ -1224,10 +1391,9 @@ class DOCXProcessorService {
       const headerParagraph = allParagraphs[0];
       const candidateParagraphs = allParagraphs.slice(1);
 
-      // Helper to extract text from paragraph
+      // Helper to extract text from paragraph (using safe bounded regex)
       const extractText = (para: string): string => {
-        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-        return textMatches.map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1')).join('').trim();
+        return safeExtractParagraphText(para);
       };
 
       // Helper to check if paragraph looks like a reference entry
@@ -1336,10 +1502,8 @@ class DOCXProcessorService {
       // Extract original numbers and match to database references
       for (let paraIdx = 0; paraIdx < refParagraphs.length; paraIdx++) {
         const para = refParagraphs[paraIdx];
-        const textMatches = para.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-        const fullText = textMatches
-          .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
-          .join('');
+        // Use safe bounded regex for text extraction
+        const fullText = safeExtractParagraphText(para);
 
         // Extract original number from paragraph
         const numMatch = fullText.match(/^(\d+)\./);
@@ -1532,10 +1696,11 @@ class DOCXProcessorService {
           }
         } else {
           // Active reference - may need number update and/or swap highlighting
+          // Using bounded quantifiers to prevent ReDoS on malformed XML
           const numberPatterns = [
-            { pattern: /(<w:t[^>]*>)\s*(\d+)\.\s*/, format: 'dot' },
-            { pattern: /(<w:t[^>]*>)\s*(\d+)\s+/, format: 'space' },
-            { pattern: /(<w:t[^>]*>)\s*\[(\d+)\]\s*/, format: 'bracket' },
+            { pattern: new RegExp(`(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)\\s*(\\d+)\\.\\s*`), format: 'dot' },
+            { pattern: new RegExp(`(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)\\s*(\\d+)\\s+`), format: 'space' },
+            { pattern: new RegExp(`(<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>)\\s*\\[(\\d+)\\]\\s*`), format: 'bracket' },
           ];
 
           for (const { pattern, format } of numberPatterns) {
@@ -1593,11 +1758,8 @@ class DOCXProcessorService {
 
           // STYLE CONVERSION: If converted text exists, replace the reference content
           if (item.convertedText) {
-            // Check if this is a numbered or unnumbered reference
-            const paraTextMatches = updatedPara.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-            const paraFullText = paraTextMatches
-              .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
-              .join('').trim();
+            // Check if this is a numbered or unnumbered reference (using safe bounded regex)
+            const paraFullText = safeExtractParagraphText(updatedPara);
             const isNumberedRef = /^\s*\d+[\.\)\]]/.test(paraFullText);
 
             if (isNumberedRef) {
@@ -1661,11 +1823,8 @@ class DOCXProcessorService {
     revisionId: number,
     acceptChanges: boolean = false
   ): string {
-    // Extract all text from the paragraph
-    const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-    const fullText = textMatches
-      .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
-      .join('');
+    // Extract all text from the paragraph (using safe bounded regex)
+    const fullText = safeExtractParagraphText(paragraphXml);
 
     // Find where the content starts (after the number and period/tab)
     const contentStartMatch = fullText.match(/^\s*\d+[\.\)\]]\s*/);
@@ -1704,9 +1863,11 @@ class DOCXProcessorService {
 
     while ((runMatch = runRegex.exec(paragraphXml)) !== null) {
       const runContent = runMatch[2];
-      const textMatch = runContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
+      // Use safe bounded regex for text extraction (single match)
+      const textMatches = safeRegexExec(createSafeTextTagRegex(), runContent, 1);
+      const textMatch = textMatches.length > 0 ? textMatches[0] : null;
       if (textMatch) {
-        const text = textMatch[1];
+        const text = textMatch[2];
         // Check if this run contains the number
         if (!foundNumber && /^\s*\d+[\.\)\]]/.test(text)) {
           foundNumber = true;
@@ -1737,8 +1898,12 @@ class DOCXProcessorService {
     if (acceptChanges) {
       // CLEAN EXPORT: Replace content directly without Track Changes
       // Find the number run and replace content directly after it
+      // Using bounded quantifiers to prevent ReDoS
+      const cleanReplacePattern = new RegExp(
+        `(<w:r\\b[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>[\\s\\S]*?<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>\\s*\\d+[.\\)\\]]\\s*)([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})(<\\/w:t>[\\s\\S]*?<\\/w:r>)`
+      );
       result = paragraphXml.replace(
-        /(<w:r\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\d+[\.\)\]]\s*)([^<]*)(<\/w:t>[\s\S]*?<\/w:r>)/,
+        cleanReplacePattern,
         (match, beforeContent, contentAfterNum, afterTag) => {
           // Replace content directly
           return `${beforeContent}${afterTag}<w:r><w:t>${this.escapeXml(newContent)}</w:t></w:r>`;
@@ -1764,8 +1929,12 @@ class DOCXProcessorService {
         `<w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${this.escapeXml(newContent)}</w:t></w:r></w:ins>`;
 
       // Find the number run and append Track Changes after it
+      // Using bounded quantifiers to prevent ReDoS
+      const trackChangePattern = new RegExp(
+        `(<w:r\\b[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>[\\s\\S]*?<w:t[^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}}>\\s*\\d+[.\\)\\]]\\s*)([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})(<\\/w:t>[\\s\\S]*?<\\/w:r>)`
+      );
       result = paragraphXml.replace(
-        /(<w:r\b[^>]*>[\s\S]*?<w:t[^>]*>\s*\d+[\.\)\]]\s*)([^<]*)(<\/w:t>[\s\S]*?<\/w:r>)/,
+        trackChangePattern,
         (match, beforeContent, contentAfterNum, afterTag) => {
           if (contentAfterNum.trim()) {
             // Number and some content in same run
@@ -1806,11 +1975,8 @@ class DOCXProcessorService {
     revisionId: number,
     acceptChanges: boolean = false
   ): string {
-    // Extract all text from the paragraph
-    const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-    const fullText = textMatches
-      .map(t => t.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1'))
-      .join('').trim();
+    // Extract all text from the paragraph (using safe bounded regex)
+    const fullText = safeExtractParagraphText(paragraphXml);
 
     const newContent = convertedText.trim();
 
@@ -1932,6 +2098,13 @@ class DOCXProcessorService {
 
       zip.file('word/document.xml', documentXML);
       const result = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+      // Memory cleanup: Release JSZip resources and large strings
+      cleanupZip(zip);
+      documentXML = '';
+      changeMap.clear();
+      placeholders.clear();
+
       recordSuccess();
       return result;
     } catch (error: unknown) {
