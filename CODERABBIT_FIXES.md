@@ -115,6 +115,7 @@ END IF;
 **Result:** Verification now correctly detects partial migrations
 
 **Test Cases:**
+
 | Scenario | Old Logic | New Logic |
 |----------|-----------|-----------|
 | 0 columns exist | ❌ FAIL | ❌ FAIL ✅ |

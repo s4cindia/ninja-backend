@@ -38,18 +38,49 @@ ADD COLUMN IF NOT EXISTS "fieldName" TEXT;
 
 -- Step 2.2: Migrate data from old structure to new structure (idempotent)
 -- Only update if old columns exist and new columns are NULL
-UPDATE "CriterionChangeLog" ccl
-SET "acrJobId" = acr."acrJobId"
-FROM "AcrCriterionReview" acr
-WHERE ccl."criterionReviewId" = acr.id
-  AND ccl."acrJobId" IS NULL;
+DO $$
+BEGIN
+  -- Only run if old column "criterionReviewId" still exists
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'CriterionChangeLog'
+    AND column_name = 'criterionReviewId'
+  ) THEN
+    UPDATE "CriterionChangeLog" ccl
+    SET "acrJobId" = acr."acrJobId"
+    FROM "AcrCriterionReview" acr
+    WHERE ccl."criterionReviewId" = acr.id
+      AND ccl."acrJobId" IS NULL;
+
+    RAISE NOTICE 'Migrated acrJobId from criterionReviewId';
+  ELSE
+    RAISE NOTICE 'Column criterionReviewId does not exist, skipping migration';
+  END IF;
+END$$;
 
 -- Map changeType → fieldName (only if fieldName is NULL)
-UPDATE "CriterionChangeLog"
-SET "fieldName" = COALESCE("changeType", 'unknown_field')
-WHERE "fieldName" IS NULL;
+DO $$
+BEGIN
+  -- Only run if old column "changeType" still exists
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'CriterionChangeLog'
+    AND column_name = 'changeType'
+  ) THEN
+    UPDATE "CriterionChangeLog"
+    SET "fieldName" = COALESCE("changeType", 'unknown_field')
+    WHERE "fieldName" IS NULL;
+
+    RAISE NOTICE 'Migrated fieldName from changeType';
+  ELSE
+    RAISE NOTICE 'Column changeType does not exist, skipping migration';
+  END IF;
+END$$;
 
 -- Step 2.3: Archive and delete orphaned records (for audit compliance)
+-- Enable pgcrypto extension for gen_random_uuid()
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Create archive table if it doesn't exist
 CREATE TABLE IF NOT EXISTS "CriterionChangeLog_Archive" (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
