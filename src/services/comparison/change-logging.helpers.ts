@@ -118,3 +118,38 @@ export function extractWcagLevel(ruleId: string): string {
 
   return levelMappings[ruleId] || 'A';
 }
+
+export function extractSeverity(ruleId: string): string {
+  const severityMappings: Record<string, string> = {
+    // PDF Auto-fixable codes (Critical - these break PDF/UA compliance)
+    'MATTERHORN-01-001': 'CRITICAL', // Marked flag - PDF not tagged
+    'MATTERHORN-01-005': 'CRITICAL', // Suspects flag - structural issues
+
+    // PDF Auto-fixable codes (Minor - metadata improvements)
+    'MATTERHORN-01-002': 'MINOR', // DisplayDocTitle - UI preference
+
+    // PDF Quick-fix codes (Major - important accessibility)
+    'PDF-NO-LANGUAGE': 'MAJOR',      // Language affects screen readers
+    'MATTERHORN-11-001': 'MAJOR',    // Document language
+    'WCAG-2.4.2': 'MAJOR',           // Page title for navigation
+
+    // PDF Quick-fix codes (Minor - metadata)
+    'PDF-NO-TITLE': 'MINOR',         // Title is helpful but not critical
+    'MATTERHORN-01-003': 'MINOR',    // Document title
+    'PDF-NO-CREATOR': 'MINOR',       // Creator metadata
+    'PDF-NO-METADATA': 'MINOR',      // General metadata
+
+    // EPUB codes (default to MAJOR)
+    'EPUB-META-001': 'MAJOR',
+    'EPUB-META-002': 'MAJOR',
+    'EPUB-SEM-001': 'MAJOR',
+    'EPUB-IMG-001': 'CRITICAL',      // Alt text is critical
+    'EPUB-STRUCT-002': 'MAJOR',
+    'EPUB-STRUCT-003': 'MAJOR',
+    'EPUB-NAV-001': 'MAJOR',
+    'EPUB-CONTRAST-001': 'MAJOR',
+    'COLOR-CONTRAST': 'MAJOR',
+  };
+
+  return severityMappings[ruleId] || 'MAJOR';
+}

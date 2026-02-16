@@ -21,6 +21,7 @@ import {
   mapFixTypeToChangeType,
   extractWcagCriteria,
   extractWcagLevel,
+  extractSeverity,
 } from '../services/comparison';
 
 const comparisonService = new ComparisonService(prisma);
@@ -872,7 +873,7 @@ export class PdfRemediationController {
               description: result.description,
               beforeContent: result.before,
               afterContent: result.after,
-              severity: 'MAJOR',
+              severity: extractSeverity(issueCode),
               wcagCriteria: extractWcagCriteria(issueCode),
               wcagLevel: extractWcagLevel(issueCode),
               appliedBy: req.user?.email || 'user',

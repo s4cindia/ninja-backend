@@ -21,6 +21,7 @@ import {
   mapFixTypeToChangeType,
   extractWcagCriteria,
   extractWcagLevel,
+  extractSeverity,
 } from '../comparison';
 
 const comparisonService = new ComparisonService(prisma);
@@ -301,12 +302,12 @@ class PdfAutoRemediationService {
                   taskId: task.id,
                   issueId: task.issueId,
                   ruleId: task.issueCode,
-                  filePath: task.filePath || 'document.pdf',
+                  filePath: task.filePath || fileName,
                   changeType: mapFixTypeToChangeType(task.issueCode),
                   description: modification.description,
                   beforeContent: modification.before,
                   afterContent: modification.after,
-                  severity: 'MAJOR',
+                  severity: extractSeverity(task.issueCode),
                   wcagCriteria: extractWcagCriteria(task.issueCode),
                   wcagLevel: extractWcagLevel(task.issueCode),
                   appliedBy: 'auto-fix-system',
