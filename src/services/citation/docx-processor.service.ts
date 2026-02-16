@@ -2,22 +2,142 @@
  * DOCX Processor Service
  * Handles DOCX parsing and modification while preserving formatting
  * Supports Track Changes for showing modifications
+ *
+ * Memory Management:
+ * - Files <= 5MB: Process in memory (fast path)
+ * - Files > 5MB: Use disk-based processing with temp files
+ * - Circuit breaker: Check available memory before processing
  */
 
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
+import { memoryConfig, getMemoryUsage, isMemorySafeForSize } from '../../config/memory.config';
+import { withMemoryTracking, FileTooLargeError } from '../../utils/memory-safe-processor';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
 // Security constants for DOCX processing
+// Aligned with memoryConfig for consistent limits
 const SECURITY_LIMITS = {
-  MAX_DOCX_SIZE: 50 * 1024 * 1024,  // 50MB max DOCX file size (matches controller limit)
-  MAX_XML_SIZE: 50 * 1024 * 1024,   // 50MB max XML content size
-  MAX_ZIP_ENTRIES: 1000,             // Max files in DOCX archive
-  MAX_ELEMENT_DEPTH: 100,            // Max XML nesting depth
+  MAX_DOCX_SIZE: memoryConfig.maxUploadFileSize,  // 50MB max DOCX file size
+  MAX_XML_SIZE: memoryConfig.maxXmlMemorySize,    // 10MB max XML content size
+  MAX_ZIP_ENTRIES: 1000,                           // Max files in DOCX archive
+  MAX_ELEMENT_DEPTH: 100,                          // Max XML nesting depth
+  // Memory-safe processing threshold (files larger use disk-based processing)
+  MEMORY_PROCESSING_LIMIT: memoryConfig.maxMemoryFileSize, // 5MB
 };
+
+/**
+ * Circuit breaker state for memory protection
+ */
+interface CircuitBreakerState {
+  isOpen: boolean;
+  openedAt: number;
+  consecutiveFailures: number;
+  lastMemoryCheck: number;
+}
+
+const circuitBreaker: CircuitBreakerState = {
+  isOpen: false,
+  openedAt: 0,
+  consecutiveFailures: 0,
+  lastMemoryCheck: 0,
+};
+
+// Circuit breaker settings
+const CIRCUIT_BREAKER_THRESHOLD = 3;  // Failures before opening
+const CIRCUIT_BREAKER_RESET_MS = 30000; // 30 seconds cooldown
+const MEMORY_CHECK_INTERVAL_MS = 5000;  // Check memory every 5 seconds
+
+/**
+ * Check if circuit breaker allows processing
+ */
+function checkCircuitBreaker(fileSize: number): void {
+  const now = Date.now();
+
+  // Reset circuit breaker after cooldown
+  if (circuitBreaker.isOpen && (now - circuitBreaker.openedAt) > CIRCUIT_BREAKER_RESET_MS) {
+    logger.info('[DOCX Processor] Circuit breaker reset after cooldown');
+    circuitBreaker.isOpen = false;
+    circuitBreaker.consecutiveFailures = 0;
+  }
+
+  // Check if circuit is open
+  if (circuitBreaker.isOpen) {
+    throw AppError.serviceUnavailable(
+      'DOCX processing temporarily unavailable due to high memory pressure. Please retry in a few seconds.',
+      'CIRCUIT_BREAKER_OPEN'
+    );
+  }
+
+  // Periodic memory check
+  if ((now - circuitBreaker.lastMemoryCheck) > MEMORY_CHECK_INTERVAL_MS) {
+    circuitBreaker.lastMemoryCheck = now;
+    const usage = getMemoryUsage();
+
+    // Check if we have enough memory for this file
+    if (!isMemorySafeForSize(fileSize)) {
+      logger.warn('[DOCX Processor] Memory pressure detected', {
+        fileSize,
+        heapUsedMB: usage.heapUsedMB,
+        heapTotalMB: usage.heapTotalMB
+      });
+
+      // For large files under memory pressure, reject immediately
+      if (fileSize > SECURITY_LIMITS.MEMORY_PROCESSING_LIMIT) {
+        circuitBreaker.consecutiveFailures++;
+
+        if (circuitBreaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          circuitBreaker.isOpen = true;
+          circuitBreaker.openedAt = now;
+          logger.error('[DOCX Processor] Circuit breaker OPENED due to memory pressure');
+        }
+
+        throw AppError.serviceUnavailable(
+          `Insufficient memory to process ${Math.round(fileSize / 1024 / 1024)}MB file. Current heap: ${usage.heapUsedMB}MB/${usage.heapTotalMB}MB`,
+          'INSUFFICIENT_MEMORY'
+        );
+      }
+    } else {
+      // Reset failure count on successful memory check
+      circuitBreaker.consecutiveFailures = 0;
+    }
+  }
+}
+
+/**
+ * Record successful processing (resets circuit breaker failures)
+ */
+function recordSuccess(): void {
+  circuitBreaker.consecutiveFailures = 0;
+}
+
+/**
+ * Record processing failure
+ */
+function recordFailure(): void {
+  circuitBreaker.consecutiveFailures++;
+  if (circuitBreaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    circuitBreaker.isOpen = true;
+    circuitBreaker.openedAt = Date.now();
+    logger.error('[DOCX Processor] Circuit breaker OPENED due to consecutive failures');
+  }
+}
+
+/**
+ * Reset circuit breaker state (for testing only)
+ */
+export function resetCircuitBreaker(): void {
+  circuitBreaker.isOpen = false;
+  circuitBreaker.openedAt = 0;
+  circuitBreaker.consecutiveFailures = 0;
+  circuitBreaker.lastMemoryCheck = 0;
+}
 
 /**
  * Sanitize XML content to prevent XXE (XML External Entity) attacks
@@ -89,6 +209,56 @@ function validateDOCXStructure(zip: any): { valid: boolean; error?: string } {
   return { valid: true };
 }
 
+/**
+ * Temp file management for disk-based processing
+ */
+interface TempFileHandle {
+  path: string;
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * Create a temp file from a buffer for disk-based processing
+ */
+async function createTempFile(buffer: Buffer, prefix: string = 'docx-'): Promise<TempFileHandle> {
+  const tempDir = os.tmpdir();
+  const fileName = `${prefix}${Date.now()}-${Math.random().toString(36).substring(7)}.docx`;
+  const filePath = path.join(tempDir, fileName);
+
+  await fs.writeFile(filePath, buffer);
+
+  return {
+    path: filePath,
+    cleanup: async () => {
+      try {
+        await fs.unlink(filePath);
+        logger.debug(`[DOCX Processor] Cleaned up temp file: ${filePath}`);
+      } catch (err) {
+        // Ignore cleanup errors - file may already be deleted
+        logger.debug(`[DOCX Processor] Temp file cleanup skipped: ${filePath}`);
+      }
+    }
+  };
+}
+
+/**
+ * Determine if a file should use disk-based processing
+ */
+function shouldUseDiskProcessing(bufferSize: number): boolean {
+  // Use disk processing for files larger than memory limit
+  if (bufferSize > SECURITY_LIMITS.MEMORY_PROCESSING_LIMIT) {
+    return true;
+  }
+
+  // Also use disk processing if memory is low
+  if (!isMemorySafeForSize(bufferSize * 3)) { // 3x for processing overhead
+    logger.info(`[DOCX Processor] Using disk processing due to memory pressure`);
+    return true;
+  }
+
+  return false;
+}
+
 export interface DOCXContent {
   text: string;
   html: string;
@@ -136,24 +306,95 @@ export interface ReferenceEntry {
 class DOCXProcessorService {
   /**
    * Extract text from DOCX file
+   * Uses disk-based processing for large files (> 5MB) or when memory is constrained
    */
   async extractText(buffer: Buffer): Promise<DOCXContent> {
-    try {
-      logger.info('[DOCX Processor] Extracting text from DOCX');
-      const textResult = await mammoth.extractRawText({ buffer });
-      const htmlResult = await mammoth.convertToHtml({ buffer });
+    const fileSize = buffer.length;
 
-      return {
-        text: textResult.value,
-        html: htmlResult.value,
-        rawBuffer: buffer
-      };
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      // Log full error with stack trace for debugging
-      logger.error('[DOCX Processor] Failed to extract text:', error);
-      throw AppError.unprocessable(`DOCX extraction failed: ${errorMessage}`, 'DOCX_EXTRACTION_FAILED');
+    // Circuit breaker check
+    checkCircuitBreaker(fileSize);
+
+    // Check file size limit
+    if (fileSize > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+      throw new FileTooLargeError(
+        fileSize,
+        SECURITY_LIMITS.MAX_DOCX_SIZE,
+        `DOCX file too large: ${Math.round(fileSize / 1024 / 1024)}MB exceeds ${Math.round(SECURITY_LIMITS.MAX_DOCX_SIZE / 1024 / 1024)}MB limit`
+      );
     }
+
+    const useDiskProcessing = shouldUseDiskProcessing(fileSize);
+
+    if (useDiskProcessing) {
+      return this.extractTextDiskBased(buffer);
+    }
+
+    return this.extractTextInMemory(buffer);
+  }
+
+  /**
+   * Extract text using in-memory processing (fast path for small files)
+   */
+  private async extractTextInMemory(buffer: Buffer): Promise<DOCXContent> {
+    return withMemoryTracking('DOCX extractText (in-memory)', async () => {
+      try {
+        logger.info(`[DOCX Processor] Extracting text in-memory (${Math.round(buffer.length / 1024)}KB)`);
+
+        const textResult = await mammoth.extractRawText({ buffer });
+        const htmlResult = await mammoth.convertToHtml({ buffer });
+
+        recordSuccess();
+
+        return {
+          text: textResult.value,
+          html: htmlResult.value,
+          rawBuffer: buffer
+        };
+      } catch (error: unknown) {
+        recordFailure();
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('[DOCX Processor] Failed to extract text (in-memory):', error);
+        throw AppError.unprocessable(`DOCX extraction failed: ${errorMessage}`, 'DOCX_EXTRACTION_FAILED');
+      }
+    });
+  }
+
+  /**
+   * Extract text using disk-based processing (memory-safe for large files)
+   */
+  private async extractTextDiskBased(buffer: Buffer): Promise<DOCXContent> {
+    let tempFile: TempFileHandle | null = null;
+
+    return withMemoryTracking('DOCX extractText (disk-based)', async () => {
+      try {
+        logger.info(`[DOCX Processor] Extracting text disk-based (${Math.round(buffer.length / 1024)}KB)`);
+
+        // Write buffer to temp file
+        tempFile = await createTempFile(buffer, 'docx-extract-');
+
+        // Process using file path instead of buffer (reduces memory footprint)
+        const textResult = await mammoth.extractRawText({ path: tempFile.path });
+        const htmlResult = await mammoth.convertToHtml({ path: tempFile.path });
+
+        recordSuccess();
+
+        return {
+          text: textResult.value,
+          html: htmlResult.value,
+          rawBuffer: buffer // Keep original buffer for downstream use
+        };
+      } catch (error: unknown) {
+        recordFailure();
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        logger.error('[DOCX Processor] Failed to extract text (disk-based):', error);
+        throw AppError.unprocessable(`DOCX extraction failed: ${errorMessage}`, 'DOCX_EXTRACTION_FAILED');
+      } finally {
+        // Always clean up temp file
+        if (tempFile) {
+          await tempFile.cleanup();
+        }
+      }
+    });
   }
 
   /**
@@ -179,13 +420,27 @@ class DOCXProcessorService {
     },
     acceptChanges: boolean = false  // If true, apply changes cleanly without Track Changes markup
   ): Promise<{ buffer: Buffer; summary: ReplacementSummary }> {
-    try {
-      logger.info(`[DOCX Processor] Processing: ${changedCitations.length} changed, ${orphanedCitations.length} orphaned`);
+    const fileSize = originalBuffer.length;
 
-      // Security: Check buffer size
-      if (originalBuffer.length > SECURITY_LIMITS.MAX_DOCX_SIZE) {
-        throw AppError.badRequest(`DOCX file too large: ${originalBuffer.length} bytes (max: ${SECURITY_LIMITS.MAX_DOCX_SIZE})`, 'FILE_TOO_LARGE');
-      }
+    // Circuit breaker check - this operation is memory-intensive
+    checkCircuitBreaker(fileSize);
+
+    // Log memory state before processing
+    const memBefore = getMemoryUsage();
+    logger.info(`[DOCX Processor] Memory before processing: ${memBefore.heapUsedMB}MB/${memBefore.heapTotalMB}MB`);
+
+    return withMemoryTracking('DOCX replaceCitationsWithTrackChanges', async () => {
+      try {
+        logger.info(`[DOCX Processor] Processing: ${changedCitations.length} changed, ${orphanedCitations.length} orphaned`);
+
+        // Security: Check buffer size
+        if (fileSize > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+          throw new FileTooLargeError(
+            fileSize,
+            SECURITY_LIMITS.MAX_DOCX_SIZE,
+            `DOCX file too large: ${Math.round(fileSize / 1024 / 1024)}MB exceeds ${Math.round(SECURITY_LIMITS.MAX_DOCX_SIZE / 1024 / 1024)}MB limit`
+          );
+        }
 
       const summary: ReplacementSummary = {
         totalCitations: 0,
@@ -447,12 +702,20 @@ class DOCXProcessorService {
 
       const exportType = acceptChanges ? 'clean export' : 'Track Changes';
       logger.info(`[DOCX Processor] Complete: ${summary.totalCitations} citations (${exportType})`);
+
+      // Log memory state after processing
+      const memAfter = getMemoryUsage();
+      logger.info(`[DOCX Processor] Memory after processing: ${memAfter.heapUsedMB}MB/${memAfter.heapTotalMB}MB`);
+
+      recordSuccess();
       return { buffer: modifiedBuffer, summary };
     } catch (error: unknown) {
+      recordFailure();
       // Log full error object with stack trace for debugging
       logger.error('[DOCX Processor] Failed to replace citations:', error);
       throw error;
     }
+    }); // End withMemoryTracking
   }
 
   private escapeXml(text: string): string {
@@ -1614,15 +1877,25 @@ class DOCXProcessorService {
     originalBuffer: Buffer,
     replacements: CitationReplacement[]
   ): Promise<Buffer> {
-    try {
-      if (replacements.length === 0) return originalBuffer;
+    if (replacements.length === 0) return originalBuffer;
 
-      // Security: Check buffer size
-      if (originalBuffer.length > SECURITY_LIMITS.MAX_DOCX_SIZE) {
-        throw AppError.badRequest(`DOCX file too large: ${originalBuffer.length} bytes`, 'FILE_TOO_LARGE');
-      }
+    const fileSize = originalBuffer.length;
 
-      const zip = await JSZip.loadAsync(originalBuffer);
+    // Circuit breaker check
+    checkCircuitBreaker(fileSize);
+
+    return withMemoryTracking('DOCX replaceCitations', async () => {
+      try {
+        // Security: Check buffer size
+        if (fileSize > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+          throw new FileTooLargeError(
+            fileSize,
+            SECURITY_LIMITS.MAX_DOCX_SIZE,
+            `DOCX file too large: ${Math.round(fileSize / 1024 / 1024)}MB`
+          );
+        }
+
+        const zip = await JSZip.loadAsync(originalBuffer);
 
       // Security: Validate DOCX structure
       const structureValidation = validateDOCXStructure(zip);
@@ -1658,16 +1931,28 @@ class DOCXProcessorService {
       }
 
       zip.file('word/document.xml', documentXML);
-      return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      const result = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      recordSuccess();
+      return result;
     } catch (error: unknown) {
+      recordFailure();
       // Log full error with stack trace for debugging
       logger.error('[DOCX Processor] Failed to replace style references:', error);
       throw error;
     }
+    }); // End withMemoryTracking
   }
 
   async validateDOCX(buffer: Buffer): Promise<{ valid: boolean; error?: string }> {
     try {
+      // Quick size check before processing
+      if (buffer.length > SECURITY_LIMITS.MAX_DOCX_SIZE) {
+        return {
+          valid: false,
+          error: `File too large: ${Math.round(buffer.length / 1024 / 1024)}MB exceeds ${Math.round(SECURITY_LIMITS.MAX_DOCX_SIZE / 1024 / 1024)}MB limit`
+        };
+      }
+
       await this.extractText(buffer);
       return { valid: true };
     } catch (error: unknown) {
@@ -1677,6 +1962,7 @@ class DOCXProcessorService {
   }
 
   async getStatistics(buffer: Buffer): Promise<{ wordCount: number; paragraphCount: number; pageCount: number }> {
+    // extractText already handles memory safety
     const content = await this.extractText(buffer);
     const words = content.text.split(/\s+/).filter(w => w.length > 0);
     const paragraphs = content.text.split(/\n\n+/);
@@ -1697,9 +1983,27 @@ class DOCXProcessorService {
     originalBuffer: Buffer,
     _changes: Array<{ type: string; beforeText: string; afterText: string }>
   ): Promise<Buffer> {
+    // Circuit breaker check even for stub method
+    checkCircuitBreaker(originalBuffer.length);
+
     // TODO: Implement DOCX change application
     logger.warn('[DOCXProcessor] applyChanges not fully implemented - returning original buffer');
     return originalBuffer;
+  }
+
+  /**
+   * Get current circuit breaker status (for monitoring/debugging)
+   */
+  getCircuitBreakerStatus(): {
+    isOpen: boolean;
+    consecutiveFailures: number;
+    memoryUsage: ReturnType<typeof getMemoryUsage>;
+  } {
+    return {
+      isOpen: circuitBreaker.isOpen,
+      consecutiveFailures: circuitBreaker.consecutiveFailures,
+      memoryUsage: getMemoryUsage()
+    };
   }
 }
 

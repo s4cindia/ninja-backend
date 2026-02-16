@@ -50,8 +50,47 @@ vi.mock('../../../../src/services/citation/reference-style-updater.service', () 
   },
 }));
 
+// Mock memory config to avoid memory pressure issues in tests
+vi.mock('../../../../src/config/memory.config', () => ({
+  memoryConfig: {
+    maxMemoryFileSize: 5 * 1024 * 1024,  // 5MB
+    maxXmlMemorySize: 10 * 1024 * 1024,  // 10MB
+    maxUploadFileSize: 50 * 1024 * 1024, // 50MB
+    streamChunkSize: 65536,
+    magicByteBufferSize: 4096,
+    memoryWarningThreshold: 0.8,
+    enableMemoryLogging: false,
+  },
+  getMemoryUsage: vi.fn().mockReturnValue({
+    heapUsed: 50 * 1024 * 1024,   // 50MB
+    heapTotal: 512 * 1024 * 1024, // 512MB
+    external: 10 * 1024 * 1024,
+    rss: 100 * 1024 * 1024,
+    heapUsedMB: 50,
+    heapTotalMB: 512,
+  }),
+  // Always return true for memory safety in tests
+  isMemorySafeForSize: vi.fn().mockReturnValue(true),
+}));
+
+// Mock memory-safe-processor
+vi.mock('../../../../src/utils/memory-safe-processor', () => ({
+  FileTooLargeError: class FileTooLargeError extends Error {
+    constructor(
+      public readonly fileSize: number,
+      public readonly maxSize: number,
+      message?: string
+    ) {
+      super(message || `File size ${fileSize} exceeds maximum ${maxSize} for memory processing`);
+      this.name = 'FileTooLargeError';
+    }
+  },
+  withMemoryTracking: vi.fn().mockImplementation(async (_operation, fn) => fn()),
+  assertMemorySafe: vi.fn(),
+}));
+
 import * as mammoth from 'mammoth';
-import { docxProcessorService } from '../../../../src/services/citation/docx-processor.service';
+import { docxProcessorService, resetCircuitBreaker } from '../../../../src/services/citation/docx-processor.service';
 
 describe('DOCXProcessorService', () => {
   // Create a valid DOCX-like buffer (ZIP magic bytes)
@@ -64,6 +103,9 @@ describe('DOCXProcessorService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+
+    // Reset circuit breaker state between tests
+    resetCircuitBreaker();
 
     // Default successful mocks
     vi.mocked(mammoth.extractRawText).mockResolvedValue({
@@ -245,13 +287,14 @@ describe('DOCXProcessorService', () => {
       const largeBuffer = Buffer.alloc(51 * 1024 * 1024);
 
       // The replaceCitationsWithTrackChanges should throw for oversized files
+      // Either "too large" error or "exceeds" error pattern
       await expect(
         docxProcessorService.replaceCitationsWithTrackChanges(
           largeBuffer,
           [{ oldText: '[1]', newText: '[2]' }],
           []
         )
-      ).rejects.toThrow(/too large/);
+      ).rejects.toThrow(/too large|exceeds/i);
     });
 
     it('should reject non-ZIP files via validateDOCX', async () => {
