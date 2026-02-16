@@ -16,6 +16,12 @@ import { fileStorageService } from '../services/storage/file-storage.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { PDFName, PDFDict } from 'pdf-lib';
 import path from 'path';
+import { comparisonService } from '../services/comparison';
+import {
+  mapFixTypeToChangeType,
+  extractWcagCriteria,
+  extractWcagLevel,
+} from '../services/comparison/change-logging.helpers';
 
 export class PdfRemediationController {
   /**
@@ -842,6 +848,42 @@ export class PdfRemediationController {
               updatedAt: new Date(),
             },
           });
+
+          // Log change to RemediationChange table
+          try {
+            // Map field to issue code for proper WCAG mapping
+            const issueCodeMap: Record<string, string> = {
+              'language': 'PDF-NO-LANGUAGE',
+              'title': 'PDF-NO-TITLE',
+              'creator': 'PDF-NO-CREATOR',
+              'metadata': 'PDF-NO-METADATA',
+            };
+            const issueCode = issueCodeMap[field] || field.toUpperCase();
+
+            await comparisonService.logChange({
+              jobId,
+              taskId: task.id,
+              issueId: task.issueId,
+              ruleId: issueCode,
+              filePath: fileName,
+              changeType: mapFixTypeToChangeType(issueCode),
+              description: result.description,
+              beforeContent: result.before,
+              afterContent: result.after,
+              severity: 'MAJOR',
+              wcagCriteria: extractWcagCriteria(issueCode),
+              wcagLevel: extractWcagLevel(issueCode),
+              appliedBy: req.user?.email || 'user',
+            });
+            logger.info(`[PDF Remediation] Change logged for quick-fix: ${field}`);
+          } catch (logError) {
+            logger.error(
+              `[PDF Remediation] Failed to log change for quick-fix: ${
+                logError instanceof Error ? logError.message : String(logError)
+              }`
+            );
+            // Don't fail the transaction if logging fails
+          }
         }
 
         // Update parent job output with remediated file URL

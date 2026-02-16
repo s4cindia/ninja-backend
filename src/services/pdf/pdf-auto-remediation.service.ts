@@ -15,6 +15,12 @@ import type {
   RemediationTask,
   TaskStatus,
 } from '../../types/pdf-remediation.types';
+import { comparisonService } from '../comparison';
+import {
+  mapFixTypeToChangeType,
+  extractWcagCriteria,
+  extractWcagLevel,
+} from '../comparison/change-logging.helpers';
 
 /**
  * Handler function type
@@ -284,6 +290,33 @@ class PdfAutoRemediationService {
             if (modification.success) {
               result.completedTasks++;
               logger.info(`[Auto-Remediation] ✓ Completed task ${task.id}: ${task.issueCode}`);
+
+              // Log change to RemediationChange table
+              try {
+                await comparisonService.logChange({
+                  jobId,
+                  taskId: task.id,
+                  issueId: task.issueId,
+                  ruleId: task.issueCode,
+                  filePath: task.filePath || 'document.pdf',
+                  changeType: mapFixTypeToChangeType(task.issueCode),
+                  description: modification.description,
+                  beforeContent: modification.before,
+                  afterContent: modification.after,
+                  severity: 'MAJOR',
+                  wcagCriteria: extractWcagCriteria(task.issueCode),
+                  wcagLevel: extractWcagLevel(task.issueCode),
+                  appliedBy: 'auto-fix-system',
+                });
+                logger.info(`[Auto-Remediation] Change logged for task ${task.id}`);
+              } catch (logError) {
+                logger.error(
+                  `[Auto-Remediation] Failed to log change for task ${task.id}: ${
+                    logError instanceof Error ? logError.message : String(logError)
+                  }`
+                );
+                // Don't fail the remediation if logging fails
+              }
             } else {
               result.failedTasks++;
               logger.error(`[Auto-Remediation] ✗ Failed task ${task.id}: ${modification.error}`);

@@ -1,5 +1,6 @@
 export function mapFixTypeToChangeType(fixCode: string): string {
   const mappings: Record<string, string> = {
+    // EPUB codes
     'EPUB-META-001': 'add-language',
     'EPUB-META-002': 'add-accessibility-features',
     'EPUB-META-003': 'add-accessibility-summary',
@@ -16,6 +17,19 @@ export function mapFixTypeToChangeType(fixCode: string): string {
     'EPUB-CONTRAST-001': 'fix-color-contrast',
     'EPUB-TYPE-HAS-MATCHING-ROLE': 'add-aria-role',
     'COLOR-CONTRAST': 'fix-color-contrast',
+
+    // PDF Auto-fixable codes
+    'MATTERHORN-01-001': 'set-marked-flag',
+    'MATTERHORN-01-002': 'set-display-doc-title',
+    'MATTERHORN-01-005': 'set-suspects-flag',
+
+    // PDF Quick-fix codes
+    'PDF-NO-LANGUAGE': 'add-language',
+    'PDF-NO-TITLE': 'add-title',
+    'PDF-NO-CREATOR': 'add-creator',
+    'MATTERHORN-11-001': 'add-language',
+    'MATTERHORN-01-003': 'add-title',
+    'WCAG-2.4.2': 'add-title',
   };
 
   return mappings[fixCode] || fixCode.toLowerCase().replace(/[_\s]+/g, '-');
@@ -23,6 +37,7 @@ export function mapFixTypeToChangeType(fixCode: string): string {
 
 export function extractWcagCriteria(ruleId: string): string | undefined {
   const wcagMappings: Record<string, string> = {
+    // EPUB codes
     'EPUB-META-001': '3.1.1',
     'EPUB-META-002': '4.1.2',
     'EPUB-META-003': '4.1.2',
@@ -38,6 +53,19 @@ export function extractWcagCriteria(ruleId: string): string | undefined {
     'EPUB-FIG-001': '1.1.1',
     'EPUB-CONTRAST-001': '1.4.3',
     'COLOR-CONTRAST': '1.4.3',
+
+    // PDF Auto-fixable codes
+    'MATTERHORN-01-001': '1.4.2', // Marked flag (PDF/UA requirement)
+    'MATTERHORN-01-002': '2.4.2', // DisplayDocTitle
+    'MATTERHORN-01-005': '1.4.2', // Suspects flag
+
+    // PDF Quick-fix codes
+    'PDF-NO-LANGUAGE': '3.1.1',
+    'PDF-NO-TITLE': '2.4.2',
+    'PDF-NO-CREATOR': '4.1.2',
+    'MATTERHORN-11-001': '3.1.1', // Document language
+    'MATTERHORN-01-003': '2.4.2', // Document title
+    'WCAG-2.4.2': '2.4.2', // Page titled
   };
 
   if (wcagMappings[ruleId]) {
@@ -54,6 +82,7 @@ export function extractWcagCriteria(ruleId: string): string | undefined {
 
 export function extractWcagLevel(ruleId: string): string {
   const levelMappings: Record<string, string> = {
+    // EPUB codes
     'EPUB-META-001': 'A',
     'EPUB-META-002': 'A',
     'EPUB-META-003': 'A',
@@ -69,6 +98,19 @@ export function extractWcagLevel(ruleId: string): string {
     'EPUB-FIG-001': 'A',
     'EPUB-CONTRAST-001': 'AA',
     'COLOR-CONTRAST': 'AA',
+
+    // PDF Auto-fixable codes
+    'MATTERHORN-01-001': 'A', // Marked flag
+    'MATTERHORN-01-002': 'A', // DisplayDocTitle
+    'MATTERHORN-01-005': 'A', // Suspects flag
+
+    // PDF Quick-fix codes
+    'PDF-NO-LANGUAGE': 'A',
+    'PDF-NO-TITLE': 'A',
+    'PDF-NO-CREATOR': 'A',
+    'MATTERHORN-11-001': 'A', // Document language
+    'MATTERHORN-01-003': 'A', // Document title
+    'WCAG-2.4.2': 'A', // Page titled
   };
 
   return levelMappings[ruleId] || 'A';
