@@ -124,12 +124,30 @@ router.get(
  * POST /api/v1/citation-management/upload
  * Upload DOCX and start AI analysis
  * Rate limited: 10 uploads per 15 minutes per user
+ *
+ * Returns:
+ * - If async processing available: { status: 'QUEUED', jobId, documentId }
+ * - If sync fallback: { status: 'COMPLETED', documentId, statistics }
  */
 router.post(
   '/upload',
   uploadRateLimiter,
   upload.single('file'),
   citationManagementController.upload.bind(citationManagementController)
+);
+
+/**
+ * GET /api/v1/citation-management/job/:jobId/status
+ * Get job status for polling (used with async processing)
+ *
+ * Returns:
+ * - status: 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+ * - progress: 0-100
+ * - document: { documentId, statistics } (when completed)
+ */
+router.get(
+  '/job/:jobId/status',
+  citationManagementController.getJobStatus.bind(citationManagementController)
 );
 
 /**

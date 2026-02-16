@@ -12,6 +12,7 @@ import { aiFormatConverterService, CitationStyle } from '../services/citation/ai
 import { doiValidationService } from '../services/citation/doi-validation.service';
 import { docxProcessorService, ReferenceEntry } from '../services/citation/docx-processor.service';
 import { citationStorageService } from '../services/citation/citation-storage.service';
+import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../queues';
 
 export class CitationManagementController {
   /**
@@ -133,13 +134,79 @@ export class CitationManagementController {
           fullHtml: content.html,
           wordCount: stats.wordCount,
           pageCount: stats.pageCount,
-          status: 'ANALYZING'
+          status: 'QUEUED'
         }
       });
 
-      // Run AI analysis and WAIT for it to complete
-      logger.info(`[Citation Management] Starting analysis for ${document.id}`);
+      // Check if async processing is available (Redis configured)
+      const useAsyncProcessing = areQueuesAvailable();
+
+      if (useAsyncProcessing) {
+        // Queue the analysis job for background processing
+        const citationQueue = getCitationQueue();
+
+        if (citationQueue) {
+          await citationQueue.add(
+            `citation-${document.id}`,
+            {
+              type: JOB_TYPES.CITATION_DETECTION,
+              tenantId,
+              userId,
+              options: {
+                documentId: document.id,
+              },
+            },
+            {
+              jobId: job.id,
+              priority: 1,
+            }
+          );
+
+          // Update job status to QUEUED
+          await prisma.job.update({
+            where: { id: job.id },
+            data: { status: 'QUEUED' },
+          });
+
+          logger.info(`[Citation Management] Queued analysis job for ${document.id}`);
+
+          // Return immediately with job ID for polling
+          res.json({
+            success: true,
+            data: {
+              documentId: document.id,
+              jobId: job.id,
+              status: 'QUEUED',
+              filename: file.originalname,
+              statistics: stats,
+              message: 'Document uploaded. Analysis is processing in the background.',
+            },
+          });
+          return;
+        }
+      }
+
+      // Fallback: Run synchronously if queue not available (development mode)
+      logger.info(`[Citation Management] Running synchronous analysis for ${document.id} (no queue available)`);
+
+      await prisma.editorialDocument.update({
+        where: { id: document.id },
+        data: { status: 'ANALYZING' },
+      });
+
       await this.analyzeDocument(document.id, content.text);
+
+      // Update statuses
+      await prisma.editorialDocument.update({
+        where: { id: document.id },
+        data: { status: 'COMPLETED' },
+      });
+
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { status: 'COMPLETED' },
+      });
+
       logger.info(`[Citation Management] Analysis completed for ${document.id}`);
 
       // Get final counts after analysis
@@ -156,6 +223,7 @@ export class CitationManagementController {
         success: true,
         data: {
           documentId: document.id,
+          jobId: job.id,
           status: 'COMPLETED',
           filename: file.originalname,
           statistics: {
@@ -167,6 +235,88 @@ export class CitationManagementController {
       });
     } catch (error) {
       logger.error('[Citation Management] Upload failed:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation-management/job/:jobId/status
+   * Get job status for polling (used with async processing)
+   */
+  async getJobStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { jobId } = req.params;
+      const { tenantId } = req.user!;
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+        select: {
+          id: true,
+          status: true,
+          progress: true,
+          error: true,
+          output: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!job) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Job not found' },
+        });
+        return;
+      }
+
+      // Get document info if job is completed
+      let documentInfo = null;
+      if (job.status === 'COMPLETED') {
+        const document = await prisma.editorialDocument.findFirst({
+          where: { jobId: job.id },
+          select: {
+            id: true,
+            originalName: true,
+            status: true,
+            wordCount: true,
+            pageCount: true,
+          },
+        });
+
+        if (document) {
+          const [citationCount, referenceCount] = await Promise.all([
+            prisma.citation.count({ where: { documentId: document.id } }),
+            prisma.referenceListEntry.count({ where: { documentId: document.id } }),
+          ]);
+
+          documentInfo = {
+            documentId: document.id,
+            filename: document.originalName,
+            status: document.status,
+            statistics: {
+              wordCount: document.wordCount,
+              pageCount: document.pageCount,
+              citationsFound: citationCount,
+              referencesFound: referenceCount,
+            },
+          };
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          jobId: job.id,
+          status: job.status,
+          progress: job.progress || 0,
+          error: job.error,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          ...(documentInfo && { document: documentInfo }),
+        },
+      });
+    } catch (error) {
+      logger.error('[Citation Management] Get job status failed:', error);
       next(error);
     }
   }
@@ -4115,7 +4265,17 @@ export class CitationManagementController {
   /**
    * Background: Analyze document citations
    */
-  private async analyzeDocument(documentId: string, documentText: string): Promise<void> {
+  /**
+   * Analyze document for citations (can be called from worker)
+   * @param documentId - Document ID to analyze
+   * @param documentText - Full text content of the document
+   * @param progressCallback - Optional callback for progress updates
+   */
+  async analyzeDocument(
+    documentId: string,
+    documentText: string,
+    progressCallback?: (progress: number, message: string) => Promise<void>
+  ): Promise<void> {
     try {
       await prisma.editorialDocument.update({
         where: { id: documentId },
