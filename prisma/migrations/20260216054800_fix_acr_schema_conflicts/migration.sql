@@ -29,23 +29,25 @@ ALTER COLUMN "aiStatus" SET NOT NULL;
 -- PART 2: Fix CriterionChangeLog schema refactoring
 -- =====================================================
 
--- Step 2.1: Add new required columns
+-- Step 2.1: Add new required columns (idempotent - safe to re-run)
 ALTER TABLE "CriterionChangeLog"
-ADD COLUMN "acrJobId" TEXT;
+ADD COLUMN IF NOT EXISTS "acrJobId" TEXT;
 
 ALTER TABLE "CriterionChangeLog"
-ADD COLUMN "fieldName" TEXT;
+ADD COLUMN IF NOT EXISTS "fieldName" TEXT;
 
--- Step 2.2: Migrate data from old structure to new structure
--- Map criterionReviewId → acrJobId by looking up the parent AcrJob
+-- Step 2.2: Migrate data from old structure to new structure (idempotent)
+-- Only update if old columns exist and new columns are NULL
 UPDATE "CriterionChangeLog" ccl
 SET "acrJobId" = acr."acrJobId"
 FROM "AcrCriterionReview" acr
-WHERE ccl."criterionReviewId" = acr.id;
+WHERE ccl."criterionReviewId" = acr.id
+  AND ccl."acrJobId" IS NULL;
 
--- Map changeType → fieldName (use changeType as fieldName for now)
+-- Map changeType → fieldName (only if fieldName is NULL)
 UPDATE "CriterionChangeLog"
-SET "fieldName" = COALESCE("changeType", 'unknown_field');
+SET "fieldName" = COALESCE("changeType", 'unknown_field')
+WHERE "fieldName" IS NULL;
 
 -- Step 2.3: Log orphaned records before deletion (for audit trail)
 DO $$
@@ -65,23 +67,65 @@ END$$;
 DELETE FROM "CriterionChangeLog"
 WHERE "acrJobId" IS NULL;
 
--- Step 2.4: Now make new columns NOT NULL
-ALTER TABLE "CriterionChangeLog"
-ALTER COLUMN "acrJobId" SET NOT NULL;
+-- Step 2.4: Make new columns NOT NULL (idempotent - checks for NULLs first)
+DO $$
+DECLARE
+  null_acr_job_count INTEGER;
+  null_field_count INTEGER;
+BEGIN
+  -- Check for NULL values before setting NOT NULL
+  SELECT COUNT(*) INTO null_acr_job_count
+  FROM "CriterionChangeLog"
+  WHERE "acrJobId" IS NULL;
 
-ALTER TABLE "CriterionChangeLog"
-ALTER COLUMN "fieldName" SET NOT NULL;
+  SELECT COUNT(*) INTO null_field_count
+  FROM "CriterionChangeLog"
+  WHERE "fieldName" IS NULL;
 
--- Step 2.5: Rename createdAt to changedAt (schema evolution)
-ALTER TABLE "CriterionChangeLog"
-RENAME COLUMN "createdAt" TO "changedAt";
+  IF null_acr_job_count > 0 THEN
+    RAISE EXCEPTION 'Cannot set acrJobId to NOT NULL: % rows have NULL values', null_acr_job_count;
+  END IF;
 
--- Step 2.6: Drop old columns that are no longer in schema
+  IF null_field_count > 0 THEN
+    RAISE EXCEPTION 'Cannot set fieldName to NOT NULL: % rows have NULL values', null_field_count;
+  END IF;
+
+  -- Safe to set NOT NULL
+  EXECUTE 'ALTER TABLE "CriterionChangeLog" ALTER COLUMN "acrJobId" SET NOT NULL';
+  EXECUTE 'ALTER TABLE "CriterionChangeLog" ALTER COLUMN "fieldName" SET NOT NULL';
+
+  RAISE NOTICE 'Set acrJobId and fieldName to NOT NULL';
+EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'NOT NULL constraints already exist, skipping';
+END$$;
+
+-- Step 2.5: Rename createdAt to changedAt (idempotent - conditional on column existence)
+DO $$
+BEGIN
+  -- Only rename if createdAt exists and changedAt does not
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'CriterionChangeLog'
+    AND column_name = 'createdAt'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'CriterionChangeLog'
+    AND column_name = 'changedAt'
+  ) THEN
+    ALTER TABLE "CriterionChangeLog" RENAME COLUMN "createdAt" TO "changedAt";
+    RAISE NOTICE 'Renamed createdAt to changedAt';
+  ELSE
+    RAISE NOTICE 'Column rename skipped (createdAt does not exist or changedAt already exists)';
+  END IF;
+END$$;
+
+-- Step 2.6: Drop old columns that are no longer in schema (idempotent)
 ALTER TABLE "CriterionChangeLog"
-DROP COLUMN "criterionReviewId",
-DROP COLUMN "jobId",
-DROP COLUMN "changeType",
-DROP COLUMN "reason";
+DROP COLUMN IF EXISTS "criterionReviewId",
+DROP COLUMN IF EXISTS "jobId",
+DROP COLUMN IF EXISTS "changeType",
+DROP COLUMN IF EXISTS "reason";
 
 -- Step 2.7: Add new indexes for the new columns
 CREATE INDEX IF NOT EXISTS "CriterionChangeLog_acrJobId_idx"

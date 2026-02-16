@@ -68,15 +68,20 @@ ALTER TABLE "AcrJob"
 DROP CONSTRAINT IF EXISTS "AcrJob_tenantId_jobId_key";
 
 -- =====================================================
--- PART 4: Restore NULL values for level and aiStatus
+-- PART 4: Remove NOT NULL constraints from level and aiStatus
 -- =====================================================
 
--- WARNING: This sets everything to NULL - original values are lost
+-- NOTE: DROP NOT NULL only removes the constraint, does not change existing values
+-- Values set by forward migration ('A' and 'pending') will remain
 ALTER TABLE "AcrCriterionReview"
 ALTER COLUMN "level" DROP NOT NULL;
 
 ALTER TABLE "AcrCriterionReview"
 ALTER COLUMN "aiStatus" DROP NOT NULL;
 
-RAISE NOTICE 'ROLLBACK COMPLETE: Database restored to pre-migration state';
-RAISE WARNING 'NOTE: Some data may be lost, especially orphaned CriterionChangeLog records';
+-- Final rollback status messages
+DO $$
+BEGIN
+  RAISE NOTICE 'ROLLBACK COMPLETE: Database restored to pre-migration state';
+  RAISE WARNING 'NOTE: Some data may be lost, especially orphaned CriterionChangeLog records';
+END$$;

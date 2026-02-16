@@ -46,7 +46,7 @@ END$$;
 DO $$
 DECLARE
   has_old_columns BOOLEAN;
-  has_new_columns BOOLEAN;
+  has_new_columns INTEGER;
 BEGIN
   -- Check for old columns (should NOT exist)
   SELECT EXISTS (
@@ -59,15 +59,14 @@ BEGIN
     RAISE EXCEPTION '❌ FAILED: Old columns still exist in CriterionChangeLog';
   END IF;
 
-  -- Check for new columns (should exist)
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'CriterionChangeLog'
-    AND column_name IN ('acrJobId', 'fieldName', 'changedAt')
-  ) INTO has_new_columns;
+  -- Check for new columns (all 3 must exist)
+  SELECT COUNT(*) INTO has_new_columns
+  FROM information_schema.columns
+  WHERE table_name = 'CriterionChangeLog'
+  AND column_name IN ('acrJobId', 'fieldName', 'changedAt');
 
-  IF NOT has_new_columns THEN
-    RAISE EXCEPTION '❌ FAILED: New columns missing from CriterionChangeLog';
+  IF has_new_columns <> 3 THEN
+    RAISE EXCEPTION '❌ FAILED: New columns missing from CriterionChangeLog (expected 3, found %)', has_new_columns;
   END IF;
 
   RAISE NOTICE '✅ PASSED: CriterionChangeLog structure is correct';
