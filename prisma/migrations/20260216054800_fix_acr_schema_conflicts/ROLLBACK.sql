@@ -30,12 +30,19 @@ ALTER TABLE "CriterionChangeLog"
 RENAME COLUMN "changedAt" TO "createdAt";
 
 -- Attempt to restore data (best effort - may not be 100% accurate)
--- NOTE: This is lossy if orphaned records were deleted
+-- WARNING: This recovery is best-effort and may not restore original criterionReviewId
+-- if multiple AcrCriterionReview records exist for the same acrJobId.
+-- Uses DISTINCT ON to select one review deterministically (most recent by createdAt).
+-- NOTE: This is lossy if orphaned records were deleted (check CriterionChangeLog_Archive)
 UPDATE "CriterionChangeLog" ccl
 SET "criterionReviewId" = acr.id,
     "jobId" = acr."acrJobId",
     "changeType" = ccl."fieldName"
-FROM "AcrCriterionReview" acr
+FROM (
+  SELECT DISTINCT ON ("acrJobId") id, "acrJobId"
+  FROM "AcrCriterionReview"
+  ORDER BY "acrJobId", "createdAt" DESC
+) acr
 WHERE ccl."acrJobId" = acr."acrJobId";
 
 -- Drop new columns

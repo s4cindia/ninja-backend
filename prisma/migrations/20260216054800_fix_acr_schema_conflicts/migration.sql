@@ -49,21 +49,42 @@ UPDATE "CriterionChangeLog"
 SET "fieldName" = COALESCE("changeType", 'unknown_field')
 WHERE "fieldName" IS NULL;
 
--- Step 2.3: Log orphaned records before deletion (for audit trail)
+-- Step 2.3: Archive and delete orphaned records (for audit compliance)
+-- Create archive table if it doesn't exist
+CREATE TABLE IF NOT EXISTS "CriterionChangeLog_Archive" (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  archived_at TIMESTAMP DEFAULT NOW(),
+  migration_name TEXT,
+  reason TEXT,
+  original_data JSONB
+);
+
+-- Archive orphaned records before deletion
 DO $$
 DECLARE
   orphaned_count INTEGER;
 BEGIN
+  -- Count orphaned records
   SELECT COUNT(*) INTO orphaned_count
   FROM "CriterionChangeLog"
   WHERE "acrJobId" IS NULL;
 
   IF orphaned_count > 0 THEN
-    RAISE NOTICE 'WARNING: Deleting % orphaned CriterionChangeLog records where acrJobId could not be mapped', orphaned_count;
+    -- Archive to audit table
+    INSERT INTO "CriterionChangeLog_Archive" (migration_name, reason, original_data)
+    SELECT
+      '20260216054800_fix_acr_schema_conflicts',
+      'Orphaned record: acrJobId could not be mapped from criterionReviewId',
+      to_jsonb(ccl)
+    FROM "CriterionChangeLog" ccl
+    WHERE "acrJobId" IS NULL;
+
+    RAISE NOTICE 'WARNING: Archived and deleting % orphaned CriterionChangeLog records where acrJobId could not be mapped', orphaned_count;
+    RAISE NOTICE 'Archived records can be recovered from CriterionChangeLog_Archive table';
   END IF;
 END$$;
 
--- Delete orphaned records that couldn't be mapped
+-- Delete orphaned records that couldn't be mapped (now archived)
 DELETE FROM "CriterionChangeLog"
 WHERE "acrJobId" IS NULL;
 
@@ -188,17 +209,34 @@ BEGIN
   END IF;
 END$$;
 
--- Remove duplicate AcrJob records (keep most recent)
-DELETE FROM "AcrJob" a USING "AcrJob" b
-WHERE a."tenantId" = b."tenantId"
-  AND a."jobId" = b."jobId"
-  AND a."createdAt" < b."createdAt";
+-- Remove duplicate AcrJob records (keep most recent with deterministic tiebreaker)
+-- Uses ROW_NUMBER() with ctid as tiebreaker to handle identical timestamps
+WITH duplicates AS (
+  SELECT id,
+         ROW_NUMBER() OVER (
+           PARTITION BY "tenantId", "jobId"
+           ORDER BY "createdAt" DESC, ctid
+         ) as rn
+  FROM "AcrJob"
+)
+DELETE FROM "AcrJob"
+WHERE id IN (
+  SELECT id FROM duplicates WHERE rn > 1
+);
 
--- Remove duplicate AcrCriterionReview records (keep most recent)
-DELETE FROM "AcrCriterionReview" a USING "AcrCriterionReview" b
-WHERE a."acrJobId" = b."acrJobId"
-  AND a."criterionId" = b."criterionId"
-  AND a."createdAt" < b."createdAt";
+-- Remove duplicate AcrCriterionReview records (keep most recent with deterministic tiebreaker)
+WITH duplicates AS (
+  SELECT id,
+         ROW_NUMBER() OVER (
+           PARTITION BY "acrJobId", "criterionId"
+           ORDER BY "createdAt" DESC, ctid
+         ) as rn
+  FROM "AcrCriterionReview"
+)
+DELETE FROM "AcrCriterionReview"
+WHERE id IN (
+  SELECT id FROM duplicates WHERE rn > 1
+);
 
 -- =====================================================
 -- PART 5: Add unique constraints to prevent future duplicates
