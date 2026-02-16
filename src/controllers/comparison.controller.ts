@@ -37,14 +37,19 @@ export class ComparisonController {
    * - Logs warnings when limits are capped for telemetry/abuse detection
    */
   private validatePagination(
-    page?: string,
-    limit?: string,
-    jobId?: string
+    page?: string | string[],
+    limit?: string | string[],
+    context?: { jobId?: string; endpoint?: string; tenantId?: string }
   ): { page?: number; limit?: number } {
+    // Type guard: query params can be string | string[] | undefined
+    // If array is provided (?page[]=1&page[]=2), reject it
+    const pageStr = typeof page === 'string' ? page : undefined;
+    const limitStr = typeof limit === 'string' ? limit : undefined;
+
     // Enforce digits-only input to reject scientific notation and fractional values
     const digitsOnlyRegex = /^\d+$/;
-    const parsedPage = page && digitsOnlyRegex.test(page) ? Number(page) : undefined;
-    const parsedLimit = limit && digitsOnlyRegex.test(limit) ? Number(limit) : undefined;
+    const parsedPage = pageStr && digitsOnlyRegex.test(pageStr) ? Number(pageStr) : undefined;
+    const parsedLimit = limitStr && digitsOnlyRegex.test(limitStr) ? Number(limitStr) : undefined;
 
     let validatedPage: number | undefined = undefined;
     if (parsedPage !== undefined && Number.isInteger(parsedPage) && parsedPage > 0) {
@@ -56,7 +61,10 @@ export class ComparisonController {
           requested: parsedPage,
           applied: MAX_PAGE,
           maxOffset: (MAX_PAGE - 1) * MAX_PAGINATION_LIMIT,
-          jobId,
+          jobId: context?.jobId,
+          endpoint: context?.endpoint,
+          tenantId: context?.tenantId,
+          timestamp: new Date().toISOString(),
         });
       }
     }
@@ -70,7 +78,10 @@ export class ComparisonController {
         logger.warn('Pagination limit capped', {
           requested: parsedLimit,
           applied: MAX_PAGINATION_LIMIT,
-          jobId,
+          jobId: context?.jobId,
+          endpoint: context?.endpoint,
+          tenantId: context?.tenantId,
+          timestamp: new Date().toISOString(),
         });
       }
     }
@@ -101,10 +112,27 @@ export class ComparisonController {
       }
 
       const { page, limit } = this.validatePagination(
-        req.query.page as string | undefined,
-        req.query.limit as string | undefined,
-        jobId
+        req.query.page as string | string[] | undefined,
+        req.query.limit as string | string[] | undefined,
+        {
+          jobId,
+          endpoint: req.path,
+          tenantId: req.user?.tenantId,
+        }
       );
+
+      // Set response headers if limits were capped (for client notification)
+      const requestedPage = typeof req.query.page === 'string' ? Number(req.query.page) : undefined;
+      const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+
+      if (requestedPage && requestedPage > MAX_PAGE) {
+        res.setHeader('X-Pagination-Page-Capped', 'true');
+        res.setHeader('X-Pagination-Max-Page', MAX_PAGE.toString());
+      }
+      if (requestedLimit && requestedLimit > MAX_PAGINATION_LIMIT) {
+        res.setHeader('X-Pagination-Limit-Capped', 'true');
+        res.setHeader('X-Pagination-Max-Limit', MAX_PAGINATION_LIMIT.toString());
+      }
 
       const data = await this.comparisonService.getComparison(jobId, { page, limit });
 
@@ -171,10 +199,27 @@ export class ComparisonController {
       }
 
       const { page, limit } = this.validatePagination(
-        req.query.page as string | undefined,
-        req.query.limit as string | undefined,
-        jobId
+        req.query.page as string | string[] | undefined,
+        req.query.limit as string | string[] | undefined,
+        {
+          jobId,
+          endpoint: req.path,
+          tenantId: req.user?.tenantId,
+        }
       );
+
+      // Set response headers if limits were capped (for client notification)
+      const requestedPage = typeof req.query.page === 'string' ? Number(req.query.page) : undefined;
+      const requestedLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+
+      if (requestedPage && requestedPage > MAX_PAGE) {
+        res.setHeader('X-Pagination-Page-Capped', 'true');
+        res.setHeader('X-Pagination-Max-Page', MAX_PAGE.toString());
+      }
+      if (requestedLimit && requestedLimit > MAX_PAGINATION_LIMIT) {
+        res.setHeader('X-Pagination-Limit-Capped', 'true');
+        res.setHeader('X-Pagination-Max-Limit', MAX_PAGINATION_LIMIT.toString());
+      }
 
       const filters: ComparisonFilters = {
         changeType: req.query.changeType as string | undefined,

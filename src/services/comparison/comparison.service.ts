@@ -48,12 +48,15 @@ export class ComparisonService {
     }
 
     // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(pagination?.page) ? pagination!.page! : 1;
+    const inputLimit = Number.isFinite(pagination?.limit) ? pagination!.limit! : DEFAULT_PAGINATION_LIMIT;
+
     // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
-    const safePage = Math.min(Math.max(1, pagination?.page ?? 1), MAX_PAGE);
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
 
     // Ensure limit is positive and within MAX_PAGINATION_LIMIT
-    let requestedLimit = pagination?.limit ?? DEFAULT_PAGINATION_LIMIT;
-    requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
 
     const skip = (safePage - 1) * limit;
@@ -151,12 +154,15 @@ export class ComparisonService {
     }
 
     // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(filters.page) ? filters.page! : 1;
+    const inputLimit = Number.isFinite(filters.limit) ? filters.limit! : DEFAULT_PAGINATION_LIMIT;
+
     // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
-    const safePage = Math.min(Math.max(1, filters.page ?? 1), MAX_PAGE);
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
 
     // Ensure limit is positive and within MAX_PAGINATION_LIMIT
-    let requestedLimit = filters.limit ?? DEFAULT_PAGINATION_LIMIT;
-    requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
 
     const skip = (safePage - 1) * limit;
