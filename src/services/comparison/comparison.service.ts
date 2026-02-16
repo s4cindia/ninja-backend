@@ -8,6 +8,7 @@ import {
   PaginationInfo,
 } from '../../types/comparison.types';
 import { logger } from '../../lib/logger';
+import { MAX_PAGINATION_LIMIT, DEFAULT_PAGINATION_LIMIT } from '../../constants/pagination.constants';
 
 function decodeHtmlEntities(str: string | null): string | null {
   if (!str) return str;
@@ -28,12 +29,6 @@ function decodeChangeContent<T extends { beforeContent?: string | null; afterCon
   };
 }
 
-/**
- * Maximum number of records to return per page
- * Prevents OOM errors and excessive query times for large result sets
- */
-const MAX_PAGINATION_LIMIT = 200;
-
 export class ComparisonService {
   constructor(private prisma: PrismaClient) {}
 
@@ -53,7 +48,7 @@ export class ComparisonService {
     }
 
     const page = pagination?.page || 1;
-    const requestedLimit = pagination?.limit || 50;
+    const requestedLimit = pagination?.limit || DEFAULT_PAGINATION_LIMIT;
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
@@ -84,14 +79,14 @@ export class ComparisonService {
       pages: Math.ceil(totalChanges / limit),
     };
 
-    const input = job.input as Record<string, any>;
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = job.input as Record<string, unknown>;
+    const fileName = (input?.fileName as string) || (input?.filename as string) || 'Unknown';
 
     return {
       jobId,
       fileName,
-      originalFileId: input?.originalFileId,
-      remediatedFileId: input?.remediatedFileId,
+      originalFileId: input?.originalFileId as string | undefined,
+      remediatedFileId: input?.remediatedFileId as string | undefined,
       auditedAt: job.startedAt || undefined,
       remediatedAt: job.completedAt || undefined,
       summary,
@@ -148,7 +143,7 @@ export class ComparisonService {
     }
 
     const page = filters.page || 1;
-    const requestedLimit = filters.limit || 50;
+    const requestedLimit = filters.limit || DEFAULT_PAGINATION_LIMIT;
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
     const skip = (page - 1) * limit;
 
@@ -177,8 +172,8 @@ export class ComparisonService {
       select: { input: true },
     });
 
-    const input = (job?.input as Record<string, any>) || {};
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = (job?.input as Record<string, unknown>) || {};
+    const fileName = (input?.fileName as string) || (input?.filename as string) || 'Unknown';
 
     return {
       jobId,

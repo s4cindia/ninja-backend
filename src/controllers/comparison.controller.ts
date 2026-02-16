@@ -3,28 +3,73 @@ import { ComparisonService } from '../services/comparison';
 import { ComparisonFilters } from '../types/comparison.types';
 import prisma from '../lib/prisma';
 import { AuthenticatedRequest } from '../types/authenticated-request';
-
-/**
- * Maximum number of records to return per page
- * Prevents OOM errors and excessive query times for large result sets
- * Must match MAX_PAGINATION_LIMIT in comparison.service.ts
- */
-const MAX_PAGINATION_LIMIT = 200;
+import { MAX_PAGINATION_LIMIT } from '../constants/pagination.constants';
+import { logger } from '../lib/logger';
 
 export class ComparisonController {
   constructor(private comparisonService: ComparisonService) {}
 
   private async verifyTenantAccess(jobId: string, tenantId?: string): Promise<boolean> {
     if (!tenantId) return false;
-    
+
     const job = await prisma.job.findUnique({
       where: { id: jobId },
       select: { tenantId: true }
     });
-    
+
     return job?.tenantId === tenantId;
   }
 
+  /**
+   * Validates and normalizes pagination parameters
+   *
+   * @param page - Raw page number from query string
+   * @param limit - Raw limit from query string
+   * @param jobId - Job ID for logging purposes
+   * @returns Validated pagination object with optional page and limit
+   *
+   * @remarks
+   * - Returns undefined for page/limit if invalid (not a positive finite number)
+   * - Caps limit at MAX_PAGINATION_LIMIT to prevent OOM errors
+   * - Logs a warning when limit is capped for telemetry
+   */
+  private validatePagination(
+    page?: string,
+    limit?: string,
+    jobId?: string
+  ): { page?: number; limit?: number } {
+    const parsedPage = page ? parseInt(page, 10) : undefined;
+    const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+
+    const validatedPage = parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0
+      ? parsedPage
+      : undefined;
+
+    let validatedLimit: number | undefined = undefined;
+    if (parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0) {
+      validatedLimit = Math.min(parsedLimit, MAX_PAGINATION_LIMIT);
+
+      // Log when limit is capped for telemetry/abuse detection
+      if (parsedLimit > MAX_PAGINATION_LIMIT) {
+        logger.warn('Pagination limit capped', {
+          requested: parsedLimit,
+          applied: MAX_PAGINATION_LIMIT,
+          jobId,
+        });
+      }
+    }
+
+    return { page: validatedPage, limit: validatedLimit };
+  }
+
+  /**
+   * Get comparison data for a job with pagination
+   *
+   * @route GET /api/jobs/:jobId/comparison
+   * @param req - Request with jobId param and optional page/limit query params
+   * @param res - Response with comparison data
+   * @param next - Error handler
+   */
   getComparison = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -39,12 +84,11 @@ export class ComparisonController {
         return;
       }
 
-      const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
-      const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-      const page = parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : undefined;
-      const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0
-        ? Math.min(parsedLimit, MAX_PAGINATION_LIMIT)
-        : undefined;
+      const { page, limit } = this.validatePagination(
+        req.query.page as string | undefined,
+        req.query.limit as string | undefined,
+        jobId
+      );
 
       const data = await this.comparisonService.getComparison(jobId, { page, limit });
 
@@ -54,6 +98,14 @@ export class ComparisonController {
     }
   };
 
+  /**
+   * Get a specific remediation change by ID
+   *
+   * @route GET /api/jobs/:jobId/comparison/changes/:changeId
+   * @param req - Request with jobId and changeId params
+   * @param res - Response with change details
+   * @param next - Error handler
+   */
   getChangeById = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -76,6 +128,18 @@ export class ComparisonController {
     }
   };
 
+  /**
+   * Get filtered comparison data with optional filters
+   *
+   * @route GET /api/jobs/:jobId/comparison/filter
+   * @param req - Request with jobId and filter query params
+   * @param res - Response with filtered comparison data
+   * @param next - Error handler
+   *
+   * @remarks
+   * Supported filters: changeType, severity, status, wcagCriteria, filePath, search
+   * Supports pagination via page and limit query params
+   */
   getChangesByFilter = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -90,8 +154,11 @@ export class ComparisonController {
         return;
       }
 
-      const parsedPage = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
-      const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const { page, limit } = this.validatePagination(
+        req.query.page as string | undefined,
+        req.query.limit as string | undefined,
+        jobId
+      );
 
       const filters: ComparisonFilters = {
         changeType: req.query.changeType as string | undefined,
@@ -100,10 +167,8 @@ export class ComparisonController {
         wcagCriteria: req.query.wcagCriteria as string | undefined,
         filePath: req.query.filePath as string | undefined,
         search: req.query.search as string | undefined,
-        page: parsedPage !== undefined && Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : undefined,
-        limit: parsedLimit !== undefined && Number.isFinite(parsedLimit) && parsedLimit > 0
-          ? Math.min(parsedLimit, MAX_PAGINATION_LIMIT)
-          : undefined,
+        page,
+        limit,
       };
 
       const data = await this.comparisonService.getChangesByFilter(jobId, filters);
