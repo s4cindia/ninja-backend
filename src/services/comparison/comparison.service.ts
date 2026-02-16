@@ -8,7 +8,7 @@ import {
   PaginationInfo,
 } from '../../types/comparison.types';
 import { logger } from '../../lib/logger';
-import { MAX_PAGINATION_LIMIT, DEFAULT_PAGINATION_LIMIT } from '../../constants/pagination.constants';
+import { MAX_PAGINATION_LIMIT, DEFAULT_PAGINATION_LIMIT, MAX_PAGE } from '../../constants/pagination.constants';
 
 function decodeHtmlEntities(str: string | null): string | null {
   if (!str) return str;
@@ -47,15 +47,16 @@ export class ComparisonService {
       throw new Error('Job not found');
     }
 
-    // Normalize pagination parameters to ensure positive values
-    let page = pagination?.page ?? 1;
-    page = page > 0 ? page : 1;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, pagination?.page ?? 1), MAX_PAGE);
 
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
     let requestedLimit = pagination?.limit ?? DEFAULT_PAGINATION_LIMIT;
     requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
-
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
-    const skip = (page - 1) * limit;
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -78,7 +79,7 @@ export class ComparisonService {
     const byWcag = this.groupByField(allChanges, 'wcagCriteria');
 
     const paginationInfo: PaginationInfo = {
-      page,
+      page: safePage,
       limit,
       total: totalChanges,
       pages: Math.ceil(totalChanges / limit),
@@ -149,15 +150,16 @@ export class ComparisonService {
       ];
     }
 
-    // Normalize pagination parameters to ensure positive values
-    let page = filters.page ?? 1;
-    page = page > 0 ? page : 1;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, filters.page ?? 1), MAX_PAGE);
 
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
     let requestedLimit = filters.limit ?? DEFAULT_PAGINATION_LIMIT;
     requestedLimit = requestedLimit > 0 ? requestedLimit : DEFAULT_PAGINATION_LIMIT;
-
     const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
-    const skip = (page - 1) * limit;
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -197,7 +199,7 @@ export class ComparisonService {
       bySeverity,
       byWcag,
       pagination: {
-        page,
+        page: safePage,
         limit,
         total: totalChanges,
         pages: Math.ceil(totalChanges / limit),

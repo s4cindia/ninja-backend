@@ -29,8 +29,9 @@ export class ComparisonController {
    * @returns Validated pagination object with optional page and limit
    *
    * @remarks
-   * - Uses Number() + Number.isInteger() for stricter validation (rejects '10.5', '10e2')
-   * - Returns undefined for page/limit if invalid (not a positive integer)
+   * - Uses digits-only regex (/^\d+$/) to reject non-integer formats
+   * - Rejects: fractional ('10.5'), scientific ('10e2'), negative ('-5'), hex ('0x10')
+   * - Accepts: only positive integers ('1', '50', '1000')
    * - Caps page at MAX_PAGE (10000) to prevent excessive offset calculations
    * - Caps limit at MAX_PAGINATION_LIMIT (200) to prevent OOM errors
    * - Logs warnings when limits are capped for telemetry/abuse detection
@@ -40,8 +41,10 @@ export class ComparisonController {
     limit?: string,
     jobId?: string
   ): { page?: number; limit?: number } {
-    const parsedPage = page ? Number(page) : undefined;
-    const parsedLimit = limit ? Number(limit) : undefined;
+    // Enforce digits-only input to reject scientific notation and fractional values
+    const digitsOnlyRegex = /^\d+$/;
+    const parsedPage = page && digitsOnlyRegex.test(page) ? Number(page) : undefined;
+    const parsedLimit = limit && digitsOnlyRegex.test(limit) ? Number(limit) : undefined;
 
     let validatedPage: number | undefined = undefined;
     if (parsedPage !== undefined && Number.isInteger(parsedPage) && parsedPage > 0) {
