@@ -855,6 +855,8 @@ export class PdfRemediationController {
           // Log change to RemediationChange table
           try {
             // Map field to issue code for proper WCAG mapping
+            // Currently supported quick-fix fields: language, title, creator, metadata
+            // See pdf-modifier.service.ts for available modification methods
             const issueCodeMap: Record<string, string> = {
               'language': 'PDF-NO-LANGUAGE',
               'title': 'PDF-NO-TITLE',
@@ -878,12 +880,19 @@ export class PdfRemediationController {
               wcagLevel: extractWcagLevel(issueCode),
               appliedBy: req.user?.email || 'user',
             });
-            logger.info(`[PDF Remediation] Change logged for quick-fix: ${field}`);
+            logger.info(`[PDF Remediation] Change logged for quick-fix: ${field} (task ${task.id})`);
           } catch (logError) {
             logger.error(
-              `[PDF Remediation] Failed to log change for quick-fix: ${
+              `[PDF Remediation] Failed to log change for task ${task.id} (field: ${field}): ${
                 logError instanceof Error ? logError.message : String(logError)
-              }`
+              }`,
+              {
+                jobId,
+                taskId: task.id,
+                issueId: task.issueId,
+                field,
+                error: logError instanceof Error ? logError.message : String(logError),
+              }
             );
             // Don't fail the transaction if logging fails
           }
