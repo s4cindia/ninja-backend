@@ -2962,9 +2962,9 @@ class DOCXProcessorService {
   private reorderReferencesInXML(
     xml: string,
     reorderMap: Array<{ oldPosition: number; newPosition: number; content: string; contentStart: string }>,
-    author: string,
-    revisionDate: string,
-    revisionId: number
+    _author: string,
+    _revisionDate: string,
+    _revisionId: number
   ): string {
     try {
       // Find the References section - look for "References" header

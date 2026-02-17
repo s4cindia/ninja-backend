@@ -3,6 +3,7 @@
  *
  * End-to-end tests for style conversion functionality
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 

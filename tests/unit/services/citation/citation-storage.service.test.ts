@@ -3,6 +3,7 @@
  *
  * Tests for file storage abstraction (S3 with local fallback)
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock S3 service

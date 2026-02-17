@@ -3,6 +3,7 @@
  *
  * Tests the complete upload → analysis → export flow for citation management
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 

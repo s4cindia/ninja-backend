@@ -3,6 +3,7 @@
  *
  * Tests for AI-powered citation detection and reference extraction
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock Claude service - mock all methods including generateJSONWithUsage

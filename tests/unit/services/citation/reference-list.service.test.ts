@@ -4,6 +4,7 @@
  * Tests for reference list generation and batch operations
  * Includes tests for N+1 query prevention (batch inserts/updates)
  */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock dependencies
