@@ -764,15 +764,18 @@ export class AcrService {
     };
   }
 
-  async resolveAcrJob(jobId: string, userId?: string, tenantId?: string) {
+  async resolveAcrJob(jobId: string, tenantId: string, userId?: string) {
+    if (!tenantId) {
+      throw new Error('tenantId is required for tenant-scoped ACR job lookup');
+    }
     return prisma.acrJob.findFirst({
       where: {
         OR: [
           { id: jobId },
           { jobId: jobId },
         ],
+        tenantId,
         ...(userId && { userId }),
-        ...(tenantId && { tenantId }),
       },
       orderBy: { createdAt: 'desc' },
     });

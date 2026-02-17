@@ -1679,7 +1679,14 @@ export class AcrController {
       const userId = req.user?.id;
       const tenantId = req.user?.tenantId;
 
-      const acrJob = await acrService.resolveAcrJob(jobId, userId, tenantId);
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' },
+        });
+      }
+
+      const acrJob = await acrService.resolveAcrJob(jobId, tenantId, userId);
       if (!acrJob) {
         return res.status(404).json({
           success: false,
