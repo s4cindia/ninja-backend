@@ -569,7 +569,9 @@ export class PdfController {
         },
       });
 
-      // Create AcrJob record so PDF audit appears in ACR workflow
+      // Create an initial AcrJob record so this PDF audit appears in the ACR workflow.
+      // Multiple AcrJob records per jobId are intentional: finalized reports are preserved
+      // as version history and subsequent edits produce new draft records.
       try {
         await prisma.acrJob.create({
           data: {
@@ -741,7 +743,11 @@ export class PdfController {
       });
       logger.info(`[reScanJob] Database updated for job ${jobId}. Status: ${updatedJob.status}`);
 
-      // Upsert AcrJob record so re-scanned PDF audit remains in ACR workflow
+      // Ensure an AcrJob record exists so the re-scanned PDF appears in the ACR workflow.
+      // Multiple AcrJob records per jobId are intentional (finalized reports are versioned).
+      // This creates one only when none exists. The non-atomic findFirst+create pattern is
+      // shared with the EPUB acr.service.ts implementation; a concurrent race would at most
+      // produce an extra draft record, which is non-fatal and caught below.
       try {
         const existingAcrJob = await prisma.acrJob.findFirst({ where: { jobId } });
         if (!existingAcrJob) {
