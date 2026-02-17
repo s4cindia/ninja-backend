@@ -4,6 +4,8 @@ export interface ComparisonSummary {
   rejected: number;
   skipped: number;
   failed: number;
+  discovered: number; // Number of fixes discovered during remediation (not in original audit)
+  plannedFixes: number; // Number of fixes from original audit (totalChanges - discovered)
   issuesBefore?: number;
   issuesAfter?: number;
   resolutionRate?: number;

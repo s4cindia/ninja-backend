@@ -7,6 +7,8 @@ import {
   CreateChangeData,
   PaginationInfo,
 } from '../../types/comparison.types';
+import { logger } from '../../lib/logger';
+import { MAX_PAGINATION_LIMIT, DEFAULT_PAGINATION_LIMIT, MAX_PAGE } from '../../constants/pagination.constants';
 
 function decodeHtmlEntities(str: string | null): string | null {
   if (!str) return str;
@@ -45,9 +47,19 @@ export class ComparisonService {
       throw new Error('Job not found');
     }
 
-    const page = pagination?.page || 1;
-    const limit = pagination?.limit || 50;
-    const skip = (page - 1) * limit;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(pagination?.page) ? pagination!.page! : 1;
+    const inputLimit = Number.isFinite(pagination?.limit) ? pagination!.limit! : DEFAULT_PAGINATION_LIMIT;
+
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
+
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -61,16 +73,19 @@ export class ComparisonService {
 
     const allChanges = await this.prisma.remediationChange.findMany({
       where: { jobId },
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allChanges);
+    // Identify discovered fixes by comparing with original audit issues
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allChanges);
+
+    const summary = this.calculateSummary(allChanges, discoveredCount);
     const byType = this.groupByField(allChanges, 'changeType');
     const bySeverity = this.groupByField(allChanges, 'severity');
     const byWcag = this.groupByField(allChanges, 'wcagCriteria');
 
     const paginationInfo: PaginationInfo = {
-      page,
+      page: safePage,
       limit,
       total: totalChanges,
       pages: Math.ceil(totalChanges / limit),
@@ -139,9 +154,19 @@ export class ComparisonService {
       ];
     }
 
-    const page = filters.page || 1;
-    const limit = filters.limit || 50;
-    const skip = (page - 1) * limit;
+    // Normalize and clamp pagination parameters (defense-in-depth)
+    // Guard against NaN/Infinity by validating with Number.isFinite before Math operations
+    const inputPage = Number.isFinite(filters.page) ? filters.page! : 1;
+    const inputLimit = Number.isFinite(filters.limit) ? filters.limit! : DEFAULT_PAGINATION_LIMIT;
+
+    // Ensure page is positive and within MAX_PAGE to prevent excessive offsets
+    const safePage = Math.min(Math.max(1, inputPage), MAX_PAGE);
+
+    // Ensure limit is positive and within MAX_PAGINATION_LIMIT
+    const requestedLimit = inputLimit > 0 ? inputLimit : DEFAULT_PAGINATION_LIMIT;
+    const limit = Math.min(requestedLimit, MAX_PAGINATION_LIMIT);
+
+    const skip = (safePage - 1) * limit;
 
     const [changes, totalChanges] = await Promise.all([
       this.prisma.remediationChange.findMany({
@@ -155,10 +180,13 @@ export class ComparisonService {
 
     const allFilteredChanges = await this.prisma.remediationChange.findMany({
       where,
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allFilteredChanges);
+    // Calculate discovered fixes for filtered changes
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allFilteredChanges);
+
+    const summary = this.calculateSummary(allFilteredChanges, discoveredCount);
     const byType = this.groupByField(allFilteredChanges, 'changeType');
     const bySeverity = this.groupByField(allFilteredChanges, 'severity');
     const byWcag = this.groupByField(allFilteredChanges, 'wcagCriteria');
@@ -179,7 +207,7 @@ export class ComparisonService {
       bySeverity,
       byWcag,
       pagination: {
-        page,
+        page: safePage,
         limit,
         total: totalChanges,
         pages: Math.ceil(totalChanges / limit),
@@ -252,8 +280,61 @@ export class ComparisonService {
     return change;
   }
 
+  /**
+   * Safely log changes with error handling
+   *
+   * This method wraps logChange() calls with try-catch to prevent logging failures
+   * from breaking remediation workflows. Failed logs are logged but don't throw errors.
+   *
+   * @param changes - Array of change data to log
+   * @param context - Logging context (jobId, source identifier)
+   * @returns Number of successfully logged changes
+   * @example
+   * const successCount = await comparisonService.logChangesSafely(
+   *   [{ jobId, changeType, description, ... }],
+   *   { jobId: 'job-123', source: 'PDF-AutoFix' }
+   * );
+   * logger.info(`Logged ${successCount}/5 changes`);
+   */
+  async logChangesSafely(
+    changes: CreateChangeData[],
+    context: { jobId: string; source: string }
+  ): Promise<number> {
+    let successCount = 0;
+
+    for (const changeData of changes) {
+      try {
+        await this.logChange(changeData);
+        successCount++;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.error(
+          `[${context.source}] Failed to log change for job ${context.jobId}`,
+          {
+            changeType: changeData.changeType,
+            error: errorMessage,
+          }
+        );
+        // Continue processing remaining changes
+      }
+    }
+
+    if (successCount < changes.length) {
+      logger.warn(
+        `[${context.source}] Logged ${successCount}/${changes.length} changes for job ${context.jobId}`
+      );
+    } else {
+      logger.info(
+        `[${context.source}] Successfully logged ${successCount} changes for job ${context.jobId}`
+      );
+    }
+
+    return successCount;
+  }
+
   private calculateSummary(
-    changes: { status: ChangeStatus }[]
+    changes: { status: ChangeStatus }[],
+    discoveredCount: number = 0
   ): ComparisonSummary {
     const summary: ComparisonSummary = {
       totalChanges: changes.length,
@@ -261,6 +342,8 @@ export class ComparisonService {
       rejected: 0,
       skipped: 0,
       failed: 0,
+      discovered: discoveredCount,
+      plannedFixes: Math.max(0, changes.length - discoveredCount),
     };
 
     for (const change of changes) {
@@ -284,6 +367,56 @@ export class ComparisonService {
     }
 
     return summary;
+  }
+
+  /**
+   * Calculates the number of discovered fixes by comparing changes with original audit issues
+   * A "discovered fix" is a change that was applied but wasn't in the original audit findings
+   */
+  private async calculateDiscoveredFixes(
+    jobId: string,
+    changes: { filePath: string; ruleId: string | null; status: ChangeStatus }[]
+  ): Promise<number> {
+    try {
+      const job = await this.prisma.job.findUnique({
+        where: { id: jobId },
+        select: { output: true },
+      });
+
+      if (!job || !job.output) {
+        return 0;
+      }
+
+      const output = job.output as { combinedIssues?: unknown };
+      if (!Array.isArray(output.combinedIssues)) {
+        // combinedIssues absent or malformed — cannot determine discovered vs planned
+        return 0;
+      }
+      const auditIssues = output.combinedIssues as Array<{ code: string; location: string }>;
+
+      // Create a set of audit issue signatures for fast lookup
+      const auditSignatures = new Set(
+        auditIssues.map(issue => `${issue.location}:${issue.code}`)
+      );
+
+      // Only count changes that were actually applied and don't match any audit issue.
+      // NOTE: issue.location (from EPUBCheck/ACE) and change.filePath (from modifier) may
+      // use different path formats (e.g. with/without "EPUB/" prefix). If discoveredCount
+      // unexpectedly equals the total applied count, check the debug logs below for mismatches.
+      let discoveredCount = 0;
+      for (const change of changes.filter(c => c.status === ChangeStatus.APPLIED)) {
+        const changeSignature = `${change.filePath}:${change.ruleId || ''}`;
+        if (!auditSignatures.has(changeSignature)) {
+          logger.debug(`[calculateDiscoveredFixes] No audit match for change: ${changeSignature}`);
+          discoveredCount++;
+        }
+      }
+
+      return discoveredCount;
+    } catch (error) {
+      logger.error('Failed to calculate discovered fixes', error instanceof Error ? error : undefined);
+      return 0; // Fail gracefully
+    }
   }
 
   private groupByField(

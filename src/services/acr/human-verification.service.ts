@@ -128,9 +128,9 @@ class HumanVerificationService {
     return await this.getQueue(jobId);
   }
 
-  async getQueue(jobId: string): Promise<VerificationQueue> {
+  async getQueue(jobId: string, tenantId?: string): Promise<VerificationQueue> {
     let items = verificationStore.get(jobId);
-    
+
     if (!items) {
       const defaultCriteria = [
         '1.1.1', '1.3.1', '1.4.3', '2.1.1', '2.4.1', '2.4.6',
@@ -140,15 +140,19 @@ class HumanVerificationService {
     }
 
     const pendingItems = items.filter(i => i.status === 'PENDING').length;
-    const verifiedItems = items.filter(i => 
-      i.status === 'VERIFIED_PASS' || 
-      i.status === 'VERIFIED_FAIL' || 
+    const verifiedItems = items.filter(i =>
+      i.status === 'VERIFIED_PASS' ||
+      i.status === 'VERIFIED_FAIL' ||
       i.status === 'VERIFIED_PARTIAL'
     ).length;
     const deferredItems = items.filter(i => i.status === 'DEFERRED').length;
     const notApplicableItems = items.filter(i => i.status === 'NOT_APPLICABLE').length;
 
-    const finalizeCheck = await this.canFinalizeAcr(jobId);
+    // Use tenant-scoped DB check when tenantId is available; fall back to in-memory
+    // only when not (tracked for full propagation in GH #197)
+    const finalizeCheck = tenantId
+      ? await this.canFinalizeAcr(jobId, tenantId)
+      : this.computeCanFinalizeFromItems(items);
 
     return {
       jobId,
@@ -374,16 +378,58 @@ class HumanVerificationService {
     return record;
   }
 
-  async canFinalizeAcr(jobId: string): Promise<CanFinalizeResult> {
+  /** Compute canFinalize purely from in-memory store items, without a DB query. */
+  private computeCanFinalizeFromItems(items: VerificationQueueItem[]): CanFinalizeResult {
+    const criticalItems = items.filter(i => i.severity === 'critical');
+    const seriousItems = items.filter(i => i.severity === 'serious');
+    const manualRequiredItems = items.filter(i => i.confidenceLevel === 'MANUAL_REQUIRED');
+    const lowConfidenceItems = items.filter(i => i.confidenceLevel === 'LOW');
+
+    const requiredItems = [...new Set([
+      ...criticalItems,
+      ...seriousItems,
+      ...manualRequiredItems,
+      ...lowConfidenceItems,
+    ])];
+
+    const blockers: string[] = [];
+    let verifiedCount = 0;
+
+    for (const item of requiredItems) {
+      if (item.status === 'VERIFIED_PASS' ||
+          item.status === 'VERIFIED_FAIL' ||
+          item.status === 'VERIFIED_PARTIAL') {
+        verifiedCount++;
+      } else if (item.status === 'PENDING') {
+        blockers.push(`${item.wcagCriterion} (${item.criterionId}) - ${item.severity} severity, requires verification`);
+      } else if (item.status === 'DEFERRED') {
+        blockers.push(`${item.wcagCriterion} (${item.criterionId}) - deferred, must be resolved before finalization`);
+      }
+    }
+
+    return {
+      canFinalize: blockers.length === 0,
+      blockers,
+      verifiedCount,
+      totalRequired: requiredItems.length,
+    };
+  }
+
+  async canFinalizeAcr(jobId: string, tenantId: string): Promise<CanFinalizeResult> {
+    if (!tenantId) {
+      throw new Error('tenantId is required for tenant-scoped ACR finalization check');
+    }
     // First check if there are database-stored criterion reviews (from ACR Review & Edit page)
     try {
       const acrJob = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           OR: [
             { id: jobId },
             { jobId: jobId }
-          ]
+          ],
+          tenantId,
         },
+        orderBy: { createdAt: 'desc' },
         include: {
           criteria: true
         }
@@ -432,54 +478,22 @@ class HumanVerificationService {
 
     // Fallback to in-memory verification store
     let items = verificationStore.get(jobId);
-    
+
     if (!items) {
       await this.getQueueFromJob(jobId);
       items = verificationStore.get(jobId);
     }
-    
+
     if (!items) {
       return {
         canFinalize: false,
         blockers: ['No verification queue found for this job'],
         verifiedCount: 0,
-        totalRequired: 0
+        totalRequired: 0,
       };
     }
 
-    const criticalItems = items.filter(i => i.severity === 'critical');
-    const seriousItems = items.filter(i => i.severity === 'serious');
-    const manualRequiredItems = items.filter(i => i.confidenceLevel === 'MANUAL_REQUIRED');
-    const lowConfidenceItems = items.filter(i => i.confidenceLevel === 'LOW');
-
-    const requiredItems = [...new Set([
-      ...criticalItems,
-      ...seriousItems,
-      ...manualRequiredItems,
-      ...lowConfidenceItems
-    ])];
-
-    const blockers: string[] = [];
-    let verifiedCount = 0;
-
-    for (const item of requiredItems) {
-      if (item.status === 'VERIFIED_PASS' || 
-          item.status === 'VERIFIED_FAIL' || 
-          item.status === 'VERIFIED_PARTIAL') {
-        verifiedCount++;
-      } else if (item.status === 'PENDING') {
-        blockers.push(`${item.wcagCriterion} (${item.criterionId}) - ${item.severity} severity, requires verification`);
-      } else if (item.status === 'DEFERRED') {
-        blockers.push(`${item.wcagCriterion} (${item.criterionId}) - deferred, must be resolved before finalization`);
-      }
-    }
-
-    return {
-      canFinalize: blockers.length === 0,
-      blockers,
-      verifiedCount,
-      totalRequired: requiredItems.length
-    };
+    return this.computeCanFinalizeFromItems(items);
   }
 
   async getAuditLog(jobId: string): Promise<VerificationRecord[]> {
