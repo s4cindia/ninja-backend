@@ -16,6 +16,8 @@ interface AccessibilityIssue {
   category: string;
   element?: string;
   context?: string;
+  // Track which file(s) are affected (useful for structural issues)
+  affectedFiles?: string[];
 }
 
 interface JSAuditResult {
@@ -75,25 +77,45 @@ class EPUBJSAuditorService {
         htmlFiles.push({ filePath, content });
       }
 
-      const hasMainLandmarkAnywhere = htmlFiles.some(({ content }) => {
-        return /role\s*=\s*["']main["']/i.test(content) || /<main[\s>]/i.test(content);
-      });
+      // Track which files are missing main landmark
+      const filesWithoutMainLandmark: string[] = [];
 
       for (const { filePath, content } of htmlFiles) {
+        // Skip navigation documents (nav, toc, etc.)
+        if (this.isNavigationDocument(filePath)) {
+          continue;
+        }
+
         stats.totalDocuments++;
         const docIssues = this.auditContentDocument(content, filePath, stats, createIssue, true);
         issues.push(...docIssues);
+
+        // Check if this file has a main landmark
+        // Skip frontmatter/backmatter as they don't need main landmarks
+        if (!this.isFrontOrBackMatter(content)) {
+          const hasMainLandmark = this.hasMainRole(content);
+          if (!hasMainLandmark) {
+            filesWithoutMainLandmark.push(filePath);
+          }
+        }
       }
 
-      if (!hasMainLandmarkAnywhere && htmlFiles.length > 0) {
+      // If any content files lack main landmark, create issue
+      if (filesWithoutMainLandmark.length > 0) {
+        // Use the first affected file as the primary location
+        const primaryFile = filesWithoutMainLandmark[0];
+
         issues.push(createIssue({
           code: 'EPUB-STRUCT-004',
           severity: 'minor',
           message: 'Missing main landmark in EPUB',
           wcagCriteria: '1.3.1',
-          location: 'EPUB',
-          suggestion: 'Add role="main" or <main> element to identify main content in one of the content documents',
+          // Use specific file path instead of generic 'EPUB'
+          location: primaryFile,
+          suggestion: `Add role="main" or <main> element to identify main content in ${primaryFile}`,
           category: 'structure',
+          // Track all affected files for comprehensive remediation
+          affectedFiles: filesWithoutMainLandmark,
         }));
       }
 
@@ -349,6 +371,65 @@ class EPUBJSAuditorService {
     }
 
     return issues;
+  }
+
+  /**
+   * Check if a document has role="main" or <main> element
+   */
+  private hasMainRole(content: string): boolean {
+    // Check for role="main" attribute
+    if (/role\s*=\s*["']main["']/i.test(content)) {
+      return true;
+    }
+
+    // Check for <main> element
+    if (/<main[\s>]/i.test(content)) {
+      return true;
+    }
+
+    // Check for epub:type="bodymatter" which often implies main content
+    if (/epub:type\s*=\s*["'][^"']*bodymatter[^"']*["']/i.test(content)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if document is a navigation file (should be skipped)
+   */
+  private isNavigationDocument(filePath: string): boolean {
+    const navPatterns = [
+      /nav\.x?html$/i,
+      /toc\.x?html$/i,
+      /navigation/i,
+      /contents\.x?html$/i,
+    ];
+
+    return navPatterns.some(pattern => pattern.test(filePath));
+  }
+
+  /**
+   * Check if document is frontmatter/backmatter that doesn't need main landmark
+   * These include: cover, title pages, copyright, dedications, etc.
+   */
+  private isFrontOrBackMatter(content: string): boolean {
+    // Check for epub:type attributes that indicate non-main content
+    const patterns = [
+      /epub:type\s*=\s*["'][^"']*cover[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*frontmatter[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*backmatter[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*titlepage[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*halftitlepage[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*copyright-page[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*dedication[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*epigraph[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*foreword[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*preface[^"']*["']/i,
+      /epub:type\s*=\s*["'][^"']*acknowledgments[^"']*["']/i,
+    ];
+
+    return patterns.some(pattern => pattern.test(content));
   }
 }
 

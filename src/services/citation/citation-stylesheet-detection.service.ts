@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
+import { AppError } from '../../utils/app-error';
 import {
   DetectedCitation,
   StylesheetAnalysisResult,
@@ -13,7 +14,7 @@ import {
   mapToCitationStyle,
   mapToSectionContext,
 } from './citation.types';
-import { styleRulesService } from './style-rules.service';
+// styleRulesService reserved for future use
 
 const STYLE_CODE_MAP: Record<string, { code: string; name: string }> = {
   'numeric-bracket': { code: 'vancouver', name: 'Vancouver' },
@@ -109,13 +110,13 @@ export class CitationStylesheetDetectionService {
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       try {
         const response = await fetch(presignedUrl, { signal: controller.signal });
-        if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+        if (!response.ok) throw AppError.badRequest(`Failed to fetch: ${response.status}`, 'FETCH_FAILED');
         fileBuffer = Buffer.from(await response.arrayBuffer());
       } finally {
         clearTimeout(timeoutId);
       }
     } else {
-      throw new Error('Either fileS3Key or presignedUrl is required');
+      throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
     }
 
     const parsed = await documentParser.parse(fileBuffer, fileName);
@@ -148,12 +149,18 @@ export class CitationStylesheetDetectionService {
           orderBy: { startOffset: 'asc' },
           include: { primaryComponent: { select: { confidence: true } } },
         },
+        documentContent: true,
       },
     });
 
-    if (!doc || !doc.fullText) return null;
+    if (!doc || !doc.documentContent?.fullText) return null;
 
-    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations);
+    // Use original processing time from document timestamps when available
+    const originalProcessingTime = doc.parsedAt && doc.createdAt
+      ? doc.parsedAt.getTime() - doc.createdAt.getTime()
+      : undefined;
+
+    return this.runFullAnalysis(documentId, doc.jobId, tenantId, doc.documentContent.fullText, Date.now(), doc.originalName || doc.fileName, doc.citations, originalProcessingTime);
   }
 
   async getAnalysisByJobId(jobId: string, tenantId: string): Promise<StylesheetAnalysisResult | null> {
@@ -172,7 +179,7 @@ export class CitationStylesheetDetectionService {
   private async runFullAnalysis(
     documentId: string,
     jobId: string,
-    tenantId: string,
+    _tenantId: string,
     fullText: string,
     startTime: number,
     fileName?: string,
@@ -189,10 +196,11 @@ export class CitationStylesheetDetectionService {
       sectionContext: string;
       primaryComponentId: string | null;
       primaryComponent: { confidence: number } | null;
-    }>
+    }>,
+    originalProcessingTime?: number
   ): Promise<StylesheetAnalysisResult> {
 
-    const styleInfo = editorialAi.detectCitationStyleFromText(fullText);
+    const styleInfo = await editorialAi.detectCitationStyleFromText(fullText);
 
     let inferredStyle = styleInfo.style;
     let confidence = 0;
@@ -221,20 +229,22 @@ export class CitationStylesheetDetectionService {
     }
 
     if (evidence.length === 0) {
+      const numericCount = styleInfo.numericCount || 0;
+      const authorDateCount = styleInfo.authorDateCount || 0;
       if (inferredStyle === 'numeric-bracket') {
-        confidence = Math.min(0.95, 0.5 + styleInfo.numericCount * 0.03);
-        evidence.push(`Found ${styleInfo.numericCount} numeric bracket citations [N]`);
+        confidence = Math.min(0.95, 0.5 + numericCount * 0.03);
+        evidence.push(`Found ${numericCount} numeric bracket citations [N]`);
         if (styleInfo.hasReferenceSection) {
           evidence.push('Document contains a numbered reference list');
           confidence = Math.min(0.98, confidence + 0.1);
         }
       } else if (inferredStyle === 'author-date') {
-        confidence = Math.min(0.90, 0.5 + styleInfo.authorDateCount * 0.03);
-        evidence.push(`Found ${styleInfo.authorDateCount} author-date citations (Author, Year)`);
+        confidence = Math.min(0.90, 0.5 + authorDateCount * 0.03);
+        evidence.push(`Found ${authorDateCount} author-date citations (Author, Year)`);
         if (styleInfo.hasReferenceSection) evidence.push('Document contains an alphabetical reference list');
       } else if (inferredStyle === 'mixed') {
         confidence = 0.5;
-        evidence.push(`Found ${styleInfo.numericCount} numeric and ${styleInfo.authorDateCount} author-date citations`);
+        evidence.push(`Found ${numericCount} numeric and ${authorDateCount} author-date citations`);
         evidence.push('Document uses mixed citation styles');
       } else {
         confidence = 0.2;
@@ -265,14 +275,16 @@ export class CitationStylesheetDetectionService {
         startOffset: c.startOffset,
         endOffset: c.endOffset,
         confidence: c.confidence,
-        sectionContext: c.sectionContext || 'BODY',
+        sectionContext: (c.sectionContext || 'BODY') as DetectedCitation['sectionContext'],
         primaryComponentId: c.primaryComponentId,
         isParsed: !!c.primaryComponentId,
         parseConfidence: c.primaryComponent?.confidence ?? null,
       }));
     } else {
       const extractedCitations = await editorialAi.detectCitations(fullText);
-      citations = await this.storeCitations(documentId, extractedCitations);
+      const storeResult = await this.storeCitations(documentId, extractedCitations);
+      citations = storeResult.citations;
+      // Note: storeResult.failures contains any citations that failed to store
     }
 
     const bodyCitations = citations.filter(c =>
@@ -289,7 +301,7 @@ export class CitationStylesheetDetectionService {
       const dbEntries = await prisma.referenceListEntry.findMany({
         where: { documentId },
         orderBy: { sortKey: 'asc' },
-        select: { sortKey: true, title: true, formattedApa: true, citationIds: true },
+        select: { sortKey: true, title: true, formattedApa: true, citationLinks: { select: { citationId: true } } },
       });
       if (dbEntries.length > 0) {
         referenceEntries = dbEntries.map((e, idx) => {
@@ -297,7 +309,7 @@ export class CitationStylesheetDetectionService {
           return {
             number: numMatch ? parseInt(numMatch[1], 10) : idx + 1,
             text: e.formattedApa || e.title || e.sortKey,
-            citationIds: e.citationIds || [],
+            citationIds: e.citationLinks.map(link => link.citationId),
           };
         });
       }
@@ -307,7 +319,7 @@ export class CitationStylesheetDetectionService {
     const crossReference = this.analyzeCrossReferences(bodyCitations, referenceEntries);
 
     const unmatchedRefIndices = new Set(
-      crossReference.referencesWithoutCitation.map(r => r.entryIndex)
+      crossReference.referencesWithoutCitation.map((r: { entryIndex: number }) => r.entryIndex)
     );
     const refListSummary: ReferenceListSummaryEntry[] = referenceEntries.map((entry, index) => {
       const hasMatch = !unmatchedRefIndices.has(index);
@@ -328,12 +340,12 @@ export class CitationStylesheetDetectionService {
       documentId,
       jobId,
       filename: fileName,
-      processingTimeMs: Date.now() - startTime,
+      processingTimeMs: originalProcessingTime ?? (Date.now() - startTime),
       detectedStyle: {
         styleCode: finalStyleCode,
         styleName: finalStyleName,
         confidence,
-        citationFormat: styleInfo.style === 'numeric-superscript' ? 'numeric-bracket' : styleInfo.style,
+        citationFormat: this.deriveCitationFormat(finalStyleCode, inferredStyle),
         evidence,
       },
       sequenceAnalysis,
@@ -721,11 +733,36 @@ export class CitationStylesheetDetectionService {
     return { styleCode: '', styleName: '', confidence: 0 };
   }
 
+  /**
+   * Derive citation format from resolved style code or inferred style
+   */
+  private deriveCitationFormat(finalStyleCode: string, inferredStyle: string): string {
+    // Numeric styles
+    const numericStyles = ['vancouver', 'ieee', 'ama', 'nlm'];
+    if (numericStyles.some(s => finalStyleCode.toLowerCase().includes(s))) {
+      return 'numeric-bracket';
+    }
+
+    // Author-date styles
+    const authorDateStyles = ['apa', 'harvard', 'chicago', 'mla'];
+    if (authorDateStyles.some(s => finalStyleCode.toLowerCase().includes(s))) {
+      return 'author-date';
+    }
+
+    // Fall back to inferred style with mapping
+    if (inferredStyle === 'numeric-superscript') {
+      return 'numeric-bracket';
+    }
+
+    return inferredStyle || 'unknown';
+  }
+
   private async storeCitations(
     documentId: string,
     extractedCitations: Awaited<ReturnType<typeof editorialAi.detectCitations>>
-  ): Promise<DetectedCitation[]> {
+  ): Promise<{ citations: DetectedCitation[]; failures: { text: string; error: string }[] }> {
     const citations: DetectedCitation[] = [];
+    const failures: { text: string; error: string }[] = [];
 
     for (const extracted of extractedCitations) {
       try {
@@ -759,11 +796,33 @@ export class CitationStylesheetDetectionService {
           parseConfidence: null,
         });
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        failures.push({ text: extracted.text.slice(0, 100), error: errorMessage });
         logger.error(`[Stylesheet Detection] Failed to store citation: ${extracted.text.slice(0, 50)}`, error instanceof Error ? error : undefined);
       }
     }
 
-    return citations;
+    if (failures.length > 0) {
+      logger.warn(`[Stylesheet Detection] ${failures.length} citations failed to store out of ${extractedCitations.length} total`);
+    }
+
+    return { citations, failures };
+  }
+
+  /**
+   * Get MIME type from file extension
+   */
+  private getMimeTypeFromExtension(fileName: string): string {
+    const ext = fileName.toLowerCase().split('.').pop() || '';
+    const mimeTypes: Record<string, string> = {
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'doc': 'application/msword',
+      'pdf': 'application/pdf',
+      'txt': 'text/plain',
+      'rtf': 'application/rtf',
+      'odt': 'application/vnd.oasis.opendocument.text',
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
   }
 
   private async createEditorialDocument(
@@ -779,17 +838,18 @@ export class CitationStylesheetDetectionService {
 
     if (existing) return existing;
 
+    // Derive MIME type from file extension dynamically
+    const mimeType = this.getMimeTypeFromExtension(fileName);
+
     return prisma.editorialDocument.create({
       data: {
         jobId,
         tenantId,
         fileName,
         originalName: fileName,
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        mimeType,
         fileSize,
         storagePath: '',
-        fullText: parsed.text,
-        fullHtml: parsed.html || null,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,
@@ -798,6 +858,14 @@ export class CitationStylesheetDetectionService {
         language: parsed.metadata.language || null,
         status: EditorialDocStatus.ANALYZING,
         parsedAt: new Date(),
+        documentContent: {
+          create: {
+            fullText: parsed.text,
+            fullHtml: parsed.html || null,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        },
       },
     });
   }

@@ -2,6 +2,7 @@ import { PDFDocument, PDFName, PDFDict, PDFString } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import fs from 'fs/promises';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { pdfConfig } from '../../config/pdf.config';
 import { AppError } from '../../utils/app-error';
 
@@ -14,7 +15,8 @@ const pdfjsWorkerPath = path.join(
   'pdf.worker.mjs'
 );
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerPath;
+// Convert to file:// URL on Windows to avoid ESM loader errors
+pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(pdfjsWorkerPath).href;
 
 export interface PDFMetadata {
   title?: string;
@@ -33,6 +35,7 @@ export interface PDFMetadata {
   hasOutline: boolean;
   hasAcroForm: boolean;
   hasXFA: boolean;
+  suspect?: boolean;
 }
 
 export interface PDFPageInfo {

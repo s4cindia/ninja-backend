@@ -159,6 +159,10 @@ export class EditorialOverviewController {
         return;
       }
 
+      // Sanitize pagination params: clamp to minimum 0, cap limit at 100
+      const parsedLimit = Math.min(Math.max(0, parseInt(limit as string) || 20), 100);
+      const parsedOffset = Math.max(0, parseInt(offset as string) || 0);
+
       const where: Record<string, unknown> = { tenantId };
       if (status) where.status = status;
 
@@ -186,8 +190,8 @@ export class EditorialOverviewController {
             },
           },
           orderBy: { createdAt: 'desc' },
-          take: Math.min(parseInt(limit as string) || 20, 100),
-          skip: parseInt(offset as string) || 0,
+          take: parsedLimit,
+          skip: parsedOffset,
         }),
         prisma.editorialDocument.count({ where }),
       ]);
@@ -217,8 +221,8 @@ export class EditorialOverviewController {
             },
           })),
           total,
-          limit: Math.min(parseInt(limit as string) || 20, 100),
-          offset: parseInt(offset as string) || 0,
+          limit: parsedLimit,
+          offset: parsedOffset,
         },
       });
     } catch (error) {
@@ -238,13 +242,13 @@ export class EditorialOverviewController {
 
       let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { id: true, fullText: true, fullHtml: true },
+        select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
       });
 
       if (!document) {
         document = await prisma.editorialDocument.findFirst({
           where: { jobId: documentId, tenantId },
-          select: { id: true, fullText: true, fullHtml: true },
+          select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
         });
       }
 
@@ -260,7 +264,7 @@ export class EditorialOverviewController {
         const analysis = await citationStylesheetDetectionService.getAnalysisResults(document.id, tenantId)
           || await citationStylesheetDetectionService.getAnalysisByJobId(document.id, tenantId);
 
-        if (analysis && document.fullHtml) {
+        if (analysis && document.documentContent?.fullHtml) {
           const lookupMap: Record<string, string> = {};
           for (const entry of analysis.referenceList.entries) {
             if (entry.number !== null) {
@@ -276,8 +280,56 @@ export class EditorialOverviewController {
             }
           }
 
-          const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers };
-          highlightedHtml = highlightCitationsInHtml(document.fullHtml, highlightData);
+          // Get reference link status from citationLinks relation
+          const referenceLinkStatus = new Map<number, string[]>();
+          const referenceAuthorStatus = new Map<string, { citationIds: string[]; year?: string }>();
+          const refEntries = await prisma.referenceListEntry.findMany({
+            where: { documentId: document.id },
+            select: { sortKey: true, citationLinks: { select: { citationId: true } }, authors: true, year: true }
+          });
+          for (const entry of refEntries) {
+            const citationIds = entry.citationLinks.map(link => link.citationId);
+            const refNum = parseInt(entry.sortKey, 10);
+            if (!isNaN(refNum)) {
+              referenceLinkStatus.set(refNum, citationIds);
+            }
+            // Also build author-based lookup for APA-style references
+            // Validate that entry.authors is an array of strings before using
+            const authors = entry.authors;
+            if (Array.isArray(authors) && authors.length > 0) {
+              const firstAuthor = authors[0];
+              // Skip invalid author entries
+              if (typeof firstAuthor !== 'string' || !firstAuthor.trim()) {
+                continue;
+              }
+
+              // Extract first author's last name
+              let lastName: string;
+              if (firstAuthor.includes(',')) {
+                // "LastName, FirstName" format - take part before comma
+                lastName = firstAuthor.split(',')[0].trim();
+              } else {
+                // "FirstName LastName" format - take last word as last name
+                const parts = firstAuthor.trim().split(/\s+/).filter(p => p.length > 0);
+                lastName = parts.length > 0 ? parts[parts.length - 1] : firstAuthor;
+              }
+
+              // Skip if lastName is empty after processing
+              if (!lastName.trim()) {
+                continue;
+              }
+
+              referenceAuthorStatus.set(lastName.toLowerCase(), {
+                citationIds,
+                year: entry.year || undefined
+              });
+              logger.debug(`[Editorial Overview] Author lookup: ${lastName.toLowerCase()} -> ${citationIds.length} citations`);
+            }
+          }
+          logger.info(`[Editorial Overview] Reference link status: ${referenceLinkStatus.size} by number, ${referenceAuthorStatus.size} by author, ${Array.from(referenceLinkStatus.values()).filter(ids => ids.length > 0).length} linked`);
+
+          const highlightData: CitationHighlightData = { lookupMap, orphanedNumbers, referenceLinkStatus, referenceAuthorStatus };
+          highlightedHtml = highlightCitationsInHtml(document.documentContent!.fullHtml!, highlightData);
         }
       } catch (hlError) {
         logger.warn('[Editorial Overview] Citation highlighting failed, returning plain HTML', hlError instanceof Error ? hlError : undefined);
@@ -288,8 +340,8 @@ export class EditorialOverviewController {
         success: true,
         data: {
           documentId: document.id,
-          fullText: document.fullText || null,
-          fullHtml: highlightedHtml || document.fullHtml || null,
+          fullText: document.documentContent?.fullText || null,
+          fullHtml: highlightedHtml || document.documentContent?.fullHtml || null,
           highlightedHtml,
           referenceLookup,
         },
@@ -344,9 +396,11 @@ export class EditorialOverviewController {
 
       const sanitizedHtml = sanitizeDocumentHtml(result.value);
 
-      await prisma.editorialDocument.update({
-        where: { id: document.id },
-        data: { fullHtml: sanitizedHtml },
+      // Update or create document content
+      await prisma.editorialDocumentContent.upsert({
+        where: { documentId: document.id },
+        update: { fullHtml: sanitizedHtml },
+        create: { documentId: document.id, fullHtml: sanitizedHtml },
       });
 
       logger.info(`[Editorial Overview] Regenerated HTML for document ${document.id} (${result.value.length} chars)`);
@@ -479,7 +533,7 @@ export class EditorialOverviewController {
           severity: 'error',
           type: 'DUPLICATE_CITATION',
           title: `${seq.duplicateNumbers.length} duplicate in-text citation number(s)`,
-          detail: `Duplicated: ${seq.duplicateNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Duplicated: ${seq.duplicateNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.duplicateNumbers,
         });
       }
@@ -490,7 +544,7 @@ export class EditorialOverviewController {
           severity: 'error',
           type: 'MISSING_CITATION_NUMBER',
           title: `${seq.missingNumbers.length} missing citation number(s) in sequence`,
-          detail: `Missing: ${seq.missingNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Missing: ${seq.missingNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.missingNumbers,
         });
       }
@@ -501,12 +555,12 @@ export class EditorialOverviewController {
           severity: 'warning',
           type: 'OUT_OF_ORDER',
           title: `${seq.outOfOrderNumbers.length} citation(s) appear out of order`,
-          detail: `Out of order: ${seq.outOfOrderNumbers.map(n => '[' + n + ']').join(', ')}`,
+          detail: `Out of order: ${seq.outOfOrderNumbers.map((n: number) => '[' + n + ']').join(', ')}`,
           citationNumbers: seq.outOfOrderNumbers,
         });
       }
 
-      seq.gaps.forEach((gap, i) => {
+      seq.gaps.forEach((gap: { before: number; after: number }, i: number) => {
         issues.push({
           id: `seq-gap-${i}`,
           severity: 'warning',
@@ -517,7 +571,7 @@ export class EditorialOverviewController {
         });
       });
 
-      xref.citationsWithoutReference.forEach(cit => {
+      xref.citationsWithoutReference.forEach((cit: { number: number | null; citationId: string; text: string }) => {
         issues.push({
           id: `xref-orphan-${cit.number || cit.citationId}`,
           severity: 'error',
@@ -528,7 +582,7 @@ export class EditorialOverviewController {
         });
       });
 
-      xref.referencesWithoutCitation.forEach(ref => {
+      xref.referencesWithoutCitation.forEach((ref: { number: number | null; entryIndex: number; text: string }) => {
         issues.push({
           id: `xref-uncited-${ref.number || ref.entryIndex}`,
           severity: 'warning',

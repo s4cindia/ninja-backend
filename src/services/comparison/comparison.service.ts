@@ -8,6 +8,25 @@ import {
   PaginationInfo,
 } from '../../types/comparison.types';
 
+function decodeHtmlEntities(str: string | null): string | null {
+  if (!str) return str;
+  return str
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function decodeChangeContent<T extends { beforeContent?: string | null; afterContent?: string | null }>(change: T): T {
+  return {
+    ...change,
+    beforeContent: decodeHtmlEntities(change.beforeContent ?? null),
+    afterContent: decodeHtmlEntities(change.afterContent ?? null),
+  };
+}
+
 export class ComparisonService {
   constructor(private prisma: PrismaClient) {}
 
@@ -57,14 +76,14 @@ export class ComparisonService {
       pages: Math.ceil(totalChanges / limit),
     };
 
-    const input = job.input as Record<string, any>;
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = job.input as Record<string, unknown>;
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,
       fileName,
-      originalFileId: input?.originalFileId,
-      remediatedFileId: input?.remediatedFileId,
+      originalFileId: input?.originalFileId as string | undefined,
+      remediatedFileId: input?.remediatedFileId as string | undefined,
       auditedAt: job.startedAt || undefined,
       remediatedAt: job.completedAt || undefined,
       summary,
@@ -72,7 +91,7 @@ export class ComparisonService {
       bySeverity,
       byWcag,
       pagination: paginationInfo,
-      changes,
+      changes: changes.map(decodeChangeContent),
     };
   }
 
@@ -89,14 +108,14 @@ export class ComparisonService {
       throw new Error('Change does not belong to this job');
     }
 
-    return change;
+    return decodeChangeContent(change);
   }
 
   async getChangesByFilter(
     jobId: string,
     filters: ComparisonFilters
   ): Promise<ComparisonData> {
-    const where: any = { jobId };
+    const where: Record<string, unknown> = { jobId };
 
     if (filters.changeType) {
       where.changeType = filters.changeType;
@@ -149,8 +168,8 @@ export class ComparisonService {
       select: { input: true },
     });
 
-    const input = (job?.input as Record<string, any>) || {};
-    const fileName = input?.fileName || input?.filename || 'Unknown';
+    const input = (job?.input as Record<string, unknown>) || {};
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,
@@ -165,7 +184,7 @@ export class ComparisonService {
         total: totalChanges,
         pages: Math.ceil(totalChanges / limit),
       },
-      changes,
+      changes: changes.map(decodeChangeContent),
     };
   }
 

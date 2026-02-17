@@ -47,6 +47,7 @@ interface ManifestEntry {
 interface AuditResults {
   fileName?: string;
   issues: AuditIssue[];
+  remediatedIssues?: AuditIssue[];
   manifest?: ManifestEntry[];
 }
 
@@ -186,7 +187,7 @@ export class AcrService {
           level: criterion.level,
           confidence: analysis.confidence,
           aiStatus: analysis.status,
-          evidence: analysis.evidence || undefined,
+          evidence: analysis.evidence ? JSON.parse(JSON.stringify(analysis.evidence)) : undefined,
         },
       });
 
@@ -278,7 +279,7 @@ export class AcrService {
       level: c.level,
       confidence: c.confidence,
       status: c.aiStatus,
-      evidence: c.evidence as any,
+      evidence: c.evidence as Record<string, unknown> | null,
       conformanceLevel: c.conformanceLevel,
       remarks: c.reviewerNotes,
       reviewedAt: c.reviewedAt,
@@ -343,7 +344,7 @@ export class AcrService {
       level: c.level,
       confidence: c.confidence,
       status: c.aiStatus,
-      evidence: c.evidence as any,
+      evidence: c.evidence as Record<string, unknown> | null,
       conformanceLevel: c.conformanceLevel,
       remarks: c.reviewerNotes,
       reviewedAt: c.reviewedAt,
@@ -599,7 +600,7 @@ export class AcrService {
             affectedFiles: issue.filePath ? [issue.filePath] : [],
             issueCount: 1,
           })),
-          affectedFiles: relatedIssues.map((i: any) => i.filePath).filter(Boolean),
+          affectedFiles: relatedIssues.map((i: AuditIssue) => i.filePath).filter(Boolean),
           issueCount: relatedIssues.length,
         },
       };
@@ -614,7 +615,7 @@ export class AcrService {
     };
   }
 
-  private findRelatedAuditIssues(criterion: Criterion, auditIssues: any[]) {
+  private findRelatedAuditIssues(criterion: Criterion, auditIssues: AuditIssue[]) {
     const related = [];
 
     for (const issue of auditIssues) {
@@ -626,7 +627,7 @@ export class AcrService {
     return related;
   }
 
-  private isIssueRelatedToCriterion(issue: any, criterion: Criterion) {
+  private isIssueRelatedToCriterion(issue: AuditIssue, criterion: Criterion) {
     const issueCode = issue.code?.toUpperCase() || '';
     const criterionNumber = criterion.number;
 
@@ -657,13 +658,14 @@ export class AcrService {
     return false;
   }
 
-  private generateEvidenceDescription(issues: any[]): string {
+  private generateEvidenceDescription(issues: AuditIssue[]): string {
     if (issues.length === 1) {
       return issues[0].message;
     }
 
     const issuesByCode = issues.reduce((acc, issue) => {
-      acc[issue.code] = (acc[issue.code] || 0) + 1;
+      const code = issue.code || 'unknown';
+      acc[code] = (acc[code] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
 
@@ -678,7 +680,7 @@ export class AcrService {
     const criterionNumber = criterion.number;
 
     if (['1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', '1.2.6', '1.2.7', '1.2.8', '1.2.9'].includes(criterionNumber)) {
-      const hasMedia = auditResults.manifest?.some((item: any) =>
+      const hasMedia = auditResults.manifest?.some((item: ManifestEntry) =>
         item.mediaType?.includes('audio') || item.mediaType?.includes('video')
       );
       return !hasMedia;
@@ -715,26 +717,44 @@ export class AcrService {
       return {
         fileName: 'Unknown Document',
         issues: [],
+        remediatedIssues: [],
         manifest: [],
       };
     }
 
-    const allIssues = job.validationResults.flatMap(vr =>
-      vr.issues.map(issue => ({
-        code: issue.code,
-        severity: issue.severity,
-        message: issue.description,
-        filePath: issue.filePath,
-        wcagCriteria: issue.wcagCriteria,
-      }))
-    );
+    // Categorize issues by their resolution status
+    const pendingIssues: AuditIssue[] = [];
+    const remediatedIssues: AuditIssue[] = [];
 
-    const input = job.input as any;
+    for (const vr of job.validationResults) {
+      for (const issue of vr.issues) {
+        const issueData: AuditIssue = {
+          id: issue.id,
+          code: issue.code,
+          severity: issue.severity,
+          message: issue.description,
+          filePath: issue.filePath,
+          wcagCriteria: issue.wcagCriteria,
+        };
+
+        // Check issue status - REMEDIATED, VERIFIED, or FIXED means it's been addressed
+        if (issue.status === 'REMEDIATED' || issue.status === 'VERIFIED' || issue.status === 'FIXED') {
+          remediatedIssues.push(issueData);
+        } else {
+          // PENDING, SKIPPED, FAILED, or null status all count as unresolved
+          // These need attention in the ACR workflow
+          pendingIssues.push(issueData);
+        }
+      }
+    }
+
+    const input = job.input as { originalName?: string; fileName?: string } | null;
     const fileName = input?.originalName || input?.fileName || 'Unknown Document';
 
     return {
       fileName,
-      issues: allIssues,
+      issues: pendingIssues,
+      remediatedIssues,
       manifest: [],
     };
   }

@@ -1,11 +1,20 @@
+/**
+ * Citation Controller
+ * HTTP request handlers for citation detection and parsing APIs
+ */
+
 import { Request, Response, NextFunction } from 'express';
 import { citationDetectionService } from './citation-detection.service';
 import { citationParsingService } from './citation-parsing.service';
-import { citationStylesheetDetectionService } from './citation-stylesheet-detection.service';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { DetectionInput } from './citation.types';
 
 export class CitationController {
+  /**
+   * POST /api/v1/citation/detect
+   * Upload file and detect citations
+   */
   async detectFromUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const tenantId = req.user?.tenantId;
@@ -16,58 +25,84 @@ export class CitationController {
         return;
       }
 
-      const { fileS3Key, presignedUrl, fileName, fileSize, jobId: existingJobId } = req.body as {
+      const { fileS3Key, presignedUrl, fileName, fileSize } = req.body as {
         fileS3Key?: string;
         presignedUrl?: string;
         fileName?: string;
         fileSize?: number;
-        jobId?: string;
       };
 
-      if (existingJobId) {
-        const result = await citationStylesheetDetectionService.getAnalysisByJobId(existingJobId, tenantId);
-        if (!result) {
-          res.status(404).json({ success: false, error: 'Job not found or no analysis results' });
-          return;
-        }
-        res.status(200).json({ success: true, data: result });
-        return;
-      }
-
-      if (req.file) {
-        const result = await citationStylesheetDetectionService.analyzeFromBuffer(
-          tenantId,
-          userId,
-          req.file.buffer,
-          req.file.originalname
-        );
-        res.status(201).json({ success: true, data: result });
+      if (!fileName) {
+        res.status(400).json({ success: false, error: 'fileName is required' });
         return;
       }
 
       if (!fileS3Key && !presignedUrl) {
-        res.status(400).json({ success: false, error: 'Provide file upload, fileS3Key, presignedUrl, or jobId' });
+        res.status(400).json({ success: false, error: 'Either fileS3Key or presignedUrl is required' });
         return;
       }
 
-      const resolvedFileName = fileName || (fileS3Key ? fileS3Key.split('/').pop() || 'unknown' : 'document');
+      // Create job for audit trail
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'CITATION_VALIDATION',
+          status: 'PROCESSING',
+          input: { fileS3Key, presignedUrl, fileName, fileSize },
+          startedAt: new Date(),
+        },
+      });
 
-      const result = await citationStylesheetDetectionService.analyzeFromS3(
-        tenantId,
-        userId,
-        fileS3Key,
-        presignedUrl,
-        resolvedFileName,
-        fileSize
-      );
+      try {
+        const input: DetectionInput = {
+          jobId: job.id,
+          tenantId,
+          userId,
+          fileS3Key,
+          presignedUrl,
+          fileName,
+          fileSize,
+        };
 
-      res.status(201).json({ success: true, data: result });
+        const result = await citationDetectionService.detectCitations(input);
+
+        // Update job to completed
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            output: result as object,
+          },
+        });
+
+        res.status(201).json({ success: true, data: result });
+      } catch (error) {
+        // Update job to failed with nested try-catch to preserve original error
+        try {
+          await prisma.job.update({
+            where: { id: job.id },
+            data: {
+              status: 'FAILED',
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+          });
+        } catch (updateError) {
+          logger.error(`[Citation Controller] Failed to update job ${job.id} status to FAILED`, updateError instanceof Error ? updateError : undefined);
+        }
+        throw error;
+      }
     } catch (error) {
       logger.error('[Citation Controller] detectFromUpload failed', error instanceof Error ? error : undefined);
       next(error);
     }
   }
 
+  /**
+   * GET /api/v1/citation/job/:jobId
+   * Get detection results by job ID
+   */
   async getCitationsByJob(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { jobId } = req.params;
@@ -78,10 +113,10 @@ export class CitationController {
         return;
       }
 
-      const result = await citationStylesheetDetectionService.getAnalysisByJobId(jobId, tenantId);
+      const result = await citationDetectionService.getDetectionResultsByJob(jobId, tenantId);
 
       if (!result) {
-        res.status(404).json({ success: false, error: 'No analysis found for this job' });
+        res.status(404).json({ success: false, error: 'No citations found for this job' });
         return;
       }
 
@@ -92,6 +127,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * GET /api/v1/citation/document/:documentId
+   * Get all citations for a document
+   */
   async getCitations(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
@@ -102,7 +141,7 @@ export class CitationController {
         return;
       }
 
-      const result = await citationStylesheetDetectionService.getAnalysisResults(documentId, tenantId);
+      const result = await citationDetectionService.getDetectionResults(documentId, tenantId);
 
       if (!result) {
         res.status(404).json({ success: false, error: 'Document not found' });
@@ -116,6 +155,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * POST /api/v1/citation/document/:documentId/redetect
+   * Re-run detection on existing document
+   */
   async redetect(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
@@ -135,6 +178,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * POST /api/v1/citation/:citationId/parse
+   * Parse a single citation into components
+   */
   async parseCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { citationId } = req.params;
@@ -154,6 +201,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * POST /api/v1/citation/document/:documentId/parse-all
+   * Parse all citations in a document
+   */
   async parseAllCitations(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
@@ -173,6 +224,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * GET /api/v1/citation/:citationId
+   * Get single citation with latest component
+   */
   async getCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { citationId } = req.params;
@@ -197,6 +252,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * GET /api/v1/citation/:citationId/components
+   * Get all components for a citation (version history)
+   */
   async getComponents(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { citationId } = req.params;
@@ -216,6 +275,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * POST /api/v1/citation/:citationId/reparse
+   * Re-parse a citation (creates new component version)
+   */
   async reparseCitation(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { citationId } = req.params;
@@ -235,6 +298,10 @@ export class CitationController {
     }
   }
 
+  /**
+   * GET /api/v1/citation/document/:documentId/with-components
+   * Get all citations with their components
+   */
   async getCitationsWithComponents(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
@@ -253,81 +320,7 @@ export class CitationController {
       next(error);
     }
   }
-
-  async getStats(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const { documentId } = req.params;
-      const tenantId = req.user?.tenantId;
-
-      if (!tenantId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
-        return;
-      }
-
-      const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
-        select: { id: true, originalName: true, fileName: true },
-      });
-
-      if (!document) {
-        res.status(404).json({ success: false, error: 'Document not found' });
-        return;
-      }
-
-      const citations = await prisma.citation.findMany({
-        where: { documentId },
-        select: {
-          citationType: true,
-          detectedStyle: true,
-          primaryComponentId: true,
-          confidence: true,
-        },
-      });
-
-      const total = citations.length;
-      const parsed = citations.filter((c) => c.primaryComponentId !== null).length;
-      const unparsed = total - parsed;
-
-      const needsReview = citations.filter((c) => c.confidence < 0.7 && c.primaryComponentId !== null).length;
-
-      let averageConfidence = 0;
-      if (total > 0) {
-        const totalConfidence = citations.reduce((sum, c) => {
-          const conf = c.confidence <= 1 ? c.confidence * 100 : c.confidence;
-          return sum + conf;
-        }, 0);
-        averageConfidence = Math.round(totalConfidence / total);
-      }
-
-      const byType: Record<string, number> = {};
-      for (const c of citations) {
-        byType[c.citationType] = (byType[c.citationType] || 0) + 1;
-      }
-
-      const byStyle: Record<string, number> = {};
-      for (const c of citations) {
-        const style = c.detectedStyle || 'UNKNOWN';
-        byStyle[style] = (byStyle[style] || 0) + 1;
-      }
-
-      res.json({
-        success: true,
-        data: {
-          total,
-          parsed,
-          unparsed,
-          needsReview,
-          averageConfidence,
-          byType,
-          byStyle,
-          fileName: document.originalName || document.fileName,
-        },
-      });
-    } catch (error) {
-      logger.error('[Citation Controller] getStats failed', error instanceof Error ? error : undefined);
-      next(error);
-    }
-  }
 }
 
+// Export singleton instance
 export const citationController = new CitationController();

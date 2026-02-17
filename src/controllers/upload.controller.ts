@@ -1,10 +1,20 @@
 import { Request, Response } from 'express';
+import { nanoid } from 'nanoid';
 import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 export const getPresignedUploadUrl = async (req: Request, res: Response) => {
   try {
+    // Check if S3 is enabled for development
+    const useS3 = process.env.USE_S3 !== 'false';
+    if (!useS3) {
+      return res.status(500).json({
+        success: false,
+        error: 'S3 not configured - use direct upload instead'
+      });
+    }
+
     const { fileName, contentType, fileSize } = req.body;
     const tenantId = req.user?.tenantId;
 
@@ -16,8 +26,16 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'fileName is required' });
     }
 
-    if (!fileName.toLowerCase().endsWith('.epub')) {
-      return res.status(400).json({ success: false, error: 'Only EPUB files are allowed' });
+    // Allow both EPUB and PDF files
+    const fileExtension = fileName.toLowerCase();
+    const isEpub = fileExtension.endsWith('.epub');
+    const isPdf = fileExtension.endsWith('.pdf');
+
+    if (!isEpub && !isPdf) {
+      return res.status(400).json({
+        success: false,
+        error: 'Only EPUB and PDF files are allowed'
+      });
     }
 
     const maxSize = 100 * 1024 * 1024;
@@ -28,23 +46,29 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
       });
     }
 
+    // Determine default content type based on file extension
+    const defaultContentType = isPdf ? 'application/pdf' : 'application/epub+zip';
+    const finalContentType = contentType || defaultContentType;
+
     const result = await s3Service.getPresignedUploadUrl(
       tenantId,
       fileName,
-      contentType || 'application/epub+zip'
+      finalContentType
     );
 
     const file = await prisma.file.create({
       data: {
+        id: nanoid(),
         tenantId,
         filename: fileName,
         originalName: fileName,
-        mimeType: contentType || 'application/epub+zip',
+        mimeType: finalContentType,
         size: fileSize || 0,
         path: result.fileKey,
         status: 'PENDING_UPLOAD',
         storagePath: result.fileKey,
         storageType: 'S3',
+        updatedAt: new Date(),
       },
     });
 

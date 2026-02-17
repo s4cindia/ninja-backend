@@ -3,8 +3,10 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import AdmZip from 'adm-zip';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
+import config from '../../config/index';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
@@ -115,6 +117,16 @@ interface EpubAuditResult {
     manualRequired: number;
   };
   accessibilityMetadata: AceResult['metadata'] | null;
+  coverage: {
+    totalFiles: number;
+    filesScanned: number;
+    percentage: number;
+    fileCategories: {
+      frontMatter: number;
+      chapters: number;
+      backMatter: number;
+    };
+  };
   auditedAt: Date;
 }
 
@@ -342,6 +354,11 @@ class EpubAuditService {
       logger.info(`  Quick-fixable: ${classificationStats.quickFixable}`);
       logger.info(`  Manual required: ${classificationStats.manualRequired}`);
 
+      // Calculate coverage
+      const coverage = this.calculateCoverage(buffer);
+      logger.info(`📊 Audit Coverage: ${coverage.filesScanned}/${coverage.totalFiles} files (${coverage.percentage}%)`);
+      logger.info(`   Front Matter: ${coverage.fileCategories.frontMatter}, Chapters: ${coverage.fileCategories.chapters}, Back Matter: ${coverage.fileCategories.backMatter}`);
+
       const result: EpubAuditResult = {
         jobId,
         fileName,
@@ -363,6 +380,7 @@ class EpubAuditService {
         summaryBySource,
         classificationStats,
         accessibilityMetadata: aceResult?.metadata || null,
+        coverage,
         auditedAt: new Date(),
       };
 
@@ -401,8 +419,10 @@ class EpubAuditService {
     logger.info(`Running EPUBCheck on: ${epubPath}`);
     logger.info(`EPUBCheck JAR path: ${this.epubCheckPath}`);
 
+    const javaCommand = config.javaPath || 'java';
+
     try {
-      await execFileAsync('java', ['-version']);
+      await execFileAsync(javaCommand, ['-version']);
       logger.info('Java is available');
     } catch (javaError) {
       logger.warn(`Java not available, skipping EPUBCheck: ${javaError instanceof Error ? javaError.message : 'unknown error'}`);
@@ -416,9 +436,9 @@ class EpubAuditService {
     }
 
     try {
-      logger.info(`Executing: java -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
+      logger.info(`Executing: ${javaCommand} -jar ${this.epubCheckPath} ${epubPath} --json ${outputPath}`);
       await execFileAsync(
-        'java',
+        javaCommand,
         ['-jar', this.epubCheckPath, epubPath, '--json', outputPath],
         { timeout: 60000 }
       );
@@ -664,6 +684,102 @@ class EpubAuditService {
     logger.info(`Fetching EPUB from S3: ${fileKey}`);
     const buffer = await s3Service.getFileBuffer(fileKey);
     return this.runAudit(buffer, jobId, fileName);
+  }
+
+  /**
+   * Calculate audit coverage from EPUB buffer
+   */
+  private calculateCoverage(buffer: Buffer): {
+    totalFiles: number;
+    filesScanned: number;
+    percentage: number;
+    fileCategories: {
+      frontMatter: number;
+      chapters: number;
+      backMatter: number;
+    };
+  } {
+    try {
+      const zip = new AdmZip(buffer);
+      const entries = zip.getEntries();
+
+      // Filter for content files (XHTML/HTML)
+      const contentFiles = entries.filter(entry =>
+        !entry.isDirectory &&
+        entry.entryName.match(/\.(xhtml|html)$/i) &&
+        !entry.entryName.includes('META-INF')
+      );
+
+      const fileCategories = this.categorizeFiles(contentFiles);
+
+      const totalFiles = contentFiles.length;
+      const filesScanned = contentFiles.length; // EPUBCheck/ACE scan all files
+      const percentage = totalFiles === 0 ? 0 : Math.round((filesScanned / totalFiles) * 100);
+
+      return {
+        totalFiles,
+        filesScanned,
+        percentage,
+        fileCategories
+      };
+    } catch (error) {
+      logger.warn('Failed to calculate coverage, returning default', error);
+      return {
+        totalFiles: 0,
+        filesScanned: 0,
+        percentage: 0,
+        fileCategories: { frontMatter: 0, chapters: 0, backMatter: 0 }
+      };
+    }
+  }
+
+  /**
+   * Categorize files by type (front matter, chapters, back matter)
+   */
+  private categorizeFiles(files: AdmZip.IZipEntry[]): {
+    frontMatter: number;
+    chapters: number;
+    backMatter: number;
+  } {
+    let frontMatter = 0;
+    let chapters = 0;
+    let backMatter = 0;
+
+    for (const file of files) {
+      const name = file.entryName.toLowerCase();
+      const basename = path.basename(name);
+
+      // Front matter: cover, title page, copyright, TOC, etc.
+      if (
+        basename.includes('cover') ||
+        basename.includes('toc') ||
+        basename.includes('title') ||
+        basename.includes('copyright') ||
+        basename.startsWith('00_') ||
+        basename.startsWith('front') ||
+        name.includes('/front')
+      ) {
+        frontMatter++;
+      }
+      // Back matter: acknowledgments, appendix, glossary, etc.
+      else if (
+        basename.includes('ack') ||
+        basename.includes('appendix') ||
+        basename.includes('glossary') ||
+        basename.includes('back') ||
+        basename.includes('endnote') ||
+        basename.includes('index') ||
+        name.includes('/back')
+      ) {
+        backMatter++;
+      }
+      // Chapters (default)
+      else {
+        chapters++;
+      }
+    }
+
+    return { frontMatter, chapters, backMatter };
   }
 }
 

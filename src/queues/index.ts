@@ -9,6 +9,7 @@ export const QUEUE_NAMES = {
   FILE_PROCESSING: 'file-processing',
   BATCH_REMEDIATION: 'batch-remediation',
   BATCH_PROCESSING: 'batch-processing',
+  CITATION_PROCESSING: 'citation-processing',
 } as const;
 
 export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
@@ -23,6 +24,7 @@ export const JOB_TYPES = {
   ACR_WORKFLOW: 'ACR_WORKFLOW',
   PLAGIARISM_CHECK: 'PLAGIARISM_CHECK',
   CITATION_VALIDATION: 'CITATION_VALIDATION',
+  CITATION_DETECTION: 'CITATION_DETECTION',
   STYLE_VALIDATION: 'STYLE_VALIDATION',
   EDITORIAL_FULL: 'EDITORIAL_FULL',
 } as const;
@@ -140,9 +142,11 @@ let _vpatQueue: Queue<JobData, JobResult> | null = null;
 let _fileProcessingQueue: Queue<JobData, JobResult> | null = null;
 let _batchQueue: Queue<BatchJobData, BatchJobResult> | null = null;
 let _batchProcessingQueue: Queue<BatchProcessingJobData, BatchProcessingJobResult> | null = null;
+let _citationQueue: Queue<JobData, JobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
 let _fileProcessingQueueEvents: QueueEvents | null = null;
+let _citationQueueEvents: QueueEvents | null = null;
 let _initialized = false;
 
 function ensureQueuesInitialized(): void {
@@ -208,6 +212,15 @@ function ensureQueuesInitialized(): void {
     connection,
   });
 
+  _citationQueue = new Queue<JobData, JobResult>(
+    QUEUE_NAMES.CITATION_PROCESSING,
+    { connection, defaultJobOptions }
+  );
+
+  _citationQueueEvents = new QueueEvents(QUEUE_NAMES.CITATION_PROCESSING, {
+    connection,
+  });
+
   _initialized = true;
   logger.info('📦 BullMQ queues initialized with TLS support');
 }
@@ -246,6 +259,11 @@ export function getBatchProcessingQueue(): Queue<BatchProcessingJobData, BatchPr
   return _batchProcessingQueue;
 }
 
+export function getCitationQueue(): Queue<JobData, JobResult> | null {
+  ensureQueuesInitialized();
+  return _citationQueue;
+}
+
 export function getQueue(name: QueueName): Queue<JobData, JobResult> {
   switch (name) {
     case QUEUE_NAMES.ACCESSIBILITY:
@@ -254,6 +272,10 @@ export function getQueue(name: QueueName): Queue<JobData, JobResult> {
       return getVpatQueue();
     case QUEUE_NAMES.FILE_PROCESSING:
       return getFileProcessingQueue();
+    case QUEUE_NAMES.CITATION_PROCESSING:
+      const queue = getCitationQueue();
+      if (!queue) throw new Error('Citation queue not available - Redis not configured');
+      return queue;
     default:
       throw new Error(`Unknown queue: ${name}`);
   }
@@ -275,19 +297,23 @@ export async function closeQueues(): Promise<void> {
   if (_fileProcessingQueue) closePromises.push(_fileProcessingQueue.close());
   if (_batchQueue) closePromises.push(_batchQueue.close());
   if (_batchProcessingQueue) closePromises.push(_batchProcessingQueue.close());
+  if (_citationQueue) closePromises.push(_citationQueue.close());
   if (_accessibilityQueueEvents) closePromises.push(_accessibilityQueueEvents.close());
   if (_vpatQueueEvents) closePromises.push(_vpatQueueEvents.close());
   if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
+  if (_citationQueueEvents) closePromises.push(_citationQueueEvents.close());
 
   await Promise.all(closePromises);
-  
+
   _accessibilityQueue = null;
   _vpatQueue = null;
   _fileProcessingQueue = null;
   _batchQueue = null;
   _batchProcessingQueue = null;
+  _citationQueue = null;
   _accessibilityQueueEvents = null;
   _vpatQueueEvents = null;
   _fileProcessingQueueEvents = null;
+  _citationQueueEvents = null;
   _initialized = false;
 }

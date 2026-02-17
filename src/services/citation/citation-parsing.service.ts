@@ -6,6 +6,7 @@
 import { editorialAi } from '../shared';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { AppError } from '../../utils/app-error';
 import {
   ParsedCitationResult,
   BulkParseResult,
@@ -34,12 +35,12 @@ export class CitationParsingService {
     });
 
     if (!citation) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     // Enforce tenant-scoped access
     if (tenantId && citation.document.tenantId !== tenantId) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     // 2. Parse using AI
@@ -115,11 +116,11 @@ export class CitationParsingService {
     });
 
     if (!doc) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     // Get all citations for document
@@ -149,33 +150,6 @@ export class CitationParsingService {
       }
     }
 
-    // Calculate average confidence from newly parsed results
-    const confidences = results.map(r => r.confidence);
-    const averageConfidence = confidences.length > 0
-      ? confidences.reduce((a, b) => a + b, 0) / confidences.length
-      : 0;
-
-    // Build completion message
-    const totalParsedNow = skippedCount + results.length;
-    const unparsedRemaining = allCitations.length - totalParsedNow;
-    let message: string;
-    if (errors.length === 0 && unparsedRemaining === 0) {
-      message = `All ${allCitations.length} citations parsed successfully`;
-    } else if (errors.length > 0) {
-      message = `Parsed ${results.length} citations with ${errors.length} errors`;
-    } else {
-      message = `Parsed ${results.length} citations (${skippedCount} already parsed)`;
-    }
-
-    // Build updated stats
-    const byType: Record<string, number> = {};
-    const byStyle: Record<string, number> = {};
-    for (const c of allCitations) {
-      byType[c.citationType] = (byType[c.citationType] || 0) + 1;
-      const style = c.detectedStyle || 'UNKNOWN';
-      byStyle[style] = (byStyle[style] || 0) + 1;
-    }
-
     const bulkResult: BulkParseResult = {
       documentId,
       totalCitations: allCitations.length,
@@ -185,15 +159,6 @@ export class CitationParsingService {
       results,
       errors,
       processingTimeMs: Date.now() - startTime,
-      averageConfidence: Math.round(averageConfidence * 100) / 100, // Round to 2 decimals
-      message,
-      stats: {
-        total: allCitations.length,
-        parsed: totalParsedNow,
-        unparsed: unparsedRemaining,
-        byType,
-        byStyle,
-      },
     };
 
     logger.info(`[Citation Parsing] Bulk complete: ${bulkResult.parsed} parsed, ${bulkResult.skipped} skipped, ${bulkResult.failed} failed in ${bulkResult.processingTimeMs}ms`);
@@ -228,11 +193,11 @@ export class CitationParsingService {
     });
 
     if (!citation) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     if (tenantId && citation.document.tenantId !== tenantId) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     const components = await prisma.citationComponent.findMany({
@@ -343,11 +308,11 @@ export class CitationParsingService {
     });
 
     if (!doc) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     const citations = await prisma.citation.findMany({

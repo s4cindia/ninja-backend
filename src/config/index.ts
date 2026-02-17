@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-interface Config {
+export interface Config {
   port: number;
   nodeEnv: string;
   version: string;
@@ -13,6 +13,7 @@ interface Config {
   maxFileSize: number;
   uploadDir: string;
   aceServiceUrl: string | null;
+  javaPath: string | null;
   s3Bucket: string;
   s3Region: string;
   awsAccessKeyId: string | null;
@@ -31,6 +32,7 @@ export const config: Config = {
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '52428800', 10),
   uploadDir: process.env.UPLOAD_DIR || './uploads',
   aceServiceUrl: process.env.ACE_SERVICE_URL || null,
+  javaPath: process.env.JAVA_PATH || null,
   s3Bucket: process.env.S3_BUCKET || 'ninja-epub-staging',
   s3Region: process.env.S3_REGION || 'ap-south-1',
   awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || null,

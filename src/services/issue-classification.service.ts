@@ -13,6 +13,14 @@ interface ClassificationResult {
   isQuickFixable: boolean;
 }
 
+interface ZipEntry {
+  getData(): Buffer;
+}
+
+interface ZipWithEntries {
+  getEntry?(path: string): ZipEntry | null;
+}
+
 export class IssueClassificationService {
   calculateConfidence(issueCode: string, context?: IssueContext): number {
     return calculateConfidence(issueCode, context);
@@ -32,7 +40,7 @@ export class IssueClassificationService {
     issueCode: string, 
     filePath: string, 
     location: string, 
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<IssueContext> {
     const context: IssueContext = {};
 
@@ -52,21 +60,22 @@ export class IssueClassificationService {
   }
 
   private async analyzeTableStructure(
-    zip: any, 
+    zip: Record<string, unknown>, 
     filePath: string, 
     _location: string
   ): Promise<'simple' | 'complex'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipWithEntries = zip as ZipWithEntries;
+      const entry = zipWithEntries.getEntry?.(normalizedPath) || zipWithEntries.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'simple';
       }
 
       const content = entry.getData().toString('utf-8');
       const $ = cheerio.load(content, { xmlMode: true });
-      
+
       const tables = $('table');
       let maxComplexity = 0;
 
@@ -95,14 +104,15 @@ export class IssueClassificationService {
   }
 
   private async analyzeImageType(
-    zip: any, 
-    filePath: string, 
+    zip: Record<string, unknown>,
+    filePath: string,
     _location: string
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const entry = zip.getEntry(normalizedPath) || zip.getEntry(`OEBPS/${normalizedPath}`);
-      
+      const zipWithEntries = zip as ZipWithEntries;
+      const entry = zipWithEntries.getEntry?.(normalizedPath) || zipWithEntries.getEntry?.(`OEBPS/${normalizedPath}`);
+
       if (!entry) {
         return 'content';
       }
@@ -163,7 +173,7 @@ export class IssueClassificationService {
     severity: string,
     filePath: string,
     location: string,
-    zip: any
+    zip: Record<string, unknown>
   ): Promise<{
     confidence: number;
     fixType: FixClassification;

@@ -8,9 +8,6 @@ import multer from 'multer';
 import { authenticate } from '../../middleware/auth.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { citationController } from './citation.controller';
-import { citationValidationController } from '../../controllers/citation-validation.controller';
-import { citationCorrectionController } from '../../controllers/citation-correction.controller';
-import { referenceListController } from '../../controllers/reference-list.controller';
 import {
   documentIdParamSchema,
   citationIdParamSchema,
@@ -19,31 +16,22 @@ import {
 
 const router = Router();
 
-// File upload configuration for citation detection
+// File upload configuration
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max
-  fileFilter: (_req, file, cb) => {
-    const allowedExt = ['pdf', 'docx', 'txt', 'epub'];
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  fileFilter: (req, file, cb) => {
+    const allowedExt = ['pdf', 'epub', 'docx', 'xml', 'txt'];
     const ext = file.originalname.toLowerCase().split('.').pop();
     if (allowedExt.includes(ext || '')) {
       cb(null, true);
     } else {
-      cb(new Error('Unsupported file type. Allowed: PDF, DOCX, TXT, EPUB'));
+      cb(new Error('Unsupported file type. Allowed: PDF, EPUB, DOCX, XML, TXT'));
     }
   },
 });
 
-// ============================================
-// PUBLIC ROUTES (no authentication required)
-// ============================================
-
-router.get(
-  '/styles',
-  citationValidationController.getStyles.bind(citationValidationController)
-);
-
-// Apply authentication to all remaining routes
+// Apply authentication to all routes
 router.use(authenticate);
 
 // ============================================
@@ -85,12 +73,6 @@ router.get(
   citationController.getCitationsWithComponents.bind(citationController)
 );
 
-router.get(
-  '/document/:documentId/stats',
-  validate({ params: documentIdParamSchema }),
-  citationController.getStats.bind(citationController)
-);
-
 // ============================================
 // JOB-LEVEL ROUTES
 // ============================================
@@ -127,85 +109,6 @@ router.post(
   '/:citationId/reparse',
   validate({ params: citationIdParamSchema }),
   citationController.reparseCitation.bind(citationController)
-);
-
-// ============================================
-// VALIDATION ROUTES
-// ============================================
-
-router.post(
-  '/document/:documentId/validate',
-  validate({ params: documentIdParamSchema }),
-  citationValidationController.validateDocument.bind(citationValidationController)
-);
-
-router.get(
-  '/document/:documentId/validations',
-  validate({ params: documentIdParamSchema }),
-  citationValidationController.getValidations.bind(citationValidationController)
-);
-
-// ============================================
-// CORRECTION ROUTES
-// ============================================
-
-router.post(
-  '/validation/:validationId/accept',
-  citationCorrectionController.acceptCorrection.bind(citationCorrectionController)
-);
-
-router.post(
-  '/validation/:validationId/reject',
-  citationCorrectionController.rejectCorrection.bind(citationCorrectionController)
-);
-
-router.post(
-  '/validation/:validationId/edit',
-  citationCorrectionController.applyManualEdit.bind(citationCorrectionController)
-);
-
-router.post(
-  '/document/:documentId/correct/batch',
-  validate({ params: documentIdParamSchema }),
-  citationCorrectionController.batchCorrect.bind(citationCorrectionController)
-);
-
-router.get(
-  '/document/:documentId/changes',
-  validate({ params: documentIdParamSchema }),
-  citationCorrectionController.getChanges.bind(citationCorrectionController)
-);
-
-router.post(
-  '/change/:changeId/revert',
-  citationCorrectionController.revertChange.bind(citationCorrectionController)
-);
-
-// ============================================
-// REFERENCE LIST ROUTES
-// ============================================
-
-router.get(
-  '/document/:documentId/reference-list',
-  validate({ params: documentIdParamSchema }),
-  referenceListController.getReferenceList.bind(referenceListController)
-);
-
-router.post(
-  '/document/:documentId/reference-list/generate',
-  validate({ params: documentIdParamSchema }),
-  referenceListController.generateReferenceList.bind(referenceListController)
-);
-
-router.patch(
-  '/reference-list/:entryId',
-  referenceListController.updateEntry.bind(referenceListController)
-);
-
-router.post(
-  '/document/:documentId/reference-list/finalize',
-  validate({ params: documentIdParamSchema }),
-  referenceListController.finalizeReferenceList.bind(referenceListController)
 );
 
 export default router;

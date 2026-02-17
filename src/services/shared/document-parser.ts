@@ -6,11 +6,9 @@
 
 import AdmZip from 'adm-zip';
 import { XMLParser } from 'fast-xml-parser';
-import mammoth from 'mammoth';
 import { PDFDocument } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { logger } from '../../lib/logger';
-import { sanitizeDocumentHtml, MAMMOTH_STYLE_MAP } from '../../utils/html-sanitizer';
 
 export interface TextChunk {
   id: string;
@@ -59,7 +57,6 @@ type SupportedFormat = 'pdf' | 'epub' | 'docx' | 'xml' | 'txt';
 
 export class DocumentParser {
   private xmlParser: XMLParser;
-  private orderedXmlParser: XMLParser;
   private readonly CHUNK_SIZE = 500;
 
   constructor() {
@@ -67,12 +64,6 @@ export class DocumentParser {
       ignoreAttributes: false,
       attributeNamePrefix: '@_',
       preserveOrder: false,
-      trimValues: true,
-    });
-    this.orderedXmlParser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: '@_',
-      preserveOrder: true,
       trimValues: true,
     });
   }
@@ -226,7 +217,6 @@ export class DocumentParser {
     const chapters: DocumentStructure['chapters'] = [];
     const headings: DocumentStructure['headings'] = [];
     let currentOffset = 0;
-    let _paragraphIndex = 0;
 
     for (const item of spineItems) {
       try {
@@ -260,7 +250,6 @@ export class DocumentParser {
 
           fullText += chapterText + '\n\n';
           currentOffset += chapterText.length + 2;
-          _paragraphIndex++;
         }
       } catch (error) {
         logger.warn(`[DocumentParser] Failed to parse EPUB item: ${item.href}`, error instanceof Error ? error : undefined);
@@ -303,29 +292,15 @@ export class DocumentParser {
     }
 
     const documentXml = zip.readAsText('word/document.xml');
-    const orderedDoc = this.orderedXmlParser.parse(documentXml);
+    const doc = this.xmlParser.parse(documentXml);
     
-    const { text: fullText, headings } = this.extractTextFromDocxOrdered(orderedDoc);
+    const { text: fullText, headings } = this.extractTextFromDocx(doc);
     metadata.wordCount = this.countWords(fullText);
 
     const chunks = this.chunkText(fullText);
 
-    let html: string | undefined;
-    try {
-      const result = await mammoth.convertToHtml({ buffer }, {
-        styleMap: MAMMOTH_STYLE_MAP,
-      });
-      html = sanitizeDocumentHtml(result.value);
-      if (result.messages.length > 0) {
-        logger.debug(`[DocumentParser] Mammoth warnings: ${result.messages.length}`);
-      }
-    } catch (err) {
-      logger.warn('[DocumentParser] Mammoth HTML conversion failed, falling back to text-only', err instanceof Error ? err : undefined);
-    }
-
     return {
       text: fullText,
-      html,
       chunks,
       metadata,
       structure: { chapters: [], headings },
@@ -609,11 +584,9 @@ export class DocumentParser {
   }
 
   /**
-   * Extract text from DOCX using order-preserving parser output.
-   * Handles w:hyperlink, w:r, w:fldSimple in correct document order,
-   * ensuring bracket citations [N] inside hyperlinks are preserved.
+   * Extract text from DOCX document.xml structure
    */
-  private extractTextFromDocxOrdered(orderedDoc: unknown[]): {
+  private extractTextFromDocx(doc: Record<string, unknown>): {
     text: string;
     headings: DocumentStructure['headings'];
   } {
@@ -621,39 +594,27 @@ export class DocumentParser {
     let text = '';
     let offset = 0;
 
-    const bodyChildren = this.navigateToBody(orderedDoc);
-    if (!bodyChildren) {
-      logger.warn('[DocumentParser] Could not find w:body in ordered DOCX structure');
-      return { text: '', headings: [] };
-    }
+    const body = (doc['w:document'] as Record<string, unknown>)?.['w:body'];
+    if (!body) return { text: '', headings: [] };
 
-    for (const element of bodyChildren) {
-      const elObj = element as Record<string, unknown>;
-      if (!elObj['w:p']) continue;
+    const paragraphs = (body as Record<string, unknown>)['w:p'];
+    const pArray = Array.isArray(paragraphs) ? paragraphs : paragraphs ? [paragraphs] : [];
 
-      const pChildren = elObj['w:p'] as unknown[];
-      if (!Array.isArray(pChildren)) continue;
+    for (const p of pArray as Array<Record<string, unknown>>) {
+      const pPr = p['w:pPr'] as Record<string, unknown> | undefined;
+      const pStyle = pPr?.['w:pStyle'] as Record<string, string> | undefined;
+      const styleId = pStyle?.['@_w:val'] || '';
 
       let paragraphText = '';
-      let styleId = '';
+      const runs = p['w:r'];
+      const rArray = Array.isArray(runs) ? runs : runs ? [runs] : [];
 
-      for (const child of pChildren) {
-        const childObj = child as Record<string, unknown>;
-
-        if (childObj['w:pPr']) {
-          styleId = this.extractStyleFromPPr(childObj['w:pPr'] as unknown[]);
-        }
-
-        if (childObj['w:r']) {
-          paragraphText += this.extractTextFromOrderedRun(childObj['w:r'] as unknown[]);
-        }
-
-        if (childObj['w:hyperlink']) {
-          paragraphText += this.extractTextFromOrderedContainer(childObj['w:hyperlink'] as unknown[]);
-        }
-
-        if (childObj['w:fldSimple']) {
-          paragraphText += this.extractTextFromOrderedContainer(childObj['w:fldSimple'] as unknown[]);
+      for (const r of rArray as Array<Record<string, unknown>>) {
+        const textNode = r['w:t'];
+        if (typeof textNode === 'string') {
+          paragraphText += textNode;
+        } else if (textNode && typeof textNode === 'object') {
+          paragraphText += (textNode as Record<string, string>)['#text'] || '';
         }
       }
 
@@ -668,84 +629,6 @@ export class DocumentParser {
     }
 
     return { text: text.trim(), headings };
-  }
-
-  /**
-   * Navigate the ordered parser output to find the w:body children array.
-   * Structure: doc -> [xmlDecl, {w:document: [{w:body: [...paragraphs...]}]}]
-   */
-  private navigateToBody(orderedDoc: unknown[]): unknown[] | null {
-    if (!Array.isArray(orderedDoc)) return null;
-
-    for (const topEl of orderedDoc) {
-      const topObj = topEl as Record<string, unknown>;
-      const wDocChildren = topObj['w:document'] as unknown[];
-      if (!Array.isArray(wDocChildren)) continue;
-
-      for (const docChild of wDocChildren) {
-        const docChildObj = docChild as Record<string, unknown>;
-        if (Array.isArray(docChildObj['w:body'])) {
-          return docChildObj['w:body'] as unknown[];
-        }
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Extract w:pStyle value from ordered w:pPr children.
-   */
-  private extractStyleFromPPr(pPrChildren: unknown[]): string {
-    if (!Array.isArray(pPrChildren)) return '';
-    for (const child of pPrChildren) {
-      const childObj = child as Record<string, unknown>;
-      if (childObj['w:pStyle'] !== undefined) {
-        const attrs = childObj[':@'] as Record<string, string> | undefined;
-        return attrs?.['@_w:val'] || '';
-      }
-    }
-    return '';
-  }
-
-  /**
-   * Extract text from an ordered w:r (run) element's children.
-   */
-  private extractTextFromOrderedRun(runChildren: unknown[]): string {
-    if (!Array.isArray(runChildren)) return '';
-    let runText = '';
-    for (const child of runChildren) {
-      const childObj = child as Record<string, unknown>;
-      if (childObj['w:t'] !== undefined) {
-        const tContent = childObj['w:t'];
-        if (typeof tContent === 'string') {
-          runText += tContent;
-        } else if (Array.isArray(tContent)) {
-          for (const tItem of tContent) {
-            const tItemObj = tItem as Record<string, unknown>;
-            if (tItemObj['#text'] !== undefined) {
-              runText += String(tItemObj['#text']);
-            }
-          }
-        }
-      }
-    }
-    return runText;
-  }
-
-  /**
-   * Extract text from an ordered container element (w:hyperlink, w:fldSimple)
-   * that may contain w:r runs inside.
-   */
-  private extractTextFromOrderedContainer(containerChildren: unknown[]): string {
-    if (!Array.isArray(containerChildren)) return '';
-    let containerText = '';
-    for (const child of containerChildren) {
-      const childObj = child as Record<string, unknown>;
-      if (childObj['w:r']) {
-        containerText += this.extractTextFromOrderedRun(childObj['w:r'] as unknown[]);
-      }
-    }
-    return containerText;
   }
 
   /**

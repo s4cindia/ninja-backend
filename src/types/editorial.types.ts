@@ -39,9 +39,9 @@ export interface ClassificationResult {
 /** Citation extraction result */
 export interface ExtractedCitation {
   text: string;
-  type: 'parenthetical' | 'narrative' | 'footnote' | 'endnote' | 'numeric' | 'reference';
+  type: 'parenthetical' | 'narrative' | 'footnote' | 'endnote';
   style: 'APA' | 'MLA' | 'Chicago' | 'Vancouver' | 'unknown';
-  sectionContext: 'body' | 'references' | 'footnotes' | 'endnotes' | 'abstract' | 'unknown';
+  sectionContext?: 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN';
   location: {
     pageNumber?: number;
     paragraphIndex: number;

@@ -5,6 +5,7 @@
 
 import mammoth from 'mammoth';
 import { logger } from '../../lib/logger';
+import { AppError } from '../../utils/app-error';
 
 interface CitationMarker {
   id: string;
@@ -84,9 +85,10 @@ export class ManuscriptExtractorService {
         wordCount,
         paragraphCount,
       };
-    } catch (error: any) {
-      logger.error(`[ManuscriptExtractor] Extraction failed: ${error.message}`);
-      throw new Error(`Failed to extract manuscript content: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[ManuscriptExtractor] Extraction failed: ${errorMessage}`);
+      throw AppError.internal(`Failed to extract manuscript content: ${errorMessage}`, 'EXTRACTION_FAILED');
     }
   }
 

@@ -138,6 +138,21 @@ model AcrVersion {
   @@index([createdAt])
 }
 
+model CriterionChangeLog {
+  id            String   @id @default(uuid())
+  acrJobId      String
+  criterionId   String
+  fieldName     String
+  previousValue Json?
+  newValue      Json?
+  changedBy     String
+  changedAt     DateTime @default(now())
+
+  @@index([acrJobId])
+  @@index([criterionId])
+  @@index([changedAt])
+}
+
 enum JobType {
   PDF_ACCESSIBILITY
   EPUB_ACCESSIBILITY
@@ -196,6 +211,8 @@ model Issue {
   status             IssueStatus      @default(PENDING)
   fixedAt            DateTime?
   fixedBy            String?
+  remediationMethod  String? // 'auto' | 'quick-fix' | 'manual'
+  remediationTaskId  String? // Links to the remediation task that fixed this issue
   createdAt          DateTime         @default(now())
 
   @@index([validationResultId])
@@ -207,6 +224,8 @@ model Issue {
 enum IssueStatus {
   PENDING
   FIXED
+  REMEDIATED
+  VERIFIED
   SKIPPED
   FAILED
 }
@@ -455,15 +474,21 @@ model ComparisonReport {
 }
 
 model AcrJob {
-  id            String   @id @default(uuid())
-  jobId         String
-  tenantId      String
-  userId        String
-  edition       String
-  status        String   @default("in_progress")
-  documentTitle String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id               String    @id @default(uuid())
+  jobId            String
+  tenantId         String
+  userId           String
+  edition          String
+  status           String    @default("in_progress")
+  documentTitle    String?
+  documentType     String?
+  totalCriteria    Int?
+  executiveSummary String?   @db.Text
+  conformanceLevel String?
+  approvedBy       String?
+  approvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   user     User                 @relation(fields: [userId], references: [id])
   criteria AcrCriterionReview[]
@@ -475,21 +500,27 @@ model AcrJob {
 }
 
 model AcrCriterionReview {
-  id               String    @id @default(uuid())
-  acrJobId         String
-  criterionId      String
-  criterionNumber  String
-  criterionName    String
-  level            String
-  confidence       Int       @default(0)
-  aiStatus         String
-  evidence         Json?
-  conformanceLevel String?
-  reviewerNotes    String?   @db.Text
-  reviewedAt       DateTime?
-  reviewedBy       String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  acrJobId           String
+  criterionId        String
+  criterionNumber    String
+  criterionName      String
+  level              String
+  confidence         Int       @default(0)
+  aiStatus           String
+  evidence           Json?
+  conformanceLevel   String?
+  reviewerNotes      String?   @db.Text
+  reviewedAt         DateTime?
+  reviewedBy         String?
+  isNotApplicable    Boolean   @default(false)
+  naReason           String?   @db.Text
+  naSuggestionData   Json?
+  verificationStatus String?
+  verificationMethod String?
+  verificationNotes  String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   acrJob   AcrJob @relation(fields: [acrJobId], references: [id], onDelete: Cascade)
   reviewer User?  @relation("CriterionReviewer", fields: [reviewedBy], references: [id])
@@ -601,6 +632,7 @@ model BatchFile {
 
   @@index([batchId])
   @@index([status])
+  @@index([batchId, status]) // Compound index for status-filtered batch file queries
 }
 
 enum BatchStatus {
@@ -639,8 +671,7 @@ model EditorialDocument {
   storagePath  String
   storageType  StorageType @default(S3)
 
-  fullText   String? @db.Text
-  fullHtml   String? @db.Text
+  // Content metadata (actual content is in EditorialDocumentContent)
   wordCount  Int     @default(0)
   pageCount  Int?
   chunkCount Int     @default(0)
@@ -655,34 +686,56 @@ model EditorialDocument {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  referenceListStatus    String?    // "draft", "finalized"
-  referenceListStyle     String?
+  referenceListStatus      String? // "draft", "finalized"
+  referenceListStyle       String?
   referenceListGeneratedAt DateTime?
 
-  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  job               Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  chunks            EditorialTextChunk[]
-  citations         Citation[]
-  styleViolations   StyleViolation[]
-  plagiarismMatches PlagiarismMatch[]
-  references        Reference[]
-  editorialReports  EditorialReport[]
-  citationValidations    CitationValidation[]
-  citationChanges        CitationChange[]
-  referenceListEntries   ReferenceListEntry[]
+  tenant               Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job                  Job                       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chunks               EditorialTextChunk[]
+  citations            Citation[]
+  styleViolations      StyleViolation[]
+  plagiarismMatches    PlagiarismMatch[]
+  references           Reference[]
+  editorialReports     EditorialReport[]
+  citationValidations  CitationValidation[]
+  citationChanges      CitationChange[]
+  referenceListEntries ReferenceListEntry[]
+  documentContent      EditorialDocumentContent?
 
   @@index([tenantId])
   @@index([jobId])
   @@index([status])
+  @@index([tenantId, status]) // Compound index for tenant-scoped status queries
 }
 
 enum EditorialDocStatus {
   UPLOADED
+  QUEUED
   PARSING
   PARSED
   ANALYZING
   COMPLETED
   FAILED
+}
+
+// Separate table for large text content to avoid updating EditorialDocument on content changes
+// This improves performance for frequent content updates and reduces row lock contention
+model EditorialDocumentContent {
+  id         String @id @default(uuid())
+  documentId String @unique
+
+  fullText  String? @db.Text
+  fullHtml  String? @db.Text
+  wordCount Int     @default(0)
+  pageCount Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
 }
 
 model EditorialTextChunk {
@@ -742,20 +795,22 @@ model Citation {
   primaryComponentId String?            @unique
   primaryComponent   CitationComponent? @relation("PrimaryCitation", fields: [primaryComponentId], references: [id], onDelete: SetNull)
 
-  validationStatus   String?    // "valid", "has_errors", "has_warnings", "not_validated"
+  validationStatus   String? // "valid", "has_errors", "has_warnings", "not_validated"
   lastValidatedAt    DateTime?
   lastValidatedStyle String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  components  CitationComponent[]  @relation("CitationComponents")
-  validations CitationValidation[]
+  components           CitationComponent[]          @relation("CitationComponents")
+  validations          CitationValidation[]
+  referenceListEntries ReferenceListEntryCitation[]
 
   @@index([documentId])
   @@index([citationType])
   @@index([referenceId])
   @@index([validationStatus])
+  @@index([documentId, citationType]) // Compound index for type-filtered citation queries
 }
 
 enum CitationType {
@@ -876,51 +931,51 @@ model Reference {
 }
 
 model CitationStyleGuide {
-  id            String   @id @default(uuid())
-  code          String   @unique  // "apa7", "mla9", "chicago17"
-  name          String            // "APA 7th Edition"
-  version       String?
+  id      String  @id @default(uuid())
+  code    String  @unique // "apa7", "mla9", "chicago17"
+  name    String // "APA 7th Edition"
+  version String?
 
-  inTextRules   Json     // Rules for in-text citations
-  referenceRules Json    // Rules for reference entries
+  inTextRules    Json // Rules for in-text citations
+  referenceRules Json // Rules for reference entries
 
-  sortOrder     String   @default("alphabetical") // "alphabetical", "numbered", "appearance"
-  hangingIndent Boolean  @default(true)
-  doubleSpacing Boolean  @default(true)
+  sortOrder     String  @default("alphabetical") // "alphabetical", "numbered", "appearance"
+  hangingIndent Boolean @default(true)
+  doubleSpacing Boolean @default(true)
 
-  isSystem      Boolean  @default(true)
-  tenantId      String?
+  isSystem Boolean @default(true)
+  tenantId String?
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([tenantId])
 }
 
 model CitationValidation {
-  id         String   @id @default(uuid())
+  id         String            @id @default(uuid())
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   citationId String
   citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
 
-  styleCode     String
+  styleCode String
 
-  violationType String   // "punctuation", "capitalization", "author_format", "date_format", "italics"
-  ruleReference String   // "APA 8.17"
+  violationType String // "punctuation", "capitalization", "author_format", "date_format", "italics"
+  ruleReference String // "APA 8.17"
   ruleName      String
   explanation   String?
 
-  originalText  String
-  suggestedFix  String
+  originalText String
+  suggestedFix String
 
-  severity      String   @default("warning") // "error", "warning", "info"
+  severity String @default("warning") // "error", "warning", "info"
 
-  status        String   @default("pending") // "pending", "accepted", "rejected", "edited"
-  resolvedText  String?
-  resolvedBy    String?
-  resolvedAt    DateTime?
+  status       String    @default("pending") // "pending", "accepted", "rejected", "edited"
+  resolvedText String?
+  resolvedBy   String?
+  resolvedAt   DateTime?
 
   createdAt DateTime @default(now())
 
@@ -930,59 +985,82 @@ model CitationValidation {
 }
 
 model CitationChange {
-  id            String   @id @default(uuid())
-  documentId    String
-  document      EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  citationId    String?
-  changeType    String   // "correction", "format", "revert"
+  /// Links to specific Citation when change affects a single citation.
+  /// NULL for document-wide changes (STYLE_CONVERSION, RESEQUENCE, REFERENCE_STYLE_CONVERSION)
+  /// that affect multiple citations or only reference entries.
+  citationId String?
+  changeType String // "correction", "format", "revert", "RENUMBER", "STYLE_CONVERSION", "RESEQUENCE", etc.
 
-  beforeText    String
-  afterText     String
+  beforeText String
+  afterText  String
 
-  appliedBy     String
-  appliedAt     DateTime @default(now())
+  appliedBy String
+  appliedAt DateTime @default(now())
 
-  isReverted    Boolean  @default(false)
-  revertedAt    DateTime?
+  isReverted Boolean   @default(false)
+  revertedAt DateTime?
 
   @@index([documentId])
+  @@index([documentId, isReverted]) // Compound index for active changes query
 }
 
 model ReferenceListEntry {
-  id            String   @id @default(uuid())
-  documentId    String
-  document      EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  id         String            @id @default(uuid())
+  documentId String
+  document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  citationIds   String[]
-  sortKey       String
+  sortKey    String
 
-  authors       Json
-  year          String?
-  title         String
-  sourceType    String
+  authors    Json
+  year       String?
+  title      String
+  sourceType String
 
-  journalName   String?
-  volume        String?
-  issue         String?
-  pages         String?
-  publisher     String?
-  doi           String?
-  url           String?
+  journalName String?
+  volume      String?
+  issue       String?
+  pages       String?
+  publisher   String?
+  doi         String?
+  url         String?
 
-  enrichmentSource     String   // "crossref", "pubmed", "manual", "ai"
+  enrichmentSource     String // "crossref", "pubmed", "manual", "ai"
   enrichmentConfidence Float
 
   formattedApa     String?
   formattedMla     String?
   formattedChicago String?
 
-  isEdited      Boolean  @default(false)
-  editedAt      DateTime?
+  isEdited Boolean   @default(false)
+  editedAt DateTime?
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  citationLinks ReferenceListEntryCitation[]
 
   @@index([documentId])
+  @@index([documentId, sortKey]) // Compound index for sorted reference list queries
+}
+
+// Junction table for ReferenceListEntry to Citation with proper FK constraints
+// Replaces the String[] citationIds field for referential integrity
+model ReferenceListEntryCitation {
+  id                   String @id @default(uuid())
+  referenceListEntryId String
+  citationId           String
+
+  referenceListEntry ReferenceListEntry @relation(fields: [referenceListEntryId], references: [id], onDelete: Cascade)
+  citation           Citation           @relation(fields: [citationId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([referenceListEntryId, citationId])
+  @@index([referenceListEntryId])
+  @@index([citationId])
 }
 
 model PlagiarismMatch {

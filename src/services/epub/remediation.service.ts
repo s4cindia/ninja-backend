@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { nanoid } from 'nanoid';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { epubAuditService } from './epub-audit.service';
@@ -21,6 +22,7 @@ import {
   clearTracking,
   findMissingIssues,
 } from '../../utils/issue-debugger';
+import type { ModificationResult } from './epub-modifier.service';
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -46,6 +48,9 @@ interface RemediationTask {
   resolvedAt?: Date;
   notes?: string;
   completionMethod?: 'auto' | 'manual' | 'verified';
+  // Track where fix was actually applied
+  resolvedLocation?: string;
+  resolvedFiles?: string[];
   createdAt: Date;
   updatedAt: Date;
   filePath?: string;
@@ -410,6 +415,7 @@ class RemediationService {
 
     await prisma.job.create({
       data: {
+        id: nanoid(),
         tenantId: job.tenantId,
         userId: job.userId,
         type: 'BATCH_VALIDATION',
@@ -417,6 +423,7 @@ class RemediationService {
         input: { sourceJobId: jobId, planType: 'remediation' },
         output: JSON.parse(JSON.stringify(plan)),
         completedAt: new Date(),
+        updatedAt: new Date(),
       },
     });
 
@@ -445,7 +452,12 @@ class RemediationService {
     status: RemediationStatus,
     resolution?: string,
     resolvedBy?: string,
-    options?: { notes?: string; completionMethod?: 'auto' | 'manual' | 'verified' }
+    options?: {
+      notes?: string;
+      completionMethod?: 'auto' | 'manual' | 'verified';
+      resolvedLocation?: string;
+      resolvedFiles?: string[];
+    }
   ): Promise<RemediationTask> {
     return await prisma.$transaction(async (tx) => {
       const planJob = await tx.job.findFirst({
@@ -483,6 +495,64 @@ class RemediationService {
         }
         if (options?.notes) {
           task.notes = options.notes;
+        }
+        if (options?.resolvedLocation) {
+          task.resolvedLocation = options.resolvedLocation;
+        }
+        if (options?.resolvedFiles) {
+          task.resolvedFiles = options.resolvedFiles;
+        }
+
+        // Update corresponding Issue record status to REMEDIATED
+        if (status === 'completed' && task.issueCode) {
+          const planInput = planJob.input as { sourceJobId?: string } | null;
+          const sourceJobId = planInput?.sourceJobId;
+          
+          if (sourceJobId && tx.validationResult) {
+            // Find all validation results for this job
+            const validationResults = await tx.validationResult.findMany({
+              where: { jobId: sourceJobId },
+            });
+
+            for (const validationResult of validationResults) {
+              // Build location matching condition - check both filePath and location fields
+              // since task.location may match either field depending on how the issue was stored
+              const locationConditions: Array<Record<string, unknown>> = [];
+              if (task.location) {
+                locationConditions.push(
+                  { filePath: task.location },
+                  { location: task.location }
+                );
+              }
+
+              // Update Issue records matching this task's issue code and location
+              const updateResult = await tx.issue.updateMany({
+                where: {
+                  validationResultId: validationResult.id,
+                  code: task.issueCode,
+                  status: 'PENDING',
+                  ...(locationConditions.length > 0 ? { OR: locationConditions } : {}),
+                },
+                data: {
+                  status: 'REMEDIATED',
+                  fixedAt: new Date(),
+                  fixedBy: resolvedBy || 'system',
+                  remediationMethod: options?.completionMethod || 'quick-fix',
+                  remediationTaskId: task.id,
+                },
+              });
+              
+              if (updateResult.count > 0) {
+                logger.info(`Updated ${updateResult.count} Issue(s) to REMEDIATED for code ${task.issueCode}`, {
+                  jobId,
+                  taskId,
+                  issueCode: task.issueCode,
+                  location: task.location,
+                  validationResultId: validationResult.id,
+                });
+              }
+            }
+          }
         }
       }
 
@@ -662,6 +732,16 @@ class RemediationService {
       before: { total: number; bySeverity: Record<string, number> };
       after: { total: number; bySeverity: Record<string, number> };
     };
+    coverage: {
+      totalFiles: number;
+      filesScanned: number;
+      percentage: number;
+      fileCategories: {
+        frontMatter: number;
+        chapters: number;
+        backMatter: number;
+      };
+    };
   }> {
     const originalPlan = await this.getRemediationPlan(jobId);
     if (!originalPlan) {
@@ -670,9 +750,38 @@ class RemediationService {
 
     logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${file.originalname}`);
 
+    // Get original job to extract tenant and user info
+    const originalJob = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { tenantId: true, userId: true },
+    });
+
+    if (!originalJob) {
+      throw new Error('Original job not found');
+    }
+
+    // Create a new job for the re-audit
+    const reauditJobId = nanoid();
+    await prisma.job.create({
+      data: {
+        id: reauditJobId,
+        tenantId: originalJob.tenantId,
+        userId: originalJob.userId,
+        type: 'EPUB_ACCESSIBILITY',
+        status: 'PROCESSING',
+        input: {
+          sourceJobId: jobId,
+          fileName: file.originalname,
+          auditType: 'reaudit',
+        },
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
     const newAuditResult = await epubAuditService.runAudit(
       file.buffer,
-      `reaudit-${jobId}`,
+      reauditJobId,
       file.originalname
     );
 
@@ -730,6 +839,7 @@ class RemediationService {
         before: { total: originalPlan.tasks.length, bySeverity: beforeBySeverity },
         after: { total: newAuditResult.combinedIssues.length, bySeverity: afterBySeverity },
       },
+      coverage: newAuditResult.coverage,
     };
   }
 
@@ -820,8 +930,9 @@ class RemediationService {
 
     for (const task of originalTasks) {
       const taskKey = `${task.issueCode}:${task.location || ''}`;
-      if (!newIssueKeys.has(taskKey) && task.status === 'pending') {
-        resolvedTaskIds.push(task.id);
+      // Check if issue no longer exists in new audit, regardless of task status
+      if (!newIssueKeys.has(taskKey)) {
+        resolvedTaskIds.push(task.issueCode);
       }
     }
 
@@ -1509,7 +1620,7 @@ class RemediationService {
 
     for (const [code, tasks] of codeGroups) {
       try {
-        let fixResults: Array<{ success: boolean; filePath: string; description: string }> = [];
+        let fixResults: ModificationResult[] = [];
 
         switch (code) {
           case 'EPUB-META-001':
@@ -1529,6 +1640,13 @@ class RemediationService {
             break;
           case 'EPUB-NAV-001':
             fixResults = await epubModifier.addSkipNavigation(zip);
+            break;
+          case 'EPUB-STRUCT-004':
+            // Pass target file locations so landmarks are added to the correct files
+            const targetLocations = tasks
+              .map(t => t.location)
+              .filter((loc): loc is string => !!loc);
+            fixResults = await epubModifier.addAriaLandmarks(zip, targetLocations);
             break;
           default:
             logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
@@ -1553,8 +1671,8 @@ class RemediationService {
                 filePath: result.filePath,
                 changeType: code.toLowerCase().replace(/-/g, '_'),
                 description: result.description,
-                beforeContent: (result as { before?: string }).before,
-                afterContent: (result as { after?: string }).after,
+                beforeContent: result.before,
+                afterContent: result.after,
                 severity: 'MAJOR',
                 appliedBy: 'system',
               });
@@ -1563,13 +1681,27 @@ class RemediationService {
             }
           }
 
+          // Extract resolved location from fix results (computed once for all tasks)
+          const modifiedFiles = fixResults
+            .filter(r => r.success && r.filePath && r.filePath !== 'all')
+            .map(r => r.filePath);
+
           for (const task of tasks) {
+            // Each task prefers its own location if that location appears in modified files
+            const resolvedLocation = modifiedFiles.includes(task.location || '')
+              ? task.location
+              : (modifiedFiles.length > 0 ? modifiedFiles[0] : task.location);
+
             await this.updateTaskStatus(
               jobId,
               task.id,
               'completed',
               `Auto-applied high-confidence fix`,
-              'system'
+              'system',
+              {
+                resolvedLocation,
+                resolvedFiles: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+              }
             );
             results.applied++;
             results.details.push({
@@ -1601,9 +1733,31 @@ class RemediationService {
     }
 
     if (results.applied > 0) {
-      const modifiedBuffer = await epubModifier.saveEPUB(zip);
+      let modifiedBuffer = await epubModifier.saveEPUB(zip);
+
+      // Phase 2: Post-modification landmark validation
+      logger.info('[Post-Modification] Validating landmarks after all fixes...');
+      const landmarkValidation = await epubModifier.validateAndFixLandmarks(modifiedBuffer);
+
+      if (landmarkValidation.success && landmarkValidation.changes.length > 0) {
+        logger.info(`[Post-Modification] Applied ${landmarkValidation.changes.length} landmark fixes`);
+        if (landmarkValidation.buffer) {
+          modifiedBuffer = landmarkValidation.buffer;
+        }
+
+        // Track landmark fixes in results
+        results.applied += landmarkValidation.changes.length;
+        for (const change of landmarkValidation.changes) {
+          logger.info(`  - ${change.filePath}: ${change.description}`);
+        }
+      } else if (landmarkValidation.success) {
+        logger.info('[Post-Modification] All landmarks validated - no fixes needed');
+      } else {
+        logger.warn('[Post-Modification] Landmark validation failed:', landmarkValidation.error);
+      }
+
       await fileStorageService.saveRemediatedFile(jobId, remediatedFileName, modifiedBuffer);
-      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes`);
+      logger.info(`[AutoFix] Saved remediated EPUB after ${results.applied} auto-fixes (including landmark validation)`);
     }
 
     logger.info(`[AutoFix] Results: ${results.applied} applied, ${results.failed} failed, ${results.skipped} skipped`);

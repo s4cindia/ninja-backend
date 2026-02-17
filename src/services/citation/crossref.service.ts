@@ -1,9 +1,25 @@
 import { logger } from '../../lib/logger';
+import { crossRefRateLimiter } from '../../utils/rate-limiter';
 
 export interface CrossRefAuthor {
   given?: string;
   family: string;
   suffix?: string;
+}
+
+interface CrossRefWork {
+  author?: CrossRefAuthor[];
+  title?: string[];
+  published?: { 'date-parts'?: number[][] };
+  created?: { 'date-parts'?: number[][] };
+  'container-title'?: string[];
+  volume?: string;
+  issue?: string;
+  page?: string;
+  DOI?: string;
+  URL?: string;
+  publisher?: string;
+  type?: string;
 }
 
 export interface EnrichedMetadata {
@@ -29,6 +45,9 @@ class CrossRefService {
 
   async lookupByDoi(doi: string): Promise<EnrichedMetadata | null> {
     try {
+      // Apply rate limiting before making request
+      await crossRefRateLimiter.acquire();
+
       const cleanDoi = doi.replace(/^https?:\/\/doi\.org\//, '');
       const url = `${this.baseUrl}/${encodeURIComponent(cleanDoi)}`;
 
@@ -43,7 +62,7 @@ class CrossRefService {
         return null;
       }
 
-      const data = await response.json() as { message: any };
+      const data = await response.json() as { message: CrossRefWork };
       const work = data.message;
 
       return this.mapCrossRefWork(work);
@@ -55,6 +74,9 @@ class CrossRefService {
 
   async search(query: string, limit = 5): Promise<EnrichedMetadata[]> {
     try {
+      // Apply rate limiting before making request
+      await crossRefRateLimiter.acquire();
+
       const url = `${this.baseUrl}?query=${encodeURIComponent(query)}&rows=${limit}`;
 
       const response = await fetch(url, {
@@ -67,17 +89,17 @@ class CrossRefService {
         return [];
       }
 
-      const data = await response.json() as { message?: { items?: any[] } };
+      const data = await response.json() as { message?: { items?: CrossRefWork[] } };
       const works = data.message?.items || [];
 
-      return works.map((work: any) => this.mapCrossRefWork(work));
+      return works.map((work: CrossRefWork) => this.mapCrossRefWork(work));
     } catch (error) {
       logger.error('[CrossRef] Search error', error instanceof Error ? error : undefined);
       return [];
     }
   }
 
-  private mapCrossRefWork(work: any): EnrichedMetadata {
+  private mapCrossRefWork(work: CrossRefWork): EnrichedMetadata {
     const authors = (work.author || []).map((a: CrossRefAuthor) => ({
       firstName: a.given,
       lastName: a.family,
@@ -98,7 +120,7 @@ class CrossRefService {
       doi: work.DOI,
       url: work.URL || (work.DOI ? `https://doi.org/${work.DOI}` : undefined),
       publisher: work.publisher,
-      sourceType: this.mapWorkType(work.type),
+      sourceType: this.mapWorkType(work.type || ''),
       source: 'crossref',
       confidence: 0.95
     };

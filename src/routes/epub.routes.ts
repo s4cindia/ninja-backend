@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { epubController } from '../controllers/epub.controller';
 import { epubContentController } from '../controllers/epub-content.controller';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authenticateFlexible } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 
 const router = Router();
@@ -63,7 +63,8 @@ router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentControl
 router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJob, epubController.scanEpubTypes);
 router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, epubController.markTaskFixed);
 router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
-router.get('/job/:jobId/image/*', authenticate, authorizeJob, epubController.getImage);
+router.get('/job/:jobId/asset/*', authenticateFlexible, authorizeJob, epubController.getAsset.bind(epubController));
+router.get('/job/:jobId/image/*', authenticateFlexible, authorizeJob, epubController.getImage.bind(epubController));
 
 router.get('/fix-template/:issueCode', authenticate, epubController.getFixTemplate);
 router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);
