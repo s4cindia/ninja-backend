@@ -95,7 +95,22 @@ export class CitationDetectionService {
       return result;
 
     } catch (error) {
-      logger.error('[Citation Detection] Failed', error instanceof Error ? error : undefined);
+      // Transition job to FAILED to prevent stuck PROCESSING state
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Citation Detection] Failed for jobId=${jobId}: ${errorMessage}`, error instanceof Error ? error : undefined);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: errorMessage,
+        },
+      }).catch(updateError => {
+        // Log but don't throw - we want to re-throw the original error
+        logger.error(`[Citation Detection] Failed to update job status: ${updateError}`);
+      });
+
       throw error;
     }
   }

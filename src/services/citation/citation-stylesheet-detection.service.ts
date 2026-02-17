@@ -145,29 +145,49 @@ export class CitationStylesheetDetectionService {
     });
     const jobId = job.id;
 
-    const parsed = await documentParser.parse(fileBuffer, fileName);
-    logger.info(`[Stylesheet Detection] Parsed: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
+    try {
+      const parsed = await documentParser.parse(fileBuffer, fileName);
+      logger.info(`[Stylesheet Detection] Parsed: ${parsed.metadata.wordCount} words, ${parsed.chunks.length} chunks`);
 
-    const editorialDoc = await this.createEditorialDocument(jobId, tenantId, fileName, fileBuffer.length, parsed);
+      const editorialDoc = await this.createEditorialDocument(jobId, tenantId, fileName, fileBuffer.length, parsed);
 
-    const result = await this.runFullAnalysis(editorialDoc.id, jobId, tenantId, parsed.text, startTime, fileName);
+      const result = await this.runFullAnalysis(editorialDoc.id, jobId, tenantId, parsed.text, startTime, fileName);
 
-    await prisma.editorialDocument.update({
-      where: { id: editorialDoc.id },
-      data: { status: EditorialDocStatus.PARSED },
-    });
+      await prisma.editorialDocument.update({
+        where: { id: editorialDoc.id },
+        data: { status: EditorialDocStatus.PARSED },
+      });
 
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        output: { documentId: editorialDoc.id },
-      },
-    });
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: { documentId: editorialDoc.id },
+        },
+      });
 
-    logger.info(`[Stylesheet Detection] Completed in ${result.processingTimeMs}ms`);
-    return result;
+      logger.info(`[Stylesheet Detection] Completed in ${result.processingTimeMs}ms`);
+      return result;
+    } catch (error) {
+      // Transition job to FAILED to prevent stuck PROCESSING state
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Stylesheet Detection] Failed for jobId=${jobId}: ${errorMessage}`, error instanceof Error ? error : undefined);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: errorMessage,
+        },
+      }).catch(updateError => {
+        // Log but don't throw - we want to re-throw the original error
+        logger.error(`[Stylesheet Detection] Failed to update job status: ${updateError}`);
+      });
+
+      throw error;
+    }
   }
 
   async analyzeFromS3(
@@ -192,46 +212,66 @@ export class CitationStylesheetDetectionService {
     });
     const jobId = job.id;
 
-    let fileBuffer: Buffer;
-    if (fileS3Key) {
-      fileBuffer = await s3Service.getFileBuffer(fileS3Key);
-    } else if (presignedUrl) {
-      // SSRF Prevention: Validate URL before fetching
-      this.validatePresignedUrl(presignedUrl);
+    try {
+      let fileBuffer: Buffer;
+      if (fileS3Key) {
+        fileBuffer = await s3Service.getFileBuffer(fileS3Key);
+      } else if (presignedUrl) {
+        // SSRF Prevention: Validate URL before fetching
+        this.validatePresignedUrl(presignedUrl);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      try {
-        const response = await fetch(presignedUrl, { signal: controller.signal });
-        if (!response.ok) throw AppError.badRequest(`Failed to fetch: ${response.status}`, 'FETCH_FAILED');
-        fileBuffer = Buffer.from(await response.arrayBuffer());
-      } finally {
-        clearTimeout(timeoutId);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(presignedUrl, { signal: controller.signal });
+          if (!response.ok) throw AppError.badRequest(`Failed to fetch: ${response.status}`, 'FETCH_FAILED');
+          fileBuffer = Buffer.from(await response.arrayBuffer());
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } else {
+        throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
       }
-    } else {
-      throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
+
+      const parsed = await documentParser.parse(fileBuffer, fileName);
+      const editorialDoc = await this.createEditorialDocument(jobId, tenantId, fileName, fileBuffer.length, parsed);
+
+      const result = await this.runFullAnalysis(editorialDoc.id, jobId, tenantId, parsed.text, startTime, fileName);
+
+      await prisma.editorialDocument.update({
+        where: { id: editorialDoc.id },
+        data: { status: EditorialDocStatus.PARSED },
+      });
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          output: { documentId: editorialDoc.id },
+        },
+      });
+
+      return result;
+    } catch (error) {
+      // Transition job to FAILED to prevent stuck PROCESSING state
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Stylesheet Detection] S3 analysis failed for jobId=${jobId}: ${errorMessage}`, error instanceof Error ? error : undefined);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: errorMessage,
+        },
+      }).catch(updateError => {
+        // Log but don't throw - we want to re-throw the original error
+        logger.error(`[Stylesheet Detection] Failed to update job status: ${updateError}`);
+      });
+
+      throw error;
     }
-
-    const parsed = await documentParser.parse(fileBuffer, fileName);
-    const editorialDoc = await this.createEditorialDocument(jobId, tenantId, fileName, fileBuffer.length, parsed);
-
-    const result = await this.runFullAnalysis(editorialDoc.id, jobId, tenantId, parsed.text, startTime, fileName);
-
-    await prisma.editorialDocument.update({
-      where: { id: editorialDoc.id },
-      data: { status: EditorialDocStatus.PARSED },
-    });
-
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        output: { documentId: editorialDoc.id },
-      },
-    });
-
-    return result;
   }
 
   async getAnalysisResults(documentId: string, tenantId: string): Promise<StylesheetAnalysisResult | null> {
