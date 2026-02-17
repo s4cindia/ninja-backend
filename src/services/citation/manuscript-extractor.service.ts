@@ -4,8 +4,39 @@
  */
 
 import mammoth from 'mammoth';
+import DOMPurify from 'isomorphic-dompurify';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
+
+// XSS Prevention: Strict allowlist for HTML sanitization
+// Only allows safe formatting tags from DOCX conversion
+const SANITIZE_CONFIG = {
+  ALLOWED_TAGS: [
+    // Document structure
+    'p', 'div', 'span', 'br', 'hr',
+    // Headings
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    // Text formatting
+    'strong', 'b', 'em', 'i', 'u', 's', 'sub', 'sup',
+    // Lists
+    'ul', 'ol', 'li',
+    // Tables
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    // Block quotes
+    'blockquote',
+  ],
+  ALLOWED_ATTR: [
+    // Safe attributes only - no event handlers, no href/src
+    'class', 'id', 'data-*',
+  ],
+  // Explicitly forbid dangerous elements and attributes
+  FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'link', 'meta', 'base'],
+  FORBID_ATTR: ['onclick', 'onerror', 'onload', 'onmouseover', 'onfocus', 'onblur', 'href', 'src', 'action', 'formaction', 'xlink:href', 'data-bind'],
+  // Remove all URI-based attributes to prevent javascript: URLs
+  ALLOW_DATA_ATTR: true,
+  // Strip all HTML comments
+  ALLOW_UNKNOWN_PROTOCOLS: false,
+};
 
 interface CitationMarker {
   id: string;
@@ -49,6 +80,11 @@ export class ManuscriptExtractorService {
       });
 
       let html = result.value;
+
+      // XSS Prevention: Sanitize HTML before any processing or storage
+      // This prevents stored XSS attacks from malicious DOCX files
+      html = DOMPurify.sanitize(html, SANITIZE_CONFIG);
+      logger.debug('[ManuscriptExtractor] HTML sanitized for XSS prevention');
 
       // Remove references section before processing
       // Pattern matches when References/Bibliography is the main heading (possibly with prefix like <REFH>)
