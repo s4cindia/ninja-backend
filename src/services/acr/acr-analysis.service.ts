@@ -365,6 +365,18 @@ function analyzeWcagCriteria(
       return false;
     });
 
+    // Override status with high-confidence N/A suggestion when no issues remain
+    if (
+      naSuggestion?.suggestedStatus === 'not_applicable' &&
+      naSuggestion.confidence >= 80 &&
+      remainingIssuesList!.length === 0
+    ) {
+      status = 'not_applicable';
+      confidence = naSuggestion.confidence;
+      findings = [naSuggestion.rationale];
+      recommendation = '';
+    }
+
     criteriaAnalysis.push({
       id: criterion.id,
       name: criterion.name,
