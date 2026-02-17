@@ -569,6 +569,23 @@ export class PdfController {
         },
       });
 
+      // Create AcrJob record so PDF audit appears in ACR workflow
+      try {
+        await prisma.acrJob.create({
+          data: {
+            jobId: job.id,
+            tenantId,
+            userId,
+            edition: 'WCAG21-AA',
+            documentTitle: req.file.originalname,
+            documentType: 'PDF',
+            status: 'draft',
+          },
+        });
+      } catch (acrErr) {
+        logger.warn('[PDF Audit] Failed to create AcrJob record (non-fatal)', acrErr instanceof Error ? acrErr.message : String(acrErr));
+      }
+
       return res.status(200).json({
         success: true,
         data: {
@@ -723,6 +740,26 @@ export class PdfController {
         },
       });
       logger.info(`[reScanJob] Database updated for job ${jobId}. Status: ${updatedJob.status}`);
+
+      // Upsert AcrJob record so re-scanned PDF audit remains in ACR workflow
+      try {
+        const existingAcrJob = await prisma.acrJob.findFirst({ where: { jobId } });
+        if (!existingAcrJob) {
+          await prisma.acrJob.create({
+            data: {
+              jobId,
+              tenantId,
+              userId: job.userId,
+              edition: 'WCAG21-AA',
+              documentTitle: fileName,
+              documentType: 'PDF',
+              status: 'draft',
+            },
+          });
+        }
+      } catch (acrErr) {
+        logger.warn('[reScanJob] Failed to upsert AcrJob record (non-fatal)', acrErr instanceof Error ? acrErr.message : String(acrErr));
+      }
 
       return res.status(200).json({
         success: true,
