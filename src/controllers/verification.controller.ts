@@ -308,6 +308,10 @@ export class VerificationController {
       }
 
       const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        res.status(401).json({ success: false, error: { message: 'Authentication required' } });
+        return;
+      }
       const result = await humanVerificationService.canFinalizeAcr(jobId, tenantId);
 
       res.json({
