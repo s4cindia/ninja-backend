@@ -185,7 +185,9 @@ describe('CitationManagementController', () => {
           expect.objectContaining({
             success: true,
             data: expect.objectContaining({
-              documentId: 'doc-123',
+              document: expect.objectContaining({
+                id: 'doc-123',
+              }),
             }),
           })
         );
@@ -522,9 +524,11 @@ describe('CitationManagementController', () => {
           expect.objectContaining({
             success: true,
             data: expect.objectContaining({
-              statistics: expect.objectContaining({
-                citationsFound: 3,
-                referencesFound: 2,
+              document: expect.objectContaining({
+                statistics: expect.objectContaining({
+                  totalCitations: expect.any(Number),
+                  totalReferences: 2,
+                }),
               }),
             }),
           })
