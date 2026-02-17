@@ -4,6 +4,7 @@ import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
 import { AppError } from '../../utils/app-error';
+import { config } from '../../config';
 import {
   DetectedCitation,
   StylesheetAnalysisResult,
@@ -32,7 +33,96 @@ const AVAILABLE_CONVERSIONS = [
   { code: 'ieee', name: 'IEEE' },
 ];
 
+// Allowlisted S3 hostname patterns (AWS S3 and compatible services)
+const ALLOWED_S3_HOSTNAME_PATTERNS = [
+  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,  // bucket.s3.region.amazonaws.com
+  /^s3\.[a-z0-9-]+\.amazonaws\.com$/i,               // s3.region.amazonaws.com
+  /^[a-z0-9-]+\.s3\.amazonaws\.com$/i,               // bucket.s3.amazonaws.com (legacy)
+  /^s3\.amazonaws\.com$/i,                            // s3.amazonaws.com (legacy)
+];
+
+// Private/loopback IP ranges to block (SSRF prevention)
+const PRIVATE_IP_PATTERNS = [
+  /^127\./,                    // Loopback
+  /^10\./,                     // Class A private
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,  // Class B private
+  /^192\.168\./,               // Class C private
+  /^169\.254\./,               // Link-local (AWS metadata endpoint)
+  /^0\./,                      // Current network
+  /^::1$/,                     // IPv6 loopback
+  /^fc00:/i,                   // IPv6 unique local
+  /^fe80:/i,                   // IPv6 link-local
+  /^fd[0-9a-f]{2}:/i,          // IPv6 unique local
+];
+
 export class CitationStylesheetDetectionService {
+
+  /**
+   * Validate a presigned URL to prevent SSRF attacks.
+   * - Enforces HTTPS protocol
+   * - Allowlists S3 hostnames
+   * - Rejects private/loopback IPs
+   * @throws AppError if URL is invalid or potentially malicious
+   */
+  private validatePresignedUrl(presignedUrl: string): void {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(presignedUrl);
+    } catch {
+      throw AppError.badRequest('Invalid URL format', 'INVALID_URL');
+    }
+
+    // Enforce HTTPS protocol
+    if (parsedUrl.protocol !== 'https:') {
+      logger.warn(`[SSRF Prevention] Blocked non-HTTPS URL: ${parsedUrl.protocol}`);
+      throw AppError.badRequest('Only HTTPS URLs are allowed', 'HTTPS_REQUIRED');
+    }
+
+    const hostname = parsedUrl.hostname.toLowerCase();
+
+    // Check for private/loopback IPs (including when hostname is an IP)
+    for (const pattern of PRIVATE_IP_PATTERNS) {
+      if (pattern.test(hostname)) {
+        logger.warn(`[SSRF Prevention] Blocked private/loopback IP: ${hostname}`);
+        throw AppError.badRequest('Access to private network addresses is not allowed', 'PRIVATE_IP_BLOCKED');
+      }
+    }
+
+    // Block localhost variants
+    if (hostname === 'localhost' || hostname === 'localhost.localdomain') {
+      logger.warn(`[SSRF Prevention] Blocked localhost: ${hostname}`);
+      throw AppError.badRequest('Access to localhost is not allowed', 'LOCALHOST_BLOCKED');
+    }
+
+    // Check against allowlisted S3 hostname patterns
+    let isAllowed = false;
+
+    for (const pattern of ALLOWED_S3_HOSTNAME_PATTERNS) {
+      if (pattern.test(hostname)) {
+        isAllowed = true;
+        break;
+      }
+    }
+
+    // Also allow the configured S3 bucket hostname
+    if (!isAllowed && config.s3Bucket && config.s3Region) {
+      const expectedHostnames = [
+        `${config.s3Bucket}.s3.${config.s3Region}.amazonaws.com`,
+        `${config.s3Bucket}.s3.amazonaws.com`,
+        `s3.${config.s3Region}.amazonaws.com`,
+      ];
+      if (expectedHostnames.some(h => h.toLowerCase() === hostname)) {
+        isAllowed = true;
+      }
+    }
+
+    if (!isAllowed) {
+      logger.warn(`[SSRF Prevention] Blocked non-S3 hostname: ${hostname}`);
+      throw AppError.badRequest('URL must point to an allowed S3 endpoint', 'INVALID_S3_HOST');
+    }
+
+    logger.debug(`[SSRF Prevention] URL validated: ${hostname}`);
+  }
 
   async analyzeFromBuffer(
     tenantId: string,
@@ -106,6 +196,9 @@ export class CitationStylesheetDetectionService {
     if (fileS3Key) {
       fileBuffer = await s3Service.getFileBuffer(fileS3Key);
     } else if (presignedUrl) {
+      // SSRF Prevention: Validate URL before fetching
+      this.validatePresignedUrl(presignedUrl);
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       try {
