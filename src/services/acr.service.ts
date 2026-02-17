@@ -143,13 +143,15 @@ export class AcrService {
       throw new Error(`Invalid edition: ${edition}`);
     }
 
-    // Check if ACR already exists for this job
+    // Check if ACR already exists for this job (latest version)
     const existingAcrJob = await prisma.acrJob.findFirst({
       where: { jobId, tenantId },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (existingAcrJob) {
-      // Return existing ACR analysis
+    // Reuse the existing record only if it is not yet finalized — a finalized report
+    // should produce a new version so the history is preserved.
+    if (existingAcrJob && existingAcrJob.status !== 'finalized') {
       const existingReviews = await prisma.acrCriterionReview.findMany({
         where: { acrJobId: existingAcrJob.id },
       });
@@ -258,6 +260,7 @@ export class AcrService {
         userId,
         tenantId,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         criteria: {
           orderBy: {
@@ -323,6 +326,7 @@ export class AcrService {
         userId,
         tenantId,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         criteria: {
           orderBy: {
@@ -391,13 +395,7 @@ export class AcrService {
       remarks?: string;
     }
   ) {
-    const acrJob = await prisma.acrJob.findFirst({
-      where: { 
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
-      },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');
@@ -480,13 +478,7 @@ export class AcrService {
       throw new Error(`Invalid conformance levels: ${invalidLevels.join(', ')}. Must be one of: ${validLevels.join(', ')}`);
     }
 
-    const acrJob = await prisma.acrJob.findFirst({
-      where: { 
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
-      },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');
@@ -539,13 +531,7 @@ export class AcrService {
   }
 
   async getCriterionDetails(acrJobId: string, criterionId: string, userId: string, tenantId: string) {
-    const acrJob = await prisma.acrJob.findFirst({
-      where: { 
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
-      },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');
@@ -758,14 +744,20 @@ export class AcrService {
     };
   }
 
-  async resolveAcrJob(jobId: string) {
+  async resolveAcrJob(jobId: string, tenantId: string, userId?: string) {
+    if (!tenantId) {
+      throw new Error('tenantId is required for tenant-scoped ACR job lookup');
+    }
     return prisma.acrJob.findFirst({
       where: {
         OR: [
           { id: jobId },
           { jobId: jobId },
         ],
+        tenantId,
+        ...(userId && { userId }),
       },
+      orderBy: { createdAt: 'desc' },
     });
   }
 

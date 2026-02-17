@@ -589,12 +589,13 @@ export class AcrController {
 
       // 5. Also get any human-edited criteria from AcrCriterionReview to merge
       const acrJob = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           OR: [
             { id: acrId },
             { jobId: acrId }
           ]
         },
+        orderBy: { createdAt: 'desc' },
         include: { criteria: true }
       });
 
@@ -759,14 +760,15 @@ export class AcrController {
         }
       });
 
-      // If not found by acrJob ID, try finding by jobId
+      // If not found by acrJob ID, try finding by jobId (latest version)
       if (!acrJob) {
         acrJob = await prisma.acrJob.findFirst({
-          where: { 
+          where: {
             jobId: acrId,
             userId,
             tenantId
-          }
+          },
+          orderBy: { createdAt: 'desc' },
         });
       }
 
@@ -1343,6 +1345,7 @@ export class AcrController {
           jobId,
           tenantId,
         },
+        orderBy: { createdAt: 'desc' },
       });
 
       if (!acrJob) {
@@ -1673,8 +1676,17 @@ export class AcrController {
   async finalizeAcr(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
 
-      const acrJob = await acrService.resolveAcrJob(jobId);
+      if (!tenantId || !userId) {
+        return res.status(401).json({
+          success: false,
+          error: { message: 'Authentication required' },
+        });
+      }
+
+      const acrJob = await acrService.resolveAcrJob(jobId, tenantId, userId);
       if (!acrJob) {
         return res.status(404).json({
           success: false,
@@ -1828,11 +1840,12 @@ export class AcrController {
       }
 
       const acrJobRecord = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           jobId: batchAcrId,
           tenantId,
           userId,
         },
+        orderBy: { createdAt: 'desc' },
         include: { criteria: true },
       });
 

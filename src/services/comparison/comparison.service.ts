@@ -73,10 +73,13 @@ export class ComparisonService {
 
     const allChanges = await this.prisma.remediationChange.findMany({
       where: { jobId },
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allChanges);
+    // Identify discovered fixes by comparing with original audit issues
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allChanges);
+
+    const summary = this.calculateSummary(allChanges, discoveredCount);
     const byType = this.groupByField(allChanges, 'changeType');
     const bySeverity = this.groupByField(allChanges, 'severity');
     const byWcag = this.groupByField(allChanges, 'wcagCriteria');
@@ -179,10 +182,13 @@ export class ComparisonService {
 
     const allFilteredChanges = await this.prisma.remediationChange.findMany({
       where,
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allFilteredChanges);
+    // Calculate discovered fixes for filtered changes
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allFilteredChanges);
+
+    const summary = this.calculateSummary(allFilteredChanges, discoveredCount);
     const byType = this.groupByField(allFilteredChanges, 'changeType');
     const bySeverity = this.groupByField(allFilteredChanges, 'severity');
     const byWcag = this.groupByField(allFilteredChanges, 'wcagCriteria');
@@ -331,7 +337,8 @@ export class ComparisonService {
   }
 
   private calculateSummary(
-    changes: { status: ChangeStatus }[]
+    changes: { status: ChangeStatus }[],
+    discoveredCount: number = 0
   ): ComparisonSummary {
     const summary: ComparisonSummary = {
       totalChanges: changes.length,
@@ -339,6 +346,8 @@ export class ComparisonService {
       rejected: 0,
       skipped: 0,
       failed: 0,
+      discovered: discoveredCount,
+      plannedFixes: Math.max(0, changes.length - discoveredCount),
     };
 
     for (const change of changes) {
@@ -362,6 +371,56 @@ export class ComparisonService {
     }
 
     return summary;
+  }
+
+  /**
+   * Calculates the number of discovered fixes by comparing changes with original audit issues
+   * A "discovered fix" is a change that was applied but wasn't in the original audit findings
+   */
+  private async calculateDiscoveredFixes(
+    jobId: string,
+    changes: { filePath: string; ruleId: string | null; status: ChangeStatus }[]
+  ): Promise<number> {
+    try {
+      const job = await this.prisma.job.findUnique({
+        where: { id: jobId },
+        select: { output: true },
+      });
+
+      if (!job || !job.output) {
+        return 0;
+      }
+
+      const output = job.output as { combinedIssues?: unknown };
+      if (!Array.isArray(output.combinedIssues)) {
+        // combinedIssues absent or malformed — cannot determine discovered vs planned
+        return 0;
+      }
+      const auditIssues = output.combinedIssues as Array<{ code: string; location: string }>;
+
+      // Create a set of audit issue signatures for fast lookup
+      const auditSignatures = new Set(
+        auditIssues.map(issue => `${issue.location}:${issue.code}`)
+      );
+
+      // Only count changes that were actually applied and don't match any audit issue.
+      // NOTE: issue.location (from EPUBCheck/ACE) and change.filePath (from modifier) may
+      // use different path formats (e.g. with/without "EPUB/" prefix). If discoveredCount
+      // unexpectedly equals the total applied count, check the debug logs below for mismatches.
+      let discoveredCount = 0;
+      for (const change of changes.filter(c => c.status === ChangeStatus.APPLIED)) {
+        const changeSignature = `${change.filePath}:${change.ruleId || ''}`;
+        if (!auditSignatures.has(changeSignature)) {
+          logger.debug(`[calculateDiscoveredFixes] No audit match for change: ${changeSignature}`);
+          discoveredCount++;
+        }
+      }
+
+      return discoveredCount;
+    } catch (error) {
+      logger.error('Failed to calculate discovered fixes', error instanceof Error ? error : undefined);
+      return 0; // Fail gracefully
+    }
   }
 
   private groupByField(
