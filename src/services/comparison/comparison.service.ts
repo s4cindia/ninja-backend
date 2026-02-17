@@ -379,7 +379,7 @@ export class ComparisonService {
    */
   private async calculateDiscoveredFixes(
     jobId: string,
-    changes: { filePath: string; ruleId: string | null }[]
+    changes: { filePath: string; ruleId: string | null; status: ChangeStatus }[]
   ): Promise<number> {
     try {
       const job = await this.prisma.job.findUnique({
@@ -399,9 +399,9 @@ export class ComparisonService {
         auditIssues.map(issue => `${issue.location}:${issue.code}`)
       );
 
-      // Count changes that don't match any audit issue
+      // Only count changes that were actually applied and don't match any audit issue
       let discoveredCount = 0;
-      for (const change of changes) {
+      for (const change of changes.filter(c => c.status === ChangeStatus.APPLIED)) {
         const changeSignature = `${change.filePath}:${change.ruleId || ''}`;
         if (!auditSignatures.has(changeSignature)) {
           discoveredCount++;

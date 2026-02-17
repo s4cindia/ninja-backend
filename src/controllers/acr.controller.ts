@@ -1345,6 +1345,7 @@ export class AcrController {
           jobId,
           tenantId,
         },
+        orderBy: { createdAt: 'desc' },
       });
 
       if (!acrJob) {
@@ -1675,8 +1676,10 @@ export class AcrController {
   async finalizeAcr(req: Request, res: Response) {
     try {
       const { jobId } = req.params;
+      const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
 
-      const acrJob = await acrService.resolveAcrJob(jobId);
+      const acrJob = await acrService.resolveAcrJob(jobId, userId, tenantId);
       if (!acrJob) {
         return res.status(404).json({
           success: false,

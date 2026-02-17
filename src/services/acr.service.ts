@@ -395,11 +395,12 @@ export class AcrService {
     }
   ) {
     const acrJob = await prisma.acrJob.findFirst({
-      where: { 
+      where: {
         OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
+        userId,
+        tenantId
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!acrJob) {
@@ -484,11 +485,12 @@ export class AcrService {
     }
 
     const acrJob = await prisma.acrJob.findFirst({
-      where: { 
+      where: {
         OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
+        userId,
+        tenantId
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!acrJob) {
@@ -543,11 +545,12 @@ export class AcrService {
 
   async getCriterionDetails(acrJobId: string, criterionId: string, userId: string, tenantId: string) {
     const acrJob = await prisma.acrJob.findFirst({
-      where: { 
+      where: {
         OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId, 
-        tenantId 
+        userId,
+        tenantId
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!acrJob) {
@@ -761,14 +764,17 @@ export class AcrService {
     };
   }
 
-  async resolveAcrJob(jobId: string) {
+  async resolveAcrJob(jobId: string, userId?: string, tenantId?: string) {
     return prisma.acrJob.findFirst({
       where: {
         OR: [
           { id: jobId },
           { jobId: jobId },
         ],
+        ...(userId && { userId }),
+        ...(tenantId && { tenantId }),
       },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
