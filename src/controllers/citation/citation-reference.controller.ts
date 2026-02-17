@@ -233,7 +233,8 @@ export class CitationReferenceController {
           document: {
             include: {
               referenceListEntries: { orderBy: { sortKey: 'asc' } },
-              citations: true
+              citations: true,
+              documentContent: true
             }
           }
         }
@@ -419,6 +420,46 @@ export class CitationReferenceController {
           }));
 
           await tx.citationChange.createMany({ data: renumberChanges });
+        }
+
+        // Update fullHtml and fullText in DocumentContent with renumbered citations
+        // Uses updateCitationNumbersInHtmlWithDeletion which properly handles ranges like [3-5]
+        if (referenceToDelete.document.documentContent && oldToNewNumber.size > 0) {
+          const updateData: { fullHtml?: string; fullText?: string } = {};
+
+          // Convert Map<number, number | null> to the format the helper expects
+          // Filter out null values for renumbering, keep track of deleted numbers
+          const renumberMap = new Map<number, number>();
+          for (const [oldNum, newNum] of oldToNewNumber) {
+            if (newNum !== null) {
+              renumberMap.set(oldNum, newNum);
+            }
+          }
+
+          if (referenceToDelete.document.documentContent.fullHtml) {
+            updateData.fullHtml = this.updateCitationNumbersInHtml(
+              referenceToDelete.document.documentContent.fullHtml,
+              renumberMap,
+              true // isDeletion = true to handle orphaned citations
+            );
+          }
+
+          if (referenceToDelete.document.documentContent.fullText) {
+            updateData.fullText = this.updateCitationNumbersInHtml(
+              referenceToDelete.document.documentContent.fullText,
+              renumberMap,
+              true // isDeletion = true
+            );
+          }
+
+          if (Object.keys(updateData).length > 0) {
+            await tx.editorialDocumentContent.update({
+              where: { documentId },
+              data: updateData
+            });
+
+            logger.info(`[CitationReference] Updated documentContent after delete with renumbered citations`);
+          }
         }
       });
 
@@ -897,7 +938,32 @@ export class CitationReferenceController {
         );
       }
 
-      // 3. Create CitationChange records for track changes
+      // 3. Update fullHtml and fullText in DocumentContent with new citation numbers
+      // Uses updateCitationNumbersInHtml which properly handles ranges like [3-5]
+      if (document.documentContent && oldToNewNumber.size > 0) {
+        const updateData: { fullHtml?: string; fullText?: string } = {};
+
+        if (document.documentContent.fullHtml) {
+          updateData.fullHtml = this.updateCitationNumbersInHtml(document.documentContent.fullHtml, oldToNewNumber);
+        }
+
+        if (document.documentContent.fullText) {
+          updateData.fullText = this.updateCitationNumbersInHtml(document.documentContent.fullText, oldToNewNumber);
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          operations.push(
+            prisma.editorialDocumentContent.update({
+              where: { documentId },
+              data: updateData
+            })
+          );
+
+          logger.info(`[CitationReference] Updated documentContent with citation number changes`);
+        }
+      }
+
+      // 4. Create CitationChange records for track changes
       if (allChanges.length > 0) {
         operations.push(
           prisma.citationChange.createMany({ data: allChanges })
@@ -1033,6 +1099,81 @@ export class CitationReferenceController {
     ranges.push(rangeStart === rangeEnd ? `${rangeStart}` : `${rangeStart}-${rangeEnd}`);
 
     return ranges.join(',');
+  }
+
+  /**
+   * Update citation numbers in full HTML/text content
+   * Handles all citation formats: [3], [3-5], [1,2,3], (3), (3-5), etc.
+   * Uses placeholder-based replacement to avoid double-replacement issues
+   */
+  private updateCitationNumbersInHtml(text: string, oldToNewMap: Map<number, number>, isDeletion = false): string {
+    // Track original citations and their replacements
+    const replacements: { original: string; replacement: string }[] = [];
+
+    // Pattern matches: [1], [1-3], [1,2,3], [1, 3-5, 7], etc.
+    const bracketPattern = /\[(\d+(?:\s*[-–—,]\s*\d+)*)\]/g;
+    const parenPattern = /\((\d+(?:\s*[-–—,]\s*\d+)*)\)/g;
+
+    // Helper to remap numbers within a citation
+    const remapAndFormat = (numStr: string): string | null => {
+      const result: number[] = [];
+      const parts = numStr.split(',').map(p => p.trim());
+
+      for (const part of parts) {
+        if (/[-–—]/.test(part)) {
+          const rangeParts = part.split(/[-–—]/).map(n => parseInt(n.trim()));
+          if (rangeParts.length === 2 && !isNaN(rangeParts[0]) && !isNaN(rangeParts[1])) {
+            for (let i = rangeParts[0]; i <= rangeParts[1]; i++) {
+              const newNum = oldToNewMap.get(i);
+              if (newNum !== undefined && newNum !== null) {
+                result.push(newNum);
+              }
+            }
+          }
+        } else {
+          const num = parseInt(part);
+          if (!isNaN(num)) {
+            const newNum = oldToNewMap.get(num);
+            if (newNum !== undefined && newNum !== null) {
+              result.push(newNum);
+            }
+          }
+        }
+      }
+
+      if (result.length === 0 && isDeletion) return null; // Indicates orphaned
+      if (result.length === 0) return numStr; // Keep original if no mapping found
+
+      return this.formatNumberList(result);
+    };
+
+    // Process bracket citations [N]
+    let result = text.replace(bracketPattern, (match, nums) => {
+      const remapped = remapAndFormat(nums);
+      if (remapped === null) return '[orphaned]';
+      const newCitation = `[${remapped}]`;
+      if (newCitation !== match) {
+        replacements.push({ original: match, replacement: newCitation });
+      }
+      return newCitation;
+    });
+
+    // Process parenthetical citations (N)
+    result = result.replace(parenPattern, (match, nums) => {
+      const remapped = remapAndFormat(nums);
+      if (remapped === null) return '(orphaned)';
+      const newCitation = `(${remapped})`;
+      if (newCitation !== match) {
+        replacements.push({ original: match, replacement: newCitation });
+      }
+      return newCitation;
+    });
+
+    if (replacements.length > 0) {
+      logger.info(`[CitationReference] Updated ${replacements.length} citations in HTML content`);
+    }
+
+    return result;
   }
 }
 
