@@ -60,6 +60,13 @@ const exportRateLimiter = rateLimit({
 
 const router = Router();
 
+// ============================================
+// AUTHENTICATION - MUST BE FIRST
+// All routes in this file require authentication.
+// This middleware is applied BEFORE any route definitions.
+// ============================================
+router.use(authenticate);
+
 // Configure multer for DOCX uploads
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -79,11 +86,10 @@ const upload = multer({
   },
 });
 
-// All routes require authentication
-router.use(authenticate);
-
 // ============================================
-// DEBUG ENDPOINTS (disabled in production, require auth)
+// DEBUG ENDPOINTS (disabled in production)
+// Protected by router.use(authenticate) above.
+// Additional blockInProduction middleware for defense-in-depth.
 // ============================================
 
 // Middleware to block debug endpoints in production
