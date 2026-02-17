@@ -23,6 +23,16 @@ vi.mock('../../../../src/lib/prisma', () => ({
   },
 }));
 
+// Mock logger to suppress expected error logs during tests
+vi.mock('../../../../src/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
 describe('PdfReauditService', () => {
   // Test data setup
   const mockJobId = 'test-job-123';
