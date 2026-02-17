@@ -45,11 +45,12 @@ class ClaudeService {
   private getModelName(options: ClaudeOptions = {}): string {
     const modelType = options.model || 'sonnet';
 
-    // Claude models - use explicit dated versions for stability
+    // Claude models - verified against Anthropic API (2026-02-17)
+    // Model IDs must match Anthropic API exactly to avoid 400/404 errors
     const models: Record<string, string> = {
-      haiku: 'claude-3-5-haiku-20241022',      // Fast, cost-effective
+      haiku: 'claude-3-haiku-20240307',        // Fast, cost-effective (Claude 3 Haiku)
       sonnet: 'claude-sonnet-4-20250514',      // Balanced performance (Claude Sonnet 4)
-      opus: 'claude-opus-4-20250514'           // Most capable (Claude Opus 4)
+      opus: 'claude-opus-4-5-20251101'         // Most capable (Claude Opus 4.5)
     };
 
     return models[modelType] || models.sonnet;
