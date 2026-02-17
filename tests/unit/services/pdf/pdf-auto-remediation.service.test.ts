@@ -26,6 +26,19 @@ vi.mock('../../../../src/lib/logger', () => ({
     debug: vi.fn(),
   },
 }));
+vi.mock('../../../../src/lib/prisma', () => ({ default: {} }));
+vi.mock('../../../../src/services/comparison', () => {
+  class MockComparisonService {
+    logChange = vi.fn().mockResolvedValue(undefined);
+  }
+  return {
+    ComparisonService: MockComparisonService,
+    mapFixTypeToChangeType: vi.fn().mockReturnValue('test-change-type'),
+    extractWcagCriteria: vi.fn().mockReturnValue(undefined),
+    extractWcagLevel: vi.fn().mockReturnValue(undefined),
+    extractSeverity: vi.fn().mockReturnValue('MAJOR'),
+  };
+});
 
 describe('PdfAutoRemediationService', () => {
   let mockPdfBuffer: Buffer;
@@ -79,7 +92,7 @@ describe('PdfAutoRemediationService', () => {
       vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
       // Mock task status updates
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
 
       // Mock PDF saving
       const mockSavedBuffer = Buffer.from('modified-pdf');
@@ -140,7 +153,7 @@ describe('PdfAutoRemediationService', () => {
       vi.mocked(pdfRemediationService.getRemediationPlan).mockResolvedValue(planWithUnknownIssue);
       vi.mocked(pdfModifierService.createBackup).mockResolvedValue('/path/to/backup.pdf');
       vi.mocked(pdfModifierService.loadPDF).mockResolvedValue(mockPdfDoc);
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
       vi.mocked(pdfModifierService.validatePDF).mockResolvedValue({ valid: true, errors: [] });
       vi.mocked(pdfVerificationService.verifyRemediation).mockResolvedValue({
@@ -186,7 +199,7 @@ describe('PdfAutoRemediationService', () => {
       vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(failureModification);
       vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(successModification);
 
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
       vi.mocked(pdfModifierService.validatePDF).mockResolvedValue({ valid: true, errors: [] });
       vi.mocked(pdfVerificationService.verifyRemediation).mockResolvedValue({
@@ -219,7 +232,7 @@ describe('PdfAutoRemediationService', () => {
       vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
       vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('invalid-pdf'));
 
       // Validation fails
@@ -267,7 +280,7 @@ describe('PdfAutoRemediationService', () => {
     it('should update task status to IN_PROGRESS during execution', async () => {
       vi.mocked(pdfRemediationService.getRemediationPlan).mockResolvedValue({
         ...mockRemediationPlan,
-        tasks: [createMockTask('task-1', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING')],
+        tasks: [createMockTask('task-1', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING')],
       });
 
       vi.mocked(pdfModifierService.createBackup).mockResolvedValue('/backup.pdf');
@@ -276,7 +289,7 @@ describe('PdfAutoRemediationService', () => {
         success: true,
         description: 'Success',
       });
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
       vi.mocked(pdfModifierService.validatePDF).mockResolvedValue({ valid: true, errors: [] });
       vi.mocked(pdfVerificationService.verifyRemediation).mockResolvedValue({
@@ -313,7 +326,7 @@ describe('PdfAutoRemediationService', () => {
       vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
       vi.spyOn(pdfModifierService, 'setSuspectsFlag').mockResolvedValue(mockModification);
 
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
       vi.mocked(pdfModifierService.validatePDF).mockResolvedValue({ valid: true, errors: [] });
       vi.mocked(pdfVerificationService.verifyRemediation).mockResolvedValue({
@@ -339,9 +352,9 @@ describe('PdfAutoRemediationService', () => {
       const planWithDuplicates = {
         ...mockRemediationPlan,
         tasks: [
-          createMockTask('task-1', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
-          createMockTask('task-2', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
-          createMockTask('task-3', 'PDF-NO-TITLE', 'AUTO_FIXABLE', 'PENDING'),
+          createMockTask('task-1', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING'),
+          createMockTask('task-2', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING'),
+          createMockTask('task-3', 'MATTERHORN-01-002', 'AUTO_FIXABLE', 'PENDING'),
         ],
       };
 
@@ -353,7 +366,7 @@ describe('PdfAutoRemediationService', () => {
       vi.spyOn(pdfModifierService, 'setMarkedFlag').mockResolvedValue(mockModification);
       vi.spyOn(pdfModifierService, 'setDisplayDocTitle').mockResolvedValue(mockModification);
 
-      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue(undefined as any);
+      vi.mocked(pdfRemediationService.updateTaskStatus).mockResolvedValue({ success: true, task: { id: 'task-1', status: 'COMPLETED' } } as any);
       vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('pdf'));
       vi.mocked(pdfModifierService.validatePDF).mockResolvedValue({ valid: true, errors: [] });
       vi.mocked(pdfVerificationService.verifyRemediation).mockResolvedValue({
