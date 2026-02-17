@@ -120,6 +120,11 @@ class CitationCorrectionService {
       throw AppError.forbidden('Access denied');
     }
 
+    // Guard: prevent overwriting already-resolved validations
+    if (validation.status !== 'pending') {
+      throw AppError.badRequest('Validation already resolved');
+    }
+
     await prisma.citationValidation.update({
       where: { id: validationId },
       data: {
@@ -149,6 +154,11 @@ class CitationCorrectionService {
 
     if (validation.document.tenantId !== tenantId) {
       throw AppError.forbidden('Access denied');
+    }
+
+    // Guard: prevent overwriting already-resolved validations
+    if (validation.status !== 'pending') {
+      throw AppError.badRequest('Validation already resolved');
     }
 
     const originalText = validation.citation.rawText;
