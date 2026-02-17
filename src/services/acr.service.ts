@@ -394,14 +394,7 @@ export class AcrService {
       remarks?: string;
     }
   ) {
-    const acrJob = await prisma.acrJob.findFirst({
-      where: {
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId,
-        tenantId
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');
@@ -484,14 +477,7 @@ export class AcrService {
       throw new Error(`Invalid conformance levels: ${invalidLevels.join(', ')}. Must be one of: ${validLevels.join(', ')}`);
     }
 
-    const acrJob = await prisma.acrJob.findFirst({
-      where: {
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId,
-        tenantId
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');
@@ -544,14 +530,7 @@ export class AcrService {
   }
 
   async getCriterionDetails(acrJobId: string, criterionId: string, userId: string, tenantId: string) {
-    const acrJob = await prisma.acrJob.findFirst({
-      where: {
-        OR: [{ id: acrJobId }, { jobId: acrJobId }],
-        userId,
-        tenantId
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const acrJob = await this.resolveAcrJob(acrJobId, tenantId, userId);
 
     if (!acrJob) {
       throw new Error('ACR job not found or access denied');

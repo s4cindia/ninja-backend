@@ -391,19 +391,27 @@ export class ComparisonService {
         return 0;
       }
 
-      const output = job.output as { combinedIssues?: Array<{ code: string; location: string }> };
-      const auditIssues = output.combinedIssues || [];
+      const output = job.output as { combinedIssues?: unknown };
+      if (!Array.isArray(output.combinedIssues)) {
+        // combinedIssues absent or malformed — cannot determine discovered vs planned
+        return 0;
+      }
+      const auditIssues = output.combinedIssues as Array<{ code: string; location: string }>;
 
       // Create a set of audit issue signatures for fast lookup
       const auditSignatures = new Set(
         auditIssues.map(issue => `${issue.location}:${issue.code}`)
       );
 
-      // Only count changes that were actually applied and don't match any audit issue
+      // Only count changes that were actually applied and don't match any audit issue.
+      // NOTE: issue.location (from EPUBCheck/ACE) and change.filePath (from modifier) may
+      // use different path formats (e.g. with/without "EPUB/" prefix). If discoveredCount
+      // unexpectedly equals the total applied count, check the debug logs below for mismatches.
       let discoveredCount = 0;
       for (const change of changes.filter(c => c.status === ChangeStatus.APPLIED)) {
         const changeSignature = `${change.filePath}:${change.ruleId || ''}`;
         if (!auditSignatures.has(changeSignature)) {
+          logger.debug(`[calculateDiscoveredFixes] No audit match for change: ${changeSignature}`);
           discoveredCount++;
         }
       }
