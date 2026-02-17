@@ -832,9 +832,9 @@ class RemediationService {
       originalIssues: originalPlan.tasks.length,
       newIssues: newAuditResult.combinedIssues.length,
       resolved: resolvedIssueCodes.length,
-      // stillPending should be the count of issues remaining in the new audit
-      // NOT (original tasks - verified tasks) which double-counts already-fixed issues
-      stillPending: newAuditResult.combinedIssues.length,
+      // stillPending = original issues not yet resolved (distinct from newIssues which
+      // includes newly discovered issues not in the original audit)
+      stillPending: originalPlan.tasks.length - resolvedIssueCodes.length,
       verifiedTasks,
       newIssuesFound,
       comparison: {

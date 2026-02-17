@@ -1679,7 +1679,7 @@ export class AcrController {
       const userId = req.user?.id;
       const tenantId = req.user?.tenantId;
 
-      if (!tenantId) {
+      if (!tenantId || !userId) {
         return res.status(401).json({
           success: false,
           error: { message: 'Authentication required' },

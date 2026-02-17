@@ -347,7 +347,7 @@ export class ComparisonService {
       skipped: 0,
       failed: 0,
       discovered: discoveredCount,
-      plannedFixes: changes.length - discoveredCount,
+      plannedFixes: Math.max(0, changes.length - discoveredCount),
     };
 
     for (const change of changes) {

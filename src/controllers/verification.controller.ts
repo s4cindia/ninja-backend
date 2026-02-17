@@ -307,7 +307,8 @@ export class VerificationController {
         return;
       }
 
-      const result = await humanVerificationService.canFinalizeAcr(jobId);
+      const tenantId = req.user?.tenantId;
+      const result = await humanVerificationService.canFinalizeAcr(jobId, tenantId);
 
       res.json({
         success: true,

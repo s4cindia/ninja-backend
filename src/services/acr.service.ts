@@ -149,8 +149,9 @@ export class AcrService {
       orderBy: { createdAt: 'desc' },
     });
 
-    if (existingAcrJob) {
-      // Return existing ACR analysis
+    // Reuse the existing record only if it is not yet finalized — a finalized report
+    // should produce a new version so the history is preserved.
+    if (existingAcrJob && existingAcrJob.status !== 'finalized') {
       const existingReviews = await prisma.acrCriterionReview.findMany({
         where: { acrJobId: existingAcrJob.id },
       });

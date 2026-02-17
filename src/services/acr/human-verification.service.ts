@@ -374,7 +374,7 @@ class HumanVerificationService {
     return record;
   }
 
-  async canFinalizeAcr(jobId: string): Promise<CanFinalizeResult> {
+  async canFinalizeAcr(jobId: string, tenantId?: string): Promise<CanFinalizeResult> {
     // First check if there are database-stored criterion reviews (from ACR Review & Edit page)
     try {
       const acrJob = await prisma.acrJob.findFirst({
@@ -382,7 +382,8 @@ class HumanVerificationService {
           OR: [
             { id: jobId },
             { jobId: jobId }
-          ]
+          ],
+          ...(tenantId && { tenantId }),
         },
         orderBy: { createdAt: 'desc' },
         include: {
