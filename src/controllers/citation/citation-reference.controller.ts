@@ -10,6 +10,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { Prisma, PrismaPromise } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
@@ -744,12 +745,10 @@ export class CitationReferenceController {
         }
       }) : [];
 
-      const totalReferences = document.referenceListEntries.length;
-
       // USE ID-BASED LINKS between citations and references
       // 1. Build a map of reference ID -> reference number
       const refIdToNumber = new Map<string, number>();
-      const refIdToEntry = new Map<string, any>();
+      const refIdToEntry = new Map<string, typeof document.referenceListEntries[0]>();
       for (const ref of document.referenceListEntries) {
         const num = parseInt(ref.sortKey) || 0;
         refIdToNumber.set(ref.id, num);
@@ -884,7 +883,7 @@ export class CitationReferenceController {
       }
 
       // Create all CitationChange records data
-      const allChanges: any[] = [];
+      const allChanges: Prisma.CitationChangeCreateManyInput[] = [];
 
       // Add reference renumbering changes (for reference section track changes)
       // Note: citationId is null for reference-only changes since CitationChange doesn't have referenceId
@@ -914,7 +913,7 @@ export class CitationReferenceController {
       }
 
       // Execute ALL updates in a single transaction to prevent partial state
-      const operations: any[] = [];
+      const operations: PrismaPromise<unknown>[] = [];
 
       // 1. Update reference sortKeys
       for (const ref of document.referenceListEntries) {

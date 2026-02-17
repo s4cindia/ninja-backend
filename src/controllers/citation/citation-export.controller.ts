@@ -14,7 +14,6 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
-import { AppError } from '../../utils/app-error';
 
 export class CitationExportController {
   /**
