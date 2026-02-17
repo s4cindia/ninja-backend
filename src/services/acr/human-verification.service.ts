@@ -378,12 +378,13 @@ class HumanVerificationService {
     // First check if there are database-stored criterion reviews (from ACR Review & Edit page)
     try {
       const acrJob = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           OR: [
             { id: jobId },
             { jobId: jobId }
           ]
         },
+        orderBy: { createdAt: 'desc' },
         include: {
           criteria: true
         }

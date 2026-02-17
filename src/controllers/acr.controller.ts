@@ -589,12 +589,13 @@ export class AcrController {
 
       // 5. Also get any human-edited criteria from AcrCriterionReview to merge
       const acrJob = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           OR: [
             { id: acrId },
             { jobId: acrId }
           ]
         },
+        orderBy: { createdAt: 'desc' },
         include: { criteria: true }
       });
 
@@ -759,14 +760,15 @@ export class AcrController {
         }
       });
 
-      // If not found by acrJob ID, try finding by jobId
+      // If not found by acrJob ID, try finding by jobId (latest version)
       if (!acrJob) {
         acrJob = await prisma.acrJob.findFirst({
-          where: { 
+          where: {
             jobId: acrId,
             userId,
             tenantId
-          }
+          },
+          orderBy: { createdAt: 'desc' },
         });
       }
 
@@ -1828,11 +1830,12 @@ export class AcrController {
       }
 
       const acrJobRecord = await prisma.acrJob.findFirst({
-        where: { 
+        where: {
           jobId: batchAcrId,
           tenantId,
           userId,
         },
+        orderBy: { createdAt: 'desc' },
         include: { criteria: true },
       });
 

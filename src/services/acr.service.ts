@@ -143,9 +143,10 @@ export class AcrService {
       throw new Error(`Invalid edition: ${edition}`);
     }
 
-    // Check if ACR already exists for this job
+    // Check if ACR already exists for this job (latest version)
     const existingAcrJob = await prisma.acrJob.findFirst({
       where: { jobId, tenantId },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (existingAcrJob) {
@@ -258,6 +259,7 @@ export class AcrService {
         userId,
         tenantId,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         criteria: {
           orderBy: {
@@ -323,6 +325,7 @@ export class AcrService {
         userId,
         tenantId,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         criteria: {
           orderBy: {
