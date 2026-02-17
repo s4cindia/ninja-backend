@@ -647,6 +647,41 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
         logger.info(`[ACR Analysis] Converted ${issues.length} WCAG issues, ${otherCriteria.length} other issues`);
       }
     }
+  } else if (job.type === 'PDF_ACCESSIBILITY') {
+    // PDF audit jobs store issues inside job.output.auditReport.issues.
+    // Issues already carry wcagCriteria: string[], so they map directly into
+    // analyzeWcagCriteria without any additional transformation.
+    const pdfReport = auditOutput?.auditReport as {
+      issues?: AuditIssue[];
+      fileName?: string;
+    } | undefined;
+
+    issues = (pdfReport?.issues || []);
+    logger.info(`[ACR Analysis] PDF_ACCESSIBILITY job: ${issues.length} issues from auditReport`);
+
+    // Pull applied RemediationChange records from Phase 4's table so the
+    // confidence analyser knows which issues have already been fixed.
+    try {
+      const dbChanges = await prisma.remediationChange.findMany({
+        where: { jobId, status: 'APPLIED' },
+        select: { ruleId: true, wcagCriteria: true, appliedAt: true },
+      });
+
+      remediationChanges = dbChanges.map(rc => ({
+        // issueCode matches the PDF issue code format (e.g. "WCAG-2.4.2")
+        issueCode: rc.ruleId ?? undefined,
+        // criterionId is the bare WCAG number (e.g. "2.4.2")
+        criterionId: rc.wcagCriteria ?? undefined,
+        status: 'applied',
+        fixedAt: rc.appliedAt?.toISOString(),
+      }));
+
+      logger.info(`[ACR Analysis] PDF_ACCESSIBILITY: ${remediationChanges.length} applied remediation changes`);
+    } catch (err) {
+      logger.warn('[ACR Analysis] Could not load RemediationChange records for PDF job', err instanceof Error ? err : undefined);
+    }
+
+    // No EPUB to detect — PDF content detection is handled by B3
   } else {
     issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
     logger.info(`[ACR Analysis] Using ${issues.length} issues from job output`);
@@ -730,7 +765,10 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
       status: 'draft' as const,
       edition: (editionCode || 'VPAT2.5-INT') as 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT',
       productInfo: {
-        name: (auditOutput?.epubTitle as string) || 'Unknown Product',
+        name: (auditOutput?.epubTitle as string) ||
+              (auditOutput?.auditReport as { fileName?: string } | undefined)?.fileName ||
+              (auditOutput?.fileName as string) ||
+              'Unknown Product',
         version: '1.0',
         vendor: '',
         description: '',
