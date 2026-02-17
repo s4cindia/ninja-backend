@@ -4,6 +4,7 @@ import acrEditionsData from '../../data/acrEditions.json';
 import { acrVersioningService } from './acr-versioning.service';
 import { RULE_TO_CRITERIA_MAP } from './wcag-issue-mapper.service';
 import { contentDetectionService, ApplicabilitySuggestion } from './content-detection.service';
+import { pdfContentDetectionService } from './pdf-content-detection.service';
 import { fileStorageService } from '../storage/file-storage.service';
 import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
@@ -681,7 +682,29 @@ export async function getAnalysisForJob(jobId: string, userId?: string, forceRef
       logger.warn('[ACR Analysis] Could not load RemediationChange records for PDF job', err instanceof Error ? err : undefined);
     }
 
-    // No EPUB to detect — PDF content detection is handled by B3
+    // Run PDF content detection to generate N/A suggestions
+    try {
+      const jobInput = job.input as Record<string, unknown> | null;
+      const pdfFileName = (jobInput?.fileName as string | undefined) ||
+                          (pdfReport?.fileName as string | undefined);
+
+      if (pdfFileName) {
+        logger.info(`[ACR] Running PDF content detection: ${pdfFileName}`);
+        const pdfBuffer = await fileStorageService.getFile(jobId, pdfFileName);
+
+        if (pdfBuffer) {
+          naSuggestions = await pdfContentDetectionService.analyzePDFContent(pdfBuffer, pdfFileName);
+          logger.info(`[ACR] PDF content detection: ${naSuggestions.length} N/A suggestions`);
+        } else {
+          logger.warn(`[ACR] PDF file not found in storage: ${pdfFileName}`);
+        }
+      } else {
+        logger.warn('[ACR] No PDF filename in job input, skipping content detection');
+      }
+    } catch (error) {
+      logger.error('[ACR] PDF content detection failed, continuing without N/A suggestions', error instanceof Error ? error : undefined);
+      naSuggestions = [];
+    }
   } else {
     issues = (auditOutput?.combinedIssues || auditOutput?.issues || []) as AuditIssue[];
     logger.info(`[ACR Analysis] Using ${issues.length} issues from job output`);
