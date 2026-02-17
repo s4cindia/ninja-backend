@@ -1,0 +1,66 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(pwd)",
+      "Bash(ls)",
+      "Bash(git status)",
+      "Bash(git branch)",
+      "Bash(git log)",
+      "Bash(git diff)",
+      "Bash(npm test)",
+      "Bash(npm run)",
+      "Bash(npx tsc)",
+      "Bash(node -v)",
+      "Bash(npm -v)",
+      "Bash(cat package.json)",
+      "Bash(which)",
+      "Bash(echo)",
+      "Bash(find)"
+    ],
+    "defaultMode": "default"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/branch-protection.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/hooks/branch-protection.sh"
+          },
+          {
+            "type": "command",
+            "command": "node -e \"const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const f=d.tool_input?.file_path||''; if(f.startsWith('/')||f.startsWith('~')) { console.error('❌ Error: Use Windows paths (C:\\\\\\\\Users\\\\\\\\...), not Linux paths (/tmp/, /home/)'); process.exit(2); }\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -o pipefail -c \"cd $CLAUDE_PROJECT_DIR && echo '🔍 Running TypeScript check...' && npx tsc --noEmit 2>&1 | head -20\""
+          },
+          {
+            "type": "command",
+            "command": "bash -o pipefail -c \"cd $CLAUDE_PROJECT_DIR && echo '🔍 Running lint check...' && npm run lint 2>&1 | head -20\""
+          }
+        ]
+      }
+    ]
+  }
+}

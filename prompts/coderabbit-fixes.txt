@@ -1,0 +1,37 @@
+In @.claude/hooks/branch-protection.sh:
+- Around line 12-31: The hook only checks the current branch (BRANCH) so pushes
+like `git push origin HEAD:main` bypass it; update the check for git push to
+parse push targets in COMMAND and reject any push that targets main/master
+(e.g., detect patterns like :main, :master, refs/heads/main, refs/heads/master,
+or explicit remote/branch targets ending in /main or /master). Specifically, in
+the block that inspects COMMAND and BRANCH, add a regex test against "$COMMAND"
+for push-target patterns (e.g., grep -qE '(:|refs/heads/|/)(main|master)(\s|$)')
+and if matched, print the same error and exit non-zero instead of relying solely
+on BRANCH; keep existing BRANCH check for local pushes as well.
+
+In @.claude/settings.json:
+- Around line 44-46: Update the inline node -e Windows-path guard in the command
+(the part that defines variable f) so it rejects any POSIX-style absolute or
+home paths by checking whether f starts with a forward slash or tilde instead of
+only checking for /tmp/ and /home/; replace the current condition that uses
+f.startsWith('/tmp/') || f.startsWith('/home/') with a check that f starts with
+'/' or '~' and keep the existing error message and exit code behavior.
+
+In `@CLAUDE.md`:
+- Around line 79-82: Update the inconsistent backend repo name/path in the
+document by choosing one canonical name (either "ninja" or "ninja-backend") and
+replacing the other occurrence so both the "Development Environment" block and
+the "The workspace contains multiple repositories" section reference the same
+repo name and path; specifically edit the text that currently reads
+`ninja-backend` at the repositories list or the earlier reference to `ninja` so
+both show the identical identifier and filesystem path (e.g., `ninja-backend` at
+C:\Users\avrve\projects\ninja-backend or `ninja` at
+C:\Users\avrve\projects\ninja), and ensure any README or workspace mentions in
+the same file are updated to match the chosen canonical name.
+- Around line 133-136: The CLI example uses the incorrect "npm test --
+--related" invocation; replace that instruction to call the Vitest subcommand
+directly by updating the text that currently shows "npm test -- --related" to
+instruct users to run the vitest related command (e.g., "npx vitest related
+<path/to/changed/file>") or add an npm script named something like
+"test:related" that runs "vitest related --run" and reference that script
+instead of the broken npm test form.
