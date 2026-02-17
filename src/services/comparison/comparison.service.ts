@@ -73,10 +73,13 @@ export class ComparisonService {
 
     const allChanges = await this.prisma.remediationChange.findMany({
       where: { jobId },
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allChanges);
+    // Identify discovered fixes by comparing with original audit issues
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allChanges);
+
+    const summary = this.calculateSummary(allChanges, discoveredCount);
     const byType = this.groupByField(allChanges, 'changeType');
     const bySeverity = this.groupByField(allChanges, 'severity');
     const byWcag = this.groupByField(allChanges, 'wcagCriteria');
@@ -179,10 +182,13 @@ export class ComparisonService {
 
     const allFilteredChanges = await this.prisma.remediationChange.findMany({
       where,
-      select: { status: true, changeType: true, severity: true, wcagCriteria: true },
+      select: { status: true, changeType: true, severity: true, wcagCriteria: true, filePath: true, ruleId: true },
     });
 
-    const summary = this.calculateSummary(allFilteredChanges);
+    // Calculate discovered fixes for filtered changes
+    const discoveredCount = await this.calculateDiscoveredFixes(jobId, allFilteredChanges);
+
+    const summary = this.calculateSummary(allFilteredChanges, discoveredCount);
     const byType = this.groupByField(allFilteredChanges, 'changeType');
     const bySeverity = this.groupByField(allFilteredChanges, 'severity');
     const byWcag = this.groupByField(allFilteredChanges, 'wcagCriteria');
@@ -331,7 +337,8 @@ export class ComparisonService {
   }
 
   private calculateSummary(
-    changes: { status: ChangeStatus }[]
+    changes: { status: ChangeStatus }[],
+    discoveredCount: number = 0
   ): ComparisonSummary {
     const summary: ComparisonSummary = {
       totalChanges: changes.length,
@@ -339,6 +346,8 @@ export class ComparisonService {
       rejected: 0,
       skipped: 0,
       failed: 0,
+      discovered: discoveredCount,
+      plannedFixes: changes.length - discoveredCount,
     };
 
     for (const change of changes) {
@@ -362,6 +371,48 @@ export class ComparisonService {
     }
 
     return summary;
+  }
+
+  /**
+   * Calculates the number of discovered fixes by comparing changes with original audit issues
+   * A "discovered fix" is a change that was applied but wasn't in the original audit findings
+   */
+  private async calculateDiscoveredFixes(
+    jobId: string,
+    changes: { filePath: string; ruleId: string | null }[]
+  ): Promise<number> {
+    try {
+      const job = await this.prisma.job.findUnique({
+        where: { id: jobId },
+        select: { output: true },
+      });
+
+      if (!job || !job.output) {
+        return 0;
+      }
+
+      const output = job.output as { combinedIssues?: Array<{ code: string; location: string }> };
+      const auditIssues = output.combinedIssues || [];
+
+      // Create a set of audit issue signatures for fast lookup
+      const auditSignatures = new Set(
+        auditIssues.map(issue => `${issue.location}:${issue.code}`)
+      );
+
+      // Count changes that don't match any audit issue
+      let discoveredCount = 0;
+      for (const change of changes) {
+        const changeSignature = `${change.filePath}:${change.ruleId || ''}`;
+        if (!auditSignatures.has(changeSignature)) {
+          discoveredCount++;
+        }
+      }
+
+      return discoveredCount;
+    } catch (error) {
+      logger.error('Failed to calculate discovered fixes', error instanceof Error ? error : undefined);
+      return 0; // Fail gracefully
+    }
   }
 
   private groupByField(
