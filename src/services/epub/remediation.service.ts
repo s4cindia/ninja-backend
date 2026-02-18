@@ -1161,7 +1161,7 @@ class RemediationService {
     return {
       acrWorkflowId: acrJob.id,
       transferredTasks: tasksToTransfer.length,
-      message: `${pendingTasks.length} tasks transferred to ACR workflow for verification`,
+      message: `${tasksToTransfer.length} tasks transferred to ACR workflow for verification`,
     };
   }
 
