@@ -27,19 +27,30 @@ ALTER COLUMN "aiStatus" SET NOT NULL;
 
 -- =====================================================
 -- PART 2: Fix CriterionChangeLog schema refactoring
+-- Skip if CriterionChangeLog table doesn't exist
 -- =====================================================
 
 -- Step 2.1: Add new required columns (idempotent - safe to re-run)
-ALTER TABLE "CriterionChangeLog"
-ADD COLUMN IF NOT EXISTS "acrJobId" TEXT;
-
-ALTER TABLE "CriterionChangeLog"
-ADD COLUMN IF NOT EXISTS "fieldName" TEXT;
-
--- Step 2.2: Migrate data from old structure to new structure (idempotent)
--- Only update if old columns exist and new columns are NULL
 DO $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+        ALTER TABLE "CriterionChangeLog" ADD COLUMN IF NOT EXISTS "acrJobId" TEXT;
+        ALTER TABLE "CriterionChangeLog" ADD COLUMN IF NOT EXISTS "fieldName" TEXT;
+    ELSE
+        RAISE NOTICE 'CriterionChangeLog table does not exist, skipping PART 2';
+    END IF;
+END$$;
+
+-- Step 2.2: Migrate data from old structure to new structure (idempotent)
+-- Only update if table and old columns exist
+DO $$
+BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RAISE NOTICE 'CriterionChangeLog table does not exist, skipping Step 2.2';
+    RETURN;
+  END IF;
+
   -- Only run if old column "criterionReviewId" still exists
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -61,6 +72,11 @@ END$$;
 -- Map changeType → fieldName (only if fieldName is NULL)
 DO $$
 BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RETURN;
+  END IF;
+
   -- Only run if old column "changeType" still exists
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -95,6 +111,11 @@ DO $$
 DECLARE
   orphaned_count INTEGER;
 BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RETURN;
+  END IF;
+
   -- Count orphaned records
   SELECT COUNT(*) INTO orphaned_count
   FROM "CriterionChangeLog"
@@ -116,8 +137,12 @@ BEGIN
 END$$;
 
 -- Delete orphaned records that couldn't be mapped (now archived)
-DELETE FROM "CriterionChangeLog"
-WHERE "acrJobId" IS NULL;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    DELETE FROM "CriterionChangeLog" WHERE "acrJobId" IS NULL;
+  END IF;
+END$$;
 
 -- Step 2.4: Make new columns NOT NULL (idempotent - checks for NULLs first)
 DO $$
@@ -125,6 +150,11 @@ DECLARE
   null_acr_job_count INTEGER;
   null_field_count INTEGER;
 BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RETURN;
+  END IF;
+
   -- Check for NULL values before setting NOT NULL
   SELECT COUNT(*) INTO null_acr_job_count
   FROM "CriterionChangeLog"
@@ -155,6 +185,12 @@ END$$;
 -- Step 2.5: Rename createdAt to changedAt (idempotent - conditional on column existence)
 DO $$
 BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RAISE NOTICE 'CriterionChangeLog table does not exist, skipping Step 2.5';
+    RETURN;
+  END IF;
+
   -- Only rename if createdAt exists and changedAt does not
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -173,23 +209,47 @@ BEGIN
 END$$;
 
 -- Step 2.6: Drop old columns that are no longer in schema (idempotent)
-ALTER TABLE "CriterionChangeLog"
-DROP COLUMN IF EXISTS "criterionReviewId",
-DROP COLUMN IF EXISTS "jobId",
-DROP COLUMN IF EXISTS "changeType",
-DROP COLUMN IF EXISTS "reason";
+DO $$
+BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RAISE NOTICE 'CriterionChangeLog table does not exist, skipping Step 2.6';
+    RETURN;
+  END IF;
+
+  -- Drop old columns (idempotent with IF EXISTS)
+  ALTER TABLE "CriterionChangeLog"
+  DROP COLUMN IF EXISTS "criterionReviewId",
+  DROP COLUMN IF EXISTS "jobId",
+  DROP COLUMN IF EXISTS "changeType",
+  DROP COLUMN IF EXISTS "reason";
+
+  RAISE NOTICE 'Dropped old columns from CriterionChangeLog';
+END$$;
 
 -- Step 2.7: Add new indexes for the new columns
-CREATE INDEX IF NOT EXISTS "CriterionChangeLog_acrJobId_idx"
-ON "CriterionChangeLog"("acrJobId");
+DO $$
+BEGIN
+  -- Skip if table doesn't exist
+  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    RAISE NOTICE 'CriterionChangeLog table does not exist, skipping Step 2.7';
+    RETURN;
+  END IF;
 
-CREATE INDEX IF NOT EXISTS "CriterionChangeLog_changedAt_idx"
-ON "CriterionChangeLog"("changedAt");
+  -- Add new indexes (idempotent with IF NOT EXISTS)
+  CREATE INDEX IF NOT EXISTS "CriterionChangeLog_acrJobId_idx"
+  ON "CriterionChangeLog"("acrJobId");
 
--- Drop old indexes that reference dropped columns
-DROP INDEX IF EXISTS "CriterionChangeLog_criterionReviewId_idx";
-DROP INDEX IF EXISTS "CriterionChangeLog_jobId_idx";
-DROP INDEX IF EXISTS "CriterionChangeLog_createdAt_idx";
+  CREATE INDEX IF NOT EXISTS "CriterionChangeLog_changedAt_idx"
+  ON "CriterionChangeLog"("changedAt");
+
+  -- Drop old indexes that reference dropped columns
+  DROP INDEX IF EXISTS "CriterionChangeLog_criterionReviewId_idx";
+  DROP INDEX IF EXISTS "CriterionChangeLog_jobId_idx";
+  DROP INDEX IF EXISTS "CriterionChangeLog_createdAt_idx";
+
+  RAISE NOTICE 'Updated indexes on CriterionChangeLog';
+END$$;
 
 -- =====================================================
 -- PART 3: Fix AcrJob schema changes (remove old columns)
@@ -325,15 +385,19 @@ BEGIN
     RAISE EXCEPTION 'Verification failed: AcrCriterionReview has NULL values in required fields';
   END IF;
 
-  -- Verify CriterionChangeLog
-  SELECT COUNT(*), COUNT("acrJobId"), COUNT("fieldName")
-  INTO ccl_total, ccl_has_job, ccl_has_field
-  FROM "CriterionChangeLog";
+  -- Verify CriterionChangeLog (only if table exists)
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'CriterionChangeLog') THEN
+    SELECT COUNT(*), COUNT("acrJobId"), COUNT("fieldName")
+    INTO ccl_total, ccl_has_job, ccl_has_field
+    FROM "CriterionChangeLog";
 
-  RAISE NOTICE 'CriterionChangeLog: % total, % have acrJobId, % have fieldName', ccl_total, ccl_has_job, ccl_has_field;
+    RAISE NOTICE 'CriterionChangeLog: % total, % have acrJobId, % have fieldName', ccl_total, ccl_has_job, ccl_has_field;
 
-  IF ccl_total != ccl_has_job OR ccl_total != ccl_has_field THEN
-    RAISE EXCEPTION 'Verification failed: CriterionChangeLog has NULL values in required fields';
+    IF ccl_total != ccl_has_job OR ccl_total != ccl_has_field THEN
+      RAISE EXCEPTION 'Verification failed: CriterionChangeLog has NULL values in required fields';
+    END IF;
+  ELSE
+    RAISE NOTICE 'CriterionChangeLog table does not exist, skipping verification';
   END IF;
 
   RAISE NOTICE 'SUCCESS: All verifications passed!';

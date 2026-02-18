@@ -1,8 +1,13 @@
--- CreateEnum
-CREATE TYPE "ChangeStatus" AS ENUM ('APPLIED', 'REJECTED', 'REVERTED', 'FAILED', 'SKIPPED');
+-- CreateEnum (idempotent - check if exists first)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ChangeStatus') THEN
+        CREATE TYPE "ChangeStatus" AS ENUM ('APPLIED', 'REJECTED', 'REVERTED', 'FAILED', 'SKIPPED');
+    END IF;
+END$$;
 
--- CreateTable
-CREATE TABLE "RemediationChange" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "RemediationChange" (
     "id" TEXT NOT NULL,
     "jobId" TEXT NOT NULL,
     "taskId" TEXT,
@@ -28,8 +33,8 @@ CREATE TABLE "RemediationChange" (
     CONSTRAINT "RemediationChange_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "ComparisonReport" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "ComparisonReport" (
     "id" TEXT NOT NULL,
     "jobId" TEXT NOT NULL,
     "totalChanges" INTEGER NOT NULL,
@@ -45,23 +50,33 @@ CREATE TABLE "ComparisonReport" (
     CONSTRAINT "ComparisonReport_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE UNIQUE INDEX "RemediationChange_jobId_changeNumber_key" ON "RemediationChange"("jobId", "changeNumber");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "RemediationChange_jobId_changeNumber_key" ON "RemediationChange"("jobId", "changeNumber");
 
--- CreateIndex
-CREATE INDEX "RemediationChange_jobId_idx" ON "RemediationChange"("jobId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "RemediationChange_jobId_idx" ON "RemediationChange"("jobId");
 
--- CreateIndex
-CREATE INDEX "RemediationChange_status_idx" ON "RemediationChange"("status");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "RemediationChange_status_idx" ON "RemediationChange"("status");
 
--- CreateIndex
-CREATE UNIQUE INDEX "ComparisonReport_jobId_key" ON "ComparisonReport"("jobId");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "ComparisonReport_jobId_key" ON "ComparisonReport"("jobId");
 
--- CreateIndex
-CREATE INDEX "ComparisonReport_jobId_idx" ON "ComparisonReport"("jobId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "ComparisonReport_jobId_idx" ON "ComparisonReport"("jobId");
 
--- AddForeignKey
-ALTER TABLE "RemediationChange" ADD CONSTRAINT "RemediationChange_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'RemediationChange_jobId_fkey') THEN
+        ALTER TABLE "RemediationChange" ADD CONSTRAINT "RemediationChange_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    END IF;
+END$$;
 
--- AddForeignKey
-ALTER TABLE "ComparisonReport" ADD CONSTRAINT "ComparisonReport_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ComparisonReport_jobId_fkey') THEN
+        ALTER TABLE "ComparisonReport" ADD CONSTRAINT "ComparisonReport_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    END IF;
+END$$;
