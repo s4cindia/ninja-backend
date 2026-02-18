@@ -356,32 +356,46 @@ WHERE id IN (
 -- PART 5: Add unique constraints to prevent future duplicates
 -- =====================================================
 
--- Add unique constraint for AcrCriterionReview (if not exists)
+-- Add unique constraint for AcrCriterionReview (idempotent with exception handling)
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'AcrCriterionReview_acrJobId_criterionId_key'
-    ) THEN
-        ALTER TABLE "AcrCriterionReview"
-        ADD CONSTRAINT "AcrCriterionReview_acrJobId_criterionId_key"
-        UNIQUE ("acrJobId", "criterionId");
-        RAISE NOTICE 'Added unique constraint: AcrCriterionReview_acrJobId_criterionId_key';
-    END IF;
+    ALTER TABLE "AcrCriterionReview"
+    ADD CONSTRAINT "AcrCriterionReview_acrJobId_criterionId_key"
+    UNIQUE ("acrJobId", "criterionId");
+    RAISE NOTICE 'Added unique constraint: AcrCriterionReview_acrJobId_criterionId_key';
+EXCEPTION
+    WHEN duplicate_table THEN
+        RAISE NOTICE 'Unique constraint on AcrCriterionReview already exists, skipping';
+    WHEN duplicate_object THEN
+        RAISE NOTICE 'Unique constraint on AcrCriterionReview already exists, skipping';
+    WHEN others THEN
+        -- Check if it's a "relation already exists" error (unique index already exists)
+        IF SQLERRM LIKE '%already exists%' THEN
+            RAISE NOTICE 'Unique constraint on AcrCriterionReview already exists, skipping';
+        ELSE
+            RAISE;
+        END IF;
 END$$;
 
--- Add unique constraint for AcrJob (if not exists)
+-- Add unique constraint for AcrJob (idempotent with exception handling)
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'AcrJob_tenantId_jobId_key'
-    ) THEN
-        ALTER TABLE "AcrJob"
-        ADD CONSTRAINT "AcrJob_tenantId_jobId_key"
-        UNIQUE ("tenantId", "jobId");
-        RAISE NOTICE 'Added unique constraint: AcrJob_tenantId_jobId_key';
-    END IF;
+    ALTER TABLE "AcrJob"
+    ADD CONSTRAINT "AcrJob_tenantId_jobId_key"
+    UNIQUE ("tenantId", "jobId");
+    RAISE NOTICE 'Added unique constraint: AcrJob_tenantId_jobId_key';
+EXCEPTION
+    WHEN duplicate_table THEN
+        RAISE NOTICE 'Unique constraint on AcrJob already exists, skipping';
+    WHEN duplicate_object THEN
+        RAISE NOTICE 'Unique constraint on AcrJob already exists, skipping';
+    WHEN others THEN
+        -- Check if it's a "relation already exists" error (unique index already exists)
+        IF SQLERRM LIKE '%already exists%' THEN
+            RAISE NOTICE 'Unique constraint on AcrJob already exists, skipping';
+        ELSE
+            RAISE;
+        END IF;
 END$$;
 
 -- =====================================================
