@@ -43,10 +43,20 @@ export interface EnrichedMetadata {
 class CrossRefService {
   private baseUrl = 'https://api.crossref.org/works';
   private userAgent: string;
+  private readonly REQUEST_TIMEOUT_MS = 10000; // 10 second timeout
 
   constructor() {
     const contactEmail = process.env.CROSSREF_CONTACT_EMAIL || 'support@s4carlisle.com';
     this.userAgent = `Ninja-Citation-Tool/1.0 (mailto:${contactEmail})`;
+  }
+
+  /**
+   * Validate DOI format to prevent SSRF attacks
+   * Valid DOIs start with "10." followed by registrant code and suffix
+   */
+  private isValidDoiFormat(doi: string): boolean {
+    // DOI format: 10.xxxx/yyyy (must start with "10." and contain "/")
+    return /^10\.\d{4,}\/[^\s]+$/.test(doi);
   }
 
   async lookupByDoi(doi: string): Promise<EnrichedMetadata | null> {
@@ -54,14 +64,28 @@ class CrossRefService {
       // Apply rate limiting before making request
       await crossRefRateLimiter.acquire();
 
-      const cleanDoi = doi.replace(/^https?:\/\/doi\.org\//, '');
+      const cleanDoi = doi.replace(/^https?:\/\/doi\.org\//, '').replace(/^doi:/i, '').trim();
+
+      // Validate DOI format to prevent SSRF
+      if (!this.isValidDoiFormat(cleanDoi)) {
+        logger.warn(`[CrossRef] Invalid DOI format rejected: ${cleanDoi.substring(0, 50)}`);
+        return null;
+      }
+
       const url = `${this.baseUrl}/${encodeURIComponent(cleanDoi)}`;
+
+      // Use AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
 
       const response = await fetch(url, {
         headers: {
           'User-Agent': this.userAgent
-        }
+        },
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         logger.warn(`[CrossRef] DOI lookup failed: ${response.status} for ${cleanDoi}`);
@@ -83,13 +107,22 @@ class CrossRefService {
       // Apply rate limiting before making request
       await crossRefRateLimiter.acquire();
 
-      const url = `${this.baseUrl}?query=${encodeURIComponent(query)}&rows=${limit}`;
+      // Limit query length to prevent abuse
+      const sanitizedQuery = query.substring(0, 500);
+      const url = `${this.baseUrl}?query=${encodeURIComponent(sanitizedQuery)}&rows=${Math.min(limit, 20)}`;
+
+      // Use AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.REQUEST_TIMEOUT_MS);
 
       const response = await fetch(url, {
         headers: {
           'User-Agent': this.userAgent
-        }
+        },
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         return [];
