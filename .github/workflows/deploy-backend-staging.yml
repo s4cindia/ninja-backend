@@ -99,6 +99,20 @@ jobs:
 
           if [ "$EXIT_CODE" != "0" ]; then
             echo "Migration failed with exit code: $EXIT_CODE"
+
+            # Extract task ID from ARN for log stream name
+            TASK_ID=$(echo $TASK_ARN | sed 's/.*task\///' | sed 's/.*\///')
+            echo "Task ID: $TASK_ID"
+
+            # Try to fetch CloudWatch logs for debugging
+            echo "=== Fetching CloudWatch logs for debugging ==="
+            aws logs get-log-events \
+              --log-group-name "/ecs/ninja-backend-task" \
+              --log-stream-name "ecs/ninja-backend/$TASK_ID" \
+              --limit 50 \
+              --query 'events[*].message' \
+              --output text 2>/dev/null || echo "Could not fetch logs"
+
             exit 1
           fi
 
