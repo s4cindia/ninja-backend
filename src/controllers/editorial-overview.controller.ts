@@ -242,13 +242,13 @@ export class EditorialOverviewController {
 
       let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
+        select: { id: true, jobId: true, documentContent: { select: { fullText: true, fullHtml: true } } },
       });
 
       if (!document) {
         document = await prisma.editorialDocument.findFirst({
           where: { jobId: documentId, tenantId },
-          select: { id: true, documentContent: { select: { fullText: true, fullHtml: true } } },
+          select: { id: true, jobId: true, documentContent: { select: { fullText: true, fullHtml: true } } },
         });
       }
 
@@ -261,8 +261,9 @@ export class EditorialOverviewController {
       let referenceLookup: Record<string, string> = {};
 
       try {
+        // First try by document ID, then fallback to job ID lookup
         const analysis = await citationStylesheetDetectionService.getAnalysisResults(document.id, tenantId)
-          || await citationStylesheetDetectionService.getAnalysisByJobId(document.id, tenantId);
+          || await citationStylesheetDetectionService.getAnalysisByJobId(document.jobId, tenantId);
 
         if (analysis && document.documentContent?.fullHtml) {
           const lookupMap: Record<string, string> = {};
