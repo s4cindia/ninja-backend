@@ -3,7 +3,9 @@
  * Handles document upload, analysis, and job status
  *
  * Endpoints:
- * - POST /upload - Upload DOCX and start analysis
+ * - POST /presign-upload - Get presigned S3 URL for DOCX upload
+ * - POST /confirm-upload - Confirm upload and start analysis
+ * - POST /upload - Legacy: Upload DOCX and start analysis (deprecated, use presigned URLs)
  * - GET /job/:jobId/status - Get job status for polling
  * - GET /document/:documentId/analysis - Get analysis results
  * - POST /document/:documentId/reanalyze - Re-run analysis
@@ -11,8 +13,10 @@
 
 import { Request, Response, NextFunction } from 'express';
 import * as path from 'path';
+import { nanoid } from 'nanoid';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { s3Service } from '../../services/s3.service';
 import { aiCitationDetectorService } from '../../services/citation/ai-citation-detector.service';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
@@ -30,8 +34,318 @@ function isAuthenticated(req: Request): req is Request & { user: { tenantId: str
 
 export class CitationUploadController {
   /**
+   * POST /api/v1/citation-management/presign-upload
+   * Get presigned S3 URL for DOCX upload
+   *
+   * This is the preferred upload method per PRESIGNED_S3_UPLOAD_DESIGN.md:
+   * - Avoids CloudFront WAF blocking multipart uploads
+   * - Prevents ECS memory exhaustion from in-memory file buffers
+   */
+  async presignUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { tenantId } = req.user;
+      const { fileName, fileSize } = req.body;
+
+      if (!fileName || typeof fileName !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_FILENAME', message: 'fileName is required' }
+        });
+        return;
+      }
+
+      // Validate file extension
+      const fileExt = fileName.toLowerCase().split('.').pop();
+      if (fileExt !== 'docx') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_TYPE', message: 'Only DOCX files are allowed' }
+        });
+        return;
+      }
+
+      // Validate file size if provided
+      if (fileSize && fileSize > MAX_FILE_SIZE) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'FILE_TOO_LARGE', message: `File size exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit` }
+        });
+        return;
+      }
+
+      // Check if S3 is configured
+      if (!s3Service.isConfigured()) {
+        res.status(503).json({
+          success: false,
+          error: { code: 'S3_NOT_CONFIGURED', message: 'S3 storage is not configured' }
+        });
+        return;
+      }
+
+      const contentType = ALLOWED_MIMES[0];
+
+      // Get presigned URL from S3
+      const result = await s3Service.getPresignedUploadUrl(
+        tenantId,
+        fileName,
+        contentType,
+        3600 // 1 hour expiry
+      );
+
+      // Create a pending file record
+      const file = await prisma.file.create({
+        data: {
+          id: nanoid(),
+          tenantId,
+          filename: fileName,
+          originalName: fileName,
+          mimeType: contentType,
+          size: fileSize || 0,
+          path: result.fileKey,
+          status: 'PENDING_UPLOAD',
+          storagePath: result.fileKey,
+          storageType: 'S3',
+          updatedAt: new Date(),
+        },
+      });
+
+      logger.info(`[Citation Upload] Generated presigned URL for ${fileName}, fileId=${file.id}`);
+
+      res.json({
+        success: true,
+        data: {
+          uploadUrl: result.uploadUrl,
+          fileKey: result.fileKey,
+          fileId: file.id,
+          expiresIn: result.expiresIn,
+        },
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Presign failed:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/citation-management/confirm-upload
+   * Confirm S3 upload completed and start analysis
+   */
+  async confirmUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { tenantId, id: userId } = req.user;
+      const { fileKey, fileName } = req.body;
+
+      if (!fileKey || typeof fileKey !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_FILE_KEY', message: 'fileKey is required' }
+        });
+        return;
+      }
+
+      if (!fileName || typeof fileName !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_FILENAME', message: 'fileName is required' }
+        });
+        return;
+      }
+
+      logger.info(`[Citation Upload] Confirming upload: ${fileKey}`);
+
+      // Download file from S3 to process
+      let fileBuffer: Buffer;
+      try {
+        fileBuffer = await s3Service.getFileBuffer(fileKey);
+      } catch (s3Error) {
+        logger.error(`[Citation Upload] Failed to retrieve file from S3: ${fileKey}`, s3Error);
+        res.status(400).json({
+          success: false,
+          error: { code: 'FILE_NOT_FOUND', message: 'File not found in S3. Upload may have failed.' }
+        });
+        return;
+      }
+
+      // Security: Validate ZIP magic bytes (DOCX is a ZIP file)
+      if (fileBuffer.length < 4 || fileBuffer.readUInt32LE(0) !== 0x04034B50) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_FILE_STRUCTURE', message: 'Invalid DOCX file structure' }
+        });
+        return;
+      }
+
+      // Validate DOCX content structure
+      const validation = await docxProcessorService.validateDOCX(fileBuffer);
+      if (!validation.valid) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_DOCX', message: validation.error }
+        });
+        return;
+      }
+
+      // Extract text and statistics
+      const content = await docxProcessorService.extractText(fileBuffer);
+      const stats = await docxProcessorService.getStatistics(fileBuffer);
+
+      // Create job
+      const job = await prisma.job.create({
+        data: {
+          tenantId,
+          userId,
+          type: 'CITATION_DETECTION',
+          status: 'PROCESSING',
+          input: {
+            filename: fileName,
+            fileSize: fileBuffer.length,
+            fileKey,
+            mimeType: ALLOWED_MIMES[0],
+          },
+          output: {},
+          priority: 1
+        }
+      });
+
+      // Extract filename from storage path for database record (cross-platform)
+      const storedFileName = path.basename(fileKey) || fileName;
+
+      // Create document record with content in separate table for performance
+      const document = await prisma.editorialDocument.create({
+        data: {
+          tenantId,
+          jobId: job.id,
+          originalName: fileName,
+          fileName: storedFileName,
+          mimeType: ALLOWED_MIMES[0],
+          fileSize: fileBuffer.length,
+          storagePath: fileKey,
+          storageType: 'S3',
+          wordCount: stats.wordCount,
+          pageCount: stats.pageCount,
+          status: 'QUEUED',
+          documentContent: {
+            create: {
+              fullText: content.text,
+              fullHtml: content.html,
+              wordCount: stats.wordCount,
+              pageCount: stats.pageCount,
+            }
+          }
+        }
+      });
+
+      // Update file record status
+      await prisma.file.updateMany({
+        where: { storagePath: fileKey, tenantId },
+        data: { status: 'UPLOADED' }
+      });
+
+      // Check if async processing is available (Redis configured)
+      const useAsyncProcessing = areQueuesAvailable();
+
+      if (useAsyncProcessing) {
+        const citationQueue = getCitationQueue();
+        if (citationQueue) {
+          await citationQueue.add(
+            `citation-${document.id}`,
+            {
+              type: JOB_TYPES.CITATION_DETECTION,
+              tenantId,
+              userId,
+              options: { documentId: document.id },
+            },
+            { jobId: job.id, priority: 1 }
+          );
+
+          await prisma.job.update({
+            where: { id: job.id },
+            data: { status: 'QUEUED' },
+          });
+
+          logger.info(`[Citation Upload] Queued analysis job for ${document.id}`);
+
+          res.json({
+            success: true,
+            data: {
+              documentId: document.id,
+              jobId: job.id,
+              status: 'QUEUED',
+              filename: fileName,
+              statistics: stats,
+              message: 'Document uploaded. Analysis is processing in the background.',
+            },
+          });
+          return;
+        }
+      }
+
+      // Fallback: Run synchronously if queue not available
+      logger.info(`[Citation Upload] Running synchronous analysis for ${document.id}`);
+
+      await prisma.editorialDocument.update({
+        where: { id: document.id },
+        data: { status: 'ANALYZING' },
+      });
+
+      await this.analyzeDocument(document.id, content.text);
+
+      // Get final results
+      const finalDoc = await prisma.editorialDocument.findUnique({
+        where: { id: document.id },
+        include: { citations: true }
+      });
+      const finalRefs = await prisma.referenceListEntry.count({
+        where: { documentId: document.id }
+      });
+
+      // Update job status
+      await prisma.job.update({
+        where: { id: job.id },
+        data: { status: 'COMPLETED', completedAt: new Date() }
+      });
+
+      res.json({
+        success: true,
+        data: {
+          documentId: document.id,
+          status: 'COMPLETED',
+          filename: fileName,
+          statistics: {
+            ...stats,
+            citationsFound: finalDoc?.citations?.length || 0,
+            referencesFound: finalRefs
+          }
+        }
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Confirm upload failed:', error);
+      next(error);
+    }
+  }
+
+  /**
    * POST /api/v1/citation/upload
    * Upload and analyze DOCX document
+   *
+   * @deprecated Use presignUpload + confirmUpload for production.
+   * In-memory uploads can exhaust ECS memory and are blocked by CloudFront WAF.
    */
   async upload(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {

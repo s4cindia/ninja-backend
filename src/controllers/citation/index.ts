@@ -26,6 +26,10 @@ import { citationExportController } from './citation-export.controller';
  */
 export const citationManagementController = {
   // Upload & Analysis (citation-upload.controller)
+  // Presigned S3 upload (preferred pattern)
+  presignUpload: citationUploadController.presignUpload.bind(citationUploadController),
+  confirmUpload: citationUploadController.confirmUpload.bind(citationUploadController),
+  // Legacy in-memory upload (deprecated)
   upload: citationUploadController.upload.bind(citationUploadController),
   getJobStatus: citationUploadController.getJobStatus.bind(citationUploadController),
   getRecentJobs: citationUploadController.getRecentJobs.bind(citationUploadController),
