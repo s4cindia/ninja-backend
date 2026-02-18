@@ -70,6 +70,24 @@ jobs:
 
           echo "Registered migration task definition: $MIGRATION_TASK_DEF_ARN"
 
+          # First, try to resolve any failed migrations
+          RESOLVE_TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition $MIGRATION_TASK_DEF_ARN \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "ninja-backend",
+                "command": ["sh", "-c", "npx prisma migrate resolve --applied 20260215000000_schema_optimization_indexes || true"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Resolve task started: $RESOLVE_TASK_ARN"
+          aws ecs wait tasks-stopped --cluster ${{ env.ECS_CLUSTER }} --tasks $RESOLVE_TASK_ARN
+
           # Run migration task with new image
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
