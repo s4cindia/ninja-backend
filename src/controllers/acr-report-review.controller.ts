@@ -39,9 +39,11 @@ export class AcrReportReviewController {
       });
     } catch (error) {
       logger.error('[ACR Report Review API] Failed to initialize report', error instanceof Error ? error : undefined);
-      return res.status(500).json({
+      const message = error instanceof Error ? error.message : 'Failed to initialize report';
+      const statusCode = message.includes('must be') ? 400 : 500;
+      return res.status(statusCode).json({
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to initialize report'
+        error: { message }
       });
     }
   }

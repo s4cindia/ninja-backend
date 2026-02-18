@@ -55,6 +55,10 @@ class AcrReportReviewService {
   ) {
     logger.info(`[ACR Report Review] Initializing report for job ${jobId}`);
 
+    if (!verificationData || !Array.isArray(verificationData)) {
+      throw new Error('verificationData must be a non-empty array of criterion verification objects');
+    }
+
     try {
       // Fetch source job to detect document type
       const sourceJob = await prisma.job.findUnique({
