@@ -100,7 +100,7 @@ class DOIValidationService {
 
     // Check per-tenant rate limits if tenantId provided
     if (tenantId) {
-      const canProceed = tenantCitationUsageTracker.canMakeCall(tenantId);
+      const canProceed = await tenantCitationUsageTracker.canMakeCall(tenantId);
       if (!canProceed.allowed) {
         logger.warn(`[DOI Validation] Tenant ${tenantId} rate limited: ${canProceed.reason}`);
         throw new RateLimitError(
@@ -109,10 +109,10 @@ class DOIValidationService {
         );
       }
       // Record the batch call
-      tenantCitationUsageTracker.recordCall(tenantId);
+      await tenantCitationUsageTracker.recordCall(tenantId);
       // Record operations (one per reference with DOI)
       const operationCount = references.filter(r => r.components.doi).length;
-      tenantCitationUsageTracker.recordTokens(tenantId, operationCount);
+      await tenantCitationUsageTracker.recordTokens(tenantId, operationCount);
     }
 
     // Separate references with and without DOIs

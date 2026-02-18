@@ -404,9 +404,10 @@ Return ONLY a JSON array with NO additional text:
       const arrayEnd = jsonText.lastIndexOf(']');
 
       if (arrayStart === -1 || arrayEnd === -1) {
-        logger.error('[Format Converter] No JSON array found in AI response');
+        const errorMsg = 'AI conversion failed: No JSON array found in response';
+        logger.error(`[Format Converter] ${errorMsg}`);
         logger.error(`[Format Converter] Response was: ${jsonText.substring(0, 500)}...`);
-        return references;
+        throw new Error(errorMsg);
       }
 
       jsonText = jsonText.substring(arrayStart, arrayEnd + 1);
@@ -415,8 +416,9 @@ Return ONLY a JSON array with NO additional text:
       const converted = JSON.parse(jsonText);
 
       if (!Array.isArray(converted)) {
-        logger.error('[Format Converter] Parsed result is not an array');
-        return references;
+        const errorMsg = 'AI conversion failed: Parsed result is not an array';
+        logger.error(`[Format Converter] ${errorMsg}`);
+        throw new Error(errorMsg);
       }
 
       logger.info(`[Format Converter] Successfully parsed ${converted.length} converted references`);

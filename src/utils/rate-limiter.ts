@@ -126,7 +126,12 @@ export class RateLimiter {
 }
 
 /**
- * Per-tenant usage tracker for AI and API usage
+ * Per-tenant usage tracker for AI and API usage (in-process)
+ *
+ * WARNING: This is NOT safe for multi-instance deployments (ECS Fargate, Kubernetes).
+ * Use RedisTenantUsageTracker for distributed environments.
+ *
+ * @deprecated Use RedisTenantUsageTracker for production multi-instance deployments
  */
 export class TenantUsageTracker {
   private usage: Map<string, TenantUsage> = new Map();
@@ -136,6 +141,7 @@ export class TenantUsageTracker {
   constructor(name: string, config: TenantUsageConfig) {
     this.name = name;
     this.config = config;
+    logger.warn(`[${name}] Using in-process TenantUsageTracker - not safe for multi-instance deployments`);
   }
 
   /**
@@ -254,6 +260,230 @@ export class TenantUsageTracker {
    */
   clearAll(): void {
     this.usage.clear();
+  }
+}
+
+/**
+ * Redis-based per-tenant usage tracker for multi-instance deployments
+ *
+ * Safe for ECS Fargate, Kubernetes, and other multi-instance environments.
+ * Falls back gracefully when Redis is unavailable.
+ */
+export class RedisTenantUsageTracker {
+  private redis: Redis | null = null;
+  private config: TenantUsageConfig;
+  private name: string;
+  private keyPrefix: string;
+  private initPromise: Promise<void> | null = null;
+
+  constructor(name: string, config: TenantUsageConfig) {
+    this.name = name;
+    this.config = config;
+    this.keyPrefix = `tenant-usage:${name}`;
+  }
+
+  /**
+   * Lazy initialization of Redis client
+   */
+  private async ensureRedis(): Promise<Redis | null> {
+    if (this.initPromise) {
+      await this.initPromise;
+      return this.redis;
+    }
+
+    this.initPromise = (async () => {
+      try {
+        const { isRedisConfigured } = await import('../config/redis.config');
+        if (!isRedisConfigured()) {
+          logger.debug(`[${this.name}] Redis not configured, tenant usage tracking disabled`);
+          return;
+        }
+
+        const { getRedisClient } = await import('../lib/redis');
+        this.redis = getRedisClient();
+        logger.info(`[${this.name}] Redis tenant usage tracker initialized`);
+      } catch (error) {
+        logger.warn(`[${this.name}] Failed to initialize Redis tenant usage tracker:`, error);
+        this.redis = null;
+      }
+    })();
+
+    await this.initPromise;
+    return this.redis;
+  }
+
+  /**
+   * Get Redis key for hourly call count
+   */
+  private getHourlyKey(tenantId: string): string {
+    const hour = Math.floor(Date.now() / (60 * 60 * 1000));
+    return `${this.keyPrefix}:${tenantId}:calls:${hour}`;
+  }
+
+  /**
+   * Get Redis key for daily token count
+   */
+  private getDailyKey(tenantId: string): string {
+    const day = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+    return `${this.keyPrefix}:${tenantId}:tokens:${day}`;
+  }
+
+  /**
+   * Check if tenant can make an API call
+   */
+  async canMakeCall(tenantId: string): Promise<{ allowed: boolean; reason?: string; retryAfter?: number }> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      // Redis not available - allow (fail open)
+      return { allowed: true };
+    }
+
+    try {
+      const key = this.getHourlyKey(tenantId);
+      const count = await redis.get(key);
+      const currentCalls = count ? parseInt(count, 10) : 0;
+
+      if (currentCalls >= this.config.maxCallsPerHour) {
+        const ttl = await redis.ttl(key);
+        return {
+          allowed: false,
+          reason: `Hourly API call limit (${this.config.maxCallsPerHour}) exceeded`,
+          retryAfter: ttl > 0 ? ttl : 3600,
+        };
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      logger.error(`[${this.name}] Redis canMakeCall check failed:`, error);
+      return { allowed: true }; // Fail open
+    }
+  }
+
+  /**
+   * Check if tenant can use tokens
+   */
+  async canUseTokens(tenantId: string, tokens: number): Promise<{ allowed: boolean; reason?: string; retryAfter?: number }> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      return { allowed: true };
+    }
+
+    try {
+      const key = this.getDailyKey(tenantId);
+      const count = await redis.get(key);
+      const currentTokens = count ? parseInt(count, 10) : 0;
+
+      if (currentTokens + tokens > this.config.maxTokensPerDay) {
+        const ttl = await redis.ttl(key);
+        return {
+          allowed: false,
+          reason: `Daily token limit (${this.config.maxTokensPerDay}) exceeded`,
+          retryAfter: ttl > 0 ? ttl : 86400,
+        };
+      }
+
+      return { allowed: true };
+    } catch (error) {
+      logger.error(`[${this.name}] Redis canUseTokens check failed:`, error);
+      return { allowed: true };
+    }
+  }
+
+  /**
+   * Record an API call for tenant
+   */
+  async recordCall(tenantId: string): Promise<void> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      return;
+    }
+
+    try {
+      const key = this.getHourlyKey(tenantId);
+      const multi = redis.multi();
+      multi.incr(key);
+      multi.expire(key, 3600); // Expire after 1 hour
+      await multi.exec();
+      logger.debug(`[${this.name}] Recorded call for tenant ${tenantId}`);
+    } catch (error) {
+      logger.error(`[${this.name}] Redis recordCall failed:`, error);
+    }
+  }
+
+  /**
+   * Record token usage for tenant
+   */
+  async recordTokens(tenantId: string, tokens: number): Promise<void> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      return;
+    }
+
+    try {
+      const key = this.getDailyKey(tenantId);
+      const multi = redis.multi();
+      multi.incrby(key, tokens);
+      multi.expire(key, 86400); // Expire after 24 hours
+      await multi.exec();
+      logger.debug(`[${this.name}] Recorded ${tokens} tokens for tenant ${tenantId}`);
+    } catch (error) {
+      logger.error(`[${this.name}] Redis recordTokens failed:`, error);
+    }
+  }
+
+  /**
+   * Get usage statistics for tenant
+   */
+  async getStats(tenantId: string): Promise<{
+    callsThisHour: number;
+    maxCallsPerHour: number;
+    tokensUsedToday: number;
+    maxTokensPerDay: number;
+  }> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      return {
+        callsThisHour: 0,
+        maxCallsPerHour: this.config.maxCallsPerHour,
+        tokensUsedToday: 0,
+        maxTokensPerDay: this.config.maxTokensPerDay,
+      };
+    }
+
+    try {
+      const [calls, tokens] = await Promise.all([
+        redis.get(this.getHourlyKey(tenantId)),
+        redis.get(this.getDailyKey(tenantId)),
+      ]);
+
+      return {
+        callsThisHour: calls ? parseInt(calls, 10) : 0,
+        maxCallsPerHour: this.config.maxCallsPerHour,
+        tokensUsedToday: tokens ? parseInt(tokens, 10) : 0,
+        maxTokensPerDay: this.config.maxTokensPerDay,
+      };
+    } catch (error) {
+      logger.error(`[${this.name}] Redis getStats failed:`, error);
+      return {
+        callsThisHour: 0,
+        maxCallsPerHour: this.config.maxCallsPerHour,
+        tokensUsedToday: 0,
+        maxTokensPerDay: this.config.maxTokensPerDay,
+      };
+    }
+  }
+
+  /**
+   * Check if Redis is available
+   */
+  async isAvailable(): Promise<boolean> {
+    const redis = await this.ensureRedis();
+    return redis !== null;
   }
 }
 
@@ -434,19 +664,25 @@ export const doiOrgRateLimiter = new RateLimiter({
 });
 
 /**
- * Per-tenant AI usage tracker
+ * Per-tenant AI usage tracker (Redis-based for multi-instance safety)
  * Limits: 1M tokens/day, 1000 calls/hour
+ *
+ * Safe for ECS Fargate, Kubernetes, and other multi-instance deployments.
+ * Falls back gracefully when Redis is unavailable.
  */
-export const tenantAIUsageTracker = new TenantUsageTracker('AI-Usage', {
+export const tenantAIUsageTracker = new RedisTenantUsageTracker('AI-Usage', {
   maxTokensPerDay: 1_000_000,
   maxCallsPerHour: 1000,
 });
 
 /**
- * Per-tenant citation API usage tracker
+ * Per-tenant citation API usage tracker (Redis-based for multi-instance safety)
  * Limits: 500 DOI validations/hour, 10000 "tokens" (operations) per day
+ *
+ * Safe for ECS Fargate, Kubernetes, and other multi-instance deployments.
+ * Falls back gracefully when Redis is unavailable.
  */
-export const tenantCitationUsageTracker = new TenantUsageTracker('Citation-Usage', {
+export const tenantCitationUsageTracker = new RedisTenantUsageTracker('Citation-Usage', {
   maxTokensPerDay: 10000, // Operations per day
   maxCallsPerHour: 500, // DOI validations per hour
 });

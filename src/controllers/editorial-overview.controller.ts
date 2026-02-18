@@ -47,37 +47,26 @@ export class EditorialOverviewController {
         return;
       }
 
-      const [creationJob, outputLinkedJobs] = await Promise.all([
-        prisma.job.findUnique({
-          where: { id: document.jobId },
-          select: {
-            id: true,
-            type: true,
-            status: true,
-            createdAt: true,
-            completedAt: true,
-            error: true,
-          },
-        }),
-        prisma.$queryRaw<Array<{
-          id: string;
-          type: string;
-          status: string;
-          createdAt: Date;
-          completedAt: Date | null;
-          error: string | null;
-        }>>`
-          SELECT id, type, status, "createdAt", "completedAt", error
-          FROM "Job"
-          WHERE "tenantId" = ${tenantId}
-            AND id != ${document.jobId}
-            AND output->>'documentId' = ${documentId}
-          ORDER BY "createdAt" DESC
-        `,
-      ]);
+      // Query for additional jobs linked via output (already have document.job from include)
+      const outputLinkedJobs = await prisma.$queryRaw<Array<{
+        id: string;
+        type: string;
+        status: string;
+        createdAt: Date;
+        completedAt: Date | null;
+        error: string | null;
+      }>>`
+        SELECT id, type, status, "createdAt", "completedAt", error
+        FROM "Job"
+        WHERE "tenantId" = ${tenantId}
+          AND id != ${document.jobId}
+          AND output->>'documentId' = ${documentId}
+        ORDER BY "createdAt" DESC
+      `;
 
+      // Use document.job from the include (avoids duplicate query)
       const documentJobs = [
-        ...(creationJob ? [creationJob] : []),
+        ...(document.job ? [document.job] : []),
         ...outputLinkedJobs,
       ];
 

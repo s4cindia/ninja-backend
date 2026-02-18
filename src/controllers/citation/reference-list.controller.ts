@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { referenceListService } from '../services/citation/reference-list.service';
-import { logger } from '../lib/logger';
+import { referenceListService } from '../../services/citation/reference-list.service';
+import { logger } from '../../lib/logger';
 
 export class ReferenceListController {
   async getReferenceList(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -10,7 +10,10 @@ export class ReferenceListController {
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
         return;
       }
 
@@ -42,12 +45,18 @@ export class ReferenceListController {
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
         return;
       }
 
       if (!styleCode) {
-        res.status(400).json({ success: false, error: 'styleCode is required' });
+        res.status(400).json({
+          success: false,
+          error: { code: 'MISSING_STYLE_CODE', message: 'styleCode is required' }
+        });
         return;
       }
 
@@ -77,7 +86,10 @@ export class ReferenceListController {
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
         return;
       }
 
@@ -96,7 +108,10 @@ export class ReferenceListController {
       const tenantId = req.user?.tenantId;
 
       if (!tenantId) {
-        res.status(401).json({ success: false, error: 'Authentication required' });
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
         return;
       }
 

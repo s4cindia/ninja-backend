@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   RateLimiter,
   TenantUsageTracker,
+  RedisTenantUsageTracker,
   RateLimitError,
 } from '../../../src/utils/rate-limiter';
 
@@ -289,6 +290,72 @@ describe('TenantUsageTracker', () => {
 
       expect(tracker.getStats('tenant-1').callsThisHour).toBe(0);
       expect(tracker.getStats('tenant-2').callsThisHour).toBe(0);
+    });
+  });
+});
+
+describe('RedisTenantUsageTracker', () => {
+  const TENANT_ID = 'tenant-redis-123';
+
+  /**
+   * Note: Full Redis integration tests require a running Redis instance.
+   * These tests verify the graceful fallback behavior when Redis is unavailable.
+   * The class is designed to fail-open (allow requests) when Redis cannot be reached
+   * to maintain availability in production.
+   */
+
+  describe('Graceful Fallback', () => {
+    it('should allow calls when Redis is not configured', async () => {
+      // When Redis URL is not set, should fail-open
+      const tracker = new RedisTenantUsageTracker('Test', {
+        maxTokensPerDay: 1000,
+        maxCallsPerHour: 100,
+      });
+
+      const result = await tracker.canMakeCall(TENANT_ID);
+      // Should gracefully allow when Redis unavailable (fail-open for availability)
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should allow token usage when Redis is not configured', async () => {
+      const tracker = new RedisTenantUsageTracker('Test', {
+        maxTokensPerDay: 1000,
+        maxCallsPerHour: 100,
+      });
+
+      const result = await tracker.canUseTokens(TENANT_ID, 100);
+      expect(result.allowed).toBe(true);
+    });
+
+    it('should not throw when recording calls without Redis', async () => {
+      const tracker = new RedisTenantUsageTracker('Test', {
+        maxTokensPerDay: 1000,
+        maxCallsPerHour: 100,
+      });
+
+      // Should not throw
+      await expect(tracker.recordCall(TENANT_ID)).resolves.not.toThrow();
+    });
+
+    it('should not throw when recording tokens without Redis', async () => {
+      const tracker = new RedisTenantUsageTracker('Test', {
+        maxTokensPerDay: 1000,
+        maxCallsPerHour: 100,
+      });
+
+      // Should not throw
+      await expect(tracker.recordTokens(TENANT_ID, 100)).resolves.not.toThrow();
+    });
+  });
+
+  describe('Configuration', () => {
+    it('should create tracker with provided config', () => {
+      const tracker = new RedisTenantUsageTracker('AI-Test', {
+        maxTokensPerDay: 5000,
+        maxCallsPerHour: 200,
+      });
+
+      expect(tracker).toBeDefined();
     });
   });
 });

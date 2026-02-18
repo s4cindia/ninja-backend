@@ -689,19 +689,16 @@ Return a JSON object:
     const entriesToFormat = typedEntries.filter(entry => !this.getFormattedFromEntry(entry, formattedColumn));
 
     if (entriesToFormat.length > 0) {
-      // Format all entries in parallel batches
-      const BATCH_SIZE = 5;
+      // Format entries sequentially to prevent AI rate limit exhaustion
+      // Each formatReference call makes an AI request
       const updates: Array<{ id: string; formatted: string }> = [];
 
-      for (let i = 0; i < entriesToFormat.length; i += BATCH_SIZE) {
-        const batch = entriesToFormat.slice(i, i + BATCH_SIZE);
-        const batchResults = await Promise.all(
-          batch.map(async entry => ({
-            id: entry.id,
-            formatted: (await this.formatReference(this.prismaEntryToReferenceEntry(entry as unknown as PrismaReferenceEntry), styleCode)).formatted
-          }))
+      for (const entry of entriesToFormat) {
+        const result = await this.formatReference(
+          this.prismaEntryToReferenceEntry(entry as unknown as PrismaReferenceEntry),
+          styleCode
         );
-        updates.push(...batchResults);
+        updates.push({ id: entry.id, formatted: result.formatted });
       }
 
       // Batch update all entries in a single transaction

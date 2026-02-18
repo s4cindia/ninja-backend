@@ -25,6 +25,7 @@ interface MigrationStats {
   entriesWithCitations: number;
   linksCreated: number;
   linksSkipped: number;
+  fieldsCleared: number;
   errors: number;
 }
 
@@ -36,8 +37,12 @@ async function migrateCitationLinks(options: { dryRun: boolean; verbose: boolean
     entriesWithCitations: 0,
     linksCreated: 0,
     linksSkipped: 0,
+    fieldsCleared: 0,
     errors: 0,
   };
+
+  // Track entries to clear after successful migration
+  const entriesToClear: string[] = [];
 
   console.log('\n=== Citation Links Migration ===');
   console.log(`Mode: ${dryRun ? 'DRY RUN (no changes will be made)' : 'LIVE'}`);
@@ -112,12 +117,34 @@ async function migrateCitationLinks(options: { dryRun: boolean; verbose: boolean
           skipDuplicates: true,
         });
         stats.linksCreated += validIdsToLink.length;
+        entriesToClear.push(entry.id);
       } catch (error) {
         console.error(`  Entry ${entry.id}: Failed to create links:`, error);
         stats.errors += validIdsToLink.length;
       }
     } else {
       stats.linksCreated += validIdsToLink.length;
+      entriesToClear.push(entry.id);
+    }
+  }
+
+  // Clear deprecated citationIds field after successful migration
+  if (entriesToClear.length > 0) {
+    if (!dryRun) {
+      console.log(`\nClearing deprecated citationIds field from ${entriesToClear.length} entries...`);
+      try {
+        const result = await prisma.referenceListEntry.updateMany({
+          where: { id: { in: entriesToClear } },
+          data: { citationIds: [] },
+        });
+        stats.fieldsCleared = result.count;
+        console.log(`  Cleared ${result.count} entries`);
+      } catch (error) {
+        console.error('  Failed to clear citationIds:', error);
+        stats.errors++;
+      }
+    } else {
+      stats.fieldsCleared = entriesToClear.length;
     }
   }
 
@@ -137,6 +164,7 @@ async function main() {
     console.log(`Entries with citationIds: ${stats.entriesWithCitations}`);
     console.log(`Links created: ${stats.linksCreated}${dryRun ? ' (would be created)' : ''}`);
     console.log(`Links skipped (already exist): ${stats.linksSkipped}`);
+    console.log(`Deprecated fields cleared: ${stats.fieldsCleared}${dryRun ? ' (would be cleared)' : ''}`);
     console.log(`Errors: ${stats.errors}`);
 
     if (dryRun && stats.linksCreated > 0) {

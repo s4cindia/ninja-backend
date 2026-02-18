@@ -64,6 +64,7 @@ vi.mock('../../src/services/citation/citation-storage.service', () => ({
   citationStorageService: {
     uploadFile: vi.fn(),
     downloadFile: vi.fn(),
+    getFileBuffer: vi.fn(),
   },
 }));
 
@@ -529,6 +530,7 @@ describe('Citation Workflow Integration', () => {
         tenantId: TENANT_ID,
         originalName: 'test.docx',
         storagePath: 'citations/tenant-123/test.docx',
+        storageType: 'LOCAL',
         citations: [],
         referenceListEntries: [],
       } as any);
@@ -537,14 +539,9 @@ describe('Citation Workflow Integration', () => {
         { changeType: 'RENUMBER', beforeText: '[1]', afterText: '[2]', isReverted: false },
       ] as any);
 
-      // Mock file read with path traversal protection
-      const fsPromises = await import('fs/promises');
-      const path = await import('path');
-      const uploadDir = path.resolve(process.cwd(), 'uploads');
-      const validPath = path.join(uploadDir, 'citations/tenant-123/test.docx');
-      vi.mocked(fsPromises.realpath).mockResolvedValue(validPath);
+      // Mock storage service to return original buffer
       const originalBuffer = Buffer.from('original docx content');
-      vi.mocked(fsPromises.readFile).mockResolvedValue(originalBuffer);
+      vi.mocked(citationStorageService.getFileBuffer).mockResolvedValue(originalBuffer);
 
       // Mock docx processor
       const modifiedBuffer = Buffer.from('modified docx content');
@@ -576,32 +573,37 @@ describe('Citation Workflow Integration', () => {
       );
     });
 
-    it('should reject path traversal attempts in storagePath (security)', async () => {
+    it('should handle file not found errors from storage service', async () => {
       mockReq.params = { documentId: 'doc-123' };
 
-      // Document with malicious storagePath containing path traversal
+      // Document exists but file is missing
       vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue({
         id: 'doc-123',
         tenantId: TENANT_ID,
         originalName: 'test.docx',
-        storagePath: '../../../etc/passwd', // Path traversal attempt
+        storagePath: 'citations/tenant-123/missing.docx',
+        storageType: 'LOCAL',
         citations: [],
         referenceListEntries: [],
       } as any);
 
       vi.mocked(prisma.citationChange.findMany).mockResolvedValue([]);
 
-      // Mock realpath to return a path outside uploads directory
-      const fsPromises = await import('fs/promises');
-      vi.mocked(fsPromises.realpath).mockResolvedValue('/etc/passwd');
+      // Mock storage service to throw file not found error
+      vi.mocked(citationStorageService.getFileBuffer).mockRejectedValue(
+        new Error('File not found')
+      );
 
       await exportController.exportDocument(mockReq as Request, mockRes as Response, mockNext);
 
-      // Should throw AppError which gets passed to next()
-      expect(mockNext).toHaveBeenCalledWith(
+      // Should return 404 for file not found
+      expect(statusMock).toHaveBeenCalledWith(404);
+      expect(jsonMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          statusCode: 403,
-          code: 'INVALID_PATH',
+          success: false,
+          error: expect.objectContaining({
+            code: 'FILE_NOT_FOUND',
+          }),
         })
       );
     });
@@ -686,7 +688,9 @@ describe('Citation Workflow Integration', () => {
         expect.objectContaining({
           success: true,
           data: expect.objectContaining({
-            documentId: 'doc-1',
+            document: expect.objectContaining({
+              id: 'doc-1',
+            }),
             detectedStyle: 'Vancouver',
           }),
         })

@@ -13,6 +13,7 @@ export { CitationUploadController, citationUploadController } from './citation-u
 export { CitationReferenceController, citationReferenceController } from './citation-reference.controller';
 export { CitationStyleController, citationStyleController } from './citation-style.controller';
 export { CitationExportController, citationExportController } from './citation-export.controller';
+export { ReferenceListController, referenceListController } from './reference-list.controller';
 
 // Import controllers for unified facade
 import { citationUploadController } from './citation-upload.controller';

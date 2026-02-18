@@ -154,9 +154,21 @@ export function validateFileSize(size: number, maxSizeBytes: number): boolean {
 
 /**
  * Sanitizes filename to prevent path traversal attacks
+ * Handles URL-encoded variants (single and double-encoded)
  */
 export function sanitizeFilename(filename: string): string {
-  return filename
+  // Decode URL-encoded characters (handle double-encoding by decoding twice)
+  let decoded = filename;
+  try {
+    // First pass: decode %XX sequences
+    decoded = decodeURIComponent(decoded);
+    // Second pass: catch double-encoded sequences like %252F -> %2F -> /
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // If decoding fails (invalid sequences), continue with original/partial decode
+  }
+
+  return decoded
     .replace(/\0/g, '') // Remove null bytes
     .replace(/[/\\]/g, '_') // Replace path separators
     .replace(/\.\./g, '_') // Remove parent directory references
@@ -169,6 +181,21 @@ export function sanitizeFilename(filename: string): string {
  * Note: This is a basic check, not a replacement for proper virus scanning
  */
 export function checkForSuspiciousContent(buffer: Buffer): { suspicious: boolean; reason?: string } {
+  // Skip pattern matching for binary formats (DOCX/XLSX/PPTX are ZIP files)
+  // ZIP signature: PK\x03\x04 (0x50 0x4B 0x03 0x04)
+  // PDF signature: %PDF
+  const isZipFile = buffer.length >= 4 &&
+    buffer[0] === 0x50 && buffer[1] === 0x4B &&
+    buffer[2] === 0x03 && buffer[3] === 0x04;
+  const isPdfFile = buffer.length >= 4 &&
+    buffer[0] === 0x25 && buffer[1] === 0x50 &&
+    buffer[2] === 0x44 && buffer[3] === 0x46;
+
+  // Binary files should not be pattern-matched as text (causes false positives)
+  if (isZipFile || isPdfFile) {
+    return { suspicious: false };
+  }
+
   // Check for embedded scripts in supposed document files
   const content = buffer.toString('utf8', 0, Math.min(buffer.length, 10000));
 

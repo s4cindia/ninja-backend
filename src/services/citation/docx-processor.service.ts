@@ -65,11 +65,16 @@ const MAX_TENANT_BREAKERS = 10000; // Prevent unbounded growth
 
 /**
  * Get or create circuit breaker state for a tenant
+ * Uses LRU eviction: delete and re-add on access to maintain recency order
  */
 function getTenantBreaker(tenantId: string): TenantCircuitBreakerState {
   let breaker = tenantCircuitBreakers.get(tenantId);
-  if (!breaker) {
-    // Prevent unbounded Map growth - evict oldest entries if needed
+  if (breaker) {
+    // LRU: Move to end by deleting and re-adding (most recently used)
+    tenantCircuitBreakers.delete(tenantId);
+    tenantCircuitBreakers.set(tenantId, breaker);
+  } else {
+    // Evict least recently used (first entry) if at capacity
     if (tenantCircuitBreakers.size >= MAX_TENANT_BREAKERS) {
       const firstKey = tenantCircuitBreakers.keys().next().value;
       if (firstKey) tenantCircuitBreakers.delete(firstKey);
