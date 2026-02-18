@@ -32,5 +32,24 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
+      - name: Validate migrations are idempotent
+        run: |
+          echo "Checking migrations for non-idempotent patterns..."
+          ERRORS=0
+          for file in prisma/migrations/*/migration.sql; do
+            [ -e "$file" ] || continue
+            # Check for bare ALTER TABLE without DO block
+            if grep -qE "^ALTER TABLE" "$file" && ! grep -q "DO \\\$\\\$" "$file"; then
+              echo "WARNING: $file has bare ALTER TABLE without DO block"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+          if [ $ERRORS -gt 0 ]; then
+            echo "Found $ERRORS migrations that may not be idempotent"
+            echo "Wrap ALTER statements in DO blocks with table existence checks"
+            exit 1
+          fi
+          echo "All migrations look idempotent!"
+
       - name: Build application
         run: npm run build
