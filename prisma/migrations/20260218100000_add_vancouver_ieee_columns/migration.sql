@@ -1,19 +1,4 @@
--- AlterTable (idempotent - handles case where columns already exist)
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'ReferenceListEntry'
-        AND column_name = 'formattedVancouver'
-    ) THEN
-        ALTER TABLE "ReferenceListEntry" ADD COLUMN "formattedVancouver" TEXT;
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'ReferenceListEntry'
-        AND column_name = 'formattedIeee'
-    ) THEN
-        ALTER TABLE "ReferenceListEntry" ADD COLUMN "formattedIeee" TEXT;
-    END IF;
-END $$;
+-- This migration is a no-op because the columns were already added via prisma db push.
+-- The schema has formattedVancouver and formattedIeee on ReferenceListEntry.
+-- This migration file exists to keep Prisma's migration history in sync.
+SELECT 1;
