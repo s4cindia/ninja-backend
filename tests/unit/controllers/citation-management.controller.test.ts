@@ -646,7 +646,17 @@ describe('CitationManagementController', () => {
       vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue({
         id: 'doc-123',
         tenantId: 'tenant-123',
-      } as any);
+        jobId: null,
+        originalName: 'test.docx',
+        storagePath: '/test/path',
+        storageType: 'LOCAL',
+        status: 'COMPLETED',
+        wordCount: 1000,
+        pageCount: 10,
+        referenceListStyle: 'APA',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
 
       const error = new Error('Update failed');
       vi.mocked(prisma.referenceListEntry.findUnique).mockRejectedValue(error);
