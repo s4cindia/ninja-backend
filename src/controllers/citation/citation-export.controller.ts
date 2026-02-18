@@ -14,11 +14,14 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
+import { resolveDocumentSimple } from './document-resolver';
 
 export class CitationExportController {
   /**
    * GET /api/v1/citation-management/document/:documentId/preview
    * Preview changes that will be applied on export
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async previewChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -27,15 +30,8 @@ export class CitationExportController {
 
       logger.info(`[CitationExport] Previewing changes for document ${documentId}`);
 
-      // Get document with tenant verification
-      const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
-        select: {
-          id: true,
-          originalName: true,
-          referenceListStyle: true
-        }
-      });
+      // Resolve document (handles both document ID and job ID)
+      const document = await resolveDocumentSimple(documentId, tenantId);
 
       if (!document) {
         res.status(404).json({
@@ -45,10 +41,13 @@ export class CitationExportController {
         return;
       }
 
+      // Use the resolved document ID for subsequent queries
+      const resolvedDocId = document.id;
+
       // Get all changes
       const changes = await prisma.citationChange.findMany({
         where: {
-          documentId,
+          documentId: resolvedDocId,
           isReverted: false
         },
         orderBy: { appliedAt: 'asc' }
@@ -87,7 +86,7 @@ export class CitationExportController {
       res.json({
         success: true,
         data: {
-          documentId,
+          documentId: resolvedDocId,
           documentName: document.originalName,
           currentStyle: document.referenceListStyle,
           summary,
@@ -103,6 +102,8 @@ export class CitationExportController {
   /**
    * GET /api/v1/citation-management/document/:documentId/export
    * Export modified DOCX with preserved formatting
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async exportDocument(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -111,9 +112,23 @@ export class CitationExportController {
 
       logger.info(`[CitationExport] Exporting document ${documentId}`);
 
-      // Get document with tenant verification
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      // Use resolved document ID for subsequent queries
+      const resolvedDocId = baseDoc.id;
+
+      // Get document with full relations
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: resolvedDocId, tenantId },
         include: {
           citations: true,
           referenceListEntries: { orderBy: { sortKey: 'asc' } }
@@ -131,7 +146,7 @@ export class CitationExportController {
       // Get all changes to apply
       const changes = await prisma.citationChange.findMany({
         where: {
-          documentId,
+          documentId: resolvedDocId,
           isReverted: false
         },
         orderBy: { appliedAt: 'asc' }

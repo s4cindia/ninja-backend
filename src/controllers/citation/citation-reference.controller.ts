@@ -15,6 +15,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
+import { resolveDocumentSimple } from './document-resolver';
 
 /**
  * Safely extract authors array from Prisma JsonValue
@@ -35,6 +36,8 @@ export class CitationReferenceController {
   /**
    * POST /api/v1/citation-management/document/:documentId/reorder
    * Reorder references and auto-update in-text citations
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async reorderReferences(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -44,9 +47,20 @@ export class CitationReferenceController {
 
       logger.info(`[CitationReference] Reordering references for ${documentId}`);
 
-      // Get current references and citations with tenant verification
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      // Get current references and citations with tenant verification using resolved ID
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: baseDoc.id, tenantId },
         include: {
           citations: true,
           referenceListEntries: {
@@ -525,6 +539,12 @@ export class CitationReferenceController {
    * - url: valid URL format
    * - publisher: string (max 500 chars)
    */
+  /**
+   * PATCH /api/v1/citation-management/document/:documentId/reference/:referenceId
+   * Edit a reference
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
+   */
   async editReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId, referenceId } = req.params;
@@ -533,6 +553,10 @@ export class CitationReferenceController {
       const { tenantId } = req.user!;
 
       logger.info(`[CitationReference] Editing reference ${referenceId} in document ${documentId}`);
+
+      // Resolve the document ID (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+      const resolvedDocId = baseDoc?.id;
 
       const reference = await prisma.referenceListEntry.findUnique({
         where: { id: referenceId },
@@ -558,7 +582,8 @@ export class CitationReferenceController {
         return;
       }
 
-      if (reference.documentId !== documentId) {
+      // Verify document ID matches (comparing resolved ID)
+      if (resolvedDocId && reference.documentId !== resolvedDocId) {
         res.status(400).json({
           success: false,
           error: { code: 'INVALID_DOCUMENT', message: 'Reference does not belong to this document' }
@@ -611,6 +636,8 @@ export class CitationReferenceController {
   /**
    * POST /api/v1/citation-management/document/:documentId/reset-changes
    * Reset all citation changes for a document (clears partial resequencing)
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async resetChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -619,9 +646,8 @@ export class CitationReferenceController {
 
       logger.info(`[CitationReference] Resetting citation changes for ${documentId}`);
 
-      const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId }
-      });
+      // Resolve document (handles both document ID and job ID)
+      const document = await resolveDocumentSimple(documentId, tenantId);
 
       if (!document) {
         res.status(404).json({
@@ -631,12 +657,14 @@ export class CitationReferenceController {
         return;
       }
 
+      const resolvedDocId = document.id;
+
       // Delete all CitationChange records for this document
       const result = await prisma.citationChange.deleteMany({
-        where: { documentId }
+        where: { documentId: resolvedDocId }
       });
 
-      logger.info(`[CitationReference] Deleted ${result.count} CitationChange records for document ${documentId}`);
+      logger.info(`[CitationReference] Deleted ${result.count} CitationChange records for document ${resolvedDocId}`);
 
       res.json({
         success: true,
@@ -653,6 +681,8 @@ export class CitationReferenceController {
   /**
    * POST /api/v1/citation-management/document/:documentId/create-links
    * Create citation-reference links for existing documents that don't have them
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async createCitationLinks(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -661,8 +691,19 @@ export class CitationReferenceController {
 
       logger.info(`[CitationReference] Creating citation-reference links for ${documentId}`);
 
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: baseDoc.id, tenantId },
         include: {
           citations: { orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }] },
           referenceListEntries: { orderBy: { sortKey: 'asc' } }
@@ -739,6 +780,8 @@ export class CitationReferenceController {
   /**
    * POST /api/v1/citation-management/document/:documentId/resequence
    * Resequence references by first appearance in text
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async resequenceByAppearance(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -747,8 +790,19 @@ export class CitationReferenceController {
 
       logger.info(`[CitationReference] Resequencing references by appearance for ${documentId}`);
 
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: baseDoc.id, tenantId },
         include: {
           citations: {
             orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }]

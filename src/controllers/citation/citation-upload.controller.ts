@@ -831,6 +831,9 @@ export class CitationUploadController {
   /**
    * GET /api/v1/citation-management/document/:documentId/analysis
    * Get complete citation analysis results
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
+   * This flexibility allows the frontend to use either ID for navigation.
    */
   async getAnalysis(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -844,7 +847,8 @@ export class CitationUploadController {
       const { documentId } = req.params;
       const { tenantId } = req.user;
 
-      const document = await prisma.editorialDocument.findFirst({
+      // First try to find by document ID
+      let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
         include: {
           citations: { include: { reference: true } },
@@ -852,6 +856,19 @@ export class CitationUploadController {
           documentContent: true
         }
       });
+
+      // If not found by document ID, try finding by job ID
+      // (frontend may navigate using jobId if documentId wasn't available)
+      if (!document) {
+        document = await prisma.editorialDocument.findFirst({
+          where: { jobId: documentId, tenantId },
+          include: {
+            citations: { include: { reference: true } },
+            job: true,
+            documentContent: true
+          }
+        });
+      }
 
       if (!document) {
         res.status(404).json({
