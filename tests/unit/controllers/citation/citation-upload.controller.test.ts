@@ -55,6 +55,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
 vi.mock('../../../../src/services/s3.service', () => ({
   s3Service: {
     isConfigured: vi.fn(),
+    getConfigStatus: vi.fn().mockReturnValue({ bucket: false, region: 'us-east-1', credentialsType: 'none' }),
     getPresignedUploadUrl: vi.fn(),
     getFileBuffer: vi.fn(),
   },
@@ -197,7 +198,7 @@ describe('CitationUploadController', () => {
       expect(statusMock).toHaveBeenCalledWith(503);
       expect(jsonMock).toHaveBeenCalledWith({
         success: false,
-        error: { code: 'S3_NOT_CONFIGURED', message: 'S3 storage is not configured' },
+        error: { code: 'S3_NOT_CONFIGURED', message: 'S3 storage is not configured. Contact administrator.' },
       });
     });
 
