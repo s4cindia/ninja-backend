@@ -998,6 +998,10 @@ model CitationChange {
   beforeText String
   afterText  String
 
+  /// Optional structured metadata for the change (e.g., position, style info for deletions)
+  /// Keeps afterText clean for human-readable text while storing machine-readable data separately
+  metadata   Json?
+
   appliedBy String
   appliedAt DateTime @default(now())
 

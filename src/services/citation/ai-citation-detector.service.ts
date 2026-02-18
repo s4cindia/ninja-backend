@@ -360,7 +360,7 @@ class AICitationDetectorService {
     const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
 
     // Build prompt with clear boundaries to prevent injection
-    const prompt = `TASK: Find ALL in-text citations in the document below. Return ONLY a JSON array.
+    const prompt = `TASK: Find ALL in-text citations in the document below.
 
 INSTRUCTIONS:
 - IGNORE superscript numbers immediately after author names (these are affiliations, NOT citations)
@@ -441,13 +441,12 @@ Return ONLY the JSON array, no explanations.`;
     const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
 
     // Build prompt with clear boundaries to prevent injection
-    const prompt = `TASK: Extract ALL references from the reference section. Return ONLY a JSON array.
+    const prompt = `TASK: Extract ALL references from the reference section.
 
 INSTRUCTIONS:
 - Find the References, Bibliography, Footnotes, Notes, or Works Cited section in the document
 - For Chicago/Turabian style: extract references from the Footnotes or Notes section
 - Extract each reference with available metadata
-- Return ONLY a JSON array, no explanations
 
 OUTPUT FORMAT:
 [{"number":1,"rawText":"Smith J. Article Title. Journal. 2020;10:123.","authors":["Smith J"],"year":"2020","title":"Article Title","journal":"Journal","volume":"10","pages":"123","doi":"10.1234/ex"}]

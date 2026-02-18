@@ -18,6 +18,7 @@ import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 import { memoryConfig, getMemoryUsage, isMemorySafeForSize } from '../../config/memory.config';
 import { withMemoryTracking, FileTooLargeError } from '../../utils/memory-safe-processor';
+import { normalizeSuperscripts } from '../../utils/unicode';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
@@ -1177,14 +1178,7 @@ class DOCXProcessorService {
 
     // Normalize Unicode superscript characters to regular digits for matching
     // Chicago/footnote style may store "¹²³" but Word XML uses "123" with styling
-    const superscriptMap: Record<string, string> = {
-      '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
-      '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
-    };
-    let normalizedCitationText = citationText;
-    for (const [sup, digit] of Object.entries(superscriptMap)) {
-      normalizedCitationText = normalizedCitationText.replace(new RegExp(sup, 'g'), digit);
-    }
+    const normalizedCitationText = normalizeSuperscripts(citationText);
 
     // Pattern 1: Exact match first
     citationStart = combinedText.indexOf(citationText);
@@ -2614,7 +2608,7 @@ class DOCXProcessorService {
    */
   async applyChanges(
     originalBuffer: Buffer,
-    changes: Array<{ type: string; beforeText: string; afterText: string }>
+    changes: Array<{ type: string; beforeText: string; afterText: string; metadata?: Record<string, unknown> | null }>
   ): Promise<Buffer> {
     if (changes.length === 0) {
       logger.info('[DOCXProcessor] No changes to apply, returning original buffer');
@@ -2807,20 +2801,16 @@ class DOCXProcessorService {
             // Check if this is a reference list deletion or an in-text citation deletion
             // Reference deletions can be:
             // 1. Vancouver/numbered style: "[N] Reference text..."
-            // 2. Chicago/footnote style: Just the reference text (metadata in afterText)
+            // 2. Chicago/footnote style: Just the reference text (metadata stored separately)
 
-            // First check for Chicago/footnote style metadata
+            // Check for Chicago/footnote style via metadata field
             let isFootnoteStyleRef = false;
             let refPosition: number | null = null;
-            if (change.afterText) {
-              try {
-                const metadata = JSON.parse(change.afterText);
-                if (metadata.isFootnoteStyle === true) {
-                  isFootnoteStyleRef = true;
-                  refPosition = metadata.position;
-                }
-              } catch {
-                // Not JSON metadata, continue with normal processing
+            if (change.metadata && typeof change.metadata === 'object') {
+              const meta = change.metadata as Record<string, unknown>;
+              if (meta.isFootnoteStyle === true) {
+                isFootnoteStyleRef = true;
+                refPosition = typeof meta.position === 'number' ? meta.position : null;
               }
             }
 
@@ -2839,20 +2829,16 @@ class DOCXProcessorService {
               let citationFound = false;
               let targetParaId: string | null = null;
 
-              // Try to get position info from afterText (stored during change creation)
-              if (change.afterText) {
-                try {
-                  const posInfo = JSON.parse(change.afterText);
-                  if (posInfo.startOffset !== undefined) {
-                    // Build position map and find paragraph by offset
-                    const positionMap = this.buildPositionToParagraphMap(paragraphs);
-                    targetParaId = this.findParagraphByOffset(positionMap, posInfo.startOffset);
-                    if (targetParaId) {
-                      logger.info(`[DOCXProcessor] Found citation by offset ${posInfo.startOffset} -> paraId=${targetParaId}`);
-                    }
+              // Try to get position info from metadata (stored during change creation)
+              if (change.metadata && typeof change.metadata === 'object') {
+                const meta = change.metadata as Record<string, unknown>;
+                if (typeof meta.startOffset === 'number') {
+                  // Build position map and find paragraph by offset
+                  const positionMap = this.buildPositionToParagraphMap(paragraphs);
+                  targetParaId = this.findParagraphByOffset(positionMap, meta.startOffset);
+                  if (targetParaId) {
+                    logger.info(`[DOCXProcessor] Found citation by offset ${meta.startOffset} -> paraId=${targetParaId}`);
                   }
-                } catch {
-                  // afterText is not JSON, fallback to text search
                 }
               }
 
@@ -2878,14 +2864,7 @@ class DOCXProcessorService {
               // Fallback: search paragraphs for the citation text
               if (!citationFound) {
                 // Normalize Unicode superscripts for fallback search (¹ → 1)
-                const superscriptMap: Record<string, string> = {
-                  '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
-                  '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
-                };
-                let normalizedCitationText = citationText;
-                for (const [sup, digit] of Object.entries(superscriptMap)) {
-                  normalizedCitationText = normalizedCitationText.replace(new RegExp(sup, 'g'), digit);
-                }
+                const normalizedCitationText = normalizeSuperscripts(citationText);
 
                 for (const para of paragraphs) {
                   if (!para.paraId) continue;
@@ -2927,13 +2906,18 @@ class DOCXProcessorService {
               // Vancouver/numbered style: "[N] Reference text..."
               refNumber = deleteMatch[1];
               refText = deleteMatch[2].trim();
-            } else if (isFootnoteStyleRef && refPosition !== null) {
+            } else if (isFootnoteStyleRef) {
               // Chicago/footnote style: reference text stored directly
-              refNumber = String(refPosition);
+              // Use position from metadata, or fallback to '0' if missing
+              refNumber = refPosition !== null ? String(refPosition) : '0';
               refText = change.beforeText.trim();
+              if (refPosition === null) {
+                logger.warn(`[DOCXProcessor] Footnote style DELETE missing position in metadata, using 0`);
+              }
             } else {
-              // Fallback - shouldn't happen but handle gracefully
-              logger.warn(`[DOCXProcessor] Unexpected DELETE format: "${change.beforeText.substring(0, 50)}..."`);
+              // This branch is unreachable given isReferenceDelete = deleteMatch || isFootnoteStyleRef
+              // If we somehow get here, it's a programming error - log and skip
+              logger.error(`[DOCXProcessor] BUG: Unreachable code reached. isReferenceDelete=${isReferenceDelete}, deleteMatch=${!!deleteMatch}, isFootnoteStyleRef=${isFootnoteStyleRef}`);
               continue;
             }
 

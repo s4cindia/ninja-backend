@@ -21,6 +21,7 @@ import { aiCitationDetectorService } from '../../services/citation/ai-citation-d
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
+import { normalizeSuperscripts } from '../../utils/unicode';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -1034,20 +1035,20 @@ export class CitationUploadController {
             refNumToId.set(num, ref.id);
           }
 
-          // Create links for numeric and footnote citations
-          // Superscript map for Chicago footnote style (¹²³⁴⁵⁶⁷⁸⁹⁰ -> 1234567890)
-          const superscriptMap: Record<string, string> = {
-            '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
-            '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
-          };
-
+          // Create links for numeric and footnote citations only
+          // Skip author-date citations (e.g., "(Smith, 2021)") to avoid linking year as reference number
           const linkData: { citationId: string; referenceListEntryId: string }[] = [];
           for (const citation of createdCitations) {
-            // Convert superscript characters to regular digits
-            let normalizedText = citation.rawText;
-            for (const [sup, digit] of Object.entries(superscriptMap)) {
-              normalizedText = normalizedText.replace(new RegExp(sup, 'g'), digit);
+            // Only process numeric-style citations (NUMERIC, FOOTNOTE, ENDNOTE)
+            // Author-date citations would incorrectly match year (2021) as reference number
+            if (citation.citationType !== 'NUMERIC' &&
+                citation.citationType !== 'FOOTNOTE' &&
+                citation.citationType !== 'ENDNOTE') {
+              continue;
             }
+
+            // Convert superscript characters to regular digits (¹²³ -> 123)
+            const normalizedText = normalizeSuperscripts(citation.rawText);
 
             // Extract all numbers from the citation (handles [1], [1, 2], [1-3], ¹, ², etc.)
             const nums = normalizedText.match(/\d+/g);

@@ -372,12 +372,13 @@ export class CitationReferenceController {
             citationId: null,
             changeType: 'DELETE',
             beforeText: deleteBeforeText,
-            // Store metadata for export to know the position and style
-            afterText: JSON.stringify({
+            afterText: '', // Empty for deletions - no "after" text
+            // Store structured metadata separately for export processing
+            metadata: {
               position: deletedPosition,
               style: docStyle,
               isFootnoteStyle: isChicagoStyle
-            }),
+            },
             appliedBy: 'user',
             isReverted: false
           }
@@ -417,12 +418,13 @@ export class CitationReferenceController {
                 citationId: citation.id,
                 changeType: 'DELETE',
                 beforeText: citation.rawText,
-                // Store citation ID and position info for ID-based lookup
-                afterText: JSON.stringify({
+                afterText: '', // Empty for deletions - no "after" text
+                // Store position info in metadata for ID-based lookup during export
+                metadata: {
                   citationId: citation.id,
                   startOffset: citation.startOffset,
                   endOffset: citation.endOffset
-                }),
+                },
                 appliedBy: 'system',
                 isReverted: false
               }
