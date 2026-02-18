@@ -5,7 +5,7 @@
 -- =====================================================
 
 -- =====================================================
--- PART 1: Fix AcrCriterionReview NULL values
+-- PART 1: Fix AcrCriterionReview NULL values (idempotent)
 -- =====================================================
 
 -- Set default values for NULL level (WCAG Level A is most permissive)
@@ -18,12 +18,35 @@ UPDATE "AcrCriterionReview"
 SET "aiStatus" = 'pending'
 WHERE "aiStatus" IS NULL;
 
--- Now make columns NOT NULL (schema requires this)
-ALTER TABLE "AcrCriterionReview"
-ALTER COLUMN "level" SET NOT NULL;
+-- Now make columns NOT NULL (schema requires this) - idempotent
+DO $$
+BEGIN
+  -- Check if level column is already NOT NULL
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'AcrCriterionReview'
+    AND column_name = 'level'
+    AND is_nullable = 'YES'
+  ) THEN
+    ALTER TABLE "AcrCriterionReview" ALTER COLUMN "level" SET NOT NULL;
+    RAISE NOTICE 'Set AcrCriterionReview.level to NOT NULL';
+  ELSE
+    RAISE NOTICE 'AcrCriterionReview.level is already NOT NULL, skipping';
+  END IF;
 
-ALTER TABLE "AcrCriterionReview"
-ALTER COLUMN "aiStatus" SET NOT NULL;
+  -- Check if aiStatus column is already NOT NULL
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'AcrCriterionReview'
+    AND column_name = 'aiStatus'
+    AND is_nullable = 'YES'
+  ) THEN
+    ALTER TABLE "AcrCriterionReview" ALTER COLUMN "aiStatus" SET NOT NULL;
+    RAISE NOTICE 'Set AcrCriterionReview.aiStatus to NOT NULL';
+  ELSE
+    RAISE NOTICE 'AcrCriterionReview.aiStatus is already NOT NULL, skipping';
+  END IF;
+END$$;
 
 -- =====================================================
 -- PART 2: Fix CriterionChangeLog schema refactoring
