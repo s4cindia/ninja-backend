@@ -696,10 +696,25 @@ export const epubController = {
 
       logger.info(`[Re-audit] Starting re-audit for job ${jobId}, file: ${req.file.originalname}`);
 
-      const result = await remediationService.reauditEpub(jobId, {
-        buffer: req.file.buffer,
-        originalname: req.file.originalname,
-      });
+      // Race against a 25-second timeout to ensure we respond before CloudFront's
+      // 30-second origin timeout. If the EPUB is too large/complex, we return a
+      // helpful 408 (with CORS headers already set) instead of letting CloudFront
+      // silently 504 with no CORS headers.
+      const REAUDIT_TIMEOUT_MS = 25_000;
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Re-audit timed out. The EPUB may be too large to process synchronously. Please try again with a smaller file.')),
+          REAUDIT_TIMEOUT_MS,
+        ),
+      );
+
+      const result = await Promise.race([
+        remediationService.reauditEpub(jobId, {
+          buffer: req.file.buffer,
+          originalname: req.file.originalname,
+        }),
+        timeoutPromise,
+      ]);
 
       logger.info(`[Re-audit] Completed: ${result.resolved} issues resolved, ${result.stillPending} still pending`);
 
@@ -726,10 +741,12 @@ export const epubController = {
         rawResult: result
       });
     } catch (error) {
-      logger.error('Re-audit failed', error instanceof Error ? error : undefined);
-      return res.status(500).json({
+      const message = error instanceof Error ? error.message : 'Re-audit failed';
+      const isTimeout = message.includes('timed out');
+      logger.error(`Re-audit ${isTimeout ? 'timed out' : 'failed'}`, error instanceof Error ? error : undefined);
+      return res.status(isTimeout ? 408 : 500).json({
         success: false,
-        error: error instanceof Error ? error.message : 'Re-audit failed',
+        error: message,
       });
     }
   },
