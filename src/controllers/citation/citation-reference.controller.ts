@@ -16,6 +16,21 @@ import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 
+/**
+ * Safely extract authors array from Prisma JsonValue
+ * @param authors - Prisma JsonValue that may be string[], string, or other types
+ * @returns string[] with safe handling for all input types
+ */
+function safeAuthorsArray(authors: unknown): string[] {
+  if (Array.isArray(authors)) {
+    return authors.map(a => typeof a === 'string' ? a : String(a));
+  }
+  if (typeof authors === 'string') {
+    return authors.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  }
+  return [];
+}
+
 export class CitationReferenceController {
   /**
    * POST /api/v1/citation-management/document/:documentId/reorder
@@ -54,7 +69,7 @@ export class CitationReferenceController {
         number: index + 1,
         rawText: r.formattedApa || `${JSON.stringify(r.authors)} (${r.year}). ${r.title}`,
         components: {
-          authors: r.authors as string[],
+          authors: safeAuthorsArray(r.authors),
           year: r.year || undefined,
           title: r.title || undefined,
           journal: r.journalName || undefined,
@@ -205,7 +220,7 @@ export class CitationReferenceController {
             id: r.id,
             position: index + 1,
             number: index + 1,
-            rawText: r.formattedApa || `${(r.authors as string[])?.join(', ') || 'Unknown'} (${r.year || 'n.d.'}). ${r.title || 'Untitled'}`,
+            rawText: r.formattedApa || `${safeAuthorsArray(r.authors).join(', ') || 'Unknown'} (${r.year || 'n.d.'}). ${r.title || 'Untitled'}`,
             citationCount: r.citationLinks.length
           }))
         }
@@ -301,7 +316,7 @@ export class CitationReferenceController {
 
       // Build the deleted reference text for track changes
       const deletedRefText = referenceToDelete.formattedApa ||
-        `${(referenceToDelete.authors as string[])?.join(', ') || 'Unknown'} (${referenceToDelete.year || 'n.d.'}). ${referenceToDelete.title || 'Untitled'}`;
+        `${safeAuthorsArray(referenceToDelete.authors).join(', ') || 'Unknown'} (${referenceToDelete.year || 'n.d.'}). ${referenceToDelete.title || 'Untitled'}`;
 
       // Execute all database operations in a single transaction
       await prisma.$transaction(async (tx) => {
@@ -361,7 +376,7 @@ export class CitationReferenceController {
 
         // If no explicit links, find citations by matching author surname + year
         if (affectedCitations.length === 0 && referenceToDelete.year) {
-          const authors = referenceToDelete.authors as string[] | undefined;
+          const authors = safeAuthorsArray(referenceToDelete.authors);
           const firstAuthor = authors?.[0] || '';
           // Extract surname (handles "Smith, J." -> "Smith" or "Smith J" -> "Smith")
           const surname = firstAuthor.split(/[,\s]/)[0];

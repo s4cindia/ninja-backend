@@ -34,13 +34,6 @@ interface RateLimitBucket {
   lastRefill: number;
 }
 
-interface TenantUsage {
-  tokensUsed: number;
-  callsThisHour: number;
-  lastHourReset: number;
-  lastDayReset: number;
-}
-
 /**
  * Token bucket rate limiter for API calls
  */
@@ -125,143 +118,9 @@ export class RateLimiter {
   }
 }
 
-/**
- * Per-tenant usage tracker for AI and API usage (in-process)
- *
- * WARNING: This is NOT safe for multi-instance deployments (ECS Fargate, Kubernetes).
- * Use RedisTenantUsageTracker for distributed environments.
- *
- * @deprecated Use RedisTenantUsageTracker for production multi-instance deployments
- */
-export class TenantUsageTracker {
-  private usage: Map<string, TenantUsage> = new Map();
-  private config: TenantUsageConfig;
-  private name: string;
-
-  constructor(name: string, config: TenantUsageConfig) {
-    this.name = name;
-    this.config = config;
-    logger.warn(`[${name}] Using in-process TenantUsageTracker - not safe for multi-instance deployments`);
-  }
-
-  /**
-   * Get or create usage record for tenant
-   */
-  private getUsage(tenantId: string): TenantUsage {
-    const now = Date.now();
-    let usage = this.usage.get(tenantId);
-
-    if (!usage) {
-      usage = {
-        tokensUsed: 0,
-        callsThisHour: 0,
-        lastHourReset: now,
-        lastDayReset: now,
-      };
-      this.usage.set(tenantId, usage);
-    }
-
-    // Reset hourly counter if needed
-    if (now - usage.lastHourReset >= 60 * 60 * 1000) {
-      usage.callsThisHour = 0;
-      usage.lastHourReset = now;
-    }
-
-    // Reset daily counter if needed
-    if (now - usage.lastDayReset >= 24 * 60 * 60 * 1000) {
-      usage.tokensUsed = 0;
-      usage.lastDayReset = now;
-    }
-
-    return usage;
-  }
-
-  /**
-   * Check if tenant can make an API call
-   */
-  canMakeCall(tenantId: string): { allowed: boolean; reason?: string; retryAfter?: number } {
-    const usage = this.getUsage(tenantId);
-
-    if (usage.callsThisHour >= this.config.maxCallsPerHour) {
-      const retryAfter = Math.ceil((60 * 60 * 1000 - (Date.now() - usage.lastHourReset)) / 1000);
-      return {
-        allowed: false,
-        reason: `Hourly API call limit (${this.config.maxCallsPerHour}) exceeded`,
-        retryAfter,
-      };
-    }
-
-    return { allowed: true };
-  }
-
-  /**
-   * Check if tenant can use tokens
-   */
-  canUseTokens(tenantId: string, tokens: number): { allowed: boolean; reason?: string; retryAfter?: number } {
-    const usage = this.getUsage(tenantId);
-
-    if (usage.tokensUsed + tokens > this.config.maxTokensPerDay) {
-      const retryAfter = Math.ceil((24 * 60 * 60 * 1000 - (Date.now() - usage.lastDayReset)) / 1000);
-      return {
-        allowed: false,
-        reason: `Daily token limit (${this.config.maxTokensPerDay}) exceeded`,
-        retryAfter,
-      };
-    }
-
-    return { allowed: true };
-  }
-
-  /**
-   * Record an API call for tenant
-   */
-  recordCall(tenantId: string): void {
-    const usage = this.getUsage(tenantId);
-    usage.callsThisHour++;
-    logger.debug(`[${this.name}] Tenant ${tenantId} calls this hour: ${usage.callsThisHour}/${this.config.maxCallsPerHour}`);
-  }
-
-  /**
-   * Record token usage for tenant
-   */
-  recordTokens(tenantId: string, tokens: number): void {
-    const usage = this.getUsage(tenantId);
-    usage.tokensUsed += tokens;
-    logger.debug(`[${this.name}] Tenant ${tenantId} tokens today: ${usage.tokensUsed}/${this.config.maxTokensPerDay}`);
-  }
-
-  /**
-   * Get usage statistics for tenant
-   */
-  getStats(tenantId: string): {
-    callsThisHour: number;
-    maxCallsPerHour: number;
-    tokensUsedToday: number;
-    maxTokensPerDay: number;
-  } {
-    const usage = this.getUsage(tenantId);
-    return {
-      callsThisHour: usage.callsThisHour,
-      maxCallsPerHour: this.config.maxCallsPerHour,
-      tokensUsedToday: usage.tokensUsed,
-      maxTokensPerDay: this.config.maxTokensPerDay,
-    };
-  }
-
-  /**
-   * Reset usage for a specific tenant (for testing)
-   */
-  resetTenant(tenantId: string): void {
-    this.usage.delete(tenantId);
-  }
-
-  /**
-   * Clear all usage data (for testing)
-   */
-  clearAll(): void {
-    this.usage.clear();
-  }
-}
+// Note: In-process TenantUsageTracker has been removed.
+// Use RedisTenantUsageTracker for all tenant usage tracking (multi-instance safe).
+// For testing, see tests/unit/utils/rate-limiter.test.ts for mock patterns.
 
 /**
  * Redis-based per-tenant usage tracker for multi-instance deployments

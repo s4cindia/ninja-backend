@@ -60,7 +60,15 @@ export const HTML_SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
   },
   allowedSchemes: ['http', 'https', 'mailto'],
   allowedSchemesByTag: {
-    img: ['http', 'https', 'data'], // data: URIs only allowed for images
+    // SECURITY NOTE: data: URIs are allowed for images to support embedded images
+    // from DOCX conversion (mammoth.js embeds images as base64 data URIs).
+    // This is a known XSS vector in some browser/parser combinations.
+    // Mitigations:
+    // 1. Frontend should set Content-Security-Policy: img-src 'self' data: https:
+    // 2. Output is only rendered in our controlled frontend context
+    // 3. HTML is sanitized by sanitize-html which strips malicious attributes
+    // If data: images are not needed, remove 'data' from this list.
+    img: ['http', 'https', 'data'],
   },
   disallowedTagsMode: 'discard',
 };

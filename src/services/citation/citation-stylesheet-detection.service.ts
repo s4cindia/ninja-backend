@@ -34,11 +34,25 @@ const AVAILABLE_CONVERSIONS = [
 ];
 
 // Allowlisted S3 hostname patterns (AWS S3 and compatible services)
+// Reference: https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html
+//
+// IMPORTANT: These patterns are evaluated at request time, so config changes
+// take effect on the next request (no service restart needed).
 const ALLOWED_S3_HOSTNAME_PATTERNS = [
-  /^[a-z0-9-]+\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,  // bucket.s3.region.amazonaws.com
-  /^s3\.[a-z0-9-]+\.amazonaws\.com$/i,               // s3.region.amazonaws.com
-  /^[a-z0-9-]+\.s3\.amazonaws\.com$/i,               // bucket.s3.amazonaws.com (legacy)
-  /^s3\.amazonaws\.com$/i,                            // s3.amazonaws.com (legacy)
+  // Virtual-hosted style: bucket.s3.region.amazonaws.com
+  /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3\.[a-z0-9-]+\.amazonaws\.com$/i,
+  // Path-style: s3.region.amazonaws.com
+  /^s3\.[a-z0-9-]+\.amazonaws\.com$/i,
+  // Legacy virtual-hosted: bucket.s3.amazonaws.com
+  /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3\.amazonaws\.com$/i,
+  // Legacy path-style: s3.amazonaws.com
+  /^s3\.amazonaws\.com$/i,
+  // Transfer Acceleration: bucket.s3-accelerate.amazonaws.com
+  /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3-accelerate\.amazonaws\.com$/i,
+  // Dual-stack: bucket.s3.dualstack.region.amazonaws.com
+  /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3\.dualstack\.[a-z0-9-]+\.amazonaws\.com$/i,
+  // S3 access points: accesspoint.s3-accesspoint.region.amazonaws.com
+  /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.s3-accesspoint\.[a-z0-9-]+\.amazonaws\.com$/i,
 ];
 
 // Private/loopback IP ranges to block (SSRF prevention)

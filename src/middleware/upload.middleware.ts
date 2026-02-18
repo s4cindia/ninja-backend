@@ -153,6 +153,9 @@ export const uploadSingleToDisk = uploadToDisk.single('file');
 /**
  * Middleware to validate uploaded file content (magic bytes)
  * Handles both memory-based and disk-based uploads efficiently
+ *
+ * Note: This middleware should be used with withProcessingTimeout() for timeout protection:
+ * app.post('/upload', withProcessingTimeout(5000), uploadSingle, validateUploadedFile, ...)
  */
 export function validateUploadedFile(
   req: Request,
@@ -165,20 +168,7 @@ export function validateUploadedFile(
     return next();
   }
 
-  const startTime = Date.now();
-  const VALIDATION_TIMEOUT_MS = 5000;
-
   try {
-    // Check timeout
-    if (Date.now() - startTime > VALIDATION_TIMEOUT_MS) {
-      logger.error('[Upload] Validation timeout exceeded');
-      res.status(408).json({
-        success: false,
-        error: { code: 'VALIDATION_TIMEOUT', message: 'File validation timed out' }
-      });
-      return;
-    }
-
     // Determine if file is in memory or on disk
     if (file.buffer) {
       // Memory-based validation (small files)
