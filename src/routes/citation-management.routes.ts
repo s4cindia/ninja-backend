@@ -2,13 +2,15 @@
  * Citation Management Routes
  * Comprehensive citation tool API
  *
- * File uploads use presigned S3 URLs per PRESIGNED_S3_UPLOAD_DESIGN.md:
- * - CloudFront WAF blocks multipart uploads
- * - In-memory uploads exhaust ECS task memory under load
- * - Pattern: presign -> client uploads to S3 -> confirm
+ * File Upload Options:
+ * 1. LOCAL DEV: POST /upload (multer in-memory) - for local development without S3
+ * 2. CLOUD/PROD: POST /presign-upload + POST /confirm-upload (presigned S3 URLs)
+ *    - Required for CloudFront (WAF blocks multipart uploads)
+ *    - Prevents ECS memory exhaustion under concurrent load
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -70,6 +72,30 @@ const router = Router();
 // This middleware is applied BEFORE any route definitions.
 // ============================================
 router.use(authenticate);
+
+// ============================================
+// MULTER CONFIGURATION (for local development)
+// In production, use presigned S3 URLs instead to avoid:
+// - CloudFront WAF blocking multipart uploads
+// - ECS memory exhaustion from 50MB buffers per concurrent upload
+// ============================================
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimes = [
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // DOCX
+    ];
+
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only DOCX files are allowed'));
+    }
+  },
+});
 
 // ============================================
 // DEBUG ENDPOINTS (disabled in production)
@@ -144,12 +170,34 @@ router.get(
 );
 
 // ============================================
-// DOCUMENT MANAGEMENT (Presigned S3 Upload Pattern)
+// DOCUMENT MANAGEMENT
 // ============================================
 
 /**
+ * POST /api/v1/citation-management/upload
+ * Upload DOCX via multipart form-data (LOCAL DEVELOPMENT)
+ * Rate limited: 10 uploads per 15 minutes per user
+ *
+ * NOTE: For cloud/production deployments, use presign-upload + confirm-upload
+ * to avoid CloudFront WAF blocking and ECS memory exhaustion.
+ *
+ * Body (multipart/form-data):
+ * - file: DOCX file
+ *
+ * Returns:
+ * - If async processing available: { status: 'QUEUED', jobId, documentId }
+ * - If sync fallback: { status: 'COMPLETED', documentId, statistics }
+ */
+router.post(
+  '/upload',
+  uploadRateLimiter,
+  upload.single('file'),
+  citationManagementController.upload.bind(citationManagementController)
+);
+
+/**
  * POST /api/v1/citation-management/presign-upload
- * Get presigned S3 URL for DOCX upload
+ * Get presigned S3 URL for DOCX upload (CLOUD/PRODUCTION)
  * Rate limited: 10 uploads per 15 minutes per user
  *
  * Body:
@@ -170,7 +218,7 @@ router.post(
 
 /**
  * POST /api/v1/citation-management/confirm-upload
- * Confirm S3 upload and start AI analysis
+ * Confirm S3 upload and start AI analysis (CLOUD/PRODUCTION)
  *
  * Body:
  * - fileKey: S3 object key from presign-upload
