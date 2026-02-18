@@ -1175,8 +1175,28 @@ class DOCXProcessorService {
     let citationStart = -1;
     let actualCitationText = citationText;
 
+    // Normalize Unicode superscript characters to regular digits for matching
+    // Chicago/footnote style may store "¹²³" but Word XML uses "123" with styling
+    const superscriptMap: Record<string, string> = {
+      '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+      '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+    };
+    let normalizedCitationText = citationText;
+    for (const [sup, digit] of Object.entries(superscriptMap)) {
+      normalizedCitationText = normalizedCitationText.replace(new RegExp(sup, 'g'), digit);
+    }
+
     // Pattern 1: Exact match first
     citationStart = combinedText.indexOf(citationText);
+
+    // Pattern 1b: Try with normalized superscripts (¹ → 1)
+    if (citationStart === -1 && normalizedCitationText !== citationText) {
+      citationStart = combinedText.indexOf(normalizedCitationText);
+      if (citationStart !== -1) {
+        actualCitationText = normalizedCitationText;
+        logger.debug(`[DOCX Processor] Found citation with normalized superscripts: "${normalizedCitationText}"`);
+      }
+    }
 
     // Pattern 2: Try with parentheses - single citation (Author, Year)
     if (citationStart === -1) {
@@ -2784,12 +2804,34 @@ class DOCXProcessorService {
         // Process RENUMBER changes to update reference list numbers
         for (const change of changes) {
           if (change.type === 'DELETE' && change.beforeText) {
-            // Check if this is a reference list deletion (format: "[N] Reference text...")
-            // or an in-text citation deletion (format: "(Author, Year)" or similar)
+            // Check if this is a reference list deletion or an in-text citation deletion
+            // Reference deletions can be:
+            // 1. Vancouver/numbered style: "[N] Reference text..."
+            // 2. Chicago/footnote style: Just the reference text (metadata in afterText)
+
+            // First check for Chicago/footnote style metadata
+            let isFootnoteStyleRef = false;
+            let refPosition: number | null = null;
+            if (change.afterText) {
+              try {
+                const metadata = JSON.parse(change.afterText);
+                if (metadata.isFootnoteStyle === true) {
+                  isFootnoteStyleRef = true;
+                  refPosition = metadata.position;
+                }
+              } catch {
+                // Not JSON metadata, continue with normal processing
+              }
+            }
+
+            // Check for numbered style format: "[N] Reference text..."
             const deleteMatch = change.beforeText.match(/^\[(\d+)\]\s*(.+)$/);
 
-            if (!deleteMatch) {
-              // This is an in-text citation deletion (e.g., "(Bender et al., 2021)")
+            // Determine if this is a reference deletion or in-text citation deletion
+            const isReferenceDelete = deleteMatch || isFootnoteStyleRef;
+
+            if (!isReferenceDelete) {
+              // This is an in-text citation deletion (e.g., "(Bender et al., 2021)" or "¹")
               const citationText = change.beforeText.trim();
               logger.info(`[DOCXProcessor] Processing in-text citation DELETE: "${citationText}"`);
 
@@ -2835,9 +2877,20 @@ class DOCXProcessorService {
 
               // Fallback: search paragraphs for the citation text
               if (!citationFound) {
+                // Normalize Unicode superscripts for fallback search (¹ → 1)
+                const superscriptMap: Record<string, string> = {
+                  '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+                  '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+                };
+                let normalizedCitationText = citationText;
+                for (const [sup, digit] of Object.entries(superscriptMap)) {
+                  normalizedCitationText = normalizedCitationText.replace(new RegExp(sup, 'g'), digit);
+                }
+
                 for (const para of paragraphs) {
                   if (!para.paraId) continue;
-                  if (!para.combinedText.includes(citationText)) continue;
+                  // Check for both original and normalized text
+                  if (!para.combinedText.includes(citationText) && !para.combinedText.includes(normalizedCitationText)) continue;
 
                   logger.info(`[DOCXProcessor] Found citation by text search in paragraph ${para.paraId}`);
 
@@ -2866,10 +2919,25 @@ class DOCXProcessorService {
               continue;
             }
 
-            const refNumber = deleteMatch[1];
-            const refText = deleteMatch[2].trim();
+            // Handle reference deletion - get refNumber and refText based on style
+            let refNumber: string;
+            let refText: string;
 
-            logger.info(`[DOCXProcessor] DELETE ref ${refNumber}: refText="${refText.substring(0, 80)}..."`);
+            if (deleteMatch) {
+              // Vancouver/numbered style: "[N] Reference text..."
+              refNumber = deleteMatch[1];
+              refText = deleteMatch[2].trim();
+            } else if (isFootnoteStyleRef && refPosition !== null) {
+              // Chicago/footnote style: reference text stored directly
+              refNumber = String(refPosition);
+              refText = change.beforeText.trim();
+            } else {
+              // Fallback - shouldn't happen but handle gracefully
+              logger.warn(`[DOCXProcessor] Unexpected DELETE format: "${change.beforeText.substring(0, 50)}..."`);
+              continue;
+            }
+
+            logger.info(`[DOCXProcessor] DELETE ref ${refNumber}: refText="${refText.substring(0, 80)}..." (footnoteStyle=${isFootnoteStyleRef})`);
 
             // ID-BASED APPROACH: Search in combined paragraph text, then use paraId to locate
             // This handles text split across multiple XML elements due to formatting

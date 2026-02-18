@@ -441,10 +441,11 @@ Return ONLY the JSON array, no explanations.`;
     const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
 
     // Build prompt with clear boundaries to prevent injection
-    const prompt = `TASK: Extract ALL references from the References/Bibliography section. Return ONLY a JSON array.
+    const prompt = `TASK: Extract ALL references from the reference section. Return ONLY a JSON array.
 
 INSTRUCTIONS:
-- Find the References or Bibliography section in the document
+- Find the References, Bibliography, Footnotes, Notes, or Works Cited section in the document
+- For Chicago/Turabian style: extract references from the Footnotes or Notes section
 - Extract each reference with available metadata
 - Return ONLY a JSON array, no explanations
 

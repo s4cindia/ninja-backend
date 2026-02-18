@@ -356,13 +356,28 @@ export class CitationReferenceController {
         }
 
         // Create CitationChange record for the deleted reference
+        // Format depends on citation style - Chicago uses footnotes without [N] prefix
+        const docStyle = referenceToDelete.document.referenceListStyle?.toLowerCase() || '';
+        const isChicagoStyle = docStyle.includes('chicago') || docStyle.includes('turabian') || docStyle.includes('footnote');
+
+        // For Chicago/footnote style, store just the reference text (footnotes don't have [N] prefix)
+        // For other styles (Vancouver, APA numbered), include the [N] prefix
+        const deleteBeforeText = isChicagoStyle
+          ? deletedRefText
+          : `[${deletedPosition}] ${deletedRefText}`;
+
         await tx.citationChange.create({
           data: {
             documentId,
             citationId: null,
             changeType: 'DELETE',
-            beforeText: `[${deletedPosition}] ${deletedRefText}`,
-            afterText: '',
+            beforeText: deleteBeforeText,
+            // Store metadata for export to know the position and style
+            afterText: JSON.stringify({
+              position: deletedPosition,
+              style: docStyle,
+              isFootnoteStyle: isChicagoStyle
+            }),
             appliedBy: 'user',
             isReverted: false
           }
