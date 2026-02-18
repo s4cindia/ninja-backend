@@ -38,6 +38,16 @@ export interface ExportOptions {
   branding?: BrandingOptions;
 }
 
+interface BatchDocument {
+  fileName: string;
+  status?: string;
+  issuesFound?: number;
+}
+
+interface BatchInfo {
+  documentList?: BatchDocument[];
+}
+
 export interface ExportResult {
   downloadUrl: string;
   expiresAt: Date;
@@ -231,7 +241,7 @@ async function exportToDocx(
   ];
   
   // Add Products Evaluated section for batch ACRs (DOCX)
-  const batchInfoDocx = (acr as unknown as Record<string, unknown>).batchInfo as any;
+  const batchInfoDocx = (acr as unknown as Record<string, unknown>).batchInfo as BatchInfo | undefined;
   if (batchInfoDocx && batchInfoDocx.documentList && Array.isArray(batchInfoDocx.documentList) && batchInfoDocx.documentList.length > 0) {
     children.push(new Paragraph({
       children: [new TextRun({ text: 'Products Evaluated', bold: true, size: 28 })],
@@ -247,7 +257,7 @@ async function exportToDocx(
         const detailParts = [];
         if (doc.status) detailParts.push(`Status: ${doc.status}`);
         if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
-        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        if ((doc as unknown as Record<string, unknown>).score) detailParts.push(`Score: ${(doc as unknown as Record<string, unknown>).score}`);
         const detailText = detailParts.join(' | ');
         children.push(new Paragraph({ children: [new TextRun({ text: `   ${detailText}`, italics: true, size: 18 })] }));
       }
@@ -374,7 +384,7 @@ async function exportToPdf(
   yPosition -= 15;
 
   // Add Products Evaluated section for batch ACRs
-  const batchInfo = (acr as unknown as Record<string, unknown>).batchInfo as any;
+  const batchInfo = (acr as unknown as Record<string, unknown>).batchInfo as BatchInfo | undefined;
   if (batchInfo && batchInfo.documentList && Array.isArray(batchInfo.documentList) && batchInfo.documentList.length > 0) {
     page.drawText('Products Evaluated', { x: margin, y: yPosition, size: 14, font: helveticaBold });
     yPosition -= 18;
@@ -390,7 +400,7 @@ async function exportToPdf(
         const detailParts = [];
         if (doc.status) detailParts.push(`Status: ${doc.status}`);
         if (doc.issuesFound !== undefined) detailParts.push(`Issues: ${doc.issuesFound}`);
-        if (doc.score) detailParts.push(`Score: ${doc.score}`);
+        if ((doc as unknown as Record<string, unknown>).score) detailParts.push(`Score: ${(doc as unknown as Record<string, unknown>).score}`);
         const detailText = detailParts.join(' | ');
         page.drawText(detailText, { x: margin + 25, y: yPosition, size: 8, font: helvetica, color: rgb(0.4, 0.4, 0.4) });
         yPosition -= lineHeight;

@@ -172,13 +172,13 @@ class BatchQuickFixService {
               await prisma.job.update({
                 where: { id: file.auditJobId },
                 data: {
-                  output: {
+                  output: JSON.parse(JSON.stringify({
                     ...output,
                     autoRemediation: {
                       ...autoRemediation,
                       modifications: [...modifications, ...newModifications],
                     },
-                  } as any,
+                  })),
                 },
               });
 

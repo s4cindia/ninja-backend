@@ -210,21 +210,8 @@ class PdfRemediationService {
     plan.quickFixCount = pendingQuickFix;
     plan.manualFixCount = pendingManual;
 
-    // Add completed counts for display
-    plan.completedAutoFixCount = completedAutoFixable;
-    plan.completedQuickFixCount = completedQuickFix;
-
-    // Fetch parent job to get remediatedFileUrl
-    const parentJob = await this.prisma.job.findUnique({
-      where: { id: jobId },
-    });
-
-    if (parentJob?.output && typeof parentJob.output === 'object') {
-      const output = parentJob.output as Record<string, unknown>;
-      if (output.remediatedFileUrl) {
-        plan.remediatedFileUrl = output.remediatedFileUrl as string;
-      }
-    }
+    // Add completed count for display
+    (plan as { completedAutoFixCount?: number }).completedAutoFixCount = completedAutoFixable;
 
     logger.info(
       `[PDF Remediation] Retrieved plan with ${plan.totalIssues} tasks (${pendingAutoFixable} auto-fixable, ${completedAutoFixable} completed)`

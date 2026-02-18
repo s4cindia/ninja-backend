@@ -2,6 +2,11 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { AppError } from '../../utils/app-error';
 
+interface FontInfo {
+  bold?: boolean;
+  italic?: boolean;
+}
+
 export interface TextItem {
   text: string;
   pageNumber: number;
@@ -253,7 +258,7 @@ class TextExtractorService {
     const height = fontSize;
 
     const fontName = String(item.fontName || 'unknown');
-    const fontInfo = (commonFonts.get(fontName) as any) || {};
+    const fontInfo: FontInfo = commonFonts.get(fontName) || {};
     const isBold = fontInfo.bold || /bold/i.test(fontName);
     const isItalic = fontInfo.italic || /italic|oblique/i.test(fontName);
 
@@ -274,8 +279,8 @@ class TextExtractorService {
     };
   }
 
-  private async getCommonFonts(page: pdfjsLib.PDFPageProxy): Promise<Map<string, any>> {
-    const fonts = new Map<string, any>();
+  private async getCommonFonts(page: pdfjsLib.PDFPageProxy): Promise<Map<string, FontInfo>> {
+    const fonts = new Map<string, FontInfo>();
     try {
       await page.getOperatorList();
     } catch {

@@ -6,6 +6,7 @@ import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
+import { processCitationJob } from './processors/citation.processor';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
 
@@ -34,6 +35,13 @@ export function startWorkers(): void {
     concurrency: 2,
   });
   if (fileWorker) workers.push(fileWorker);
+
+  const citationWorker = createWorker({
+    queueName: QUEUE_NAMES.CITATION_PROCESSING,
+    processor: processCitationJob,
+    concurrency: 2,
+  });
+  if (citationWorker) workers.push(citationWorker);
 
   if (isRedisConfigured()) {
     const connection = getBullMQConnection();

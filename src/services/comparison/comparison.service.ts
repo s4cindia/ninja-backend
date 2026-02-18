@@ -92,9 +92,7 @@ export class ComparisonService {
     };
 
     const input = job.input as Record<string, unknown>;
-    const fileName = typeof input?.fileName === 'string' ? input.fileName
-      : typeof input?.filename === 'string' ? input.filename
-      : 'Unknown';
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,
@@ -199,9 +197,7 @@ export class ComparisonService {
     });
 
     const input = (job?.input as Record<string, unknown>) || {};
-    const fileName = typeof input?.fileName === 'string' ? input.fileName
-      : typeof input?.filename === 'string' ? input.filename
-      : 'Unknown';
+    const fileName = String(input?.fileName || input?.filename || 'Unknown');
 
     return {
       jobId,

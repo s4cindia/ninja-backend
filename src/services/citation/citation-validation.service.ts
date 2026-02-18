@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
+import { AppError } from '../../utils/app-error';
 
 const uuidSchema = z.string().uuid();
 
@@ -27,7 +28,7 @@ export class CitationValidationService {
     const validation = validateComponentOwnershipSchema.safeParse({ citationId, componentId });
     if (!validation.success) {
       const errors = validation.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
-      throw new Error(`Validation failed: ${errors}`);
+      throw AppError.badRequest(`Validation failed: ${errors}`, 'VALIDATION_ERROR');
     }
 
     const component = await this.prisma.citationComponent.findUnique({
@@ -36,13 +37,14 @@ export class CitationValidationService {
     });
 
     if (!component) {
-      throw new Error(`CitationComponent not found: ${componentId}`);
+      throw AppError.notFound(`CitationComponent not found: ${componentId}`, 'COMPONENT_NOT_FOUND');
     }
 
     if (component.citationId !== citationId) {
-      throw new Error(
+      throw AppError.badRequest(
         `CitationComponent ${componentId} belongs to Citation ${component.citationId}, ` +
-        `not Citation ${citationId}. Cannot set as primary component.`
+        `not Citation ${citationId}. Cannot set as primary component.`,
+        'COMPONENT_OWNERSHIP_MISMATCH'
       );
     }
   }
@@ -54,12 +56,12 @@ export class CitationValidationService {
     const validation = setPrimaryComponentSchema.safeParse({ citationId, componentId });
     if (!validation.success) {
       const errors = validation.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
-      throw new Error(`Validation failed: ${errors}`);
+      throw AppError.badRequest(`Validation failed: ${errors}`, 'VALIDATION_ERROR');
     }
 
     return this.prisma.$transaction(async (tx) => {
       const component = await tx.citationComponent.findFirst({
-        where: { 
+        where: {
           id: componentId,
           citationId: citationId
         },
@@ -67,8 +69,9 @@ export class CitationValidationService {
       });
 
       if (!component) {
-        throw new Error(
-          `CitationComponent ${componentId} not found or does not belong to Citation ${citationId}`
+        throw AppError.notFound(
+          `CitationComponent ${componentId} not found or does not belong to Citation ${citationId}`,
+          'COMPONENT_NOT_FOUND'
         );
       }
 
@@ -83,7 +86,7 @@ export class CitationValidationService {
     const validation = clearPrimaryComponentSchema.safeParse({ citationId });
     if (!validation.success) {
       const errors = validation.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ');
-      throw new Error(`Validation failed: ${errors}`);
+      throw AppError.badRequest(`Validation failed: ${errors}`, 'VALIDATION_ERROR');
     }
 
     return this.prisma.citation.update({

@@ -8,6 +8,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { EditorialDocStatus } from '@prisma/client';
 import { s3Service } from '../s3.service';
+import { AppError } from '../../utils/app-error';
 import {
   DetectedCitation,
   DetectionResult,
@@ -43,20 +44,20 @@ export class CitationDetectionService {
         try {
           const response = await fetch(presignedUrl, { signal: controller.signal });
           if (!response.ok) {
-            throw new Error(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`);
+            throw AppError.badRequest(`Failed to fetch file from presigned URL: ${response.status} ${response.statusText}`, 'FETCH_FAILED');
           }
           const arrayBuffer = await response.arrayBuffer();
           fileBuffer = Buffer.from(arrayBuffer);
         } catch (fetchError) {
           if (controller.signal.aborted) {
-            throw new Error(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`);
+            throw AppError.serviceUnavailable(`Presigned URL fetch timed out after ${FETCH_TIMEOUT_MS}ms`, 'FETCH_TIMEOUT');
           }
           throw fetchError;
         } finally {
           clearTimeout(timeoutId);
         }
       } else {
-        throw new Error('Either fileS3Key or presignedUrl is required');
+        throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
       }
       const actualSize = fileSize ?? fileBuffer.length;
       logger.info(`[Citation Detection] Fetched file: ${actualSize} bytes`);
@@ -94,7 +95,22 @@ export class CitationDetectionService {
       return result;
 
     } catch (error) {
-      logger.error('[Citation Detection] Failed', error instanceof Error ? error : undefined);
+      // Transition job to FAILED to prevent stuck PROCESSING state
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`[Citation Detection] Failed for jobId=${jobId}: ${errorMessage}`, error instanceof Error ? error : undefined);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: errorMessage,
+        },
+      }).catch(updateError => {
+        // Log but don't throw - we want to re-throw the original error
+        logger.error(`[Citation Detection] Failed to update job status: ${updateError}`);
+      });
+
       throw error;
     }
   }
@@ -159,24 +175,26 @@ export class CitationDetectionService {
 
     const doc = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
+      include: { documentContent: true },
     });
 
     if (!doc) {
-      throw new Error(`Editorial document not found: ${documentId}`);
+      throw AppError.notFound(`Editorial document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
-    if (!doc.fullText) {
-      throw new Error(`Document has no extracted text: ${documentId}`);
+    const fullText = doc.documentContent?.fullText;
+    if (!fullText) {
+      throw AppError.badRequest(`Document has no extracted text: ${documentId}`, 'NO_TEXT_CONTENT');
     }
 
     logger.info(`[Citation Detection] Re-detecting for documentId=${documentId}`);
 
     // Detect citations FIRST (before any DB mutations)
-    const extractedCitations = await editorialAi.detectCitations(doc.fullText);
+    const extractedCitations = await editorialAi.detectCitations(fullText);
 
     // Perform atomic transaction: delete old, insert new, update status
     const citations = await prisma.$transaction(async (tx) => {
@@ -198,7 +216,8 @@ export class CitationDetectionService {
               paragraphIndex: extracted.location.paragraphIndex,
               citationType: mapToCitationType(extracted.type),
               detectedStyle: mapToCitationStyle(extracted.style),
-              confidence: extracted.confidence / 100,
+              // Normalize confidence to 0-1 scale (handles both 0-100 and 0-1 inputs)
+              confidence: extracted.confidence <= 1 ? extracted.confidence : extracted.confidence / 100,
               isValid: null,
               validationErrors: [],
             },
@@ -234,24 +253,40 @@ export class CitationDetectionService {
     });
 
     if (existing) {
-      // Update existing document
-      return prisma.editorialDocument.update({
-        where: { id: existing.id },
-        data: {
-          fullText: parsed.text,
-          wordCount: parsed.metadata.wordCount,
-          pageCount: parsed.metadata.pageCount || null,
-          chunkCount: parsed.chunks.length,
-          title: parsed.metadata.title || null,
-          authors: parsed.metadata.authors || [],
-          language: parsed.metadata.language || null,
-          status: EditorialDocStatus.ANALYZING,
-          parsedAt: new Date(),
-        },
-      });
+      // Update existing document and its content
+      const [updatedDoc] = await prisma.$transaction([
+        prisma.editorialDocument.update({
+          where: { id: existing.id },
+          data: {
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+            chunkCount: parsed.chunks.length,
+            title: parsed.metadata.title || null,
+            authors: parsed.metadata.authors || [],
+            language: parsed.metadata.language || null,
+            status: EditorialDocStatus.ANALYZING,
+            parsedAt: new Date(),
+          },
+        }),
+        prisma.editorialDocumentContent.upsert({
+          where: { documentId: existing.id },
+          update: {
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+          create: {
+            documentId: existing.id,
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        }),
+      ]);
+      return updatedDoc;
     }
 
-    // Create new document
+    // Create new document with content in separate table
     return prisma.editorialDocument.create({
       data: {
         tenantId,
@@ -261,7 +296,6 @@ export class CitationDetectionService {
         mimeType: this.getMimeType(fileName),
         fileSize,
         storagePath: '', // Buffer-based, not stored
-        fullText: parsed.text,
         wordCount: parsed.metadata.wordCount,
         pageCount: parsed.metadata.pageCount || null,
         chunkCount: parsed.chunks.length,
@@ -270,6 +304,13 @@ export class CitationDetectionService {
         language: parsed.metadata.language || null,
         status: EditorialDocStatus.ANALYZING,
         parsedAt: new Date(),
+        documentContent: {
+          create: {
+            fullText: parsed.text,
+            wordCount: parsed.metadata.wordCount,
+            pageCount: parsed.metadata.pageCount || null,
+          },
+        },
       },
     });
   }
@@ -295,7 +336,8 @@ export class CitationDetectionService {
             paragraphIndex: extracted.location.paragraphIndex,
             startOffset: extracted.location.startOffset,
             endOffset: extracted.location.endOffset,
-            confidence: extracted.confidence / 100, // Normalize to 0-1
+            // Normalize confidence to 0-1 scale (handles both 0-100 and 0-1 inputs)
+            confidence: extracted.confidence <= 1 ? extracted.confidence : extracted.confidence / 100,
             isValid: null, // Not validated yet
             validationErrors: [],
           },

@@ -86,6 +86,15 @@ export class AppError extends Error {
   }
 
   /**
+   * Creates a 429 Too Many Requests error.
+   * @param message - Error message (defaults to 'Too many requests')
+   * @param code - Optional error code
+   */
+  static tooManyRequests(message: string = 'Too many requests', code?: string): AppError {
+    return new AppError(message, 429, code || 'TOO_MANY_REQUESTS');
+  }
+
+  /**
    * Creates a 500 Internal Server Error.
    * @param message - Error message (defaults to 'Internal server error')
    * @param code - Optional error code

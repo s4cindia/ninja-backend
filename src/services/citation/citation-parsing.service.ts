@@ -6,6 +6,7 @@
 import { editorialAi } from '../shared';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { AppError } from '../../utils/app-error';
 import {
   ParsedCitationResult,
   BulkParseResult,
@@ -34,12 +35,12 @@ export class CitationParsingService {
     });
 
     if (!citation) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     // Enforce tenant-scoped access
     if (tenantId && citation.document.tenantId !== tenantId) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     // 2. Parse using AI
@@ -115,11 +116,11 @@ export class CitationParsingService {
     });
 
     if (!doc) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     // Get all citations for document
@@ -192,11 +193,11 @@ export class CitationParsingService {
     });
 
     if (!citation) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     if (tenantId && citation.document.tenantId !== tenantId) {
-      throw new Error(`Citation not found: ${citationId}`);
+      throw AppError.notFound(`Citation not found: ${citationId}`, 'CITATION_NOT_FOUND');
     }
 
     const components = await prisma.citationComponent.findMany({
@@ -240,7 +241,24 @@ export class CitationParsingService {
 
     if (!component) return null;
 
-    return this.mapComponentToResult(citationId, component, false, []);
+    // Compute actual review state instead of hardcoding false
+    const fieldConfidences = Object.values(
+      (component.fieldConfidence as Record<string, number>) || {}
+    );
+    const { needsReview, reviewReasons } = this.evaluateReviewNeeded(
+      component.confidence,
+      {
+        authors: component.authors as string[] | undefined,
+        year: component.year,
+        title: component.title,
+        type: component.sourceType,
+        doi: component.doi,
+        url: component.url,
+      },
+      fieldConfidences
+    );
+
+    return this.mapComponentToResult(citationId, component, needsReview, reviewReasons);
   }
 
   /**
@@ -307,11 +325,11 @@ export class CitationParsingService {
     });
 
     if (!doc) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     if (tenantId && doc.tenantId !== tenantId) {
-      throw new Error(`Document not found: ${documentId}`);
+      throw AppError.notFound(`Document not found: ${documentId}`, 'DOCUMENT_NOT_FOUND');
     }
 
     const citations = await prisma.citation.findMany({

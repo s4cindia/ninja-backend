@@ -47,6 +47,7 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
     case JOB_TYPES.ACR_WORKFLOW:
     case JOB_TYPES.PLAGIARISM_CHECK:
     case JOB_TYPES.CITATION_VALIDATION:
+    case JOB_TYPES.CITATION_DETECTION:
     case JOB_TYPES.STYLE_VALIDATION:
     case JOB_TYPES.EDITORIAL_FULL:
       return null;
@@ -163,7 +164,7 @@ export class QueueService {
 
     if (areQueuesAvailable()) {
       try {
-        const queue = getQueueForJobType(job.type);
+        const queue = getQueueForJobType(job.type as Parameters<typeof getQueueForJobType>[0]);
         if (queue) {
           const queueJob = await queue.getJob(jobId);
           if (queueJob) {

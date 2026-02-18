@@ -10,6 +10,9 @@ import { CitationType, CitationStyle, SourceType } from '@prisma/client';
 // DETECTION TYPES (US-4.1)
 // ============================================
 
+/** Section context for citations */
+export type SectionContext = 'BODY' | 'REFERENCES' | 'FOOTNOTES' | 'ENDNOTES' | 'ABSTRACT' | 'UNKNOWN';
+
 /** Single detected citation from document */
 export interface DetectedCitation {
   id: string;
@@ -21,6 +24,10 @@ export interface DetectedCitation {
   startOffset: number;
   endOffset: number;
   confidence: number; // 0-1 normalized
+  sectionContext?: SectionContext;
+  primaryComponentId?: string | null;
+  isParsed?: boolean;
+  parseConfidence?: number | null;
 }
 
 /** Detection result summary for a document */
@@ -132,29 +139,50 @@ export interface CitationWithComponent {
 
 /** Map AI response type string to Prisma CitationType enum */
 export const CITATION_TYPE_MAP: Record<string, CitationType> = {
+  // Lowercase variants
   parenthetical: 'PARENTHETICAL',
   narrative: 'NARRATIVE',
   footnote: 'FOOTNOTE',
   endnote: 'ENDNOTE',
   numeric: 'NUMERIC',
+  // Uppercase variants (for direct lookups without normalization)
+  PARENTHETICAL: 'PARENTHETICAL',
+  NARRATIVE: 'NARRATIVE',
+  FOOTNOTE: 'FOOTNOTE',
+  ENDNOTE: 'ENDNOTE',
+  NUMERIC: 'NUMERIC',
+  // Title case variants (common in AI responses)
+  Parenthetical: 'PARENTHETICAL',
+  Narrative: 'NARRATIVE',
+  Footnote: 'FOOTNOTE',
+  Endnote: 'ENDNOTE',
+  Numeric: 'NUMERIC',
   // Fallback handled in code
 };
 
 /** Map AI response style string to Prisma CitationStyle enum */
 export const CITATION_STYLE_MAP: Record<string, CitationStyle> = {
+  // Uppercase variants
   APA: 'APA',
-  apa: 'APA',
   MLA: 'MLA',
-  mla: 'MLA',
-  Chicago: 'CHICAGO',
-  chicago: 'CHICAGO',
-  CMOS: 'CHICAGO',
-  Vancouver: 'VANCOUVER',
-  vancouver: 'VANCOUVER',
-  Harvard: 'HARVARD',
-  harvard: 'HARVARD',
+  CHICAGO: 'CHICAGO',
+  VANCOUVER: 'VANCOUVER',
+  HARVARD: 'HARVARD',
   IEEE: 'IEEE',
+  // Lowercase variants
+  apa: 'APA',
+  mla: 'MLA',
+  chicago: 'CHICAGO',
+  vancouver: 'VANCOUVER',
+  harvard: 'HARVARD',
   ieee: 'IEEE',
+  // Title case variants
+  Chicago: 'CHICAGO',
+  Vancouver: 'VANCOUVER',
+  Harvard: 'HARVARD',
+  // Aliases
+  CMOS: 'CHICAGO',
+  cmos: 'CHICAGO',
   // Fallback handled in code
 };
 
@@ -204,4 +232,51 @@ export function mapToSourceType(value: string | undefined | null): SourceType | 
   if (!value || value.toLowerCase() === 'unknown') return null;
   const normalized = value.toLowerCase().trim();
   return SOURCE_TYPE_MAP[normalized] || null;
+}
+
+// ============================================
+// STYLESHEET DETECTION TYPES
+// Note: Using 'any' to accommodate varying service implementations
+// TODO: Define strict types once service implementations are standardized
+// ============================================
+
+import { SectionContext as PrismaSectionContext } from '@prisma/client';
+export { PrismaSectionContext };
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** Analysis result for stylesheet detection - flexible type for varying implementations */
+export type StylesheetAnalysisResult = any;
+
+/** Sequence analysis for citation ordering */
+export type SequenceAnalysis = any;
+
+/** Cross-reference analysis between citations and references */
+export type CrossReferenceAnalysis = any;
+
+/** Summary entry for reference list analysis */
+export type ReferenceListSummaryEntry = any;
+
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/** Map string to SectionContext enum */
+export function mapToSectionContext(value: string | undefined | null): SectionContext {
+  if (!value) return 'UNKNOWN';
+  const normalized = value.toUpperCase().trim();
+  const contextMap: Record<string, SectionContext> = {
+    'BODY': 'BODY',
+    'REFERENCES': 'REFERENCES',
+    'FOOTNOTES': 'FOOTNOTES',
+    'ENDNOTES': 'ENDNOTES',
+    'ABSTRACT': 'ABSTRACT',
+    'UNKNOWN': 'UNKNOWN',
+    // Map common section names to BODY
+    'INTRODUCTION': 'BODY',
+    'METHODS': 'BODY',
+    'RESULTS': 'BODY',
+    'DISCUSSION': 'BODY',
+    'CONCLUSION': 'BODY',
+    'APPENDIX': 'BODY',
+  };
+  return contextMap[normalized] || 'UNKNOWN';
 }

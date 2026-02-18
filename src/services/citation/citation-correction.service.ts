@@ -1,0 +1,320 @@
+import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
+import { AppError } from '../../utils/app-error';
+
+/**
+ * Escape special regex characters in a string for safe use in RegExp
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export interface CorrectionResult {
+  validationId: string;
+  citationId: string;
+  originalText: string;
+  correctedText: string;
+  changeId: string;
+}
+
+export interface CorrectionError {
+  validationId: string;
+  error: string;
+}
+
+export interface BatchCorrectionResult {
+  correctedCount: number;
+  skippedCount: number;
+  changes: CorrectionResult[];
+  errors: CorrectionError[];
+}
+
+class CitationCorrectionService {
+  async acceptCorrection(
+    validationId: string,
+    tenantId: string
+  ): Promise<CorrectionResult> {
+    const validation = await prisma.citationValidation.findUnique({
+      where: { id: validationId },
+      include: {
+        citation: true,
+        document: true
+      }
+    });
+
+    if (!validation) {
+      throw AppError.notFound('Validation not found');
+    }
+
+    if (validation.document.tenantId !== tenantId) {
+      throw AppError.forbidden('Access denied');
+    }
+
+    if (validation.status !== 'pending') {
+      throw AppError.badRequest('Validation already resolved');
+    }
+
+    const originalText = validation.citation.rawText;
+    const correctedText = validation.suggestedFix;
+
+    // Calculate the new text once - replaces first occurrence of the violation
+    // Note: Using RegExp with escaped special characters to safely match the original text.
+    // This is intentional as each validation targets a specific violation instance.
+    const escapedOriginal = escapeRegex(validation.originalText);
+    const newRawText = originalText.replace(new RegExp(escapedOriginal), correctedText);
+
+    // Use transaction to ensure atomicity of citation update + change log + validation update
+    const change = await prisma.$transaction(async (tx) => {
+      await tx.citation.update({
+        where: { id: validation.citationId },
+        data: { rawText: newRawText }
+      });
+
+      const changeRecord = await tx.citationChange.create({
+        data: {
+          documentId: validation.documentId,
+          citationId: validation.citationId,
+          changeType: 'correction',
+          beforeText: originalText,
+          afterText: newRawText,
+          appliedBy: tenantId
+        }
+      });
+
+      await tx.citationValidation.update({
+        where: { id: validationId },
+        data: {
+          status: 'accepted',
+          resolvedText: correctedText,
+          resolvedAt: new Date()
+        }
+      });
+
+      return changeRecord;
+    });
+
+    return {
+      validationId,
+      citationId: validation.citationId,
+      originalText,
+      correctedText: newRawText,
+      changeId: change.id
+    };
+  }
+
+  async rejectCorrection(
+    validationId: string,
+    tenantId: string,
+    reason?: string
+  ): Promise<void> {
+    const validation = await prisma.citationValidation.findUnique({
+      where: { id: validationId },
+      include: { document: true }
+    });
+
+    if (!validation) {
+      throw AppError.notFound('Validation not found');
+    }
+
+    if (validation.document.tenantId !== tenantId) {
+      throw AppError.forbidden('Access denied');
+    }
+
+    // Guard: prevent overwriting already-resolved validations
+    if (validation.status !== 'pending') {
+      throw AppError.badRequest('Validation already resolved');
+    }
+
+    await prisma.citationValidation.update({
+      where: { id: validationId },
+      data: {
+        status: 'rejected',
+        resolvedAt: new Date(),
+        explanation: reason ? `Rejected: ${reason}` : validation.explanation
+      }
+    });
+  }
+
+  async applyManualEdit(
+    validationId: string,
+    correctedText: string,
+    tenantId: string
+  ): Promise<CorrectionResult> {
+    const validation = await prisma.citationValidation.findUnique({
+      where: { id: validationId },
+      include: {
+        citation: true,
+        document: true
+      }
+    });
+
+    if (!validation) {
+      throw AppError.notFound('Validation not found');
+    }
+
+    if (validation.document.tenantId !== tenantId) {
+      throw AppError.forbidden('Access denied');
+    }
+
+    // Guard: prevent overwriting already-resolved validations
+    if (validation.status !== 'pending') {
+      throw AppError.badRequest('Validation already resolved');
+    }
+
+    const originalText = validation.citation.rawText;
+
+    // Use transaction to ensure atomicity of citation update + change log + validation update
+    const change = await prisma.$transaction(async (tx) => {
+      await tx.citation.update({
+        where: { id: validation.citationId },
+        data: { rawText: correctedText }
+      });
+
+      const changeRecord = await tx.citationChange.create({
+        data: {
+          documentId: validation.documentId,
+          citationId: validation.citationId,
+          changeType: 'correction',
+          beforeText: originalText,
+          afterText: correctedText,
+          appliedBy: tenantId
+        }
+      });
+
+      await tx.citationValidation.update({
+        where: { id: validationId },
+        data: {
+          status: 'edited',
+          resolvedText: correctedText,
+          resolvedAt: new Date()
+        }
+      });
+
+      return changeRecord;
+    });
+
+    return {
+      validationId,
+      citationId: validation.citationId,
+      originalText,
+      correctedText,
+      changeId: change.id
+    };
+  }
+
+  async batchCorrect(
+    documentId: string,
+    tenantId: string,
+    options: {
+      validationIds?: string[];
+      violationType?: string;
+      applyAll?: boolean;
+    }
+  ): Promise<BatchCorrectionResult> {
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: documentId, tenantId }
+    });
+
+    if (!document) {
+      throw AppError.notFound('Document not found');
+    }
+
+    let validations;
+    if (options.validationIds) {
+      validations = await prisma.citationValidation.findMany({
+        where: {
+          id: { in: options.validationIds },
+          documentId,
+          status: 'pending'
+        },
+        include: { citation: true }
+      });
+    } else if (options.violationType && options.applyAll) {
+      validations = await prisma.citationValidation.findMany({
+        where: {
+          documentId,
+          violationType: options.violationType,
+          status: 'pending'
+        },
+        include: { citation: true }
+      });
+    } else {
+      throw AppError.badRequest('Provide validationIds or violationType with applyAll');
+    }
+
+    const results: CorrectionResult[] = [];
+    const errors: CorrectionError[] = [];
+
+    for (const validation of validations) {
+      try {
+        const result = await this.acceptCorrection(validation.id, tenantId);
+        results.push(result);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        logger.warn(`[Correction] Skipped validation ${validation.id}: ${errorMessage}`, error instanceof Error ? error : undefined);
+        errors.push({ validationId: validation.id, error: errorMessage });
+      }
+    }
+
+    return {
+      correctedCount: results.length,
+      skippedCount: errors.length,
+      changes: results,
+      errors
+    };
+  }
+
+  async getChanges(documentId: string, tenantId: string) {
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: documentId, tenantId }
+    });
+
+    if (!document) {
+      throw AppError.notFound('Document not found');
+    }
+
+    return prisma.citationChange.findMany({
+      where: { documentId },
+      orderBy: { appliedAt: 'desc' }
+    });
+  }
+
+  async revertChange(changeId: string, tenantId: string): Promise<void> {
+    const change = await prisma.citationChange.findUnique({
+      where: { id: changeId },
+      include: { document: true }
+    });
+
+    if (!change) {
+      throw AppError.notFound('Change not found');
+    }
+
+    if (change.document.tenantId !== tenantId) {
+      throw AppError.forbidden('Access denied');
+    }
+
+    if (change.isReverted) {
+      throw AppError.badRequest('Change already reverted');
+    }
+
+    // Use transaction to ensure atomicity of citation revert + change status update
+    await prisma.$transaction(async (tx) => {
+      if (change.citationId) {
+        await tx.citation.update({
+          where: { id: change.citationId },
+          data: { rawText: change.beforeText }
+        });
+      }
+
+      await tx.citationChange.update({
+        where: { id: changeId },
+        data: {
+          isReverted: true,
+          revertedAt: new Date()
+        }
+      });
+    });
+  }
+}
+
+export const citationCorrectionService = new CitationCorrectionService();

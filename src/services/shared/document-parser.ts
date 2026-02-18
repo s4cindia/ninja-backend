@@ -47,6 +47,7 @@ export interface DocumentStructure {
 
 export interface ParsedDocument {
   text: string;
+  html?: string;
   chunks: TextChunk[];
   metadata: DocumentMetadata;
   structure: DocumentStructure;
@@ -216,7 +217,6 @@ export class DocumentParser {
     const chapters: DocumentStructure['chapters'] = [];
     const headings: DocumentStructure['headings'] = [];
     let currentOffset = 0;
-    let _paragraphIndex = 0;
 
     for (const item of spineItems) {
       try {

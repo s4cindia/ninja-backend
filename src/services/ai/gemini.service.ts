@@ -5,6 +5,7 @@ import { AppError } from '../../utils/app-error';
 import { tokenCounterService, UsageRecord } from './token-counter.service';
 import { responseParserService } from './response-parser.service';
 import { logger } from '../../lib/logger';
+import { geminiRateLimiter } from '../../utils/rate-limiter';
 
 export interface GeminiResponse {
   text: string;
@@ -25,8 +26,6 @@ export interface GeminiOptions {
 
 class GeminiService {
   private client: GoogleGenerativeAI | null = null;
-  private requestCount = 0;
-  private lastResetTime = Date.now();
 
   private getClient(): GoogleGenerativeAI {
     if (!this.client) {
@@ -58,24 +57,22 @@ class GeminiService {
     });
   }
 
+  /**
+   * Check rate limit using Redis-based distributed limiter
+   * Falls back gracefully when Redis is unavailable
+   *
+   * This is safe for multi-instance deployments (ECS Fargate, Kubernetes)
+   * where in-process counters would allow N × limit requests.
+   */
   private async checkRateLimit(): Promise<void> {
-    const now = Date.now();
-    const timeSinceReset = now - this.lastResetTime;
-    
-    if (timeSinceReset >= 60000) {
-      this.requestCount = 0;
-      this.lastResetTime = now;
+    try {
+      // Use Redis-based rate limiter for multi-instance safety
+      // If Redis is unavailable, this will skip and retry logic handles 429s
+      await geminiRateLimiter.acquire();
+    } catch (error) {
+      // Log but don't block - retryWithBackoff will handle 429 responses
+      logger.warn('[Gemini Service] Rate limit check failed, proceeding with request:', error);
     }
-    
-    if (this.requestCount >= aiConfig.gemini.rateLimit.requestsPerMinute) {
-      const waitTime = 60000 - timeSinceReset;
-      logger.warn(`Rate limit reached. Waiting ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      this.requestCount = 0;
-      this.lastResetTime = Date.now();
-    }
-    
-    this.requestCount++;
   }
 
   private async retryWithBackoff<T>(

@@ -16,6 +16,16 @@ vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => 'test-id-12345'),
 }));
 
+// Mock logger to suppress expected error logs during tests
+vi.mock('../../../../src/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
 describe('PdfModifierService', () => {
   let mockPdfDoc: PDFDocument;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

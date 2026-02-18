@@ -432,6 +432,70 @@ Respond with JSON only:`;
       };
     }
   }
+
+  /**
+   * Generate reference entries from document text and citations
+   * Used by: Citation Management (US-4)
+   * @param fullText - Full document text
+   * @param citations - Array of citation inputs
+   * @param styleCode - Citation style code (e.g., 'APA', 'MLA')
+   * @returns Object containing entries array
+   */
+  async generateReferenceEntriesChunked(
+    _fullText: string,
+    _citations: Array<{ id: string; rawText: string; citationType: string; sectionContext?: string }>,
+    _styleCode: string
+  ): Promise<{
+    entries: Array<{
+      citationIds: string[];
+      authors: Array<{ firstName?: string; lastName?: string }>;
+      confidence: number;
+      doi?: string;
+      title?: string;
+      year?: string;
+      journal?: string;
+      journalName?: string;
+      volume?: string;
+      issue?: string;
+      pages?: string;
+      url?: string;
+      publisher?: string;
+      sourceType?: string;
+      formattedEntry?: string;
+    }>;
+  }> {
+    // TODO: Implement AI-powered reference entry generation
+    logger.warn('[Editorial AI] generateReferenceEntriesChunked not fully implemented - returning empty entries');
+    return { entries: [] };
+  }
+
+  /**
+   * Detect citation style from text
+   * Used by: Citation Management (US-4)
+   * @param text - Text containing citations
+   * @returns Detected style information
+   */
+  async detectCitationStyleFromText(
+    _text: string
+  ): Promise<{
+    style: string;
+    confidence: number;
+    evidence: string[];
+    hasReferenceSection?: boolean;
+    numericCount?: number;
+    authorDateCount?: number;
+  }> {
+    // TODO: Implement AI-powered style detection
+    logger.warn('[Editorial AI] detectCitationStyleFromText not fully implemented');
+    return {
+      style: 'unknown',
+      confidence: 0,
+      evidence: [],
+      hasReferenceSection: false,
+      numericCount: 0,
+      authorDateCount: 0,
+    };
+  }
 }
 
 export const editorialAi = new EditorialAiClient();

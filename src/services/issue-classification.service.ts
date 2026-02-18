@@ -13,6 +13,14 @@ interface ClassificationResult {
   isQuickFixable: boolean;
 }
 
+interface ZipEntry {
+  getData(): Buffer;
+}
+
+interface ZipWithEntries {
+  getEntry?(path: string): ZipEntry | null;
+}
+
 export class IssueClassificationService {
   calculateConfidence(issueCode: string, context?: IssueContext): number {
     return calculateConfidence(issueCode, context);
@@ -58,8 +66,8 @@ export class IssueClassificationService {
   ): Promise<'simple' | 'complex'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const zipAny = zip as any;
-      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+      const zipWithEntries = zip as ZipWithEntries;
+      const entry = zipWithEntries.getEntry?.(normalizedPath) || zipWithEntries.getEntry?.(`OEBPS/${normalizedPath}`);
 
       if (!entry) {
         return 'simple';
@@ -67,7 +75,7 @@ export class IssueClassificationService {
 
       const content = entry.getData().toString('utf-8');
       const $ = cheerio.load(content, { xmlMode: true });
-      
+
       const tables = $('table');
       let maxComplexity = 0;
 
@@ -102,8 +110,8 @@ export class IssueClassificationService {
   ): Promise<'decorative' | 'content' | 'chart' | 'diagram'> {
     try {
       const normalizedPath = filePath.replace(/^\/+/, '');
-      const zipAny = zip as any;
-      const entry = zipAny.getEntry?.(normalizedPath) || zipAny.getEntry?.(`OEBPS/${normalizedPath}`);
+      const zipWithEntries = zip as ZipWithEntries;
+      const entry = zipWithEntries.getEntry?.(normalizedPath) || zipWithEntries.getEntry?.(`OEBPS/${normalizedPath}`);
 
       if (!entry) {
         return 'content';
