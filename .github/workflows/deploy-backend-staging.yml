@@ -79,7 +79,7 @@ jobs:
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
-                "command": ["sh", "-c", "npx prisma migrate resolve --rolled-back 20260215000000_schema_optimization_indexes 2>&1; echo Exit code: $?"]
+                "command": ["sh", "-c", "npx prisma migrate resolve --rolled-back 20260215000000_schema_optimization_indexes 2>&1 || true; npx prisma migrate resolve --rolled-back 20260216000000_remove_deprecated_fields 2>&1 || true; echo Done resolving failed migrations"]
               }]
             }' \
             --query 'tasks[0].taskArn' \
