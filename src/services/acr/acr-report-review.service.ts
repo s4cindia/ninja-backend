@@ -206,15 +206,38 @@ class AcrReportReviewService {
         totalCriteria: true,
         documentType: true,
         approvedBy: true,
-        approvedAt: true
+        approvedAt: true,
+        criteria: {
+          select: {
+            isNotApplicable: true,
+            verificationStatus: true
+          }
+        }
       }
     });
 
-    return versions.map((v, idx) => ({
-      ...v,
-      versionNumber: versions.length - idx, // v1, v2, v3, etc. (oldest = v1)
-      isLatest: idx === 0
-    }));
+    return versions.map((v, idx) => {
+      const applicable = v.criteria.filter(c => !c.isNotApplicable);
+      const na = v.criteria.filter(c => c.isNotApplicable);
+      const passed = applicable.filter(c => c.verificationStatus === 'verified_pass');
+      const failed = applicable.filter(c => c.verificationStatus === 'verified_fail');
+      return {
+        id: v.id,
+        createdAt: v.createdAt,
+        updatedAt: v.updatedAt,
+        status: v.status,
+        totalCriteria: v.totalCriteria ?? v.criteria.length,
+        documentType: v.documentType,
+        approvedBy: v.approvedBy,
+        approvedAt: v.approvedAt,
+        versionNumber: versions.length - idx, // v1, v2, v3, etc. (oldest = v1)
+        isLatest: idx === 0,
+        applicableCriteria: applicable.length,
+        passedCriteria: passed.length,
+        failedCriteria: failed.length,
+        naCriteria: na.length
+      };
+    });
   }
 
   /**
@@ -328,8 +351,8 @@ class AcrReportReviewService {
       summary: {
         totalCriteria: applicableCriteria.length + naCriteria.length,
         applicableCriteria: applicableCriteria.length,
-        passedCriteria: acrJob.passedCriteria,
-        failedCriteria: acrJob.failedCriteria,
+        passedCriteria: (applicableCriteria as Array<Record<string, unknown>>).filter(c => c.verificationStatus === 'verified_pass').length,
+        failedCriteria: (applicableCriteria as Array<Record<string, unknown>>).filter(c => c.verificationStatus === 'verified_fail').length,
         naCriteria: naCriteria.length
       },
       criteria: applicableCriteria,
