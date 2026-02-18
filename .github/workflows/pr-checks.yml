@@ -35,11 +35,21 @@ jobs:
       - name: Validate migrations are idempotent
         run: |
           echo "Checking migrations for non-idempotent patterns..."
+          echo "(Migrations before 20260215 are grandfathered)"
+          CUTOFF_DATE="20260215"
           ERRORS=0
           for file in prisma/migrations/*/migration.sql; do
             [ -e "$file" ] || continue
+            # Extract migration date from path (format: YYYYMMDDHHMMSS_name)
+            dirname=$(dirname "$file")
+            migration_name=$(basename "$dirname")
+            migration_date=$(echo "$migration_name" | grep -oE '^[0-9]+' | cut -c1-8)
+            # Skip old migrations (grandfathered) - they've already been applied
+            if [[ "$migration_date" < "$CUTOFF_DATE" ]]; then
+              continue
+            fi
             # Check for bare ALTER TABLE without DO block
-            if grep -qE "^ALTER TABLE" "$file" && ! grep -q "DO \\\$\\\$" "$file"; then
+            if grep -qE "^ALTER TABLE" "$file" && ! grep -q 'DO \$\$' "$file"; then
               echo "WARNING: $file has bare ALTER TABLE without DO block"
               ERRORS=$((ERRORS + 1))
             fi
