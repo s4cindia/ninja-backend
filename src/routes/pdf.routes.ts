@@ -10,6 +10,7 @@ import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { pdfController } from '../controllers/pdf.controller';
+import { pdfAcrController } from '../controllers/pdf-acr.controller';
 import { fileStorageService } from '../services/storage/file-storage.service';
 
 // Extended request type for authenticated routes with file
@@ -232,45 +233,31 @@ router.get(
  * Generate and return ACR report
  *
  * @param jobId - Job ID
- * @query format - Report format (json|html)
+ * @query productName   - Override product name (defaults to file name)
+ * @query productVersion - Override product version (defaults to '1.0')
+ * @query vendor        - Override vendor name
+ * @query evaluator     - Override evaluator name
  * @returns ACRReport
  */
 router.get(
   '/job/:jobId/acr',
   authenticate,
   authorizeJob,
-  async (req, res, next) => {
-    try {
-      const format = (req.query.format as string) || 'json';
+  (req, res) => pdfAcrController.generateAcr(req, res)
+);
 
-      if (!['json', 'html'].includes(format)) {
-        return res.status(400).json({
-          success: false,
-          error: { message: 'Invalid format. Must be json or html' },
-        });
-      }
-
-      // TODO: Implement ACR report generation
-      res.status(501).json({
-        success: false,
-        error: {
-          message: 'ACR report endpoint not yet implemented',
-          code: 'NOT_IMPLEMENTED',
-        },
-      });
-
-      // Future implementation:
-      // const acr = await pdfAuditController.generateACR(req.params.jobId, format);
-      // if (format === 'html') {
-      //   res.setHeader('Content-Type', 'text/html');
-      //   res.send(acr);
-      // } else {
-      //   res.json({ success: true, data: acr });
-      // }
-    } catch (error) {
-      next(error);
-    }
-  }
+/**
+ * GET /pdf/job/:jobId/acr/criteria
+ * Return only the WCAG criterion results (lighter payload for verification queue)
+ *
+ * @param jobId - Job ID
+ * @returns WcagCriterionResult[]
+ */
+router.get(
+  '/job/:jobId/acr/criteria',
+  authenticate,
+  authorizeJob,
+  (req, res) => pdfAcrController.getAcrCriteria(req, res)
 );
 
 /**

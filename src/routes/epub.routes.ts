@@ -35,7 +35,13 @@ router.post('/job/:jobId/remediation/start', authenticate, authorizeJob, epubCon
 router.post('/job/:jobId/remediation/quick-fix/batch', authenticate, authorizeJob, epubController.applyBatchQuickFix);
 router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
 router.patch('/job/:jobId/remediation/task/:taskId/fix', authenticate, authorizeJob, epubController.markManualTaskFixed);
-router.post('/job/:jobId/reaudit', authenticate, authorizeJob, upload.single('file'), epubController.reauditEpub);
+// multer runs BEFORE authorizeJob so the file body is fully received before any
+// error response is sent. If authorizeJob were first and rejected the request
+// while the client was still uploading, Node.js would TCP-reset mid-stream;
+// Chrome reports that as a CORS error (no headers readable). Security is
+// maintained: authenticate still runs first, and authorizeJob checks ownership
+// after the file is buffered (file is discarded if ownership fails).
+router.post('/job/:jobId/reaudit', authenticate, upload.single('file'), authorizeJob, epubController.reauditEpub);
 router.post('/job/:jobId/transfer-to-acr', authenticate, authorizeJob, epubController.transferToAcr);
 router.get('/acr/:acrWorkflowId', authenticate, epubController.getAcrWorkflow);
 router.patch('/acr/:acrWorkflowId/criteria/:criteriaId', authenticate, epubController.updateAcrCriteria);
