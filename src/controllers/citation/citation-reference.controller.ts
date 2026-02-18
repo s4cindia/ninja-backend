@@ -356,13 +356,29 @@ export class CitationReferenceController {
         }
 
         // Create CitationChange record for the deleted reference
+        // Format depends on citation style - Chicago uses footnotes without [N] prefix
+        const docStyle = referenceToDelete.document.referenceListStyle?.toLowerCase() || '';
+        const isChicagoStyle = docStyle.includes('chicago') || docStyle.includes('turabian') || docStyle.includes('footnote');
+
+        // For Chicago/footnote style, store just the reference text (footnotes don't have [N] prefix)
+        // For other styles (Vancouver, APA numbered), include the [N] prefix
+        const deleteBeforeText = isChicagoStyle
+          ? deletedRefText
+          : `[${deletedPosition}] ${deletedRefText}`;
+
         await tx.citationChange.create({
           data: {
             documentId,
             citationId: null,
             changeType: 'DELETE',
-            beforeText: `[${deletedPosition}] ${deletedRefText}`,
-            afterText: '',
+            beforeText: deleteBeforeText,
+            afterText: '', // Empty for deletions - no "after" text
+            // Store structured metadata separately for export processing
+            metadata: {
+              position: deletedPosition,
+              style: docStyle,
+              isFootnoteStyle: isChicagoStyle
+            },
             appliedBy: 'user',
             isReverted: false
           }
@@ -402,12 +418,13 @@ export class CitationReferenceController {
                 citationId: citation.id,
                 changeType: 'DELETE',
                 beforeText: citation.rawText,
-                // Store citation ID and position info for ID-based lookup
-                afterText: JSON.stringify({
+                afterText: '', // Empty for deletions - no "after" text
+                // Store position info in metadata for ID-based lookup during export
+                metadata: {
                   citationId: citation.id,
                   startOffset: citation.startOffset,
                   endOffset: citation.endOffset
-                }),
+                },
                 appliedBy: 'system',
                 isReverted: false
               }

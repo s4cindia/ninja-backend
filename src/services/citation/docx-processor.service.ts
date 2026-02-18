@@ -18,6 +18,7 @@ import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 import { memoryConfig, getMemoryUsage, isMemorySafeForSize } from '../../config/memory.config';
 import { withMemoryTracking, FileTooLargeError } from '../../utils/memory-safe-processor';
+import { normalizeSuperscripts } from '../../utils/unicode';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
@@ -1175,8 +1176,21 @@ class DOCXProcessorService {
     let citationStart = -1;
     let actualCitationText = citationText;
 
+    // Normalize Unicode superscript characters to regular digits for matching
+    // Chicago/footnote style may store "¹²³" but Word XML uses "123" with styling
+    const normalizedCitationText = normalizeSuperscripts(citationText);
+
     // Pattern 1: Exact match first
     citationStart = combinedText.indexOf(citationText);
+
+    // Pattern 1b: Try with normalized superscripts (¹ → 1)
+    if (citationStart === -1 && normalizedCitationText !== citationText) {
+      citationStart = combinedText.indexOf(normalizedCitationText);
+      if (citationStart !== -1) {
+        actualCitationText = normalizedCitationText;
+        logger.debug(`[DOCX Processor] Found citation with normalized superscripts: "${normalizedCitationText}"`);
+      }
+    }
 
     // Pattern 2: Try with parentheses - single citation (Author, Year)
     if (citationStart === -1) {
@@ -2594,7 +2608,7 @@ class DOCXProcessorService {
    */
   async applyChanges(
     originalBuffer: Buffer,
-    changes: Array<{ type: string; beforeText: string; afterText: string }>
+    changes: Array<{ type: string; beforeText: string; afterText: string; metadata?: Record<string, unknown> | null }>
   ): Promise<Buffer> {
     if (changes.length === 0) {
       logger.info('[DOCXProcessor] No changes to apply, returning original buffer');
@@ -2784,12 +2798,30 @@ class DOCXProcessorService {
         // Process RENUMBER changes to update reference list numbers
         for (const change of changes) {
           if (change.type === 'DELETE' && change.beforeText) {
-            // Check if this is a reference list deletion (format: "[N] Reference text...")
-            // or an in-text citation deletion (format: "(Author, Year)" or similar)
+            // Check if this is a reference list deletion or an in-text citation deletion
+            // Reference deletions can be:
+            // 1. Vancouver/numbered style: "[N] Reference text..."
+            // 2. Chicago/footnote style: Just the reference text (metadata stored separately)
+
+            // Check for Chicago/footnote style via metadata field
+            let isFootnoteStyleRef = false;
+            let refPosition: number | null = null;
+            if (change.metadata && typeof change.metadata === 'object') {
+              const meta = change.metadata as Record<string, unknown>;
+              if (meta.isFootnoteStyle === true) {
+                isFootnoteStyleRef = true;
+                refPosition = typeof meta.position === 'number' ? meta.position : null;
+              }
+            }
+
+            // Check for numbered style format: "[N] Reference text..."
             const deleteMatch = change.beforeText.match(/^\[(\d+)\]\s*(.+)$/);
 
-            if (!deleteMatch) {
-              // This is an in-text citation deletion (e.g., "(Bender et al., 2021)")
+            // Determine if this is a reference deletion or in-text citation deletion
+            const isReferenceDelete = deleteMatch || isFootnoteStyleRef;
+
+            if (!isReferenceDelete) {
+              // This is an in-text citation deletion (e.g., "(Bender et al., 2021)" or "¹")
               const citationText = change.beforeText.trim();
               logger.info(`[DOCXProcessor] Processing in-text citation DELETE: "${citationText}"`);
 
@@ -2797,20 +2829,16 @@ class DOCXProcessorService {
               let citationFound = false;
               let targetParaId: string | null = null;
 
-              // Try to get position info from afterText (stored during change creation)
-              if (change.afterText) {
-                try {
-                  const posInfo = JSON.parse(change.afterText);
-                  if (posInfo.startOffset !== undefined) {
-                    // Build position map and find paragraph by offset
-                    const positionMap = this.buildPositionToParagraphMap(paragraphs);
-                    targetParaId = this.findParagraphByOffset(positionMap, posInfo.startOffset);
-                    if (targetParaId) {
-                      logger.info(`[DOCXProcessor] Found citation by offset ${posInfo.startOffset} -> paraId=${targetParaId}`);
-                    }
+              // Try to get position info from metadata (stored during change creation)
+              if (change.metadata && typeof change.metadata === 'object') {
+                const meta = change.metadata as Record<string, unknown>;
+                if (typeof meta.startOffset === 'number') {
+                  // Build position map and find paragraph by offset
+                  const positionMap = this.buildPositionToParagraphMap(paragraphs);
+                  targetParaId = this.findParagraphByOffset(positionMap, meta.startOffset);
+                  if (targetParaId) {
+                    logger.info(`[DOCXProcessor] Found citation by offset ${meta.startOffset} -> paraId=${targetParaId}`);
                   }
-                } catch {
-                  // afterText is not JSON, fallback to text search
                 }
               }
 
@@ -2835,9 +2863,13 @@ class DOCXProcessorService {
 
               // Fallback: search paragraphs for the citation text
               if (!citationFound) {
+                // Normalize Unicode superscripts for fallback search (¹ → 1)
+                const normalizedCitationText = normalizeSuperscripts(citationText);
+
                 for (const para of paragraphs) {
                   if (!para.paraId) continue;
-                  if (!para.combinedText.includes(citationText)) continue;
+                  // Check for both original and normalized text
+                  if (!para.combinedText.includes(citationText) && !para.combinedText.includes(normalizedCitationText)) continue;
 
                   logger.info(`[DOCXProcessor] Found citation by text search in paragraph ${para.paraId}`);
 
@@ -2866,10 +2898,30 @@ class DOCXProcessorService {
               continue;
             }
 
-            const refNumber = deleteMatch[1];
-            const refText = deleteMatch[2].trim();
+            // Handle reference deletion - get refNumber and refText based on style
+            let refNumber: string;
+            let refText: string;
 
-            logger.info(`[DOCXProcessor] DELETE ref ${refNumber}: refText="${refText.substring(0, 80)}..."`);
+            if (deleteMatch) {
+              // Vancouver/numbered style: "[N] Reference text..."
+              refNumber = deleteMatch[1];
+              refText = deleteMatch[2].trim();
+            } else if (isFootnoteStyleRef) {
+              // Chicago/footnote style: reference text stored directly
+              // Use position from metadata, or fallback to '0' if missing
+              refNumber = refPosition !== null ? String(refPosition) : '0';
+              refText = change.beforeText.trim();
+              if (refPosition === null) {
+                logger.warn(`[DOCXProcessor] Footnote style DELETE missing position in metadata, using 0`);
+              }
+            } else {
+              // This branch is unreachable given isReferenceDelete = deleteMatch || isFootnoteStyleRef
+              // If we somehow get here, it's a programming error - log and skip
+              logger.error(`[DOCXProcessor] BUG: Unreachable code reached. isReferenceDelete=${isReferenceDelete}, deleteMatch=${!!deleteMatch}, isFootnoteStyleRef=${isFootnoteStyleRef}`);
+              continue;
+            }
+
+            logger.info(`[DOCXProcessor] DELETE ref ${refNumber}: refText="${refText.substring(0, 80)}..." (footnoteStyle=${isFootnoteStyleRef})`);
 
             // ID-BASED APPROACH: Search in combined paragraph text, then use paraId to locate
             // This handles text split across multiple XML elements due to formatting

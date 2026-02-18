@@ -159,7 +159,8 @@ export class CitationExportController {
         modifiedBuffer = await docxProcessorService.applyChanges(originalBuffer, changes.map(c => ({
           type: c.changeType as 'RENUMBER' | 'REFERENCE_STYLE_CONVERSION' | 'DELETE' | 'INSERT',
           beforeText: c.beforeText || '',
-          afterText: c.afterText || ''
+          afterText: c.afterText || '',
+          metadata: c.metadata as Record<string, unknown> | null
         })));
       } catch (applyError) {
         logger.error('[CitationExport] Failed to apply changes:', applyError);

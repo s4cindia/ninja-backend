@@ -21,6 +21,7 @@ import { aiCitationDetectorService } from '../../services/citation/ai-citation-d
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
+import { normalizeSuperscripts } from '../../utils/unicode';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -1034,22 +1035,32 @@ export class CitationUploadController {
             refNumToId.set(num, ref.id);
           }
 
-          // Create links for numeric citations
+          // Create links for numeric and footnote citations only
+          // Skip author-date citations (e.g., "(Smith, 2021)") to avoid linking year as reference number
           const linkData: { citationId: string; referenceListEntryId: string }[] = [];
           for (const citation of createdCitations) {
-            if (citation.citationType === 'NUMERIC') {
-              // Extract all numbers from the citation (handles [1], [1, 2], [1-3], etc.)
-              const nums = citation.rawText.match(/\d+/g);
-              if (nums) {
-                for (const numStr of nums) {
-                  const num = parseInt(numStr, 10);
-                  const refId = refNumToId.get(num);
-                  if (refId) {
-                    linkData.push({
-                      citationId: citation.id,
-                      referenceListEntryId: refId
-                    });
-                  }
+            // Only process numeric-style citations (NUMERIC, FOOTNOTE, ENDNOTE)
+            // Author-date citations would incorrectly match year (2021) as reference number
+            if (citation.citationType !== 'NUMERIC' &&
+                citation.citationType !== 'FOOTNOTE' &&
+                citation.citationType !== 'ENDNOTE') {
+              continue;
+            }
+
+            // Convert superscript characters to regular digits (¹²³ -> 123)
+            const normalizedText = normalizeSuperscripts(citation.rawText);
+
+            // Extract all numbers from the citation (handles [1], [1, 2], [1-3], ¹, ², etc.)
+            const nums = normalizedText.match(/\d+/g);
+            if (nums) {
+              for (const numStr of nums) {
+                const num = parseInt(numStr, 10);
+                const refId = refNumToId.get(num);
+                if (refId) {
+                  linkData.push({
+                    citationId: citation.id,
+                    referenceListEntryId: refId
+                  });
                 }
               }
             }
