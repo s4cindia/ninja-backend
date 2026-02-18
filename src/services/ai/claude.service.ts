@@ -1,11 +1,17 @@
 /**
  * Claude AI Service (Anthropic API)
  * Provides AI capabilities using Claude models
+ *
+ * Rate Limiting:
+ * Uses Redis-based distributed rate limiting for multi-instance deployments.
+ * When Redis is unavailable, relies on the Anthropic SDK's built-in retry/backoff
+ * mechanism for handling 429 rate limit responses.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
+import { claudeRateLimiter } from '../../utils/rate-limiter';
 
 export interface ClaudeResponse {
   text: string;
@@ -26,8 +32,6 @@ export interface ClaudeOptions {
 
 class ClaudeService {
   private client: Anthropic | null = null;
-  private requestCount = 0;
-  private lastResetTime = Date.now();
 
   private getClient(): Anthropic {
     if (!this.client) {
@@ -56,28 +60,67 @@ class ClaudeService {
     return models[modelType] || models.sonnet;
   }
 
+  /**
+   * Check rate limit using Redis-based distributed limiter
+   * Falls back gracefully when Redis is unavailable
+   */
   private async checkRateLimit(): Promise<void> {
-    const now = Date.now();
-    const timeSinceReset = now - this.lastResetTime;
+    try {
+      // Use Redis-based rate limiter for multi-instance safety
+      // If Redis is unavailable, this will skip and let SDK handle 429s
+      await claudeRateLimiter.acquire();
+    } catch (error) {
+      // Log but don't block - SDK will handle 429 with retry/backoff
+      logger.warn('[Claude Service] Rate limit check failed, proceeding with request:', error);
+    }
+  }
 
-    // Reset counter every minute
-    if (timeSinceReset >= 60000) {
-      this.requestCount = 0;
-      this.lastResetTime = now;
+  /**
+   * Parse JSON from AI response text
+   * Handles markdown code blocks, escaped strings, and embedded JSON
+   */
+  private parseJSONResponse(text: string): unknown {
+    let jsonText = text.trim();
+
+    // Remove markdown code blocks first
+    if (jsonText.startsWith('```json')) {
+      jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '').trim();
+    } else if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/```\n?/g, '').trim();
     }
 
-    // Anthropic rate limits vary by tier, using conservative limit
-    const rateLimit = 50; // requests per minute
-
-    if (this.requestCount >= rateLimit) {
-      const waitTime = 60000 - timeSinceReset;
-      logger.warn(`[Claude Service] Rate limit reached. Waiting ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      this.requestCount = 0;
-      this.lastResetTime = Date.now();
+    // If the response is a JSON-encoded string (wrapped in quotes with escaped chars)
+    if (jsonText.startsWith('"')) {
+      // Remove leading quote
+      jsonText = jsonText.slice(1);
+      // Remove trailing quote if present
+      if (jsonText.endsWith('"')) {
+        jsonText = jsonText.slice(0, -1);
+      }
+      // Unescape the string
+      jsonText = jsonText
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\r/g, '\r')
+        .replace(/\\\\/g, '\\');
     }
 
-    this.requestCount++;
+    // Try to find JSON array or object if text doesn't start with [ or {
+    if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
+      const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
+      const objectMatch = jsonText.match(/\{[\s\S]*\}/);
+
+      if (arrayMatch) {
+        logger.warn('[Claude Service] Found JSON array embedded in text, extracting...');
+        jsonText = arrayMatch[0];
+      } else if (objectMatch) {
+        logger.warn('[Claude Service] Found JSON object embedded in text, extracting...');
+        jsonText = objectMatch[0];
+      }
+    }
+
+    return JSON.parse(jsonText);
   }
 
   /**
@@ -154,47 +197,7 @@ class ClaudeService {
     });
 
     try {
-      let jsonText = response.text.trim();
-
-      // Remove markdown code blocks first
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '').trim();
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/```\n?/g, '').trim();
-      }
-
-      // If the response is a JSON-encoded string (wrapped in quotes with escaped chars)
-      if (jsonText.startsWith('"')) {
-        // Remove leading quote
-        jsonText = jsonText.slice(1);
-        // Remove trailing quote if present
-        if (jsonText.endsWith('"')) {
-          jsonText = jsonText.slice(0, -1);
-        }
-        // Unescape the string
-        jsonText = jsonText
-          .replace(/\\"/g, '"')
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t')
-          .replace(/\\r/g, '\r')
-          .replace(/\\\\/g, '\\');
-      }
-
-      // Try to find JSON array or object if text doesn't start with [ or {
-      if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
-        const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
-        const objectMatch = jsonText.match(/\{[\s\S]*\}/);
-
-        if (arrayMatch) {
-          logger.warn('[Claude Service] Found JSON array embedded in text, extracting...');
-          jsonText = arrayMatch[0];
-        } else if (objectMatch) {
-          logger.warn('[Claude Service] Found JSON object embedded in text, extracting...');
-          jsonText = objectMatch[0];
-        }
-      }
-
-      return JSON.parse(jsonText);
+      return this.parseJSONResponse(response.text) as T;
     } catch (error) {
       const preview = response.text.substring(0, 500);
       logger.error('[Claude Service] Failed to parse JSON. Response preview:', preview);
@@ -217,43 +220,8 @@ class ClaudeService {
     });
 
     try {
-      let jsonText = response.text.trim();
-
-      // Remove markdown code blocks first
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '').trim();
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/```\n?/g, '').trim();
-      }
-
-      // If the response is a JSON-encoded string (wrapped in quotes with escaped chars)
-      if (jsonText.startsWith('"')) {
-        jsonText = jsonText.slice(1);
-        if (jsonText.endsWith('"')) {
-          jsonText = jsonText.slice(0, -1);
-        }
-        jsonText = jsonText
-          .replace(/\\"/g, '"')
-          .replace(/\\n/g, '\n')
-          .replace(/\\t/g, '\t')
-          .replace(/\\r/g, '\r')
-          .replace(/\\\\/g, '\\');
-      }
-
-      // Try to find JSON array or object if text doesn't start with [ or {
-      if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
-        const arrayMatch = jsonText.match(/\[[\s\S]*\]/);
-        const objectMatch = jsonText.match(/\{[\s\S]*\}/);
-
-        if (arrayMatch) {
-          jsonText = arrayMatch[0];
-        } else if (objectMatch) {
-          jsonText = objectMatch[0];
-        }
-      }
-
       return {
-        data: JSON.parse(jsonText),
+        data: this.parseJSONResponse(response.text) as T,
         usage: response.usage
       };
     } catch (parseError) {

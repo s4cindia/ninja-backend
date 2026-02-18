@@ -98,17 +98,25 @@ const upload = multer({
 });
 
 // ============================================
-// DEBUG ENDPOINTS (disabled in production)
+// DEBUG ENDPOINTS (disabled by default)
 // Protected by router.use(authenticate) above.
-// Additional blockInProduction middleware for defense-in-depth.
+// Additional blockUnlessDebugEnabled middleware for defense-in-depth.
 // ============================================
 
-// Middleware to block debug endpoints in production
-const blockInProduction = (_req: Request, res: Response, next: NextFunction) => {
-  if (process.env.NODE_ENV === 'production') {
+/**
+ * Middleware to block debug endpoints unless explicitly enabled.
+ *
+ * SECURITY: Uses explicit opt-in (ENABLE_DEBUG_ROUTES=true) rather than
+ * relying on NODE_ENV !== 'production', which would expose routes if
+ * NODE_ENV is 'staging', 'test', or unset.
+ *
+ * Debug routes are blocked by default in all environments.
+ */
+const blockUnlessDebugEnabled = (_req: Request, res: Response, next: NextFunction) => {
+  if (process.env.ENABLE_DEBUG_ROUTES !== 'true') {
     return res.status(403).json({
       success: false,
-      error: { code: 'DEBUG_DISABLED', message: 'Debug endpoints are disabled in production' }
+      error: { code: 'DEBUG_DISABLED', message: 'Debug endpoints are disabled' }
     });
   }
   next();
@@ -120,7 +128,7 @@ const blockInProduction = (_req: Request, res: Response, next: NextFunction) => 
  */
 router.get(
   '/document/:documentId/export-debug',
-  blockInProduction,
+  blockUnlessDebugEnabled,
   validate(documentIdParamSchema),
   citationManagementController.exportDebug.bind(citationManagementController)
 );
@@ -131,7 +139,7 @@ router.get(
  */
 router.post(
   '/document/:documentId/debug-style-conversion',
-  blockInProduction,
+  blockUnlessDebugEnabled,
   validate(debugStyleConversionSchema),
   citationManagementController.debugStyleConversion.bind(citationManagementController)
 );
@@ -142,7 +150,7 @@ router.post(
  */
 router.post(
   '/document/:documentId/reanalyze',
-  blockInProduction,
+  blockUnlessDebugEnabled,
   validate(documentIdParamSchema),
   citationManagementController.reanalyze.bind(citationManagementController)
 );
@@ -153,7 +161,7 @@ router.post(
  */
 router.get(
   '/document/:documentId/preview-debug',
-  blockInProduction,
+  blockUnlessDebugEnabled,
   validate(documentIdParamSchema),
   citationManagementController.previewChanges.bind(citationManagementController)
 );
@@ -164,7 +172,7 @@ router.get(
  */
 router.get(
   '/document/:documentId/export-debug-docx',
-  blockInProduction,
+  blockUnlessDebugEnabled,
   validate(exportDocumentSchema),
   citationManagementController.exportDocument.bind(citationManagementController)
 );

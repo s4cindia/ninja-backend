@@ -43,13 +43,14 @@ export class CitationController {
       }
 
       // Create job for audit trail
+      // Note: presignedUrl intentionally excluded - temporary credentials should not be persisted
       const job = await prisma.job.create({
         data: {
           tenantId,
           userId,
           type: 'CITATION_VALIDATION',
           status: 'PROCESSING',
-          input: { fileS3Key, presignedUrl, fileName, fileSize },
+          input: { fileS3Key, fileName, fileSize },
           startedAt: new Date(),
         },
       });

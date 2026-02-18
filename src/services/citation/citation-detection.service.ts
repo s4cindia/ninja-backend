@@ -216,7 +216,8 @@ export class CitationDetectionService {
               paragraphIndex: extracted.location.paragraphIndex,
               citationType: mapToCitationType(extracted.type),
               detectedStyle: mapToCitationStyle(extracted.style),
-              confidence: extracted.confidence / 100,
+              // Normalize confidence to 0-1 scale (handles both 0-100 and 0-1 inputs)
+              confidence: extracted.confidence <= 1 ? extracted.confidence : extracted.confidence / 100,
               isValid: null,
               validationErrors: [],
             },
@@ -335,7 +336,8 @@ export class CitationDetectionService {
             paragraphIndex: extracted.location.paragraphIndex,
             startOffset: extracted.location.startOffset,
             endOffset: extracted.location.endOffset,
-            confidence: extracted.confidence / 100, // Normalize to 0-1
+            // Normalize confidence to 0-1 scale (handles both 0-100 and 0-1 inputs)
+            confidence: extracted.confidence <= 1 ? extracted.confidence : extracted.confidence / 100,
             isValid: null, // Not validated yet
             validationErrors: [],
           },

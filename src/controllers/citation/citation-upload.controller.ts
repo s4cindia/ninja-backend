@@ -560,6 +560,9 @@ export class CitationUploadController {
   /**
    * POST /api/v1/citation/document/:documentId/reanalyze
    * Re-run analysis on existing document
+   *
+   * AUDIT: Archives existing data before re-analysis to preserve audit trail.
+   * Previous citations/references are captured in a REANALYSIS_ARCHIVE change record.
    */
   async reanalyze(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -571,7 +574,7 @@ export class CitationUploadController {
         return;
       }
       const { documentId } = req.params;
-      const { tenantId } = req.user;
+      const { tenantId, id: userId } = req.user;
 
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
@@ -586,10 +589,12 @@ export class CitationUploadController {
         return;
       }
 
-      // Clear existing data
+      // Archive existing data before deletion for audit trail
+      await this.archiveBeforeReanalysis(documentId, userId);
+
+      // Clear existing citations and references (CitationChange records preserved for audit)
       await prisma.citation.deleteMany({ where: { documentId } });
       await prisma.referenceListEntry.deleteMany({ where: { documentId } });
-      await prisma.citationChange.deleteMany({ where: { documentId } });
 
       // Re-analyze
       await this.analyzeDocument(documentId, document.documentContent?.fullText || '');
@@ -609,6 +614,81 @@ export class CitationUploadController {
     } catch (error) {
       logger.error('[Citation Upload] Reanalyze failed:', error);
       next(error);
+    }
+  }
+
+  /**
+   * Archive existing citations and references before re-analysis.
+   * Creates a REANALYSIS_ARCHIVE change record with the previous state
+   * and marks existing change records as superseded.
+   */
+  private async archiveBeforeReanalysis(documentId: string, userId: string): Promise<void> {
+    // Fetch existing data to archive
+    const [existingCitations, existingReferences, existingChanges] = await Promise.all([
+      prisma.citation.findMany({
+        where: { documentId },
+        select: {
+          id: true,
+          rawText: true,
+          citationType: true,
+          detectedStyle: true,
+          startOffset: true,
+          endOffset: true,
+          confidence: true,
+        }
+      }),
+      prisma.referenceListEntry.findMany({
+        where: { documentId },
+        select: {
+          id: true,
+          sortKey: true,
+          title: true,
+          authors: true,
+          year: true,
+          formattedApa: true,
+        }
+      }),
+      prisma.citationChange.count({
+        where: { documentId, isReverted: false }
+      })
+    ]);
+
+    // Only create archive if there's data to archive
+    if (existingCitations.length > 0 || existingReferences.length > 0) {
+      const archiveSnapshot = {
+        archivedAt: new Date().toISOString(),
+        reason: 'REANALYSIS',
+        previousChangeCount: existingChanges,
+        citations: existingCitations,
+        references: existingReferences,
+      };
+
+      // Create archive record capturing the pre-reanalysis state
+      await prisma.citationChange.create({
+        data: {
+          documentId,
+          changeType: 'REANALYSIS_ARCHIVE',
+          beforeText: JSON.stringify(archiveSnapshot),
+          afterText: '{}', // Will be populated by new analysis
+          appliedBy: userId,
+        }
+      });
+
+      // Mark existing change records as superseded (part of old analysis)
+      // Using isReverted to indicate they belong to a previous analysis version
+      await prisma.citationChange.updateMany({
+        where: {
+          documentId,
+          changeType: { not: 'REANALYSIS_ARCHIVE' },
+          isReverted: false,
+        },
+        data: {
+          isReverted: true,
+          revertedAt: new Date(),
+        }
+      });
+
+      logger.info(`[Citation Upload] Archived ${existingCitations.length} citations and ${existingReferences.length} references before re-analysis`);
     }
   }
 

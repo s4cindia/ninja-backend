@@ -3,9 +3,13 @@
  *
  * Provides rate limiting for external API calls using token bucket algorithm.
  * Supports per-tenant limits and global limits.
+ *
+ * For multi-instance deployments (ECS Fargate, Kubernetes), use RedisRateLimiter
+ * which provides distributed rate limiting via Redis.
  */
 
 import { logger } from '../lib/logger';
+import type { Redis } from 'ioredis';
 
 export interface RateLimiterConfig {
   /** Maximum requests per window */
@@ -266,6 +270,143 @@ export class RateLimitError extends Error {
   }
 }
 
+/**
+ * Redis-based distributed rate limiter for multi-instance deployments
+ * Uses sliding window counter pattern with atomic Redis operations
+ *
+ * Safe for ECS Fargate, Kubernetes, and other multi-instance environments
+ * where each container needs to share rate limit state.
+ */
+export class RedisRateLimiter {
+  private redis: Redis | null = null;
+  private config: Required<RateLimiterConfig>;
+  private keyPrefix: string;
+  private initPromise: Promise<void> | null = null;
+
+  constructor(config: RateLimiterConfig) {
+    this.config = {
+      ...config,
+      throwOnLimit: config.throwOnLimit ?? false,
+    };
+    this.keyPrefix = `ratelimit:${config.name}`;
+  }
+
+  /**
+   * Lazy initialization of Redis client
+   * Only loads Redis when actually needed to avoid startup failures
+   */
+  private async ensureRedis(): Promise<Redis | null> {
+    if (this.initPromise) {
+      await this.initPromise;
+      return this.redis;
+    }
+
+    this.initPromise = (async () => {
+      try {
+        const { isRedisConfigured } = await import('../config/redis.config');
+        if (!isRedisConfigured()) {
+          logger.debug(`[${this.config.name}] Redis not configured, rate limiting disabled`);
+          return;
+        }
+
+        const { getRedisClient } = await import('../lib/redis');
+        this.redis = getRedisClient();
+        logger.info(`[${this.config.name}] Redis rate limiter initialized`);
+      } catch (error) {
+        logger.warn(`[${this.config.name}] Failed to initialize Redis rate limiter:`, error);
+        this.redis = null;
+      }
+    })();
+
+    await this.initPromise;
+    return this.redis;
+  }
+
+  /**
+   * Check if request can proceed using Redis atomic operations
+   * Uses INCR + EXPIRE for sliding window rate limiting
+   */
+  async acquire(): Promise<void> {
+    const redis = await this.ensureRedis();
+
+    if (!redis) {
+      // Redis not available - skip rate limiting
+      // The Anthropic SDK will handle 429 responses with retry/backoff
+      logger.debug(`[${this.config.name}] Redis unavailable, skipping rate limit check`);
+      return;
+    }
+
+    const now = Date.now();
+    const windowKey = `${this.keyPrefix}:${Math.floor(now / this.config.windowMs)}`;
+
+    try {
+      // Atomic increment with expiry
+      const multi = redis.multi();
+      multi.incr(windowKey);
+      multi.pexpire(windowKey, this.config.windowMs * 2); // 2x window for safety
+      const results = await multi.exec();
+
+      if (!results || results.length === 0) {
+        logger.warn(`[${this.config.name}] Redis multi exec returned empty results`);
+        return;
+      }
+
+      const [incrResult] = results;
+      const currentCount = incrResult && incrResult[1] ? Number(incrResult[1]) : 0;
+
+      if (currentCount > this.config.maxRequests) {
+        const waitTime = this.config.windowMs - (now % this.config.windowMs);
+
+        if (this.config.throwOnLimit) {
+          throw new RateLimitError(
+            `${this.config.name} rate limit exceeded (${currentCount}/${this.config.maxRequests}). Try again in ${waitTime}ms.`,
+            waitTime
+          );
+        }
+
+        logger.warn(`[${this.config.name}] Rate limit reached (${currentCount}/${this.config.maxRequests}), waiting ${waitTime}ms...`);
+        await this.delay(waitTime);
+      }
+    } catch (error) {
+      if (error instanceof RateLimitError) {
+        throw error;
+      }
+      // Redis error - fail open (allow request)
+      logger.error(`[${this.config.name}] Redis rate limit check failed:`, error);
+    }
+  }
+
+  /**
+   * Get current request count in the window
+   */
+  async getCurrentCount(): Promise<number> {
+    const redis = await this.ensureRedis();
+    if (!redis) return 0;
+
+    const now = Date.now();
+    const windowKey = `${this.keyPrefix}:${Math.floor(now / this.config.windowMs)}`;
+
+    try {
+      const count = await redis.get(windowKey);
+      return count ? parseInt(count, 10) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Check if Redis is available for rate limiting
+   */
+  async isAvailable(): Promise<boolean> {
+    const redis = await this.ensureRedis();
+    return redis !== null;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
 // ============================================
 // Pre-configured rate limiters for services
 // ============================================
@@ -308,4 +449,29 @@ export const tenantAIUsageTracker = new TenantUsageTracker('AI-Usage', {
 export const tenantCitationUsageTracker = new TenantUsageTracker('Citation-Usage', {
   maxTokensPerDay: 10000, // Operations per day
   maxCallsPerHour: 500, // DOI validations per hour
+});
+
+/**
+ * Claude API rate limiter (Redis-based for multi-instance safety)
+ * Anthropic rate limits vary by tier; using conservative 50 req/min
+ *
+ * This is safe for multi-instance deployments (ECS Fargate, Kubernetes)
+ * where in-process counters would allow N × limit requests.
+ */
+export const claudeRateLimiter = new RedisRateLimiter({
+  name: 'Claude',
+  maxRequests: 50,
+  windowMs: 60000, // 50 requests per minute
+  throwOnLimit: false, // Wait instead of throwing - let SDK handle 429
+});
+
+/**
+ * Gemini API rate limiter (Redis-based for multi-instance safety)
+ * Google Gemini: 60 req/min, 1M tokens/min for most models
+ */
+export const geminiRateLimiter = new RedisRateLimiter({
+  name: 'Gemini',
+  maxRequests: 60,
+  windowMs: 60000, // 60 requests per minute
+  throwOnLimit: false,
 });

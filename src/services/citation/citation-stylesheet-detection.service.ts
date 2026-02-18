@@ -200,13 +200,24 @@ export class CitationStylesheetDetectionService {
   ): Promise<StylesheetAnalysisResult> {
     const startTime = Date.now();
 
+    // Validate inputs BEFORE creating Job to avoid orphaned PROCESSING jobs
+    if (!fileS3Key && !presignedUrl) {
+      throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
+    }
+
+    // Validate presigned URL early if provided (SSRF prevention)
+    if (presignedUrl && !fileS3Key) {
+      this.validatePresignedUrl(presignedUrl);
+    }
+
     const job = await prisma.job.create({
       data: {
         tenantId,
         userId,
         type: 'CITATION_DETECTION',
         status: 'PROCESSING',
-        input: { fileS3Key, presignedUrl, fileName, fileSize, mode: 's3' },
+        // Note: presignedUrl intentionally excluded - temporary credentials should not be persisted
+        input: { fileS3Key, fileName, fileSize, mode: 's3' },
         startedAt: new Date(),
       },
     });
@@ -216,21 +227,17 @@ export class CitationStylesheetDetectionService {
       let fileBuffer: Buffer;
       if (fileS3Key) {
         fileBuffer = await s3Service.getFileBuffer(fileS3Key);
-      } else if (presignedUrl) {
-        // SSRF Prevention: Validate URL before fetching
-        this.validatePresignedUrl(presignedUrl);
-
+      } else {
+        // presignedUrl is guaranteed to exist here (validated above)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         try {
-          const response = await fetch(presignedUrl, { signal: controller.signal });
+          const response = await fetch(presignedUrl!, { signal: controller.signal });
           if (!response.ok) throw AppError.badRequest(`Failed to fetch: ${response.status}`, 'FETCH_FAILED');
           fileBuffer = Buffer.from(await response.arrayBuffer());
         } finally {
           clearTimeout(timeoutId);
         }
-      } else {
-        throw AppError.badRequest('Either fileS3Key or presignedUrl is required', 'MISSING_FILE_INPUT');
       }
 
       const parsed = await documentParser.parse(fileBuffer, fileName);
@@ -517,13 +524,14 @@ export class CitationStylesheetDetectionService {
       };
     }
 
-    const uniqueNumbers = [...new Set(numbers)].sort((a, b) => a - b);
+    const uniqueNumbersSet = new Set(numbers); // O(1) lookups
+    const uniqueNumbers = [...uniqueNumbersSet].sort((a, b) => a - b);
     const min = uniqueNumbers[0];
     const max = uniqueNumbers[uniqueNumbers.length - 1];
 
     const missing: number[] = [];
     for (let i = min; i <= max; i++) {
-      if (!uniqueNumbers.includes(i)) {
+      if (!uniqueNumbersSet.has(i)) { // O(1) instead of O(n)
         missing.push(i);
       }
     }

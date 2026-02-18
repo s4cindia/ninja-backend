@@ -20,6 +20,7 @@ interface CrossRefWork {
   URL?: string;
   publisher?: string;
   type?: string;
+  score?: number; // CrossRef relevance score (search results only)
 }
 
 export interface EnrichedMetadata {
@@ -41,7 +42,12 @@ export interface EnrichedMetadata {
 
 class CrossRefService {
   private baseUrl = 'https://api.crossref.org/works';
-  private userAgent = 'Ninja-Citation-Tool/1.0 (mailto:support@ninja.com)';
+  private userAgent: string;
+
+  constructor() {
+    const contactEmail = process.env.CROSSREF_CONTACT_EMAIL || 'support@s4carlisle.com';
+    this.userAgent = `Ninja-Citation-Tool/1.0 (mailto:${contactEmail})`;
+  }
 
   async lookupByDoi(doi: string): Promise<EnrichedMetadata | null> {
     try {
@@ -65,7 +71,7 @@ class CrossRefService {
       const data = await response.json() as { message: CrossRefWork };
       const work = data.message;
 
-      return this.mapCrossRefWork(work);
+      return this.mapCrossRefWork(work, true); // Direct DOI lookup = high confidence
     } catch (error) {
       logger.error('[CrossRef] Lookup error', error instanceof Error ? error : undefined);
       return null;
@@ -99,7 +105,12 @@ class CrossRefService {
     }
   }
 
-  private mapCrossRefWork(work: CrossRefWork): EnrichedMetadata {
+  /**
+   * Map CrossRef API response to EnrichedMetadata
+   * @param work - CrossRef work object
+   * @param isDirectLookup - true for DOI lookup (high confidence), false for search results
+   */
+  private mapCrossRefWork(work: CrossRefWork, isDirectLookup = false): EnrichedMetadata {
     const authors = (work.author || []).map((a: CrossRefAuthor) => ({
       firstName: a.given,
       lastName: a.family,
@@ -108,6 +119,20 @@ class CrossRefService {
 
     const year = work.published?.['date-parts']?.[0]?.[0]?.toString() ||
                  work.created?.['date-parts']?.[0]?.[0]?.toString();
+
+    // Calculate confidence based on source:
+    // - Direct DOI lookup: 0.95 (verified match)
+    // - Search results: Normalize CrossRef score (typically 0-200+) to 0.5-0.95 range
+    let confidence: number;
+    if (isDirectLookup) {
+      confidence = 0.95; // Direct DOI lookup is highly reliable
+    } else if (work.score !== undefined) {
+      // CrossRef scores typically range 0-200+, normalize to 0.5-0.95
+      // Score of 100+ gets high confidence, lower scores get proportionally lower
+      confidence = Math.min(0.95, Math.max(0.5, 0.5 + (work.score / 200) * 0.45));
+    } else {
+      confidence = 0.7; // Default for search without score
+    }
 
     return {
       authors,
@@ -122,7 +147,7 @@ class CrossRefService {
       publisher: work.publisher,
       sourceType: this.mapWorkType(work.type || ''),
       source: 'crossref',
-      confidence: 0.95
+      confidence
     };
   }
 

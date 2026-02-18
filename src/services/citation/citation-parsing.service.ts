@@ -241,7 +241,24 @@ export class CitationParsingService {
 
     if (!component) return null;
 
-    return this.mapComponentToResult(citationId, component, false, []);
+    // Compute actual review state instead of hardcoding false
+    const fieldConfidences = Object.values(
+      (component.fieldConfidence as Record<string, number>) || {}
+    );
+    const { needsReview, reviewReasons } = this.evaluateReviewNeeded(
+      component.confidence,
+      {
+        authors: component.authors as string[] | undefined,
+        year: component.year,
+        title: component.title,
+        type: component.sourceType,
+        doi: component.doi,
+        url: component.url,
+      },
+      fieldConfidences
+    );
+
+    return this.mapComponentToResult(citationId, component, needsReview, reviewReasons);
   }
 
   /**

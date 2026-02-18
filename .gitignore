@@ -59,6 +59,8 @@ lib-cov
 # Prisma
 prisma/*.db
 prisma/*.db-journal
+prisma/schema.prisma.backup*
+*.backup
 
 # Replit
 .cache/
@@ -147,12 +149,19 @@ tmp/
 
 # Debug/test scripts in root (should use /scripts/debug/ instead)
 /check-*.js
+/check-*.cjs
+/check-*.ts
 /test-*.js
 /debug-*.js
 /query.js
 /verify-*.js
 /reset-*.js
 /create-test-*.js
+
+# Development documentation (not for repo)
+docs/replit-prompts/
+COMMIT-HISTORY.md
+PR_DESCRIPTION.md
 
 # EPUB storage (persistent)
 data/epub-storage/*

@@ -10,6 +10,45 @@
 
 import { claudeService } from '../ai/claude.service';
 import { logger } from '../../lib/logger';
+import { z } from 'zod';
+
+// ============================================
+// ZOD SCHEMAS FOR AI RESPONSE VALIDATION
+// ============================================
+
+/** Schema for AI-detected in-text citation */
+const aiCitationSchema = z.object({
+  text: z.string().optional().default(''),
+  paragraph: z.number().optional().default(0),
+  startChar: z.number().optional().default(0),
+  type: z.enum(['numeric', 'author-year', 'footnote', 'superscript']).optional().default('numeric'),
+  format: z.enum(['bracket', 'parenthesis', 'superscript']).optional().default('bracket'),
+  numbers: z.array(z.number()).optional().default([]),
+  context: z.string().optional().default(''),
+});
+
+/** Schema for AI-extracted reference entry */
+const aiReferenceSchema = z.object({
+  number: z.number().optional(),
+  rawText: z.string().optional().default(''),
+  authors: z.array(z.string()).optional().default([]),
+  year: z.string().optional(),
+  title: z.string().optional(),
+  journal: z.string().optional(),
+  volume: z.string().optional(),
+  issue: z.string().optional(),
+  pages: z.string().optional(),
+  doi: z.string().optional(),
+  url: z.string().optional(),
+  publisher: z.string().optional(),
+  editors: z.array(z.string()).optional(),
+});
+
+/** Schema for array of citations from AI */
+const aiCitationsArraySchema = z.array(aiCitationSchema);
+
+/** Schema for array of references from AI */
+const aiReferencesArraySchema = z.array(aiReferenceSchema);
 
 // ============================================
 // SECURITY CONSTANTS
@@ -113,24 +152,19 @@ const CLAUDE_PRICING = {
   outputPer1K: 0.015,  // $15 per 1M output tokens
 };
 
+/** Token usage for a single AI call */
+interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 class AICitationDetectorService {
-  // Token usage accumulator for the current analysis
-  private tokenUsage = { promptTokens: 0, completionTokens: 0 };
-
-  private resetTokenUsage(): void {
-    this.tokenUsage = { promptTokens: 0, completionTokens: 0 };
-  }
-
-  private accumulateUsage(usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
-    if (usage) {
-      this.tokenUsage.promptTokens += usage.promptTokens;
-      this.tokenUsage.completionTokens += usage.completionTokens;
-    }
-  }
-
-  private calculateCost(): number {
-    const inputCost = (this.tokenUsage.promptTokens / 1000) * CLAUDE_PRICING.inputPer1K;
-    const outputCost = (this.tokenUsage.completionTokens / 1000) * CLAUDE_PRICING.outputPer1K;
+  /**
+   * Calculate cost from token usage (pure function - no instance state)
+   */
+  private calculateCost(usage: TokenUsage): number {
+    const inputCost = (usage.promptTokens / 1000) * CLAUDE_PRICING.inputPer1K;
+    const outputCost = (usage.completionTokens / 1000) * CLAUDE_PRICING.outputPer1K;
     return inputCost + outputCost;
   }
 
@@ -246,7 +280,9 @@ class AICitationDetectorService {
     } = {}
   ): Promise<CitationAnalysis> {
     logger.info('[AI Citation Detector] Starting document analysis');
-    this.resetTokenUsage();
+
+    // Local accumulator - NOT instance state (safe for concurrent requests)
+    const accumulatedUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
 
     try {
       // Validate and sanitize input before processing
@@ -255,17 +291,24 @@ class AICitationDetectorService {
       logger.info(`[AI Citation Detector] Document validated (${documentText.length} chars, sanitized to ${sanitizedText.length} chars)`);
 
       // Step 1: Detect in-text citations using AI
-      const inTextCitations = await this.detectInTextCitations(sanitizedText);
+      const { citations: inTextCitations, usage: citationUsage } = await this.detectInTextCitations(sanitizedText);
+      accumulatedUsage.promptTokens += citationUsage.promptTokens;
+      accumulatedUsage.completionTokens += citationUsage.completionTokens;
       logger.info(`[AI Citation Detector] Found ${inTextCitations.length} in-text citations`);
 
       // Step 2: Extract reference list using AI
-      const references = await this.extractReferenceList(sanitizedText);
+      const { references, usage: refUsage } = await this.extractReferenceList(sanitizedText);
+      accumulatedUsage.promptTokens += refUsage.promptTokens;
+      accumulatedUsage.completionTokens += refUsage.completionTokens;
       logger.info(`[AI Citation Detector] Extracted ${references.length} references`);
 
       // Step 3: Detect citation style
       let detectedStyle = 'Unknown';
       if (options.detectStyle !== false) {
-        detectedStyle = await this.detectCitationStyle(sanitizedText, references);
+        const { style, usage: styleUsage } = await this.detectCitationStyle(sanitizedText, references);
+        accumulatedUsage.promptTokens += styleUsage.promptTokens;
+        accumulatedUsage.completionTokens += styleUsage.completionTokens;
+        detectedStyle = style;
         logger.info(`[AI Citation Detector] Detected style: ${detectedStyle}`);
       }
 
@@ -281,9 +324,9 @@ class AICitationDetectorService {
       // Step 6: Calculate statistics
       const statistics = this.calculateStatistics(inTextCitations, references, issues);
 
-      // Calculate token usage and cost
-      const totalTokens = this.tokenUsage.promptTokens + this.tokenUsage.completionTokens;
-      const estimatedCostUSD = this.calculateCost();
+      // Calculate token usage and cost from local accumulator
+      const totalTokens = accumulatedUsage.promptTokens + accumulatedUsage.completionTokens;
+      const estimatedCostUSD = this.calculateCost(accumulatedUsage);
       logger.info(`[AI Citation Detector] Token usage: ${totalTokens} total (est. $${estimatedCostUSD.toFixed(4)})`);
 
       return {
@@ -293,8 +336,8 @@ class AICitationDetectorService {
         detectedStyle,
         statistics,
         tokenUsage: {
-          promptTokens: this.tokenUsage.promptTokens,
-          completionTokens: this.tokenUsage.completionTokens,
+          promptTokens: accumulatedUsage.promptTokens,
+          completionTokens: accumulatedUsage.completionTokens,
           totalTokens,
           estimatedCostUSD
         }
@@ -308,8 +351,14 @@ class AICitationDetectorService {
   /**
    * Detect all in-text citations using AI (NO REGEX)
    * @param documentText - Pre-sanitized document text
+   * @returns Citations array and token usage for this call
    */
-  private async detectInTextCitations(documentText: string): Promise<InTextCitation[]> {
+  private async detectInTextCitations(documentText: string): Promise<{
+    citations: InTextCitation[];
+    usage: TokenUsage;
+  }> {
+    const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
+
     // Build prompt with clear boundaries to prevent injection
     const prompt = `TASK: Find ALL in-text citations in the document below. Return ONLY a JSON array.
 
@@ -343,33 +392,54 @@ Return ONLY the JSON array, no explanations.`;
         temperature: 0.1,
         maxTokens: 16384
       });
-      this.accumulateUsage(result.usage);
-      const citations = Array.isArray(result.data) ? result.data : [];
-      return citations.map((c: { text?: string; paragraph?: number; startChar?: number; type?: string; format?: string; style?: string; confidence?: number; numbers?: number[]; context?: string }, idx: number) => ({
+
+      const usage: TokenUsage = result.usage
+        ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+        : emptyUsage;
+
+      const rawData = Array.isArray(result.data) ? result.data : [];
+
+      // Validate AI response with Zod schema
+      const validation = aiCitationsArraySchema.safeParse(rawData);
+      if (!validation.success) {
+        logger.warn('[AI Citation Detector] AI response validation failed for citations:', validation.error.issues);
+        // Return empty array on validation failure - don't silently store malformed data
+        return { citations: [], usage };
+      }
+
+      const citations = validation.data.map((c, idx) => ({
         id: `citation-${idx + 1}`,
-        text: c.text || '',
+        text: c.text,
         position: {
-          paragraph: c.paragraph || 0,
+          paragraph: c.paragraph,
           sentence: 0,
-          startChar: c.startChar || 0,
-          endChar: (c.startChar || 0) + (c.text?.length || 0)
+          startChar: c.startChar,
+          endChar: c.startChar + c.text.length
         },
-        type: (c.type || 'numeric') as 'numeric' | 'author-year' | 'footnote' | 'superscript',
-        format: (c.format || 'bracket') as 'bracket' | 'parenthesis' | 'superscript',
-        numbers: c.numbers || [],
-        context: c.context || ''
+        type: c.type,
+        format: c.format,
+        numbers: c.numbers,
+        context: c.context
       }));
+
+      return { citations, usage };
     } catch (error) {
       logger.error('[AI Citation Detector] Failed to parse in-text citations:', error);
-      return [];
+      return { citations: [], usage: emptyUsage };
     }
   }
 
   /**
    * Extract reference list using AI (NO REGEX)
    * @param documentText - Pre-sanitized document text
+   * @returns References array and token usage for this call
    */
-  private async extractReferenceList(documentText: string): Promise<ReferenceEntry[]> {
+  private async extractReferenceList(documentText: string): Promise<{
+    references: ReferenceEntry[];
+    usage: TokenUsage;
+  }> {
+    const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
+
     // Build prompt with clear boundaries to prevent injection
     const prompt = `TASK: Extract ALL references from the References/Bibliography section. Return ONLY a JSON array.
 
@@ -405,14 +475,27 @@ Return ONLY the JSON array.`;
         temperature: 0.1,
         maxTokens: 16384
       });
-      this.accumulateUsage(result.usage);
-      const refs = Array.isArray(result.data) ? result.data : [];
-      return refs.map((r: { number?: number; rawText?: string; authors?: string[]; year?: string; title?: string; journal?: string; volume?: string; issue?: string; pages?: string; doi?: string; url?: string; publisher?: string; editors?: string[] }, idx: number) => ({
-        id: `ref-${r.number || idx + 1}`,
-        number: r.number || idx + 1,
-        rawText: r.rawText || '',
+
+      const usage: TokenUsage = result.usage
+        ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+        : emptyUsage;
+
+      const rawData = Array.isArray(result.data) ? result.data : [];
+
+      // Validate AI response with Zod schema
+      const validation = aiReferencesArraySchema.safeParse(rawData);
+      if (!validation.success) {
+        logger.warn('[AI Citation Detector] AI response validation failed for references:', validation.error.issues);
+        // Return empty array on validation failure - don't silently store malformed data
+        return { references: [], usage };
+      }
+
+      const references = validation.data.map((r, idx) => ({
+        id: `ref-${r.number ?? idx + 1}`,
+        number: r.number ?? idx + 1,
+        rawText: r.rawText,
         components: {
-          authors: r.authors || [],
+          authors: r.authors,
           year: r.year,
           title: r.title,
           journal: r.journal,
@@ -426,9 +509,11 @@ Return ONLY the JSON array.`;
         },
         citedBy: []
       }));
+
+      return { references, usage };
     } catch (error) {
       logger.error('[AI Citation Detector] Failed to parse references:', error);
-      return [];
+      return { references: [], usage: emptyUsage };
     }
   }
 
@@ -436,12 +521,17 @@ Return ONLY the JSON array.`;
    * Detect citation style using AI
    * @param _documentText - Document text (unused, kept for API compatibility)
    * @param references - Extracted references to analyze
+   * @returns Detected style and token usage for this call
    */
   private async detectCitationStyle(
     _documentText: string,
     references: ReferenceEntry[]
-  ): Promise<string> {
-    if (references.length === 0) return 'Unknown';
+  ): Promise<{ style: string; usage: TokenUsage }> {
+    const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
+
+    if (references.length === 0) {
+      return { style: 'Unknown', usage: emptyUsage };
+    }
 
     // Only use reference text, not raw document content
     // Sanitize reference text as well
@@ -465,13 +555,17 @@ Return ONLY the style name (one word).`;
       temperature: 0.1,
       maxTokens: 50
     });
-    this.accumulateUsage(response.usage);
+
+    const usage: TokenUsage = response.usage
+      ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens }
+      : emptyUsage;
 
     // Sanitize the response - only accept known style names
     const validStyles = ['APA', 'MLA', 'Chicago', 'Vancouver', 'IEEE', 'Harvard', 'Unknown'];
     const detectedStyle = response.text.trim().replace(/[^a-zA-Z]/g, '');
 
-    return validStyles.find(s => s.toLowerCase() === detectedStyle.toLowerCase()) || 'Unknown';
+    const style = validStyles.find(s => s.toLowerCase() === detectedStyle.toLowerCase()) || 'Unknown';
+    return { style, usage };
   }
 
   /**

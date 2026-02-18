@@ -33,19 +33,27 @@ const SECURITY_LIMITS = {
 };
 
 /**
- * Circuit breaker state for memory protection
+ * Per-tenant circuit breaker state for memory protection
+ *
+ * MULTI-TENANCY: Each tenant has its own circuit breaker to prevent
+ * one tenant's failures from affecting others. System-wide memory checks
+ * remain global since memory is a shared resource.
  */
-interface CircuitBreakerState {
+interface TenantCircuitBreakerState {
   isOpen: boolean;
   openedAt: number;
   consecutiveFailures: number;
+}
+
+interface GlobalMemoryState {
   lastMemoryCheck: number;
 }
 
-const circuitBreaker: CircuitBreakerState = {
-  isOpen: false,
-  openedAt: 0,
-  consecutiveFailures: 0,
+// Per-tenant circuit breakers - isolated failure tracking
+const tenantCircuitBreakers = new Map<string, TenantCircuitBreakerState>();
+
+// Global memory state - shared resource check
+const globalMemoryState: GlobalMemoryState = {
   lastMemoryCheck: 0,
 };
 
@@ -53,49 +61,73 @@ const circuitBreaker: CircuitBreakerState = {
 const CIRCUIT_BREAKER_THRESHOLD = 3;  // Failures before opening
 const CIRCUIT_BREAKER_RESET_MS = 30000; // 30 seconds cooldown
 const MEMORY_CHECK_INTERVAL_MS = 5000;  // Check memory every 5 seconds
+const MAX_TENANT_BREAKERS = 10000; // Prevent unbounded growth
+
+/**
+ * Get or create circuit breaker state for a tenant
+ */
+function getTenantBreaker(tenantId: string): TenantCircuitBreakerState {
+  let breaker = tenantCircuitBreakers.get(tenantId);
+  if (!breaker) {
+    // Prevent unbounded Map growth - evict oldest entries if needed
+    if (tenantCircuitBreakers.size >= MAX_TENANT_BREAKERS) {
+      const firstKey = tenantCircuitBreakers.keys().next().value;
+      if (firstKey) tenantCircuitBreakers.delete(firstKey);
+    }
+    breaker = { isOpen: false, openedAt: 0, consecutiveFailures: 0 };
+    tenantCircuitBreakers.set(tenantId, breaker);
+  }
+  return breaker;
+}
 
 /**
  * Check if circuit breaker allows processing
+ * @param fileSize - Size of file to process
+ * @param tenantId - Tenant ID for per-tenant tracking (optional for backwards compatibility)
  */
-function checkCircuitBreaker(fileSize: number): void {
+function checkCircuitBreaker(fileSize: number, tenantId?: string): void {
   const now = Date.now();
+  const effectiveTenantId = tenantId || '__global__';
+  const breaker = getTenantBreaker(effectiveTenantId);
 
-  // Reset circuit breaker after cooldown
-  if (circuitBreaker.isOpen && (now - circuitBreaker.openedAt) > CIRCUIT_BREAKER_RESET_MS) {
-    logger.info('[DOCX Processor] Circuit breaker reset after cooldown');
-    circuitBreaker.isOpen = false;
-    circuitBreaker.consecutiveFailures = 0;
+  // Reset tenant circuit breaker after cooldown
+  if (breaker.isOpen && (now - breaker.openedAt) > CIRCUIT_BREAKER_RESET_MS) {
+    logger.info(`[DOCX Processor] Circuit breaker reset for tenant ${effectiveTenantId}`);
+    breaker.isOpen = false;
+    breaker.consecutiveFailures = 0;
   }
 
-  // Check if circuit is open
-  if (circuitBreaker.isOpen) {
+  // Check if tenant circuit is open
+  if (breaker.isOpen) {
     throw AppError.serviceUnavailable(
-      'DOCX processing temporarily unavailable due to high memory pressure. Please retry in a few seconds.',
+      'DOCX processing temporarily unavailable due to recent failures. Please retry in a few seconds.',
       'CIRCUIT_BREAKER_OPEN'
     );
   }
 
-  // Periodic memory check
-  if ((now - circuitBreaker.lastMemoryCheck) > MEMORY_CHECK_INTERVAL_MS) {
-    circuitBreaker.lastMemoryCheck = now;
+  // Periodic SYSTEM-WIDE memory check (memory is shared across tenants)
+  if ((now - globalMemoryState.lastMemoryCheck) > MEMORY_CHECK_INTERVAL_MS) {
+    globalMemoryState.lastMemoryCheck = now;
     const usage = getMemoryUsage();
 
     // Check if we have enough memory for this file
     if (!isMemorySafeForSize(fileSize)) {
       logger.warn('[DOCX Processor] Memory pressure detected', {
         fileSize,
+        tenantId: effectiveTenantId,
         heapUsedMB: usage.heapUsedMB,
         heapTotalMB: usage.heapTotalMB
       });
 
       // For large files under memory pressure, reject immediately
+      // but only affect THIS tenant's circuit breaker
       if (fileSize > SECURITY_LIMITS.MEMORY_PROCESSING_LIMIT) {
-        circuitBreaker.consecutiveFailures++;
+        breaker.consecutiveFailures++;
 
-        if (circuitBreaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-          circuitBreaker.isOpen = true;
-          circuitBreaker.openedAt = now;
-          logger.error('[DOCX Processor] Circuit breaker OPENED due to memory pressure');
+        if (breaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          breaker.isOpen = true;
+          breaker.openedAt = now;
+          logger.error(`[DOCX Processor] Circuit breaker OPENED for tenant ${effectiveTenantId} due to memory pressure`);
         }
 
         throw AppError.serviceUnavailable(
@@ -105,38 +137,46 @@ function checkCircuitBreaker(fileSize: number): void {
       }
     } else {
       // Reset failure count on successful memory check
-      circuitBreaker.consecutiveFailures = 0;
+      breaker.consecutiveFailures = 0;
     }
   }
 }
 
 /**
  * Record successful processing (resets circuit breaker failures)
+ * @param tenantId - Tenant ID for per-tenant tracking
  */
-function recordSuccess(): void {
-  circuitBreaker.consecutiveFailures = 0;
+function recordSuccess(tenantId?: string): void {
+  const breaker = getTenantBreaker(tenantId || '__global__');
+  breaker.consecutiveFailures = 0;
 }
 
 /**
  * Record processing failure
+ * @param tenantId - Tenant ID for per-tenant tracking
  */
-function recordFailure(): void {
-  circuitBreaker.consecutiveFailures++;
-  if (circuitBreaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
-    circuitBreaker.isOpen = true;
-    circuitBreaker.openedAt = Date.now();
-    logger.error('[DOCX Processor] Circuit breaker OPENED due to consecutive failures');
+function recordFailure(tenantId?: string): void {
+  const effectiveTenantId = tenantId || '__global__';
+  const breaker = getTenantBreaker(effectiveTenantId);
+  breaker.consecutiveFailures++;
+  if (breaker.consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    breaker.isOpen = true;
+    breaker.openedAt = Date.now();
+    logger.error(`[DOCX Processor] Circuit breaker OPENED for tenant ${effectiveTenantId} due to consecutive failures`);
   }
 }
 
 /**
  * Reset circuit breaker state (for testing only)
+ * @param tenantId - Specific tenant to reset, or undefined to reset all
  */
-export function resetCircuitBreaker(): void {
-  circuitBreaker.isOpen = false;
-  circuitBreaker.openedAt = 0;
-  circuitBreaker.consecutiveFailures = 0;
-  circuitBreaker.lastMemoryCheck = 0;
+export function resetCircuitBreaker(tenantId?: string): void {
+  if (tenantId) {
+    tenantCircuitBreakers.delete(tenantId);
+  } else {
+    tenantCircuitBreakers.clear();
+  }
+  globalMemoryState.lastMemoryCheck = 0;
 }
 
 /**
@@ -2942,16 +2982,20 @@ class DOCXProcessorService {
 
   /**
    * Get current circuit breaker status (for monitoring/debugging)
+   * @param tenantId - Optional tenant ID to get specific tenant status
    */
-  getCircuitBreakerStatus(): {
+  getCircuitBreakerStatus(tenantId?: string): {
     isOpen: boolean;
     consecutiveFailures: number;
     memoryUsage: ReturnType<typeof getMemoryUsage>;
+    tenantCount: number;
   } {
+    const breaker = getTenantBreaker(tenantId || '__global__');
     return {
-      isOpen: circuitBreaker.isOpen,
-      consecutiveFailures: circuitBreaker.consecutiveFailures,
-      memoryUsage: getMemoryUsage()
+      isOpen: breaker.isOpen,
+      consecutiveFailures: breaker.consecutiveFailures,
+      memoryUsage: getMemoryUsage(),
+      tenantCount: tenantCircuitBreakers.size
     };
   }
 

@@ -48,6 +48,12 @@ export interface ReferenceValidation {
 class DOIValidationService {
   private crossrefApiBase = 'https://api.crossref.org/works';
   private doiOrgBase = 'https://doi.org';
+  private userAgent: string;
+
+  constructor() {
+    const contactEmail = process.env.CROSSREF_CONTACT_EMAIL || 'support@s4carlisle.com';
+    this.userAgent = `Ninja-Citation-Tool/1.0 (mailto:${contactEmail})`;
+  }
 
   /**
    * Validate a DOI and retrieve metadata
@@ -216,7 +222,7 @@ class DOIValidationService {
 
       const response = await axios.get(`${this.crossrefApiBase}/${doi}`, {
         headers: {
-          'User-Agent': 'Ninja-Citation-Tool/1.0 (mailto:support@ninja.com)'
+          'User-Agent': this.userAgent
         },
         timeout: 10000
       });

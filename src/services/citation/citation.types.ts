@@ -139,29 +139,50 @@ export interface CitationWithComponent {
 
 /** Map AI response type string to Prisma CitationType enum */
 export const CITATION_TYPE_MAP: Record<string, CitationType> = {
+  // Lowercase variants
   parenthetical: 'PARENTHETICAL',
   narrative: 'NARRATIVE',
   footnote: 'FOOTNOTE',
   endnote: 'ENDNOTE',
   numeric: 'NUMERIC',
+  // Uppercase variants (for direct lookups without normalization)
+  PARENTHETICAL: 'PARENTHETICAL',
+  NARRATIVE: 'NARRATIVE',
+  FOOTNOTE: 'FOOTNOTE',
+  ENDNOTE: 'ENDNOTE',
+  NUMERIC: 'NUMERIC',
+  // Title case variants (common in AI responses)
+  Parenthetical: 'PARENTHETICAL',
+  Narrative: 'NARRATIVE',
+  Footnote: 'FOOTNOTE',
+  Endnote: 'ENDNOTE',
+  Numeric: 'NUMERIC',
   // Fallback handled in code
 };
 
 /** Map AI response style string to Prisma CitationStyle enum */
 export const CITATION_STYLE_MAP: Record<string, CitationStyle> = {
+  // Uppercase variants
   APA: 'APA',
-  apa: 'APA',
   MLA: 'MLA',
-  mla: 'MLA',
-  Chicago: 'CHICAGO',
-  chicago: 'CHICAGO',
-  CMOS: 'CHICAGO',
-  Vancouver: 'VANCOUVER',
-  vancouver: 'VANCOUVER',
-  Harvard: 'HARVARD',
-  harvard: 'HARVARD',
+  CHICAGO: 'CHICAGO',
+  VANCOUVER: 'VANCOUVER',
+  HARVARD: 'HARVARD',
   IEEE: 'IEEE',
+  // Lowercase variants
+  apa: 'APA',
+  mla: 'MLA',
+  chicago: 'CHICAGO',
+  vancouver: 'VANCOUVER',
+  harvard: 'HARVARD',
   ieee: 'IEEE',
+  // Title case variants
+  Chicago: 'CHICAGO',
+  Vancouver: 'VANCOUVER',
+  Harvard: 'HARVARD',
+  // Aliases
+  CMOS: 'CHICAGO',
+  cmos: 'CHICAGO',
   // Fallback handled in code
 };
 
