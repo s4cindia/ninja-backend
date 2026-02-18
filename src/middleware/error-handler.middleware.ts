@@ -53,6 +53,18 @@ export const errorHandler = (
   res: Response,
   _next: NextFunction
 ): void => {
+  // Belt-and-suspenders: ensure CORS headers are always present in error responses.
+  // The cors() middleware should have set these earlier, but if a multer/stream error
+  // or TCP-level issue caused them to be dropped, re-set them here so browsers can
+  // read the error body instead of showing a CORS policy failure.
+  if (!res.headersSent) {
+    const origin = req.headers.origin as string | undefined;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+  }
+
 
   let error: AppError;
 
