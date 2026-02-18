@@ -83,6 +83,8 @@ interface PrismaReferenceEntry {
   formattedApa: string | null;
   formattedMla: string | null;
   formattedChicago: string | null;
+  formattedVancouver: string | null;
+  formattedIeee: string | null;
   isEdited: boolean | null;
   editedAt: Date | null;
   createdAt: Date;
@@ -145,6 +147,8 @@ interface FallbackEntryData {
   formattedApa?: string;
   formattedMla?: string;
   formattedChicago?: string;
+  formattedVancouver?: string;
+  formattedIeee?: string;
 }
 
 // ============================================================================
@@ -171,6 +175,8 @@ export interface ReferenceEntry {
   formattedApa?: string | null;
   formattedMla?: string | null;
   formattedChicago?: string | null;
+  formattedVancouver?: string | null;
+  formattedIeee?: string | null;
   isEdited?: boolean;
 }
 
@@ -385,6 +391,10 @@ class ReferenceListService {
             entryData.formattedMla = formattedText;
           } else if (formattedColumn === 'formattedChicago') {
             entryData.formattedChicago = formattedText;
+          } else if (formattedColumn === 'formattedVancouver') {
+            entryData.formattedVancouver = formattedText;
+          } else if (formattedColumn === 'formattedIeee') {
+            entryData.formattedIeee = formattedText;
           }
 
           return {
@@ -453,6 +463,10 @@ class ReferenceListService {
           entry.formattedMla = citation.rawText;
         } else if (formattedColumn === 'formattedChicago') {
           entry.formattedChicago = citation.rawText;
+        } else if (formattedColumn === 'formattedVancouver') {
+          entry.formattedVancouver = citation.rawText;
+        } else if (formattedColumn === 'formattedIeee') {
+          entry.formattedIeee = citation.rawText;
         }
         return entry;
       });
@@ -767,6 +781,8 @@ Return a JSON object:
         formattedApa: formattedColumn === 'formattedApa' ? formatted : e.formattedApa,
         formattedMla: formattedColumn === 'formattedMla' ? formatted : e.formattedMla,
         formattedChicago: formattedColumn === 'formattedChicago' ? formatted : e.formattedChicago,
+        formattedVancouver: formattedColumn === 'formattedVancouver' ? formatted : e.formattedVancouver,
+        formattedIeee: formattedColumn === 'formattedIeee' ? formatted : e.formattedIeee,
         isEdited: Boolean(e.isEdited),
       };
     });
@@ -884,8 +900,8 @@ Return a JSON object:
       apa7: 'formattedApa',
       mla9: 'formattedMla',
       chicago17: 'formattedChicago',
-      vancouver: 'formattedApa',
-      ieee: 'formattedApa',
+      vancouver: 'formattedVancouver',
+      ieee: 'formattedIeee',
     };
     return columns[styleCode] || 'formattedApa';
   }
@@ -969,6 +985,10 @@ Return a JSON object:
         return entry.formattedMla ?? null;
       case 'formattedChicago':
         return entry.formattedChicago ?? null;
+      case 'formattedVancouver':
+        return entry.formattedVancouver ?? null;
+      case 'formattedIeee':
+        return entry.formattedIeee ?? null;
       default:
         return null;
     }
@@ -997,6 +1017,8 @@ Return a JSON object:
       formattedApa: record.formattedApa,
       formattedMla: record.formattedMla,
       formattedChicago: record.formattedChicago,
+      formattedVancouver: record.formattedVancouver,
+      formattedIeee: record.formattedIeee,
       isEdited: record.isEdited ?? false,
     };
   }

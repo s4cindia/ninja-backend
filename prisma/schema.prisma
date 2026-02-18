@@ -1031,9 +1031,11 @@ model ReferenceListEntry {
   enrichmentSource     String // "crossref", "pubmed", "manual", "ai"
   enrichmentConfidence Float
 
-  formattedApa     String?
-  formattedMla     String?
-  formattedChicago String?
+  formattedApa       String?
+  formattedMla       String?
+  formattedChicago   String?
+  formattedVancouver String?
+  formattedIeee      String?
 
   isEdited Boolean   @default(false)
   editedAt DateTime?
