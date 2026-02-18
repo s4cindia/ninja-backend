@@ -38,9 +38,19 @@ BEGIN
     END IF;
 END $$;
 
--- Step 2: Drop deprecated columns from EditorialDocument (IF EXISTS)
-ALTER TABLE "EditorialDocument" DROP COLUMN IF EXISTS "fullText";
-ALTER TABLE "EditorialDocument" DROP COLUMN IF EXISTS "fullHtml";
+-- Step 2: Drop deprecated columns from EditorialDocument (if table exists)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'EditorialDocument') THEN
+        ALTER TABLE "EditorialDocument" DROP COLUMN IF EXISTS "fullText";
+        ALTER TABLE "EditorialDocument" DROP COLUMN IF EXISTS "fullHtml";
+    END IF;
+END $$;
 
--- Step 3: Drop deprecated column from ReferenceListEntry (IF EXISTS)
-ALTER TABLE "ReferenceListEntry" DROP COLUMN IF EXISTS "citationIds";
+-- Step 3: Drop deprecated column from ReferenceListEntry (if table exists)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ReferenceListEntry') THEN
+        ALTER TABLE "ReferenceListEntry" DROP COLUMN IF EXISTS "citationIds";
+    END IF;
+END $$;
