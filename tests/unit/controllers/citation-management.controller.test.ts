@@ -642,6 +642,12 @@ describe('CitationManagementController', () => {
       mockReq.params = { documentId: 'doc-123', referenceId: 'ref-1' };
       mockReq.body = { title: 'New Title' };
 
+      // resolveDocumentSimple calls findFirst first, so mock it to return a document
+      vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue({
+        id: 'doc-123',
+        tenantId: 'tenant-123',
+      } as any);
+
       const error = new Error('Update failed');
       vi.mocked(prisma.referenceListEntry.findUnique).mockRejectedValue(error);
 
