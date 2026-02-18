@@ -70,7 +70,7 @@ jobs:
 
           echo "Registered migration task definition: $MIGRATION_TASK_DEF_ARN"
 
-          # First, try to resolve any failed migrations
+          # First, try to resolve any failed migrations by marking them as rolled-back
           RESOLVE_TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition $MIGRATION_TASK_DEF_ARN \
@@ -79,7 +79,7 @@ jobs:
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
-                "command": ["sh", "-c", "npx prisma migrate resolve --applied 20260215000000_schema_optimization_indexes || true"]
+                "command": ["sh", "-c", "npx prisma migrate resolve --rolled-back 20260215000000_schema_optimization_indexes 2>&1; echo Exit code: $?"]
               }]
             }' \
             --query 'tasks[0].taskArn' \
@@ -87,6 +87,14 @@ jobs:
 
           echo "Resolve task started: $RESOLVE_TASK_ARN"
           aws ecs wait tasks-stopped --cluster ${{ env.ECS_CLUSTER }} --tasks $RESOLVE_TASK_ARN
+
+          # Get resolve task exit code (informational)
+          RESOLVE_EXIT=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks $RESOLVE_TASK_ARN \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          echo "Resolve task exit code: $RESOLVE_EXIT"
 
           # Run migration task with new image
           TASK_ARN=$(aws ecs run-task \
