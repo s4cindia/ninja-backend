@@ -742,4 +742,68 @@ Related Documentation
 - ./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md - User documentation
 
 ---
-Last updated: February 12, 2026
+Last updated: February 19, 2026
+
+---
+
+## Workflow Agent (Sprint 9-11)
+
+### Architecture
+- **Orchestration layer** sitting between API routes and existing services
+- XState v5 state machine: 14 states, 4 phases, 4 HITL gates
+- Non-invasive: calls existing services, never modifies them
+- State persisted to PostgreSQL, cached in Redis
+
+### State Flow
+```
+UPLOAD_RECEIVED → PREPROCESSING → RUNNING_EPUBCHECK → RUNNING_ACE → RUNNING_AI_ANALYSIS
+→ AWAITING_AI_REVIEW (Gate 1) → AUTO_REMEDIATION → AWAITING_REMEDIATION_REVIEW (Gate 2)
+→ VERIFICATION_AUDIT → CONFORMANCE_MAPPING → AWAITING_CONFORMANCE_REVIEW (Gate 3)
+→ ACR_GENERATION → AWAITING_ACR_SIGNOFF (Gate 4) → COMPLETED
+```
+
+### HITL Gates
+- Gate 1 (AI Review): Conditionally skippable if all HIGH confidence
+- Gate 2 (Remediation Review): NEVER skippable — manual fixes required
+- Gate 3 (Conformance Review): NEVER skippable — legal requirement
+- Gate 4 (ACR Sign-off): NEVER skippable — attestation required
+
+### Key Directories
+- `src/services/workflow/` — XState machine, agent service, adapters (T1)
+- `src/services/hitl/` — HITL gates, notifications, remediation tracking (T2)
+- `src/services/queue/` — BullMQ workers, WebSocket service (T3)
+- `src/routes/workflow.routes.ts`, `hitl.routes.ts`, `batch.routes.ts` (T3)
+- `src/types/workflow-contracts.ts` — **SHARED READ-ONLY — do not modify**
+- `src/controllers/workflow.controller.ts`, `hitl.controller.ts`, `batch.controller.ts` (T3)
+
+### Shared Contracts (READ ONLY)
+File: `src/types/workflow-contracts.ts`
+Contains: WorkflowState enum, HITLGate enum, HITLAction enum, RemediationCategory enum,
+all API request/response types, WebSocket event types, Zod validation schemas.
+ALL terminals import from this file. NONE modify it.
+
+### Terminal Ownership (Sprint 9)
+| Terminal | Branch | Exclusive Paths |
+|----------|--------|----------------|
+| T1: State Machine | `feature/wf-state-machine` | `src/services/workflow/*`, `src/types/workflow.types.ts` |
+| T2: HITL Gateway | `feature/wf-hitl-gateway` | `src/services/hitl/*` |
+| T3: API + Queue | `feature/wf-api-queue` | `src/routes/workflow*.ts`, `src/routes/hitl.routes.ts`, `src/controllers/workflow*.ts`, `src/controllers/hitl.controller.ts`, `src/schemas/workflow*.ts`, `src/schemas/hitl.schemas.ts`, `src/services/queue/*` |
+| T4: Frontend | `feature/wf-frontend` | Frontend repo only |
+
+### Merge Order (non-negotiable)
+T1 → T2 → T3 → T4
+
+### Testing
+- Backend uses **Vitest** (not Jest) — use `import { describe, it, expect, vi } from 'vitest'`
+- Mock Prisma with `vi.mock('../../lib/prisma')` pattern
+- Run: `npm test -- src/services/workflow/`
+
+### Adapter → Existing Service Mapping
+| Adapter | Calls |
+|---------|-------|
+| epubcheck.adapter | `src/services/epub/epub-audit.service.ts` |
+| ace.adapter | `src/services/epub/ace-client.service.ts` |
+| gemini.adapter | `src/services/ai/gemini.service.ts` |
+| remediation.adapter | `src/services/epub/remediation.service.ts` |
+| conformance.adapter | `src/services/acr/conformance-engine.service.ts` |
+| acr.adapter | `src/services/acr/acr-generator.service.ts` — `generateAcr(jobId, options, verificationData?)` |

@@ -44,6 +44,10 @@ model User {
   acrJobs             AcrJob[]
   acrCriterionReviews AcrCriterionReview[] @relation("CriterionReviewer")
   batches             Batch[]
+  workflowInstances   WorkflowInstance[]
+  batchWorkflows      BatchWorkflow[]
+  hitlDecisions       HITLDecision[]
+  remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
 
   @@index([tenantId])
   @@index([email])
@@ -277,7 +281,8 @@ model File {
   updatedAt    DateTime    @updatedAt
   deletedAt    DateTime?
 
-  artifacts Artifact[]
+  artifacts         Artifact[]
+  workflowInstances WorkflowInstance[]
 
   @@index([tenantId])
   @@index([status])
@@ -1276,4 +1281,105 @@ enum ReportFormat {
   JSON
   PDF
   DOCX
+}
+
+// ============================================================
+// WORKFLOW AGENT MODELS (Sprint 9-11)
+// ============================================================
+
+model WorkflowInstance {
+  id           String    @id @default(uuid())
+  fileId       String
+  file         File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  batchId      String?
+  batch        BatchWorkflow? @relation(fields: [batchId], references: [id])
+  currentState String    @default("UPLOAD_RECEIVED")
+  stateData    Json      @default("{}")
+  priority     Int       @default(5)
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+  errorMessage String?
+  retryCount   Int       @default(0)
+  loopCount    Int       @default(0)
+  createdBy    String
+  user         User      @relation(fields: [createdBy], references: [id])
+
+  hitlDecisions    HITLDecision[]
+  remediationItems RemediationItem[]
+  events           WorkflowEvent[]
+
+  @@index([currentState])
+  @@index([batchId])
+  @@index([createdBy])
+  @@index([fileId])
+}
+
+model BatchWorkflow {
+  id          String    @id @default(uuid())
+  name        String
+  totalFiles  Int
+  concurrency Int       @default(3)
+  status      String    @default("PENDING")
+  createdBy   String
+  user        User      @relation(fields: [createdBy], references: [id])
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  workflows WorkflowInstance[]
+
+  @@index([status])
+  @@index([createdBy])
+}
+
+model HITLDecision {
+  id            String           @id @default(uuid())
+  workflowId    String
+  workflow      WorkflowInstance @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  gate          String
+  itemType      String
+  itemId        String
+  decision      String
+  originalValue Json
+  modifiedValue Json?
+  justification String?
+  reviewerId    String
+  reviewer      User             @relation(fields: [reviewerId], references: [id])
+  decidedAt     DateTime         @default(now())
+
+  @@index([workflowId, gate])
+  @@index([reviewerId])
+}
+
+model RemediationItem {
+  id               String           @id @default(uuid())
+  workflowId       String
+  workflow         WorkflowInstance @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  auditFindingId   String
+  category         String
+  autoFixApplied   Boolean          @default(false)
+  autoFixDetail    Json?
+  requiresManual   Boolean          @default(false)
+  manualFixApplied Boolean          @default(false)
+  manualFixDetail  Json?
+  fixedBy          String?
+  fixer            User?            @relation("RemediationFixer", fields: [fixedBy], references: [id])
+  fixedAt          DateTime?
+  wcagCriterion    String
+  aiSuggestion     Json?
+
+  @@index([workflowId, category])
+  @@index([workflowId, requiresManual, manualFixApplied])
+}
+
+model WorkflowEvent {
+  id         String           @id @default(uuid())
+  workflowId String
+  workflow   WorkflowInstance @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  eventType  String
+  fromState  String?
+  toState    String?
+  payload    Json             @default("{}")
+  timestamp  DateTime         @default(now())
+
+  @@index([workflowId, timestamp])
 }
