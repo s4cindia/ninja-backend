@@ -957,9 +957,12 @@ class RemediationService {
     }
 
     const pendingTasks = plan.tasks.filter(t => t.status === 'pending');
+    // When all tasks are already completed (e.g. via auto-fix), transfer all tasks
+    // so the remediation outcome is still documented in the ACR workflow.
+    const tasksToTransfer = pendingTasks.length > 0 ? pendingTasks : plan.tasks;
 
-    if (pendingTasks.length === 0) {
-      throw new Error('No pending tasks to transfer. All tasks are already completed.');
+    if (tasksToTransfer.length === 0) {
+      throw new Error('No tasks found in the remediation plan to transfer.');
     }
 
     const originalJob = await prisma.job.findFirst({
@@ -975,10 +978,10 @@ class RemediationService {
       id: string;
       name: string;
       level: 'A' | 'AA' | 'AAA';
-      tasks: typeof pendingTasks;
+      tasks: typeof tasksToTransfer;
     }>();
 
-    for (const task of pendingTasks) {
+    for (const task of tasksToTransfer) {
       // Get WCAG criteria codes from task
       const wcagCodes = Array.isArray(task.wcagCriteria)
         ? task.wcagCriteria
@@ -1036,7 +1039,7 @@ class RemediationService {
     });
 
     // Also include unmapped tasks with fallback identifiers
-    const unmappedTasks = pendingTasks.filter(task => {
+    const unmappedTasks = tasksToTransfer.filter(task => {
       const wcagCodes = Array.isArray(task.wcagCriteria)
         ? task.wcagCriteria
         : task.wcagCriteria ? [task.wcagCriteria] : [];
@@ -1073,11 +1076,11 @@ class RemediationService {
       edition: options?.edition || null,
       vendor: options?.vendor || null,
       contactEmail: options?.contactEmail || null,
-      totalCriteria: pendingTasks.length,
+      totalCriteria: tasksToTransfer.length,
       verifiedCount: 0,
       criteria: acrCriteria,
       stats: {
-        notVerified: pendingTasks.length,
+        notVerified: tasksToTransfer.length,
         verified: 0,
         failed: 0,
         notApplicable: 0,
@@ -1111,9 +1114,9 @@ class RemediationService {
         },
       });
 
-      // Create AcrCriterionReview records based on WCAG criteria from pending tasks
+      // Create AcrCriterionReview records based on WCAG criteria from transferred tasks
       const wcagCriteriaSet = new Set<string>();
-      for (const task of pendingTasks) {
+      for (const task of tasksToTransfer) {
         if (Array.isArray(task.wcagCriteria)) {
           task.wcagCriteria.forEach((c: string) => wcagCriteriaSet.add(c));
         } else if (task.wcagCriteria) {
@@ -1123,13 +1126,14 @@ class RemediationService {
 
       // Create criterion reviews for affected WCAG criteria
       for (const criterionId of wcagCriteriaSet) {
+        const criterion = wcagCriteriaService.getCriteriaById(criterionId);
         await prisma.acrCriterionReview.create({
           data: {
             acrJobId: acrJobRecord.id,
             criterionId,
             criterionNumber: criterionId,
-            criterionName: `WCAG ${criterionId}`,
-            level: criterionId.startsWith('1.4.') ? 'AA' : 'A',
+            criterionName: criterion?.name || `WCAG ${criterionId}`,
+            level: criterion?.level || 'A',
             confidence: 50,
             aiStatus: 'needs_review',
           },
@@ -1141,7 +1145,7 @@ class RemediationService {
       logger.warn(`[ACR Transfer] Could not create AcrJob record: ${acrJobError instanceof Error ? acrJobError.message : 'Unknown error'}`);
     }
 
-    for (const task of pendingTasks) {
+    for (const task of tasksToTransfer) {
       await this.updateTaskStatus(
         jobId,
         task.id,
@@ -1152,12 +1156,12 @@ class RemediationService {
       );
     }
 
-    logger.info(`[ACR Transfer] Transferred ${pendingTasks.length} tasks from job ${jobId} to ACR workflow ${acrJob.id}`);
+    logger.info(`[ACR Transfer] Transferred ${tasksToTransfer.length} tasks from job ${jobId} to ACR workflow ${acrJob.id}`);
 
     return {
       acrWorkflowId: acrJob.id,
-      transferredTasks: pendingTasks.length,
-      message: `${pendingTasks.length} tasks transferred to ACR workflow for verification`,
+      transferredTasks: tasksToTransfer.length,
+      message: `${tasksToTransfer.length} tasks transferred to ACR workflow for verification`,
     };
   }
 
