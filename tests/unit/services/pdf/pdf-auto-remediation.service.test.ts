@@ -365,9 +365,11 @@ describe('PdfAutoRemediationService', () => {
       const planWithDuplicates = {
         ...mockRemediationPlan,
         tasks: [
-          createMockTask('task-1', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING'),
-          createMockTask('task-2', 'MATTERHORN-01-001', 'AUTO_FIXABLE', 'PENDING'),
-          createMockTask('task-3', 'MATTERHORN-01-002', 'AUTO_FIXABLE', 'PENDING'),
+          // Use PDF-NO-LANGUAGE which maps to addLanguage handler
+          createMockTask('task-1', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
+          createMockTask('task-2', 'PDF-NO-LANGUAGE', 'AUTO_FIXABLE', 'PENDING'),
+          // Use PDF-NO-TITLE which maps to addTitle handler
+          createMockTask('task-3', 'PDF-NO-TITLE', 'AUTO_FIXABLE', 'PENDING'),
         ],
       };
 
