@@ -28,7 +28,7 @@ interface TokenPayload {
 export class AuthService {
   private generateTokens(payload: TokenPayload) {
     const accessToken = jwt.sign(payload, config.jwtSecret, {
-      expiresIn: '15m',
+      expiresIn: config.jwtExpiresIn as jwt.SignOptions['expiresIn'],
     });
     
     const refreshToken = jwt.sign(payload, config.jwtRefreshSecret, {
