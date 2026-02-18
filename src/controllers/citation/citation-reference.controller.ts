@@ -556,7 +556,14 @@ export class CitationReferenceController {
 
       // Resolve the document ID (handles both document ID and job ID)
       const baseDoc = await resolveDocumentSimple(documentId, tenantId);
-      const resolvedDocId = baseDoc?.id;
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+      const resolvedDocId = baseDoc.id;
 
       const reference = await prisma.referenceListEntry.findUnique({
         where: { id: referenceId },
@@ -583,7 +590,7 @@ export class CitationReferenceController {
       }
 
       // Verify document ID matches (comparing resolved ID)
-      if (resolvedDocId && reference.documentId !== resolvedDocId) {
+      if (reference.documentId !== resolvedDocId) {
         res.status(400).json({
           success: false,
           error: { code: 'INVALID_DOCUMENT', message: 'Reference does not belong to this document' }

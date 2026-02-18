@@ -327,6 +327,22 @@ describe('CitationManagementController', () => {
         mockReq.params = { documentId: 'doc-123', referenceId: 'ref-1' };
         mockReq.body = { title: 'Updated Title' };
 
+        // Mock document lookup (resolveDocumentSimple is called first)
+        vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue({
+          id: 'doc-123',
+          tenantId: TENANT_A,
+          jobId: null,
+          originalName: 'test.docx',
+          storagePath: '/test/path',
+          storageType: 'LOCAL',
+          status: 'COMPLETED',
+          wordCount: 1000,
+          pageCount: 10,
+          referenceListStyle: 'APA',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
         const mockReference = {
           id: 'ref-1',
           documentId: 'doc-123',
@@ -350,7 +366,8 @@ describe('CitationManagementController', () => {
           mockNext
         );
 
-        // Verify tenant check happens by checking findUnique includes document
+        // Verify document is resolved first, then reference is fetched
+        expect(prisma.editorialDocument.findFirst).toHaveBeenCalled();
         expect(prisma.referenceListEntry.findUnique).toHaveBeenCalledWith(
           expect.objectContaining({
             where: { id: 'ref-1' },
@@ -365,16 +382,8 @@ describe('CitationManagementController', () => {
         mockReq.params = { documentId: 'doc-123', referenceId: 'ref-1' };
         mockReq.body = { title: 'Hacked Title' };
 
-        const mockReference = {
-          id: 'ref-1',
-          documentId: 'doc-123',
-          document: {
-            tenantId: TENANT_B, // Different tenant!
-            citations: [],
-          },
-        };
-
-        vi.mocked(prisma.referenceListEntry.findUnique).mockResolvedValue(mockReference as never);
+        // Document lookup with tenant filter returns null (document not found for this tenant)
+        vi.mocked(prisma.editorialDocument.findFirst).mockResolvedValue(null);
 
         await referenceController.editReference(
           mockReq as Request,
@@ -382,12 +391,14 @@ describe('CitationManagementController', () => {
           mockNext
         );
 
-        // CRITICAL: Should return 404 to prevent tenant enumeration
+        // CRITICAL: Should return 404 to prevent tenant/document enumeration
         expect(statusMock).toHaveBeenCalledWith(404);
         expect(jsonMock).toHaveBeenCalledWith({
           success: false,
-          error: { code: 'NOT_FOUND', message: 'Reference not found' },
+          error: { code: 'NOT_FOUND', message: 'Document not found' },
         });
+        // Ensure reference lookup was NOT called (blocked at document level)
+        expect(prisma.referenceListEntry.findUnique).not.toHaveBeenCalled();
         // Ensure update was NOT called
         expect(prisma.referenceListEntry.update).not.toHaveBeenCalled();
       });
