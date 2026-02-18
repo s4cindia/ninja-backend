@@ -84,9 +84,10 @@ export class CitationUploadController {
 
       // Check if S3 is configured
       if (!s3Service.isConfigured()) {
+        logger.warn('[Citation Upload] S3 not configured, presign unavailable', s3Service.getConfigStatus());
         res.status(503).json({
           success: false,
-          error: { code: 'S3_NOT_CONFIGURED', message: 'S3 storage is not configured' }
+          error: { code: 'S3_NOT_CONFIGURED', message: 'S3 storage is not configured. Contact administrator.' }
         });
         return;
       }
@@ -94,12 +95,57 @@ export class CitationUploadController {
       const contentType = ALLOWED_MIMES[0];
 
       // Get presigned URL from S3
-      const result = await s3Service.getPresignedUploadUrl(
-        tenantId,
-        fileName,
-        contentType,
-        3600 // 1 hour expiry
-      );
+      let result;
+      try {
+        result = await s3Service.getPresignedUploadUrl(
+          tenantId,
+          fileName,
+          contentType,
+          3600 // 1 hour expiry
+        );
+      } catch (s3Error: unknown) {
+        // Log detailed S3 error for debugging
+        const errorMessage = s3Error instanceof Error ? s3Error.message : String(s3Error);
+        const errorName = s3Error instanceof Error ? s3Error.name : 'UnknownError';
+        logger.error('[Citation Upload] S3 presign failed:', {
+          error: errorMessage,
+          errorName,
+          configStatus: s3Service.getConfigStatus(),
+        });
+
+        // Return specific error code for S3 credential/permission issues
+        if (errorName === 'CredentialsProviderError' || errorMessage.includes('credentials')) {
+          res.status(503).json({
+            success: false,
+            error: {
+              code: 'S3_CREDENTIALS_ERROR',
+              message: 'S3 credentials not configured. Contact administrator.'
+            }
+          });
+          return;
+        }
+
+        if (errorName === 'AccessDenied' || errorMessage.includes('Access Denied')) {
+          res.status(503).json({
+            success: false,
+            error: {
+              code: 'S3_ACCESS_DENIED',
+              message: 'S3 access denied. Check IAM permissions.'
+            }
+          });
+          return;
+        }
+
+        // Generic S3 error
+        res.status(503).json({
+          success: false,
+          error: {
+            code: 'S3_ERROR',
+            message: 'S3 service error. Please try again later.'
+          }
+        });
+        return;
+      }
 
       // Create a pending file record
       const file = await prisma.file.create({
@@ -785,6 +831,9 @@ export class CitationUploadController {
   /**
    * GET /api/v1/citation-management/document/:documentId/analysis
    * Get complete citation analysis results
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
+   * This flexibility allows the frontend to use either ID for navigation.
    */
   async getAnalysis(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -798,7 +847,8 @@ export class CitationUploadController {
       const { documentId } = req.params;
       const { tenantId } = req.user;
 
-      const document = await prisma.editorialDocument.findFirst({
+      // First try to find by document ID
+      let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
         include: {
           citations: { include: { reference: true } },
@@ -806,6 +856,19 @@ export class CitationUploadController {
           documentContent: true
         }
       });
+
+      // If not found by document ID, try finding by job ID
+      // (frontend may navigate using jobId if documentId wasn't available)
+      if (!document) {
+        document = await prisma.editorialDocument.findFirst({
+          where: { jobId: documentId, tenantId },
+          include: {
+            citations: { include: { reference: true } },
+            job: true,
+            documentContent: true
+          }
+        });
+      }
 
       if (!document) {
         res.status(404).json({

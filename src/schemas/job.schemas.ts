@@ -8,7 +8,12 @@ export const jobTypeEnum = z.enum([
   'ALT_TEXT_GENERATION',
   'METADATA_EXTRACTION',
   'BATCH_VALIDATION',
-  'ACR_WORKFLOW'
+  'ACR_WORKFLOW',
+  'PLAGIARISM_CHECK',
+  'CITATION_VALIDATION',
+  'CITATION_DETECTION',
+  'STYLE_VALIDATION',
+  'EDITORIAL_FULL'
 ]);
 
 export const jobStatusEnum = z.enum([

@@ -14,11 +14,14 @@ import { logger } from '../../lib/logger';
 import { CitationStyle, aiFormatConverterService } from '../../services/citation/ai-format-converter.service';
 import { ReferenceEntry, InTextCitation } from '../../services/citation/ai-citation-detector.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
+import { resolveDocumentSimple } from './document-resolver';
 
 export class CitationStyleController {
   /**
    * POST /api/v1/citation-management/document/:documentId/convert-style
    * Convert citation style
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async convertStyle(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -38,9 +41,20 @@ export class CitationStyleController {
         return;
       }
 
-      // Get document with tenant verification
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      // Get document with full relations using resolved ID
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: baseDoc.id, tenantId },
         include: {
           referenceListEntries: { orderBy: { sortKey: 'asc' } },
           citations: true
@@ -229,6 +243,8 @@ export class CitationStyleController {
   /**
    * POST /api/v1/citation-management/document/:documentId/validate-dois
    * Validate all DOIs in references
+   *
+   * NOTE: The :documentId param can be either a document ID or a job ID.
    */
   async validateDOIs(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -237,9 +253,20 @@ export class CitationStyleController {
 
       logger.info(`[CitationStyle] Validating DOIs for document ${documentId}`);
 
-      // Get document with tenant verification
+      // Resolve document (handles both document ID and job ID)
+      const baseDoc = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!baseDoc) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      // Get document with full relations using resolved ID
       const document = await prisma.editorialDocument.findFirst({
-        where: { id: documentId, tenantId },
+        where: { id: baseDoc.id, tenantId },
         include: {
           referenceListEntries: { orderBy: { sortKey: 'asc' } }
         }

@@ -153,6 +153,33 @@ class S3Service {
   isConfigured(): boolean {
     return !!this.bucket;
   }
+
+  /**
+   * Check if S3 is fully configured (bucket + credentials)
+   * Used by citation upload to determine if presigned URLs can be generated
+   */
+  isFullyConfigured(): boolean {
+    // Check bucket is set
+    if (!this.bucket) {
+      return false;
+    }
+
+    // Check if credentials are available (either explicit or via IAM role)
+    // When running on ECS with IAM role, credentials are injected automatically
+    // So we just verify bucket is set and trust AWS SDK credential chain
+    return true;
+  }
+
+  /**
+   * Get configuration status for debugging
+   */
+  getConfigStatus(): { bucket: boolean; region: string; credentialsType: string } {
+    return {
+      bucket: !!this.bucket,
+      region: config.s3Region || 'not-set',
+      credentialsType: config.awsAccessKeyId ? 'explicit' : 'iam-role',
+    };
+  }
 }
 
 export const s3Service = new S3Service();
