@@ -270,7 +270,7 @@ class AICitationDetectorService {
    * Analyze document for citations using AI
    * @param documentText - The document text to analyze (max 100K characters)
    * @param options - Analysis options
-   * @throws Error if document exceeds size limits or fails validation
+   * @throws Error if document exceeds size limits, fails validation, or AI service unavailable
    */
   async analyzeDocument(
     documentText: string,
@@ -280,6 +280,13 @@ class AICitationDetectorService {
     } = {}
   ): Promise<CitationAnalysis> {
     logger.info('[AI Citation Detector] Starting document analysis');
+
+    // Fail fast if AI service is not available
+    if (!claudeService.isAvailable()) {
+      const errorMsg = 'AI service unavailable: ANTHROPIC_API_KEY not configured';
+      logger.error(`[AI Citation Detector] ${errorMsg}`);
+      throw new Error(errorMsg);
+    }
 
     // Local accumulator - NOT instance state (safe for concurrent requests)
     const accumulatedUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
@@ -352,6 +359,7 @@ class AICitationDetectorService {
    * Detect all in-text citations using AI (NO REGEX)
    * @param documentText - Pre-sanitized document text
    * @returns Citations array and token usage for this call
+   * @throws Error if AI service is unavailable or API call fails
    */
   private async detectInTextCitations(documentText: string): Promise<{
     citations: InTextCitation[];
@@ -386,53 +394,50 @@ ${documentText}
 
 Return ONLY the JSON array, no explanations.`;
 
-    try {
-      const result = await claudeService.generateJSONWithUsage(prompt, {
-        model: 'sonnet',
-        temperature: 0.1,
-        maxTokens: 16384
-      });
+    // Call AI service - let errors propagate up
+    const result = await claudeService.generateJSONWithUsage(prompt, {
+      model: 'sonnet',
+      temperature: 0.1,
+      maxTokens: 16384
+    });
 
-      const usage: TokenUsage = result.usage
-        ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
-        : emptyUsage;
+    const usage: TokenUsage = result.usage
+      ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+      : emptyUsage;
 
-      const rawData = Array.isArray(result.data) ? result.data : [];
+    const rawData = Array.isArray(result.data) ? result.data : [];
 
-      // Validate AI response with Zod schema
-      const validation = aiCitationsArraySchema.safeParse(rawData);
-      if (!validation.success) {
-        logger.warn('[AI Citation Detector] AI response validation failed for citations:', validation.error.issues);
-        // Return empty array on validation failure - don't silently store malformed data
-        return { citations: [], usage };
-      }
-
-      const citations = validation.data.map((c, idx) => ({
-        id: `citation-${idx + 1}`,
-        text: c.text,
-        position: {
-          paragraph: c.paragraph,
-          sentence: 0,
-          startChar: c.startChar,
-          endChar: c.startChar + c.text.length
-        },
-        type: c.type,
-        format: c.format,
-        numbers: c.numbers,
-        context: c.context
-      }));
-
-      return { citations, usage };
-    } catch (error) {
-      logger.error('[AI Citation Detector] Failed to parse in-text citations:', error);
-      return { citations: [], usage: emptyUsage };
+    // Validate AI response with Zod schema
+    const validation = aiCitationsArraySchema.safeParse(rawData);
+    if (!validation.success) {
+      logger.warn('[AI Citation Detector] AI response validation failed for citations:', validation.error.issues);
+      // Return empty array on validation failure - don't silently store malformed data
+      return { citations: [], usage };
     }
+
+    const citations = validation.data.map((c, idx) => ({
+      id: `citation-${idx + 1}`,
+      text: c.text,
+      position: {
+        paragraph: c.paragraph,
+        sentence: 0,
+        startChar: c.startChar,
+        endChar: c.startChar + c.text.length
+      },
+      type: c.type,
+      format: c.format,
+      numbers: c.numbers,
+      context: c.context
+    }));
+
+    return { citations, usage };
   }
 
   /**
    * Extract reference list using AI (NO REGEX)
    * @param documentText - Pre-sanitized document text
    * @returns References array and token usage for this call
+   * @throws Error if AI service is unavailable or API call fails
    */
   private async extractReferenceList(documentText: string): Promise<{
     references: ReferenceEntry[];
@@ -469,52 +474,48 @@ ${documentText}
 
 Return ONLY the JSON array.`;
 
-    try {
-      const result = await claudeService.generateJSONWithUsage(prompt, {
-        model: 'sonnet',
-        temperature: 0.1,
-        maxTokens: 16384
-      });
+    // Call AI service - let errors propagate up
+    const result = await claudeService.generateJSONWithUsage(prompt, {
+      model: 'sonnet',
+      temperature: 0.1,
+      maxTokens: 16384
+    });
 
-      const usage: TokenUsage = result.usage
-        ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
-        : emptyUsage;
+    const usage: TokenUsage = result.usage
+      ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
+      : emptyUsage;
 
-      const rawData = Array.isArray(result.data) ? result.data : [];
+    const rawData = Array.isArray(result.data) ? result.data : [];
 
-      // Validate AI response with Zod schema
-      const validation = aiReferencesArraySchema.safeParse(rawData);
-      if (!validation.success) {
-        logger.warn('[AI Citation Detector] AI response validation failed for references:', validation.error.issues);
-        // Return empty array on validation failure - don't silently store malformed data
-        return { references: [], usage };
-      }
-
-      const references = validation.data.map((r, idx) => ({
-        id: `ref-${r.number ?? idx + 1}`,
-        number: r.number ?? idx + 1,
-        rawText: r.rawText,
-        components: {
-          authors: r.authors,
-          year: r.year,
-          title: r.title,
-          journal: r.journal,
-          volume: r.volume,
-          issue: r.issue,
-          pages: r.pages,
-          doi: r.doi,
-          url: r.url,
-          publisher: r.publisher,
-          editors: r.editors
-        },
-        citedBy: []
-      }));
-
-      return { references, usage };
-    } catch (error) {
-      logger.error('[AI Citation Detector] Failed to parse references:', error);
-      return { references: [], usage: emptyUsage };
+    // Validate AI response with Zod schema
+    const validation = aiReferencesArraySchema.safeParse(rawData);
+    if (!validation.success) {
+      logger.warn('[AI Citation Detector] AI response validation failed for references:', validation.error.issues);
+      // Return empty array on validation failure - don't silently store malformed data
+      return { references: [], usage };
     }
+
+    const references = validation.data.map((r, idx) => ({
+      id: `ref-${r.number ?? idx + 1}`,
+      number: r.number ?? idx + 1,
+      rawText: r.rawText,
+      components: {
+        authors: r.authors,
+        year: r.year,
+        title: r.title,
+        journal: r.journal,
+        volume: r.volume,
+        issue: r.issue,
+        pages: r.pages,
+        doi: r.doi,
+        url: r.url,
+        publisher: r.publisher,
+        editors: r.editors
+      },
+      citedBy: []
+    }));
+
+    return { references, usage };
   }
 
   /**

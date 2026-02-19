@@ -19,9 +19,13 @@ export interface StorageResult {
 class CitationStorageService {
   /**
    * Check if S3 storage is available and configured
+   * Works with both explicit credentials and IAM roles (ECS/EC2)
    */
   private isS3Available(): boolean {
-    return s3Service.isConfigured() && !!config.awsAccessKeyId && !!config.awsSecretAccessKey;
+    // s3Service.isConfigured() checks if bucket is set
+    // On ECS, credentials come from IAM role via AWS SDK credential chain
+    // We don't require explicit credentials - trust the SDK to handle auth
+    return s3Service.isConfigured();
   }
 
   /**
