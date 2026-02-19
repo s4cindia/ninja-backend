@@ -2,7 +2,7 @@
 -- Sprint 9: WorkflowInstance, BatchWorkflow, HITLDecision, RemediationItem, WorkflowEvent
 
 -- CreateTable: WorkflowInstance
-CREATE TABLE "WorkflowInstance" (
+CREATE TABLE IF NOT EXISTS "WorkflowInstance" (
     "id" TEXT NOT NULL,
     "fileId" TEXT NOT NULL,
     "batchId" TEXT,
@@ -20,7 +20,7 @@ CREATE TABLE "WorkflowInstance" (
 );
 
 -- CreateTable: BatchWorkflow
-CREATE TABLE "BatchWorkflow" (
+CREATE TABLE IF NOT EXISTS "BatchWorkflow" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "totalFiles" INTEGER NOT NULL,
@@ -34,7 +34,7 @@ CREATE TABLE "BatchWorkflow" (
 );
 
 -- CreateTable: HITLDecision
-CREATE TABLE "HITLDecision" (
+CREATE TABLE IF NOT EXISTS "HITLDecision" (
     "id" TEXT NOT NULL,
     "workflowId" TEXT NOT NULL,
     "gate" TEXT NOT NULL,
@@ -51,7 +51,7 @@ CREATE TABLE "HITLDecision" (
 );
 
 -- CreateTable: RemediationItem
-CREATE TABLE "RemediationItem" (
+CREATE TABLE IF NOT EXISTS "RemediationItem" (
     "id" TEXT NOT NULL,
     "workflowId" TEXT NOT NULL,
     "auditFindingId" TEXT NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE "RemediationItem" (
 );
 
 -- CreateTable: WorkflowEvent
-CREATE TABLE "WorkflowEvent" (
+CREATE TABLE IF NOT EXISTS "WorkflowEvent" (
     "id" TEXT NOT NULL,
     "workflowId" TEXT NOT NULL,
     "eventType" TEXT NOT NULL,
@@ -82,47 +82,65 @@ CREATE TABLE "WorkflowEvent" (
     CONSTRAINT "WorkflowEvent_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "WorkflowInstance_currentState_idx" ON "WorkflowInstance"("currentState");
-CREATE INDEX "WorkflowInstance_batchId_idx" ON "WorkflowInstance"("batchId");
-CREATE INDEX "WorkflowInstance_createdBy_idx" ON "WorkflowInstance"("createdBy");
-CREATE INDEX "WorkflowInstance_fileId_idx" ON "WorkflowInstance"("fileId");
+-- CreateIndex (with IF NOT EXISTS)
+CREATE INDEX IF NOT EXISTS "WorkflowInstance_currentState_idx" ON "WorkflowInstance"("currentState");
+CREATE INDEX IF NOT EXISTS "WorkflowInstance_batchId_idx" ON "WorkflowInstance"("batchId");
+CREATE INDEX IF NOT EXISTS "WorkflowInstance_createdBy_idx" ON "WorkflowInstance"("createdBy");
+CREATE INDEX IF NOT EXISTS "WorkflowInstance_fileId_idx" ON "WorkflowInstance"("fileId");
 
-CREATE INDEX "BatchWorkflow_status_idx" ON "BatchWorkflow"("status");
-CREATE INDEX "BatchWorkflow_createdBy_idx" ON "BatchWorkflow"("createdBy");
+CREATE INDEX IF NOT EXISTS "BatchWorkflow_status_idx" ON "BatchWorkflow"("status");
+CREATE INDEX IF NOT EXISTS "BatchWorkflow_createdBy_idx" ON "BatchWorkflow"("createdBy");
 
-CREATE INDEX "HITLDecision_workflowId_gate_idx" ON "HITLDecision"("workflowId", "gate");
-CREATE INDEX "HITLDecision_reviewerId_idx" ON "HITLDecision"("reviewerId");
+CREATE INDEX IF NOT EXISTS "HITLDecision_workflowId_gate_idx" ON "HITLDecision"("workflowId", "gate");
+CREATE INDEX IF NOT EXISTS "HITLDecision_reviewerId_idx" ON "HITLDecision"("reviewerId");
 
-CREATE INDEX "RemediationItem_workflowId_category_idx" ON "RemediationItem"("workflowId", "category");
-CREATE INDEX "RemediationItem_workflowId_requiresManual_manualFixApplied_idx" ON "RemediationItem"("workflowId", "requiresManual", "manualFixApplied");
+CREATE INDEX IF NOT EXISTS "RemediationItem_workflowId_category_idx" ON "RemediationItem"("workflowId", "category");
+CREATE INDEX IF NOT EXISTS "RemediationItem_workflowId_requiresManual_manualFixApplied_idx" ON "RemediationItem"("workflowId", "requiresManual", "manualFixApplied");
 
-CREATE INDEX "WorkflowEvent_workflowId_timestamp_idx" ON "WorkflowEvent"("workflowId", "timestamp");
+CREATE INDEX IF NOT EXISTS "WorkflowEvent_workflowId_timestamp_idx" ON "WorkflowEvent"("workflowId", "timestamp");
 
--- AddForeignKey
-ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_fileId_fkey"
-    FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent with DO blocks)
+DO $$ BEGIN
+    ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_fileId_fkey"
+        FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_batchId_fkey"
-    FOREIGN KEY ("batchId") REFERENCES "BatchWorkflow"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_batchId_fkey"
+        FOREIGN KEY ("batchId") REFERENCES "BatchWorkflow"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_createdBy_fkey"
-    FOREIGN KEY ("createdBy") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "WorkflowInstance" ADD CONSTRAINT "WorkflowInstance_createdBy_fkey"
+        FOREIGN KEY ("createdBy") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "BatchWorkflow" ADD CONSTRAINT "BatchWorkflow_createdBy_fkey"
-    FOREIGN KEY ("createdBy") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "BatchWorkflow" ADD CONSTRAINT "BatchWorkflow_createdBy_fkey"
+        FOREIGN KEY ("createdBy") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "HITLDecision" ADD CONSTRAINT "HITLDecision_workflowId_fkey"
-    FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "HITLDecision" ADD CONSTRAINT "HITLDecision_workflowId_fkey"
+        FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "HITLDecision" ADD CONSTRAINT "HITLDecision_reviewerId_fkey"
-    FOREIGN KEY ("reviewerId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "HITLDecision" ADD CONSTRAINT "HITLDecision_reviewerId_fkey"
+        FOREIGN KEY ("reviewerId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "RemediationItem" ADD CONSTRAINT "RemediationItem_workflowId_fkey"
-    FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "RemediationItem" ADD CONSTRAINT "RemediationItem_workflowId_fkey"
+        FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "RemediationItem" ADD CONSTRAINT "RemediationItem_fixedBy_fkey"
-    FOREIGN KEY ("fixedBy") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "RemediationItem" ADD CONSTRAINT "RemediationItem_fixedBy_fkey"
+        FOREIGN KEY ("fixedBy") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-ALTER TABLE "WorkflowEvent" ADD CONSTRAINT "WorkflowEvent_workflowId_fkey"
-    FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "WorkflowEvent" ADD CONSTRAINT "WorkflowEvent_workflowId_fkey"
+        FOREIGN KEY ("workflowId") REFERENCES "WorkflowInstance"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
