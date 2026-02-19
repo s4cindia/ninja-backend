@@ -36,7 +36,9 @@ async function processCitationDetection(
     throw new Error('Missing documentId in job options');
   }
 
+  logger.info(`[Citation Worker] ========================================`);
   logger.info(`[Citation Worker] Starting citation detection for document ${documentId}`);
+  logger.info(`[Citation Worker] Job ID: ${jobId}, Job Name: ${job.name}`);
 
   try {
     // Stage 1: Fetch document

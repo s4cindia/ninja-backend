@@ -53,7 +53,72 @@ export class CitationExportController {
         orderBy: { appliedAt: 'asc' }
       });
 
-      // Group changes by type
+      // Get citations with their reference links for frontend display
+      const citations = await prisma.citation.findMany({
+        where: { documentId: resolvedDocId },
+        include: {
+          referenceListEntries: {
+            include: { referenceListEntry: true }
+          }
+        },
+        orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }]
+      });
+
+      // Get references for building number map
+      const references = await prisma.referenceListEntry.findMany({
+        where: { documentId: resolvedDocId },
+        orderBy: { sortKey: 'asc' }
+      });
+
+      // Build ref ID to number map
+      const refIdToNumber = new Map<string, number>();
+      for (let i = 0; i < references.length; i++) {
+        refIdToNumber.set(references[i].id, i + 1);
+      }
+
+      // Build citation ID to change map
+      const citationToChange = new Map<string, typeof changes[0]>();
+      for (const change of changes) {
+        if (change.citationId) {
+          citationToChange.set(change.citationId, change);
+        }
+      }
+
+      // Format citations for frontend with change info
+      const formattedCitations = citations.map(c => {
+        const change = citationToChange.get(c.id);
+        const linkedRefIds = c.referenceListEntries?.map(link => link.referenceListEntryId) || [];
+        const linkedRefNumbers = linkedRefIds
+          .map(refId => refIdToNumber.get(refId))
+          .filter((num): num is number => num !== undefined);
+
+        // Determine change type
+        let changeType = 'unchanged';
+        if (change) {
+          if (change.changeType === 'RENUMBER') changeType = 'renumber';
+          else if (change.changeType === 'REFERENCE_STYLE_CONVERSION') changeType = 'style';
+          else if (change.changeType === 'DELETE') changeType = 'deleted';
+          else changeType = change.changeType.toLowerCase();
+        }
+
+        // Check if orphaned (has no valid reference)
+        const isOrphaned = linkedRefNumbers.length === 0 && c.citationType === 'NUMERIC';
+
+        return {
+          id: c.id,
+          rawText: c.rawText,
+          citationType: c.citationType,
+          paragraphIndex: c.paragraphIndex,
+          referenceNumber: linkedRefNumbers[0] || null,
+          linkedReferenceNumbers: linkedRefNumbers,
+          originalText: change?.beforeText || c.rawText,
+          newText: change?.afterText || c.rawText,
+          changeType,
+          isOrphaned
+        };
+      });
+
+      // Group changes by type (for backward compatibility)
       const changesByType: Record<string, Array<{
         id: string;
         beforeText: string | null;
@@ -80,7 +145,10 @@ export class CitationExportController {
         byType: Object.entries(changesByType).map(([type, items]) => ({
           type,
           count: items.length
-        }))
+        })),
+        totalCitations: citations.length,
+        citationsWithChanges: formattedCitations.filter(c => c.changeType !== 'unchanged').length,
+        orphanedCitations: formattedCitations.filter(c => c.isOrphaned).length
       };
 
       res.json({
@@ -90,7 +158,9 @@ export class CitationExportController {
           documentName: document.originalName,
           currentStyle: document.referenceListStyle,
           summary,
-          changes: changesByType
+          changes: changesByType,
+          // Add citations array for frontend track changes display
+          citations: formattedCitations
         }
       });
     } catch (error) {

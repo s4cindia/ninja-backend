@@ -564,13 +564,19 @@ Return ONLY the JSON array.`;
 
     const prompt = `TASK: Identify the citation style from these reference entries.
 
+KEY DISTINGUISHING FEATURES:
+- Vancouver/IEEE: Numbered refs, author initials after surname (Brown TB), abbreviated journals, volume;pages format (33:1877-1901), NO year in parentheses
+- APA: Authors with comma (Brown, T. B.), year in parentheses after authors (2020), full journal names, volume(issue), pages
+- MLA: Author. "Title." Journal, vol., no., year, pages. No parentheses around year.
+- Chicago: Author. "Title." Journal Volume, no. Issue (Year): pages.
+- Harvard: Author (Year) Title. Journal, Volume(Issue), pages.
+
 ---BEGIN REFERENCES---
 ${sampleRefs}
 ---END REFERENCES---
 
-Possible styles: APA, MLA, Chicago, Vancouver, IEEE, Harvard
-
-Return ONLY the style name (one word).`;
+Based on the formatting patterns above, identify the style.
+Return ONLY the style name (one word): APA, MLA, Chicago, Vancouver, IEEE, or Harvard`;
 
     const response = await claudeService.generate(prompt, {
       model: 'haiku',
@@ -582,11 +588,22 @@ Return ONLY the style name (one word).`;
       ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens }
       : emptyUsage;
 
-    // Sanitize the response - only accept known style names
-    const validStyles = ['APA', 'MLA', 'Chicago', 'Vancouver', 'IEEE', 'Harvard', 'Unknown'];
-    const detectedStyle = response.text.trim().replace(/[^a-zA-Z]/g, '');
+    // Extract style name from response - AI may return full sentence or just the style
+    const validStyles = ['APA', 'MLA', 'Chicago', 'Vancouver', 'IEEE', 'Harvard'];
+    const rawResponse = response.text.trim();
 
-    const style = validStyles.find(s => s.toLowerCase() === detectedStyle.toLowerCase()) || 'Unknown';
+    logger.info(`[AI Citation Detector] Style detection raw response: "${rawResponse}"`);
+
+    // Look for any valid style name within the response (case-insensitive)
+    let style = 'Unknown';
+    for (const validStyle of validStyles) {
+      if (rawResponse.toLowerCase().includes(validStyle.toLowerCase())) {
+        style = validStyle;
+        break;
+      }
+    }
+
+    logger.info(`[AI Citation Detector] Final detected style: ${style}`);
     return { style, usage };
   }
 
