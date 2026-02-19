@@ -492,7 +492,9 @@ DO $$ BEGIN
         FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- Add CITATION_DETECTION job type if not exists
+-- Add CITATION_DETECTION job type if not exists (idempotent with pg_enum check)
 DO $$ BEGIN
-    ALTER TYPE "JobType" ADD VALUE 'CITATION_DETECTION';
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel = 'CITATION_DETECTION' AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'JobType')) THEN
+        ALTER TYPE "JobType" ADD VALUE 'CITATION_DETECTION';
+    END IF;
+END $$;
