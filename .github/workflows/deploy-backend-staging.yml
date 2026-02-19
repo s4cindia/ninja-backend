@@ -32,18 +32,28 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      # Docker BuildKit with GitHub Actions cache (saves ~2-3 min)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      - name: Build and push image with caching
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Set image output
+        id: image-output
+        run: echo "image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      # Combined migration step (saves ~1-2 min by running resolve + deploy in one task)
       - name: Run Prisma migrations
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -70,33 +80,7 @@ jobs:
 
           echo "Registered migration task definition: $MIGRATION_TASK_DEF_ARN"
 
-          # First, try to resolve any failed migrations by marking them as rolled-back
-          RESOLVE_TASK_ARN=$(aws ecs run-task \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --task-definition $MIGRATION_TASK_DEF_ARN \
-            --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
-            --overrides '{
-              "containerOverrides": [{
-                "name": "ninja-backend",
-                "command": ["sh", "-c", "npx prisma migrate resolve --rolled-back 20260215000000_schema_optimization_indexes 2>&1 || true; npx prisma migrate resolve --rolled-back 20260216000000_remove_deprecated_fields 2>&1 || true; npx prisma migrate resolve --rolled-back 20260216054800_fix_acr_schema_conflicts 2>&1 || true; npx prisma migrate resolve --rolled-back 20260218000000_add_remediation_change_tables 2>&1 || true; npx prisma migrate resolve --rolled-back 20260218110000_add_citation_change_metadata 2>&1 || true; echo Done resolving failed migrations"]
-              }]
-            }' \
-            --query 'tasks[0].taskArn' \
-            --output text)
-
-          echo "Resolve task started: $RESOLVE_TASK_ARN"
-          aws ecs wait tasks-stopped --cluster ${{ env.ECS_CLUSTER }} --tasks $RESOLVE_TASK_ARN
-
-          # Get resolve task exit code (informational)
-          RESOLVE_EXIT=$(aws ecs describe-tasks \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --tasks $RESOLVE_TASK_ARN \
-            --query 'tasks[0].containers[0].exitCode' \
-            --output text)
-          echo "Resolve task exit code: $RESOLVE_EXIT"
-
-          # Run migration task with new image
+          # Combined: resolve failed migrations AND deploy in single task
           TASK_ARN=$(aws ecs run-task \
             --cluster ${{ env.ECS_CLUSTER }} \
             --task-definition $MIGRATION_TASK_DEF_ARN \
@@ -105,7 +89,7 @@ jobs:
             --overrides '{
               "containerOverrides": [{
                 "name": "ninja-backend",
-                "command": ["npx", "prisma", "migrate", "deploy"]
+                "command": ["sh", "-c", "echo Resolving any failed migrations... && npx prisma migrate resolve --rolled-back 20260215000000_schema_optimization_indexes 2>/dev/null || true && npx prisma migrate resolve --rolled-back 20260216000000_remove_deprecated_fields 2>/dev/null || true && npx prisma migrate resolve --rolled-back 20260216054800_fix_acr_schema_conflicts 2>/dev/null || true && npx prisma migrate resolve --rolled-back 20260218000000_add_remediation_change_tables 2>/dev/null || true && npx prisma migrate resolve --rolled-back 20260218110000_add_citation_change_metadata 2>/dev/null || true && echo Running migrations... && npx prisma migrate deploy"]
               }]
             }' \
             --query 'tasks[0].taskArn' \
@@ -180,7 +164,7 @@ jobs:
         with:
           task-definition: task-definition.json
           container-name: ninja-backend
-          image: ${{ steps.build-image.outputs.image }}
+          image: ${{ steps.image-output.outputs.image }}
 
       - name: Deploy to Amazon ECS
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
@@ -190,8 +174,7 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
 
-      - name: Wait for service to stabilize
-        run: sleep 30
+      # Removed extra sleep - wait-for-service-stability already handles it
 
       - name: Setup Node.js for tests
         uses: actions/setup-node@v4
