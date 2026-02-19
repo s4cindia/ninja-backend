@@ -139,11 +139,15 @@ jobs:
           ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
+          GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
         run: |
           # Build secrets array conditionally
           SECRETS_ARRAY='[{"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
           if [ -n "$ANTHROPIC_ARN" ]; then
             SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "ANTHROPIC_API_KEY", "valueFrom": "'"$ANTHROPIC_ARN"'"}'
+          fi
+          if [ -n "$GEMINI_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "GEMINI_API_KEY", "valueFrom": "'"$GEMINI_ARN"'"}'
           fi
           SECRETS_ARRAY="$SECRETS_ARRAY]"
 
@@ -161,7 +165,7 @@ jobs:
             # Add secrets section
             (.containerDefinitions[0].secrets) |= (
               (. // []) |
-              map(select(.name != "REDIS_URL" and .name != "ANTHROPIC_API_KEY")) +
+              map(select(.name != "REDIS_URL" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY")) +
               $secrets
             )
           ' task-definition.json > task-definition-updated.json
