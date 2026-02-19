@@ -140,9 +140,15 @@ jobs:
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
         run: |
+          # Build secrets array conditionally
+          SECRETS_ARRAY='[{"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
+          if [ -n "$ANTHROPIC_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "ANTHROPIC_API_KEY", "valueFrom": "'"$ANTHROPIC_ARN"'"}'
+          fi
+          SECRETS_ARRAY="$SECRETS_ARRAY]"
+
           jq --arg aceurl "$ACE_URL" \
-             --arg redisarn "$REDIS_ARN" \
-             --arg anthropicarn "$ANTHROPIC_ARN" '
+             --argjson secrets "$SECRETS_ARRAY" '
             # Update environment variables
             (.containerDefinitions[0].environment) |= (
               map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION")) +
@@ -156,10 +162,7 @@ jobs:
             (.containerDefinitions[0].secrets) |= (
               (. // []) |
               map(select(.name != "REDIS_URL" and .name != "ANTHROPIC_API_KEY")) +
-              [
-                {"name": "REDIS_URL", "valueFrom": $redisarn},
-                {"name": "ANTHROPIC_API_KEY", "valueFrom": $anthropicarn}
-              ]
+              $secrets
             )
           ' task-definition.json > task-definition-updated.json
           mv task-definition-updated.json task-definition.json
