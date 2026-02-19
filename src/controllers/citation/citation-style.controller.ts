@@ -15,6 +15,7 @@ import { CitationStyle, aiFormatConverterService } from '../../services/citation
 import { ReferenceEntry, InTextCitation } from '../../services/citation/ai-citation-detector.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
 import { resolveDocumentSimple } from './document-resolver';
+import { buildRefIdToNumberMap, getRefNumber } from '../../utils/citation.utils';
 
 export class CitationStyleController {
   /**
@@ -299,113 +300,115 @@ export class CitationStyleController {
         return;
       }
 
-      const validationResults: Array<{
-        referenceId: string;
-        referenceNumber: number;
-        doi: string;
-        valid: boolean;
-        metadata?: Record<string, unknown>;
-        discrepancies?: Array<{ field: string; referenceValue: string; crossrefValue: string }>;
-        error?: string;
-      }> = [];
+      // Build reference number map using shared utility
+      const refIdToNumber = buildRefIdToNumberMap(document.referenceListEntries);
 
-      // Build reference number map
-      const allRefs = document.referenceListEntries;
-      const refIdToNumber = new Map<string, number>();
-      for (let i = 0; i < allRefs.length; i++) {
-        refIdToNumber.set(allRefs[i].id, i + 1);
-      }
+      // Convert to ReferenceEntry format for validateReferences (which has rate limiting)
+      const referenceEntries: ReferenceEntry[] = referencesWithDOI.map((ref, index) => ({
+        id: ref.id,
+        number: getRefNumber(refIdToNumber, ref.id) ?? index + 1,
+        rawText: ref.formattedApa || ref.title,
+        components: {
+          authors: Array.isArray(ref.authors) ? ref.authors as string[] : [],
+          year: ref.year ?? undefined,
+          title: ref.title,
+          journal: ref.journalName ?? undefined,
+          volume: ref.volume ?? undefined,
+          issue: ref.issue ?? undefined,
+          pages: ref.pages ?? undefined,
+          doi: ref.doi ?? undefined,
+          url: ref.url ?? undefined
+        },
+        detectedStyle: 'APA',
+        citedBy: []
+      }));
 
-      for (const ref of referencesWithDOI) {
-        try {
-          const result = await doiValidationService.validateDOI(ref.doi!);
+      // Use validateReferences which has rate limiting (global + per-tenant)
+      const serviceResults = await doiValidationService.validateReferences(referenceEntries, tenantId);
 
-          // Find discrepancies between reference and CrossRef metadata
-          const discrepancies: Array<{ field: string; referenceValue: string; crossrefValue: string }> = [];
+      // Build validation results with discrepancies
+      const validationResults = serviceResults.map((result, index) => {
+        const ref = referencesWithDOI[index];
+        const refNumber = getRefNumber(refIdToNumber, ref.id);
 
-          if (result.valid && result.metadata) {
-            const meta = result.metadata;
+        // Build discrepancies from service result
+        const discrepancies: Array<{ field: string; referenceValue: string; crossrefValue: string }> = [];
 
-            // Compare title
-            if (ref.title && meta.title) {
-              const refTitle = ref.title.toLowerCase().trim();
-              const metaTitle = meta.title.toLowerCase().trim();
-              if (refTitle !== metaTitle && !refTitle.includes(metaTitle) && !metaTitle.includes(refTitle)) {
-                discrepancies.push({
-                  field: 'title',
-                  referenceValue: ref.title,
-                  crossrefValue: meta.title
-                });
-              }
-            }
+        if (result.hasValidDOI && result.metadata) {
+          const meta = result.metadata;
 
-            // Compare year
-            if (ref.year && meta.year) {
-              if (ref.year !== meta.year) {
-                discrepancies.push({
-                  field: 'year',
-                  referenceValue: ref.year,
-                  crossrefValue: meta.year
-                });
-              }
-            }
-
-            // Compare journal
-            if (ref.journalName && meta.journal) {
-              const refJournal = ref.journalName.toLowerCase().trim();
-              const metaJournal = meta.journal.toLowerCase().trim();
-              if (refJournal !== metaJournal && !refJournal.includes(metaJournal) && !metaJournal.includes(refJournal)) {
-                discrepancies.push({
-                  field: 'journal',
-                  referenceValue: ref.journalName,
-                  crossrefValue: meta.journal
-                });
-              }
-            }
-
-            // Compare volume
-            if (ref.volume && meta.volume) {
-              if (ref.volume !== meta.volume) {
-                discrepancies.push({
-                  field: 'volume',
-                  referenceValue: ref.volume,
-                  crossrefValue: meta.volume
-                });
-              }
-            }
-
-            // Compare pages
-            if (ref.pages && meta.pages) {
-              const refPages = ref.pages.replace(/[–—]/g, '-').trim();
-              const metaPages = meta.pages.replace(/[–—]/g, '-').trim();
-              if (refPages !== metaPages) {
-                discrepancies.push({
-                  field: 'pages',
-                  referenceValue: ref.pages,
-                  crossrefValue: meta.pages
-                });
-              }
+          // Compare title
+          if (ref.title && meta.title) {
+            const refTitle = ref.title.toLowerCase().trim();
+            const metaTitle = meta.title.toLowerCase().trim();
+            if (refTitle !== metaTitle && !refTitle.includes(metaTitle) && !metaTitle.includes(refTitle)) {
+              discrepancies.push({
+                field: 'title',
+                referenceValue: ref.title,
+                crossrefValue: meta.title
+              });
             }
           }
 
-          validationResults.push({
-            referenceId: ref.id,
-            referenceNumber: refIdToNumber.get(ref.id) || 0,
-            doi: ref.doi!,
-            valid: result.valid,
-            metadata: result.metadata as Record<string, unknown> | undefined,
-            discrepancies: discrepancies.length > 0 ? discrepancies : undefined
-          });
-        } catch (error) {
-          validationResults.push({
-            referenceId: ref.id,
-            referenceNumber: refIdToNumber.get(ref.id) || 0,
-            doi: ref.doi!,
-            valid: false,
-            error: error instanceof Error ? error.message : 'Validation failed'
-          });
+          // Compare year
+          if (ref.year && meta.year) {
+            if (ref.year !== meta.year) {
+              discrepancies.push({
+                field: 'year',
+                referenceValue: ref.year,
+                crossrefValue: meta.year
+              });
+            }
+          }
+
+          // Compare journal
+          if (ref.journalName && meta.journal) {
+            const refJournal = ref.journalName.toLowerCase().trim();
+            const metaJournal = meta.journal.toLowerCase().trim();
+            if (refJournal !== metaJournal && !refJournal.includes(metaJournal) && !metaJournal.includes(refJournal)) {
+              discrepancies.push({
+                field: 'journal',
+                referenceValue: ref.journalName,
+                crossrefValue: meta.journal
+              });
+            }
+          }
+
+          // Compare volume
+          if (ref.volume && meta.volume) {
+            if (ref.volume !== meta.volume) {
+              discrepancies.push({
+                field: 'volume',
+                referenceValue: ref.volume,
+                crossrefValue: meta.volume
+              });
+            }
+          }
+
+          // Compare pages
+          if (ref.pages && meta.pages) {
+            const refPages = ref.pages.replace(/[–—]/g, '-').trim();
+            const metaPages = meta.pages.replace(/[–—]/g, '-').trim();
+            if (refPages !== metaPages) {
+              discrepancies.push({
+                field: 'pages',
+                referenceValue: ref.pages,
+                crossrefValue: meta.pages
+              });
+            }
+          }
         }
-      }
+
+        return {
+          referenceId: ref.id,
+          referenceNumber: refNumber,
+          doi: ref.doi!,
+          valid: result.hasValidDOI,
+          metadata: result.metadata as Record<string, unknown> | undefined,
+          discrepancies: discrepancies.length > 0 ? discrepancies : undefined,
+          error: result.suggestions?.[0]
+        };
+      });
 
       const validCount = validationResults.filter(r => r.valid).length;
       const withDiscrepancies = validationResults.filter(r => r.discrepancies && r.discrepancies.length > 0).length;

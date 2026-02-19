@@ -15,6 +15,7 @@ import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { resolveDocumentSimple } from './document-resolver';
+import { buildRefIdToNumberMap, getRefNumber, isCitationOrphaned, formatCitationWithChanges } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
@@ -70,11 +71,8 @@ export class CitationExportController {
         orderBy: { sortKey: 'asc' }
       });
 
-      // Build ref ID to number map
-      const refIdToNumber = new Map<string, number>();
-      for (let i = 0; i < references.length; i++) {
-        refIdToNumber.set(references[i].id, i + 1);
-      }
+      // Build ref ID to number map using shared utility
+      const refIdToNumber = buildRefIdToNumberMap(references);
 
       // Build citation ID to change map
       const citationToChange = new Map<string, typeof changes[0]>();
@@ -84,38 +82,18 @@ export class CitationExportController {
         }
       }
 
-      // Format citations for frontend with change info
+      // Format citations for frontend with change info using shared utility
       const formattedCitations = citations.map(c => {
         const change = citationToChange.get(c.id);
-        const linkedRefIds = c.referenceListEntries?.map(link => link.referenceListEntryId) || [];
-        const linkedRefNumbers = linkedRefIds
-          .map(refId => refIdToNumber.get(refId))
-          .filter((num): num is number => num !== undefined);
-
-        // Determine change type
-        let changeType = 'unchanged';
-        if (change) {
-          if (change.changeType === 'RENUMBER') changeType = 'renumber';
-          else if (change.changeType === 'REFERENCE_STYLE_CONVERSION') changeType = 'style';
-          else if (change.changeType === 'DELETE') changeType = 'deleted';
-          else changeType = change.changeType.toLowerCase();
-        }
-
-        // Check if orphaned (has no valid reference)
-        const isOrphaned = linkedRefNumbers.length === 0 && c.citationType === 'NUMERIC';
-
-        return {
-          id: c.id,
-          rawText: c.rawText,
-          citationType: c.citationType,
-          paragraphIndex: c.paragraphIndex,
-          referenceNumber: linkedRefNumbers[0] || null,
-          linkedReferenceNumbers: linkedRefNumbers,
-          originalText: change?.beforeText || c.rawText,
-          newText: change?.afterText || c.rawText,
-          changeType,
-          isOrphaned
-        };
+        return formatCitationWithChanges(
+          c,
+          refIdToNumber,
+          change ? {
+            changeType: change.changeType,
+            beforeText: change.beforeText,
+            afterText: change.afterText
+          } : undefined
+        );
       });
 
       // Group changes by type (for backward compatibility)

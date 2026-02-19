@@ -76,7 +76,9 @@ function matchAuthorYearCitation(
           const hasMatchingAuthor = ref.authors.some(author => {
             // Extract last name (first part before comma, or first word)
             const lastName = author.split(/[,\s]/)[0].toLowerCase();
-            return lastName === authorName || lastName.includes(authorName) || authorName.includes(lastName);
+            // Use startsWith to handle abbreviations without false positives
+            // e.g., "Smith" matches "Smi" but not "S" matching "Smith"
+            return lastName === authorName || lastName.startsWith(authorName) || authorName.startsWith(lastName);
           });
 
           return hasMatchingAuthor;
