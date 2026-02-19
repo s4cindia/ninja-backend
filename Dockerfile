@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     pandoc \
     poppler-utils \
+    postgresql-client \
     unzip \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nodejs
