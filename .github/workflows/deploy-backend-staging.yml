@@ -153,9 +153,9 @@ jobs:
 
           jq --arg aceurl "$ACE_URL" \
              --argjson secrets "$SECRETS_ARRAY" '
-            # Update environment variables
+            # Update environment variables (remove API keys - they will be added as secrets)
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
