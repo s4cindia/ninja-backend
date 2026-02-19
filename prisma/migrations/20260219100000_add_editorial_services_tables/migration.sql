@@ -32,9 +32,19 @@ DO $$ BEGIN
     CREATE TYPE "ValidationSeverity" AS ENUM ('ERROR', 'WARNING', 'INFO');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- CreateEnum: ChangeType
+-- CreateEnum: PlagiarismMatchType
 DO $$ BEGIN
-    CREATE TYPE "ChangeType" AS ENUM ('FORMAT_CORRECTION', 'ORDER_CHANGE', 'STYLE_CONVERSION', 'MANUAL_EDIT', 'REVERT');
+    CREATE TYPE "PlagiarismMatchType" AS ENUM ('EXACT', 'PARAPHRASE', 'SIMILAR');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- CreateEnum: PlagiarismClassification
+DO $$ BEGIN
+    CREATE TYPE "PlagiarismClassification" AS ENUM ('PLAGIARISM', 'COMMON_KNOWLEDGE', 'SELF_CITATION', 'QUOTATION', 'FALSE_POSITIVE');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- CreateEnum: MatchReviewStatus
+DO $$ BEGIN
+    CREATE TYPE "MatchReviewStatus" AS ENUM ('PENDING', 'CONFIRMED', 'DISMISSED', 'DISPUTED');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- CreateTable: EditorialDocument
@@ -200,55 +210,65 @@ CREATE TABLE IF NOT EXISTS "CitationStyleGuide" (
 -- CreateTable: CitationValidation
 CREATE TABLE IF NOT EXISTS "CitationValidation" (
     "id" TEXT NOT NULL,
-    "citationId" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
-    "styleCode" TEXT NOT NULL,
-    "isValid" BOOLEAN NOT NULL DEFAULT false,
-    "errorCount" INTEGER NOT NULL DEFAULT 0,
-    "warningCount" INTEGER NOT NULL DEFAULT 0,
-    "infoCount" INTEGER NOT NULL DEFAULT 0,
-    "issues" JSONB NOT NULL DEFAULT '[]',
+    "citationId" TEXT NOT NULL,
+    "ruleCode" TEXT NOT NULL,
+    "severity" "ValidationSeverity" NOT NULL DEFAULT 'WARNING',
+    "message" TEXT NOT NULL,
+    "suggestion" TEXT,
+    "autoFixable" BOOLEAN NOT NULL DEFAULT false,
+    "status" TEXT NOT NULL DEFAULT 'pending',
+    "resolvedText" TEXT,
+    "resolvedBy" TEXT,
+    "resolvedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "CitationValidation_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: CitationChange
+-- CreateTable: CitationChange (matches actual schema)
 CREATE TABLE IF NOT EXISTS "CitationChange" (
     "id" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
     "citationId" TEXT,
-    "referenceId" TEXT,
-    "changeType" "ChangeType" NOT NULL,
-    "beforeValue" JSONB NOT NULL,
-    "afterValue" JSONB NOT NULL,
-    "description" TEXT,
-    "appliedBy" TEXT,
+    "changeType" TEXT NOT NULL,
+    "beforeText" TEXT NOT NULL,
+    "afterText" TEXT NOT NULL,
+    "metadata" JSONB,
+    "appliedBy" TEXT NOT NULL,
+    "appliedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "isReverted" BOOLEAN NOT NULL DEFAULT false,
     "revertedAt" TIMESTAMP(3),
-    "revertedBy" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "batchId" TEXT,
-    "reason" TEXT,
-    "sourceField" TEXT,
-    "targetField" TEXT,
 
     CONSTRAINT "CitationChange_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: ReferenceListEntry
+-- CreateTable: ReferenceListEntry (matches actual schema)
 CREATE TABLE IF NOT EXISTS "ReferenceListEntry" (
     "id" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
     "sortKey" TEXT NOT NULL,
-    "formattedText" TEXT NOT NULL,
-    "referenceStyle" TEXT NOT NULL,
-    "sourceReferenceId" TEXT,
-    "citationIds" TEXT[],
-    "position" INTEGER NOT NULL DEFAULT 0,
+    "authors" JSONB NOT NULL,
+    "year" TEXT,
+    "title" TEXT NOT NULL,
+    "sourceType" TEXT NOT NULL,
+    "journalName" TEXT,
+    "volume" TEXT,
+    "issue" TEXT,
+    "pages" TEXT,
+    "publisher" TEXT,
+    "doi" TEXT,
+    "url" TEXT,
+    "enrichmentSource" TEXT NOT NULL,
+    "enrichmentConfidence" DOUBLE PRECISION NOT NULL,
+    "formattedApa" TEXT,
+    "formattedMla" TEXT,
+    "formattedChicago" TEXT,
+    "formattedVancouver" TEXT,
+    "formattedIeee" TEXT,
+    "isEdited" BOOLEAN NOT NULL DEFAULT false,
+    "editedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "ReferenceListEntry_pkey" PRIMARY KEY ("id")
 );
@@ -287,13 +307,19 @@ CREATE TABLE IF NOT EXISTS "PlagiarismMatch" (
     "sourceChunkId" TEXT NOT NULL,
     "matchedChunkId" TEXT,
     "externalSource" TEXT,
-    "matchPercentage" DOUBLE PRECISION NOT NULL,
+    "externalUrl" TEXT,
+    "externalTitle" TEXT,
+    "matchType" "PlagiarismMatchType" NOT NULL,
+    "similarityScore" DOUBLE PRECISION NOT NULL,
+    "classification" "PlagiarismClassification" NOT NULL,
+    "confidence" DOUBLE PRECISION NOT NULL,
+    "aiReasoning" TEXT,
+    "sourceText" TEXT NOT NULL,
     "matchedText" TEXT NOT NULL,
-    "matchType" TEXT NOT NULL,
-    "isExcluded" BOOLEAN NOT NULL DEFAULT false,
-    "excludedBy" TEXT,
-    "excludedAt" TIMESTAMP(3),
-    "excludeReason" TEXT,
+    "status" "MatchReviewStatus" NOT NULL DEFAULT 'PENDING',
+    "reviewedBy" TEXT,
+    "reviewedAt" TIMESTAMP(3),
+    "reviewNotes" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "PlagiarismMatch_pkey" PRIMARY KEY ("id")
@@ -341,12 +367,11 @@ CREATE INDEX IF NOT EXISTS "Reference_doi_idx" ON "Reference"("doi");
 CREATE UNIQUE INDEX IF NOT EXISTS "CitationStyleGuide_code_key" ON "CitationStyleGuide"("code");
 CREATE INDEX IF NOT EXISTS "CitationStyleGuide_tenantId_idx" ON "CitationStyleGuide"("tenantId");
 
-CREATE UNIQUE INDEX IF NOT EXISTS "CitationValidation_citationId_styleCode_key" ON "CitationValidation"("citationId", "styleCode");
 CREATE INDEX IF NOT EXISTS "CitationValidation_documentId_idx" ON "CitationValidation"("documentId");
 CREATE INDEX IF NOT EXISTS "CitationValidation_citationId_idx" ON "CitationValidation"("citationId");
+CREATE INDEX IF NOT EXISTS "CitationValidation_status_idx" ON "CitationValidation"("status");
 
 CREATE INDEX IF NOT EXISTS "CitationChange_documentId_idx" ON "CitationChange"("documentId");
-CREATE INDEX IF NOT EXISTS "CitationChange_citationId_idx" ON "CitationChange"("citationId");
 CREATE INDEX IF NOT EXISTS "CitationChange_documentId_isReverted_idx" ON "CitationChange"("documentId", "isReverted");
 
 CREATE INDEX IF NOT EXISTS "ReferenceListEntry_documentId_idx" ON "ReferenceListEntry"("documentId");
@@ -361,6 +386,7 @@ CREATE INDEX IF NOT EXISTS "StyleViolation_isResolved_idx" ON "StyleViolation"("
 
 CREATE INDEX IF NOT EXISTS "PlagiarismMatch_documentId_idx" ON "PlagiarismMatch"("documentId");
 CREATE INDEX IF NOT EXISTS "PlagiarismMatch_sourceChunkId_idx" ON "PlagiarismMatch"("sourceChunkId");
+CREATE INDEX IF NOT EXISTS "PlagiarismMatch_status_idx" ON "PlagiarismMatch"("status");
 
 CREATE INDEX IF NOT EXISTS "EditorialReport_documentId_idx" ON "EditorialReport"("documentId");
 CREATE INDEX IF NOT EXISTS "EditorialReport_reportType_idx" ON "EditorialReport"("reportType");
@@ -412,13 +438,13 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    ALTER TABLE "CitationValidation" ADD CONSTRAINT "CitationValidation_citationId_fkey"
-        FOREIGN KEY ("citationId") REFERENCES "Citation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    ALTER TABLE "CitationValidation" ADD CONSTRAINT "CitationValidation_documentId_fkey"
+        FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    ALTER TABLE "CitationValidation" ADD CONSTRAINT "CitationValidation_documentId_fkey"
-        FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    ALTER TABLE "CitationValidation" ADD CONSTRAINT "CitationValidation_citationId_fkey"
+        FOREIGN KEY ("citationId") REFERENCES "Citation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
