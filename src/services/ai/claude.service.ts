@@ -168,18 +168,49 @@ class ClaudeService {
         finishReason: response.stop_reason || 'end_turn'
       };
     } catch (error: unknown) {
-      logger.error('[Claude Service] Generation failed:', error);
+      // Log detailed error information for debugging
+      const errorDetails = {
+        name: error instanceof Error ? error.name : 'Unknown',
+        message: error instanceof Error ? error.message : String(error),
+        status: (error as { status?: number }).status,
+        code: (error as { code?: string }).code,
+        cause: (error as { cause?: unknown }).cause
+      };
+      logger.error('[Claude Service] Generation failed:', errorDetails);
 
-      const apiError = error as { status?: number; message?: string };
+      const apiError = error as { status?: number; message?: string; code?: string };
+
       if (apiError.status === 429) {
         throw AppError.tooManyRequests('Claude API rate limit exceeded');
       }
 
       if (apiError.status === 401) {
-        throw AppError.internal('Invalid Claude API key');
+        throw AppError.internal('Invalid Claude API key - check ANTHROPIC_API_KEY');
       }
 
+      if (apiError.status === 403) {
+        throw AppError.internal('Claude API access forbidden - check API key permissions');
+      }
+
+      // Network/connection errors
+      if (apiError.code === 'ECONNREFUSED' || apiError.code === 'ENOTFOUND') {
+        throw AppError.internal('Cannot reach Claude API - check network connectivity');
+      }
+
+      if (apiError.code === 'ETIMEDOUT' || apiError.code === 'ESOCKETTIMEDOUT') {
+        throw AppError.internal('Claude API connection timed out');
+      }
+
+      // Check for connection error pattern (common with invalid keys or network issues)
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMessage.includes('Connection error') || errorMessage.includes('connect')) {
+        // Log API key presence (not the actual key) for debugging
+        const keyPresent = !!process.env.ANTHROPIC_API_KEY;
+        const keyPrefix = keyPresent ? process.env.ANTHROPIC_API_KEY?.substring(0, 10) + '...' : 'NOT SET';
+        logger.error(`[Claude Service] Connection error - API key present: ${keyPresent}, prefix: ${keyPrefix}`);
+        throw AppError.internal('Claude API connection error - verify API key format and network access');
+      }
+
       throw AppError.internal(`Claude API error: ${errorMessage}`);
     }
   }
@@ -237,6 +268,70 @@ class ClaudeService {
    */
   isAvailable(): boolean {
     return !!process.env.ANTHROPIC_API_KEY;
+  }
+
+  /**
+   * Validate API key format
+   * Anthropic API keys should start with 'sk-ant-'
+   */
+  validateApiKey(): { valid: boolean; error?: string } {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!apiKey) {
+      return { valid: false, error: 'ANTHROPIC_API_KEY not set' };
+    }
+
+    // Check for common issues
+    const trimmedKey = apiKey.trim();
+    if (trimmedKey !== apiKey) {
+      logger.warn('[Claude Service] API key has leading/trailing whitespace');
+    }
+
+    // Check for JSON wrapper (common Secrets Manager mistake)
+    if (trimmedKey.startsWith('{') || trimmedKey.startsWith('"')) {
+      return { valid: false, error: 'API key appears to be JSON-wrapped - use plain text value' };
+    }
+
+    // Check for expected prefix
+    if (!trimmedKey.startsWith('sk-ant-')) {
+      return { valid: false, error: 'API key should start with sk-ant-' };
+    }
+
+    // Check minimum length (Anthropic keys are typically 100+ chars)
+    if (trimmedKey.length < 50) {
+      return { valid: false, error: 'API key appears too short' };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Health check - validate configuration and test API connection
+   */
+  async healthCheck(): Promise<{ healthy: boolean; details: Record<string, unknown> }> {
+    const details: Record<string, unknown> = {
+      apiKeyPresent: !!process.env.ANTHROPIC_API_KEY,
+      apiKeyValidation: this.validateApiKey()
+    };
+
+    if (!details.apiKeyPresent || !(details.apiKeyValidation as { valid: boolean }).valid) {
+      return { healthy: false, details };
+    }
+
+    try {
+      // Make a minimal API call to verify connection
+      const response = await this.generate('Say "OK" and nothing else.', {
+        model: 'haiku',
+        maxTokens: 10,
+        temperature: 0
+      });
+      details.testResponse = response.text.substring(0, 50);
+      details.tokensUsed = response.usage?.totalTokens;
+      return { healthy: true, details };
+    } catch (error) {
+      details.connectionError = error instanceof Error ? error.message : String(error);
+      return { healthy: false, details };
+    }
   }
 }
 

@@ -1,11 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { geminiService } from '../services/ai/gemini.service';
+import { claudeService } from '../services/ai/claude.service';
 import { tokenCounterService } from '../services/ai/token-counter.service';
 import { aiConfig } from '../config/ai.config';
 
 const router = Router();
 
+// Gemini health check (original)
 router.get('/health', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isHealthy = await geminiService.healthCheck();
@@ -14,6 +16,50 @@ router.get('/health', async (req: Request, res: Response, next: NextFunction) =>
       data: {
         service: 'gemini',
         status: isHealthy ? 'healthy' : 'unhealthy',
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Claude health check (for citation detection)
+router.get('/health/claude', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const healthResult = await claudeService.healthCheck();
+    res.json({
+      success: true,
+      data: {
+        service: 'claude',
+        status: healthResult.healthy ? 'healthy' : 'unhealthy',
+        details: healthResult.details,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Combined health check for all AI services
+router.get('/health/all', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const [geminiHealthy, claudeResult] = await Promise.all([
+      geminiService.healthCheck().catch(() => false),
+      claudeService.healthCheck().catch((e) => ({ healthy: false, details: { error: String(e) } }))
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        gemini: {
+          status: geminiHealthy ? 'healthy' : 'unhealthy',
+        },
+        claude: {
+          status: claudeResult.healthy ? 'healthy' : 'unhealthy',
+          details: claudeResult.details,
+        },
         timestamp: new Date().toISOString(),
       },
     });

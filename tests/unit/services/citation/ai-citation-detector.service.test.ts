@@ -15,6 +15,9 @@ vi.mock('../../../../src/services/ai/claude.service', () => ({
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 }
     })),
     generate: vi.fn(),
+    isAvailable: vi.fn().mockReturnValue(true),
+    validateApiKey: vi.fn().mockReturnValue({ valid: true }),
+    healthCheck: vi.fn().mockResolvedValue({ healthy: true, details: {} }),
   },
 }));
 
@@ -124,20 +127,16 @@ describe('AICitationDetectorService', () => {
       expect(result.references).toHaveLength(0);
     });
 
-    it('should handle AI service errors gracefully', async () => {
+    it('should throw AI service errors for proper handling upstream', async () => {
       const documentText = 'Document with citations [1].';
 
-      // Mock generateJSONWithUsage to throw error - inner methods catch and return []
+      // Mock generateJSONWithUsage to throw error - errors now propagate up
       vi.mocked(claudeService.generateJSONWithUsage)
-        .mockRejectedValueOnce(new Error('AI service unavailable'))
         .mockRejectedValueOnce(new Error('AI service unavailable'));
-      vi.mocked(claudeService.generate).mockResolvedValue({ text: 'Unknown' } as any);
 
-      // Service gracefully handles errors - returns empty results
-      const result = await aiCitationDetectorService.analyzeDocument(documentText);
-      expect(result.inTextCitations).toHaveLength(0);
-      expect(result.references).toHaveLength(0);
-      expect(result.detectedStyle).toBe('Unknown');
+      // Service should throw the error for proper handling upstream
+      await expect(aiCitationDetectorService.analyzeDocument(documentText))
+        .rejects.toThrow('AI service unavailable');
     });
 
     it('should handle malformed AI responses for citations', async () => {
@@ -301,38 +300,46 @@ describe('AICitationDetectorService', () => {
   });
 
   describe('Error Handling', () => {
-    it('should handle rate limit errors gracefully', async () => {
+    it('should throw rate limit errors for proper handling', async () => {
       const documentText = 'Document [1].';
 
       const rateLimitError = new Error('Rate limit exceeded');
       (rateLimitError as any).status = 429;
 
-      // Both inner methods will fail
+      // First call will fail with rate limit
       vi.mocked(claudeService.generateJSONWithUsage)
-        .mockRejectedValueOnce(rateLimitError)
         .mockRejectedValueOnce(rateLimitError);
-      vi.mocked(claudeService.generate).mockResolvedValue({ text: 'Unknown' } as any);
 
-      // Service gracefully handles errors - returns empty results
-      const result = await aiCitationDetectorService.analyzeDocument(documentText);
-      expect(result.inTextCitations).toHaveLength(0);
-      expect(result.references).toHaveLength(0);
+      // Service should throw the error for proper handling upstream
+      await expect(aiCitationDetectorService.analyzeDocument(documentText))
+        .rejects.toThrow('Rate limit exceeded');
     });
 
-    it('should handle network timeout errors gracefully', async () => {
+    it('should throw network timeout errors for proper handling', async () => {
       const documentText = 'Document [1].';
 
       const timeoutError = new Error('ETIMEDOUT');
-      // Both inner methods will fail
+      // First call will fail with timeout
       vi.mocked(claudeService.generateJSONWithUsage)
-        .mockRejectedValueOnce(timeoutError)
         .mockRejectedValueOnce(timeoutError);
-      vi.mocked(claudeService.generate).mockResolvedValue({ text: 'Unknown' } as any);
 
-      // Service gracefully handles errors - returns empty results
-      const result = await aiCitationDetectorService.analyzeDocument(documentText);
-      expect(result.inTextCitations).toHaveLength(0);
-      expect(result.detectedStyle).toBe('Unknown');
+      // Service should throw the error for proper handling upstream
+      await expect(aiCitationDetectorService.analyzeDocument(documentText))
+        .rejects.toThrow('ETIMEDOUT');
+    });
+
+    it('should throw when AI service is unavailable', async () => {
+      const documentText = 'Document [1].';
+
+      // Mock isAvailable to return false
+      vi.mocked(claudeService.isAvailable).mockReturnValue(false);
+
+      // Service should throw immediately
+      await expect(aiCitationDetectorService.analyzeDocument(documentText))
+        .rejects.toThrow('AI service unavailable');
+
+      // Restore isAvailable for other tests
+      vi.mocked(claudeService.isAvailable).mockReturnValue(true);
     });
   });
 });
