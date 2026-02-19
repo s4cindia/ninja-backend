@@ -15,7 +15,7 @@ import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { resolveDocumentSimple } from './document-resolver';
-import { buildRefIdToNumberMap, getRefNumber, isCitationOrphaned, formatCitationWithChanges } from '../../utils/citation.utils';
+import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
