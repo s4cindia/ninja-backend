@@ -370,9 +370,7 @@ export const conformanceReviewSchema = z.object({
 export const acrSignoffSchema = z.object({
   attestation: z.object({
     text: z.string().min(1, 'Attestation text is required'),
-    confirmed: z.literal(true, {
-      errorMap: () => ({ message: 'Attestation must be confirmed' }),
-    }),
+    confirmed: z.literal(true).describe('Attestation must be confirmed'),
   }),
   notes: z.string().optional(),
 });
