@@ -1287,7 +1287,13 @@ export class CitationUploadController {
             }
 
             // Parse author-year from citation text like "(Smith, 2020)" or "(Brown et al., 2021)"
-            const authorYearMatches = matchAuthorYearCitation(citation.rawText, createdRefs);
+            // Convert authors from JsonValue to string[] for type safety
+            const refsWithAuthors = createdRefs.map(r => ({
+              id: r.id,
+              authors: Array.isArray(r.authors) ? r.authors as string[] : [],
+              year: r.year
+            }));
+            const authorYearMatches = matchAuthorYearCitation(citation.rawText, refsWithAuthors);
             for (const matchedRef of authorYearMatches) {
               linkData.push({
                 citationId: citation.id,
