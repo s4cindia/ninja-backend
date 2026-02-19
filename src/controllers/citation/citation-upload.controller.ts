@@ -34,6 +34,67 @@ function isAuthenticated(req: Request): req is Request & { user: { tenantId: str
          typeof req.user.id === 'string';
 }
 
+/**
+ * Match author-year citation text to reference entries
+ * Handles: "(Smith, 2020)", "(Brown et al., 2021)", "(Smith & Jones, 2020)"
+ * Also handles multiple citations: "(Brown et al., 2020; Bommasani et al., 2021)"
+ */
+function matchAuthorYearCitation(
+  citationText: string,
+  references: Array<{ id: string; authors: string[]; year: string | null }>
+): Array<{ id: string }> {
+  const matches: Array<{ id: string }> = [];
+
+  // Remove parentheses and split by semicolon for multiple citations
+  const innerText = citationText.replace(/^\(|\)$/g, '').trim();
+  const parts = innerText.split(/\s*;\s*/);
+
+  for (const part of parts) {
+    // Extract author name(s) and year from the citation part
+    // Patterns: "Smith, 2020", "Smith & Jones, 2020", "Smith et al., 2020"
+    const authorYearPatterns = [
+      // "Brown et al., 2020" or "Brown et al. 2020"
+      /^([A-Z][a-zA-Z'-]+)\s+et\s+al\.?,?\s*(\d{4})/i,
+      // "Smith & Jones, 2020"
+      /^([A-Z][a-zA-Z'-]+)\s*(?:&|and)\s*[A-Z][a-zA-Z'-]+,?\s*(\d{4})/i,
+      // "Smith, 2020"
+      /^([A-Z][a-zA-Z'-]+),?\s*(\d{4})/i,
+    ];
+
+    for (const pattern of authorYearPatterns) {
+      const match = part.match(pattern);
+      if (match) {
+        const authorName = match[1].toLowerCase();
+        const year = match[2];
+
+        // Find matching reference by author and year
+        const matchedRef = references.find(ref => {
+          if (!ref.authors || ref.authors.length === 0) return false;
+          if (ref.year !== year) return false;
+
+          // Check if any author's last name matches
+          const hasMatchingAuthor = ref.authors.some(author => {
+            // Extract last name (first part before comma, or first word)
+            const lastName = author.split(/[,\s]/)[0].toLowerCase();
+            // Use startsWith to handle abbreviations without false positives
+            // e.g., "Smith" matches "Smi" but not "S" matching "Smith"
+            return lastName === authorName || lastName.startsWith(authorName) || authorName.startsWith(lastName);
+          });
+
+          return hasMatchingAuthor;
+        });
+
+        if (matchedRef && !matches.some(m => m.id === matchedRef.id)) {
+          matches.push({ id: matchedRef.id });
+        }
+        break; // Found a pattern match, move to next part
+      }
+    }
+  }
+
+  return matches;
+}
+
 export class CitationUploadController {
   /**
    * POST /api/v1/citation-management/presign-upload
@@ -899,7 +960,15 @@ export class CitationUploadController {
       let document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
         include: {
-          citations: { include: { reference: true } },
+          citations: {
+            include: {
+              reference: true,
+              // Include the join table links to ReferenceListEntry
+              referenceListEntries: {
+                include: { referenceListEntry: true }
+              }
+            }
+          },
           job: true,
           documentContent: true
         }
@@ -911,7 +980,15 @@ export class CitationUploadController {
         document = await prisma.editorialDocument.findFirst({
           where: { jobId: documentId, tenantId },
           include: {
-            citations: { include: { reference: true } },
+            citations: {
+              include: {
+                reference: true,
+                // Include the join table links to ReferenceListEntry
+                referenceListEntries: {
+                  include: { referenceListEntry: true }
+                }
+              }
+            },
             job: true,
             documentContent: true
           }
@@ -927,8 +1004,10 @@ export class CitationUploadController {
       }
 
       // Get reference list entries with citation links
+      // Use document.id (the actual document ID) not documentId (which may be a job ID)
+      const actualDocumentId = document.id;
       const references = await prisma.referenceListEntry.findMany({
-        where: { documentId },
+        where: { documentId: actualDocumentId },
         orderBy: { sortKey: 'asc' },
         include: { citationLinks: true }
       });
@@ -936,7 +1015,7 @@ export class CitationUploadController {
       // Get reference style conversions
       const refStyleConversions = await prisma.citationChange.findMany({
         where: {
-          documentId,
+          documentId: actualDocumentId,
           changeType: 'REFERENCE_STYLE_CONVERSION',
           isReverted: false
         }
@@ -968,19 +1047,45 @@ export class CitationUploadController {
         citationCount: ref.citationLinks.length
       }));
 
+      // Build map from reference ID to reference number (1-based index)
+      const refIdToNumber = new Map<string, number>();
+      for (let i = 0; i < references.length; i++) {
+        refIdToNumber.set(references[i].id, i + 1);
+      }
+
       // Format citations for response
-      const formattedCitations = document.citations.map(c => ({
-        id: c.id,
-        rawText: c.rawText,
-        type: c.citationType,
-        position: {
-          paragraph: c.paragraphIndex,
-          startOffset: c.startOffset,
-          endOffset: c.endOffset
-        },
-        referenceId: c.referenceId,
-        confidence: c.confidence
-      }));
+      // Include linked reference IDs from the ReferenceListEntryCitation join table
+      const formattedCitations = document.citations.map(c => {
+        // Get linked reference IDs from the join table
+        const linkedRefIds = c.referenceListEntries?.map(link => link.referenceListEntryId) || [];
+        // Get linked reference numbers for display
+        const linkedRefNumbers = linkedRefIds
+          .map(refId => refIdToNumber.get(refId))
+          .filter((num): num is number => num !== undefined);
+
+        return {
+          id: c.id,
+          rawText: c.rawText,
+          type: c.citationType,
+          position: {
+            paragraph: c.paragraphIndex,
+            startOffset: c.startOffset,
+            endOffset: c.endOffset
+          },
+          // Use the first linked reference ID from the join table, or fallback to old referenceId
+          referenceId: linkedRefIds[0] || c.referenceId || null,
+          // referenceNumber for backward compatibility (first linked reference number)
+          referenceNumber: linkedRefNumbers[0] || null,
+          // Include all linked reference IDs for compound citations like [1, 2] or [3-5]
+          linkedReferenceIds: linkedRefIds,
+          linkedReferenceNumbers: linkedRefNumbers,
+          confidence: c.confidence
+        };
+      });
+
+      // Count citations with links for debugging
+      const citationsWithLinks = formattedCitations.filter(c => c.linkedReferenceIds.length > 0).length;
+      logger.info(`[Citation Upload] getAnalysis response: docId=${document.id}, status=${document.status}, style=${document.referenceListStyle}, citationsCount=${formattedCitations.length}, citationsWithLinks=${citationsWithLinks}, refsCount=${references.length}`);
 
       res.json({
         success: true,
@@ -1177,6 +1282,28 @@ export class CitationUploadController {
             }
           }
 
+          // Also link author-year (PARENTHETICAL) citations by matching author name and year
+          for (const citation of createdCitations) {
+            if (citation.citationType !== 'PARENTHETICAL') {
+              continue;
+            }
+
+            // Parse author-year from citation text like "(Smith, 2020)" or "(Brown et al., 2021)"
+            // Convert authors from JsonValue to string[] for type safety
+            const refsWithAuthors = createdRefs.map(r => ({
+              id: r.id,
+              authors: Array.isArray(r.authors) ? r.authors as string[] : [],
+              year: r.year
+            }));
+            const authorYearMatches = matchAuthorYearCitation(citation.rawText, refsWithAuthors);
+            for (const matchedRef of authorYearMatches) {
+              linkData.push({
+                citationId: citation.id,
+                referenceListEntryId: matchedRef.id
+              });
+            }
+          }
+
           if (linkData.length > 0) {
             // Use createMany with skipDuplicates to avoid errors on duplicate links
             await prisma.referenceListEntryCitation.createMany({
@@ -1282,7 +1409,7 @@ export class CitationUploadController {
    * GET /api/v1/citation-management/health
    * Health check for citation AI service (Claude)
    */
-  async healthCheck(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async healthCheck(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       logger.info('[Citation Upload] Health check requested');
 

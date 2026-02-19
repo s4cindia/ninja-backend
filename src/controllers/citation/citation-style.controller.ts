@@ -15,6 +15,7 @@ import { CitationStyle, aiFormatConverterService } from '../../services/citation
 import { ReferenceEntry, InTextCitation } from '../../services/citation/ai-citation-detector.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
 import { resolveDocumentSimple } from './document-resolver';
+import { buildRefIdToNumberMap, getRefNumber } from '../../utils/citation.utils';
 
 export class CitationStyleController {
   /**
@@ -178,9 +179,10 @@ export class CitationStyleController {
           });
 
           // Store conversion change for track changes
+          // Use document.id (the resolved actual document ID) not documentId (which may be a job ID)
           await prisma.citationChange.create({
             data: {
-              documentId,
+              documentId: document.id,
               citationId: change.referenceId,
               changeType: 'REFERENCE_STYLE_CONVERSION',
               beforeText: change.oldFormat,
@@ -201,10 +203,11 @@ export class CitationStyleController {
       }
 
       // Store in-text citation conversions for track changes
+      // Use document.id (the resolved actual document ID) not documentId (which may be a job ID)
       for (const citConversion of conversionResult.citationConversions) {
         await prisma.citationChange.create({
           data: {
-            documentId,
+            documentId: document.id,
             changeType: 'INTEXT_STYLE_CONVERSION',
             beforeText: citConversion.oldText,
             afterText: citConversion.newText,
@@ -215,8 +218,9 @@ export class CitationStyleController {
       }
 
       // Update document style
+      // Use document.id (the resolved actual document ID) not documentId (which may be a job ID)
       await prisma.editorialDocument.update({
-        where: { id: documentId },
+        where: { id: document.id },
         data: { referenceListStyle: targetStyle }
       });
 
@@ -296,34 +300,118 @@ export class CitationStyleController {
         return;
       }
 
-      const validationResults: Array<{
-        referenceId: string;
-        doi: string;
-        valid: boolean;
-        metadata?: Record<string, unknown>;
-        error?: string;
-      }> = [];
+      // Build reference number map using shared utility
+      const refIdToNumber = buildRefIdToNumberMap(document.referenceListEntries);
 
-      for (const ref of referencesWithDOI) {
-        try {
-          const result = await doiValidationService.validateDOI(ref.doi!);
-          validationResults.push({
-            referenceId: ref.id,
-            doi: ref.doi!,
-            valid: result.valid,
-            metadata: result.metadata as Record<string, unknown> | undefined
-          });
-        } catch (error) {
-          validationResults.push({
-            referenceId: ref.id,
-            doi: ref.doi!,
-            valid: false,
-            error: error instanceof Error ? error.message : 'Validation failed'
-          });
+      // Convert to ReferenceEntry format for validateReferences (which has rate limiting)
+      const referenceEntries: ReferenceEntry[] = referencesWithDOI.map((ref, index) => ({
+        id: ref.id,
+        number: getRefNumber(refIdToNumber, ref.id) ?? index + 1,
+        rawText: ref.formattedApa || ref.title,
+        components: {
+          authors: Array.isArray(ref.authors) ? ref.authors as string[] : [],
+          year: ref.year ?? undefined,
+          title: ref.title,
+          journal: ref.journalName ?? undefined,
+          volume: ref.volume ?? undefined,
+          issue: ref.issue ?? undefined,
+          pages: ref.pages ?? undefined,
+          doi: ref.doi ?? undefined,
+          url: ref.url ?? undefined
+        },
+        detectedStyle: 'APA',
+        citedBy: []
+      }));
+
+      // Use validateReferences which has rate limiting (global + per-tenant)
+      const serviceResults = await doiValidationService.validateReferences(referenceEntries, tenantId);
+
+      // Build validation results with discrepancies
+      const validationResults = serviceResults.map((result, index) => {
+        const ref = referencesWithDOI[index];
+        const refNumber = getRefNumber(refIdToNumber, ref.id);
+
+        // Build discrepancies from service result
+        const discrepancies: Array<{ field: string; referenceValue: string; crossrefValue: string }> = [];
+
+        if (result.hasValidDOI && result.metadata) {
+          const meta = result.metadata;
+
+          // Compare title
+          if (ref.title && meta.title) {
+            const refTitle = ref.title.toLowerCase().trim();
+            const metaTitle = meta.title.toLowerCase().trim();
+            if (refTitle !== metaTitle && !refTitle.includes(metaTitle) && !metaTitle.includes(refTitle)) {
+              discrepancies.push({
+                field: 'title',
+                referenceValue: ref.title,
+                crossrefValue: meta.title
+              });
+            }
+          }
+
+          // Compare year
+          if (ref.year && meta.year) {
+            if (ref.year !== meta.year) {
+              discrepancies.push({
+                field: 'year',
+                referenceValue: ref.year,
+                crossrefValue: meta.year
+              });
+            }
+          }
+
+          // Compare journal
+          if (ref.journalName && meta.journal) {
+            const refJournal = ref.journalName.toLowerCase().trim();
+            const metaJournal = meta.journal.toLowerCase().trim();
+            if (refJournal !== metaJournal && !refJournal.includes(metaJournal) && !metaJournal.includes(refJournal)) {
+              discrepancies.push({
+                field: 'journal',
+                referenceValue: ref.journalName,
+                crossrefValue: meta.journal
+              });
+            }
+          }
+
+          // Compare volume
+          if (ref.volume && meta.volume) {
+            if (ref.volume !== meta.volume) {
+              discrepancies.push({
+                field: 'volume',
+                referenceValue: ref.volume,
+                crossrefValue: meta.volume
+              });
+            }
+          }
+
+          // Compare pages
+          if (ref.pages && meta.pages) {
+            const refPages = ref.pages.replace(/[–—]/g, '-').trim();
+            const metaPages = meta.pages.replace(/[–—]/g, '-').trim();
+            if (refPages !== metaPages) {
+              discrepancies.push({
+                field: 'pages',
+                referenceValue: ref.pages,
+                crossrefValue: meta.pages
+              });
+            }
+          }
         }
-      }
+
+        return {
+          referenceId: ref.id,
+          referenceNumber: refNumber,
+          doi: ref.doi!,
+          valid: result.hasValidDOI,
+          metadata: result.metadata as Record<string, unknown> | undefined,
+          discrepancies: discrepancies.length > 0 ? discrepancies : undefined,
+          error: result.suggestions?.[0]
+        };
+      });
 
       const validCount = validationResults.filter(r => r.valid).length;
+      const withDiscrepancies = validationResults.filter(r => r.discrepancies && r.discrepancies.length > 0).length;
 
       res.json({
         success: true,
@@ -332,6 +420,7 @@ export class CitationStyleController {
           validated: validationResults.length,
           valid: validCount,
           invalid: validationResults.length - validCount,
+          withDiscrepancies,
           results: validationResults
         }
       });

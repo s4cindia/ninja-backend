@@ -15,6 +15,7 @@ import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { resolveDocumentSimple } from './document-resolver';
+import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
@@ -53,7 +54,49 @@ export class CitationExportController {
         orderBy: { appliedAt: 'asc' }
       });
 
-      // Group changes by type
+      // Get citations with their reference links for frontend display
+      const citations = await prisma.citation.findMany({
+        where: { documentId: resolvedDocId },
+        include: {
+          referenceListEntries: {
+            include: { referenceListEntry: true }
+          }
+        },
+        orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }]
+      });
+
+      // Get references for building number map
+      const references = await prisma.referenceListEntry.findMany({
+        where: { documentId: resolvedDocId },
+        orderBy: { sortKey: 'asc' }
+      });
+
+      // Build ref ID to number map using shared utility
+      const refIdToNumber = buildRefIdToNumberMap(references);
+
+      // Build citation ID to change map
+      const citationToChange = new Map<string, typeof changes[0]>();
+      for (const change of changes) {
+        if (change.citationId) {
+          citationToChange.set(change.citationId, change);
+        }
+      }
+
+      // Format citations for frontend with change info using shared utility
+      const formattedCitations = citations.map(c => {
+        const change = citationToChange.get(c.id);
+        return formatCitationWithChanges(
+          c,
+          refIdToNumber,
+          change ? {
+            changeType: change.changeType,
+            beforeText: change.beforeText,
+            afterText: change.afterText
+          } : undefined
+        );
+      });
+
+      // Group changes by type (for backward compatibility)
       const changesByType: Record<string, Array<{
         id: string;
         beforeText: string | null;
@@ -80,7 +123,10 @@ export class CitationExportController {
         byType: Object.entries(changesByType).map(([type, items]) => ({
           type,
           count: items.length
-        }))
+        })),
+        totalCitations: citations.length,
+        citationsWithChanges: formattedCitations.filter(c => c.changeType !== 'unchanged').length,
+        orphanedCitations: formattedCitations.filter(c => c.isOrphaned).length
       };
 
       res.json({
@@ -90,7 +136,9 @@ export class CitationExportController {
           documentName: document.originalName,
           currentStyle: document.referenceListStyle,
           summary,
-          changes: changesByType
+          changes: changesByType,
+          // Add citations array for frontend track changes display
+          citations: formattedCitations
         }
       });
     } catch (error) {

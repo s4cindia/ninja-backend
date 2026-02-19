@@ -37,6 +37,7 @@ async function processCitationDetection(
   }
 
   logger.info(`[Citation Worker] Starting citation detection for document ${documentId}`);
+  logger.info(`[Citation Worker] Job ID: ${jobId}, Job Name: ${job.name}`);
 
   try {
     // Stage 1: Fetch document
