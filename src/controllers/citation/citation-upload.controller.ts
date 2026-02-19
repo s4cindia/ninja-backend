@@ -22,6 +22,7 @@ import { docxProcessorService } from '../../services/citation/docx-processor.ser
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
 import { normalizeSuperscripts } from '../../utils/unicode';
+import { claudeService } from '../../services/ai/claude.service';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -344,7 +345,11 @@ export class CitationUploadController {
       });
 
       // Check if async processing is available (Redis configured)
-      const useAsyncProcessing = areQueuesAvailable();
+      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
+      const forceSync = process.env.CITATION_FORCE_SYNC === 'true';
+      const useAsyncProcessing = !forceSync && areQueuesAvailable();
+
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSync}`);
 
       if (useAsyncProcessing) {
         const citationQueue = getCitationQueue();
@@ -382,7 +387,7 @@ export class CitationUploadController {
         }
       }
 
-      // Fallback: Run synchronously if queue not available
+      // Fallback: Run synchronously if queue not available or forceSync=true
       logger.info(`[Citation Upload] Running synchronous analysis for ${document.id}`);
 
       await prisma.editorialDocument.update({
@@ -561,9 +566,13 @@ export class CitationUploadController {
       });
 
       // Check if async processing is available (Redis configured)
-      const useAsyncProcessing = areQueuesAvailable();
+      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
+      const forceSyncUpload = process.env.CITATION_FORCE_SYNC === 'true';
+      const useAsyncProcessingUpload = !forceSyncUpload && areQueuesAvailable();
 
-      if (useAsyncProcessing) {
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSyncUpload}`);
+
+      if (useAsyncProcessingUpload) {
         const citationQueue = getCitationQueue();
         if (citationQueue) {
           await citationQueue.add(
@@ -599,7 +608,7 @@ export class CitationUploadController {
         }
       }
 
-      // Fallback: Run synchronously if queue not available
+      // Fallback: Run synchronously if queue not available or forceSync=true
       logger.info(`[Citation Upload] Running synchronous analysis for ${document.id}`);
 
       await prisma.editorialDocument.update({
@@ -1266,6 +1275,50 @@ export class CitationUploadController {
     } catch (error) {
       logger.error('[Citation Upload] Get recent jobs failed:', error);
       next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/citation-management/health
+   * Health check for citation AI service (Claude)
+   */
+  async healthCheck(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      logger.info('[Citation Upload] Health check requested');
+
+      // Check Claude API key validation
+      const keyValidation = claudeService.validateApiKey();
+
+      // Check if Claude service is available
+      const isAvailable = claudeService.isAvailable();
+
+      // Get full health check from Claude service
+      const healthResult = await claudeService.healthCheck();
+
+      res.json({
+        success: true,
+        data: {
+          service: 'citation-ai',
+          provider: 'claude',
+          isAvailable,
+          keyValidation,
+          healthCheck: healthResult,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Health check failed:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      res.json({
+        success: false,
+        data: {
+          service: 'citation-ai',
+          provider: 'claude',
+          isAvailable: false,
+          error: errorMessage,
+          timestamp: new Date().toISOString(),
+        },
+      });
     }
   }
 

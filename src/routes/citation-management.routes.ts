@@ -178,6 +178,20 @@ router.get(
 );
 
 // ============================================
+// HEALTH CHECK
+// ============================================
+
+/**
+ * GET /api/v1/citation-management/health
+ * Health check for citation AI service (Claude)
+ * Returns API key validation status and test call result
+ */
+router.get(
+  '/health',
+  citationManagementController.healthCheck.bind(citationManagementController)
+);
+
+// ============================================
 // DOCUMENT MANAGEMENT
 // ============================================
 

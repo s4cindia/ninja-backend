@@ -280,6 +280,7 @@ class AICitationDetectorService {
     } = {}
   ): Promise<CitationAnalysis> {
     logger.info('[AI Citation Detector] Starting document analysis');
+    logger.info('[AI Citation Detector] Using Claude AI service for citation detection');
 
     // Fail fast if AI service is not available
     if (!claudeService.isAvailable()) {
@@ -287,6 +288,10 @@ class AICitationDetectorService {
       logger.error(`[AI Citation Detector] ${errorMsg}`);
       throw new Error(errorMsg);
     }
+
+    // Log API key validation status
+    const keyValidation = claudeService.validateApiKey();
+    logger.info(`[AI Citation Detector] Claude API key validation: ${JSON.stringify(keyValidation)}`);
 
     // Local accumulator - NOT instance state (safe for concurrent requests)
     const accumulatedUsage: TokenUsage = { promptTokens: 0, completionTokens: 0 };
@@ -405,15 +410,23 @@ Return ONLY the JSON array, no explanations.`;
       ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
       : emptyUsage;
 
+    // Log raw AI response for debugging
+    logger.info(`[AI Citation Detector] Raw citation response type: ${typeof result.data}`);
+    logger.info(`[AI Citation Detector] Raw citation response (preview): ${JSON.stringify(result.data).substring(0, 500)}`);
+
     const rawData = Array.isArray(result.data) ? result.data : [];
+    logger.info(`[AI Citation Detector] Citation array length after parsing: ${rawData.length}`);
 
     // Validate AI response with Zod schema
     const validation = aiCitationsArraySchema.safeParse(rawData);
     if (!validation.success) {
-      logger.warn('[AI Citation Detector] AI response validation failed for citations:', validation.error.issues);
+      logger.error('[AI Citation Detector] AI response validation FAILED for citations');
+      logger.error('[AI Citation Detector] Validation errors:', JSON.stringify(validation.error.issues, null, 2));
+      logger.error('[AI Citation Detector] Raw data that failed validation:', JSON.stringify(rawData).substring(0, 1000));
       // Return empty array on validation failure - don't silently store malformed data
       return { citations: [], usage };
     }
+    logger.info(`[AI Citation Detector] Citation validation PASSED with ${validation.data.length} citations`);
 
     const citations = validation.data.map((c, idx) => ({
       id: `citation-${idx + 1}`,
@@ -485,15 +498,23 @@ Return ONLY the JSON array.`;
       ? { promptTokens: result.usage.promptTokens, completionTokens: result.usage.completionTokens }
       : emptyUsage;
 
+    // Log raw AI response for debugging reference extraction issues
+    logger.info(`[AI Citation Detector] Raw reference extraction response type: ${typeof result.data}`);
+    logger.info(`[AI Citation Detector] Raw reference extraction response (preview): ${JSON.stringify(result.data).substring(0, 500)}`);
+
     const rawData = Array.isArray(result.data) ? result.data : [];
+    logger.info(`[AI Citation Detector] Reference array length after parsing: ${rawData.length}`);
 
     // Validate AI response with Zod schema
     const validation = aiReferencesArraySchema.safeParse(rawData);
     if (!validation.success) {
-      logger.warn('[AI Citation Detector] AI response validation failed for references:', validation.error.issues);
+      logger.error('[AI Citation Detector] AI response validation FAILED for references');
+      logger.error('[AI Citation Detector] Validation errors:', JSON.stringify(validation.error.issues, null, 2));
+      logger.error('[AI Citation Detector] Raw data that failed validation:', JSON.stringify(rawData).substring(0, 1000));
       // Return empty array on validation failure - don't silently store malformed data
       return { references: [], usage };
     }
+    logger.info(`[AI Citation Detector] Reference validation PASSED with ${validation.data.length} references`);
 
     const references = validation.data.map((r, idx) => ({
       id: `ref-${r.number ?? idx + 1}`,
