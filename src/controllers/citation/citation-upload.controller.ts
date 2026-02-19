@@ -216,15 +216,54 @@ export class CitationUploadController {
 
       logger.info(`[Citation Upload] Confirming upload: ${fileKey}`);
 
+      // Verify S3 is configured
+      if (!s3Service.isConfigured()) {
+        logger.error('[Citation Upload] S3 bucket not configured');
+        res.status(503).json({
+          success: false,
+          error: { code: 'S3_NOT_CONFIGURED', message: 'Storage service not configured. Contact administrator.' }
+        });
+        return;
+      }
+
       // Download file from S3 to process
       let fileBuffer: Buffer;
       try {
         fileBuffer = await s3Service.getFileBuffer(fileKey);
-      } catch (s3Error) {
-        logger.error(`[Citation Upload] Failed to retrieve file from S3: ${fileKey}`, s3Error);
-        res.status(400).json({
+      } catch (s3Error: unknown) {
+        const errorName = s3Error instanceof Error ? s3Error.name : 'UnknownError';
+        const errorMessage = s3Error instanceof Error ? s3Error.message : String(s3Error);
+        logger.error(`[Citation Upload] Failed to retrieve file from S3: ${fileKey}`, { errorName, errorMessage, s3Error });
+
+        // Return specific error codes based on S3 error type
+        const lowerMessage = errorMessage.toLowerCase();
+        if (errorName === 'NoSuchKey' || errorMessage.includes('NoSuchKey') || lowerMessage.includes('not found') || lowerMessage.includes('notfound')) {
+          res.status(400).json({
+            success: false,
+            error: { code: 'FILE_NOT_FOUND', message: 'File not found in S3. Upload may have failed.' }
+          });
+          return;
+        }
+
+        if (errorName === 'AccessDenied' || errorMessage.includes('AccessDenied')) {
+          res.status(503).json({
+            success: false,
+            error: { code: 'S3_ACCESS_DENIED', message: 'Storage access denied. Contact administrator.' }
+          });
+          return;
+        }
+
+        if (errorName === 'CredentialsProviderError' || errorMessage.includes('credentials')) {
+          res.status(503).json({
+            success: false,
+            error: { code: 'S3_CREDENTIALS_ERROR', message: 'Storage credentials not configured. Contact administrator.' }
+          });
+          return;
+        }
+
+        res.status(500).json({
           success: false,
-          error: { code: 'FILE_NOT_FOUND', message: 'File not found in S3. Upload may have failed.' }
+          error: { code: 'S3_ERROR', message: 'Failed to retrieve file from storage. Please try again.' }
         });
         return;
       }
