@@ -1401,7 +1401,7 @@ export class CitationUploadController {
    * GET /api/v1/citation-management/health
    * Health check for citation AI service (Claude)
    */
-  async healthCheck(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async healthCheck(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       logger.info('[Citation Upload] Health check requested');
 
