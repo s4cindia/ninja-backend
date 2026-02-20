@@ -5,6 +5,7 @@ import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
 import { JobType } from '../queues';
 import { workflowService } from '../services/workflow/workflow.service';
+import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { logger } from '../lib/logger';
 
 /**
@@ -96,15 +97,25 @@ export class JobController {
       const job = await queueService.getJobStatus(jobId, req.user.tenantId);
 
       // ═══════════════════════════════════════════════════════════════
-      // 🔄 Sprint 9: Automatically create workflow for this job
+      // 🔄 Sprint 9.1: Conditionally create workflow for this job
       // ═══════════════════════════════════════════════════════════════
       let workflowId: string | undefined;
       try {
         if (fileId) {
-          logger.info(`[Job Controller] Creating workflow for job ${jobId}, file ${fileId}`);
-          const workflow = await workflowService.createWorkflow(fileId, req.user.id);
-          workflowId = workflow.id;
-          logger.info(`[Job Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+          // Check if workflow is enabled for this tenant/job
+          const shouldCreate = await workflowConfigService.shouldCreateWorkflow(
+            req.user.tenantId,
+            options?.workflow
+          );
+
+          if (shouldCreate) {
+            logger.info(`[Job Controller] Creating workflow for job ${jobId}, file ${fileId}`);
+            const workflow = await workflowService.createWorkflow(fileId, req.user.id);
+            workflowId = workflow.id;
+            logger.info(`[Job Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+          } else {
+            logger.info(`[Job Controller] Workflow disabled for tenant ${req.user.tenantId}, skipping creation`);
+          }
         } else {
           logger.warn(`[Job Controller] No fileId provided, skipping workflow creation for job ${jobId}`);
         }
