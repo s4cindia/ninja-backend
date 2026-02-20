@@ -34,6 +34,7 @@ export const citationManagementController = {
   upload: citationUploadController.upload.bind(citationUploadController),
   getJobStatus: citationUploadController.getJobStatus.bind(citationUploadController),
   getRecentJobs: citationUploadController.getRecentJobs.bind(citationUploadController),
+  deleteJob: citationUploadController.deleteJob.bind(citationUploadController),
   getAnalysis: citationUploadController.getAnalysis.bind(citationUploadController),
   reanalyze: citationUploadController.reanalyze.bind(citationUploadController),
   analyzeDocument: citationUploadController.analyzeDocument.bind(citationUploadController),

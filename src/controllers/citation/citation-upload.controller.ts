@@ -1036,6 +1036,7 @@ export class CitationUploadController {
         authors: ref.authors,
         year: ref.year,
         title: ref.title,
+        sourceType: ref.sourceType,
         journalName: ref.journalName,
         volume: ref.volume,
         issue: ref.issue,
@@ -1206,13 +1207,30 @@ export class CitationUploadController {
       }
 
       // Store references using batch insert
-      const refData = analysis.references.map((ref, i) => ({
+      // Sort references by their AI-extracted number to ensure correct ordering
+      const sortedRefs = [...analysis.references].sort((a, b) => (a.number ?? 999) - (b.number ?? 999));
+
+      // Build mapping from AI-extracted (old) numbers to sequential (new) numbers
+      // E.g., if AI extracted refs numbered [1, 2, 3, 5, 8], we map: {1->1, 2->2, 3->3, 5->4, 8->5}
+      const oldToNewRefNumber = new Map<number, number>();
+      for (let i = 0; i < sortedRefs.length; i++) {
+        const oldNum = sortedRefs[i].number ?? (i + 1);
+        const newNum = i + 1;
+        oldToNewRefNumber.set(oldNum, newNum);
+        logger.debug(`[Citation Upload] Reference renumber mapping: ${oldNum} -> ${newNum}`);
+      }
+
+      const refData = sortedRefs.map((ref, i) => ({
         documentId,
+        // Use SEQUENTIAL sortKey (1, 2, 3, ...) to match display numbers
+        // This ensures citation [1] links to displayed Reference #1
         sortKey: String(i + 1).padStart(4, '0'),
         authors: ref.components?.authors || [],
         year: ref.components?.year || null,
         title: ref.components?.title || 'Untitled',
-        sourceType: 'journal' as const,
+        // Map AI sourceType to database value (default to 'journal_article')
+        // Convert to lowercase for frontend compatibility (color badges, labels)
+        sourceType: ref.sourceType?.toLowerCase() || 'journal_article',
         journalName: ref.components?.journal || null,
         volume: ref.components?.volume || null,
         issue: ref.components?.issue || null,
@@ -1226,6 +1244,41 @@ export class CitationUploadController {
 
       if (refData.length > 0) {
         await prisma.referenceListEntry.createMany({ data: refData });
+      }
+
+      // Update citation rawText with remapped numbers (if any mapping changes exist)
+      // E.g., [5, 8] becomes [4, 5] if refs were renumbered
+      const hasGaps = [...oldToNewRefNumber.entries()].some(([old, newNum]) => old !== newNum);
+      if (hasGaps && citationData.length > 0) {
+        logger.debug(`[Citation Upload] Reference numbers have gaps, remapping citations...`);
+        for (const citation of citationData) {
+          const originalText = citation.rawText;
+          citation.rawText = this.remapCitationNumbers(citation.rawText, oldToNewRefNumber);
+          if (originalText !== citation.rawText) {
+            logger.debug(`[Citation Upload] Remapped citation: "${originalText}" -> "${citation.rawText}"`);
+          }
+        }
+
+        // Also update DocumentContent (fullHtml/fullText) with remapped numbers
+        const docContent = await prisma.editorialDocumentContent.findUnique({
+          where: { documentId }
+        });
+        if (docContent) {
+          const updateData: { fullHtml?: string; fullText?: string } = {};
+          if (docContent.fullHtml) {
+            updateData.fullHtml = this.remapCitationNumbersInContent(docContent.fullHtml, oldToNewRefNumber);
+          }
+          if (docContent.fullText) {
+            updateData.fullText = this.remapCitationNumbersInContent(docContent.fullText, oldToNewRefNumber);
+          }
+          if (Object.keys(updateData).length > 0) {
+            await prisma.editorialDocumentContent.update({
+              where: { documentId },
+              data: updateData
+            });
+            logger.debug(`[Citation Upload] Updated document content with remapped citation numbers`);
+          }
+        }
       }
 
       // Create citation-reference links for numeric citations
@@ -1254,24 +1307,42 @@ export class CitationUploadController {
           // Create links for numeric and footnote citations only
           // Skip author-date citations (e.g., "(Smith, 2021)") to avoid linking year as reference number
           const linkData: { citationId: string; referenceListEntryId: string }[] = [];
-          for (const citation of createdCitations) {
-            // Only process numeric-style citations (NUMERIC, FOOTNOTE, ENDNOTE)
-            // Author-date citations would incorrectly match year (2021) as reference number
-            if (citation.citationType !== 'NUMERIC' &&
-                citation.citationType !== 'FOOTNOTE' &&
-                citation.citationType !== 'ENDNOTE') {
-              continue;
-            }
 
+          // Debug: Log refNumToId map (use debug level to avoid noise in production)
+          logger.debug(`[Citation Upload] refNumToId map has ${refNumToId.size} entries`);
+          for (const [num, id] of refNumToId) {
+            logger.debug(`[Citation Upload]   ${num} -> ${id}`);
+          }
+
+          for (const citation of createdCitations) {
             // Convert superscript characters to regular digits (¹²³ -> 123)
             const normalizedText = normalizeSuperscripts(citation.rawText);
 
-            // Extract all numbers from the citation (handles [1], [1, 2], [1-3], ¹, ², etc.)
-            const nums = normalizedText.match(/\d+/g);
-            if (nums) {
-              for (const numStr of nums) {
-                const num = parseInt(numStr, 10);
+            // Check if this looks like a numeric citation (contains brackets or just numbers)
+            // Skip author-year citations that only contain years (4-digit numbers in parentheses)
+            const isAuthorYear = citation.citationType === 'PARENTHETICAL' &&
+              /^\([A-Za-z]/.test(citation.rawText); // Starts with (Author
+
+            if (isAuthorYear) {
+              logger.debug(`[Citation Upload] Skipping author-year citation: "${citation.rawText}"`);
+              continue;
+            }
+
+            // Use expandNumericRange to properly handle ranges like [3-5] -> [3, 4, 5]
+            // This ensures all numbers in a range are linked, not just endpoints
+            const nums = this.expandNumericRange(normalizedText);
+            logger.debug(`[Citation Upload] Processing citation "${citation.rawText}" -> normalized: "${normalizedText}" -> expanded numbers: ${JSON.stringify(nums)}`);
+
+            if (nums.length > 0) {
+              for (const num of nums) {
+                // Skip if number looks like a year (1900-2100 range)
+                // Using year range instead of > 100 to support documents with 100+ references
+                if (num >= 1900 && num <= 2100) {
+                  logger.debug(`[Citation Upload]   Skipping ${num} (likely a year)`);
+                  continue;
+                }
                 const refId = refNumToId.get(num);
+                logger.debug(`[Citation Upload]   Number ${num} -> refId: ${refId || 'NOT FOUND'}`);
                 if (refId) {
                   linkData.push({
                     citationId: citation.id,
@@ -1406,6 +1477,105 @@ export class CitationUploadController {
   }
 
   /**
+   * DELETE /api/v1/citation-management/job/:jobId
+   * Delete a job and its associated document/data
+   */
+  async deleteJob(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+      const { tenantId, id: userId } = req.user;
+      const { jobId } = req.params;
+
+      logger.info(`[Citation Upload] Deleting job ${jobId}`);
+
+      // Find the job and verify ownership
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+          userId,
+          type: 'CITATION_DETECTION'
+        }
+      });
+
+      if (!job) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Job not found' }
+        });
+        return;
+      }
+
+      // Find associated document
+      const document = await prisma.editorialDocument.findFirst({
+        where: { jobId }
+      });
+
+      // Delete in correct order to respect foreign key constraints
+      await prisma.$transaction(async (tx) => {
+        if (document) {
+          // Delete citation changes
+          await tx.citationChange.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete citation-reference links
+          await tx.referenceListEntryCitation.deleteMany({
+            where: {
+              citation: { documentId: document.id }
+            }
+          });
+
+          // Delete citations
+          await tx.citation.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete reference list entries
+          await tx.referenceListEntry.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete document content
+          await tx.editorialDocumentContent.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete the document
+          await tx.editorialDocument.delete({
+            where: { id: document.id }
+          });
+        }
+
+        // Delete the job
+        await tx.job.delete({
+          where: { id: jobId }
+        });
+      });
+
+      logger.info(`[Citation Upload] Deleted job ${jobId} and associated data`);
+
+      res.json({
+        success: true,
+        data: {
+          message: 'Job deleted successfully',
+          jobId,
+          documentId: document?.id || null
+        }
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Delete job failed:', error);
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/v1/citation-management/health
    * Health check for citation AI service (Claude)
    */
@@ -1501,6 +1671,121 @@ export class CitationUploadController {
       }
     }
     return numbers;
+  }
+
+  /**
+   * Remap citation numbers in rawText using old-to-new mapping
+   * E.g., "[5, 8]" with mapping {5->4, 8->5} becomes "[4, 5]"
+   */
+  private remapCitationNumbers(rawText: string, oldToNewMap: Map<number, number>): string {
+    // Handle bracket citations [N] or [N, M] or [N-M]
+    let result = rawText.replace(/\[(\d+(?:\s*[-–—,]\s*\d+)*)\]/g, (_match, nums) => {
+      const remapped = this.remapNumberList(nums, oldToNewMap);
+      return `[${remapped}]`;
+    });
+
+    // Handle parenthetical numeric citations (N) or (N, M)
+    result = result.replace(/\((\d+(?:\s*[-–—,]\s*\d+)*)\)/g, (_match, nums) => {
+      // Skip if it looks like an author-year citation
+      if (/[A-Za-z]/.test(nums)) return _match;
+      const remapped = this.remapNumberList(nums, oldToNewMap);
+      return `(${remapped})`;
+    });
+
+    return result;
+  }
+
+  /**
+   * Remap citation numbers in full content (HTML/text)
+   */
+  private remapCitationNumbersInContent(content: string, oldToNewMap: Map<number, number>): string {
+    // Handle bracket citations [N]
+    let result = content.replace(/\[(\d+(?:\s*[-–—,]\s*\d+)*)\]/g, (_match, nums) => {
+      const remapped = this.remapNumberList(nums, oldToNewMap);
+      return `[${remapped}]`;
+    });
+
+    // Handle parenthetical numeric citations (N) - only pure numbers
+    result = result.replace(/\((\d+(?:\s*,\s*\d+)*)\)/g, (_match, nums) => {
+      const remapped = this.remapNumberList(nums, oldToNewMap);
+      return `(${remapped})`;
+    });
+
+    return result;
+  }
+
+  /**
+   * Remap a comma-separated or range of numbers using the mapping
+   * Skips numbers in year range (1900-2100) to avoid transforming years like (2023)
+   */
+  private remapNumberList(numStr: string, oldToNewMap: Map<number, number>): string {
+    const result: number[] = [];
+    const parts = numStr.split(/\s*,\s*/);
+
+    // Helper to check if a number looks like a year
+    const isLikelyYear = (n: number) => n >= 1900 && n <= 2100;
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      // Check for range
+      const rangeMatch = trimmed.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1], 10);
+        const end = parseInt(rangeMatch[2], 10);
+
+        // If range looks like years (e.g., 2020-2023), skip remapping entirely
+        if (isLikelyYear(start) && isLikelyYear(end)) {
+          result.push(start); // Preserve as-is - will be joined with range later
+          continue;
+        }
+
+        for (let i = start; i <= end && i < start + 100; i++) {
+          const newNum = oldToNewMap.get(i);
+          if (newNum !== undefined) {
+            result.push(newNum);
+          }
+        }
+      } else {
+        const num = parseInt(trimmed, 10);
+        if (!isNaN(num)) {
+          // Skip year-like numbers to avoid transforming "(2023)" or "(2020, 2021)"
+          if (isLikelyYear(num)) {
+            result.push(num); // Preserve original
+            continue;
+          }
+
+          const newNum = oldToNewMap.get(num);
+          if (newNum !== undefined) {
+            result.push(newNum);
+          } else {
+            // Keep original if no mapping (shouldn't happen but be safe)
+            result.push(num);
+          }
+        }
+      }
+    }
+
+    // Format result with ranges where possible
+    if (result.length === 0) return numStr;
+    if (result.length === 1) return result[0].toString();
+
+    const sorted = [...new Set(result)].sort((a, b) => a - b);
+    const ranges: string[] = [];
+    let rangeStart = sorted[0];
+    let rangeEnd = sorted[0];
+
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i] === rangeEnd + 1) {
+        rangeEnd = sorted[i];
+      } else {
+        ranges.push(rangeStart === rangeEnd ? `${rangeStart}` : `${rangeStart}-${rangeEnd}`);
+        rangeStart = sorted[i];
+        rangeEnd = sorted[i];
+      }
+    }
+    ranges.push(rangeStart === rangeEnd ? `${rangeStart}` : `${rangeStart}-${rangeEnd}`);
+
+    return ranges.join(', ');
   }
 }
 

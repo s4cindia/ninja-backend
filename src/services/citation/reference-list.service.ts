@@ -199,6 +199,48 @@ interface FormatReferenceResult {
   confidence: number;
 }
 
+// ============================================================================
+// Exported Helper Functions for Style Normalization
+// ============================================================================
+
+/**
+ * Normalize citation style string to internal style code
+ * Handles various input formats: "APA 7th", "apa", "APA", etc.
+ */
+export function normalizeStyleCode(style: string | null | undefined): string {
+  if (!style) return 'apa7';
+
+  const normalized = style.toLowerCase().trim();
+
+  // Direct matches for internal codes
+  if (['apa7', 'mla9', 'chicago17', 'vancouver', 'ieee'].includes(normalized)) {
+    return normalized;
+  }
+
+  // Map display names to internal codes
+  if (normalized.includes('apa')) return 'apa7';
+  if (normalized.includes('mla')) return 'mla9';
+  if (normalized.includes('chicago') || normalized.includes('turabian')) return 'chicago17';
+  if (normalized.includes('vancouver')) return 'vancouver';
+  if (normalized.includes('ieee')) return 'ieee';
+
+  return 'apa7'; // Default fallback
+}
+
+/**
+ * Get the database column name for formatted text based on style code
+ */
+export function getFormattedColumn(styleCode: string): string {
+  const columns: Record<string, string> = {
+    apa7: 'formattedApa',
+    mla9: 'formattedMla',
+    chicago17: 'formattedChicago',
+    vancouver: 'formattedVancouver',
+    ieee: 'formattedIeee',
+  };
+  return columns[styleCode] || 'formattedApa';
+}
+
 class ReferenceListService {
   async getReferenceList(
     documentId: string,

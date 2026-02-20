@@ -12,8 +12,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { Prisma, PrismaPromise } from '@prisma/client';
 import prisma from '../../lib/prisma';
+
+// Type for Prisma transaction client
+type TransactionClient = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
+import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 
@@ -30,6 +34,75 @@ function safeAuthorsArray(authors: unknown): string[] {
     return authors.split(',').map(s => s.trim()).filter(s => s.length > 0);
   }
   return [];
+}
+
+/**
+ * Parse authors from JSON value to Author array format
+ */
+function parseAuthorsToArray(authors: Prisma.JsonValue): Array<{ firstName?: string; lastName: string; suffix?: string }> {
+  if (!Array.isArray(authors)) return [];
+
+  return authors.map(a => {
+    if (typeof a === 'string') {
+      // Simple string author - treat as last name
+      return { lastName: a };
+    }
+    if (a && typeof a === 'object' && 'lastName' in a) {
+      return {
+        firstName: (a as { firstName?: string }).firstName,
+        lastName: (a as { lastName: string }).lastName,
+        suffix: (a as { suffix?: string }).suffix
+      };
+    }
+    return { lastName: String(a) };
+  });
+}
+
+/**
+ * Format authors for in-text citation based on citation style
+ * - APA: "Smith & Jones" (2 authors), "Smith et al." (3+)
+ * - Vancouver: "Smith, Jones" (comma separator)
+ * - Chicago/MLA: "Smith and Jones" (uses "and" instead of ampersand)
+ * - IEEE: Not typically used for in-text (uses numbers)
+ */
+function formatAuthorsForInTextCitation(
+  authors: Array<{ firstName?: string; lastName: string; suffix?: string }>,
+  styleCode?: string
+): string {
+  if (!authors || authors.length === 0) {
+    return 'Unknown';
+  }
+
+  // Extract last names, stripping any initials that may be included
+  // Handles: "Bommasani R" -> "Bommasani", "Bommasani, R." -> "Bommasani", "Bommasani EM" -> "Bommasani"
+  const lastNames = authors.map(a => {
+    const lastName = a.lastName || 'Unknown';
+    // Extract just the surname (first word before comma, space+initial, or space+uppercase)
+    // Pattern: Take everything before a comma, or before " X" where X is uppercase (initial)
+    const surnameMatch = lastName.match(/^([A-Za-z\-']+)/);
+    return surnameMatch ? surnameMatch[1] : lastName;
+  });
+  const style = (styleCode || 'apa').toLowerCase();
+
+  if (lastNames.length === 1) {
+    return lastNames[0];
+  }
+
+  // Style-specific formatting for 2 authors
+  if (lastNames.length === 2) {
+    if (style.includes('vancouver') || style.includes('ieee')) {
+      // Vancouver/IEEE typically use numbers, but if needed use comma
+      return `${lastNames[0]}, ${lastNames[1]}`;
+    } else if (style.includes('chicago') || style.includes('mla') || style.includes('turabian')) {
+      // Chicago/MLA use "and"
+      return `${lastNames[0]} and ${lastNames[1]}`;
+    }
+    // APA uses ampersand
+    return `${lastNames[0]} & ${lastNames[1]}`;
+  }
+
+  // 3+ authors: "First et al." (most styles)
+  return `${lastNames[0]} et al.`;
 }
 
 export class CitationReferenceController {
@@ -299,9 +372,11 @@ export class CitationReferenceController {
         const oldPosition = parseInt(allReferences[i].sortKey) || (i + 1);
         if (allReferences[i].id === referenceId) {
           oldToNewNumber.set(oldPosition, null);
+          logger.debug(`[CitationReference] Mapping: ${oldPosition} -> null (deleted)`);
         } else {
           newPosition++;
           oldToNewNumber.set(oldPosition, newPosition);
+          logger.debug(`[CitationReference] Mapping: ${oldPosition} -> ${newPosition}`);
         }
       }
 
@@ -311,10 +386,19 @@ export class CitationReferenceController {
 
       // Prepare citation updates before database operations
       // Track old->new text for creating CitationChange records
+      // Process citations based on citationType - NUMERIC citations need renumbering
       const citationUpdates: { id: string; oldRawText: string; newRawText: string }[] = [];
       for (const citation of citations) {
-        if (citation.citationType !== 'NUMERIC') continue;
+        // Use citationType field for semantic distinction
+        // Skip PARENTHETICAL (author-year) citations - they don't have numeric references
+        if (citation.citationType === 'PARENTHETICAL') {
+          continue;
+        }
+        // For NUMERIC and other types, check if citation contains any numbers
+        if (!/\d/.test(citation.rawText)) continue;
+
         const newRawText = this.updateCitationNumbersWithDeletion(citation.rawText, oldToNewNumber);
+        logger.debug(`[CitationReference] Citation update: length=${citation.rawText.length} -> ${newRawText.length}`);
         if (newRawText !== citation.rawText) {
           citationUpdates.push({ id: citation.id, oldRawText: citation.rawText, newRawText });
         }
@@ -398,8 +482,18 @@ export class CitationReferenceController {
           }
         });
 
-        // Create DELETE CitationChange records for affected in-text citations
+        // Create DELETE CitationChange records for TRULY ORPHANED in-text citations
+        // A citation is orphaned only if ALL its referenced numbers are deleted
+        // Citations that still reference other valid references get RENUMBER, not DELETE
         // This handles author-year style citations like "(Bender et al., 2021)"
+
+        // Build set of citation IDs that will be truly renumbered (exclude those marked as orphaned)
+        // Citations with newRawText === '[orphaned]' are not being renumbered, they're being deleted
+        const renumberedCitationIds = new Set(
+          citationUpdates
+            .filter(u => u.newRawText !== '[orphaned]')
+            .map(u => u.id)
+        );
 
         // First try explicit links, then fall back to text matching
         let affectedCitations = citations.filter(c => affectedCitationIds.includes(c.id));
@@ -423,8 +517,13 @@ export class CitationReferenceController {
           }
         }
 
+        // Only create DELETE changes for citations that are TRULY orphaned
+        // (not being renumbered to a new valid text)
+        const trulyOrphanedCitations = affectedCitations.filter(c => !renumberedCitationIds.has(c.id));
+        logger.info(`[CitationReference] ${affectedCitations.length} affected citations, ${trulyOrphanedCitations.length} truly orphaned`);
+
         // Store citation ID and position info for ID-based lookup during export
-        for (const citation of affectedCitations) {
+        for (const citation of trulyOrphanedCitations) {
           if (citation.rawText) {
             await tx.citationChange.create({
               data: {
@@ -510,6 +609,22 @@ export class CitationReferenceController {
         }
       });
 
+      // IMPORTANT: Rebuild citation-reference links after renumbering
+      // The links need to match the NEW reference numbers in citation text
+      // Use the actual document ID, not the param (which could be a job ID)
+      // Note: This runs after the main transaction commits. If it fails,
+      // the delete is complete but links may be stale.
+      const actualDocId = referenceToDelete.document.id;
+      let linksCreated = 0;
+      let linkRebuildWarning: string | undefined;
+      try {
+        linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId);
+      } catch (linkError) {
+        const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
+        linkRebuildWarning = `Citation-reference links may be stale. Error: ${errorMessage}. Refresh to reconcile.`;
+        logger.warn(`[CitationReference] rebuildCitationLinks failed - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
+      }
+
       res.json({
         success: true,
         data: {
@@ -517,12 +632,171 @@ export class CitationReferenceController {
           deletedReferenceId: referenceId,
           deletedPosition,
           affectedCitations: affectedCitationIds.length,
-          remainingReferences: remainingReferences.length
+          remainingReferences: remainingReferences.length,
+          linksRebuilt: linksCreated,
+          ...(linkRebuildWarning && { warning: linkRebuildWarning })
         }
       });
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * Rebuild citation-reference links based on current sortKey values
+   * Called after operations that change reference numbering (delete, reorder)
+   * @param tx Optional transaction client - if provided, runs within existing transaction
+   */
+  private async rebuildCitationLinks(
+    documentId: string,
+    tenantId: string,
+    tx?: TransactionClient
+  ): Promise<number> {
+    const db = tx || prisma;
+    const document = await db.editorialDocument.findFirst({
+      where: { id: documentId, tenantId },
+      include: {
+        citations: { orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }] },
+        referenceListEntries: { orderBy: { sortKey: 'asc' } }
+      }
+    });
+
+    if (!document) return 0;
+
+    // Build reference number to ID map from current sortKey values
+    const refNumToId = new Map<number, string>();
+    for (const ref of document.referenceListEntries) {
+      const num = parseInt(ref.sortKey) || 0;
+      refNumToId.set(num, ref.id);
+      logger.debug(`[CitationReference] rebuildLinks: ref ${num} -> ${ref.id.substring(0, 8)}`);
+    }
+
+    // Build author-year key to ID map for parenthetical citations
+    // Keys like "Smith 2020", "Smith & Jones 2021", "Smith et al. 2022"
+    // Known limitations (best-effort matching):
+    // - Multi-particle names ("van der Berg") may not match correctly
+    // - Non-standard punctuation variations may fail
+    // - Citations with page numbers ("Smith, 2020, p. 45") will not match
+    const authorYearToId = new Map<string, string>();
+    for (const ref of document.referenceListEntries) {
+      if (ref.authors && ref.year) {
+        // Use parseAuthorsToArray to handle both string and object author formats
+        const authors = parseAuthorsToArray(ref.authors);
+        if (authors.length > 0 && authors[0].lastName) {
+          // Extract surname only (handles "Bender EM" -> "Bender")
+          let firstAuthor = authors[0].lastName.split(',')[0].split(' ')[0].trim();
+          const year = ref.year;
+
+          // Single author: "Smith 2020"
+          if (authors.length === 1) {
+            const key = `${firstAuthor} ${year}`.toLowerCase();
+            authorYearToId.set(key, ref.id);
+            logger.info(`[CitationReference] rebuildLinks: Added key "${key}" -> ref ${ref.id.substring(0, 8)}`);
+          }
+          // Two authors: "Smith & Jones 2020", "Smith and Jones 2020"
+          else if (authors.length === 2) {
+            // Extract surname only (handles "Gebru T" -> "Gebru")
+            const secondAuthor = authors[1].lastName.split(',')[0].split(' ')[0].trim();
+            const keys = [
+              `${firstAuthor} & ${secondAuthor} ${year}`.toLowerCase(),
+              `${firstAuthor} and ${secondAuthor} ${year}`.toLowerCase(),
+              `${firstAuthor}, ${secondAuthor} ${year}`.toLowerCase()
+            ];
+            keys.forEach(key => authorYearToId.set(key, ref.id));
+            logger.info(`[CitationReference] rebuildLinks: Added keys for 2-author ref: "${keys[0]}" -> ref ${ref.id.substring(0, 8)}`);
+          }
+          // 3+ authors: "Smith et al. 2020"
+          else {
+            const keys = [
+              `${firstAuthor} et al. ${year}`.toLowerCase(),
+              `${firstAuthor} et al ${year}`.toLowerCase()
+            ];
+            keys.forEach(key => authorYearToId.set(key, ref.id));
+            logger.info(`[CitationReference] rebuildLinks: Added keys for 3+ author ref: "${keys[0]}" -> ref ${ref.id.substring(0, 8)}`);
+          }
+        }
+      }
+    }
+
+    // Create links for all citations
+    const linkData: { citationId: string; referenceListEntryId: string }[] = [];
+    logger.info(`[CitationReference] rebuildLinks: Processing ${document.citations.length} citations`);
+    for (const citation of document.citations) {
+      logger.info(`[CitationReference] rebuildLinks: Citation "${citation.rawText.substring(0, 40)}" type=${citation.citationType}`);
+      // Handle numeric citations (e.g., "[1]", "[1,2]", "[3-5]")
+      const nums = this.expandCitationNumbers(citation.rawText);
+      if (nums.length > 0) {
+        for (const num of nums) {
+          const refId = refNumToId.get(num);
+          if (refId) {
+            linkData.push({
+              citationId: citation.id,
+              referenceListEntryId: refId
+            });
+            logger.debug(`[CitationReference] rebuildLinks: citation "${citation.rawText}" -> ref ${num}`);
+          }
+        }
+      }
+      // Handle parenthetical author-year citations (e.g., "(Smith, 2020)", "(Smith & Jones, 2021)")
+      else if (citation.citationType === 'PARENTHETICAL') {
+        // Normalize citation text for matching:
+        // "(Bommasani, R. et al., 2026)" -> "bommasani et al. 2026"
+        const normalizedText = citation.rawText
+          .replace(/[()[\]]/g, '') // Remove brackets
+          .replace(/,\s*[A-Z]\.\s*/g, ' ') // Remove initials like ", R. " -> " "
+          .replace(/\s+[A-Z]\.\s*/g, ' ') // Remove initials like " R. " -> " "
+          .replace(/,\s*(\d{4})/g, ' $1') // "Smith, 2020" -> "Smith 2020"
+          .replace(/\s+/g, ' ') // Collapse multiple spaces
+          .trim()
+          .toLowerCase();
+
+        logger.info(`[CitationReference] rebuildLinks: Trying to match citation "${citation.rawText}" -> normalized: "${normalizedText}"`);
+
+        const refId = authorYearToId.get(normalizedText);
+        if (refId) {
+          linkData.push({
+            citationId: citation.id,
+            referenceListEntryId: refId
+          });
+          logger.info(`[CitationReference] rebuildLinks: MATCHED author-year citation "${citation.rawText}" -> ref ${refId.substring(0, 8)}`);
+        } else {
+          logger.warn(`[CitationReference] rebuildLinks: NO MATCH for citation "${citation.rawText}" (normalized: "${normalizedText}")`);
+        }
+      }
+    }
+
+    // Delete existing links and create new ones atomically
+    const refIds = document.referenceListEntries.map(r => r.id);
+
+    // If we have a transaction client, use it directly
+    // Otherwise wrap in a new transaction for atomicity
+    const doLinkUpdates = async (client: TransactionClient) => {
+      if (refIds.length > 0) {
+        await client.referenceListEntryCitation.deleteMany({
+          where: { referenceListEntryId: { in: refIds } }
+        });
+      }
+
+      if (linkData.length > 0) {
+        await client.referenceListEntryCitation.createMany({
+          data: linkData,
+          skipDuplicates: true
+        });
+      }
+    };
+
+    if (tx) {
+      // Already inside a transaction - use provided client directly
+      await doLinkUpdates(tx);
+    } else {
+      // No transaction provided - create new one for atomicity
+      await prisma.$transaction(async (newTx) => {
+        await doLinkUpdates(newTx);
+      });
+    }
+
+    logger.info(`[CitationReference] rebuildLinks: Created ${linkData.length} links for document ${documentId}`);
+    return linkData.length;
   }
 
   /**
@@ -616,23 +890,269 @@ export class CitationReferenceController {
         }
       });
 
+      // Regenerate formatted field based on document's reference list style
+      const styleCode = normalizeStyleCode(reference.document.referenceListStyle);
+      const formattedColumn = getFormattedColumn(styleCode);
+
+      logger.info(`[CitationReference] Regenerating formatted text for reference ${referenceId} with style ${styleCode} (column: ${formattedColumn})`);
+
+      // Build ReferenceEntry object for formatting
+      const entryForFormatting = {
+        id: updatedReference.id,
+        sortKey: updatedReference.sortKey,
+        authors: parseAuthorsToArray(updatedReference.authors),
+        year: updatedReference.year,
+        title: updatedReference.title,
+        sourceType: updatedReference.sourceType,
+        journalName: updatedReference.journalName,
+        volume: updatedReference.volume,
+        issue: updatedReference.issue,
+        pages: updatedReference.pages,
+        publisher: updatedReference.publisher,
+        doi: updatedReference.doi,
+        url: updatedReference.url,
+        enrichmentSource: updatedReference.enrichmentSource,
+        enrichmentConfidence: updatedReference.enrichmentConfidence
+      };
+
+      // Call formatReference to regenerate the formatted text
+      // On failure, continue without formatted text update but still create REFERENCE_EDIT records
+      let formatResult: { formatted: string } | null = null;
+      try {
+        formatResult = await referenceListService.formatReference(entryForFormatting, styleCode);
+        logger.info(`[CitationReference] Format result received successfully`);
+      } catch (formatError) {
+        logger.error(`[CitationReference] formatReference failed - continuing without formatted text update:`, formatError instanceof Error ? formatError : undefined);
+        // formatResult remains null, which is handled below
+      }
+
+      // Check if any field changed - store for potential revert
+      const oldAuthors = reference.authors;
+      const oldYear = reference.year;
+      const oldTitle = reference.title;
+      const oldPublisher = reference.publisher;
+      const newAuthors = updatedReference.authors;
+      const newYear = updatedReference.year;
+
+      const authorsChanged = JSON.stringify(oldAuthors) !== JSON.stringify(newAuthors);
+      const yearChanged = oldYear !== newYear;
+
+      logger.debug(`[CitationReference] Change detection: authorsChanged=${authorsChanged}, yearChanged=${yearChanged}, oldYear=${oldYear}, newYear=${newYear}`);
+
+      // If the old formatted text is missing, generate it now so export can find/replace
+      // This handles references that were uploaded before formatted text generation was implemented
+      let oldFormattedText = (reference as Record<string, unknown>)[formattedColumn] as string | null;
+      if (!oldFormattedText) {
+        logger.info(`[CitationReference] Old formatted text missing for ${formattedColumn}, generating from old values...`);
+        try {
+          const oldEntryForFormatting = {
+            id: reference.id,
+            sortKey: reference.sortKey,
+            authors: parseAuthorsToArray(oldAuthors),
+            year: oldYear,
+            title: oldTitle,
+            sourceType: reference.sourceType,
+            journalName: reference.journalName,
+            volume: reference.volume,
+            issue: reference.issue,
+            pages: reference.pages,
+            publisher: oldPublisher,
+            doi: reference.doi,
+            url: reference.url,
+            enrichmentSource: reference.enrichmentSource,
+            enrichmentConfidence: reference.enrichmentConfidence
+          };
+          const oldFormatResult = await referenceListService.formatReference(oldEntryForFormatting, styleCode);
+          oldFormattedText = oldFormatResult.formatted;
+          logger.info(`[CitationReference] Generated old formatted text: "${oldFormattedText?.substring(0, 80)}..."`);
+        } catch {
+          logger.warn(`[CitationReference] Failed to generate old formatted text, export may not update reference section`);
+        }
+      }
+
+      // Prepare reference edit metadata for change tracking
+      // Use the generated oldFormattedText for the current style column
+      const referenceEditMetadata = {
+        referenceId: referenceId,
+        oldValues: {
+          authors: oldAuthors,
+          year: oldYear,
+          title: oldTitle,
+          publisher: oldPublisher,
+          journalName: reference.journalName,
+          volume: reference.volume,
+          issue: reference.issue,
+          pages: reference.pages,
+          doi: reference.doi,
+          url: reference.url,
+          // Use generated oldFormattedText for the appropriate style column
+          formattedApa: formattedColumn === 'formattedApa' ? oldFormattedText : reference.formattedApa,
+          formattedMla: formattedColumn === 'formattedMla' ? oldFormattedText : reference.formattedMla,
+          formattedChicago: formattedColumn === 'formattedChicago' ? oldFormattedText : reference.formattedChicago,
+          formattedVancouver: formattedColumn === 'formattedVancouver' ? oldFormattedText : reference.formattedVancouver,
+          formattedIeee: formattedColumn === 'formattedIeee' ? oldFormattedText : reference.formattedIeee
+        },
+        newValues: {
+          authors: newAuthors,
+          year: newYear,
+          title: updatedReference.title,
+          publisher: updatedReference.publisher,
+          journalName: updatedReference.journalName,
+          volume: updatedReference.volume,
+          issue: updatedReference.issue,
+          pages: updatedReference.pages,
+          doi: updatedReference.doi,
+          url: updatedReference.url
+        }
+      };
+
+      // Wrap all DB writes in a single transaction to ensure consistency
+      // This includes: formatted text update (if available), change record creation, and in-text citation changes
+      const { finalReference, citationChangesCreated } = await prisma.$transaction(async (tx) => {
+        // Update the reference - conditionally include formatted text if formatResult exists
+        const updateData: Prisma.ReferenceListEntryUpdateInput = {
+          isEdited: true,
+          editedAt: new Date()
+        };
+
+        // Only update formatted text if formatting succeeded
+        if (formatResult) {
+          // Use type assertion since formattedColumn is a valid column name from getFormattedColumn
+          (updateData as Record<string, unknown>)[formattedColumn] = formatResult.formatted;
+        }
+
+        const finalRef = await tx.referenceListEntry.update({
+          where: { id: referenceId },
+          data: updateData
+        });
+
+        logger.info(`[CitationReference] Reference ${referenceId} updated${formatResult ? ' and reformatted' : ' (formatting skipped)'} with ${styleCode} style`);
+
+        // Create a reference edit change record (no citationId - this is for the reference itself)
+        await tx.citationChange.create({
+          data: {
+            documentId: resolvedDocId,
+            citationId: null, // null means this is a reference-level change
+            changeType: 'REFERENCE_EDIT',
+            beforeText: `Reference: ${oldTitle}`,
+            afterText: `Reference: ${updatedReference.title}`,
+            metadata: referenceEditMetadata as unknown as Prisma.InputJsonValue,
+            appliedBy: 'user',
+            isReverted: false
+          }
+        });
+        logger.info(`[CitationReference] Created REFERENCE_EDIT change record for reference ${referenceId}`);
+
+        let changesCreated = 0;
+
+        // If author or year changed, also create changes for linked in-text citations
+        if (authorsChanged || yearChanged) {
+          logger.info(`[CitationReference] Author/year changed, updating linked in-text citations`);
+
+          // Find citations linked to this reference
+          let linkedCitations = await tx.referenceListEntryCitation.findMany({
+            where: { referenceListEntryId: referenceId },
+            include: {
+              citation: true
+            }
+          });
+
+          logger.info(`[CitationReference] Found ${linkedCitations.length} linked citations`);
+
+          // If no links found but document has citations, rebuild links and retry
+          // This ensures links are always up-to-date even if they were missing or broken
+          if (linkedCitations.length === 0 && reference.document.citations.length > 0) {
+            logger.info(`[CitationReference] No links found, rebuilding citation-reference links...`);
+
+            // Rebuild links within the transaction
+            const linksCreated = await this.rebuildCitationLinks(resolvedDocId, tenantId, tx);
+            logger.info(`[CitationReference] Rebuilt ${linksCreated} links, retrying find...`);
+
+            // Retry finding linked citations
+            linkedCitations = await tx.referenceListEntryCitation.findMany({
+              where: { referenceListEntryId: referenceId },
+              include: {
+                citation: true
+              }
+            });
+            logger.info(`[CitationReference] After rebuild: Found ${linkedCitations.length} linked citations`);
+          }
+
+          // Format new author text for in-text citation
+          const newAuthorText = formatAuthorsForInTextCitation(parseAuthorsToArray(newAuthors), styleCode);
+          const processedCitationIds = new Set<string>();
+
+          // Process linked citations
+          for (const link of linkedCitations) {
+            const citation = link.citation;
+            logger.info(`[CitationReference] Processing linked citation ${citation.id}, type=${citation.citationType}`);
+
+            // Only update PARENTHETICAL (author-year) citations
+            if (citation.citationType === 'PARENTHETICAL') {
+              // Generate new citation text based on updated author/year
+              const newCitationText = `(${newAuthorText}, ${newYear || 'n.d.'})`;
+
+              // Create CitationChange record (beforeText uses actual citation.rawText)
+              await tx.citationChange.create({
+                data: {
+                  documentId: resolvedDocId,
+                  citationId: citation.id,
+                  changeType: 'REFERENCE_EDIT',
+                  beforeText: citation.rawText,
+                  afterText: newCitationText,
+                  metadata: { referenceId } as unknown as Prisma.InputJsonValue,
+                  appliedBy: 'user',
+                  isReverted: false
+                }
+              });
+
+              // IMPORTANT: Also update Citation.rawText so rebuildCitationLinks can match it later
+              // This ensures that if rebuildCitationLinks runs after a delete, the citation text
+              // matches the updated reference author/year
+              await tx.citation.update({
+                where: { id: citation.id },
+                data: { rawText: newCitationText }
+              });
+
+              processedCitationIds.add(citation.id);
+              changesCreated++;
+              logger.info(`[CitationReference] Created CitationChange and updated Citation.rawText for ${citation.id}: "${citation.rawText}" -> "${newCitationText}"`);
+            }
+          }
+
+          // Final warning if still no links after rebuild
+          if (linkedCitations.length === 0 && reference.document.citations.length > 0) {
+            logger.warn(`[CitationReference] Still no linked citations found for reference ${referenceId} after rebuild. Citation format may not match reference author/year.`);
+          }
+        }
+
+        return { finalReference: finalRef, citationChangesCreated: changesCreated };
+      });
+
       res.json({
         success: true,
         data: {
-          message: 'Reference updated successfully',
+          message: citationChangesCreated > 0
+            ? `Reference updated successfully. ${citationChangesCreated} in-text citation(s) will be updated.`
+            : 'Reference updated successfully',
           reference: {
-            id: updatedReference.id,
-            authors: updatedReference.authors,
-            year: updatedReference.year,
-            title: updatedReference.title,
-            journalName: updatedReference.journalName,
-            volume: updatedReference.volume,
-            issue: updatedReference.issue,
-            pages: updatedReference.pages,
-            doi: updatedReference.doi,
-            url: updatedReference.url,
-            publisher: updatedReference.publisher
-          }
+            id: finalReference.id,
+            authors: finalReference.authors,
+            year: finalReference.year,
+            title: finalReference.title,
+            journalName: finalReference.journalName,
+            volume: finalReference.volume,
+            issue: finalReference.issue,
+            pages: finalReference.pages,
+            doi: finalReference.doi,
+            url: finalReference.url,
+            publisher: finalReference.publisher,
+            // Only include formatted text if formatting succeeded
+            ...(formatResult ? { [formattedColumn]: formatResult.formatted } : {}),
+            isEdited: finalReference.isEdited,
+            editedAt: finalReference.editedAt
+          },
+          citationChangesCreated
         }
       });
     } catch (error) {
@@ -666,18 +1186,102 @@ export class CitationReferenceController {
 
       const resolvedDocId = document.id;
 
-      // Delete all CitationChange records for this document
-      const result = await prisma.citationChange.deleteMany({
-        where: { documentId: resolvedDocId }
+      // First, find and revert any REFERENCE_EDIT changes
+      // Order by appliedAt ASC to get the earliest (original) change first for each reference
+      const referenceEditChanges = await prisma.citationChange.findMany({
+        where: {
+          documentId: resolvedDocId,
+          changeType: 'REFERENCE_EDIT',
+          isReverted: false,
+          citationId: null // Reference-level changes have null citationId
+        },
+        orderBy: { appliedAt: 'asc' }
       });
 
-      logger.info(`[CitationReference] Deleted ${result.count} CitationChange records for document ${resolvedDocId}`);
+      // Group by referenceId and only use the EARLIEST change's oldValues (true original state)
+      // This handles the case where a reference was edited multiple times
+      const earliestChangeByRefId = new Map<string, typeof referenceEditChanges[0]>();
+      for (const change of referenceEditChanges) {
+        if (change.metadata && typeof change.metadata === 'object') {
+          const metadata = change.metadata as { referenceId?: string };
+          if (metadata.referenceId && !earliestChangeByRefId.has(metadata.referenceId)) {
+            earliestChangeByRefId.set(metadata.referenceId, change);
+          }
+        }
+      }
+
+      // Wrap entire revert + delete in a transaction to ensure atomicity
+      // If any revert fails, the entire operation rolls back
+      const { referencesReverted, changesDeleted } = await prisma.$transaction(async (tx) => {
+        let reverted = 0;
+
+        for (const [refId, change] of earliestChangeByRefId) {
+          const metadata = change.metadata as {
+            referenceId?: string;
+            oldValues?: {
+              authors?: unknown;
+              year?: string | null;
+              title?: string;
+              publisher?: string | null;
+              journalName?: string | null;
+              volume?: string | null;
+              issue?: string | null;
+              pages?: string | null;
+              doi?: string | null;
+              url?: string | null;
+              formattedApa?: string | null;
+              formattedMla?: string | null;
+              formattedChicago?: string | null;
+              formattedVancouver?: string | null;
+              formattedIeee?: string | null;
+            };
+          };
+
+          if (metadata.oldValues) {
+            // This will throw and rollback the entire transaction if it fails
+            await tx.referenceListEntry.update({
+              where: { id: refId },
+              data: {
+                authors: metadata.oldValues.authors as Prisma.InputJsonValue,
+                year: metadata.oldValues.year,
+                title: metadata.oldValues.title || '',
+                publisher: metadata.oldValues.publisher,
+                journalName: metadata.oldValues.journalName,
+                volume: metadata.oldValues.volume,
+                issue: metadata.oldValues.issue,
+                pages: metadata.oldValues.pages,
+                doi: metadata.oldValues.doi,
+                url: metadata.oldValues.url,
+                formattedApa: metadata.oldValues.formattedApa,
+                formattedMla: metadata.oldValues.formattedMla,
+                formattedChicago: metadata.oldValues.formattedChicago,
+                formattedVancouver: metadata.oldValues.formattedVancouver,
+                formattedIeee: metadata.oldValues.formattedIeee,
+                isEdited: false,
+                editedAt: null
+              }
+            });
+            reverted++;
+            logger.info(`[CitationReference] Reverted reference ${refId} to original values (from earliest change)`);
+          }
+        }
+
+        // Delete all CitationChange records for this document
+        const result = await tx.citationChange.deleteMany({
+          where: { documentId: resolvedDocId }
+        });
+
+        return { referencesReverted: reverted, changesDeleted: result.count };
+      });
+
+      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references for document ${resolvedDocId}`);
 
       res.json({
         success: true,
         data: {
-          message: `Reset complete. Deleted ${result.count} change records.`,
-          deletedCount: result.count
+          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s).`,
+          deletedCount: changesDeleted,
+          referencesReverted
         }
       });
     } catch (error) {
@@ -846,9 +1450,7 @@ export class CitationReferenceController {
         const num = parseInt(ref.sortKey) || 0;
         refIdToNumber.set(ref.id, num);
         refIdToEntry.set(ref.id, ref);
-        // Log each reference for debugging
-        const authorName = ref.formattedApa?.split('.')[0] || ref.title?.substring(0, 20) || 'Unknown';
-        logger.info(`[CitationReference] Reference: sortKey=${ref.sortKey} (num=${num}), id=${ref.id.substring(0, 8)}, author=${authorName}`);
+        logger.debug(`[CitationReference] Reference: sortKey=${ref.sortKey} (num=${num}), id=${ref.id.substring(0, 8)}`);
       }
 
       // 2. Build a map of citation ID -> linked reference IDs
@@ -868,7 +1470,7 @@ export class CitationReferenceController {
         // Get linked references via the junction table
         const linkedRefIds = citationToRefs.get(citation.id) || [];
 
-        logger.info(`[CitationReference] Citation: rawText="${citation.rawText}", pos=${citation.startOffset}, linkedRefs=${linkedRefIds.length}`);
+        logger.debug(`[CitationReference] Citation: id=${citation.id.substring(0, 8)}, pos=${citation.startOffset}, linkedRefs=${linkedRefIds.length}`);
 
         for (const refId of linkedRefIds) {
           const refNum = refIdToNumber.get(refId) || 0;
@@ -884,7 +1486,7 @@ export class CitationReferenceController {
         // Fallback: If no links exist, try to extract number from rawText (for numeric citations)
         if (linkedRefIds.length === 0 && citation.citationType === 'NUMERIC') {
           const nums = citation.rawText.match(/\d+/g);
-          logger.info(`[CitationReference]   -> FALLBACK: extracted nums=[${nums?.join(', ')}] from rawText`);
+          logger.debug(`[CitationReference]   -> FALLBACK: extracted ${nums?.length || 0} numbers`);
           if (nums) {
             for (const numStr of nums) {
               const num = parseInt(numStr, 10);
@@ -897,9 +1499,7 @@ export class CitationReferenceController {
                     citationId: citation.id,
                     refNum
                   });
-                  const entry = refIdToEntry.get(refId);
-                  const authorName = entry?.formattedApa?.split('.')[0] || 'Unknown';
-                  logger.info(`[CitationReference]   -> FALLBACK matched num=${num} to ref ${refId.substring(0, 8)} (${authorName})`);
+                  logger.debug(`[CitationReference]   -> FALLBACK matched num=${num} to ref ${refId.substring(0, 8)}`);
                   break;
                 }
               }
@@ -916,9 +1516,7 @@ export class CitationReferenceController {
       // Log the appearance order for debugging
       logger.info(`[CitationReference] Appearance order (sorted by position):`);
       for (const ra of referenceAppearances) {
-        const entry = refIdToEntry.get(ra.refId);
-        const authorName = entry?.formattedApa?.split('.')[0] || 'Unknown';
-        logger.info(`[CitationReference]   pos=${ra.position}: refNum=${ra.refNum} (${authorName})`);
+        logger.debug(`[CitationReference]   pos=${ra.position}: refNum=${ra.refNum}`);
       }
 
       // Build appearance order mapping using reference IDs
@@ -1067,14 +1665,25 @@ export class CitationReferenceController {
         await prisma.$transaction(operations);
       }
 
-      logger.info(`[CitationReference] Resequenced: ${referenceUpdates.length} references, ${citationUpdates.length} citations for document ${documentId}`);
+      // IMPORTANT: Rebuild citation-reference links after resequencing
+      // Note: This runs outside the main transaction. If it fails, the main changes
+      // are already committed but links may be stale. Log warning for reconciliation.
+      let linksCreated = 0;
+      try {
+        linksCreated = await this.rebuildCitationLinks(document.id, tenantId);
+      } catch (linkError) {
+        logger.warn(`[CitationReference] rebuildCitationLinks failed after resequence - links may be stale for document ${document.id}. Manual reconciliation may be needed.`, linkError instanceof Error ? linkError : undefined);
+      }
+
+      logger.info(`[CitationReference] Resequenced: ${referenceUpdates.length} references, ${citationUpdates.length} citations, ${linksCreated} links for document ${documentId}`);
 
       res.json({
         success: true,
         data: {
           message: 'References resequenced by appearance order',
           mapping: Object.fromEntries(oldToNewNumber),
-          citationsUpdated: citationUpdates.length
+          citationsUpdated: citationUpdates.length,
+          linksRebuilt: linksCreated
         }
       });
     } catch (error) {
@@ -1266,6 +1875,56 @@ export class CitationReferenceController {
     }
 
     return result;
+  }
+
+  /**
+   * Expand citation numbers including ranges
+   * E.g., "[3-5]" -> [3, 4, 5], "[1,2]" -> [1, 2], "[3–5]" (en-dash) -> [3, 4, 5]
+   *
+   * Only processes text that looks like numeric citations (starts with [ or contains only numbers).
+   * Excludes year-like numbers (1900-2099) to avoid matching parenthetical citations like "(Bender et al., 2021)".
+   */
+  private expandCitationNumbers(rawText: string): number[] {
+    // Only process if it looks like a numeric citation (starts with [ or is just numbers)
+    // Skip text that contains author names (letters) mixed with years
+    const trimmedText = rawText.trim();
+
+    // If text starts with [ it's likely a numeric citation like [1], [1,2], [3-5]
+    // If text starts with ( it might be parenthetical author-year like (Smith, 2020)
+    if (trimmedText.startsWith('(') && /[a-zA-Z]/.test(trimmedText)) {
+      // Contains letters + starts with ( = likely author-year citation, not numeric
+      return [];
+    }
+
+    const numbers: number[] = [];
+    // Remove brackets/parentheses
+    const inner = rawText.replace(/[\[\]()]/g, '');
+    const parts = inner.split(/\s*,\s*/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      // Check for range like "3-5" or "3–5" (en-dash) or "3—5" (em-dash)
+      const rangeMatch = trimmed.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1], 10);
+        const end = parseInt(rangeMatch[2], 10);
+        // Skip year-like numbers (typically reference lists don't have 1900+ references)
+        if (start >= 1900 || end >= 1900) {
+          continue;
+        }
+        // Expand range (with safety limit of 100)
+        for (let i = start; i <= end && i < start + 100; i++) {
+          numbers.push(i);
+        }
+      } else {
+        const num = parseInt(trimmed, 10);
+        // Skip NaN and year-like numbers (1900-2099)
+        if (!isNaN(num) && num < 1900) {
+          numbers.push(num);
+        }
+      }
+    }
+    return numbers;
   }
 }
 

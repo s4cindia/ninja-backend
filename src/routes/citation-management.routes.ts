@@ -283,6 +283,16 @@ router.get(
 );
 
 /**
+ * DELETE /api/v1/citation-management/job/:jobId
+ * Delete a job and its associated document/data
+ */
+router.delete(
+  '/job/:jobId',
+  validate(jobIdParamSchema),
+  citationManagementController.deleteJob.bind(citationManagementController)
+);
+
+/**
  * GET /api/v1/citation-management/document/:documentId/analysis
  * Get complete citation analysis results
  */

@@ -14,6 +14,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
+import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
 import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
@@ -79,8 +80,10 @@ export class CitationExportController {
       for (const change of changes) {
         if (change.citationId) {
           citationToChange.set(change.citationId, change);
+          logger.info(`[CitationExport] Preview: Mapped change for citationId=${change.citationId}, before="${change.beforeText?.substring(0, 40)}", after="${change.afterText?.substring(0, 40)}"`);
         }
       }
+      logger.info(`[CitationExport] Preview: ${citationToChange.size} citation changes mapped, ${citations.length} total citations`);
 
       // Format citations for frontend with change info using shared utility
       const formattedCitations = citations.map(c => {
@@ -216,15 +219,86 @@ export class CitationExportController {
         return;
       }
 
-      // Apply changes using docx processor
-      let modifiedBuffer: Buffer;
-      try {
-        modifiedBuffer = await docxProcessorService.applyChanges(originalBuffer, changes.map(c => ({
-          type: c.changeType as 'RENUMBER' | 'REFERENCE_STYLE_CONVERSION' | 'DELETE' | 'INSERT',
+      // Build the changes array for the docx processor
+      // This includes in-text citation changes AND reference section updates
+      const changesToApply: Array<{
+        type: string;
+        beforeText: string;
+        afterText: string;
+        metadata?: Record<string, unknown> | null;
+      }> = [];
+
+      // Process each change
+      for (const c of changes) {
+        // For REFERENCE_EDIT changes, we need to handle both:
+        // 1. In-text citation updates (citationId is set)
+        // 2. Reference section updates (citationId is null)
+        if (c.changeType === 'REFERENCE_EDIT' && !c.citationId && c.metadata) {
+          // This is a reference-level change - need to update the reference section
+          const metadata = c.metadata as Record<string, unknown>;
+          const referenceId = metadata.referenceId as string;
+          const oldValues = metadata.oldValues as Record<string, unknown>;
+
+          if (referenceId && oldValues) {
+            // Find the current reference to get the new formatted text
+            const currentRef = document.referenceListEntries.find(r => r.id === referenceId);
+            if (currentRef) {
+              // Determine which formatted field to use based on document style
+              // Using getFormattedColumn() which correctly handles all style codes
+              // (e.g., 'mla9' -> 'formattedMla', 'chicago17' -> 'formattedChicago')
+              const styleCode = normalizeStyleCode(document.referenceListStyle);
+              const formattedColumn = getFormattedColumn(styleCode);
+
+              // Use dynamic property access with the correct column name
+              const oldFormatted = (oldValues as Record<string, unknown>)[formattedColumn] as string | undefined;
+              const newFormatted = (currentRef as Record<string, unknown>)[formattedColumn] as string | undefined;
+
+              // If formatted text is missing, skip this change rather than using a fallback
+              // Fallback APA-style formatting would not match the actual DOCX content for
+              // non-APA documents (Vancouver, Chicago, MLA), causing silent export failures
+              if (!oldFormatted) {
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT change - old formatted text missing for style "${styleCode}". Reference ${referenceId} may not have been formatted.`);
+                continue;
+              }
+
+              if (!newFormatted) {
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT change - new formatted text missing for style "${styleCode}". Reference ${referenceId} may not have been re-formatted after edit.`);
+                continue;
+              }
+
+              if (oldFormatted !== newFormatted) {
+                logger.info(`[CitationExport] Adding reference section change: "${oldFormatted.substring(0, 50)}..." -> "${newFormatted.substring(0, 50)}..."`);
+                changesToApply.push({
+                  type: 'REFERENCE_SECTION_EDIT',
+                  beforeText: oldFormatted,
+                  afterText: newFormatted,
+                  metadata: { referenceId, isReferenceSection: true }
+                });
+              } else {
+                logger.info(`[CitationExport] Skipping reference section change - oldFormatted: ${!!oldFormatted}, newFormatted: ${!!newFormatted}, same: ${oldFormatted === newFormatted}`);
+              }
+            }
+          }
+          // Skip the generic push below - we've already handled this reference-level edit
+          continue;
+        }
+
+        // Add the change (in-text citation change or other types)
+        logger.info(`[CitationExport] Adding change: type=${c.changeType}, citationId=${c.citationId}, before="${c.beforeText?.substring(0, 50)}", after="${c.afterText?.substring(0, 50)}"`);
+        changesToApply.push({
+          type: c.changeType,
           beforeText: c.beforeText || '',
           afterText: c.afterText || '',
           metadata: c.metadata as Record<string, unknown> | null
-        })));
+        });
+      }
+
+      logger.info(`[CitationExport] Total changes to apply: ${changesToApply.length}`);
+
+      // Apply changes using docx processor
+      let modifiedBuffer: Buffer;
+      try {
+        modifiedBuffer = await docxProcessorService.applyChanges(originalBuffer, changesToApply);
       } catch (applyError) {
         logger.error('[CitationExport] Failed to apply changes:', applyError);
         // Return original document if modification fails
