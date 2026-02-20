@@ -99,6 +99,12 @@ export function formatCitationWithChanges(
     else changeType = change.changeType.toLowerCase();
   }
 
+  // A citation is NOT orphaned if:
+  // 1. It has valid reference links, OR
+  // 2. It has a REFERENCE_EDIT change (the link may be temporarily broken but we have the change record)
+  const hasValidChange = change && change.changeType === 'REFERENCE_EDIT';
+  const orphaned = hasValidChange ? false : isCitationOrphaned(linkedRefNumbers, citation.citationType);
+
   return {
     id: citation.id,
     rawText: citation.rawText,
@@ -110,6 +116,6 @@ export function formatCitationWithChanges(
     originalText: change?.beforeText || citation.rawText,
     newText: change?.afterText || citation.rawText,
     changeType,
-    isOrphaned: isCitationOrphaned(linkedRefNumbers, citation.citationType)
+    isOrphaned: orphaned
   };
 }

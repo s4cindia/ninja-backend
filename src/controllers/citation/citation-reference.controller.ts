@@ -73,8 +73,15 @@ function formatAuthorsForInTextCitation(
     return 'Unknown';
   }
 
-  // Extract last names
-  const lastNames = authors.map(a => a.lastName || 'Unknown');
+  // Extract last names, stripping any initials that may be included
+  // Handles: "Bommasani R" -> "Bommasani", "Bommasani, R." -> "Bommasani", "Bommasani EM" -> "Bommasani"
+  const lastNames = authors.map(a => {
+    const lastName = a.lastName || 'Unknown';
+    // Extract just the surname (first word before comma, space+initial, or space+uppercase)
+    // Pattern: Take everything before a comma, or before " X" where X is uppercase (initial)
+    const surnameMatch = lastName.match(/^([A-Za-z\-']+)/);
+    return surnameMatch ? surnameMatch[1] : lastName;
+  });
   const style = (styleCode || 'apa').toLowerCase();
 
   if (lastNames.length === 1) {
@@ -672,28 +679,40 @@ export class CitationReferenceController {
     // - Citations with page numbers ("Smith, 2020, p. 45") will not match
     const authorYearToId = new Map<string, string>();
     for (const ref of document.referenceListEntries) {
-      if (ref.authors && Array.isArray(ref.authors) && ref.year) {
-        const authors = ref.authors as Array<{ firstName?: string; lastName: string }>;
-        if (authors.length > 0) {
-          // Build multiple key variants for matching flexibility
-          const firstAuthor = authors[0].lastName;
+      if (ref.authors && ref.year) {
+        // Use parseAuthorsToArray to handle both string and object author formats
+        const authors = parseAuthorsToArray(ref.authors);
+        if (authors.length > 0 && authors[0].lastName) {
+          // Extract surname only (handles "Bender EM" -> "Bender")
+          let firstAuthor = authors[0].lastName.split(',')[0].split(' ')[0].trim();
           const year = ref.year;
 
           // Single author: "Smith 2020"
           if (authors.length === 1) {
-            authorYearToId.set(`${firstAuthor} ${year}`.toLowerCase(), ref.id);
+            const key = `${firstAuthor} ${year}`.toLowerCase();
+            authorYearToId.set(key, ref.id);
+            logger.info(`[CitationReference] rebuildLinks: Added key "${key}" -> ref ${ref.id.substring(0, 8)}`);
           }
           // Two authors: "Smith & Jones 2020", "Smith and Jones 2020"
           else if (authors.length === 2) {
-            const secondAuthor = authors[1].lastName;
-            authorYearToId.set(`${firstAuthor} & ${secondAuthor} ${year}`.toLowerCase(), ref.id);
-            authorYearToId.set(`${firstAuthor} and ${secondAuthor} ${year}`.toLowerCase(), ref.id);
-            authorYearToId.set(`${firstAuthor}, ${secondAuthor} ${year}`.toLowerCase(), ref.id);
+            // Extract surname only (handles "Gebru T" -> "Gebru")
+            const secondAuthor = authors[1].lastName.split(',')[0].split(' ')[0].trim();
+            const keys = [
+              `${firstAuthor} & ${secondAuthor} ${year}`.toLowerCase(),
+              `${firstAuthor} and ${secondAuthor} ${year}`.toLowerCase(),
+              `${firstAuthor}, ${secondAuthor} ${year}`.toLowerCase()
+            ];
+            keys.forEach(key => authorYearToId.set(key, ref.id));
+            logger.info(`[CitationReference] rebuildLinks: Added keys for 2-author ref: "${keys[0]}" -> ref ${ref.id.substring(0, 8)}`);
           }
           // 3+ authors: "Smith et al. 2020"
           else {
-            authorYearToId.set(`${firstAuthor} et al. ${year}`.toLowerCase(), ref.id);
-            authorYearToId.set(`${firstAuthor} et al ${year}`.toLowerCase(), ref.id);
+            const keys = [
+              `${firstAuthor} et al. ${year}`.toLowerCase(),
+              `${firstAuthor} et al ${year}`.toLowerCase()
+            ];
+            keys.forEach(key => authorYearToId.set(key, ref.id));
+            logger.info(`[CitationReference] rebuildLinks: Added keys for 3+ author ref: "${keys[0]}" -> ref ${ref.id.substring(0, 8)}`);
           }
         }
       }
@@ -701,7 +720,9 @@ export class CitationReferenceController {
 
     // Create links for all citations
     const linkData: { citationId: string; referenceListEntryId: string }[] = [];
+    logger.info(`[CitationReference] rebuildLinks: Processing ${document.citations.length} citations`);
     for (const citation of document.citations) {
+      logger.info(`[CitationReference] rebuildLinks: Citation "${citation.rawText.substring(0, 40)}" type=${citation.citationType}`);
       // Handle numeric citations (e.g., "[1]", "[1,2]", "[3-5]")
       const nums = this.expandCitationNumbers(citation.rawText);
       if (nums.length > 0) {
@@ -718,11 +739,18 @@ export class CitationReferenceController {
       }
       // Handle parenthetical author-year citations (e.g., "(Smith, 2020)", "(Smith & Jones, 2021)")
       else if (citation.citationType === 'PARENTHETICAL') {
+        // Normalize citation text for matching:
+        // "(Bommasani, R. et al., 2026)" -> "bommasani et al. 2026"
         const normalizedText = citation.rawText
           .replace(/[()[\]]/g, '') // Remove brackets
+          .replace(/,\s*[A-Z]\.\s*/g, ' ') // Remove initials like ", R. " -> " "
+          .replace(/\s+[A-Z]\.\s*/g, ' ') // Remove initials like " R. " -> " "
           .replace(/,\s*(\d{4})/g, ' $1') // "Smith, 2020" -> "Smith 2020"
+          .replace(/\s+/g, ' ') // Collapse multiple spaces
           .trim()
           .toLowerCase();
+
+        logger.info(`[CitationReference] rebuildLinks: Trying to match citation "${citation.rawText}" -> normalized: "${normalizedText}"`);
 
         const refId = authorYearToId.get(normalizedText);
         if (refId) {
@@ -730,7 +758,9 @@ export class CitationReferenceController {
             citationId: citation.id,
             referenceListEntryId: refId
           });
-          logger.debug(`[CitationReference] rebuildLinks: author-year citation "${citation.rawText}" -> ${refId.substring(0, 8)}`);
+          logger.info(`[CitationReference] rebuildLinks: MATCHED author-year citation "${citation.rawText}" -> ref ${refId.substring(0, 8)}`);
+        } else {
+          logger.warn(`[CitationReference] rebuildLinks: NO MATCH for citation "${citation.rawText}" (normalized: "${normalizedText}")`);
         }
       }
     }
@@ -909,7 +939,39 @@ export class CitationReferenceController {
 
       logger.debug(`[CitationReference] Change detection: authorsChanged=${authorsChanged}, yearChanged=${yearChanged}, oldYear=${oldYear}, newYear=${newYear}`);
 
+      // If the old formatted text is missing, generate it now so export can find/replace
+      // This handles references that were uploaded before formatted text generation was implemented
+      let oldFormattedText = (reference as Record<string, unknown>)[formattedColumn] as string | null;
+      if (!oldFormattedText) {
+        logger.info(`[CitationReference] Old formatted text missing for ${formattedColumn}, generating from old values...`);
+        try {
+          const oldEntryForFormatting = {
+            id: reference.id,
+            sortKey: reference.sortKey,
+            authors: parseAuthorsToArray(oldAuthors),
+            year: oldYear,
+            title: oldTitle,
+            sourceType: reference.sourceType,
+            journalName: reference.journalName,
+            volume: reference.volume,
+            issue: reference.issue,
+            pages: reference.pages,
+            publisher: oldPublisher,
+            doi: reference.doi,
+            url: reference.url,
+            enrichmentSource: reference.enrichmentSource,
+            enrichmentConfidence: reference.enrichmentConfidence
+          };
+          const oldFormatResult = await referenceListService.formatReference(oldEntryForFormatting, styleCode);
+          oldFormattedText = oldFormatResult.formatted;
+          logger.info(`[CitationReference] Generated old formatted text: "${oldFormattedText?.substring(0, 80)}..."`);
+        } catch {
+          logger.warn(`[CitationReference] Failed to generate old formatted text, export may not update reference section`);
+        }
+      }
+
       // Prepare reference edit metadata for change tracking
+      // Use the generated oldFormattedText for the current style column
       const referenceEditMetadata = {
         referenceId: referenceId,
         oldValues: {
@@ -923,11 +985,12 @@ export class CitationReferenceController {
           pages: reference.pages,
           doi: reference.doi,
           url: reference.url,
-          formattedApa: reference.formattedApa,
-          formattedMla: reference.formattedMla,
-          formattedChicago: reference.formattedChicago,
-          formattedVancouver: reference.formattedVancouver,
-          formattedIeee: reference.formattedIeee
+          // Use generated oldFormattedText for the appropriate style column
+          formattedApa: formattedColumn === 'formattedApa' ? oldFormattedText : reference.formattedApa,
+          formattedMla: formattedColumn === 'formattedMla' ? oldFormattedText : reference.formattedMla,
+          formattedChicago: formattedColumn === 'formattedChicago' ? oldFormattedText : reference.formattedChicago,
+          formattedVancouver: formattedColumn === 'formattedVancouver' ? oldFormattedText : reference.formattedVancouver,
+          formattedIeee: formattedColumn === 'formattedIeee' ? oldFormattedText : reference.formattedIeee
         },
         newValues: {
           authors: newAuthors,
@@ -987,7 +1050,7 @@ export class CitationReferenceController {
           logger.info(`[CitationReference] Author/year changed, updating linked in-text citations`);
 
           // Find citations linked to this reference
-          const linkedCitations = await tx.referenceListEntryCitation.findMany({
+          let linkedCitations = await tx.referenceListEntryCitation.findMany({
             where: { referenceListEntryId: referenceId },
             include: {
               citation: true
@@ -996,37 +1059,70 @@ export class CitationReferenceController {
 
           logger.info(`[CitationReference] Found ${linkedCitations.length} linked citations`);
 
-          if (linkedCitations.length > 0) {
-            // Format new author text for in-text citation
-            const newAuthorText = formatAuthorsForInTextCitation(parseAuthorsToArray(newAuthors), styleCode);
+          // If no links found but document has citations, rebuild links and retry
+          // This ensures links are always up-to-date even if they were missing or broken
+          if (linkedCitations.length === 0 && reference.document.citations.length > 0) {
+            logger.info(`[CitationReference] No links found, rebuilding citation-reference links...`);
 
-            for (const link of linkedCitations) {
-              const citation = link.citation;
-              logger.info(`[CitationReference] Processing citation ${citation.id}, type=${citation.citationType}`);
+            // Rebuild links within the transaction
+            const linksCreated = await this.rebuildCitationLinks(resolvedDocId, tenantId, tx);
+            logger.info(`[CitationReference] Rebuilt ${linksCreated} links, retrying find...`);
 
-              // Only update PARENTHETICAL (author-year) citations
-              if (citation.citationType === 'PARENTHETICAL') {
-                // Generate new citation text based on updated author/year
-                const newCitationText = `(${newAuthorText}, ${newYear || 'n.d.'})`;
-
-                // Create CitationChange record (beforeText uses actual citation.rawText)
-                await tx.citationChange.create({
-                  data: {
-                    documentId: resolvedDocId,
-                    citationId: citation.id,
-                    changeType: 'REFERENCE_EDIT',
-                    beforeText: citation.rawText,
-                    afterText: newCitationText,
-                    metadata: { referenceId } as unknown as Prisma.InputJsonValue,
-                    appliedBy: 'user',
-                    isReverted: false
-                  }
-                });
-
-                changesCreated++;
-                logger.debug(`[CitationReference] Created CitationChange for citation ${citation.id}`);
+            // Retry finding linked citations
+            linkedCitations = await tx.referenceListEntryCitation.findMany({
+              where: { referenceListEntryId: referenceId },
+              include: {
+                citation: true
               }
+            });
+            logger.info(`[CitationReference] After rebuild: Found ${linkedCitations.length} linked citations`);
+          }
+
+          // Format new author text for in-text citation
+          const newAuthorText = formatAuthorsForInTextCitation(parseAuthorsToArray(newAuthors), styleCode);
+          const processedCitationIds = new Set<string>();
+
+          // Process linked citations
+          for (const link of linkedCitations) {
+            const citation = link.citation;
+            logger.info(`[CitationReference] Processing linked citation ${citation.id}, type=${citation.citationType}`);
+
+            // Only update PARENTHETICAL (author-year) citations
+            if (citation.citationType === 'PARENTHETICAL') {
+              // Generate new citation text based on updated author/year
+              const newCitationText = `(${newAuthorText}, ${newYear || 'n.d.'})`;
+
+              // Create CitationChange record (beforeText uses actual citation.rawText)
+              await tx.citationChange.create({
+                data: {
+                  documentId: resolvedDocId,
+                  citationId: citation.id,
+                  changeType: 'REFERENCE_EDIT',
+                  beforeText: citation.rawText,
+                  afterText: newCitationText,
+                  metadata: { referenceId } as unknown as Prisma.InputJsonValue,
+                  appliedBy: 'user',
+                  isReverted: false
+                }
+              });
+
+              // IMPORTANT: Also update Citation.rawText so rebuildCitationLinks can match it later
+              // This ensures that if rebuildCitationLinks runs after a delete, the citation text
+              // matches the updated reference author/year
+              await tx.citation.update({
+                where: { id: citation.id },
+                data: { rawText: newCitationText }
+              });
+
+              processedCitationIds.add(citation.id);
+              changesCreated++;
+              logger.info(`[CitationReference] Created CitationChange and updated Citation.rawText for ${citation.id}: "${citation.rawText}" -> "${newCitationText}"`);
             }
+          }
+
+          // Final warning if still no links after rebuild
+          if (linkedCitations.length === 0 && reference.document.citations.length > 0) {
+            logger.warn(`[CitationReference] Still no linked citations found for reference ${referenceId} after rebuild. Citation format may not match reference author/year.`);
           }
         }
 
@@ -1784,8 +1880,22 @@ export class CitationReferenceController {
   /**
    * Expand citation numbers including ranges
    * E.g., "[3-5]" -> [3, 4, 5], "[1,2]" -> [1, 2], "[3–5]" (en-dash) -> [3, 4, 5]
+   *
+   * Only processes text that looks like numeric citations (starts with [ or contains only numbers).
+   * Excludes year-like numbers (1900-2099) to avoid matching parenthetical citations like "(Bender et al., 2021)".
    */
   private expandCitationNumbers(rawText: string): number[] {
+    // Only process if it looks like a numeric citation (starts with [ or is just numbers)
+    // Skip text that contains author names (letters) mixed with years
+    const trimmedText = rawText.trim();
+
+    // If text starts with [ it's likely a numeric citation like [1], [1,2], [3-5]
+    // If text starts with ( it might be parenthetical author-year like (Smith, 2020)
+    if (trimmedText.startsWith('(') && /[a-zA-Z]/.test(trimmedText)) {
+      // Contains letters + starts with ( = likely author-year citation, not numeric
+      return [];
+    }
+
     const numbers: number[] = [];
     // Remove brackets/parentheses
     const inner = rawText.replace(/[\[\]()]/g, '');
@@ -1798,13 +1908,18 @@ export class CitationReferenceController {
       if (rangeMatch) {
         const start = parseInt(rangeMatch[1], 10);
         const end = parseInt(rangeMatch[2], 10);
+        // Skip year-like numbers (typically reference lists don't have 1900+ references)
+        if (start >= 1900 || end >= 1900) {
+          continue;
+        }
         // Expand range (with safety limit of 100)
         for (let i = start; i <= end && i < start + 100; i++) {
           numbers.push(i);
         }
       } else {
         const num = parseInt(trimmed, 10);
-        if (!isNaN(num)) {
+        // Skip NaN and year-like numbers (1900-2099)
+        if (!isNaN(num) && num < 1900) {
           numbers.push(num);
         }
       }

@@ -80,8 +80,10 @@ export class CitationExportController {
       for (const change of changes) {
         if (change.citationId) {
           citationToChange.set(change.citationId, change);
+          logger.info(`[CitationExport] Preview: Mapped change for citationId=${change.citationId}, before="${change.beforeText?.substring(0, 40)}", after="${change.afterText?.substring(0, 40)}"`);
         }
       }
+      logger.info(`[CitationExport] Preview: ${citationToChange.size} citation changes mapped, ${citations.length} total citations`);
 
       // Format citations for frontend with change info using shared utility
       const formattedCitations = citations.map(c => {
@@ -282,6 +284,7 @@ export class CitationExportController {
         }
 
         // Add the change (in-text citation change or other types)
+        logger.info(`[CitationExport] Adding change: type=${c.changeType}, citationId=${c.citationId}, before="${c.beforeText?.substring(0, 50)}", after="${c.afterText?.substring(0, 50)}"`);
         changesToApply.push({
           type: c.changeType,
           beforeText: c.beforeText || '',
@@ -289,6 +292,8 @@ export class CitationExportController {
           metadata: c.metadata as Record<string, unknown> | null
         });
       }
+
+      logger.info(`[CitationExport] Total changes to apply: ${changesToApply.length}`);
 
       // Apply changes using docx processor
       let modifiedBuffer: Buffer;

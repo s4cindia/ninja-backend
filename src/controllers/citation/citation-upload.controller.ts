@@ -1477,6 +1477,105 @@ export class CitationUploadController {
   }
 
   /**
+   * DELETE /api/v1/citation-management/job/:jobId
+   * Delete a job and its associated document/data
+   */
+  async deleteJob(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+      const { tenantId, id: userId } = req.user;
+      const { jobId } = req.params;
+
+      logger.info(`[Citation Upload] Deleting job ${jobId}`);
+
+      // Find the job and verify ownership
+      const job = await prisma.job.findFirst({
+        where: {
+          id: jobId,
+          tenantId,
+          userId,
+          type: 'CITATION_DETECTION'
+        }
+      });
+
+      if (!job) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Job not found' }
+        });
+        return;
+      }
+
+      // Find associated document
+      const document = await prisma.editorialDocument.findFirst({
+        where: { jobId }
+      });
+
+      // Delete in correct order to respect foreign key constraints
+      await prisma.$transaction(async (tx) => {
+        if (document) {
+          // Delete citation changes
+          await tx.citationChange.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete citation-reference links
+          await tx.referenceListEntryCitation.deleteMany({
+            where: {
+              citation: { documentId: document.id }
+            }
+          });
+
+          // Delete citations
+          await tx.citation.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete reference list entries
+          await tx.referenceListEntry.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete document content
+          await tx.editorialDocumentContent.deleteMany({
+            where: { documentId: document.id }
+          });
+
+          // Delete the document
+          await tx.editorialDocument.delete({
+            where: { id: document.id }
+          });
+        }
+
+        // Delete the job
+        await tx.job.delete({
+          where: { id: jobId }
+        });
+      });
+
+      logger.info(`[Citation Upload] Deleted job ${jobId} and associated data`);
+
+      res.json({
+        success: true,
+        data: {
+          message: 'Job deleted successfully',
+          jobId,
+          documentId: document?.id || null
+        }
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Delete job failed:', error);
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/v1/citation-management/health
    * Health check for citation AI service (Claude)
    */
