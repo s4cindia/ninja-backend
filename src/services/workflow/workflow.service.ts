@@ -3,11 +3,6 @@ import { WorkflowMachine } from './workflow-states';
 import { WorkflowInstance, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 
-import { WorkflowState } from '../../types/workflow-contracts';
-
-// WFState alias kept for symmetry with spec import
-type WFState = WorkflowState;
-
 class WorkflowService {
   async createWorkflow(
     fileId: string,
