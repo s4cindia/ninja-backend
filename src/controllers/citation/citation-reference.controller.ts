@@ -410,7 +410,7 @@ export class CitationReferenceController {
         `${safeAuthorsArray(referenceToDelete.authors).join(', ') || 'Unknown'} (${referenceToDelete.year || 'n.d.'}). ${referenceToDelete.title || 'Untitled'}`;
 
       // Execute all database operations in a single transaction
-      const { linksCreated } = await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         // Delete the reference
         await tx.referenceListEntry.delete({ where: { id: referenceId } });
 
@@ -600,17 +600,23 @@ export class CitationReferenceController {
             logger.info(`[CitationReference] Updated documentContent after delete with renumbered citations`);
           }
         }
-
-        // IMPORTANT: Rebuild citation-reference links inside the transaction
-        // The links need to match the NEW reference numbers in citation text
-        // Use the actual document ID, not the param (which could be a job ID)
-        // Running inside transaction ensures atomicity - if link rebuild fails,
-        // the entire delete operation is rolled back
-        const actualDocId = referenceToDelete.document.id;
-        const linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId, tx);
-
-        return { linksCreated };
       });
+
+      // IMPORTANT: Rebuild citation-reference links after renumbering
+      // The links need to match the NEW reference numbers in citation text
+      // Use the actual document ID, not the param (which could be a job ID)
+      // Note: This runs after the main transaction commits. If it fails,
+      // the delete is complete but links may be stale.
+      const actualDocId = referenceToDelete.document.id;
+      let linksCreated = 0;
+      let linkRebuildWarning: string | undefined;
+      try {
+        linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId);
+      } catch (linkError) {
+        const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
+        linkRebuildWarning = `Citation-reference links may be stale. Error: ${errorMessage}. Refresh to reconcile.`;
+        logger.warn(`[CitationReference] rebuildCitationLinks failed - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
+      }
 
       res.json({
         success: true,
@@ -620,7 +626,8 @@ export class CitationReferenceController {
           deletedPosition,
           affectedCitations: affectedCitationIds.length,
           remainingReferences: remainingReferences.length,
-          linksRebuilt: linksCreated
+          linksRebuilt: linksCreated,
+          ...(linkRebuildWarning && { warning: linkRebuildWarning })
         }
       });
     } catch (error) {
