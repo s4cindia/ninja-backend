@@ -33,8 +33,6 @@ function safeAuthorsArray(authors: unknown): string[] {
   return [];
 }
 
-// normalizeStyleCode and getFormattedColumn imported from reference-list.service.ts
-
 /**
  * Parse authors from JSON value to Author array format
  */
@@ -605,13 +603,16 @@ export class CitationReferenceController {
       // The links need to match the NEW reference numbers in citation text
       // Use the actual document ID, not the param (which could be a job ID)
       // Note: This runs outside the main transaction. If it fails, the main changes
-      // are already committed but links may be stale. Log warning for reconciliation.
+      // are already committed but links may be stale. Surface failure in response.
       const actualDocId = referenceToDelete.document.id;
       let linksCreated = 0;
+      let linkRebuildWarning: string | undefined;
       try {
         linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId);
       } catch (linkError) {
-        logger.warn(`[CitationReference] rebuildCitationLinks failed after delete - links may be stale for document ${actualDocId}. Manual reconciliation may be needed.`, linkError instanceof Error ? linkError : undefined);
+        const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
+        linkRebuildWarning = `Citation-reference links may be stale. Error: ${errorMessage}. Refresh or re-save to reconcile.`;
+        logger.warn(`[CitationReference] rebuildCitationLinks failed after delete - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
       }
 
       res.json({
@@ -622,7 +623,8 @@ export class CitationReferenceController {
           deletedPosition,
           affectedCitations: affectedCitationIds.length,
           remainingReferences: remainingReferences.length,
-          linksRebuilt: linksCreated
+          linksRebuilt: linksCreated,
+          ...(linkRebuildWarning && { warning: linkRebuildWarning })
         }
       });
     } catch (error) {
@@ -655,6 +657,10 @@ export class CitationReferenceController {
 
     // Build author-year key to ID map for parenthetical citations
     // Keys like "Smith 2020", "Smith & Jones 2021", "Smith et al. 2022"
+    // Known limitations (best-effort matching):
+    // - Multi-particle names ("van der Berg") may not match correctly
+    // - Non-standard punctuation variations may fail
+    // - Citations with page numbers ("Smith, 2020, p. 45") will not match
     const authorYearToId = new Map<string, string>();
     for (const ref of document.referenceListEntries) {
       if (ref.authors && Array.isArray(ref.authors) && ref.year) {
@@ -1088,32 +1094,36 @@ export class CitationReferenceController {
         }
       }
 
-      let referencesReverted = 0;
-      for (const [refId, change] of earliestChangeByRefId) {
-        const metadata = change.metadata as {
-          referenceId?: string;
-          oldValues?: {
-            authors?: unknown;
-            year?: string | null;
-            title?: string;
-            publisher?: string | null;
-            journalName?: string | null;
-            volume?: string | null;
-            issue?: string | null;
-            pages?: string | null;
-            doi?: string | null;
-            url?: string | null;
-            formattedApa?: string | null;
-            formattedMla?: string | null;
-            formattedChicago?: string | null;
-            formattedVancouver?: string | null;
-            formattedIeee?: string | null;
-          };
-        };
+      // Wrap entire revert + delete in a transaction to ensure atomicity
+      // If any revert fails, the entire operation rolls back
+      const { referencesReverted, changesDeleted } = await prisma.$transaction(async (tx) => {
+        let reverted = 0;
 
-        if (metadata.oldValues) {
-          try {
-            await prisma.referenceListEntry.update({
+        for (const [refId, change] of earliestChangeByRefId) {
+          const metadata = change.metadata as {
+            referenceId?: string;
+            oldValues?: {
+              authors?: unknown;
+              year?: string | null;
+              title?: string;
+              publisher?: string | null;
+              journalName?: string | null;
+              volume?: string | null;
+              issue?: string | null;
+              pages?: string | null;
+              doi?: string | null;
+              url?: string | null;
+              formattedApa?: string | null;
+              formattedMla?: string | null;
+              formattedChicago?: string | null;
+              formattedVancouver?: string | null;
+              formattedIeee?: string | null;
+            };
+          };
+
+          if (metadata.oldValues) {
+            // This will throw and rollback the entire transaction if it fails
+            await tx.referenceListEntry.update({
               where: { id: refId },
               data: {
                 authors: metadata.oldValues.authors as Prisma.InputJsonValue,
@@ -1135,26 +1145,26 @@ export class CitationReferenceController {
                 editedAt: null
               }
             });
-            referencesReverted++;
+            reverted++;
             logger.info(`[CitationReference] Reverted reference ${refId} to original values (from earliest change)`);
-          } catch (revertError) {
-            logger.error(`[CitationReference] Failed to revert reference ${refId}:`, revertError);
           }
         }
-      }
 
-      // Delete all CitationChange records for this document
-      const result = await prisma.citationChange.deleteMany({
-        where: { documentId: resolvedDocId }
+        // Delete all CitationChange records for this document
+        const result = await tx.citationChange.deleteMany({
+          where: { documentId: resolvedDocId }
+        });
+
+        return { referencesReverted: reverted, changesDeleted: result.count };
       });
 
-      logger.info(`[CitationReference] Deleted ${result.count} CitationChange records, reverted ${referencesReverted} references for document ${resolvedDocId}`);
+      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references for document ${resolvedDocId}`);
 
       res.json({
         success: true,
         data: {
-          message: `Reset complete. Deleted ${result.count} change records, reverted ${referencesReverted} reference(s).`,
-          deletedCount: result.count,
+          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s).`,
+          deletedCount: changesDeleted,
           referencesReverted
         }
       });

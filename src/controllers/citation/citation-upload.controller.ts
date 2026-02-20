@@ -1228,8 +1228,9 @@ export class CitationUploadController {
         authors: ref.components?.authors || [],
         year: ref.components?.year || null,
         title: ref.components?.title || 'Untitled',
-        // Map AI sourceType to database value (default to 'journal_article' for backwards compatibility)
-        sourceType: ref.sourceType?.toLowerCase() || 'journal_article',
+        // Map AI sourceType to database value (default to 'JOURNAL_ARTICLE')
+        // AI returns uppercase (JOURNAL_ARTICLE, BOOK, etc.) which matches SOURCE_TYPES constant
+        sourceType: ref.sourceType || 'JOURNAL_ARTICLE',
         journalName: ref.components?.journal || null,
         volume: ref.components?.volume || null,
         issue: ref.components?.issue || null,
@@ -1616,10 +1617,14 @@ export class CitationUploadController {
 
   /**
    * Remap a comma-separated or range of numbers using the mapping
+   * Skips numbers in year range (1900-2100) to avoid transforming years like (2023)
    */
   private remapNumberList(numStr: string, oldToNewMap: Map<number, number>): string {
     const result: number[] = [];
     const parts = numStr.split(/\s*,\s*/);
+
+    // Helper to check if a number looks like a year
+    const isLikelyYear = (n: number) => n >= 1900 && n <= 2100;
 
     for (const part of parts) {
       const trimmed = part.trim();
@@ -1628,6 +1633,13 @@ export class CitationUploadController {
       if (rangeMatch) {
         const start = parseInt(rangeMatch[1], 10);
         const end = parseInt(rangeMatch[2], 10);
+
+        // If range looks like years (e.g., 2020-2023), skip remapping entirely
+        if (isLikelyYear(start) && isLikelyYear(end)) {
+          result.push(start); // Preserve as-is - will be joined with range later
+          continue;
+        }
+
         for (let i = start; i <= end && i < start + 100; i++) {
           const newNum = oldToNewMap.get(i);
           if (newNum !== undefined) {
@@ -1637,6 +1649,12 @@ export class CitationUploadController {
       } else {
         const num = parseInt(trimmed, 10);
         if (!isNaN(num)) {
+          // Skip year-like numbers to avoid transforming "(2023)" or "(2020, 2021)"
+          if (isLikelyYear(num)) {
+            result.push(num); // Preserve original
+            continue;
+          }
+
           const newNum = oldToNewMap.get(num);
           if (newNum !== undefined) {
             result.push(newNum);

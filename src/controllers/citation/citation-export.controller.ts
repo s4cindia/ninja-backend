@@ -14,7 +14,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
-import { normalizeStyleCode } from '../../services/citation/reference-list.service';
+import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
 import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
@@ -226,66 +226,6 @@ export class CitationExportController {
         metadata?: Record<string, unknown> | null;
       }> = [];
 
-      // Helper function to generate basic APA-style formatted text from components
-      const generateBasicFormatted = (values: Record<string, unknown>): string => {
-        const authors = values.authors as string[] | undefined;
-        const year = values.year as string | undefined;
-        const title = values.title as string | undefined;
-        const journalName = values.journalName as string | undefined;
-        const volume = values.volume as string | undefined;
-        const issue = values.issue as string | undefined;
-        const pages = values.pages as string | undefined;
-        const doi = values.doi as string | undefined;
-        const publisher = values.publisher as string | undefined;
-
-        let formatted = '';
-
-        // Authors
-        if (authors && authors.length > 0) {
-          formatted = authors.join(', ');
-        }
-
-        // Year
-        if (year) {
-          formatted += formatted ? ` (${year}). ` : `(${year}). `;
-        } else if (formatted) {
-          formatted += '. ';
-        }
-
-        // Title
-        if (title) {
-          formatted += title;
-          if (!title.endsWith('.') && !title.endsWith('?') && !title.endsWith('!')) {
-            formatted += '.';
-          }
-          formatted += ' ';
-        }
-
-        // Journal/Publisher
-        if (journalName) {
-          formatted += journalName;
-          if (volume) {
-            formatted += `, ${volume}`;
-            if (issue) {
-              formatted += `(${issue})`;
-            }
-          }
-          if (pages) {
-            formatted += `, ${pages}`;
-          }
-          formatted += '.';
-        } else if (publisher) {
-          formatted += publisher + '.';
-        }
-
-        // DOI
-        if (doi) {
-          formatted += ` https://doi.org/${doi.replace(/^https?:\/\/doi\.org\//i, '')}`;
-        }
-
-        return formatted.trim();
-      };
-
       // Process each change
       for (const c of changes) {
         // For REFERENCE_EDIT changes, we need to handle both:
@@ -302,61 +242,29 @@ export class CitationExportController {
             const currentRef = document.referenceListEntries.find(r => r.id === referenceId);
             if (currentRef) {
               // Determine which formatted field to use based on document style
-              // Using normalizeStyleCode() for consistent style resolution
+              // Using getFormattedColumn() which correctly handles all style codes
+              // (e.g., 'mla9' -> 'formattedMla', 'chicago17' -> 'formattedChicago')
               const styleCode = normalizeStyleCode(document.referenceListStyle);
-              let oldFormatted: string | undefined;
-              let newFormatted: string | undefined;
+              const formattedColumn = getFormattedColumn(styleCode);
 
-              switch (styleCode) {
-                case 'mla':
-                  oldFormatted = oldValues.formattedMla as string;
-                  newFormatted = currentRef.formattedMla || undefined;
-                  break;
-                case 'chicago':
-                  oldFormatted = oldValues.formattedChicago as string;
-                  newFormatted = currentRef.formattedChicago || undefined;
-                  break;
-                case 'vancouver':
-                  oldFormatted = oldValues.formattedVancouver as string;
-                  newFormatted = currentRef.formattedVancouver || undefined;
-                  break;
-                case 'ieee':
-                  oldFormatted = oldValues.formattedIeee as string;
-                  newFormatted = currentRef.formattedIeee || undefined;
-                  break;
-                default:
-                  // Default to APA
-                  oldFormatted = oldValues.formattedApa as string;
-                  newFormatted = currentRef.formattedApa || undefined;
+              // Use dynamic property access with the correct column name
+              const oldFormatted = (oldValues as Record<string, unknown>)[formattedColumn] as string | undefined;
+              const newFormatted = (currentRef as Record<string, unknown>)[formattedColumn] as string | undefined;
+
+              // If formatted text is missing, skip this change rather than using a fallback
+              // Fallback APA-style formatting would not match the actual DOCX content for
+              // non-APA documents (Vancouver, Chicago, MLA), causing silent export failures
+              if (!oldFormatted) {
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT change - old formatted text missing for style "${styleCode}". Reference ${referenceId} may not have been formatted.`);
+                continue;
               }
 
-              // If oldFormatted is NULL (reference was never formatted), generate from components
-              // WARNING: This fallback generates basic APA-style formatting which may differ
-              // from the style-specific formatting shown in the UI (referenceListService.formatReference)
-              if (!oldFormatted && oldValues) {
-                oldFormatted = generateBasicFormatted(oldValues);
-                logger.warn(`[CitationExport] Using fallback formatting for old reference - may differ from UI. Generated: "${oldFormatted.substring(0, 80)}..."`);
+              if (!newFormatted) {
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT change - new formatted text missing for style "${styleCode}". Reference ${referenceId} may not have been re-formatted after edit.`);
+                continue;
               }
 
-              // If newFormatted is NULL, generate from current reference
-              // WARNING: This fallback generates basic APA-style formatting which may differ
-              // from the style-specific formatting shown in the UI (referenceListService.formatReference)
-              if (!newFormatted && currentRef) {
-                newFormatted = generateBasicFormatted({
-                  authors: currentRef.authors as string[] | undefined,
-                  year: currentRef.year,
-                  title: currentRef.title,
-                  journalName: currentRef.journalName,
-                  volume: currentRef.volume,
-                  issue: currentRef.issue,
-                  pages: currentRef.pages,
-                  doi: currentRef.doi,
-                  publisher: currentRef.publisher
-                });
-                logger.warn(`[CitationExport] Using fallback formatting for new reference - may differ from UI. Generated: "${newFormatted.substring(0, 80)}..."`);
-              }
-
-              if (oldFormatted && newFormatted && oldFormatted !== newFormatted) {
+              if (oldFormatted !== newFormatted) {
                 logger.info(`[CitationExport] Adding reference section change: "${oldFormatted.substring(0, 50)}..." -> "${newFormatted.substring(0, 50)}..."`);
                 changesToApply.push({
                   type: 'REFERENCE_SECTION_EDIT',
