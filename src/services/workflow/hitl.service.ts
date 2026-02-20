@@ -1,5 +1,6 @@
 import { HITLGate, HITLAction, HITLReviewItem, GateStatus } from '../../types/workflow-contracts';
 import prisma from '../../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { logger } from '../../lib/logger';
 
 class HITLService {
@@ -50,8 +51,8 @@ class HITLService {
         itemType: item.itemType,
         itemId,
         decision,
-        originalValue: item.originalValue as any,
-        modifiedValue: opts?.modifiedValue as any,
+        originalValue: item.originalValue as Prisma.InputJsonValue,
+        modifiedValue: opts?.modifiedValue as Prisma.InputJsonValue | undefined,
         justification: opts?.justification,
         reviewerId,
       },
