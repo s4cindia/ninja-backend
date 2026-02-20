@@ -12,6 +12,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { Prisma, PrismaPromise } from '@prisma/client';
 import prisma from '../../lib/prisma';
+
+// Type for Prisma transaction client
+type TransactionClient = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
@@ -407,7 +410,7 @@ export class CitationReferenceController {
         `${safeAuthorsArray(referenceToDelete.authors).join(', ') || 'Unknown'} (${referenceToDelete.year || 'n.d.'}). ${referenceToDelete.title || 'Untitled'}`;
 
       // Execute all database operations in a single transaction
-      await prisma.$transaction(async (tx) => {
+      const { linksCreated } = await prisma.$transaction(async (tx) => {
         // Delete the reference
         await tx.referenceListEntry.delete({ where: { id: referenceId } });
 
@@ -597,23 +600,17 @@ export class CitationReferenceController {
             logger.info(`[CitationReference] Updated documentContent after delete with renumbered citations`);
           }
         }
-      });
 
-      // IMPORTANT: Rebuild citation-reference links after renumbering
-      // The links need to match the NEW reference numbers in citation text
-      // Use the actual document ID, not the param (which could be a job ID)
-      // Note: This runs outside the main transaction. If it fails, the main changes
-      // are already committed but links may be stale. Surface failure in response.
-      const actualDocId = referenceToDelete.document.id;
-      let linksCreated = 0;
-      let linkRebuildWarning: string | undefined;
-      try {
-        linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId);
-      } catch (linkError) {
-        const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
-        linkRebuildWarning = `Citation-reference links may be stale. Error: ${errorMessage}. Refresh or re-save to reconcile.`;
-        logger.warn(`[CitationReference] rebuildCitationLinks failed after delete - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
-      }
+        // IMPORTANT: Rebuild citation-reference links inside the transaction
+        // The links need to match the NEW reference numbers in citation text
+        // Use the actual document ID, not the param (which could be a job ID)
+        // Running inside transaction ensures atomicity - if link rebuild fails,
+        // the entire delete operation is rolled back
+        const actualDocId = referenceToDelete.document.id;
+        const linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId, tx);
+
+        return { linksCreated };
+      });
 
       res.json({
         success: true,
@@ -623,8 +620,7 @@ export class CitationReferenceController {
           deletedPosition,
           affectedCitations: affectedCitationIds.length,
           remainingReferences: remainingReferences.length,
-          linksRebuilt: linksCreated,
-          ...(linkRebuildWarning && { warning: linkRebuildWarning })
+          linksRebuilt: linksCreated
         }
       });
     } catch (error) {
@@ -635,9 +631,15 @@ export class CitationReferenceController {
   /**
    * Rebuild citation-reference links based on current sortKey values
    * Called after operations that change reference numbering (delete, reorder)
+   * @param tx Optional transaction client - if provided, runs within existing transaction
    */
-  private async rebuildCitationLinks(documentId: string, tenantId: string): Promise<number> {
-    const document = await prisma.editorialDocument.findFirst({
+  private async rebuildCitationLinks(
+    documentId: string,
+    tenantId: string,
+    tx?: TransactionClient
+  ): Promise<number> {
+    const db = tx || prisma;
+    const document = await db.editorialDocument.findFirst({
       where: { id: documentId, tenantId },
       include: {
         citations: { orderBy: [{ paragraphIndex: 'asc' }, { startOffset: 'asc' }] },
@@ -727,23 +729,34 @@ export class CitationReferenceController {
     }
 
     // Delete existing links and create new ones atomically
-    // Using transaction to prevent data loss if createMany fails
     const refIds = document.referenceListEntries.map(r => r.id);
 
-    await prisma.$transaction(async (tx) => {
+    // If we have a transaction client, use it directly
+    // Otherwise wrap in a new transaction for atomicity
+    const doLinkUpdates = async (client: TransactionClient) => {
       if (refIds.length > 0) {
-        await tx.referenceListEntryCitation.deleteMany({
+        await client.referenceListEntryCitation.deleteMany({
           where: { referenceListEntryId: { in: refIds } }
         });
       }
 
       if (linkData.length > 0) {
-        await tx.referenceListEntryCitation.createMany({
+        await client.referenceListEntryCitation.createMany({
           data: linkData,
           skipDuplicates: true
         });
       }
-    });
+    };
+
+    if (tx) {
+      // Already inside a transaction - use provided client directly
+      await doLinkUpdates(tx);
+    } else {
+      // No transaction provided - create new one for atomicity
+      await prisma.$transaction(async (newTx) => {
+        await doLinkUpdates(newTx);
+      });
+    }
 
     logger.info(`[CitationReference] rebuildLinks: Created ${linkData.length} links for document ${documentId}`);
     return linkData.length;
