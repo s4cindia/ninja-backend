@@ -17,6 +17,7 @@ import { logger } from '../lib/logger';
 import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../services/comparison';
+import { workflowService } from '../services/workflow/workflow.service';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -190,11 +191,42 @@ export const epubController = {
         logger.warn(`Failed to auto-create remediation plan for job ${job.id}: ${remediationError instanceof Error ? remediationError.message : 'Unknown error'}`);
       }
 
+      // ═══════════════════════════════════════════════════════════════
+      // 🔄 Sprint 9: Create File record and Workflow for this EPUB
+      // ═══════════════════════════════════════════════════════════════
+      let workflowId: string | undefined;
+      try {
+        // Create a File record for this EPUB (needed for workflow)
+        const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+        const fileRecord = await prisma.file.create({
+          data: {
+            id: nanoid(),
+            tenantId,
+            filename: `${nanoid()}_${req.file.originalname}`,
+            originalName: req.file.originalname,
+            mimeType: req.file.mimetype || 'application/epub+zip',
+            size: req.file.size,
+            path: `${storagePath}/${job.id}/${req.file.originalname}`,
+            status: 'UPLOADED',
+          },
+        });
+        logger.info(`[EPUB Controller] Created File record ${fileRecord.id} for job ${job.id}`);
+
+        // Create workflow for this file
+        const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
+        workflowId = workflow.id;
+        logger.info(`[EPUB Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+      } catch (workflowError) {
+        // Don't fail the EPUB audit if workflow creation fails
+        logger.error(`[EPUB Controller] Failed to create workflow for job ${job.id}`, workflowError);
+      }
+
       return res.json({
         success: true,
         data: {
           ...result,
           jobId: job.id,
+          workflowId, // Include workflow ID in response
         },
       });
     } catch (error) {

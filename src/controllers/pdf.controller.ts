@@ -14,6 +14,7 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { reScanJobSchema } from '../schemas/pdf.schemas';
+import { workflowService } from '../services/workflow/workflow.service';
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -588,12 +589,43 @@ export class PdfController {
         logger.warn('[PDF Audit] Failed to create AcrJob record (non-fatal)', acrErr instanceof Error ? acrErr.message : String(acrErr));
       }
 
+      // ═══════════════════════════════════════════════════════════════
+      // 🔄 Sprint 9: Create File record and Workflow for this PDF
+      // ═══════════════════════════════════════════════════════════════
+      let workflowId: string | undefined;
+      try {
+        // Create a File record for this PDF (needed for workflow)
+        const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
+        const fileRecord = await prisma.file.create({
+          data: {
+            id: nanoid(),
+            tenantId,
+            filename: `${nanoid()}_${req.file.originalname}`,
+            originalName: req.file.originalname,
+            mimeType: req.file.mimetype || 'application/pdf',
+            size: req.file.size,
+            path: `${storagePath}/${job.id}/${req.file.originalname}`,
+            status: 'UPLOADED',
+          },
+        });
+        logger.info(`[PDF Controller] Created File record ${fileRecord.id} for job ${job.id}`);
+
+        // Create workflow for this file
+        const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
+        workflowId = workflow.id;
+        logger.info(`[PDF Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+      } catch (workflowError) {
+        // Don't fail the PDF audit if workflow creation fails
+        logger.error(`[PDF Controller] Failed to create workflow for job ${job.id}`, workflowError);
+      }
+
       return res.status(200).json({
         success: true,
         data: {
           jobId: job.id,
           fileName: req.file.originalname,
           auditReport: result,
+          workflowId, // Include workflow ID in response
         },
       });
     } catch (error) {
