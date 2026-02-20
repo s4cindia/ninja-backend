@@ -14,6 +14,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
+import { normalizeStyleCode } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
 import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
@@ -301,26 +302,32 @@ export class CitationExportController {
             const currentRef = document.referenceListEntries.find(r => r.id === referenceId);
             if (currentRef) {
               // Determine which formatted field to use based on document style
-              const styleCode = document.referenceListStyle?.toLowerCase() || 'apa';
+              // Using normalizeStyleCode() for consistent style resolution
+              const styleCode = normalizeStyleCode(document.referenceListStyle);
               let oldFormatted: string | undefined;
               let newFormatted: string | undefined;
 
-              if (styleCode.includes('mla')) {
-                oldFormatted = oldValues.formattedMla as string;
-                newFormatted = currentRef.formattedMla || undefined;
-              } else if (styleCode.includes('chicago')) {
-                oldFormatted = oldValues.formattedChicago as string;
-                newFormatted = currentRef.formattedChicago || undefined;
-              } else if (styleCode.includes('vancouver')) {
-                oldFormatted = oldValues.formattedVancouver as string;
-                newFormatted = currentRef.formattedVancouver || undefined;
-              } else if (styleCode.includes('ieee')) {
-                oldFormatted = oldValues.formattedIeee as string;
-                newFormatted = currentRef.formattedIeee || undefined;
-              } else {
-                // Default to APA
-                oldFormatted = oldValues.formattedApa as string;
-                newFormatted = currentRef.formattedApa || undefined;
+              switch (styleCode) {
+                case 'mla':
+                  oldFormatted = oldValues.formattedMla as string;
+                  newFormatted = currentRef.formattedMla || undefined;
+                  break;
+                case 'chicago':
+                  oldFormatted = oldValues.formattedChicago as string;
+                  newFormatted = currentRef.formattedChicago || undefined;
+                  break;
+                case 'vancouver':
+                  oldFormatted = oldValues.formattedVancouver as string;
+                  newFormatted = currentRef.formattedVancouver || undefined;
+                  break;
+                case 'ieee':
+                  oldFormatted = oldValues.formattedIeee as string;
+                  newFormatted = currentRef.formattedIeee || undefined;
+                  break;
+                default:
+                  // Default to APA
+                  oldFormatted = oldValues.formattedApa as string;
+                  newFormatted = currentRef.formattedApa || undefined;
               }
 
               // If oldFormatted is NULL (reference was never formatted), generate from components
@@ -362,6 +369,8 @@ export class CitationExportController {
               }
             }
           }
+          // Skip the generic push below - we've already handled this reference-level edit
+          continue;
         }
 
         // Add the change (in-text citation change or other types)

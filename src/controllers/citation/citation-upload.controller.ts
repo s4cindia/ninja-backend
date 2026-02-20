@@ -1334,8 +1334,9 @@ export class CitationUploadController {
 
             if (nums.length > 0) {
               for (const num of nums) {
-                // Skip if number is > 100 (likely a year, not a reference number)
-                if (num > 100) {
+                // Skip if number looks like a year (1900-2100 range)
+                // Using year range instead of > 100 to support documents with 100+ references
+                if (num >= 1900 && num <= 2100) {
                   logger.debug(`[Citation Upload]   Skipping ${num} (likely a year)`);
                   continue;
                 }

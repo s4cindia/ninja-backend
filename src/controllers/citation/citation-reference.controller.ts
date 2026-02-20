@@ -36,9 +36,6 @@ function safeAuthorsArray(authors: unknown): string[] {
 // normalizeStyleCode and getFormattedColumn imported from reference-list.service.ts
 
 /**
- * Get the formatted column name for a style code
- */
-/**
  * Parse authors from JSON value to Author array format
  */
 function parseAuthorsToArray(authors: Prisma.JsonValue): Array<{ firstName?: string; lastName: string; suffix?: string }> {
