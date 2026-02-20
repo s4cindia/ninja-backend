@@ -27,6 +27,21 @@ const aiCitationSchema = z.object({
   context: z.string().optional().default(''),
 });
 
+/** Valid source types for references */
+const SOURCE_TYPES = [
+  'JOURNAL_ARTICLE',
+  'BOOK',
+  'BOOK_CHAPTER',
+  'CONFERENCE_PAPER',
+  'WEBSITE',
+  'THESIS',
+  'REPORT',
+  'PREPRINT',
+  'NEWSPAPER',
+  'MAGAZINE',
+  'UNKNOWN'
+] as const;
+
 /** Schema for AI-extracted reference entry */
 const aiReferenceSchema = z.object({
   number: z.number().optional(),
@@ -42,6 +57,7 @@ const aiReferenceSchema = z.object({
   url: z.string().optional(),
   publisher: z.string().optional(),
   editors: z.array(z.string()).optional(),
+  sourceType: z.enum(SOURCE_TYPES).optional().default('UNKNOWN'),
 });
 
 /** Schema for array of citations from AI */
@@ -91,10 +107,14 @@ export interface InTextCitation {
   context: string; // Surrounding text for context
 }
 
+/** Source type for a reference */
+export type SourceType = typeof SOURCE_TYPES[number];
+
 export interface ReferenceEntry {
   id: string;
   number?: number; // Position in reference list
   rawText: string; // Complete reference text
+  sourceType?: SourceType; // JOURNAL_ARTICLE, BOOK, CONFERENCE_PAPER, etc.
   components: {
     authors?: string[];
     year?: string;
@@ -465,21 +485,44 @@ INSTRUCTIONS:
 - Find the References, Bibliography, Footnotes, Notes, or Works Cited section in the document
 - For Chicago/Turabian style: extract references from the Footnotes or Notes section
 - Extract each reference with available metadata
+- IMPORTANT: Identify the source type for each reference
 
 OUTPUT FORMAT:
-[{"number":1,"rawText":"Smith J. Article Title. Journal. 2020;10:123.","authors":["Smith J"],"year":"2020","title":"Article Title","journal":"Journal","volume":"10","pages":"123","doi":"10.1234/ex"}]
+Journal article example:
+{"number":1,"rawText":"Smith J. Article Title. Journal. 2020;10:123.","authors":["Smith J"],"year":"2020","title":"Article Title","journal":"Journal","volume":"10","pages":"123","doi":"10.1234/ex","sourceType":"JOURNAL_ARTICLE"}
+
+Book example:
+{"number":2,"rawText":"Marcus G, Davis E. Rebooting AI. Pantheon Books. 2019.","authors":["Marcus G","Davis E"],"year":"2019","title":"Rebooting AI","publisher":"Pantheon Books","sourceType":"BOOK"}
+
+Conference paper example:
+{"number":3,"rawText":"Lee K. Neural Networks. Proc ACM Conf. 2021.","authors":["Lee K"],"year":"2021","title":"Neural Networks","journal":"Proc ACM Conf","sourceType":"CONFERENCE_PAPER"}
+
+Preprint/arXiv example:
+{"number":4,"rawText":"Brown T. GPT-3. arXiv:2005.14165. 2020.","authors":["Brown T"],"year":"2020","title":"GPT-3","sourceType":"PREPRINT"}
 
 Fields to extract (omit if not present):
-- number: reference number
-- rawText: complete reference text
+- number: reference number (REQUIRED)
+- rawText: complete reference text (REQUIRED)
 - authors: array of author names
-- year: publication year
+- year: publication year (IMPORTANT: extract 4-digit year)
 - title: article/book title
-- journal: journal name
+- journal: journal name (for articles)
+- publisher: publisher name (for books - IMPORTANT: extract this for all book references)
 - volume, issue, pages: publication details
 - doi: DOI (without "doi:" prefix)
 - url: URL if present
-- publisher: publisher name
+- sourceType: one of JOURNAL_ARTICLE, BOOK, BOOK_CHAPTER, CONFERENCE_PAPER, PREPRINT, WEBSITE, THESIS, REPORT, NEWSPAPER, MAGAZINE, UNKNOWN
+
+SOURCE TYPE IDENTIFICATION RULES:
+- JOURNAL_ARTICLE: Has journal name with volume/issue/pages
+- BOOK: Has publisher, no journal name
+- BOOK_CHAPTER: Has "In:" or "In " followed by book title and editors
+- CONFERENCE_PAPER: Journal name contains "Proc", "Conference", "Symposium", "Workshop"
+- PREPRINT: Contains "arXiv", "bioRxiv", "medRxiv", "preprint"
+- WEBSITE: URL is primary identifier, no traditional publication info
+- THESIS: Contains "thesis", "dissertation"
+- REPORT: Contains "report", "technical report", organization name
+- UNKNOWN: Cannot determine type
 
 ---BEGIN DOCUMENT---
 ${documentText}
@@ -520,6 +563,7 @@ Return ONLY the JSON array.`;
       id: `ref-${r.number ?? idx + 1}`,
       number: r.number ?? idx + 1,
       rawText: r.rawText,
+      sourceType: r.sourceType,
       components: {
         authors: r.authors,
         year: r.year,

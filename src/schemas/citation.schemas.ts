@@ -119,46 +119,63 @@ export const reorderReferencesSchema = {
  * Edit reference request body
  * All fields are optional - only provided fields are updated
  */
+// Author can be either a string or an object with firstName/lastName
+const authorSchema = z.union([
+  z.string().min(1, 'Author name cannot be empty'),
+  z.object({
+    firstName: z.string().optional(),
+    lastName: z.string().min(1, 'Last name is required'),
+    suffix: z.string().optional()
+  })
+]);
+
 export const editReferenceSchema = {
   params: z.object({
     documentId: z.string().uuid('Invalid document ID format'),
     referenceId: z.string().uuid('Invalid reference ID format')
   }),
   body: z.object({
-    authors: z.array(z.string().min(1, 'Author name cannot be empty'))
+    authors: z.array(authorSchema)
       .min(1, 'At least one author is required')
       .optional(),
     year: z.string()
       .regex(/^\d{4}$/, 'Year must be a 4-digit number')
-      .optional(),
+      .optional()
+      .nullable(),
     title: z.string()
       .min(1, 'Title cannot be empty')
       .max(1000, 'Title too long (max 1000 characters)')
       .optional(),
     journalName: z.string()
-      .min(1, 'Journal name cannot be empty')
       .max(500, 'Journal name too long (max 500 characters)')
-      .optional(),
+      .optional()
+      .nullable(),
     volume: z.string()
       .max(50, 'Volume too long (max 50 characters)')
-      .optional(),
+      .optional()
+      .nullable(),
     issue: z.string()
       .max(50, 'Issue too long (max 50 characters)')
-      .optional(),
+      .optional()
+      .nullable(),
     pages: z.string()
       .max(50, 'Pages too long (max 50 characters)')
-      .optional(),
+      .optional()
+      .nullable(),
     doi: z.string()
       .regex(/^10\.\d{4,}\/[^\s]+$/, 'Invalid DOI format (should start with 10.)')
       .optional()
+      .nullable()
       .or(z.literal('')), // Allow empty string to clear DOI
     url: z.string()
       .url('Invalid URL format')
       .optional()
+      .nullable()
       .or(z.literal('')), // Allow empty string to clear URL
     publisher: z.string()
       .max(500, 'Publisher name too long (max 500 characters)')
       .optional()
+      .nullable()
   }).refine(
     (data) => {
       // At least one field should be provided
@@ -228,7 +245,7 @@ export const previewChangesSchema = {
     documentId: z.string().uuid('Invalid document ID format')
   }),
   query: z.object({
-    changeType: z.enum(['RENUMBER', 'REFERENCE_STYLE_CONVERSION', 'DELETE', 'INSERT']).optional(),
+    changeType: z.enum(['RENUMBER', 'REFERENCE_STYLE_CONVERSION', 'DELETE', 'INSERT', 'REFERENCE_EDIT']).optional(),
     includeReverted: z.enum(['true', 'false']).optional().transform(v => v === 'true')
   }).optional()
 };

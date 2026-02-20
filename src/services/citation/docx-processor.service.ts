@@ -2691,15 +2691,130 @@ class DOCXProcessorService {
 
         // Split document into body and references
         let bodyXML = documentXML.substring(0, refSectionStart);
-        const referencesXML = documentXML.substring(refSectionStart);
+        let referencesXML = documentXML.substring(refSectionStart);
 
         logger.info(`[DOCXProcessor] Body length: ${bodyXML.length}, References length: ${referencesXML.length}`);
+
+        // Separate reference section changes from body changes
+        const referenceSectionPlaceholders = new Map<string, { type: string; oldText: string; newText: string }>();
+        let refPhIndex = 0;
 
         for (const change of changes) {
           if (!change.beforeText) continue;
 
           // Skip reference RENUMBER changes in Phase 1 - they're handled in Phase 4
           if (change.type === 'RENUMBER' && change.beforeText.match(/^\[\d+\]/)) {
+            continue;
+          }
+
+          // Handle REFERENCE_SECTION_EDIT changes - these go in the References section, not body
+          // Uses ID-based matching: referenceId -> author name -> paragraph in DOCX
+          if (change.type === 'REFERENCE_SECTION_EDIT') {
+            const refPlaceholder = `__REF_CHANGE_PH_${refPhIndex}__`;
+            referenceSectionPlaceholders.set(refPlaceholder, {
+              type: change.type,
+              oldText: change.beforeText,
+              newText: change.afterText || ''
+            });
+            refPhIndex++;
+
+            logger.info(`[DOCXProcessor] Processing REFERENCE_SECTION_EDIT:`);
+            logger.info(`[DOCXProcessor]   referenceId: ${change.metadata?.referenceId || 'unknown'}`);
+            logger.info(`[DOCXProcessor]   afterText: "${(change.afterText || '').substring(0, 100)}..."`);
+
+            let found = false;
+            const meta = change.metadata as Record<string, unknown> | undefined;
+
+            // ID-BASED MATCHING: Use referenceId to find paragraph by author name
+            if (meta?.referenceId) {
+              // Extract author info from the old values or beforeText
+              let authorLastName: string | undefined;
+
+              // Try to get author from oldValues in metadata
+              const oldValues = meta.oldValues as Record<string, unknown> | undefined;
+              if (oldValues?.authors) {
+                const authors = oldValues.authors as string[];
+                if (authors.length > 0) {
+                  // Extract last name from first author
+                  authorLastName = String(authors[0]).split(/[,\s]/)[0];
+                  logger.info(`[DOCXProcessor] Using author from metadata: "${authorLastName}"`);
+                }
+              }
+
+              // Fallback: extract author from beforeText (format: "Author1, Author2 (Year). Title...")
+              if (!authorLastName && change.beforeText) {
+                const authorMatch = change.beforeText.match(/^([A-Z][a-z]+)/);
+                if (authorMatch) {
+                  authorLastName = authorMatch[1];
+                  logger.info(`[DOCXProcessor] Extracted author from beforeText: "${authorLastName}"`);
+                }
+              }
+
+              if (authorLastName) {
+                // Find paragraph containing this author in the References section
+                const escapedAuthor = authorLastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                // Use safe bounded regex to find paragraph with author name
+                const paraPattern = new RegExp(
+                  `<w:p[^>]{0,500}>(?:(?!</w:p>).){0,10000}?\\b${escapedAuthor}\\b(?:(?!</w:p>).){0,10000}?</w:p>`,
+                  'is'
+                );
+                const paraMatch = referencesXML.match(paraPattern);
+
+                if (paraMatch) {
+                  const fullParaXML = paraMatch[0];
+                  // Extract the text content from the paragraph
+                  const textMatches = fullParaXML.match(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+                  if (textMatches) {
+                    const paragraphText = textMatches
+                      .map(m => m.replace(/<\/?w:t[^>]*>/g, ''))
+                      .join('');
+
+                    logger.info(`[DOCXProcessor] Found paragraph by author "${authorLastName}": "${paragraphText.substring(0, 80)}..."`);
+
+                    // Replace this paragraph's text with placeholder
+                    const replaceResult = this.replaceCitationUniversal(referencesXML, paragraphText.trim(), refPlaceholder);
+                    if (replaceResult.count > 0) {
+                      referencesXML = replaceResult.xml;
+                      // Update placeholder mapping with actual old text from DOCX
+                      referenceSectionPlaceholders.set(refPlaceholder, {
+                        type: change.type,
+                        oldText: paragraphText.trim(),
+                        newText: change.afterText || ''
+                      });
+                      logger.info(`[DOCXProcessor] ✓ ID-based match succeeded for reference ${meta.referenceId}`);
+                      found = true;
+                    }
+                  }
+                } else {
+                  logger.warn(`[DOCXProcessor] Could not find paragraph with author "${authorLastName}" in References`);
+                }
+              }
+            }
+
+            // Fallback: try exact text match
+            if (!found) {
+              const result = this.replaceCitationUniversal(referencesXML, change.beforeText, refPlaceholder);
+              if (result.count > 0) {
+                referencesXML = result.xml;
+                logger.info(`[DOCXProcessor] ✓ Exact text match succeeded`);
+                found = true;
+              } else {
+                // Try with XML-encoded version (& -> &amp;)
+                const xmlEncodedText = change.beforeText.replace(/&/g, '&amp;');
+                if (xmlEncodedText !== change.beforeText) {
+                  const altResult = this.replaceCitationUniversal(referencesXML, xmlEncodedText, refPlaceholder);
+                  if (altResult.count > 0) {
+                    referencesXML = altResult.xml;
+                    logger.info(`[DOCXProcessor] ✓ XML-encoded text match succeeded`);
+                    found = true;
+                  }
+                }
+              }
+            }
+
+            if (!found) {
+              logger.warn(`[DOCXProcessor] ✗ Could not find reference in document (id: ${meta?.referenceId || 'unknown'})`);
+            }
             continue;
           }
 
@@ -2783,6 +2898,31 @@ class DOCXProcessorService {
           }
 
           documentXML = documentXML.replace(pattern, replacement);
+        }
+
+        // PHASE 2.1: Replace reference section placeholders with Track Changes markup
+        for (const [placeholder, info] of referenceSectionPlaceholders) {
+          const pattern = new RegExp(
+            `<w:t([^>]{0,${REGEX_LIMITS.MAX_ATTR_LENGTH}})>([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})` +
+            this.escapeRegex(placeholder) +
+            `([^<]{0,${REGEX_LIMITS.MAX_TEXT_LENGTH}})</w:t>`,
+            'g'
+          );
+
+          const escapedOld = this.escapeXml(info.oldText);
+          const escapedNew = this.escapeXml(info.newText);
+
+          // Reference edits use green highlighting
+          const replacement = `<w:t$1>$2</w:t></w:r>` +
+                            `<w:del w:id="${revisionId}" w:author="${author}" w:date="${revisionDate}">` +
+                            `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${escapedOld}</w:delText></w:r></w:del>` +
+                            `<w:ins w:id="${revisionId + 1}" w:author="${author}" w:date="${revisionDate}">` +
+                            `<w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>${escapedNew}</w:t></w:r></w:ins>` +
+                            `<w:r><w:t>$3</w:t>`;
+          revisionId += 2;
+
+          documentXML = documentXML.replace(pattern, replacement);
+          logger.info(`[DOCXProcessor] Applied track changes to reference section edit`);
         }
 
         // Clean up empty elements
