@@ -1228,9 +1228,9 @@ export class CitationUploadController {
         authors: ref.components?.authors || [],
         year: ref.components?.year || null,
         title: ref.components?.title || 'Untitled',
-        // Map AI sourceType to database value (default to 'JOURNAL_ARTICLE')
-        // AI returns uppercase (JOURNAL_ARTICLE, BOOK, etc.) which matches SOURCE_TYPES constant
-        sourceType: ref.sourceType || 'JOURNAL_ARTICLE',
+        // Map AI sourceType to database value (default to 'journal_article')
+        // Convert to lowercase for frontend compatibility (color badges, labels)
+        sourceType: ref.sourceType?.toLowerCase() || 'journal_article',
         journalName: ref.components?.journal || null,
         volume: ref.components?.volume || null,
         issue: ref.components?.issue || null,
