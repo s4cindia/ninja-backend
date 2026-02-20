@@ -14,6 +14,7 @@ import { Prisma, PrismaPromise } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
+import { referenceListService } from '../../services/citation/reference-list.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 
@@ -30,6 +31,66 @@ function safeAuthorsArray(authors: unknown): string[] {
     return authors.split(',').map(s => s.trim()).filter(s => s.length > 0);
   }
   return [];
+}
+
+/**
+ * Normalize style name to internal style code
+ * Maps display names like "APA", "MLA" to codes like "apa7", "mla9"
+ */
+function normalizeStyleCode(style: string | null | undefined): string {
+  if (!style) return 'apa7';
+
+  const normalized = style.toLowerCase().trim();
+
+  // Direct matches for internal codes
+  if (['apa7', 'mla9', 'chicago17', 'vancouver', 'ieee'].includes(normalized)) {
+    return normalized;
+  }
+
+  // Map display names to internal codes
+  if (normalized.includes('apa')) return 'apa7';
+  if (normalized.includes('mla')) return 'mla9';
+  if (normalized.includes('chicago')) return 'chicago17';
+  if (normalized.includes('vancouver')) return 'vancouver';
+  if (normalized.includes('ieee')) return 'ieee';
+
+  return 'apa7'; // Default fallback
+}
+
+/**
+ * Get the formatted column name for a style code
+ */
+function getFormattedColumn(styleCode: string): 'formattedApa' | 'formattedMla' | 'formattedChicago' | 'formattedVancouver' | 'formattedIeee' {
+  const columns: Record<string, 'formattedApa' | 'formattedMla' | 'formattedChicago' | 'formattedVancouver' | 'formattedIeee'> = {
+    apa7: 'formattedApa',
+    mla9: 'formattedMla',
+    chicago17: 'formattedChicago',
+    vancouver: 'formattedVancouver',
+    ieee: 'formattedIeee',
+  };
+  return columns[styleCode] || 'formattedApa';
+}
+
+/**
+ * Parse authors from JSON value to Author array format
+ */
+function parseAuthorsToArray(authors: Prisma.JsonValue): Array<{ firstName?: string; lastName: string; suffix?: string }> {
+  if (!Array.isArray(authors)) return [];
+
+  return authors.map(a => {
+    if (typeof a === 'string') {
+      // Simple string author - treat as last name
+      return { lastName: a };
+    }
+    if (a && typeof a === 'object' && 'lastName' in a) {
+      return {
+        firstName: (a as { firstName?: string }).firstName,
+        lastName: (a as { lastName: string }).lastName,
+        suffix: (a as { suffix?: string }).suffix
+      };
+    }
+    return { lastName: String(a) };
+  });
 }
 
 export class CitationReferenceController {
@@ -616,22 +677,63 @@ export class CitationReferenceController {
         }
       });
 
+      // Regenerate formatted field based on document's reference list style
+      const styleCode = normalizeStyleCode(reference.document.referenceListStyle);
+      const formattedColumn = getFormattedColumn(styleCode);
+
+      // Build ReferenceEntry object for formatting
+      const entryForFormatting = {
+        id: updatedReference.id,
+        sortKey: updatedReference.sortKey,
+        authors: parseAuthorsToArray(updatedReference.authors),
+        year: updatedReference.year,
+        title: updatedReference.title,
+        sourceType: updatedReference.sourceType,
+        journalName: updatedReference.journalName,
+        volume: updatedReference.volume,
+        issue: updatedReference.issue,
+        pages: updatedReference.pages,
+        publisher: updatedReference.publisher,
+        doi: updatedReference.doi,
+        url: updatedReference.url,
+        enrichmentSource: updatedReference.enrichmentSource,
+        enrichmentConfidence: updatedReference.enrichmentConfidence
+      };
+
+      // Call formatReference to regenerate the formatted text
+      const formatResult = await referenceListService.formatReference(entryForFormatting, styleCode);
+
+      // Update the reference with the new formatted text and mark as edited
+      const finalReference = await prisma.referenceListEntry.update({
+        where: { id: referenceId },
+        data: {
+          [formattedColumn]: formatResult.formatted,
+          isEdited: true,
+          editedAt: new Date()
+        }
+      });
+
+      logger.info(`[CitationReference] Reference ${referenceId} updated and reformatted with ${styleCode} style`);
+
       res.json({
         success: true,
         data: {
           message: 'Reference updated successfully',
           reference: {
-            id: updatedReference.id,
-            authors: updatedReference.authors,
-            year: updatedReference.year,
-            title: updatedReference.title,
-            journalName: updatedReference.journalName,
-            volume: updatedReference.volume,
-            issue: updatedReference.issue,
-            pages: updatedReference.pages,
-            doi: updatedReference.doi,
-            url: updatedReference.url,
-            publisher: updatedReference.publisher
+            id: finalReference.id,
+            authors: finalReference.authors,
+            year: finalReference.year,
+            title: finalReference.title,
+            journalName: finalReference.journalName,
+            volume: finalReference.volume,
+            issue: finalReference.issue,
+            pages: finalReference.pages,
+            doi: finalReference.doi,
+            url: finalReference.url,
+            publisher: finalReference.publisher,
+            [formattedColumn]: formatResult.formatted,
+            isEdited: finalReference.isEdited,
+            editedAt: finalReference.editedAt
           }
         }
       });
