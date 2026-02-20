@@ -1969,12 +1969,18 @@ class DOCXProcessorService {
         for (const ref of currentReferences) {
           if (ref.authors && ref.authors[0]) {
             const authorLastName = ref.authors[0].split(/[,\s]/)[0];
+            // Guard against empty or too-short author names that would create unsafe regex patterns
+            // \b\b (empty) matches at every word boundary, causing wrong replacements
+            if (!authorLastName || authorLastName.length < 2) {
+              logger.debug(`[DOCX Processor] Author name too short for safe matching: "${authorLastName}", skipping regex match`);
+              continue;
+            }
             const escapedAuthor = authorLastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const authorRegex = new RegExp(`\\b${escapedAuthor}\\b`, 'i');
             if (authorRegex.test(fullText)) {
               matchedRefId = ref.id;
               matchedRef = ref;
-              logger.info(`[DOCX Processor] Matched DOCX para ${origNum} (idx ${paraIdx}) to ref "${ref.authors[0]}" (id: ${ref.id})`);
+              logger.debug(`[DOCX Processor] Matched DOCX para ${origNum} (idx ${paraIdx}) to ref "${ref.authors[0]}" (id: ${ref.id})`);
               break;
             }
           }
@@ -2750,7 +2756,11 @@ class DOCXProcessorService {
                 }
               }
 
-              if (authorLastName) {
+              // Guard against empty or too-short author names that would create unsafe regex patterns
+              // \b\b (empty) matches at every word boundary, causing wrong replacements
+              if (!authorLastName || authorLastName.length < 2) {
+                logger.warn(`[DOCXProcessor] Author name too short for safe matching: "${authorLastName || ''}", falling through to exact text match`);
+              } else if (authorLastName && authorLastName.length >= 2) {
                 // Find paragraph containing this author in the References section
                 const escapedAuthor = authorLastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 // Use safe bounded regex to find paragraph with author name

@@ -324,12 +324,16 @@ export class CitationExportController {
               }
 
               // If oldFormatted is NULL (reference was never formatted), generate from components
+              // WARNING: This fallback generates basic APA-style formatting which may differ
+              // from the style-specific formatting shown in the UI (referenceListService.formatReference)
               if (!oldFormatted && oldValues) {
                 oldFormatted = generateBasicFormatted(oldValues);
-                logger.info(`[CitationExport] Generated old formatted text from components: "${oldFormatted.substring(0, 80)}..."`);
+                logger.warn(`[CitationExport] Using fallback formatting for old reference - may differ from UI. Generated: "${oldFormatted.substring(0, 80)}..."`);
               }
 
               // If newFormatted is NULL, generate from current reference
+              // WARNING: This fallback generates basic APA-style formatting which may differ
+              // from the style-specific formatting shown in the UI (referenceListService.formatReference)
               if (!newFormatted && currentRef) {
                 newFormatted = generateBasicFormatted({
                   authors: currentRef.authors as string[] | undefined,
@@ -342,7 +346,7 @@ export class CitationExportController {
                   doi: currentRef.doi,
                   publisher: currentRef.publisher
                 });
-                logger.info(`[CitationExport] Generated new formatted text from current reference: "${newFormatted.substring(0, 80)}..."`);
+                logger.warn(`[CitationExport] Using fallback formatting for new reference - may differ from UI. Generated: "${newFormatted.substring(0, 80)}..."`);
               }
 
               if (oldFormatted && newFormatted && oldFormatted !== newFormatted) {

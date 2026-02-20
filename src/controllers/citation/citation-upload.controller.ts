@@ -1217,7 +1217,7 @@ export class CitationUploadController {
         const oldNum = sortedRefs[i].number ?? (i + 1);
         const newNum = i + 1;
         oldToNewRefNumber.set(oldNum, newNum);
-        logger.info(`[Citation Upload] Reference renumber mapping: ${oldNum} -> ${newNum}`);
+        logger.debug(`[Citation Upload] Reference renumber mapping: ${oldNum} -> ${newNum}`);
       }
 
       const refData = sortedRefs.map((ref, i) => ({
@@ -1249,12 +1249,12 @@ export class CitationUploadController {
       // E.g., [5, 8] becomes [4, 5] if refs were renumbered
       const hasGaps = [...oldToNewRefNumber.entries()].some(([old, newNum]) => old !== newNum);
       if (hasGaps && citationData.length > 0) {
-        logger.info(`[Citation Upload] Reference numbers have gaps, remapping citations...`);
+        logger.debug(`[Citation Upload] Reference numbers have gaps, remapping citations...`);
         for (const citation of citationData) {
           const originalText = citation.rawText;
           citation.rawText = this.remapCitationNumbers(citation.rawText, oldToNewRefNumber);
           if (originalText !== citation.rawText) {
-            logger.info(`[Citation Upload] Remapped citation: "${originalText}" -> "${citation.rawText}"`);
+            logger.debug(`[Citation Upload] Remapped citation: "${originalText}" -> "${citation.rawText}"`);
           }
         }
 
@@ -1275,7 +1275,7 @@ export class CitationUploadController {
               where: { documentId },
               data: updateData
             });
-            logger.info(`[Citation Upload] Updated document content with remapped citation numbers`);
+            logger.debug(`[Citation Upload] Updated document content with remapped citation numbers`);
           }
         }
       }
@@ -1307,10 +1307,10 @@ export class CitationUploadController {
           // Skip author-date citations (e.g., "(Smith, 2021)") to avoid linking year as reference number
           const linkData: { citationId: string; referenceListEntryId: string }[] = [];
 
-          // Debug: Log refNumToId map
-          logger.info(`[Citation Upload] refNumToId map has ${refNumToId.size} entries:`);
+          // Debug: Log refNumToId map (use debug level to avoid noise in production)
+          logger.debug(`[Citation Upload] refNumToId map has ${refNumToId.size} entries`);
           for (const [num, id] of refNumToId) {
-            logger.info(`[Citation Upload]   ${num} -> ${id}`);
+            logger.debug(`[Citation Upload]   ${num} -> ${id}`);
           }
 
           for (const citation of createdCitations) {
@@ -1323,24 +1323,24 @@ export class CitationUploadController {
               /^\([A-Za-z]/.test(citation.rawText); // Starts with (Author
 
             if (isAuthorYear) {
-              logger.info(`[Citation Upload] Skipping author-year citation: "${citation.rawText}"`);
+              logger.debug(`[Citation Upload] Skipping author-year citation: "${citation.rawText}"`);
               continue;
             }
 
             // Use expandNumericRange to properly handle ranges like [3-5] -> [3, 4, 5]
             // This ensures all numbers in a range are linked, not just endpoints
             const nums = this.expandNumericRange(normalizedText);
-            logger.info(`[Citation Upload] Processing citation "${citation.rawText}" -> normalized: "${normalizedText}" -> expanded numbers: ${JSON.stringify(nums)}`);
+            logger.debug(`[Citation Upload] Processing citation "${citation.rawText}" -> normalized: "${normalizedText}" -> expanded numbers: ${JSON.stringify(nums)}`);
 
             if (nums.length > 0) {
               for (const num of nums) {
                 // Skip if number is > 100 (likely a year, not a reference number)
                 if (num > 100) {
-                  logger.info(`[Citation Upload]   Skipping ${num} (likely a year)`);
+                  logger.debug(`[Citation Upload]   Skipping ${num} (likely a year)`);
                   continue;
                 }
                 const refId = refNumToId.get(num);
-                logger.info(`[Citation Upload]   Number ${num} -> refId: ${refId || 'NOT FOUND'}`);
+                logger.debug(`[Citation Upload]   Number ${num} -> refId: ${refId || 'NOT FOUND'}`);
                 if (refId) {
                   linkData.push({
                     citationId: citation.id,

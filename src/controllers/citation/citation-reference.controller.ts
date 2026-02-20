@@ -607,8 +607,15 @@ export class CitationReferenceController {
       // IMPORTANT: Rebuild citation-reference links after renumbering
       // The links need to match the NEW reference numbers in citation text
       // Use the actual document ID, not the param (which could be a job ID)
+      // Note: This runs outside the main transaction. If it fails, the main changes
+      // are already committed but links may be stale. Log warning for reconciliation.
       const actualDocId = referenceToDelete.document.id;
-      await this.rebuildCitationLinks(actualDocId, tenantId);
+      let linksCreated = 0;
+      try {
+        linksCreated = await this.rebuildCitationLinks(actualDocId, tenantId);
+      } catch (linkError) {
+        logger.warn(`[CitationReference] rebuildCitationLinks failed after delete - links may be stale for document ${actualDocId}. Manual reconciliation may be needed.`, linkError instanceof Error ? linkError : undefined);
+      }
 
       res.json({
         success: true,
@@ -617,7 +624,8 @@ export class CitationReferenceController {
           deletedReferenceId: referenceId,
           deletedPosition,
           affectedCitations: affectedCitationIds.length,
-          remainingReferences: remainingReferences.length
+          remainingReferences: remainingReferences.length,
+          linksRebuilt: linksCreated
         }
       });
     } catch (error) {
@@ -1535,7 +1543,14 @@ export class CitationReferenceController {
       }
 
       // IMPORTANT: Rebuild citation-reference links after resequencing
-      const linksCreated = await this.rebuildCitationLinks(document.id, tenantId);
+      // Note: This runs outside the main transaction. If it fails, the main changes
+      // are already committed but links may be stale. Log warning for reconciliation.
+      let linksCreated = 0;
+      try {
+        linksCreated = await this.rebuildCitationLinks(document.id, tenantId);
+      } catch (linkError) {
+        logger.warn(`[CitationReference] rebuildCitationLinks failed after resequence - links may be stale for document ${document.id}. Manual reconciliation may be needed.`, linkError instanceof Error ? linkError : undefined);
+      }
 
       logger.info(`[CitationReference] Resequenced: ${referenceUpdates.length} references, ${citationUpdates.length} citations, ${linksCreated} links for document ${documentId}`);
 
@@ -1544,7 +1559,8 @@ export class CitationReferenceController {
         data: {
           message: 'References resequenced by appearance order',
           mapping: Object.fromEntries(oldToNewNumber),
-          citationsUpdated: citationUpdates.length
+          citationsUpdated: citationUpdates.length,
+          linksRebuilt: linksCreated
         }
       });
     } catch (error) {
