@@ -26,6 +26,7 @@ import batchRoutes from "./batch.routes";
 import citationRoutes from "../services/citation/citation.routes";
 import citationManagementRoutes from "./citation-management.routes";
 import pdfRemediationRoutes from "./pdf-remediation.routes";
+import workflowRoutes from "./workflow.routes";
 
 const router = Router();
 
@@ -105,5 +106,6 @@ router.use("/batch", batchRoutes);
 router.use("/citation", citationRoutes);
 router.use("/citation-management", citationManagementRoutes);
 router.use("/pdf", pdfRemediationRoutes);
+router.use("/workflows", workflowRoutes);
 
 export default router;
