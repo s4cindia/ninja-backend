@@ -1,4 +1,5 @@
 import { Server } from 'socket.io';
+import type { Server as HTTPServer } from 'http';
 import {
   WorkflowStateChangeEvent,
   HITLRequiredEvent,
@@ -11,7 +12,7 @@ import { logger } from '../../lib/logger';
 class WebSocketService {
   private io: Server | null = null;
 
-  initialize(httpServer: any): void {
+  initialize(httpServer: HTTPServer): void {
     this.io = new Server(httpServer, { cors: { origin: '*' } });
 
     this.io.on('connection', socket => {

@@ -91,7 +91,7 @@ function serverError(res: Response, err: unknown, code: string) {
 
 class WorkflowController {
   /** POST /workflows */
-  async startWorkflow(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async startWorkflow(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const parsed = startWorkflowSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -107,7 +107,7 @@ class WorkflowController {
   }
 
   /** GET /workflows/:id */
-  async getWorkflowStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async getWorkflowStatus(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const parsed = workflowParamsSchema.safeParse(req.params);
       if (!parsed.success) {
@@ -145,7 +145,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/pause */
-  async pauseWorkflow(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async pauseWorkflow(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       await workflowService.transition(id, 'PAUSE');
@@ -156,7 +156,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/resume */
-  async resumeWorkflow(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async resumeWorkflow(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       await workflowService.transition(id, 'RESUME');
@@ -167,7 +167,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/cancel */
-  async cancelWorkflow(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async cancelWorkflow(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       await workflowService.transition(id, 'CANCEL');
@@ -178,7 +178,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/retry */
-  async retryWorkflow(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async retryWorkflow(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       await workflowService.transition(id, 'RETRY');
@@ -189,7 +189,7 @@ class WorkflowController {
   }
 
   /** GET /workflows/:id/timeline */
-  async getTimeline(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async getTimeline(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       const events = await prisma.workflowEvent.findMany({
@@ -203,7 +203,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/hitl/ai-review */
-  async submitAIReview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async submitAIReview(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       const parsed = aiReviewDecisionSchema.safeParse(req.body);
@@ -225,7 +225,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/hitl/remediation-fix */
-  async submitRemediationFix(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async submitRemediationFix(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       const parsed = remediationFixSchema.safeParse(req.body);
@@ -259,7 +259,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/hitl/conformance-review */
-  async submitConformanceReview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async submitConformanceReview(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       const parsed = conformanceReviewSchema.safeParse(req.body);
@@ -281,7 +281,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/:id/hitl/acr-signoff */
-  async submitACRSignoff(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async submitACRSignoff(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
       const parsed = acrSignoffSchema.safeParse(req.body);
@@ -310,7 +310,7 @@ class WorkflowController {
   }
 
   /** POST /workflows/batch */
-  async startBatch(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async startBatch(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const parsed = startBatchSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -343,7 +343,7 @@ class WorkflowController {
   }
 
   /** GET /workflows/batch/:batchId */
-  async getBatchDashboard(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async getBatchDashboard(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { batchId } = req.params;
       const batch = await prisma.batchWorkflow.findUnique({
