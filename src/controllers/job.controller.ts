@@ -4,6 +4,8 @@ import { queueService } from '../services/queue.service';
 import { AppError } from '../utils/app-error';
 import { ErrorCodes } from '../utils/error-codes';
 import { JobType } from '../queues';
+import { workflowService } from '../services/workflow/workflow.service';
+import { logger } from '../lib/logger';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -93,9 +95,30 @@ export class JobController {
 
       const job = await queueService.getJobStatus(jobId, req.user.tenantId);
 
+      // ═══════════════════════════════════════════════════════════════
+      // 🔄 Sprint 9: Automatically create workflow for this job
+      // ═══════════════════════════════════════════════════════════════
+      let workflowId: string | undefined;
+      try {
+        if (fileId) {
+          logger.info(`[Job Controller] Creating workflow for job ${jobId}, file ${fileId}`);
+          const workflow = await workflowService.createWorkflow(fileId, req.user.id);
+          workflowId = workflow.id;
+          logger.info(`[Job Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+        } else {
+          logger.warn(`[Job Controller] No fileId provided, skipping workflow creation for job ${jobId}`);
+        }
+      } catch (workflowError) {
+        // Don't fail the job creation if workflow creation fails
+        logger.error(`[Job Controller] Failed to create workflow for job ${jobId}:`, workflowError);
+      }
+
       res.status(201).json({
         success: true,
-        data: job,
+        data: {
+          ...job,
+          workflowId, // Include workflow ID in response
+        },
       });
     } catch (error) {
       next(error);
