@@ -110,7 +110,7 @@ export class JobController {
         }
       } catch (workflowError) {
         // Don't fail the job creation if workflow creation fails
-        logger.error(`[Job Controller] Failed to create workflow for job ${jobId}:`, workflowError);
+        logger.error(`[Job Controller] Failed to create workflow for job ${jobId}`, workflowError);
       }
 
       res.status(201).json({

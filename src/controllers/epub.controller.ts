@@ -197,6 +197,7 @@ export const epubController = {
       let workflowId: string | undefined;
       try {
         // Create a File record for this EPUB (needed for workflow)
+        const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
         const fileRecord = await prisma.file.create({
           data: {
             id: nanoid(),
@@ -205,7 +206,7 @@ export const epubController = {
             originalName: req.file.originalname,
             mimeType: req.file.mimetype || 'application/epub+zip',
             size: req.file.size,
-            path: `/data/epub-storage/${job.id}/${req.file.originalname}`,
+            path: `${storagePath}/${job.id}/${req.file.originalname}`,
             status: 'UPLOADED',
           },
         });
@@ -217,7 +218,7 @@ export const epubController = {
         logger.info(`[EPUB Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
       } catch (workflowError) {
         // Don't fail the EPUB audit if workflow creation fails
-        logger.error(`[EPUB Controller] Failed to create workflow for job ${job.id}:`, workflowError);
+        logger.error(`[EPUB Controller] Failed to create workflow for job ${job.id}`, workflowError);
       }
 
       return res.json({

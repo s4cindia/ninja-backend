@@ -595,6 +595,7 @@ export class PdfController {
       let workflowId: string | undefined;
       try {
         // Create a File record for this PDF (needed for workflow)
+        const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
         const fileRecord = await prisma.file.create({
           data: {
             id: nanoid(),
@@ -603,7 +604,7 @@ export class PdfController {
             originalName: req.file.originalname,
             mimeType: req.file.mimetype || 'application/pdf',
             size: req.file.size,
-            path: `/data/pdf-storage/${job.id}/${req.file.originalname}`,
+            path: `${storagePath}/${job.id}/${req.file.originalname}`,
             status: 'UPLOADED',
           },
         });
@@ -615,7 +616,7 @@ export class PdfController {
         logger.info(`[PDF Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
       } catch (workflowError) {
         // Don't fail the PDF audit if workflow creation fails
-        logger.error(`[PDF Controller] Failed to create workflow for job ${job.id}:`, workflowError);
+        logger.error(`[PDF Controller] Failed to create workflow for job ${job.id}`, workflowError);
       }
 
       return res.status(200).json({
