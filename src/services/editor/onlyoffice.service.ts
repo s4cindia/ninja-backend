@@ -108,6 +108,14 @@ export interface EditorSession {
   config: OnlyOfficeConfig;
 }
 
+export interface DocumentInfo {
+  id: string;
+  fileName: string;
+  originalName: string;
+  storagePath: string;
+  storageType: string;
+}
+
 export interface CallbackData {
   key: string;
   status: number;
@@ -127,6 +135,7 @@ export interface CallbackData {
   }>;
   lastsave?: string;
   notmodified?: boolean;
+  token?: string; // JWT token when JWT_IN_BODY=true
 }
 
 // OnlyOffice callback status codes
@@ -180,30 +189,19 @@ class OnlyOfficeService {
 
   /**
    * Create an editor session for a document
+   * @param document - Document info (pre-fetched by controller to avoid duplicate query)
+   * @param userId - User creating the session
+   * @param userName - Display name for OnlyOffice
+   * @param mode - 'edit' or 'view'
    */
   async createSession(
-    documentId: string,
+    document: DocumentInfo,
     userId: string,
     userName: string,
     mode: 'edit' | 'view' = 'edit'
   ): Promise<EditorSession> {
+    const documentId = document.id;
     logger.info(`[OnlyOffice] Creating session for document ${documentId}`);
-
-    // Get document info
-    const document = await prisma.editorialDocument.findUnique({
-      where: { id: documentId },
-      select: {
-        id: true,
-        fileName: true,
-        originalName: true,
-        storagePath: true,
-        storageType: true,
-      },
-    });
-
-    if (!document) {
-      throw new Error('Document not found');
-    }
 
     // Generate session key
     const sessionKey = this.generateDocumentKey(documentId);
@@ -481,11 +479,20 @@ class OnlyOfficeService {
         return false;
       }
 
-      // In production, only allow OnlyOffice server and Docker network names
+      // In production, only allow OnlyOffice server and configured Docker/ECS network names
       // In development, also allow localhost for local testing
-      const allowedHosts = NODE_ENV === 'production'
+      // ONLYOFFICE_ALLOWED_HOSTS can be set to comma-separated list of additional hostnames
+      // (e.g., ECS Service Discovery names like "onlyoffice.ninja.local")
+      const additionalHosts = (process.env.ONLYOFFICE_ALLOWED_HOSTS || '')
+        .split(',')
+        .map(h => h.trim())
+        .filter(h => h.length > 0);
+
+      const baseHosts = NODE_ENV === 'production'
         ? [serverUrl.hostname, 'onlyoffice-documentserver', 'ninja-onlyoffice']
         : [serverUrl.hostname, 'localhost', '127.0.0.1', 'onlyoffice-documentserver', 'ninja-onlyoffice'];
+
+      const allowedHosts = [...baseHosts, ...additionalHosts];
 
       if (!allowedHosts.includes(parsedUrl.hostname)) {
         return false;

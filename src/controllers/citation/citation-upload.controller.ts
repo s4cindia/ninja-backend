@@ -1790,7 +1790,11 @@ export class CitationUploadController {
 
   /**
    * GET /api/v1/citation-management/documents
-   * List all editorial documents for the current user's tenant
+   * List editorial documents for the current user's tenant with pagination
+   *
+   * Query params:
+   * - limit: number (default 50, max 100)
+   * - offset: number (default 0)
    *
    * COORDINATION NOTE: This endpoint was added to support the Editorial Dashboard
    * feature (PR #217 - Editorial Services Module 1). It is a read-only listing
@@ -1813,22 +1817,44 @@ export class CitationUploadController {
 
       const { tenantId } = req.user;
 
-      const documents = await prisma.editorialDocument.findMany({
-        where: { tenantId },
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          fileName: true,
-          originalName: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-        }
-      });
+      // Parse pagination params with defaults and limits
+      const limit = Math.min(
+        Math.max(1, parseInt(req.query.limit as string, 10) || 50),
+        100
+      );
+      const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
+
+      const where = { tenantId };
+
+      const [total, documents] = await Promise.all([
+        prisma.editorialDocument.count({ where }),
+        prisma.editorialDocument.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            fileName: true,
+            originalName: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          take: limit,
+          skip: offset,
+        }),
+      ]);
 
       res.json({
         success: true,
-        data: { documents }
+        data: {
+          documents,
+          pagination: {
+            total,
+            limit,
+            offset,
+            hasMore: offset + documents.length < total,
+          },
+        },
       });
     } catch (error) {
       logger.error('[Citation Upload] getDocuments failed:', error);

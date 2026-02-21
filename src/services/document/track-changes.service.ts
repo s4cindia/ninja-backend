@@ -125,7 +125,7 @@ class TrackChangesService {
     documentId: string,
     options?: { status?: DocumentChangeStatus; limit?: number; offset?: number }
   ): Promise<{ changes: DocumentChange[]; total: number }> {
-    const limit = Math.min(options?.limit || 100, 500); // Max 500 per page
+    const limit = Math.min(options?.limit || 100, 100); // Max 100 per page (large text fields)
     const offset = options?.offset || 0;
 
     const where = {

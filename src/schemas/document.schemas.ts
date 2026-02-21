@@ -68,7 +68,9 @@ export const createChangeSchema = z.object({
 
 export const bulkActionSchema = z.object({
   action: z.enum(['accept', 'reject']),
-  changeIds: z.array(z.string().uuid('Invalid change ID')).min(1, 'At least one changeId is required'),
+  changeIds: z.array(z.string().uuid('Invalid change ID'))
+    .min(1, 'At least one changeId is required')
+    .max(500, 'Cannot process more than 500 changes at once'),
 });
 
 export const changesQuerySchema = z.object({
@@ -77,7 +79,8 @@ export const changesQuerySchema = z.object({
     if (!val) return 100;
     const parsed = parseInt(val, 10);
     if (isNaN(parsed)) return 100;
-    return Math.min(Math.max(parsed, 1), 500);
+    // Cap at 100 to limit payload size (beforeText/afterText can be large)
+    return Math.min(Math.max(parsed, 1), 100);
   }),
   offset: z.string().optional().transform((val) => {
     if (!val) return 0;

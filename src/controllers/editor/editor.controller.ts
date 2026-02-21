@@ -18,6 +18,7 @@ import { EditorSessionStatus } from '@prisma/client';
 import {
   onlyOfficeService,
   CallbackData,
+  DocumentInfo,
 } from '../../services/editor/onlyoffice.service';
 
 export class EditorController {
@@ -43,9 +44,16 @@ export class EditorController {
       });
 
       // Verify document exists and belongs to tenant
+      // Fetch all fields needed by onlyOfficeService to avoid duplicate query
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
-        select: { id: true, originalName: true },
+        select: {
+          id: true,
+          fileName: true,
+          originalName: true,
+          storagePath: true,
+          storageType: true,
+        },
       });
 
       if (!document) {
@@ -60,8 +68,17 @@ export class EditorController {
         ? `${user.firstName} ${user.lastName}`.trim() || user.email
         : 'User';
 
+      // Pass document info to service to avoid duplicate DB query
+      const documentInfo: DocumentInfo = {
+        id: document.id,
+        fileName: document.fileName,
+        originalName: document.originalName,
+        storagePath: document.storagePath,
+        storageType: document.storageType,
+      };
+
       const session = await onlyOfficeService.createSession(
-        documentId,
+        documentInfo,
         userId,
         userName,
         mode
@@ -157,9 +174,17 @@ export class EditorController {
       }
 
       // JWT verification is REQUIRED unless explicitly disabled in development
+      // OnlyOffice can send JWT in Authorization header OR body (based on JWT_IN_BODY config)
       if (onlyOfficeService.isJwtVerificationRequired()) {
+        // Try Authorization header first
         const authHeader = req.headers['authorization'] || '';
-        const token = authHeader.replace(/^bearer\s+/i, '');
+        let token = authHeader.replace(/^bearer\s+/i, '');
+
+        // If not in header, check body (JWT_IN_BODY=true in docker-compose)
+        if (!token && data.token) {
+          token = data.token;
+        }
+
         if (!token) {
           logger.warn(`[Editor] Missing JWT token for session ${sessionId}`);
           res.status(401).json({ error: 1 });
