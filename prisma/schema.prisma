@@ -1398,6 +1398,8 @@ model DocumentVersion {
   snapshot     Json     // Full document state or delta
   snapshotType String   @default("full") // "full" | "delta"
 
+  changes      DocumentChange[]
+
   @@unique([documentId, version])
   @@index([documentId])
   @@index([createdAt])
@@ -1407,6 +1409,7 @@ model DocumentChange {
   id           String             @id @default(uuid())
   documentId   String
   versionId    String?
+  version      DocumentVersion?   @relation(fields: [versionId], references: [id], onDelete: SetNull)
   changeType   DocumentChangeType
   status       DocumentChangeStatus @default(PENDING)
   startOffset  Int
@@ -1494,18 +1497,28 @@ model ComplianceCheck {
 // ============================================================
 
 model EditorSession {
-  id           String    @id @default(uuid())
+  id           String              @id @default(uuid())
   documentId   String
   userId       String
-  sessionKey   String    @unique // OnlyOffice document key
-  status       String    @default("active") // "active", "editing", "saving", "closed"
-  lastActivity DateTime  @default(now())
-  createdAt    DateTime  @default(now())
+  sessionKey   String              @unique // OnlyOffice document key
+  status       EditorSessionStatus @default(ACTIVE)
+  lastActivity DateTime            @default(now())
+  createdAt    DateTime            @default(now())
   expiresAt    DateTime
-  metadata     Json?     // OnlyOffice session metadata
+  metadata     Json?               // OnlyOffice session metadata
 
   @@index([documentId])
   @@index([userId])
   @@index([sessionKey])
   @@index([status])
+}
+
+enum EditorSessionStatus {
+  ACTIVE
+  EDITING
+  SAVING
+  SAVED
+  CLOSED
+  EXPIRED
+  ERROR
 }

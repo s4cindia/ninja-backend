@@ -23,6 +23,9 @@ import {
   CreateChangeInput,
 } from '../../services/document/track-changes.service';
 
+// Valid status values for validation
+const VALID_STATUS_VALUES = Object.values(DocumentChangeStatus);
+
 export class TrackChangesController {
   /**
    * GET /api/v1/document/:documentId/changes
@@ -52,12 +55,27 @@ export class TrackChangesController {
         return;
       }
 
-      const changeStatus = status
-        ? (status as DocumentChangeStatus)
-        : undefined;
-      const changes = await trackChangesService.getChangesByDocument(
+      // Validate status enum if provided
+      let changeStatus: DocumentChangeStatus | undefined;
+      if (status) {
+        if (!VALID_STATUS_VALUES.includes(status as DocumentChangeStatus)) {
+          res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_STATUS',
+              message: `Invalid status value. Must be one of: ${VALID_STATUS_VALUES.join(', ')}`,
+            },
+          });
+          return;
+        }
+        changeStatus = status as DocumentChangeStatus;
+      }
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+      const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+
+      const { changes, total } = await trackChangesService.getChangesByDocument(
         documentId,
-        changeStatus
+        { status: changeStatus, limit, offset }
       );
 
       res.json({
@@ -65,7 +83,9 @@ export class TrackChangesController {
         data: {
           documentId,
           changes,
-          total: changes.length,
+          total,
+          limit,
+          offset,
         },
       });
     } catch (error) {

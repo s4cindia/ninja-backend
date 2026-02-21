@@ -14,6 +14,7 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { EditorSessionStatus } from '@prisma/client';
 import {
   onlyOfficeService,
   CallbackData,
@@ -155,9 +156,15 @@ export class EditorController {
         return;
       }
 
-      // Verify token if present
-      const token = req.headers['authorization']?.replace('Bearer ', '');
-      if (token) {
+      // JWT verification is REQUIRED unless explicitly disabled in development
+      if (onlyOfficeService.isJwtVerificationRequired()) {
+        const token = req.headers['authorization']?.replace('Bearer ', '');
+        if (!token) {
+          logger.warn(`[Editor] Missing JWT token for session ${sessionId}`);
+          res.status(401).json({ error: 1 });
+          return;
+        }
+
         const verified = onlyOfficeService.verifyToken(token);
         if (!verified) {
           logger.warn(`[Editor] Invalid token for session ${sessionId}`);
@@ -178,6 +185,14 @@ export class EditorController {
    * GET /api/v1/editor/document/:sessionId
    * Serve document content to OnlyOffice
    * This endpoint is called by OnlyOffice, not by users
+   *
+   * Security Model:
+   * - Access is controlled by OnlyOffice-embedded signed JWT configuration
+   * - Session IDs are cryptographically random UUIDs with 1-hour expiry
+   * - Session state (ACTIVE/EDITING) and expiry are validated before serving
+   * - OnlyOffice callbacks use JWT verification when enabled
+   * - This endpoint does not require user authentication as OnlyOffice
+   *   server requests cannot carry user auth tokens
    */
   async serveDocument(
     req: Request,
@@ -188,6 +203,42 @@ export class EditorController {
       const { sessionId } = req.params;
 
       logger.info(`[Editor] Serving document for session ${sessionId}`);
+
+      // Validate session exists and is in valid state
+      const session = await prisma.editorSession.findUnique({
+        where: { id: sessionId },
+        select: { id: true, status: true, expiresAt: true },
+      });
+
+      if (!session) {
+        logger.warn(`[Editor] Session not found: ${sessionId}`);
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Session not found' },
+        });
+        return;
+      }
+
+      // Check session is not expired
+      if (session.expiresAt < new Date()) {
+        logger.warn(`[Editor] Session expired: ${sessionId}`);
+        res.status(410).json({
+          success: false,
+          error: { code: 'SESSION_EXPIRED', message: 'Session has expired' },
+        });
+        return;
+      }
+
+      // Check session is in valid state (active or editing)
+      const validStates: EditorSessionStatus[] = [EditorSessionStatus.ACTIVE, EditorSessionStatus.EDITING];
+      if (!validStates.includes(session.status as EditorSessionStatus)) {
+        logger.warn(`[Editor] Session in invalid state: ${sessionId} (${session.status})`);
+        res.status(403).json({
+          success: false,
+          error: { code: 'INVALID_SESSION_STATE', message: 'Session is not active' },
+        });
+        return;
+      }
 
       const buffer = await onlyOfficeService.getDocumentContent(sessionId);
 
@@ -318,13 +369,11 @@ export class EditorController {
         return;
       }
 
-      const activeCount =
-        await onlyOfficeService.getActiveSessionsForDocument(documentId);
-
+      // Single query to get sessions - derive count from array length for consistency
       const sessions = await prisma.editorSession.findMany({
         where: {
           documentId,
-          status: { in: ['active', 'editing'] },
+          status: { in: [EditorSessionStatus.ACTIVE, EditorSessionStatus.EDITING] },
           expiresAt: { gt: new Date() },
         },
         select: {
@@ -340,7 +389,7 @@ export class EditorController {
         success: true,
         data: {
           documentId,
-          activeCount,
+          activeCount: sessions.length,
           sessions,
         },
       });

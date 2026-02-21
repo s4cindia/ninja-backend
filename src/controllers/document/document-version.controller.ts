@@ -47,7 +47,13 @@ export class DocumentVersionController {
         return;
       }
 
-      const versions = await documentVersioningService.getVersions(documentId);
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+      const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+
+      const { versions, total } = await documentVersioningService.getVersions(
+        documentId,
+        { limit, offset }
+      );
 
       res.json({
         success: true,
@@ -61,7 +67,9 @@ export class DocumentVersionController {
             changeLogSummary: `${v.changeLog.length} changes`,
             snapshotType: v.snapshotType,
           })),
-          total: versions.length,
+          total,
+          limit,
+          offset,
         },
       });
     } catch (error) {

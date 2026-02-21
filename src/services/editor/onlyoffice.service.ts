@@ -21,16 +21,38 @@ import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../citation/citation-storage.service';
+import { documentVersioningService } from '../document/document-versioning.service';
+import { EditorSessionStatus } from '@prisma/client';
 
 // Get API URL from environment
 const API_URL = process.env.API_URL || 'http://localhost:3001';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Insecure default secrets that must not be used in production
+const INSECURE_SECRETS = ['your-onlyoffice-jwt-secret', 'dev-only-secret-not-for-production', ''];
+
+// Validate required secrets in production
+if (NODE_ENV === 'production') {
+  const jwtSecret = process.env.ONLYOFFICE_JWT_SECRET;
+  if (!jwtSecret || INSECURE_SECRETS.includes(jwtSecret)) {
+    throw new Error(
+      'ONLYOFFICE_JWT_SECRET environment variable must be set to a secure value in production. ' +
+      'Set ONLYOFFICE_JWT_SECRET to a strong random string (32+ characters).'
+    );
+  }
+}
+
+// Fetch timeout for OnlyOffice document downloads (in milliseconds)
+const FETCH_TIMEOUT_MS = 15000; // 15 seconds
 
 // OnlyOffice configuration
 const ONLYOFFICE_CONFIG = {
   documentServerUrl: process.env.ONLYOFFICE_URL || 'http://localhost:8080',
-  jwtSecret: process.env.ONLYOFFICE_JWT_SECRET || 'your-onlyoffice-jwt-secret',
+  jwtSecret: process.env.ONLYOFFICE_JWT_SECRET || (NODE_ENV === 'development' ? 'dev-only-secret-not-for-production' : ''),
   callbackUrl: process.env.ONLYOFFICE_CALLBACK_URL || `${API_URL}/api/v1/editor/callback`,
   documentUrl: process.env.ONLYOFFICE_DOCUMENT_URL || `${API_URL}/api/v1/editor/document`,
+  // Skip JWT verification only in development with explicit flag
+  skipJwtVerification: NODE_ENV === 'development' && process.env.ONLYOFFICE_SKIP_JWT === 'true',
 };
 
 export interface OnlyOfficeConfig {
@@ -48,6 +70,9 @@ export interface OnlyOfficeConfig {
     };
   };
   documentType: string;
+  type?: string; // "desktop" | "mobile" | "embedded"
+  width?: string;
+  height?: string;
   editorConfig: {
     callbackUrl: string;
     lang: string;
@@ -146,6 +171,14 @@ class OnlyOfficeService {
   }
 
   /**
+   * Check if JWT verification should be required
+   * Only skip in development with explicit flag
+   */
+  isJwtVerificationRequired(): boolean {
+    return !ONLYOFFICE_CONFIG.skipJwtVerification;
+  }
+
+  /**
    * Create an editor session for a document
    */
   async createSession(
@@ -184,11 +217,13 @@ class OnlyOfficeService {
         documentId,
         userId,
         sessionKey,
-        status: 'active',
+        status: EditorSessionStatus.ACTIVE,
         expiresAt,
         metadata: {
           documentName: document.originalName,
           storageType: document.storageType,
+          userName,
+          mode,
         },
       },
     });
@@ -209,6 +244,9 @@ class OnlyOfficeService {
         },
       },
       documentType: 'word',
+      type: 'desktop',
+      width: '100%',
+      height: '100%',
       editorConfig: {
         callbackUrl: `${ONLYOFFICE_CONFIG.callbackUrl}?sessionId=${session.id}`,
         lang: 'en',
@@ -265,6 +303,54 @@ class OnlyOfficeService {
       return null;
     }
 
+    // Rebuild the OnlyOffice config from stored metadata
+    const metadata = session.metadata as { documentName?: string; storageType?: string; userName?: string; mode?: string } | null;
+
+    const config: OnlyOfficeConfig = {
+      document: {
+        fileType: 'docx',
+        key: session.sessionKey,
+        title: metadata?.documentName || 'Document',
+        url: `${ONLYOFFICE_CONFIG.documentUrl}/${session.id}`,
+        permissions: {
+          comment: true,
+          download: true,
+          edit: metadata?.mode !== 'view',
+          print: true,
+          review: true,
+        },
+      },
+      documentType: 'word',
+      type: 'desktop',
+      width: '100%',
+      height: '100%',
+      editorConfig: {
+        callbackUrl: `${ONLYOFFICE_CONFIG.callbackUrl}?sessionId=${session.id}`,
+        lang: 'en',
+        mode: metadata?.mode || 'edit',
+        user: {
+          id: session.userId,
+          name: metadata?.userName || 'User',
+        },
+        customization: {
+          autosave: true,
+          chat: false,
+          comments: true,
+          compactHeader: false,
+          compactToolbar: false,
+          feedback: false,
+          forcesave: true,
+          help: true,
+          hideRightMenu: false,
+          showReviewChanges: false,
+          trackChanges: false,
+        },
+      },
+    };
+
+    // Sign the config
+    config.token = this.signConfig(config);
+
     return {
       id: session.id,
       documentId: session.documentId,
@@ -272,7 +358,7 @@ class OnlyOfficeService {
       sessionKey: session.sessionKey,
       status: session.status,
       expiresAt: session.expiresAt,
-      config: session.metadata as unknown as OnlyOfficeConfig,
+      config,
     };
   }
 
@@ -340,7 +426,7 @@ class OnlyOfficeService {
         await prisma.editorSession.update({
           where: { id: sessionId },
           data: {
-            status: 'editing',
+            status: EditorSessionStatus.EDITING,
             lastActivity: new Date(),
           },
         });
@@ -353,7 +439,7 @@ class OnlyOfficeService {
             await this.saveDocument(session.documentId, data.url, session.userId);
             await prisma.editorSession.update({
               where: { id: sessionId },
-              data: { status: 'saved' },
+              data: { status: EditorSessionStatus.SAVED },
             });
           } catch (error) {
             logger.error(`[OnlyOffice] Error saving document: ${error}`);
@@ -373,12 +459,37 @@ class OnlyOfficeService {
         logger.error(`[OnlyOffice] Save error for session ${sessionId}`);
         await prisma.editorSession.update({
           where: { id: sessionId },
-          data: { status: 'error' },
+          data: { status: EditorSessionStatus.ERROR },
         });
         break;
     }
 
     return { error: 0 };
+  }
+
+  /**
+   * Validate that a URL is from the OnlyOffice document server
+   * Prevents SSRF attacks by ensuring we only fetch from trusted sources
+   */
+  private isValidOnlyOfficeUrl(url: string): boolean {
+    try {
+      const parsedUrl = new URL(url);
+      const serverUrl = new URL(ONLYOFFICE_CONFIG.documentServerUrl);
+
+      // Allow URLs from the OnlyOffice server or localhost variants
+      const allowedHosts = [
+        serverUrl.hostname,
+        'localhost',
+        '127.0.0.1',
+        // Docker network names
+        'onlyoffice-documentserver',
+        'ninja-onlyoffice',
+      ];
+
+      return allowedHosts.includes(parsedUrl.hostname);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -391,8 +502,29 @@ class OnlyOfficeService {
   ): Promise<void> {
     logger.info(`[OnlyOffice] Saving document ${documentId} from ${documentUrl}`);
 
-    // Fetch the document from OnlyOffice
-    const response = await fetch(documentUrl);
+    // SSRF Protection: Validate the document URL is from OnlyOffice
+    if (!this.isValidOnlyOfficeUrl(documentUrl)) {
+      logger.error(`[OnlyOffice] SSRF attempt blocked - invalid documentUrl: ${documentUrl}`);
+      throw new Error('Invalid document URL - must be from OnlyOffice server');
+    }
+
+    // Fetch the document from OnlyOffice with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(documentUrl, { signal: controller.signal });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Fetch timeout: OnlyOffice document download exceeded ${FETCH_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to fetch document: ${response.statusText}`);
     }
@@ -433,9 +565,7 @@ class OnlyOfficeService {
       },
     });
 
-    // Create a version snapshot (imports from document versioning)
-    const { documentVersioningService } = await import('../document/document-versioning.service');
-
+    // Create a version snapshot
     const documentContent = await prisma.editorialDocumentContent.findUnique({
       where: { documentId },
     });
@@ -462,7 +592,7 @@ class OnlyOfficeService {
   async closeSession(sessionId: string): Promise<void> {
     await prisma.editorSession.update({
       where: { id: sessionId },
-      data: { status: 'closed' },
+      data: { status: EditorSessionStatus.CLOSED },
     });
     logger.info(`[OnlyOffice] Session ${sessionId} closed`);
   }
@@ -496,7 +626,7 @@ class OnlyOfficeService {
     return prisma.editorSession.count({
       where: {
         documentId,
-        status: { in: ['active', 'editing'] },
+        status: { in: [EditorSessionStatus.ACTIVE, EditorSessionStatus.EDITING] },
         expiresAt: { gt: new Date() },
       },
     });
@@ -509,9 +639,9 @@ class OnlyOfficeService {
     const result = await prisma.editorSession.updateMany({
       where: {
         expiresAt: { lt: new Date() },
-        status: { not: 'closed' },
+        status: { not: EditorSessionStatus.CLOSED },
       },
-      data: { status: 'expired' },
+      data: { status: EditorSessionStatus.EXPIRED },
     });
 
     if (result.count > 0) {

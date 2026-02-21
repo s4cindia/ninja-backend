@@ -199,6 +199,40 @@ function generateChangeLog(
     });
   }
 
+  // Track individual citation changes
+  const prevCiteMap = new Map(prevCites.map((c) => [c.id, c]));
+  const currCiteMap = new Map(currCites.map((c) => [c.id, c]));
+
+  for (const [citeId, currCite] of currCiteMap) {
+    const prevCite = prevCiteMap.get(citeId);
+    if (!prevCite) {
+      changes.push({
+        field: `citation.${citeId}`,
+        previousValue: null,
+        newValue: 'added',
+        reason,
+      });
+    } else if (prevCite.rawText !== currCite.rawText) {
+      changes.push({
+        field: `citation.${citeId}.rawText`,
+        previousValue: prevCite.rawText.substring(0, 50) + (prevCite.rawText.length > 50 ? '...' : ''),
+        newValue: currCite.rawText.substring(0, 50) + (currCite.rawText.length > 50 ? '...' : ''),
+        reason,
+      });
+    }
+  }
+
+  for (const [citeId] of prevCiteMap) {
+    if (!currCiteMap.has(citeId)) {
+      changes.push({
+        field: `citation.${citeId}`,
+        previousValue: 'existed',
+        newValue: null,
+        reason: reason || 'Citation removed',
+      });
+    }
+  }
+
   return changes;
 }
 
@@ -289,24 +323,40 @@ class DocumentVersioningService {
   }
 
   /**
-   * Get all versions of a document
+   * Get all versions of a document with pagination
    */
-  async getVersions(documentId: string): Promise<DocumentVersion[]> {
-    const versions = await prisma.documentVersion.findMany({
-      where: { documentId },
-      orderBy: { version: 'desc' },
-    });
+  async getVersions(
+    documentId: string,
+    options?: { limit?: number; offset?: number }
+  ): Promise<{ versions: DocumentVersion[]; total: number }> {
+    const limit = Math.min(options?.limit || 50, 100); // Max 100 per page
+    const offset = options?.offset || 0;
 
-    return versions.map((v) => ({
-      id: v.id,
-      documentId: v.documentId,
-      version: v.version,
-      createdAt: v.createdAt,
-      createdBy: v.createdBy,
-      changeLog: v.changeLog as unknown as ChangeLogEntry[],
-      snapshot: v.snapshot as unknown as DocumentSnapshot,
-      snapshotType: v.snapshotType as 'full' | 'delta',
-    }));
+    const [versions, total] = await Promise.all([
+      prisma.documentVersion.findMany({
+        where: { documentId },
+        orderBy: { version: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.documentVersion.count({
+        where: { documentId },
+      }),
+    ]);
+
+    return {
+      versions: versions.map((v) => ({
+        id: v.id,
+        documentId: v.documentId,
+        version: v.version,
+        createdAt: v.createdAt,
+        createdBy: v.createdBy,
+        changeLog: v.changeLog as unknown as ChangeLogEntry[],
+        snapshot: v.snapshot as unknown as DocumentSnapshot,
+        snapshotType: v.snapshotType as 'full' | 'delta',
+      })),
+      total,
+    };
   }
 
   /**

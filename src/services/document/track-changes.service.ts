@@ -113,28 +113,44 @@ class TrackChangesService {
   }
 
   /**
-   * Get all changes for a document
+   * Get all changes for a document with pagination
    */
   async getChangesByDocument(
     documentId: string,
-    status?: DocumentChangeStatus
-  ): Promise<DocumentChange[]> {
-    const changes = await prisma.documentChange.findMany({
-      where: {
-        documentId,
-        ...(status && { status }),
-      },
-      orderBy: { startOffset: 'asc' },
-    });
+    options?: { status?: DocumentChangeStatus; limit?: number; offset?: number }
+  ): Promise<{ changes: DocumentChange[]; total: number }> {
+    const limit = Math.min(options?.limit || 100, 500); // Max 500 per page
+    const offset = options?.offset || 0;
 
-    return changes.map((c) => this.mapToDocumentChange(c));
+    const where = {
+      documentId,
+      ...(options?.status && { status: options.status }),
+    };
+
+    const [changes, total] = await Promise.all([
+      prisma.documentChange.findMany({
+        where,
+        orderBy: { startOffset: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.documentChange.count({ where }),
+    ]);
+
+    return {
+      changes: changes.map((c) => this.mapToDocumentChange(c)),
+      total,
+    };
   }
 
   /**
    * Get pending changes for a document
    */
   async getPendingChanges(documentId: string): Promise<DocumentChange[]> {
-    return this.getChangesByDocument(documentId, DocumentChangeStatus.PENDING);
+    const result = await this.getChangesByDocument(documentId, {
+      status: DocumentChangeStatus.PENDING,
+    });
+    return result.changes;
   }
 
   /**
@@ -183,6 +199,25 @@ class TrackChangesService {
    * Process bulk actions (accept/reject multiple changes)
    */
   async processBulkAction(action: BulkChangeAction): Promise<DocumentChange[]> {
+    // First, verify all IDs exist and belong to the same document
+    const existingChanges = await prisma.documentChange.findMany({
+      where: { id: { in: action.changeIds } },
+      select: { id: true, documentId: true },
+    });
+
+    // Check if all requested IDs were found
+    if (existingChanges.length !== action.changeIds.length) {
+      const foundIds = new Set(existingChanges.map((c) => c.id));
+      const missingIds = action.changeIds.filter((id) => !foundIds.has(id));
+      throw new Error(`Some change IDs not found: ${missingIds.join(', ')}`);
+    }
+
+    // Verify all changes belong to the same document
+    const documentIds = new Set(existingChanges.map((c) => c.documentId));
+    if (documentIds.size > 1) {
+      throw new Error('All changes must belong to the same document');
+    }
+
     const status =
       action.action === 'accept'
         ? DocumentChangeStatus.ACCEPTED
@@ -261,55 +296,66 @@ class TrackChangesService {
   }
 
   /**
-   * Get change statistics for a document
+   * Get change statistics for a document using aggregation queries
    */
   async getChangeStats(documentId: string): Promise<ChangeStats> {
-    const changes = await prisma.documentChange.findMany({
-      where: { documentId },
-      select: {
-        status: true,
-        changeType: true,
-        sourceType: true,
-      },
-    });
+    // Use separate count queries for better performance
+    const [
+      total,
+      pending,
+      accepted,
+      rejected,
+      autoApplied,
+      byTypeResults,
+      bySourceResults,
+    ] = await Promise.all([
+      prisma.documentChange.count({ where: { documentId } }),
+      prisma.documentChange.count({
+        where: { documentId, status: DocumentChangeStatus.PENDING },
+      }),
+      prisma.documentChange.count({
+        where: { documentId, status: DocumentChangeStatus.ACCEPTED },
+      }),
+      prisma.documentChange.count({
+        where: { documentId, status: DocumentChangeStatus.REJECTED },
+      }),
+      prisma.documentChange.count({
+        where: { documentId, status: DocumentChangeStatus.AUTO_APPLIED },
+      }),
+      prisma.documentChange.groupBy({
+        by: ['changeType'],
+        where: { documentId },
+        _count: { changeType: true },
+      }),
+      prisma.documentChange.groupBy({
+        by: ['sourceType'],
+        where: { documentId },
+        _count: { sourceType: true },
+      }),
+    ]);
 
-    const stats: ChangeStats = {
-      total: changes.length,
-      pending: 0,
-      accepted: 0,
-      rejected: 0,
-      autoApplied: 0,
-      byType: {} as Record<DocumentChangeType, number>,
-      bySource: {},
-    };
-
-    for (const change of changes) {
-      // Count by status
-      switch (change.status) {
-        case DocumentChangeStatus.PENDING:
-          stats.pending++;
-          break;
-        case DocumentChangeStatus.ACCEPTED:
-          stats.accepted++;
-          break;
-        case DocumentChangeStatus.REJECTED:
-          stats.rejected++;
-          break;
-        case DocumentChangeStatus.AUTO_APPLIED:
-          stats.autoApplied++;
-          break;
-      }
-
-      // Count by type
-      stats.byType[change.changeType] =
-        (stats.byType[change.changeType] || 0) + 1;
-
-      // Count by source
-      const source = change.sourceType || 'unknown';
-      stats.bySource[source] = (stats.bySource[source] || 0) + 1;
+    // Build byType map
+    const byType: Record<DocumentChangeType, number> = {} as Record<DocumentChangeType, number>;
+    for (const result of byTypeResults) {
+      byType[result.changeType] = result._count.changeType;
     }
 
-    return stats;
+    // Build bySource map
+    const bySource: Record<string, number> = {};
+    for (const result of bySourceResults) {
+      const source = result.sourceType || 'unknown';
+      bySource[source] = result._count.sourceType;
+    }
+
+    return {
+      total,
+      pending,
+      accepted,
+      rejected,
+      autoApplied,
+      byType,
+      bySource,
+    };
   }
 
   /**
