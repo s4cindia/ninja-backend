@@ -320,9 +320,8 @@ class WorkflowAgentService {
 
     logger.info(`[WorkflowAgent] Audit completed: score=${auditResult.score}, issues=${issueCount}`);
 
-    // Skip ACE_START event - audit already includes ACE results
-    // Go directly to AI analysis
-    await enqueueWorkflowEvent(workflow.id, 'AI_START');
+    // Trigger ACE_START to follow state machine (ACE is already included in audit)
+    await enqueueWorkflowEvent(workflow.id, 'ACE_START');
   }
 
   /**
