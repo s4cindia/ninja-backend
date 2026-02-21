@@ -1787,6 +1787,45 @@ export class CitationUploadController {
 
     return ranges.join(', ');
   }
+
+  /**
+   * GET /api/v1/citation-management/documents
+   * List all editorial documents for the current user's tenant
+   */
+  async getDocuments(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { tenantId } = req.user;
+
+      const documents = await prisma.editorialDocument.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          fileName: true,
+          originalName: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+        }
+      });
+
+      res.json({
+        success: true,
+        data: { documents }
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] getDocuments failed:', error);
+      next(error);
+    }
+  }
 }
 
 export const citationUploadController = new CitationUploadController();

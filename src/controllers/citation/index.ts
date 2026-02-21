@@ -38,6 +38,8 @@ export const citationManagementController = {
   getAnalysis: citationUploadController.getAnalysis.bind(citationUploadController),
   reanalyze: citationUploadController.reanalyze.bind(citationUploadController),
   analyzeDocument: citationUploadController.analyzeDocument.bind(citationUploadController),
+  // Document listing
+  getDocuments: citationUploadController.getDocuments.bind(citationUploadController),
   // Health check
   healthCheck: citationUploadController.healthCheck.bind(citationUploadController),
 
