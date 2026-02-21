@@ -2,6 +2,9 @@ import { createActor } from 'xstate';
 import { WorkflowMachine } from './workflow-states';
 import { WorkflowInstance, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
+import { workflowConfigService } from './workflow-config.service';
+import { HitlGateConfig } from '../../types/workflow-config.types';
+import { logger } from '../../lib/logger';
 
 class WorkflowService {
   async createWorkflow(
@@ -92,6 +95,49 @@ class WorkflowService {
     ]);
 
     return updated;
+  }
+
+  /**
+   * Schedule a configurable HITL timeout for a workflow.
+   * Fetches the tenant configuration and returns the timeout value.
+   * Returns null if no timeout is configured (manual approval required).
+   *
+   * @param workflowId - Workflow instance ID
+   * @param gateName - HITL gate configuration key
+   * @returns Timeout in milliseconds, or null for no timeout
+   */
+  async getHitlTimeout(
+    workflowId: string,
+    gateName: keyof HitlGateConfig,
+  ): Promise<number | null> {
+    // Fetch workflow to get fileId
+    const workflow = await this.getWorkflow(workflowId);
+    if (!workflow) {
+      throw new Error(`Workflow ${workflowId} not found`);
+    }
+
+    // Fetch file to get tenantId
+    const file = await prisma.file.findUnique({
+      where: { id: workflow.fileId },
+      select: { tenantId: true },
+    });
+
+    if (!file) {
+      throw new Error(`File ${workflow.fileId} not found for workflow ${workflowId}`);
+    }
+
+    // Get configured timeout from tenant settings
+    const timeoutMs = await workflowConfigService.getGateTimeout(
+      file.tenantId,
+      gateName
+    );
+
+    logger.debug(`[Workflow] HITL timeout for ${gateName} on workflow ${workflowId}:`, {
+      timeoutMs: timeoutMs === null ? 'none' : `${timeoutMs}ms`,
+      tenantId: file.tenantId,
+    });
+
+    return timeoutMs;
   }
 
   computePhase(

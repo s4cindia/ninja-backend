@@ -18,6 +18,7 @@ import { getAllSnapshots, clearSnapshots } from '../utils/issue-flow-logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../services/comparison';
 import { workflowService } from '../services/workflow/workflow.service';
+import { workflowConfigService } from '../services/workflow/workflow-config.service';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -212,10 +213,17 @@ export const epubController = {
         });
         logger.info(`[EPUB Controller] Created File record ${fileRecord.id} for job ${job.id}`);
 
-        // Create workflow for this file
-        const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
-        workflowId = workflow.id;
-        logger.info(`[EPUB Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+        // Check if workflow is enabled for this tenant
+        const shouldCreate = await workflowConfigService.shouldCreateWorkflow(tenantId);
+
+        if (shouldCreate) {
+          // Create workflow for this file
+          const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
+          workflowId = workflow.id;
+          logger.info(`[EPUB Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+        } else {
+          logger.info(`[EPUB Controller] Workflow disabled for tenant ${tenantId}, skipping creation`);
+        }
       } catch (workflowError) {
         // Don't fail the EPUB audit if workflow creation fails
         logger.error(`[EPUB Controller] Failed to create workflow for job ${job.id}`, workflowError);

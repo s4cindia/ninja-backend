@@ -15,6 +15,7 @@ import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { reScanJobSchema } from '../schemas/pdf.schemas';
 import { workflowService } from '../services/workflow/workflow.service';
+import { workflowConfigService } from '../services/workflow/workflow-config.service';
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -610,10 +611,17 @@ export class PdfController {
         });
         logger.info(`[PDF Controller] Created File record ${fileRecord.id} for job ${job.id}`);
 
-        // Create workflow for this file
-        const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
-        workflowId = workflow.id;
-        logger.info(`[PDF Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+        // Check if workflow is enabled for this tenant
+        const shouldCreate = await workflowConfigService.shouldCreateWorkflow(tenantId);
+
+        if (shouldCreate) {
+          // Create workflow for this file
+          const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
+          workflowId = workflow.id;
+          logger.info(`[PDF Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
+        } else {
+          logger.info(`[PDF Controller] Workflow disabled for tenant ${tenantId}, skipping creation`);
+        }
       } catch (workflowError) {
         // Don't fail the PDF audit if workflow creation fails
         logger.error(`[PDF Controller] Failed to create workflow for job ${job.id}`, workflowError);
