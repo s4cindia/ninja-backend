@@ -11,6 +11,10 @@
 #   - Docker & Docker Compose
 #   - At least 4GB RAM allocated to Docker
 #   - Port 8080 available (or change below)
+#   - Environment variables set (see .env.example):
+#     - ONLYOFFICE_JWT_SECRET: JWT secret for auth (required)
+#     - ONLYOFFICE_SECURE_LINK_SECRET: Secure link secret (required)
+#     - ONLYOFFICE_USE_UNAUTHORIZED_STORAGE: Set to true for local dev (optional)
 #
 # After starting, OnlyOffice will be available at:
 #   http://localhost:8080
@@ -28,17 +32,17 @@ services:
     ports:
       - "8080:80"
     environment:
-      # JWT Configuration (REQUIRED for security)
+      # JWT Configuration (REQUIRED - set in .env file)
       - JWT_ENABLED=true
-      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-your-onlyoffice-jwt-secret}
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET in .env}
       - JWT_HEADER=Authorization
       - JWT_IN_BODY=true
 
-      # Server Configuration
-      - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET:-secure-link-secret}
+      # Server Configuration (REQUIRED - set in .env file)
+      - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET:?Set ONLYOFFICE_SECURE_LINK_SECRET in .env}
 
-      # Performance Tuning
-      - USE_UNAUTHORIZED_STORAGE=true
+      # Storage Configuration (defaults to false for security)
+      - USE_UNAUTHORIZED_STORAGE=${ONLYOFFICE_USE_UNAUTHORIZED_STORAGE:-false}
       - ALLOW_ANONYMOUS_OPERATIONS=false
 
       # Logging

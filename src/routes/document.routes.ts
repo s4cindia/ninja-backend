@@ -11,6 +11,7 @@ import { trackChangesController } from '../controllers/document/track-changes.co
 import {
   createVersionSchema,
   compareVersionsQuerySchema,
+  versionParamSchema,
   createChangeSchema,
   bulkActionSchema,
   changesQuerySchema,
@@ -20,14 +21,9 @@ import { z } from 'zod';
 
 const router = Router();
 
-// Common param schemas
+// Common param schemas (versionParamSchema imported from shared schemas)
 const documentIdParamSchema = z.object({
   documentId: z.string().uuid('Invalid document ID'),
-});
-
-const versionParamSchema = z.object({
-  documentId: z.string().uuid('Invalid document ID'),
-  version: z.string().regex(/^\d+$/, 'Version must be a number'),
 });
 
 const changeIdParamSchema = z.object({

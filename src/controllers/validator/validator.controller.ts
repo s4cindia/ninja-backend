@@ -116,7 +116,7 @@ export class ValidatorController {
       // Parse and validate limit/offset with proper clamping
       const parsedLimit = parseInt(req.query.limit as string, 10);
       const parsedOffset = parseInt(req.query.offset as string, 10);
-      const limit = isNaN(parsedLimit) ? 50 : Math.min(Math.max(parsedLimit, 0), 100);
+      const limit = isNaN(parsedLimit) ? 50 : Math.min(Math.max(parsedLimit, 1), 100);
       const offset = isNaN(parsedOffset) ? 0 : Math.max(parsedOffset, 0);
 
       const [documents, total] = await Promise.all([

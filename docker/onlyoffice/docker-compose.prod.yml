@@ -27,14 +27,14 @@ services:
     ports:
       - "80:80"
     environment:
-      # JWT Configuration (REQUIRED)
+      # JWT Configuration (REQUIRED - compose will fail if not set)
       - JWT_ENABLED=true
-      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:?ONLYOFFICE_JWT_SECRET must be set}
       - JWT_HEADER=Authorization
       - JWT_IN_BODY=true
 
-      # Security
-      - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET}
+      # Security (REQUIRED - compose will fail if not set)
+      - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET:?ONLYOFFICE_SECURE_LINK_SECRET must be set}
       # Note: ALLOW_PRIVATE_IP_ADDRESS and ALLOW_META_IP_ADDRESS are intentionally
       # not set in production to prevent SSRF attacks via internal IP ranges
 

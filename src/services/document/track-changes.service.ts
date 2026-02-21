@@ -159,27 +159,18 @@ class TrackChangesService {
   }
 
   /**
-   * Accept a change
+   * Accept a change (atomic conditional update to prevent TOCTOU race)
    */
   async acceptChange(
     changeId: string,
     reviewedBy: string
   ): Promise<DocumentChange> {
-    // First verify the change exists and is in PENDING status
-    const existing = await prisma.documentChange.findUnique({
-      where: { id: changeId },
-    });
-
-    if (!existing) {
-      throw new Error(`Change ${changeId} not found`);
-    }
-
-    if (existing.status !== DocumentChangeStatus.PENDING) {
-      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
-    }
-
-    const change = await prisma.documentChange.update({
-      where: { id: changeId },
+    // Atomic conditional update: only update if status is PENDING
+    const result = await prisma.documentChange.updateMany({
+      where: {
+        id: changeId,
+        status: DocumentChangeStatus.PENDING,
+      },
       data: {
         status: DocumentChangeStatus.ACCEPTED,
         reviewedBy,
@@ -187,39 +178,76 @@ class TrackChangesService {
       },
     });
 
+    // Check if update was successful
+    if (result.count === 0) {
+      // Determine if change doesn't exist or is not PENDING
+      const existing = await prisma.documentChange.findUnique({
+        where: { id: changeId },
+        select: { status: true },
+      });
+
+      if (!existing) {
+        throw new Error(`Change ${changeId} not found`);
+      }
+      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
+    }
+
+    // Fetch the updated change
+    const change = await prisma.documentChange.findUnique({
+      where: { id: changeId },
+    });
+
+    if (!change) {
+      throw new Error(`Change ${changeId} not found after update`);
+    }
+
     logger.info(`[TrackChanges] Accepted change ${changeId}`);
 
     return this.mapToDocumentChange(change);
   }
 
   /**
-   * Reject a change
+   * Reject a change (atomic conditional update to prevent TOCTOU race)
    */
   async rejectChange(
     changeId: string,
     reviewedBy: string
   ): Promise<DocumentChange> {
-    // First verify the change exists and is in PENDING status
-    const existing = await prisma.documentChange.findUnique({
-      where: { id: changeId },
-    });
-
-    if (!existing) {
-      throw new Error(`Change ${changeId} not found`);
-    }
-
-    if (existing.status !== DocumentChangeStatus.PENDING) {
-      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
-    }
-
-    const change = await prisma.documentChange.update({
-      where: { id: changeId },
+    // Atomic conditional update: only update if status is PENDING
+    const result = await prisma.documentChange.updateMany({
+      where: {
+        id: changeId,
+        status: DocumentChangeStatus.PENDING,
+      },
       data: {
         status: DocumentChangeStatus.REJECTED,
         reviewedBy,
         reviewedAt: new Date(),
       },
     });
+
+    // Check if update was successful
+    if (result.count === 0) {
+      // Determine if change doesn't exist or is not PENDING
+      const existing = await prisma.documentChange.findUnique({
+        where: { id: changeId },
+        select: { status: true },
+      });
+
+      if (!existing) {
+        throw new Error(`Change ${changeId} not found`);
+      }
+      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
+    }
+
+    // Fetch the updated change
+    const change = await prisma.documentChange.findUnique({
+      where: { id: changeId },
+    });
+
+    if (!change) {
+      throw new Error(`Change ${changeId} not found after update`);
+    }
 
     logger.info(`[TrackChanges] Rejected change ${changeId}`);
 
@@ -230,10 +258,10 @@ class TrackChangesService {
    * Process bulk actions (accept/reject multiple changes)
    */
   async processBulkAction(action: BulkChangeAction): Promise<DocumentChange[]> {
-    // First, verify all IDs exist and belong to the same document
+    // First, verify all IDs exist, belong to the same document, and are PENDING
     const existingChanges = await prisma.documentChange.findMany({
       where: { id: { in: action.changeIds } },
-      select: { id: true, documentId: true },
+      select: { id: true, documentId: true, status: true },
     });
 
     // Check if all requested IDs were found
@@ -249,6 +277,17 @@ class TrackChangesService {
       throw new Error('All changes must belong to the same document');
     }
 
+    // Verify all changes are in PENDING status
+    const nonPendingChanges = existingChanges.filter(
+      (c) => c.status !== DocumentChangeStatus.PENDING
+    );
+    if (nonPendingChanges.length > 0) {
+      const nonPendingIds = nonPendingChanges.map((c) => c.id);
+      throw new Error(
+        `Cannot bulk ${action.action} changes that are not PENDING: ${nonPendingIds.join(', ')}`
+      );
+    }
+
     const status =
       action.action === 'accept'
         ? DocumentChangeStatus.ACCEPTED
@@ -257,7 +296,7 @@ class TrackChangesService {
     const changes = await prisma.$transaction(
       action.changeIds.map((id) =>
         prisma.documentChange.update({
-          where: { id },
+          where: { id, status: DocumentChangeStatus.PENDING },
           data: {
             status,
             reviewedBy: action.reviewedBy,

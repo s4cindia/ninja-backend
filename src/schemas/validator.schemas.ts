@@ -11,7 +11,7 @@ export const listDocumentsQuerySchema = z.object({
     if (!val) return 50;
     const parsed = parseInt(val, 10);
     if (isNaN(parsed)) return 50;
-    return Math.min(Math.max(parsed, 0), 100);
+    return Math.min(Math.max(parsed, 1), 100);
   }),
   offset: z.string().optional().transform((val) => {
     if (!val) return 0;

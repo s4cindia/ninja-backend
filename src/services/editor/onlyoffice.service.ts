@@ -491,13 +491,17 @@ class OnlyOfficeService {
         return false;
       }
 
-      // Validate port if the server URL has a specific port
-      if (serverUrl.port) {
-        const expectedPort = serverUrl.port;
-        const actualPort = parsedUrl.port || (parsedUrl.protocol === 'https:' ? '443' : '80');
-        if (actualPort !== expectedPort) {
-          return false;
-        }
+      // Normalize ports for comparison (use default port when not specified)
+      const getEffectivePort = (urlObj: URL): string => {
+        if (urlObj.port) return urlObj.port;
+        return urlObj.protocol === 'https:' ? '443' : '80';
+      };
+
+      const expectedPort = getEffectivePort(serverUrl);
+      const actualPort = getEffectivePort(parsedUrl);
+
+      if (actualPort !== expectedPort) {
+        return false;
       }
 
       return true;
@@ -560,6 +564,14 @@ class OnlyOfficeService {
       throw new Error('Document not found');
     }
 
+    // TODO: S3 Storage Cleanup - The old S3 object at document.storagePath is not
+    // deleted when uploading a new version. Each edit-save cycle creates a new S3 object.
+    // For actively-edited documents, this causes unbounded storage growth.
+    // Future improvement: Delete the old S3 object before or after uploading the new one.
+    // Consider: document.storagePath before update, citationStorageService.deleteFile()
+    const previousStoragePath = document.storagePath;
+    void previousStoragePath; // Acknowledged: cleanup not yet implemented
+
     // Upload the new version
     const storageResult = await citationStorageService.uploadFile(
       document.tenantId,
@@ -583,9 +595,16 @@ class OnlyOfficeService {
     });
 
     // Create a version snapshot
-    // Note: The content snapshot uses the pre-edit content since we haven't
-    // re-extracted the document yet. The snapshot type is marked as 'edit'
-    // to indicate this is from OnlyOffice and may need re-extraction.
+    // KNOWN LIMITATION: The content snapshot captures PRE-EDIT text content because:
+    // 1. OnlyOffice saves the binary DOCX file directly to storage
+    // 2. Text extraction from DOCX is a separate async process (not triggered here)
+    // 3. EditorialDocumentContent still contains the OLD extracted text
+    //
+    // Impact: Version comparison will show pre-edit content until document is re-parsed.
+    // The binary DOCX in S3 is correct; only the text snapshot is stale.
+    //
+    // Future improvement: Trigger content extraction here and wait for completion,
+    // or create a background job to update the version snapshot after extraction.
     const documentContent = await prisma.editorialDocumentContent.findUnique({
       where: { documentId },
     });
@@ -600,7 +619,7 @@ class OnlyOfficeService {
         },
       },
       userId,
-      'OnlyOffice edit saved (content may need re-extraction)'
+      'OnlyOffice edit saved (text snapshot is pre-edit; binary is current)'
     );
 
     logger.info(`[OnlyOffice] Document ${documentId} saved successfully (content marked for re-extraction)`);
@@ -670,6 +689,54 @@ class OnlyOfficeService {
 
     return result.count;
   }
+
+  // Timer management for cleanup
+  private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+  private cleanupTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Start the cleanup scheduler
+   * Should be called during app bootstrap, not at module load
+   */
+  startCleanupScheduler(): void {
+    if (this.cleanupIntervalId) {
+      return; // Already running
+    }
+
+    const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
+    // Schedule periodic cleanup
+    this.cleanupIntervalId = setInterval(() => {
+      this.cleanupExpiredSessions().catch((err) => {
+        logger.error('[OnlyOffice] Failed to cleanup expired sessions:', err);
+      });
+    }, CLEANUP_INTERVAL_MS);
+
+    // Run initial cleanup with a small delay
+    this.cleanupTimeoutId = setTimeout(() => {
+      this.cleanupExpiredSessions().catch((err) => {
+        logger.error('[OnlyOffice] Failed initial session cleanup:', err);
+      });
+    }, 5000);
+
+    logger.info('[OnlyOffice] Cleanup scheduler started');
+  }
+
+  /**
+   * Stop the cleanup scheduler
+   * Should be called during graceful shutdown or in tests
+   */
+  stopCleanupScheduler(): void {
+    if (this.cleanupIntervalId) {
+      clearInterval(this.cleanupIntervalId);
+      this.cleanupIntervalId = null;
+    }
+    if (this.cleanupTimeoutId) {
+      clearTimeout(this.cleanupTimeoutId);
+      this.cleanupTimeoutId = null;
+    }
+    logger.info('[OnlyOffice] Cleanup scheduler stopped');
+  }
 }
 
 export const onlyOfficeService = new OnlyOfficeService();
@@ -681,18 +748,11 @@ export const handleCallback = onlyOfficeService.handleCallback.bind(onlyOfficeSe
 export const getDocumentContent = onlyOfficeService.getDocumentContent.bind(onlyOfficeService);
 export const closeSession = onlyOfficeService.closeSession.bind(onlyOfficeService);
 export const isAvailable = onlyOfficeService.isAvailable.bind(onlyOfficeService);
+export const startCleanupScheduler = onlyOfficeService.startCleanupScheduler.bind(onlyOfficeService);
+export const stopCleanupScheduler = onlyOfficeService.stopCleanupScheduler.bind(onlyOfficeService);
 
-// Schedule periodic cleanup of expired sessions (every 15 minutes)
-const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
-setInterval(() => {
-  onlyOfficeService.cleanupExpiredSessions().catch((err) => {
-    logger.error('[OnlyOffice] Failed to cleanup expired sessions:', err);
-  });
-}, CLEANUP_INTERVAL_MS);
-
-// Run initial cleanup on startup (with a small delay to allow DB connections)
-setTimeout(() => {
-  onlyOfficeService.cleanupExpiredSessions().catch((err) => {
-    logger.error('[OnlyOffice] Failed initial session cleanup:', err);
-  });
-}, 5000);
+// Auto-start cleanup scheduler only in non-test environment
+// In tests, use startCleanupScheduler/stopCleanupScheduler explicitly
+if (process.env.NODE_ENV !== 'test') {
+  onlyOfficeService.startCleanupScheduler();
+}
