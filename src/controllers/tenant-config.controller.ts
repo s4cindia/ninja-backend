@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../lib/prisma';
+import { Prisma } from '@prisma/client';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { AppError } from '../utils/app-error';
 import { logger } from '../lib/logger';
@@ -136,7 +137,7 @@ export class TenantConfigController {
           settings: {
             ...currentSettings,
             workflow: updatedWorkflow,
-          },
+          } as unknown as Prisma.InputJsonValue,
         },
       });
 

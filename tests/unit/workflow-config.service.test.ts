@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { workflowConfigService } from '../../src/services/workflow/workflow-config.service';
 import {
   DEFAULT_WORKFLOW_CONFIG,
-  WorkflowConfig,
   TenantSettings,
   JobWorkflowOptions,
 } from '../../src/types/workflow-config.types';

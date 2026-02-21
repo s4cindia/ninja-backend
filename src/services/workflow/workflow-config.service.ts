@@ -288,7 +288,7 @@ class WorkflowConfigService {
 
       if (jobOptions.autoRetry) {
         merged.autoRetry = {
-          ...merged.autoRetry,
+          ...merged.autoRetry!,
           ...jobOptions.autoRetry,
         };
       }
