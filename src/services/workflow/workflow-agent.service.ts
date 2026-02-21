@@ -4,17 +4,78 @@
  * Handles automated progression through audit, remediation, and ACR generation.
  */
 
-import { WorkflowInstance, Prisma } from '@prisma/client';
+import { WorkflowInstance, Prisma, JobType } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { enqueueWorkflowEvent } from '../../queues/workflow.queue';
 import { workflowService } from './workflow.service';
+import { s3Service } from '../s3.service';
+import { epubAuditService } from '../epub/epub-audit.service';
+import { pdfAuditService } from '../pdf/pdf-audit.service';
 
 /**
  * Workflow automation agent service.
  * Listens for workflow state changes and triggers appropriate automated actions.
  */
 class WorkflowAgentService {
+  /**
+   * Helper: Get file buffer from S3 or local storage.
+   */
+  private async getFileBuffer(file: { storageType: string; storagePath: string | null; path: string }): Promise<Buffer> {
+    if (file.storageType === 'S3' && file.storagePath) {
+      return await s3Service.getFileBuffer(file.storagePath);
+    } else {
+      // Local storage
+      const fs = await import('fs/promises');
+      return await fs.readFile(file.path);
+    }
+  }
+
+  /**
+   * Helper: Create or get existing job for workflow.
+   */
+  private async getOrCreateJob(
+    workflow: WorkflowInstance,
+    file: { id: string; tenantId: string; filename: string; mimeType: string },
+    userId: string,
+    jobType: JobType
+  ): Promise<{ id: string; isNew: boolean }> {
+    // Check if job already exists in workflow state
+    const stateData = workflow.stateData as { jobId?: string };
+    if (stateData.jobId) {
+      return { id: stateData.jobId, isNew: false };
+    }
+
+    // Create new job
+    const job = await prisma.job.create({
+      data: {
+        tenantId: file.tenantId,
+        userId,
+        type: jobType,
+        status: 'PROCESSING',
+        priority: 0,
+        input: {
+          fileId: file.id,
+          filename: file.filename,
+          workflowId: workflow.id,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    // Store job ID in workflow state
+    await prisma.workflowInstance.update({
+      where: { id: workflow.id },
+      data: {
+        stateData: {
+          ...(workflow.stateData as Record<string, unknown>),
+          jobId: job.id,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    logger.info(`[WorkflowAgent] Created job ${job.id} for workflow ${workflow.id}`);
+    return { id: job.id, isNew: true };
+  }
   /**
    * Process a workflow after state transition.
    * Routes to appropriate handler based on current state.
@@ -159,47 +220,97 @@ class WorkflowAgentService {
 
   /**
    * Handle RUNNING_EPUBCHECK state.
-   * Triggers EPUBCheck/Matterhorn validation.
-   *
-   * NOTE: Actual audit execution happens in job processor.
-   * This handler waits for audit completion, then triggers next step.
+   * Triggers EPUBCheck/Matterhorn/ACE validation (all in one call).
    */
   private async handleRunningEpubcheck(workflow: WorkflowInstance): Promise<void> {
-    logger.info(`[WorkflowAgent] Running initial audit for workflow ${workflow.id}`);
+    logger.info(`[WorkflowAgent] Running accessibility audit for workflow ${workflow.id}`);
 
-    // NOTE: Actual audit is triggered by job processor
-    // This is placeholder - actual integration will query job status
-    // For now, auto-advance after delay (to be replaced with job completion webhook)
+    const file = await prisma.file.findUnique({
+      where: { id: workflow.fileId },
+    });
 
-    logger.info(`[WorkflowAgent] Initial audit completed (placeholder), triggering ACE`);
-    await enqueueWorkflowEvent(workflow.id, 'ACE_START');
+    if (!file) {
+      throw new Error(`File ${workflow.fileId} not found`);
+    }
+
+    // Get or create job
+    const isEpub = file.mimeType.includes('epub');
+    const jobType: JobType = isEpub ? 'EPUB_ACCESSIBILITY' : 'PDF_ACCESSIBILITY';
+    const jobInfo = await this.getOrCreateJob(workflow, file, workflow.createdBy, jobType);
+
+    // Get file buffer
+    const buffer = await this.getFileBuffer(file);
+
+    logger.info(`[WorkflowAgent] Running ${jobType} for file ${file.filename}`);
+
+    // Run appropriate audit
+    let auditResult;
+    if (isEpub) {
+      auditResult = await epubAuditService.runAudit(buffer, jobInfo.id, file.filename);
+    } else {
+      auditResult = await pdfAuditService.runAuditFromBuffer(buffer, jobInfo.id, file.filename);
+    }
+
+    // Update job with results
+    await prisma.job.update({
+      where: { id: jobInfo.id },
+      data: {
+        status: 'COMPLETED',
+        output: auditResult as unknown as Prisma.InputJsonValue,
+        progress: 100,
+        completedAt: new Date(),
+      },
+    });
+
+    // Store audit results in workflow state
+    const issueCount = 'combinedIssues' in auditResult
+      ? auditResult.combinedIssues?.length || 0
+      : auditResult.issues?.length || 0;
+
+    await prisma.workflowInstance.update({
+      where: { id: workflow.id },
+      data: {
+        stateData: {
+          ...(workflow.stateData as Record<string, unknown>),
+          auditCompleted: true,
+          auditScore: auditResult.score,
+          issueCount,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    logger.info(`[WorkflowAgent] Audit completed: score=${auditResult.score}, issues=${issueCount}`);
+
+    // Skip ACE_START event - audit already includes ACE results
+    // Go directly to AI analysis
+    await enqueueWorkflowEvent(workflow.id, 'AI_START');
   }
 
   /**
    * Handle RUNNING_ACE state.
-   * Triggers ACE (Accessibility Checker for EPUB) audit.
+   * ACE is already included in EPUBCheck handler, so just trigger AI analysis.
    */
   private async handleRunningAce(workflow: WorkflowInstance): Promise<void> {
-    logger.info(`[WorkflowAgent] Running ACE audit for workflow ${workflow.id}`);
+    logger.info(`[WorkflowAgent] ACE audit already included in initial audit for workflow ${workflow.id}`);
 
-    // NOTE: Actual ACE audit is triggered by job processor
-    // This is placeholder - actual integration will query job status
-
-    logger.info(`[WorkflowAgent] ACE audit completed (placeholder), triggering AI analysis`);
+    // ACE results are part of the combined audit
+    // Just trigger AI analysis
     await enqueueWorkflowEvent(workflow.id, 'AI_START');
   }
 
   /**
    * Handle RUNNING_AI_ANALYSIS state.
-   * Triggers AI-powered accessibility analysis.
+   * AI analysis is typically integrated into the audit itself.
+   * This step can be used for additional AI enrichment if needed.
    */
   private async handleRunningAiAnalysis(workflow: WorkflowInstance): Promise<void> {
-    logger.info(`[WorkflowAgent] Running AI analysis for workflow ${workflow.id}`);
+    logger.info(`[WorkflowAgent] AI analysis for workflow ${workflow.id}`);
 
-    // NOTE: Actual AI analysis is triggered by job processor
-    // This is placeholder - actual integration will query job status
+    // AI analysis is already part of the audit service
+    // (Gemini provides suggestions, severity analysis, etc.)
+    // This step can be extended for additional AI processing if needed
 
-    logger.info(`[WorkflowAgent] AI analysis completed (placeholder), moving to review gate`);
+    logger.info(`[WorkflowAgent] AI analysis complete, moving to review gate`);
     await enqueueWorkflowEvent(workflow.id, 'AI_DONE');
   }
 
