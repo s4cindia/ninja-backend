@@ -14,6 +14,7 @@ import { epubAuditService } from '../epub/epub-audit.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoRemediationService } from '../epub/auto-remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
+import { acrService } from '../acr.service';
 
 /**
  * Workflow automation agent service.
@@ -624,10 +625,22 @@ class WorkflowAgentService {
       return;
     }
 
-    // NOTE: Actual ACR generation is triggered by ACR service
-    // This is placeholder - actual integration will call acrGeneratorService
+    // Generate ACR using ACR service
+    // Use International Edition (VPAT2.5-INT) which satisfies US Section 508, EU EN 301 549, and WCAG
+    const edition = 'VPAT2.5-INT';
+    const documentTitle = file.filename;
 
-    logger.info(`[WorkflowAgent] ACR generation completed (placeholder)`);
+    logger.info(`[WorkflowAgent] Creating ACR analysis: edition=${edition}, documentTitle=${documentTitle}`);
+
+    const acrResult = await acrService.createAcrAnalysis(
+      workflow.createdBy,
+      file.tenantId,
+      job.id,
+      edition,
+      documentTitle
+    );
+
+    logger.info(`[WorkflowAgent] ACR generated: acrJobId=${acrResult.acrJob.id}, criteria=${acrResult.criteriaCount}`);
 
     // Store ACR reference in workflow state
     await prisma.workflowInstance.update({
@@ -635,6 +648,9 @@ class WorkflowAgentService {
       data: {
         stateData: {
           ...(workflow.stateData as Record<string, unknown>),
+          acrJobId: acrResult.acrJob.id,
+          acrEdition: edition,
+          acrCriteriaCount: acrResult.criteriaCount,
           acrGeneratedAt: new Date().toISOString(),
           jobId: job.id,
         } as unknown as Prisma.InputJsonValue,
