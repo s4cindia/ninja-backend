@@ -1,0 +1,77 @@
+# OnlyOffice Document Server Configuration for Ninja Platform
+#
+# This docker-compose file sets up OnlyOffice Document Server for
+# document editing capabilities in the editorial services module.
+#
+# Usage:
+#   Development: docker-compose up -d
+#   Production: Use docker-compose.prod.yml with proper secrets
+#
+# Requirements:
+#   - Docker & Docker Compose
+#   - At least 4GB RAM allocated to Docker
+#   - Port 8080 available (or change below)
+#   - Environment variables set (see .env.example):
+#     - ONLYOFFICE_JWT_SECRET: JWT secret for auth (required)
+#     - ONLYOFFICE_SECURE_LINK_SECRET: Secure link secret (required)
+#     - ONLYOFFICE_USE_UNAUTHORIZED_STORAGE: Set to true for local dev (optional)
+#
+# After starting, OnlyOffice will be available at:
+#   http://localhost:8080
+#
+# Documentation:
+#   https://helpcenter.onlyoffice.com/installation/docs-community-docker.aspx
+
+version: '3.8'
+
+services:
+  onlyoffice-documentserver:
+    image: onlyoffice/documentserver:8.0
+    container_name: ninja-onlyoffice
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      # JWT Configuration (REQUIRED - set in .env file)
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:?Set ONLYOFFICE_JWT_SECRET in .env}
+      - JWT_HEADER=Authorization
+      - JWT_IN_BODY=true
+
+      # Server Configuration (REQUIRED - set in .env file)
+      - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET:?Set ONLYOFFICE_SECURE_LINK_SECRET in .env}
+
+      # Storage Configuration (defaults to false for security)
+      - USE_UNAUTHORIZED_STORAGE=${ONLYOFFICE_USE_UNAUTHORIZED_STORAGE:-false}
+      - ALLOW_ANONYMOUS_OPERATIONS=false
+
+      # Logging
+      - LOG_LEVEL=WARNING
+
+    volumes:
+      # Persistent storage for fonts, licenses, and logs
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_log:/var/log/onlyoffice
+      - onlyoffice_fonts:/usr/share/fonts/truetype/custom
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      - ninja-network
+
+volumes:
+  onlyoffice_data:
+    driver: local
+  onlyoffice_log:
+    driver: local
+  onlyoffice_fonts:
+    driver: local
+
+networks:
+  ninja-network:
+    driver: bridge

@@ -48,6 +48,7 @@ model User {
   batchWorkflows      BatchWorkflow[]
   hitlDecisions       HITLDecision[]
   remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
+  editorSessions      EditorSession[]
 
   @@index([tenantId])
   @@index([email])
@@ -707,6 +708,10 @@ model EditorialDocument {
   citationChanges      CitationChange[]
   referenceListEntries ReferenceListEntry[]
   documentContent      EditorialDocumentContent?
+  documentVersions     DocumentVersion[]
+  documentChanges      DocumentChange[]
+  editorSessions       EditorSession[]
+  complianceChecks     ComplianceCheck[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -1382,4 +1387,148 @@ model WorkflowEvent {
   timestamp  DateTime         @default(now())
 
   @@index([workflowId, timestamp])
+}
+
+// ============================================================
+// DOCUMENT VERSION CONTROL & TRACK CHANGES (Style/Compliance Module)
+// ============================================================
+
+model DocumentVersion {
+  id           String   @id @default(uuid())
+  documentId   String
+  version      Int
+  createdAt    DateTime @default(now())
+  createdBy    String
+  changeLog    Json     // Array of field-level changes
+  snapshot     Json     // Full document state or delta
+  snapshotType String   @default("full") // "full" | "delta"
+
+  document     EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  changes      DocumentChange[]
+
+  @@unique([documentId, version])
+  @@index([documentId])
+  @@index([createdAt])
+}
+
+model DocumentChange {
+  id           String             @id @default(uuid())
+  documentId   String
+  versionId    String?
+  document     EditorialDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version      DocumentVersion?   @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  changeType   DocumentChangeType
+  status       DocumentChangeStatus @default(PENDING)
+  startOffset  Int
+  endOffset    Int
+  beforeText   String?      @db.Text
+  afterText    String?      @db.Text
+  reason       String?      // "style_fix", "citation_update", "manual", "compliance_fix"
+  sourceType   String?      // "auto", "manual", "ai_suggestion", "onlyoffice"
+  metadata     Json?        // Additional change metadata (e.g., style rule ID, compliance rule)
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  createdBy    String
+
+  @@index([documentId, status])
+  @@index([documentId, createdAt])
+  @@index([versionId])
+}
+
+enum DocumentChangeType {
+  INSERT
+  DELETE
+  FORMAT
+  REPLACE
+  STYLE_FIX
+  COMPLIANCE_FIX
+}
+
+enum DocumentChangeStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  AUTO_APPLIED
+}
+
+// ============================================================
+// JOURNAL/BOOK COMPLIANCE CHECKER
+// ============================================================
+
+model ComplianceTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String?  // null = system templates (pre-built)
+  name        String   // "Nature Submission", "IEEE Journal", "Elsevier Standard"
+  publisher   String?  // "Nature Publishing Group", "IEEE", "Elsevier"
+  type        String   // "journal", "book", "conference"
+  description String?
+  rules       Json     // Array of compliance rules
+  isActive    Boolean  @default(true)
+  isSystem    Boolean  @default(false) // true for pre-built templates
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+
+  checks ComplianceCheck[]
+
+  @@index([tenantId])
+  @@index([type])
+  @@index([isActive])
+  @@index([publisher])
+}
+
+model ComplianceCheck {
+  id          String    @id @default(uuid())
+  documentId  String
+  document    EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  templateId  String
+  template    ComplianceTemplate @relation(fields: [templateId], references: [id])
+  status      JobStatus @default(QUEUED)
+  results     Json?     // Detailed compliance results
+  score       Float?    // Overall compliance score (0-100)
+  passedRules Int       @default(0)
+  failedRules Int       @default(0)
+  warnings    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  createdBy   String
+
+  @@index([documentId])
+  @@index([templateId])
+  @@index([status])
+  @@index([documentId, templateId])
+}
+
+// ============================================================
+// ONLYOFFICE EDITOR SESSIONS
+// ============================================================
+
+model EditorSession {
+  id           String              @id @default(uuid())
+  documentId   String
+  userId       String
+  sessionKey   String              @unique // OnlyOffice document key
+  status       EditorSessionStatus @default(ACTIVE)
+  lastActivity DateTime            @default(now())
+  createdAt    DateTime            @default(now())
+  expiresAt    DateTime
+  metadata     Json?               // OnlyOffice session metadata
+
+  document     EditorialDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([userId])
+  @@index([status])
+}
+
+enum EditorSessionStatus {
+  ACTIVE
+  EDITING
+  SAVING
+  SAVED
+  CLOSED
+  EXPIRED
+  ERROR
 }

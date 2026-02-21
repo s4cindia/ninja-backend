@@ -196,6 +196,15 @@ router.get(
 // ============================================
 
 /**
+ * GET /api/v1/citation-management/documents
+ * List all documents for the current user's tenant
+ */
+router.get(
+  '/documents',
+  citationManagementController.getDocuments.bind(citationManagementController)
+);
+
+/**
  * POST /api/v1/citation-management/upload
  * Upload DOCX via multipart form-data (LOCAL DEVELOPMENT)
  * Rate limited: 10 uploads per 15 minutes per user
