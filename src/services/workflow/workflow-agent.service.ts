@@ -85,6 +85,38 @@ class WorkflowAgentService {
       return { id: stateData.jobId, isNew: false };
     }
 
+    // Check for existing completed job for this file
+    const existingJobs = await prisma.job.findMany({
+      where: {
+        tenantId: file.tenantId,
+        type: jobType,
+        status: 'COMPLETED',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    // Find job that references this file
+    const existingJob = existingJobs.find(j => {
+      const input = j.input as { fileId?: string };
+      return input.fileId === file.id;
+    });
+
+    if (existingJob) {
+      // Store existing job ID in workflow state
+      await prisma.workflowInstance.update({
+        where: { id: workflow.id },
+        data: {
+          stateData: {
+            ...(workflow.stateData as Record<string, unknown>),
+            jobId: existingJob.id,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      logger.info(`[WorkflowAgent] Found existing job ${existingJob.id} for workflow ${workflow.id}`);
+      return { id: existingJob.id, isNew: false };
+    }
+
     // Create new job
     const job = await prisma.job.create({
       data: {
@@ -277,17 +309,27 @@ class WorkflowAgentService {
     const jobType: JobType = isEpub ? 'EPUB_ACCESSIBILITY' : 'PDF_ACCESSIBILITY';
     const jobInfo = await this.getOrCreateJob(workflow, file, workflow.createdBy, jobType);
 
-    // Get file buffer
-    const buffer = await this.getFileBuffer(file);
+    // Check if job is already completed (audit already ran)
+    const existingJob = await prisma.job.findUnique({
+      where: { id: jobInfo.id },
+      select: { status: true, output: true },
+    });
 
-    logger.info(`[WorkflowAgent] Running ${jobType} for file ${file.filename}`);
-
-    // Run appropriate audit
     let auditResult;
-    if (isEpub) {
-      auditResult = await epubAuditService.runAudit(buffer, jobInfo.id, file.filename);
+    if (existingJob && existingJob.status === 'COMPLETED' && existingJob.output) {
+      // Audit already completed - reuse results
+      logger.info(`[WorkflowAgent] Reusing existing audit results from job ${jobInfo.id}`);
+      auditResult = existingJob.output;
     } else {
-      auditResult = await pdfAuditService.runAuditFromBuffer(buffer, jobInfo.id, file.filename);
+      // Run audit
+      const buffer = await this.getFileBuffer(file);
+      logger.info(`[WorkflowAgent] Running ${jobType} for file ${file.filename}`);
+
+      if (isEpub) {
+        auditResult = await epubAuditService.runAudit(buffer, jobInfo.id, file.filename);
+      } else {
+        auditResult = await pdfAuditService.runAuditFromBuffer(buffer, jobInfo.id, file.filename);
+      }
     }
 
     // Update job with results
