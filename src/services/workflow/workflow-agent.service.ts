@@ -12,6 +12,8 @@ import { workflowService } from './workflow.service';
 import { s3Service } from '../s3.service';
 import { epubAuditService } from '../epub/epub-audit.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
+import { autoRemediationService } from '../epub/auto-remediation.service';
+import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
 
 /**
  * Workflow automation agent service.
@@ -28,6 +30,42 @@ class WorkflowAgentService {
       // Local storage
       const fs = await import('fs/promises');
       return await fs.readFile(file.path);
+    }
+  }
+
+  /**
+   * Helper: Save remediated file to S3 or local storage.
+   * Returns the storage path where file was saved.
+   */
+  private async saveRemediatedFile(
+    buffer: Buffer,
+    originalFile: { storageType: string; storagePath: string | null; path: string; filename: string; tenantId: string; mimeType: string },
+    suffix: string = '-remediated'
+  ): Promise<string> {
+    const path = await import('path');
+    const ext = path.extname(originalFile.filename);
+    const baseName = path.basename(originalFile.filename, ext);
+    const remediatedFilename = `${baseName}${suffix}${ext}`;
+
+    if (originalFile.storageType === 'S3' && originalFile.storagePath) {
+      // S3 storage
+      const fileKey = await s3Service.uploadBuffer(
+        originalFile.tenantId,
+        remediatedFilename,
+        buffer,
+        originalFile.mimeType,
+        'remediated'
+      );
+      logger.info(`[WorkflowAgent] Saved remediated file to S3: ${fileKey}`);
+      return fileKey;
+    } else {
+      // Local storage
+      const fs = await import('fs/promises');
+      const dir = path.dirname(originalFile.path);
+      const remediatedPath = path.join(dir, remediatedFilename);
+      await fs.writeFile(remediatedPath, buffer);
+      logger.info(`[WorkflowAgent] Saved remediated file locally: ${remediatedPath}`);
+      return remediatedPath;
     }
   }
 
@@ -339,10 +377,90 @@ class WorkflowAgentService {
       throw new Error(`File ${workflow.fileId} not found`);
     }
 
-    // NOTE: Actual remediation is triggered by job processor
-    // This is placeholder - actual integration will call remediation service
+    // Get job ID from workflow state
+    const stateData = workflow.stateData as { jobId?: string };
+    if (!stateData.jobId) {
+      throw new Error('Job ID not found in workflow state');
+    }
 
-    logger.info(`[WorkflowAgent] Auto-remediation completed (placeholder)`);
+    // Get original file buffer
+    const buffer = await this.getFileBuffer(file);
+
+    logger.info(`[WorkflowAgent] Running remediation for ${file.filename}`);
+
+    // Run appropriate remediation service
+    const isEpub = file.mimeType.includes('epub');
+
+    if (isEpub) {
+      // EPUB remediation
+      const epubResult = await autoRemediationService.runAutoRemediation(
+        buffer,
+        stateData.jobId,
+        file.filename
+      );
+
+      if (!epubResult.remediatedBuffer) {
+        logger.warn(`[WorkflowAgent] No remediated buffer returned for EPUB, skipping save`);
+      } else {
+        // Save remediated file (S3 or local)
+        const remediatedPath = await this.saveRemediatedFile(
+          epubResult.remediatedBuffer,
+          file,
+          '-remediated'
+        );
+
+        // Store remediated file path in workflow state
+        await prisma.workflowInstance.update({
+          where: { id: workflow.id },
+          data: {
+            stateData: {
+              ...(workflow.stateData as Record<string, unknown>),
+              remediatedFilePath: remediatedPath,
+              remediatedFileName: epubResult.remediatedFileName,
+              totalIssuesFixed: epubResult.totalIssuesFixed,
+              totalIssuesFailed: epubResult.totalIssuesFailed,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+
+        logger.info(`[WorkflowAgent] EPUB auto-remediation completed: fixed=${epubResult.totalIssuesFixed}, failed=${epubResult.totalIssuesFailed}`);
+      }
+    } else {
+      // PDF remediation
+      const pdfResult = await pdfAutoRemediationService.runAutoRemediation(
+        buffer,
+        stateData.jobId,
+        file.filename
+      );
+
+      if (!pdfResult.remediatedPdfBuffer) {
+        logger.warn(`[WorkflowAgent] No remediated buffer returned for PDF, skipping save`);
+      } else {
+        // Save remediated file (S3 or local)
+        const remediatedPath = await this.saveRemediatedFile(
+          pdfResult.remediatedPdfBuffer,
+          file,
+          '-remediated'
+        );
+
+        // Store remediated file path in workflow state
+        await prisma.workflowInstance.update({
+          where: { id: workflow.id },
+          data: {
+            stateData: {
+              ...(workflow.stateData as Record<string, unknown>),
+              remediatedFilePath: remediatedPath,
+              remediatedFileName: pdfResult.fileName,
+              totalIssuesFixed: pdfResult.completedTasks,
+              totalIssuesFailed: pdfResult.failedTasks,
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+
+        logger.info(`[WorkflowAgent] PDF auto-remediation completed: fixed=${pdfResult.completedTasks}, failed=${pdfResult.failedTasks}`);
+      }
+    }
+
     await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_DONE');
   }
 
@@ -362,10 +480,87 @@ class WorkflowAgentService {
   private async handleVerificationAudit(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Running verification audit for workflow ${workflow.id}`);
 
-    // NOTE: Actual verification audit is triggered by job processor
-    // This is placeholder - actual integration will re-run audit on remediated file
+    const file = await prisma.file.findUnique({
+      where: { id: workflow.fileId },
+    });
 
-    logger.info(`[WorkflowAgent] Verification audit completed (placeholder)`);
+    if (!file) {
+      throw new Error(`File ${workflow.fileId} not found`);
+    }
+
+    // Get remediated file path from workflow state
+    const stateData = workflow.stateData as {
+      jobId?: string;
+      remediatedFilePath?: string;
+      remediatedFileName?: string;
+    };
+
+    if (!stateData.remediatedFilePath) {
+      logger.warn(`[WorkflowAgent] No remediated file found, skipping verification audit`);
+      await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_START');
+      return;
+    }
+
+    if (!stateData.jobId) {
+      throw new Error('Job ID not found in workflow state');
+    }
+
+    // Get remediated file buffer
+    const remediatedBuffer = await this.getFileBuffer({
+      storageType: file.storageType,
+      storagePath: file.storageType === 'S3' ? stateData.remediatedFilePath : null,
+      path: stateData.remediatedFilePath,
+    });
+
+    logger.info(`[WorkflowAgent] Running verification audit on remediated file`);
+
+    // Run audit on remediated file
+    const isEpub = file.mimeType.includes('epub');
+    let verificationResult;
+
+    if (isEpub) {
+      verificationResult = await epubAuditService.runAudit(
+        remediatedBuffer,
+        stateData.jobId,
+        stateData.remediatedFileName || file.filename
+      );
+    } else {
+      verificationResult = await pdfAuditService.runAuditFromBuffer(
+        remediatedBuffer,
+        stateData.jobId,
+        stateData.remediatedFileName || file.filename
+      );
+    }
+
+    // Update job with verification results
+    await prisma.job.update({
+      where: { id: stateData.jobId },
+      data: {
+        output: {
+          ...(await prisma.job.findUnique({ where: { id: stateData.jobId } }).then(j => j?.output as Record<string, unknown>)),
+          verificationAudit: verificationResult,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    // Store verification results in workflow state
+    const issueCount = 'combinedIssues' in verificationResult
+      ? verificationResult.combinedIssues?.length || 0
+      : verificationResult.issues?.length || 0;
+
+    await prisma.workflowInstance.update({
+      where: { id: workflow.id },
+      data: {
+        stateData: {
+          ...(workflow.stateData as Record<string, unknown>),
+          verificationScore: verificationResult.score,
+          verificationIssueCount: issueCount,
+          verificationCompleted: true,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    logger.info(`[WorkflowAgent] Verification audit completed: score=${verificationResult.score}, issues=${issueCount}`);
     await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_START');
   }
 
