@@ -1,12 +1,23 @@
 /**
  * Validator Routes
  * Handles document upload and management for the Validator feature
+ *
+ * Note: These endpoints specifically serve the Validator workflow (direct editing).
+ * While /citation-management/documents also queries EditorialDocument, that endpoint
+ * is for the Citation Management workflow. Both share the same underlying table
+ * but serve different features with different filtering and UI requirements.
+ * Consider consolidating these endpoints if the distinction becomes unnecessary.
  */
 
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
+import { validate } from '../middleware/validate.middleware';
 import { validatorController } from '../controllers/validator/validator.controller';
+import {
+  listDocumentsQuerySchema,
+  getDocumentParamsSchema,
+} from '../schemas/validator.schemas';
 
 const router = Router();
 
@@ -19,7 +30,7 @@ const upload = multer({
   fileFilter: (_req, file, cb) => {
     if (
       file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      file.originalname.endsWith('.docx')
+      file.originalname.toLowerCase().endsWith('.docx')
     ) {
       cb(null, true);
     } else {
@@ -47,6 +58,7 @@ router.post(
  */
 router.get(
   '/documents',
+  validate({ query: listDocumentsQuerySchema }),
   validatorController.listDocuments.bind(validatorController)
 );
 
@@ -56,6 +68,7 @@ router.get(
  */
 router.get(
   '/documents/:documentId',
+  validate({ params: getDocumentParamsSchema }),
   validatorController.getDocument.bind(validatorController)
 );
 

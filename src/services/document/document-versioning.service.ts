@@ -240,86 +240,81 @@ class DocumentVersioningService {
   /**
    * Create a new version of a document
    */
+  /**
+   * Generate a stable numeric hash from documentId for advisory lock
+   * Uses djb2 algorithm to produce a 32-bit integer
+   */
+  private hashDocumentId(documentId: string): number {
+    let hash = 5381;
+    for (let i = 0; i < documentId.length; i++) {
+      hash = ((hash << 5) + hash) ^ documentId.charCodeAt(i);
+    }
+    // Ensure positive 32-bit integer
+    return Math.abs(hash | 0);
+  }
+
   async createVersion(
     documentId: string,
     snapshot: DocumentSnapshot,
     userId: string,
     reason?: string
   ): Promise<DocumentVersion> {
-    const maxRetries = 3;
-    let lastError: Error | null = null;
+    // Use advisory lock to prevent race conditions in version number assignment
+    // The lock is held for the duration of the transaction
+    const lockKey = this.hashDocumentId(documentId);
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const result = await prisma.$transaction(async (tx) => {
-          // Get latest version
-          const latestVersions = await tx.documentVersion.findMany({
-            where: { documentId },
-            orderBy: { version: 'desc' },
-            take: 1,
-            select: { version: true, snapshot: true },
-          });
+    const result = await prisma.$transaction(async (tx) => {
+      // Acquire transaction-level advisory lock (automatically released at commit/rollback)
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
-          const newVersionNumber =
-            latestVersions.length > 0 ? latestVersions[0].version + 1 : 1;
+      // Get latest version (now safe from race conditions)
+      const latestVersions = await tx.documentVersion.findMany({
+        where: { documentId },
+        orderBy: { version: 'desc' },
+        take: 1,
+        select: { version: true, snapshot: true },
+      });
 
-          const previousSnapshot =
-            latestVersions.length > 0
-              ? (latestVersions[0].snapshot as unknown as DocumentSnapshot)
-              : null;
+      const newVersionNumber =
+        latestVersions.length > 0 ? latestVersions[0].version + 1 : 1;
 
-          const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
+      const previousSnapshot =
+        latestVersions.length > 0
+          ? (latestVersions[0].snapshot as unknown as DocumentSnapshot)
+          : null;
 
-          const created = await tx.documentVersion.create({
-            data: {
-              documentId,
-              version: newVersionNumber,
-              createdBy: userId,
-              changeLog:
-                changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
-              snapshot:
-                snapshot as unknown as import('@prisma/client').Prisma.InputJsonValue,
-              snapshotType: 'full',
-            },
-          });
+      const changeLog = generateChangeLog(previousSnapshot, snapshot, reason);
 
-          logger.info(
-            `[DocumentVersioning] Created version ${newVersionNumber} for document ${documentId}`
-          );
+      const created = await tx.documentVersion.create({
+        data: {
+          documentId,
+          version: newVersionNumber,
+          createdBy: userId,
+          changeLog:
+            changeLog as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          snapshot:
+            snapshot as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          snapshotType: 'full',
+        },
+      });
 
-          return {
-            id: created.id,
-            documentId: created.documentId,
-            version: created.version,
-            createdAt: created.createdAt,
-            createdBy: created.createdBy,
-            changeLog,
-            snapshot,
-            snapshotType: created.snapshotType as 'full' | 'delta',
-          };
-        });
+      logger.info(
+        `[DocumentVersioning] Created version ${newVersionNumber} for document ${documentId}`
+      );
 
-        return result;
-      } catch (error) {
-        lastError = error as Error;
+      return {
+        id: created.id,
+        documentId: created.documentId,
+        version: created.version,
+        createdAt: created.createdAt,
+        createdBy: created.createdBy,
+        changeLog,
+        snapshot,
+        snapshotType: created.snapshotType as 'full' | 'delta',
+      };
+    });
 
-        // Check for unique constraint violation (P2002)
-        const isPrismaError =
-          error && typeof error === 'object' && 'code' in error;
-        if (isPrismaError && (error as { code: string }).code === 'P2002') {
-          if (attempt < maxRetries) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, 100 * attempt)
-            );
-            continue;
-          }
-        }
-
-        throw error;
-      }
-    }
-
-    throw lastError || new Error('Failed to create version after retries');
+    return result;
   }
 
   /**

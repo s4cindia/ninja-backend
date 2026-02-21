@@ -30,31 +30,13 @@ export const createVersionSchema = z.object({
 });
 
 export const compareVersionsQuerySchema = z.object({
-  versionA: z.string().transform((val) => {
-    const num = parseInt(val, 10);
-    if (isNaN(num) || num < 1) {
-      throw new Error('versionA must be a positive integer');
-    }
-    return num;
-  }),
-  versionB: z.string().transform((val) => {
-    const num = parseInt(val, 10);
-    if (isNaN(num) || num < 1) {
-      throw new Error('versionB must be a positive integer');
-    }
-    return num;
-  }),
+  versionA: z.coerce.number().int().min(1, 'versionA must be a positive integer'),
+  versionB: z.coerce.number().int().min(1, 'versionB must be a positive integer'),
 });
 
 export const versionParamSchema = z.object({
   documentId: z.string().uuid('Invalid document ID'),
-  version: z.string().transform((val) => {
-    const num = parseInt(val, 10);
-    if (isNaN(num) || num < 1) {
-      throw new Error('version must be a positive integer');
-    }
-    return num;
-  }),
+  version: z.coerce.number().int().min(1, 'version must be a positive integer'),
 });
 
 // ============================================
@@ -91,13 +73,33 @@ export const bulkActionSchema = z.object({
 
 export const changesQuerySchema = z.object({
   status: z.enum(['PENDING', 'ACCEPTED', 'REJECTED', 'AUTO_APPLIED']).optional(),
-  limit: z.string().transform((val) => Math.min(parseInt(val, 10) || 100, 500)).optional(),
-  offset: z.string().transform((val) => parseInt(val, 10) || 0).optional(),
+  limit: z.string().optional().transform((val) => {
+    if (!val) return 100;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed)) return 100;
+    return Math.min(Math.max(parsed, 0), 500);
+  }),
+  offset: z.string().optional().transform((val) => {
+    if (!val) return 0;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed)) return 0;
+    return Math.max(parsed, 0);
+  }),
 });
 
 export const versionsQuerySchema = z.object({
-  limit: z.string().transform((val) => Math.min(parseInt(val, 10) || 50, 100)).optional(),
-  offset: z.string().transform((val) => parseInt(val, 10) || 0).optional(),
+  limit: z.string().optional().transform((val) => {
+    if (!val) return 50;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed)) return 50;
+    return Math.min(Math.max(parsed, 0), 100);
+  }),
+  offset: z.string().optional().transform((val) => {
+    if (!val) return 0;
+    const parsed = parseInt(val, 10);
+    if (isNaN(parsed)) return 0;
+    return Math.max(parsed, 0);
+  }),
 });
 
 // ============================================

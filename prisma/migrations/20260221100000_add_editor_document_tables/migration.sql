@@ -18,7 +18,7 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- CreateTable: DocumentVersion
 CREATE TABLE IF NOT EXISTS "DocumentVersion" (
-    "id" TEXT NOT NULL,
+    "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     "documentId" TEXT NOT NULL,
     "version" INTEGER NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS "DocumentVersion" (
 
 -- CreateTable: DocumentChange
 CREATE TABLE IF NOT EXISTS "DocumentChange" (
-    "id" TEXT NOT NULL,
+    "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     "documentId" TEXT NOT NULL,
     "versionId" TEXT,
     "changeType" "DocumentChangeType" NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS "DocumentChange" (
 
 -- CreateTable: EditorSession
 CREATE TABLE IF NOT EXISTS "EditorSession" (
-    "id" TEXT NOT NULL,
+    "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     "documentId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "sessionKey" TEXT NOT NULL,
@@ -81,7 +81,6 @@ CREATE INDEX IF NOT EXISTS "DocumentChange_versionId_idx" ON "DocumentChange"("v
 CREATE UNIQUE INDEX IF NOT EXISTS "EditorSession_sessionKey_key" ON "EditorSession"("sessionKey");
 CREATE INDEX IF NOT EXISTS "EditorSession_documentId_idx" ON "EditorSession"("documentId");
 CREATE INDEX IF NOT EXISTS "EditorSession_userId_idx" ON "EditorSession"("userId");
-CREATE INDEX IF NOT EXISTS "EditorSession_sessionKey_idx" ON "EditorSession"("sessionKey");
 CREATE INDEX IF NOT EXISTS "EditorSession_status_idx" ON "EditorSession"("status");
 
 -- AddForeignKey: DocumentChange.versionId -> DocumentVersion.id

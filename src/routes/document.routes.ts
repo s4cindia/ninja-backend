@@ -34,6 +34,11 @@ const changeIdParamSchema = z.object({
   changeId: z.string().uuid('Invalid change ID'),
 });
 
+const documentChangeIdParamSchema = z.object({
+  documentId: z.string().uuid('Invalid document ID'),
+  changeId: z.string().uuid('Invalid change ID'),
+});
+
 // Apply authentication to all routes
 router.use(authenticate);
 
@@ -136,14 +141,28 @@ router.post(
   trackChangesController.rejectAllPending.bind(trackChangesController)
 );
 
-// Accept single change
+// Accept single change (RESTful path under document)
+router.patch(
+  '/:documentId/changes/:changeId/accept',
+  validate({ params: documentChangeIdParamSchema }),
+  trackChangesController.acceptChange.bind(trackChangesController)
+);
+
+// Reject single change (RESTful path under document)
+router.patch(
+  '/:documentId/changes/:changeId/reject',
+  validate({ params: documentChangeIdParamSchema }),
+  trackChangesController.rejectChange.bind(trackChangesController)
+);
+
+// Legacy routes for backwards compatibility (changeId is globally unique)
+// TODO: Deprecate these in favor of the RESTful paths above
 router.patch(
   '/change/:changeId/accept',
   validate({ params: changeIdParamSchema }),
   trackChangesController.acceptChange.bind(trackChangesController)
 );
 
-// Reject single change
 router.patch(
   '/change/:changeId/reject',
   validate({ params: changeIdParamSchema }),

@@ -201,7 +201,6 @@ router.get(
  */
 router.get(
   '/documents',
-  authenticate, // Explicit auth for defense-in-depth
   citationManagementController.getDocuments.bind(citationManagementController)
 );
 

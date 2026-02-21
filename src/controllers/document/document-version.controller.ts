@@ -47,12 +47,17 @@ export class DocumentVersionController {
         return;
       }
 
-      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
-      const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+      // Parse and validate query params with proper clamping
+      const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : NaN;
+      const parsedOffset = req.query.offset ? parseInt(req.query.offset as string, 10) : NaN;
+
+      // Apply defaults and clamp to valid ranges
+      const appliedLimit = isNaN(parsedLimit) ? 50 : Math.min(Math.max(parsedLimit, 1), 100);
+      const appliedOffset = isNaN(parsedOffset) ? 0 : Math.max(parsedOffset, 0);
 
       const { versions, total } = await documentVersioningService.getVersions(
         documentId,
-        { limit, offset }
+        { limit: appliedLimit, offset: appliedOffset }
       );
 
       res.json({
@@ -68,8 +73,8 @@ export class DocumentVersionController {
             snapshotType: v.snapshotType,
           })),
           total,
-          limit,
-          offset,
+          limit: appliedLimit,
+          offset: appliedOffset,
         },
       });
     } catch (error) {

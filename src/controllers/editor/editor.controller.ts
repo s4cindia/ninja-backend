@@ -158,7 +158,8 @@ export class EditorController {
 
       // JWT verification is REQUIRED unless explicitly disabled in development
       if (onlyOfficeService.isJwtVerificationRequired()) {
-        const token = req.headers['authorization']?.replace('Bearer ', '');
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.replace(/^bearer\s+/i, '');
         if (!token) {
           logger.warn(`[Editor] Missing JWT token for session ${sessionId}`);
           res.status(401).json({ error: 1 });

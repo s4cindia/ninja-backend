@@ -48,6 +48,7 @@ model User {
   batchWorkflows      BatchWorkflow[]
   hitlDecisions       HITLDecision[]
   remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
+  editorSessions      EditorSession[]
 
   @@index([tenantId])
   @@index([email])
@@ -707,6 +708,9 @@ model EditorialDocument {
   citationChanges      CitationChange[]
   referenceListEntries ReferenceListEntry[]
   documentContent      EditorialDocumentContent?
+  documentVersions     DocumentVersion[]
+  documentChanges      DocumentChange[]
+  editorSessions       EditorSession[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -1398,6 +1402,7 @@ model DocumentVersion {
   snapshot     Json     // Full document state or delta
   snapshotType String   @default("full") // "full" | "delta"
 
+  document     EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   changes      DocumentChange[]
 
   @@unique([documentId, version])
@@ -1409,6 +1414,7 @@ model DocumentChange {
   id           String             @id @default(uuid())
   documentId   String
   versionId    String?
+  document     EditorialDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
   version      DocumentVersion?   @relation(fields: [versionId], references: [id], onDelete: SetNull)
   changeType   DocumentChangeType
   status       DocumentChangeStatus @default(PENDING)
@@ -1507,9 +1513,11 @@ model EditorSession {
   expiresAt    DateTime
   metadata     Json?               // OnlyOffice session metadata
 
+  document     EditorialDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([documentId])
   @@index([userId])
-  @@index([sessionKey])
   @@index([status])
 }
 

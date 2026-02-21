@@ -22,7 +22,7 @@ version: '3.8'
 
 services:
   onlyoffice-documentserver:
-    image: onlyoffice/documentserver:latest
+    image: onlyoffice/documentserver:8.0
     container_name: ninja-onlyoffice
     restart: unless-stopped
     ports:

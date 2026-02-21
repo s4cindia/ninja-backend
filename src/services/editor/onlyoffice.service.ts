@@ -476,17 +476,31 @@ class OnlyOfficeService {
       const parsedUrl = new URL(url);
       const serverUrl = new URL(ONLYOFFICE_CONFIG.documentServerUrl);
 
-      // Allow URLs from the OnlyOffice server or localhost variants
-      const allowedHosts = [
-        serverUrl.hostname,
-        'localhost',
-        '127.0.0.1',
-        // Docker network names
-        'onlyoffice-documentserver',
-        'ninja-onlyoffice',
-      ];
+      // Only allow http and https schemes
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return false;
+      }
 
-      return allowedHosts.includes(parsedUrl.hostname);
+      // In production, only allow OnlyOffice server and Docker network names
+      // In development, also allow localhost for local testing
+      const allowedHosts = NODE_ENV === 'production'
+        ? [serverUrl.hostname, 'onlyoffice-documentserver', 'ninja-onlyoffice']
+        : [serverUrl.hostname, 'localhost', '127.0.0.1', 'onlyoffice-documentserver', 'ninja-onlyoffice'];
+
+      if (!allowedHosts.includes(parsedUrl.hostname)) {
+        return false;
+      }
+
+      // Validate port if the server URL has a specific port
+      if (serverUrl.port) {
+        const expectedPort = serverUrl.port;
+        const actualPort = parsedUrl.port || (parsedUrl.protocol === 'https:' ? '443' : '80');
+        if (actualPort !== expectedPort) {
+          return false;
+        }
+      }
+
+      return true;
     } catch {
       return false;
     }
@@ -554,18 +568,24 @@ class OnlyOfficeService {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     );
 
-    // Update document record
+    // Update document record and mark content as stale (needs re-extraction)
+    // Set status to UPLOADED to indicate the document file has changed and
+    // content extraction is needed for accurate text search/analysis
     await prisma.editorialDocument.update({
       where: { id: documentId },
       data: {
         storagePath: storageResult.storagePath,
         storageType: storageResult.storageType,
         fileSize: buffer.length,
+        status: 'UPLOADED', // Mark for re-parsing
         updatedAt: new Date(),
       },
     });
 
     // Create a version snapshot
+    // Note: The content snapshot uses the pre-edit content since we haven't
+    // re-extracted the document yet. The snapshot type is marked as 'edit'
+    // to indicate this is from OnlyOffice and may need re-extraction.
     const documentContent = await prisma.editorialDocumentContent.findUnique({
       where: { documentId },
     });
@@ -580,10 +600,10 @@ class OnlyOfficeService {
         },
       },
       userId,
-      'OnlyOffice edit saved'
+      'OnlyOffice edit saved (content may need re-extraction)'
     );
 
-    logger.info(`[OnlyOffice] Document ${documentId} saved successfully`);
+    logger.info(`[OnlyOffice] Document ${documentId} saved successfully (content marked for re-extraction)`);
   }
 
   /**
@@ -661,3 +681,18 @@ export const handleCallback = onlyOfficeService.handleCallback.bind(onlyOfficeSe
 export const getDocumentContent = onlyOfficeService.getDocumentContent.bind(onlyOfficeService);
 export const closeSession = onlyOfficeService.closeSession.bind(onlyOfficeService);
 export const isAvailable = onlyOfficeService.isAvailable.bind(onlyOfficeService);
+
+// Schedule periodic cleanup of expired sessions (every 15 minutes)
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+setInterval(() => {
+  onlyOfficeService.cleanupExpiredSessions().catch((err) => {
+    logger.error('[OnlyOffice] Failed to cleanup expired sessions:', err);
+  });
+}, CLEANUP_INTERVAL_MS);
+
+// Run initial cleanup on startup (with a small delay to allow DB connections)
+setTimeout(() => {
+  onlyOfficeService.cleanupExpiredSessions().catch((err) => {
+    logger.error('[OnlyOffice] Failed initial session cleanup:', err);
+  });
+}, 5000);

@@ -84,6 +84,11 @@ class TrackChangesService {
    * Create multiple changes at once (batch)
    */
   async createChanges(inputs: CreateChangeInput[]): Promise<DocumentChange[]> {
+    // Early return for empty input
+    if (inputs.length === 0) {
+      return [];
+    }
+
     const changes = await prisma.$transaction(
       inputs.map((input) =>
         prisma.documentChange.create({
@@ -106,7 +111,7 @@ class TrackChangesService {
     );
 
     logger.info(
-      `[TrackChanges] Created ${changes.length} changes for document ${inputs[0]?.documentId}`
+      `[TrackChanges] Created ${changes.length} changes for document ${inputs[0].documentId}`
     );
 
     return changes.map((c) => this.mapToDocumentChange(c));
@@ -160,6 +165,19 @@ class TrackChangesService {
     changeId: string,
     reviewedBy: string
   ): Promise<DocumentChange> {
+    // First verify the change exists and is in PENDING status
+    const existing = await prisma.documentChange.findUnique({
+      where: { id: changeId },
+    });
+
+    if (!existing) {
+      throw new Error(`Change ${changeId} not found`);
+    }
+
+    if (existing.status !== DocumentChangeStatus.PENDING) {
+      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
+    }
+
     const change = await prisma.documentChange.update({
       where: { id: changeId },
       data: {
@@ -181,6 +199,19 @@ class TrackChangesService {
     changeId: string,
     reviewedBy: string
   ): Promise<DocumentChange> {
+    // First verify the change exists and is in PENDING status
+    const existing = await prisma.documentChange.findUnique({
+      where: { id: changeId },
+    });
+
+    if (!existing) {
+      throw new Error(`Change ${changeId} not found`);
+    }
+
+    if (existing.status !== DocumentChangeStatus.PENDING) {
+      throw new Error(`Change ${changeId} is not in PENDING status (current: ${existing.status})`);
+    }
+
     const change = await prisma.documentChange.update({
       where: { id: changeId },
       data: {

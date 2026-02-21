@@ -17,8 +17,7 @@
 #   - ONLYOFFICE_JWT_SECRET: Strong random string (32+ chars)
 #   - ONLYOFFICE_SECURE_LINK_SECRET: Strong random string
 #   - API_URL: Backend API URL for callbacks
-
-version: '3.8'
+#   - AWS_REGION: AWS region for CloudWatch logs (default: ap-south-1)
 
 services:
   onlyoffice-documentserver:
@@ -36,8 +35,8 @@ services:
 
       # Security
       - SECURE_LINK_SECRET=${ONLYOFFICE_SECURE_LINK_SECRET}
-      - ALLOW_PRIVATE_IP_ADDRESS=true
-      - ALLOW_META_IP_ADDRESS=true
+      # Note: ALLOW_PRIVATE_IP_ADDRESS and ALLOW_META_IP_ADDRESS are intentionally
+      # not set in production to prevent SSRF attacks via internal IP ranges
 
       # Performance (adjust based on expected load)
       - DS_LOG_LEVEL=WARNING
@@ -76,7 +75,7 @@ services:
       driver: "awslogs"
       options:
         awslogs-group: "/ecs/ninja-onlyoffice"
-        awslogs-region: "ap-south-1"
+        awslogs-region: "${AWS_REGION:-ap-south-1}"
         awslogs-stream-prefix: "onlyoffice"
 
     networks:

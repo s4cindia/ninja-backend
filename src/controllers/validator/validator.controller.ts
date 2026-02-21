@@ -9,7 +9,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 
-const DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const docxMimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 export class ValidatorController {
   /**
@@ -47,17 +47,21 @@ export class ValidatorController {
       const storedFileName = path.basename(storageResult.storagePath) || file.originalname;
 
       // Create a Job record (required by EditorialDocument)
+      // Note: Validator uploads are direct-to-editor without processing,
+      // so we mark as QUEUED initially. The job serves as a tracking record
+      // for the document lifecycle rather than representing actual processing.
       const job = await prisma.job.create({
         data: {
           tenantId,
           userId,
           type: 'EDITORIAL_FULL',
-          status: 'COMPLETED',
+          status: 'QUEUED',
           input: {
             fileName: file.originalname,
             fileSize: file.size,
-            mimeType: DOCX_MIME_TYPE,
+            mimeType: docxMimeType,
             source: 'validator',
+            directUpload: true, // Flag indicating no processing required
           },
         },
       });
@@ -69,7 +73,7 @@ export class ValidatorController {
           jobId: job.id,
           fileName: storedFileName,
           originalName: file.originalname,
-          mimeType: DOCX_MIME_TYPE,
+          mimeType: docxMimeType,
           fileSize: file.size,
           storagePath: storageResult.storagePath,
           storageType: storageResult.storageType,
@@ -108,8 +112,12 @@ export class ValidatorController {
   ): Promise<void> {
     try {
       const { tenantId } = req.user!;
-      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
-      const offset = parseInt(req.query.offset as string) || 0;
+
+      // Parse and validate limit/offset with proper clamping
+      const parsedLimit = parseInt(req.query.limit as string, 10);
+      const parsedOffset = parseInt(req.query.offset as string, 10);
+      const limit = isNaN(parsedLimit) ? 50 : Math.min(Math.max(parsedLimit, 0), 100);
+      const offset = isNaN(parsedOffset) ? 0 : Math.max(parsedOffset, 0);
 
       const [documents, total] = await Promise.all([
         prisma.editorialDocument.findMany({

@@ -25,6 +25,8 @@ import {
 
 // Valid status values for validation
 const VALID_STATUS_VALUES = Object.values(DocumentChangeStatus);
+const VALID_CHANGE_TYPES = Object.values(DocumentChangeType);
+const VALID_SOURCE_TYPES = ['auto', 'manual', 'ai_suggestion', 'onlyoffice'];
 
 export class TrackChangesController {
   /**
@@ -198,6 +200,54 @@ export class TrackChangesController {
 
       logger.info(`[TrackChanges] Creating change for document ${documentId}`);
 
+      // Validate changeType against Prisma enum (defense in depth)
+      if (!changeType || !VALID_CHANGE_TYPES.includes(changeType)) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_CHANGE_TYPE',
+            message: `Invalid changeType. Must be one of: ${VALID_CHANGE_TYPES.join(', ')}`,
+          },
+        });
+        return;
+      }
+
+      // Validate offsets are numbers
+      if (typeof startOffset !== 'number' || typeof endOffset !== 'number') {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_OFFSET',
+            message: 'startOffset and endOffset must be numbers',
+          },
+        });
+        return;
+      }
+
+      // Validate offset range
+      if (startOffset < 0 || endOffset < 0 || endOffset < startOffset) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_OFFSET_RANGE',
+            message: 'Offsets must be non-negative and endOffset >= startOffset',
+          },
+        });
+        return;
+      }
+
+      // Validate sourceType if provided
+      if (sourceType && !VALID_SOURCE_TYPES.includes(sourceType)) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_SOURCE_TYPE',
+            message: `Invalid sourceType. Must be one of: ${VALID_SOURCE_TYPES.join(', ')}`,
+          },
+        });
+        return;
+      }
+
       // Verify document exists and belongs to tenant
       const document = await prisma.editorialDocument.findFirst({
         where: { id: documentId, tenantId },
@@ -349,6 +399,31 @@ export class TrackChangesController {
       const { documentId } = req.params;
       const { changeIds, action } = req.body;
       const { tenantId, id: userId } = req.user!;
+
+      // Validate changeIds is a non-empty array of strings (defense in depth)
+      if (!Array.isArray(changeIds) || changeIds.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_INPUT',
+            message: 'changeIds must be a non-empty array',
+          },
+        });
+        return;
+      }
+
+      // Validate action is a valid bulk action
+      const validActions = ['accept', 'reject'];
+      if (!action || !validActions.includes(action)) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_INPUT',
+            message: `action must be one of: ${validActions.join(', ')}`,
+          },
+        });
+        return;
+      }
 
       logger.info(
         `[TrackChanges] Bulk ${action} ${changeIds.length} changes for document ${documentId}`
