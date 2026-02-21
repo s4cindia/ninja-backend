@@ -4,6 +4,8 @@ import { workflowConfigService } from './workflow-config.service';
 import { HITLGate, HITLAction, HITLReviewItem } from '../../types/workflow-contracts';
 import { HitlGateConfig } from '../../types/workflow-config.types';
 import { logger } from '../../lib/logger';
+import { websocketService } from './websocket.service';
+import { config } from '../../config';
 
 class HITLOrchestratorService {
   /**
@@ -47,6 +49,17 @@ class HITLOrchestratorService {
     }
 
     logger.info(`[HITL Orchestrator] Suspended at gate ${gate} with ${items.length} items`);
+
+    // Emit WebSocket HITL required event
+    if (config.features.enableWebSocket) {
+      websocketService.emitHITLRequired({
+        workflowId,
+        gate,
+        itemCount: items.length,
+        deepLink: `/workflow/${workflowId}/hitl/${gate.toLowerCase().replace(/_/g, '-')}`,
+        timeoutAt: timeoutMs ? new Date(Date.now() + timeoutMs).toISOString() : undefined,
+      });
+    }
   }
 
   async submitDecisions(

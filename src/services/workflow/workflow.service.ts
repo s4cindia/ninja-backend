@@ -6,6 +6,8 @@ import { workflowConfigService } from './workflow-config.service';
 import { HitlGateConfig } from '../../types/workflow-config.types';
 import { enqueueWorkflowEvent } from '../../queues/workflow.queue';
 import { logger } from '../../lib/logger';
+import { websocketService } from './websocket.service';
+import { config } from '../../config';
 
 class WorkflowService {
   async createWorkflow(
@@ -117,6 +119,17 @@ class WorkflowService {
       completedAt: updated.completedAt,
       stateDataKeys: Object.keys(mergedStateData),
     });
+
+    // Emit WebSocket state change event
+    if (config.features.enableWebSocket && config.features.emitAllTransitions) {
+      websocketService.emitStateChange({
+        workflowId,
+        from: fromState as import('../../types/workflow-contracts').WorkflowState,
+        to: newState as import('../../types/workflow-contracts').WorkflowState,
+        timestamp: new Date().toISOString(),
+        phase: this.computePhase(newState),
+      });
+    }
 
     return updated;
   }

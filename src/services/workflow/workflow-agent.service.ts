@@ -15,6 +15,8 @@ import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoRemediationService } from '../epub/auto-remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
 import { acrService } from '../acr.service';
+import { websocketService } from './websocket.service';
+import { config } from '../../config';
 
 /**
  * Workflow automation agent service.
@@ -285,6 +287,17 @@ class WorkflowAgentService {
           errorStack: error instanceof Error ? error.stack : undefined,
           failedAt: new Date().toISOString(),
         });
+
+        // Emit WebSocket error event
+        if (config.features.enableWebSocket) {
+          websocketService.emitError({
+            workflowId,
+            error: error instanceof Error ? error.message : String(error),
+            state: 'FAILED',
+            retryable: true,
+            retryCount: 0, // Retry count not available in catch block
+          });
+        }
       } catch (transitionError) {
         logger.error(`[WorkflowAgent] Failed to transition to ERROR state:`, transitionError);
       }
@@ -523,6 +536,17 @@ class WorkflowAgentService {
         });
 
         logger.info(`[WorkflowAgent] EPUB auto-remediation completed: fixed=${epubResult.totalIssuesFixed}, failed=${epubResult.totalIssuesFailed}`);
+
+        // Emit WebSocket remediation progress event
+        if (config.features.enableWebSocket) {
+          websocketService.emitRemediationProgress({
+            workflowId: workflow.id,
+            autoFixed: epubResult.totalIssuesFixed,
+            manualPending: epubResult.totalIssuesFailed,
+            manualComplete: 0,
+            total: epubResult.totalIssuesFixed + epubResult.totalIssuesFailed,
+          });
+        }
       }
     } else {
       // PDF remediation
@@ -557,6 +581,17 @@ class WorkflowAgentService {
         });
 
         logger.info(`[WorkflowAgent] PDF auto-remediation completed: fixed=${pdfResult.completedTasks}, failed=${pdfResult.failedTasks}`);
+
+        // Emit WebSocket remediation progress event
+        if (config.features.enableWebSocket) {
+          websocketService.emitRemediationProgress({
+            workflowId: workflow.id,
+            autoFixed: pdfResult.completedTasks,
+            manualPending: pdfResult.failedTasks,
+            manualComplete: 0,
+            total: pdfResult.completedTasks + pdfResult.failedTasks,
+          });
+        }
       }
     }
 

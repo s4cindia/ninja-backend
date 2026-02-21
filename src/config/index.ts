@@ -18,6 +18,11 @@ export interface Config {
   s3Region: string;
   awsAccessKeyId: string | null;
   awsSecretAccessKey: string | null;
+  features: {
+    enableWebSocket: boolean;
+    emitAllTransitions: boolean;
+    emitBatchProgress: boolean;
+  };
 }
 
 export const config: Config = {
@@ -37,6 +42,11 @@ export const config: Config = {
   s3Region: process.env.S3_REGION || 'ap-south-1',
   awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || null,
   awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || null,
+  features: {
+    enableWebSocket: process.env.ENABLE_WEBSOCKET !== 'false', // Default: enabled (can disable with ENABLE_WEBSOCKET=false)
+    emitAllTransitions: process.env.WS_EMIT_ALL !== 'false', // Default: enabled
+    emitBatchProgress: process.env.WS_EMIT_BATCH !== 'false', // Default: enabled
+  },
 };
 
 export default config;
