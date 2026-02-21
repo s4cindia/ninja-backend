@@ -47,6 +47,12 @@ export function startWorkflowWorker(): Worker {
       const { workflowService } = await import('../services/workflow/workflow.service');
       await workflowService.transition(workflowId, event, payload as never);
 
+      logger.info(`[Queue Worker] State transition completed for workflow ${workflowId}`);
+
+      // Trigger workflow agent to process new state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      await workflowAgentService.processWorkflowState(workflowId);
+
       logger.info(`[Queue Worker] Completed ${event} for workflow ${workflowId}`);
     },
     {

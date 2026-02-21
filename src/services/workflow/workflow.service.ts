@@ -4,6 +4,7 @@ import { WorkflowInstance, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { workflowConfigService } from './workflow-config.service';
 import { HitlGateConfig } from '../../types/workflow-config.types';
+import { enqueueWorkflowEvent } from '../../queues/workflow.queue';
 import { logger } from '../../lib/logger';
 
 class WorkflowService {
@@ -13,7 +14,7 @@ class WorkflowService {
     batchId?: string,
   ): Promise<WorkflowInstance> {
     const id = crypto.randomUUID();
-    return prisma.workflowInstance.create({
+    const workflow = await prisma.workflowInstance.create({
       data: {
         id,
         fileId,
@@ -23,6 +24,12 @@ class WorkflowService {
         stateData: {},
       },
     });
+
+    // Auto-trigger workflow processing
+    logger.info(`[Workflow] Auto-triggering workflow ${id}`);
+    await enqueueWorkflowEvent(id, 'PREPROCESS');
+
+    return workflow;
   }
 
   async getWorkflow(workflowId: string): Promise<WorkflowInstance | null> {
