@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../../src/index';
@@ -44,7 +45,7 @@ vi.mock('../../src/middleware/auth.middleware', async (importOriginal) => {
       };
       next();
     },
-    authorize: (...roles: string[]) => (req: any, res: any, next: any) => {
+    authorize: (..._roles: string[]) => (req: any, res: any, next: any) => {
       next();
     },
     authenticateFlexible: (req: any, res: any, next: any) => {

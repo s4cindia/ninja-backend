@@ -131,7 +131,7 @@ export class TenantConfigController {
       }
 
       // Update tenant settings in database
-      const updatedTenant = await prisma.tenant.update({
+      await prisma.tenant.update({
         where: { id: req.user.tenantId },
         data: {
           settings: {
