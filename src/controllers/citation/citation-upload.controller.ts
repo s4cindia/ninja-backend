@@ -1791,6 +1791,15 @@ export class CitationUploadController {
   /**
    * GET /api/v1/citation-management/documents
    * List all editorial documents for the current user's tenant
+   *
+   * COORDINATION NOTE: This endpoint was added to support the Editorial Dashboard
+   * feature (PR #217 - Editorial Services Module 1). It is a read-only listing
+   * endpoint that does not modify citation data. The Editorial Dashboard uses this
+   * to display recent Citation Management documents alongside Validator documents.
+   *
+   * This is placed in the citation-upload controller to keep citation-related
+   * document listing in one place, but could be refactored to a shared editorial
+   * documents controller if cross-module listing becomes more complex.
    */
   async getDocuments(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {

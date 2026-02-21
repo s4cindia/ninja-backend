@@ -564,13 +564,21 @@ class OnlyOfficeService {
       throw new Error('Document not found');
     }
 
-    // TODO: S3 Storage Cleanup - The old S3 object at document.storagePath is not
-    // deleted when uploading a new version. Each edit-save cycle creates a new S3 object.
-    // For actively-edited documents, this causes unbounded storage growth.
-    // Future improvement: Delete the old S3 object before or after uploading the new one.
-    // Consider: document.storagePath before update, citationStorageService.deleteFile()
+    // KNOWN ISSUE: S3 Storage Leak (tracked for post-MVP cleanup)
+    // ============================================================
+    // The old S3 object at document.storagePath is NOT deleted when uploading
+    // a new version. Each edit-save cycle creates a new S3 object, causing
+    // unbounded storage growth for actively-edited documents.
+    //
+    // Production impact: Storage costs grow linearly with edit frequency.
+    // Mitigation: Implement S3 lifecycle rules to expire old objects, or
+    // add cleanup logic to delete previousStoragePath after successful upload.
+    //
+    // Fix approach: After successful upload (storageResult), call:
+    //   await citationStorageService.deleteFile(previousStoragePath);
+    // Handle errors gracefully - don't fail the save if cleanup fails.
     const previousStoragePath = document.storagePath;
-    void previousStoragePath; // Acknowledged: cleanup not yet implemented
+    void previousStoragePath; // Retained for future cleanup implementation
 
     // Upload the new version
     const storageResult = await citationStorageService.uploadFile(

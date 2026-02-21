@@ -26,10 +26,6 @@ const documentIdParamSchema = z.object({
   documentId: z.string().uuid('Invalid document ID'),
 });
 
-const changeIdParamSchema = z.object({
-  changeId: z.string().uuid('Invalid change ID'),
-});
-
 const documentChangeIdParamSchema = z.object({
   documentId: z.string().uuid('Invalid document ID'),
   changeId: z.string().uuid('Invalid change ID'),
@@ -151,18 +147,8 @@ router.patch(
   trackChangesController.rejectChange.bind(trackChangesController)
 );
 
-// Legacy routes for backwards compatibility (changeId is globally unique)
-// TODO: Deprecate these in favor of the RESTful paths above
-router.patch(
-  '/change/:changeId/accept',
-  validate({ params: changeIdParamSchema }),
-  trackChangesController.acceptChange.bind(trackChangesController)
-);
-
-router.patch(
-  '/change/:changeId/reject',
-  validate({ params: changeIdParamSchema }),
-  trackChangesController.rejectChange.bind(trackChangesController)
-);
+// SECURITY: Legacy routes removed - they bypassed tenant ownership checks
+// All change operations must use the RESTful /:documentId/changes/:changeId paths
+// which verify document belongs to the authenticated user's tenant
 
 export default router;

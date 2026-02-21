@@ -345,7 +345,11 @@ export class EditorController {
 
   /**
    * GET /api/v1/editor/document/:documentId/sessions
-   * Get active sessions for a document
+   * Get active sessions for a document with pagination
+   *
+   * Query params:
+   * - limit: number (default 50, max 100)
+   * - offset: number (default 0)
    */
   async getDocumentSessions(
     req: Request,
@@ -355,6 +359,13 @@ export class EditorController {
     try {
       const { documentId } = req.params;
       const { tenantId } = req.user!;
+
+      // Parse pagination params with defaults and limits
+      const limit = Math.min(
+        Math.max(1, parseInt(req.query.limit as string, 10) || 50),
+        100
+      );
+      const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
 
       // Verify document exists and belongs to tenant
       const document = await prisma.editorialDocument.findFirst({
@@ -370,28 +381,41 @@ export class EditorController {
         return;
       }
 
-      // Single query to get sessions - derive count from array length for consistency
-      const sessions = await prisma.editorSession.findMany({
-        where: {
-          documentId,
-          status: { in: [EditorSessionStatus.ACTIVE, EditorSessionStatus.EDITING] },
-          expiresAt: { gt: new Date() },
-        },
-        select: {
-          id: true,
-          userId: true,
-          status: true,
-          lastActivity: true,
-          expiresAt: true,
-        },
-      });
+      const where = {
+        documentId,
+        status: { in: [EditorSessionStatus.ACTIVE, EditorSessionStatus.EDITING] },
+        expiresAt: { gt: new Date() },
+      };
+
+      // Get total count and paginated sessions
+      const [total, sessions] = await Promise.all([
+        prisma.editorSession.count({ where }),
+        prisma.editorSession.findMany({
+          where,
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+            lastActivity: true,
+            expiresAt: true,
+          },
+          orderBy: { lastActivity: 'desc' },
+          take: limit,
+          skip: offset,
+        }),
+      ]);
 
       res.json({
         success: true,
         data: {
           documentId,
-          activeCount: sessions.length,
           sessions,
+          pagination: {
+            total,
+            limit,
+            offset,
+            hasMore: offset + sessions.length < total,
+          },
         },
       });
     } catch (error) {
