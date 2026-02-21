@@ -37,10 +37,17 @@ const MAX_SHORT_ALT_LENGTH = 125;
 const MAX_EXTENDED_ALT_LENGTH = 250;
 
 class PhotoAltGeneratorService {
-  private genAI: GoogleGenerativeAI;
-  private model: GenerativeModel;
+  private genAI: GoogleGenerativeAI | null = null;
+  private model: GenerativeModel | null = null;
 
-  constructor() {
+  /**
+   * Lazily initialize the Gemini client.
+   * This allows the module to be imported without requiring GEMINI_API_KEY,
+   * which is needed for CI/CD test runs that don't use this service.
+   */
+  private ensureInitialized(): void {
+    if (this.model) return;
+
     if (!process.env.GEMINI_API_KEY) {
       throw new Error('GEMINI_API_KEY environment variable is required');
     }
@@ -85,9 +92,12 @@ Flags to include if applicable:
 
     let result;
     let text: string;
-    
+
+    // Ensure Gemini client is initialized (lazy init for CI compatibility)
+    this.ensureInitialized();
+
     try {
-      result = await this.model.generateContent([prompt, imagePart]);
+      result = await this.model!.generateContent([prompt, imagePart]);
       const response = await result.response;
       text = response.text();
     } catch (apiError) {
@@ -292,8 +302,11 @@ Return JSON only (no markdown):
       },
     };
 
+    // Ensure Gemini client is initialized (lazy init for CI compatibility)
+    this.ensureInitialized();
+
     try {
-      const result = await this.model.generateContent([contextPrompt, imagePart]);
+      const result = await this.model!.generateContent([contextPrompt, imagePart]);
       const response = await result.response;
       const text = response.text();
       
