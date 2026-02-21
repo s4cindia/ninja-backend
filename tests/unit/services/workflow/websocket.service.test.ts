@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Server as HTTPServer } from 'http';
-import { Server, Socket } from 'socket.io';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { AddressInfo } from 'net';
+import type { WorkflowState, HITLGate } from '../../../../src/types/workflow-contracts';
 
 describe('WebSocketService', () => {
   let httpServer: HTTPServer;
@@ -97,8 +97,8 @@ describe('WebSocketService', () => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
-        clientSocket.on('error', (error: { message: string }) => {
-          expect(error.message).toBe('Invalid workflow ID format');
+        clientSocket.on('error', (error: Record<string, unknown>) => {
+          expect((error as { message: string }).message).toBe('Invalid workflow ID format');
           done();
         });
 
@@ -110,8 +110,8 @@ describe('WebSocketService', () => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
-        clientSocket.on('error', (error: { message: string }) => {
-          expect(error.message).toBe('Invalid batch ID format');
+        clientSocket.on('error', (error: Record<string, unknown>) => {
+          expect((error as { message: string }).message).toBe('Invalid batch ID format');
           done();
         });
 
@@ -130,8 +130,8 @@ describe('WebSocketService', () => {
         }
 
         // 11th subscription should fail
-        clientSocket.on('error', (error: { message: string }) => {
-          expect(error.message).toContain('Too many subscriptions');
+        clientSocket.on('error', (error: Record<string, unknown>) => {
+          expect((error as { message: string }).message).toContain('Too many subscriptions');
           done();
         });
 
@@ -156,7 +156,7 @@ describe('WebSocketService', () => {
       clientSocket.on('connect', () => {
         clientSocket.emit('subscribe:workflow', workflowId);
 
-        clientSocket.on('workflow:state-change', (event: any) => {
+        clientSocket.on('workflow:state-change', (event: Record<string, unknown>) => {
           expect(event.workflowId).toBe(workflowId);
           expect(event.from).toBe('PREPROCESSING');
           expect(event.to).toBe('RUNNING_EPUBCHECK');
@@ -169,8 +169,8 @@ describe('WebSocketService', () => {
           const { websocketService } = require('../../../../src/services/workflow/websocket.service');
           websocketService.emitStateChange({
             workflowId,
-            from: 'PREPROCESSING' as any,
-            to: 'RUNNING_EPUBCHECK' as any,
+            from: 'PREPROCESSING' as WorkflowState,
+            to: 'RUNNING_EPUBCHECK' as WorkflowState,
             timestamp: new Date().toISOString(),
             phase: 'audit',
           });
@@ -185,7 +185,7 @@ describe('WebSocketService', () => {
       clientSocket.on('connect', () => {
         clientSocket.emit('subscribe:workflow', workflowId);
 
-        clientSocket.on('workflow:hitl-required', (event: any) => {
+        clientSocket.on('workflow:hitl-required', (event: Record<string, unknown>) => {
           expect(event.workflowId).toBe(workflowId);
           expect(event.gate).toBe('AI_REVIEW');
           expect(event.itemCount).toBe(5);
@@ -196,7 +196,7 @@ describe('WebSocketService', () => {
           const { websocketService } = require('../../../../src/services/workflow/websocket.service');
           websocketService.emitHITLRequired({
             workflowId,
-            gate: 'AI_REVIEW' as any,
+            gate: 'AI_REVIEW' as HITLGate,
             itemCount: 5,
             deepLink: '/workflow/123/hitl/ai-review',
           });
@@ -211,7 +211,7 @@ describe('WebSocketService', () => {
       clientSocket.on('connect', () => {
         clientSocket.emit('subscribe:workflow', workflowId);
 
-        clientSocket.on('workflow:remediation-progress', (event: any) => {
+        clientSocket.on('workflow:remediation-progress', (event: Record<string, unknown>) => {
           expect(event.workflowId).toBe(workflowId);
           expect(event.autoFixed).toBe(10);
           expect(event.manualPending).toBe(3);
@@ -239,7 +239,7 @@ describe('WebSocketService', () => {
       clientSocket.on('connect', () => {
         clientSocket.emit('subscribe:workflow', workflowId);
 
-        clientSocket.on('workflow:error', (event: any) => {
+        clientSocket.on('workflow:error', (event: Record<string, unknown>) => {
           expect(event.workflowId).toBe(workflowId);
           expect(event.error).toBe('EPUBCheck validation failed');
           expect(event.state).toBe('FAILED');
@@ -252,7 +252,7 @@ describe('WebSocketService', () => {
           websocketService.emitError({
             workflowId,
             error: 'EPUBCheck validation failed',
-            state: 'FAILED' as any,
+            state: 'FAILED' as WorkflowState,
             retryable: true,
             retryCount: 1,
           });
@@ -267,7 +267,7 @@ describe('WebSocketService', () => {
       clientSocket.on('connect', () => {
         clientSocket.emit('subscribe:batch', batchId);
 
-        clientSocket.on('batch:progress', (event: any) => {
+        clientSocket.on('batch:progress', (event: Record<string, unknown>) => {
           expect(event.batchId).toBe(batchId);
           expect(event.completed).toBe(5);
           expect(event.total).toBe(10);
@@ -318,8 +318,8 @@ describe('WebSocketService', () => {
         const { websocketService } = require('../../../../src/services/workflow/websocket.service');
         websocketService.emitStateChange({
           workflowId: workflowId1,
-          from: 'PREPROCESSING' as any,
-          to: 'RUNNING_EPUBCHECK' as any,
+          from: 'PREPROCESSING' as WorkflowState,
+          to: 'RUNNING_EPUBCHECK' as WorkflowState,
           timestamp: new Date().toISOString(),
           phase: 'audit',
         });

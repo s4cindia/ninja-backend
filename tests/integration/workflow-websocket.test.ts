@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { Server as HTTPServer } from 'http';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { AddressInfo } from 'net';
 import prisma from '../../src/lib/prisma';
+import type { WorkflowState, HITLGate } from '../../src/types/workflow-contracts';
 
 /**
  * Integration tests for WebSocket workflow emissions.
@@ -15,7 +16,6 @@ describe('Workflow WebSocket Integration', () => {
   let testWorkflowId: string;
   let testFileId: string;
   let testUserId: string;
-  let testBatchId: string;
 
   beforeAll(async () => {
     // Create test data
@@ -87,7 +87,7 @@ describe('Workflow WebSocket Integration', () => {
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:workflow', testWorkflowId);
 
-          clientSocket.on('workflow:state-change', (event: any) => {
+          clientSocket.on('workflow:state-change', (event: Record<string, unknown>) => {
             try {
               expect(event.workflowId).toBe(testWorkflowId);
               expect(event.from).toBe('UPLOAD_RECEIVED');
@@ -122,12 +122,12 @@ describe('Workflow WebSocket Integration', () => {
 
       return new Promise<void>((resolve, reject) => {
         clientSocket = ioClient(`http://localhost:${port}`);
-        const events: any[] = [];
+        const events: Record<string, unknown>[] = [];
 
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:workflow', testWorkflowId);
 
-          clientSocket.on('workflow:state-change', (event: any) => {
+          clientSocket.on('workflow:state-change', (event: Record<string, unknown>) => {
             events.push(event);
 
             if (events.length === 2) {
@@ -168,7 +168,7 @@ describe('Workflow WebSocket Integration', () => {
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:workflow', workflowId);
 
-          clientSocket.on('workflow:hitl-required', (event: any) => {
+          clientSocket.on('workflow:hitl-required', (event: Record<string, unknown>) => {
             try {
               expect(event.workflowId).toBe(workflowId);
               expect(event.gate).toBe('AI_REVIEW');
@@ -184,7 +184,7 @@ describe('Workflow WebSocket Integration', () => {
             const { websocketService } = require('../../src/services/workflow/websocket.service');
             websocketService.emitHITLRequired({
               workflowId,
-              gate: 'AI_REVIEW' as any,
+              gate: 'AI_REVIEW' as HITLGate,
               itemCount: 5,
               deepLink: `/workflow/${workflowId}/hitl/ai-review`,
             });
@@ -206,7 +206,7 @@ describe('Workflow WebSocket Integration', () => {
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:workflow', workflowId);
 
-          clientSocket.on('workflow:error', (event: any) => {
+          clientSocket.on('workflow:error', (event: Record<string, unknown>) => {
             try {
               expect(event.workflowId).toBe(workflowId);
               expect(event.error).toBeDefined();
@@ -223,7 +223,7 @@ describe('Workflow WebSocket Integration', () => {
             websocketService.emitError({
               workflowId,
               error: 'Test error',
-              state: 'FAILED' as any,
+              state: 'FAILED' as WorkflowState,
               retryable: true,
               retryCount: 1,
             });
@@ -245,7 +245,7 @@ describe('Workflow WebSocket Integration', () => {
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:workflow', workflowId);
 
-          clientSocket.on('workflow:remediation-progress', (event: any) => {
+          clientSocket.on('workflow:remediation-progress', (event: Record<string, unknown>) => {
             try {
               expect(event.workflowId).toBe(workflowId);
               expect(typeof event.autoFixed).toBe('number');
@@ -285,7 +285,7 @@ describe('Workflow WebSocket Integration', () => {
         clientSocket.on('connect', () => {
           clientSocket.emit('subscribe:batch', batchId);
 
-          clientSocket.on('batch:progress', (event: any) => {
+          clientSocket.on('batch:progress', (event: Record<string, unknown>) => {
             try {
               expect(event.batchId).toBe(batchId);
               expect(typeof event.completed).toBe('number');
@@ -354,8 +354,8 @@ describe('Workflow WebSocket Integration', () => {
           const { websocketService } = require('../../src/services/workflow/websocket.service');
           websocketService.emitStateChange({
             workflowId,
-            from: 'PREPROCESSING' as any,
-            to: 'RUNNING_EPUBCHECK' as any,
+            from: 'PREPROCESSING' as WorkflowState,
+            to: 'RUNNING_EPUBCHECK' as WorkflowState,
             timestamp: new Date().toISOString(),
             phase: 'audit',
           });
