@@ -76,6 +76,16 @@ class WorkflowService {
       throw new Error(`Invalid transition: ${event} from ${fromState}`);
     }
 
+    // Enhanced logging for state transitions
+    logger.info(`[Workflow] Transition: ${fromState} --[${event}]--> ${newState}`, {
+      workflowId,
+      fromState,
+      event,
+      toState: newState,
+      payload: payload ? Object.keys(payload) : [],
+      timestamp: new Date().toISOString(),
+    });
+
     const mergedStateData = {
       ...(instance.stateData as Record<string, unknown>),
       ...payload,
@@ -100,6 +110,13 @@ class WorkflowService {
         },
       }),
     ]);
+
+    logger.info(`[Workflow] State persisted: ${workflowId} is now in ${newState}`, {
+      workflowId,
+      currentState: updated.currentState,
+      completedAt: updated.completedAt,
+      stateDataKeys: Object.keys(mergedStateData),
+    });
 
     return updated;
   }

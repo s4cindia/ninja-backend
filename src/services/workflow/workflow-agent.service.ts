@@ -22,6 +22,52 @@ import { acrService } from '../acr.service';
  */
 class WorkflowAgentService {
   /**
+   * Helper: Retry a function with exponential backoff.
+   * Used for transient failures (network, external services, etc.)
+   */
+  private async retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    options: {
+      maxRetries?: number;
+      initialDelayMs?: number;
+      maxDelayMs?: number;
+      operation?: string;
+    } = {}
+  ): Promise<T> {
+    const {
+      maxRetries = 3,
+      initialDelayMs = 1000,
+      maxDelayMs = 10000,
+      operation = 'operation',
+    } = options;
+
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Don't retry on last attempt
+        if (attempt === maxRetries) {
+          logger.error(`[WorkflowAgent] ${operation} failed after ${maxRetries + 1} attempts:`, lastError);
+          throw lastError;
+        }
+
+        // Calculate delay with exponential backoff
+        const delay = Math.min(initialDelayMs * Math.pow(2, attempt), maxDelayMs);
+        logger.warn(`[WorkflowAgent] ${operation} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms:`, lastError.message);
+
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError!;
+  }
+
+  /**
    * Helper: Get file buffer from S3 or local storage.
    */
   private async getFileBuffer(file: { storageType: string; storagePath: string | null; path: string }): Promise<Buffer> {
@@ -321,15 +367,24 @@ class WorkflowAgentService {
       logger.info(`[WorkflowAgent] Reusing existing audit results from job ${jobInfo.id}`);
       auditResult = existingJob.output;
     } else {
-      // Run audit
+      // Run audit with retry logic for transient failures
       const buffer = await this.getFileBuffer(file);
       logger.info(`[WorkflowAgent] Running ${jobType} for file ${file.filename}`);
 
-      if (isEpub) {
-        auditResult = await epubAuditService.runAudit(buffer, jobInfo.id, file.filename);
-      } else {
-        auditResult = await pdfAuditService.runAuditFromBuffer(buffer, jobInfo.id, file.filename);
-      }
+      auditResult = await this.retryWithBackoff(
+        async () => {
+          if (isEpub) {
+            return await epubAuditService.runAudit(buffer, jobInfo.id, file.filename);
+          } else {
+            return await pdfAuditService.runAuditFromBuffer(buffer, jobInfo.id, file.filename);
+          }
+        },
+        {
+          maxRetries: 2,
+          initialDelayMs: 2000,
+          operation: `${jobType} audit`,
+        }
+      );
     }
 
     // Update job with results
@@ -344,23 +399,25 @@ class WorkflowAgentService {
     });
 
     // Store audit results in workflow state
-    const issueCount = 'combinedIssues' in auditResult
-      ? auditResult.combinedIssues?.length || 0
-      : auditResult.issues?.length || 0;
+    const auditData = auditResult as Record<string, unknown>;
+    const issueCount = 'combinedIssues' in auditData
+      ? (auditData.combinedIssues as unknown[] | undefined)?.length || 0
+      : (auditData.issues as unknown[] | undefined)?.length || 0;
 
     await prisma.workflowInstance.update({
       where: { id: workflow.id },
       data: {
         stateData: {
           ...(workflow.stateData as Record<string, unknown>),
+          jobId: jobInfo.id, // Store jobId for remediation phase
           auditCompleted: true,
-          auditScore: auditResult.score,
+          auditScore: auditData.score as number,
           issueCount,
         } as unknown as Prisma.InputJsonValue,
       },
     });
 
-    logger.info(`[WorkflowAgent] Audit completed: score=${auditResult.score}, issues=${issueCount}`);
+    logger.info(`[WorkflowAgent] Audit completed: score=${auditData.score}, issues=${issueCount}`);
 
     // Trigger ACE_START to follow state machine (ACE is already included in audit)
     await enqueueWorkflowEvent(workflow.id, 'ACE_START');
@@ -667,8 +724,8 @@ class WorkflowAgentService {
     }
 
     // Generate ACR using ACR service
-    // Use International Edition (VPAT2.5-INT) which satisfies US Section 508, EU EN 301 549, and WCAG
-    const edition = 'VPAT2.5-INT';
+    // Use International Edition which satisfies US Section 508, EU EN 301 549, and WCAG
+    const edition = 'international';
     const documentTitle = file.filename;
 
     logger.info(`[WorkflowAgent] Creating ACR analysis: edition=${edition}, documentTitle=${documentTitle}`);
