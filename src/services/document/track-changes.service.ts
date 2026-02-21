@@ -39,6 +39,7 @@ export interface BulkChangeAction {
   changeIds: string[];
   action: 'accept' | 'reject';
   reviewedBy: string;
+  expectedDocumentId: string;
 }
 
 export interface ChangeStats {
@@ -275,6 +276,12 @@ class TrackChangesService {
     const documentIds = new Set(existingChanges.map((c) => c.documentId));
     if (documentIds.size > 1) {
       throw new Error('All changes must belong to the same document');
+    }
+
+    // Security: Verify changes belong to the expected document (prevents cross-tenant attacks)
+    const [actualDocumentId] = documentIds;
+    if (actualDocumentId !== action.expectedDocumentId) {
+      throw new Error('Changes do not belong to the specified document');
     }
 
     // Verify all changes are in PENDING status

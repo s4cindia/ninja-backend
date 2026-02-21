@@ -711,6 +711,7 @@ model EditorialDocument {
   documentVersions     DocumentVersion[]
   documentChanges      DocumentChange[]
   editorSessions       EditorSession[]
+  complianceChecks     ComplianceCheck[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -1480,6 +1481,7 @@ model ComplianceTemplate {
 model ComplianceCheck {
   id          String    @id @default(uuid())
   documentId  String
+  document    EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   templateId  String
   template    ComplianceTemplate @relation(fields: [templateId], references: [id])
   status      JobStatus @default(QUEUED)

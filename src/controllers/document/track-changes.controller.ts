@@ -447,6 +447,7 @@ export class TrackChangesController {
         changeIds,
         action,
         reviewedBy: userId,
+        expectedDocumentId: documentId,
       });
 
       res.json({

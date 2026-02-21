@@ -60,3 +60,15 @@ DO $$ BEGIN
         ON DELETE RESTRICT ON UPDATE CASCADE;
     END IF;
 END $$;
+
+-- AddForeignKey: ComplianceCheck.documentId -> EditorialDocument.id
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'ComplianceCheck_documentId_fkey'
+    ) THEN
+        ALTER TABLE "ComplianceCheck"
+        ADD CONSTRAINT "ComplianceCheck_documentId_fkey"
+        FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id")
+        ON DELETE CASCADE ON UPDATE CASCADE;
+    END IF;
+END $$;
