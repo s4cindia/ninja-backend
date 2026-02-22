@@ -20,6 +20,7 @@ import { documentExtractor } from '../document/document-extractor.service';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { nanoid } from 'nanoid';
 import type {
   StyleValidationJob,
   StyleViolation,
@@ -133,7 +134,7 @@ export class StyleValidationService {
           else if (lowerName.endsWith('.docx')) ext = '.docx';
           else if (lowerName.endsWith('.txt')) ext = '.txt';
           else if (lowerName.endsWith('.rtf')) ext = '.rtf';
-          const tempPath = path.join(os.tmpdir(), `style-extract-${input.documentId}${ext}`);
+          const tempPath = path.join(os.tmpdir(), `style-extract-${input.documentId}-${nanoid(8)}${ext}`);
           fs.writeFileSync(tempPath, fileBuffer);
 
           try {
@@ -468,9 +469,13 @@ export class StyleValidationService {
   /**
    * Get a single violation by ID
    */
-  async getViolation(violationId: string): Promise<StyleViolation | null> {
-    return prisma.styleViolation.findUnique({
-      where: { id: violationId },
+  async getViolation(violationId: string, tenantId: string): Promise<StyleViolation | null> {
+    // Verify tenant ownership via document relation to prevent IDOR
+    return prisma.styleViolation.findFirst({
+      where: {
+        id: violationId,
+        document: { tenantId },
+      },
     });
   }
 

@@ -310,44 +310,84 @@ export class HouseStyleEngineService {
       throw AppError.badRequest('Invalid import format: rules array required', 'INVALID_IMPORT');
     }
 
+    // Batch fetch existing rule names to avoid N+1 queries
+    const ruleNames = rulesJson.rules.map(r => r.name);
+    const existingRules = await prisma.houseStyleRule.findMany({
+      where: {
+        tenantId,
+        ruleSetId,
+        name: { in: ruleNames },
+      },
+      select: { name: true },
+    });
+    const existingNames = new Set(existingRules.map(r => r.name));
+
+    // Prepare rules for batch insert
+    const rulesToCreate: Array<{
+      tenantId: string;
+      ruleSetId: string;
+      name: string;
+      description: string | null;
+      category: typeof rulesJson.rules[0]['category'];
+      ruleType: typeof rulesJson.rules[0]['ruleType'];
+      pattern: string | null;
+      preferredTerm: string | null;
+      avoidTerms: string[];
+      severity: typeof rulesJson.rules[0]['severity'];
+      isActive: boolean;
+      baseStyleGuide: typeof rulesJson.rules[0]['baseStyleGuide'] | null;
+      overridesRule: string | null;
+      createdBy: string;
+    }> = [];
+
     for (let i = 0; i < rulesJson.rules.length; i++) {
       const rule = rulesJson.rules[i];
-      try {
-        // Check for duplicate name within this rule set
-        const existing = await prisma.houseStyleRule.findFirst({
-          where: {
-            tenantId,
-            ruleSetId,
-            name: rule.name,
-          },
-        });
 
-        if (existing) {
+      // Check for duplicate in existing names
+      if (existingNames.has(rule.name)) {
+        result.skipped++;
+        result.errors.push(`Rule ${i + 1}: "${rule.name}" already exists in this set - skipped`);
+        continue;
+      }
+
+      // Validate pattern if provided (ReDoS protection)
+      if (rule.pattern) {
+        try {
+          new RegExp(rule.pattern);
+          if (this.isUnsafeRegex(rule.pattern)) {
+            result.errors.push(`Rule ${i + 1}: "${rule.name}" has unsafe regex pattern - skipped`);
+            result.skipped++;
+            continue;
+          }
+        } catch {
+          result.errors.push(`Rule ${i + 1}: "${rule.name}" has invalid regex pattern - skipped`);
           result.skipped++;
-          result.errors.push(`Rule ${i + 1}: "${rule.name}" already exists in this set - skipped`);
           continue;
         }
-
-        await this.createRuleInSet(tenantId, userId, ruleSetId, {
-          name: rule.name,
-          description: rule.description ?? undefined,
-          category: rule.category,
-          ruleType: rule.ruleType,
-          pattern: rule.pattern ?? undefined,
-          preferredTerm: rule.preferredTerm ?? undefined,
-          avoidTerms: rule.avoidTerms,
-          severity: rule.severity,
-          isActive: rule.isActive,
-          baseStyleGuide: rule.baseStyleGuide ?? undefined,
-          overridesRule: rule.overridesRule ?? undefined,
-        });
-
-        result.imported++;
-      } catch (error) {
-        result.errors.push(
-          `Rule ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`
-        );
       }
+
+      rulesToCreate.push({
+        tenantId,
+        ruleSetId,
+        name: rule.name,
+        description: rule.description ?? null,
+        category: rule.category,
+        ruleType: rule.ruleType,
+        pattern: rule.pattern ?? null,
+        preferredTerm: rule.preferredTerm ?? null,
+        avoidTerms: rule.avoidTerms || [],
+        severity: rule.severity,
+        isActive: rule.isActive,
+        baseStyleGuide: rule.baseStyleGuide ?? null,
+        overridesRule: rule.overridesRule ?? null,
+        createdBy: userId,
+      });
+    }
+
+    // Batch insert all valid rules
+    if (rulesToCreate.length > 0) {
+      await prisma.houseStyleRule.createMany({ data: rulesToCreate });
+      result.imported = rulesToCreate.length;
     }
 
     logger.info(
@@ -664,43 +704,81 @@ export class HouseStyleEngineService {
       throw AppError.badRequest('Invalid import format: rules array required', 'INVALID_IMPORT');
     }
 
+    // Batch fetch existing rule names to avoid N+1 queries
+    const ruleNames = rulesJson.rules.map(r => r.name);
+    const existingRules = await prisma.houseStyleRule.findMany({
+      where: {
+        tenantId,
+        name: { in: ruleNames },
+      },
+      select: { name: true },
+    });
+    const existingNames = new Set(existingRules.map(r => r.name));
+
+    // Prepare rules for batch insert
+    const rulesToCreate: Array<{
+      tenantId: string;
+      name: string;
+      description: string | null;
+      category: typeof rulesJson.rules[0]['category'];
+      ruleType: typeof rulesJson.rules[0]['ruleType'];
+      pattern: string | null;
+      preferredTerm: string | null;
+      avoidTerms: string[];
+      severity: typeof rulesJson.rules[0]['severity'];
+      isActive: boolean;
+      baseStyleGuide: typeof rulesJson.rules[0]['baseStyleGuide'] | null;
+      overridesRule: string | null;
+      createdBy: string;
+    }> = [];
+
     for (let i = 0; i < rulesJson.rules.length; i++) {
       const rule = rulesJson.rules[i];
-      try {
-        // Check for duplicate name
-        const existing = await prisma.houseStyleRule.findFirst({
-          where: {
-            tenantId,
-            name: rule.name,
-          },
-        });
 
-        if (existing) {
+      // Check for duplicate in existing names
+      if (existingNames.has(rule.name)) {
+        result.skipped++;
+        result.errors.push(`Rule ${i + 1}: "${rule.name}" already exists - skipped`);
+        continue;
+      }
+
+      // Validate pattern if provided (ReDoS protection)
+      if (rule.pattern) {
+        try {
+          new RegExp(rule.pattern);
+          if (this.isUnsafeRegex(rule.pattern)) {
+            result.errors.push(`Rule ${i + 1}: "${rule.name}" has unsafe regex pattern - skipped`);
+            result.skipped++;
+            continue;
+          }
+        } catch {
+          result.errors.push(`Rule ${i + 1}: "${rule.name}" has invalid regex pattern - skipped`);
           result.skipped++;
-          result.errors.push(`Rule ${i + 1}: "${rule.name}" already exists - skipped`);
           continue;
         }
-
-        await this.createRule(tenantId, userId, {
-          name: rule.name,
-          description: rule.description ?? undefined,
-          category: rule.category,
-          ruleType: rule.ruleType,
-          pattern: rule.pattern ?? undefined,
-          preferredTerm: rule.preferredTerm ?? undefined,
-          avoidTerms: rule.avoidTerms,
-          severity: rule.severity,
-          isActive: rule.isActive,
-          baseStyleGuide: rule.baseStyleGuide ?? undefined,
-          overridesRule: rule.overridesRule ?? undefined,
-        });
-
-        result.imported++;
-      } catch (error) {
-        result.errors.push(
-          `Rule ${i + 1}: ${error instanceof Error ? error.message : 'Unknown error'}`
-        );
       }
+
+      rulesToCreate.push({
+        tenantId,
+        name: rule.name,
+        description: rule.description ?? null,
+        category: rule.category,
+        ruleType: rule.ruleType,
+        pattern: rule.pattern ?? null,
+        preferredTerm: rule.preferredTerm ?? null,
+        avoidTerms: rule.avoidTerms || [],
+        severity: rule.severity,
+        isActive: rule.isActive,
+        baseStyleGuide: rule.baseStyleGuide ?? null,
+        overridesRule: rule.overridesRule ?? null,
+        createdBy: userId,
+      });
+    }
+
+    // Batch insert all valid rules
+    if (rulesToCreate.length > 0) {
+      await prisma.houseStyleRule.createMany({ data: rulesToCreate });
+      result.imported = rulesToCreate.length;
     }
 
     logger.info(

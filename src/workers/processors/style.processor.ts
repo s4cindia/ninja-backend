@@ -74,30 +74,25 @@ async function processStyleValidation(
     await job.updateProgress(98);
     await queueService.updateJobProgress(jobId, 98);
 
-    // Update the associated Job record if it exists (use transaction for consistency)
+    // Update the associated Job record if it exists
+    // Note: StyleValidationJob status is already updated by executeValidation in the service
     const document = await prisma.editorialDocument.findUnique({
       where: { id: documentId },
       select: { jobId: true },
     });
 
     if (document?.jobId) {
-      await prisma.$transaction([
-        prisma.styleValidationJob.update({
-          where: { id: validationJobId },
-          data: { status: 'COMPLETED', completedAt: new Date() },
-        }),
-        prisma.job.update({
-          where: { id: document.jobId },
-          data: {
-            status: 'COMPLETED',
-            output: {
-              styleValidationJobId: validationJobId,
-              violationsFound,
-              completedAt: new Date().toISOString(),
-            },
+      await prisma.job.update({
+        where: { id: document.jobId },
+        data: {
+          status: 'COMPLETED',
+          output: {
+            styleValidationJobId: validationJobId,
+            violationsFound,
+            completedAt: new Date().toISOString(),
           },
-        }),
-      ]);
+        },
+      });
     }
 
     await job.updateProgress(100);

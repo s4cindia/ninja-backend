@@ -19,7 +19,15 @@ interface RateLimitEntry {
   resetAt: number;
 }
 
-// In-memory store for rate limiting (use Redis for production scaling)
+/**
+ * WARNING: In-memory store is NOT suitable for multi-instance deployments!
+ * With multiple ECS Fargate instances, each maintains its own counter, effectively
+ * multiplying the rate limit by the number of instances.
+ *
+ * TODO: Implement Redis-backed rate limiting using ioredis (already a project dependency)
+ * for production deployments. Consider using a sliding window algorithm with Redis
+ * MULTI/EXEC for atomic operations.
+ */
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 // Cleanup old entries periodically
