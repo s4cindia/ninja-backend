@@ -93,6 +93,19 @@ export const jobIdParamSchema = {
   }),
 };
 
+export const ruleSetIdParamSchema = {
+  params: z.object({
+    ruleSetId: z.string().min(1, 'Rule set ID is required'),
+  }),
+};
+
+export const testRulesDebugSchema = {
+  body: z.object({
+    text: z.string().min(1, 'Text is required'),
+    ruleSetIds: z.array(z.string()).optional().default(['general']),
+  }),
+};
+
 // ============================================
 // BODY SCHEMAS - VALIDATION
 // ============================================

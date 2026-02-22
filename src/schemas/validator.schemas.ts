@@ -26,6 +26,13 @@ export const getDocumentParamsSchema = z.object({
   documentId: z.string().uuid('Invalid document ID'),
 });
 
+// Params schema for document version operations
+export const getVersionParamsSchema = z.object({
+  documentId: z.string().uuid('Invalid document ID'),
+  versionId: z.string().uuid('Invalid version ID'),
+});
+
 // Type exports
 export type ListDocumentsQuery = z.infer<typeof listDocumentsQuerySchema>;
 export type GetDocumentParams = z.infer<typeof getDocumentParamsSchema>;
+export type GetVersionParams = z.infer<typeof getVersionParamsSchema>;

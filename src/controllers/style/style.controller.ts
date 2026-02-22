@@ -132,11 +132,19 @@ export class StyleController {
    * Get validation job status
    * GET /api/v1/style/job/:jobId
    */
-  async getJobStatus(req: Request, res: Response, next: NextFunction) {
+  async getJobStatus(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
 
-      const progress = await styleValidation.getJobProgress(jobId);
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+      }
+
+      const progress = await styleValidation.getJobProgress(jobId, tenantId);
 
       if (!progress) {
         return res.status(404).json({
@@ -158,10 +166,18 @@ export class StyleController {
    * Get violations for a document
    * GET /api/v1/style/document/:documentId
    */
-  async getViolations(req: Request, res: Response, next: NextFunction) {
+  async getViolations(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { documentId } = req.params;
       const query = req.query as Record<string, string | undefined>;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+      }
 
       const filters: ViolationFilters = {};
 
@@ -184,13 +200,16 @@ export class StyleController {
         filters.search = query.search;
       }
 
+      // Cap pagination take at 200 to prevent unbounded queries
+      const requestedTake = query.take ? parseInt(query.take, 10) : 100;
       const pagination = {
         skip: query.skip ? parseInt(query.skip, 10) : 0,
-        take: query.take ? parseInt(query.take, 10) : 100,
+        take: Math.min(requestedTake, 200),
       };
 
       const result = await styleValidation.getViolations(
         documentId,
+        tenantId,
         filters,
         pagination
       );
@@ -215,11 +234,19 @@ export class StyleController {
    * Get validation summary for a document
    * GET /api/v1/style/document/:documentId/summary
    */
-  async getValidationSummary(req: Request, res: Response, next: NextFunction) {
+  async getValidationSummary(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const { documentId } = req.params;
+      const tenantId = req.user?.tenantId;
 
-      const summary = await styleValidation.getValidationSummary(documentId);
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+      }
+
+      const summary = await styleValidation.getValidationSummary(documentId, tenantId);
 
       if (!summary) {
         return res.status(404).json({
@@ -249,8 +276,9 @@ export class StyleController {
       const { violationId } = req.params;
       const body = req.body as ApplyFixBody;
       const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
 
-      if (!userId) {
+      if (!userId || !tenantId) {
         return res.status(401).json({
           success: false,
           error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
@@ -261,6 +289,7 @@ export class StyleController {
         violationId,
         fixOption: body.fixOption,
         userId,
+        tenantId,
       });
 
       return res.status(200).json({
@@ -281,8 +310,9 @@ export class StyleController {
       const { violationId } = req.params;
       const body = req.body as IgnoreViolationBody;
       const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
 
-      if (!userId) {
+      if (!userId || !tenantId) {
         return res.status(401).json({
           success: false,
           error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
@@ -291,6 +321,7 @@ export class StyleController {
 
       const updated = await styleValidation.ignoreViolation(
         violationId,
+        tenantId,
         userId,
         body.reason
       );
@@ -312,8 +343,9 @@ export class StyleController {
     try {
       const body = req.body as BulkActionBody;
       const userId = req.user?.id;
+      const tenantId = req.user?.tenantId;
 
-      if (!userId) {
+      if (!userId || !tenantId) {
         return res.status(401).json({
           success: false,
           error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
@@ -324,6 +356,7 @@ export class StyleController {
         violationIds: body.violationIds,
         action: body.action,
         userId,
+        tenantId,
         reason: body.reason,
       });
 

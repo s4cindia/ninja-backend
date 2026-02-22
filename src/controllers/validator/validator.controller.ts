@@ -479,33 +479,42 @@ export class ValidatorController {
       // Create a version snapshot if content changed and createVersion is true
       let versionNumber: number | null = null;
       if (createVersion && content !== previousContent) {
-        // Get the latest version number
-        const latestVersion = await prisma.documentVersion.findFirst({
-          where: { documentId },
-          orderBy: { version: 'desc' },
-          select: { version: true },
-        });
+        // Use transaction with advisory lock to prevent race conditions
+        const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
+        versionNumber = await prisma.$transaction(async (tx) => {
+          // Acquire advisory lock scoped to this document
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
-        versionNumber = (latestVersion?.version || 0) + 1;
+          // Get the latest version number
+          const latestVersion = await tx.documentVersion.findFirst({
+            where: { documentId },
+            orderBy: { version: 'desc' },
+            select: { version: true },
+          });
 
-        // Create the version snapshot
-        await prisma.documentVersion.create({
-          data: {
-            documentId,
-            version: versionNumber,
-            createdBy: userId,
-            changeLog: [{
-              timestamp: new Date().toISOString(),
-              action: 'content_save',
-              wordCount,
-            }],
-            snapshot: {
-              content,
-              wordCount,
-              savedAt: new Date().toISOString(),
+          const newVersion = (latestVersion?.version || 0) + 1;
+
+          // Create the version snapshot
+          await tx.documentVersion.create({
+            data: {
+              documentId,
+              version: newVersion,
+              createdBy: userId,
+              changeLog: [{
+                timestamp: new Date().toISOString(),
+                action: 'content_save',
+                wordCount,
+              }],
+              snapshot: {
+                content,
+                wordCount,
+                savedAt: new Date().toISOString(),
+              },
+              snapshotType: 'full',
             },
-            snapshotType: 'full',
-          },
+          });
+
+          return newVersion;
         });
 
         logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId}`);
@@ -693,56 +702,65 @@ export class ValidatorController {
       const content = snapshot.content;
       const wordCount = snapshot.wordCount || content.replace(/<[^>]*>/g, '').split(/\s+/).filter(Boolean).length;
 
-      // Update current content
-      await prisma.editorialDocumentContent.upsert({
-        where: { documentId },
-        create: {
-          documentId,
-          fullHtml: content,
-          wordCount,
-        },
-        update: {
-          fullHtml: content,
-          wordCount,
-          updatedAt: new Date(),
-        },
-      });
+      // Use transaction with advisory lock to prevent race conditions
+      const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
+      const newVersionNumber = await prisma.$transaction(async (tx) => {
+        // Acquire advisory lock scoped to this document
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
-      // Get the latest version number for new restore version
-      const latestVersion = await prisma.documentVersion.findFirst({
-        where: { documentId },
-        orderBy: { version: 'desc' },
-        select: { version: true },
-      });
-
-      const newVersionNumber = (latestVersion?.version || 0) + 1;
-
-      // Create a new version to mark the restore
-      await prisma.documentVersion.create({
-        data: {
-          documentId,
-          version: newVersionNumber,
-          createdBy: userId,
-          changeLog: [{
-            timestamp: new Date().toISOString(),
-            action: 'restore',
-            restoredFrom: version.version,
-            restoredVersionId: versionId,
-          }],
-          snapshot: {
-            content,
+        // Update current content
+        await tx.editorialDocumentContent.upsert({
+          where: { documentId },
+          create: {
+            documentId,
+            fullHtml: content,
             wordCount,
-            savedAt: new Date().toISOString(),
-            restoredFromVersion: version.version,
           },
-          snapshotType: 'full',
-        },
-      });
+          update: {
+            fullHtml: content,
+            wordCount,
+            updatedAt: new Date(),
+          },
+        });
 
-      // Update document timestamp
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { updatedAt: new Date() },
+        // Get the latest version number for new restore version
+        const latestVersion = await tx.documentVersion.findFirst({
+          where: { documentId },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+
+        const newVersion = (latestVersion?.version || 0) + 1;
+
+        // Create a new version to mark the restore
+        await tx.documentVersion.create({
+          data: {
+            documentId,
+            version: newVersion,
+            createdBy: userId,
+            changeLog: [{
+              timestamp: new Date().toISOString(),
+              action: 'restore',
+              restoredFrom: version.version,
+              restoredVersionId: versionId,
+            }],
+            snapshot: {
+              content,
+              wordCount,
+              savedAt: new Date().toISOString(),
+              restoredFromVersion: version.version,
+            },
+            snapshotType: 'full',
+          },
+        });
+
+        // Update document timestamp
+        await tx.editorialDocument.update({
+          where: { id: documentId },
+          data: { updatedAt: new Date() },
+        });
+
+        return newVersion;
       });
 
       logger.info(`[Validator] Restored document ${documentId} to version ${version.version}, created version ${newVersionNumber}`);

@@ -16,14 +16,15 @@ model Tenant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users            User[]
-  jobs             Job[]
-  products         Product[]
-  batches          Batch[]
-  editorialDocs    EditorialDocument[]
-  houseRuleSets    HouseRuleSet[]
-  houseStyleRules  HouseStyleRule[]
-  editorialReports EditorialReport[]
+  users               User[]
+  jobs                Job[]
+  products            Product[]
+  batches             Batch[]
+  editorialDocs       EditorialDocument[]
+  houseRuleSets       HouseRuleSet[]
+  houseStyleRules     HouseStyleRule[]
+  editorialReports    EditorialReport[]
+  styleValidationJobs StyleValidationJob[]
 }
 
 model User {
@@ -702,6 +703,7 @@ model EditorialDocument {
   chunks               EditorialTextChunk[]
   citations            Citation[]
   styleViolations      StyleViolation[]
+  styleValidationJobs  StyleValidationJob[]      @relation("StyleValidationJobs")
   plagiarismMatches    PlagiarismMatch[]
   references           Reference[]
   editorialReports     EditorialReport[]
@@ -1159,6 +1161,8 @@ model StyleValidationJob {
   createdAt       DateTime  @default(now())
   createdBy       String
 
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  document   EditorialDocument @relation("StyleValidationJobs", fields: [documentId], references: [id], onDelete: Cascade)
   violations StyleViolation[]
 
   @@index([tenantId, documentId])

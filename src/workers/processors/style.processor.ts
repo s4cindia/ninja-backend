@@ -29,44 +29,34 @@ async function processStyleValidation(
   job: Job<JobData, JobResult>
 ): Promise<JobResult> {
   const jobId = job.id || job.name;
-  const { options, tenantId, userId } = job.data;
+  const { options } = job.data;
   const documentId = options?.documentId as string;
   const ruleSetIds = (options?.ruleSetIds as string[]) || ['general'];
-  const includeHouseRules = (options?.includeHouseRules as boolean) ?? true;
+  // Use the pre-created validation job ID from the controller
+  const validationJobId = options?.validationJobId as string;
 
   if (!documentId) {
     throw new Error('Missing documentId in job options');
   }
 
-  logger.info(`[Style Worker] Starting style validation for document ${documentId}`);
-  logger.info(`[Style Worker] Job ID: ${jobId}, Rule sets: ${ruleSetIds.join(', ')}`);
+  if (!validationJobId) {
+    throw new Error('Missing validationJobId in job options');
+  }
 
-  let validationJobId: string | null = null;
+  logger.info(`[Style Worker] Starting style validation for document ${documentId}`);
+  logger.info(`[Style Worker] Job ID: ${jobId}, Validation Job ID: ${validationJobId}, Rule sets: ${ruleSetIds.join(', ')}`);
 
   try {
-    // Stage 1: Create validation job
+    // Stage 1: Update job progress (job was already created by controller)
     await job.updateProgress(5);
     await queueService.updateJobProgress(jobId, 5);
-
-    const validationJob = await styleValidation.startValidation(
-      tenantId,
-      userId,
-      {
-        documentId,
-        ruleSetIds,
-        includeHouseRules,
-        useAiValidation: true,
-      }
-    );
-
-    validationJobId = validationJob.id;
 
     // Stage 2: Execute validation with progress callbacks
     await job.updateProgress(10);
     await queueService.updateJobProgress(jobId, 10);
 
     const violationsFound = await styleValidation.executeValidation(
-      validationJob.id,
+      validationJobId,
       async (progress: number, message: string) => {
         // Map validation progress (0-100) to job progress (10-95)
         const mappedProgress = 10 + Math.floor(progress * 0.85);
@@ -89,7 +79,7 @@ async function processStyleValidation(
     if (document?.jobId) {
       await prisma.$transaction([
         prisma.styleValidationJob.update({
-          where: { id: validationJob.id },
+          where: { id: validationJobId },
           data: { status: 'COMPLETED', completedAt: new Date() },
         }),
         prisma.job.update({
@@ -97,7 +87,7 @@ async function processStyleValidation(
           data: {
             status: 'COMPLETED',
             output: {
-              styleValidationJobId: validationJob.id,
+              styleValidationJobId: validationJobId,
               violationsFound,
               completedAt: new Date().toISOString(),
             },
@@ -118,7 +108,7 @@ async function processStyleValidation(
       data: {
         type: 'STYLE_VALIDATION',
         documentId,
-        validationJobId: validationJob.id,
+        validationJobId: validationJobId,
         violationsFound,
         ruleSetIds,
         timestamp: new Date().toISOString(),

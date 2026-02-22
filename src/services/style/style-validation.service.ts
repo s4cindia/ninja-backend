@@ -51,12 +51,14 @@ export interface ApplyFixInput {
   violationId: string;
   fixOption: string;
   userId: string;
+  tenantId: string;
 }
 
 export interface BulkActionInput {
   violationIds: string[];
   action: 'fix' | 'ignore' | 'wont_fix';
   userId: string;
+  tenantId: string;
   reason?: string;
 }
 
@@ -98,9 +100,9 @@ export class StyleValidationService {
     userId: string,
     input: StartValidationInput
   ): Promise<StyleValidationJob> {
-    // Verify document exists
-    const document = await prisma.editorialDocument.findUnique({
-      where: { id: input.documentId },
+    // Verify document exists and belongs to tenant
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: input.documentId, tenantId },
       include: { documentContent: true },
     });
 
@@ -416,9 +418,20 @@ export class StyleValidationService {
    */
   async getViolations(
     documentId: string,
+    tenantId: string,
     filters?: ViolationFilters,
     pagination?: { skip?: number; take?: number }
   ): Promise<{ violations: StyleViolation[]; total: number }> {
+    // First verify the document belongs to the tenant
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: documentId, tenantId },
+      select: { id: true },
+    });
+
+    if (!document) {
+      throw AppError.notFound('Document not found', 'DOCUMENT_NOT_FOUND');
+    }
+
     const where: Record<string, unknown> = { documentId };
 
     if (filters?.category) where.category = filters.category;
@@ -465,8 +478,12 @@ export class StyleValidationService {
    * Apply a fix to a violation
    */
   async applyFix(input: ApplyFixInput): Promise<StyleViolation> {
-    const violation = await prisma.styleViolation.findUnique({
-      where: { id: input.violationId },
+    // Find violation and verify tenant ownership via document
+    const violation = await prisma.styleViolation.findFirst({
+      where: {
+        id: input.violationId,
+        document: { tenantId: input.tenantId },
+      },
     });
 
     if (!violation) {
@@ -503,11 +520,16 @@ export class StyleValidationService {
    */
   async ignoreViolation(
     violationId: string,
+    tenantId: string,
     userId: string,
     reason?: string
   ): Promise<StyleViolation> {
-    const violation = await prisma.styleViolation.findUnique({
-      where: { id: violationId },
+    // Find violation and verify tenant ownership via document
+    const violation = await prisma.styleViolation.findFirst({
+      where: {
+        id: violationId,
+        document: { tenantId },
+      },
     });
 
     if (!violation) {
@@ -541,11 +563,16 @@ export class StyleValidationService {
    */
   async markWontFix(
     violationId: string,
+    tenantId: string,
     userId: string,
     reason?: string
   ): Promise<StyleViolation> {
-    const violation = await prisma.styleViolation.findUnique({
-      where: { id: violationId },
+    // Find violation and verify tenant ownership via document
+    const violation = await prisma.styleViolation.findFirst({
+      where: {
+        id: violationId,
+        document: { tenantId },
+      },
     });
 
     if (!violation) {
@@ -580,52 +607,90 @@ export class StyleValidationService {
    */
   async bulkAction(input: BulkActionInput): Promise<BulkFixResult> {
     const result: BulkFixResult = {
-      processed: 0,
+      processed: input.violationIds.length,
       succeeded: 0,
       failed: 0,
       errors: [],
     };
 
-    for (const violationId of input.violationIds) {
-      result.processed++;
+    // For ignore and wont_fix, use batch update for better performance
+    if (input.action === 'ignore' || input.action === 'wont_fix') {
+      const status = input.action === 'ignore' ? 'IGNORED' : 'WONT_FIX';
 
-      try {
-        switch (input.action) {
-          case 'fix': {
-            const violation = await this.getViolation(violationId);
-            if (violation?.suggestedText) {
-              await this.applyFix({
-                violationId,
-                fixOption: violation.suggestedText,
-                userId: input.userId,
-              });
-              result.succeeded++;
-            } else {
-              result.failed++;
-              result.errors.push({
-                violationId,
-                error: 'No suggested fix available',
-              });
-            }
-            break;
-          }
+      // Verify all violations belong to the tenant before updating
+      const validViolations = await prisma.styleViolation.findMany({
+        where: {
+          id: { in: input.violationIds },
+          status: 'PENDING',
+          document: { tenantId: input.tenantId },
+        },
+        select: { id: true },
+      });
 
-          case 'ignore':
-            await this.ignoreViolation(violationId, input.userId, input.reason);
-            result.succeeded++;
-            break;
+      const validIds = validViolations.map(v => v.id);
+      const invalidIds = input.violationIds.filter(id => !validIds.includes(id));
 
-          case 'wont_fix':
-            await this.markWontFix(violationId, input.userId, input.reason);
-            result.succeeded++;
-            break;
-        }
-      } catch (error) {
+      // Add errors for invalid violations
+      for (const id of invalidIds) {
         result.failed++;
         result.errors.push({
-          violationId,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          violationId: id,
+          error: 'Violation not found or already resolved',
         });
+      }
+
+      // Batch update valid violations
+      if (validIds.length > 0) {
+        const updateResult = await prisma.styleViolation.updateMany({
+          where: { id: { in: validIds } },
+          data: {
+            status,
+            ignoredReason: input.reason || null,
+            resolvedBy: input.userId,
+            resolvedAt: new Date(),
+          },
+        });
+        result.succeeded = updateResult.count;
+      }
+    } else {
+      // For 'fix' action, we need to process individually since each has different suggested text
+      for (const violationId of input.violationIds) {
+        try {
+          const violation = await prisma.styleViolation.findFirst({
+            where: {
+              id: violationId,
+              document: { tenantId: input.tenantId },
+            },
+          });
+
+          if (!violation) {
+            result.failed++;
+            result.errors.push({ violationId, error: 'Violation not found' });
+            continue;
+          }
+
+          if (violation.suggestedText) {
+            await this.applyFix({
+              violationId,
+              fixOption: violation.suggestedText,
+              userId: input.userId,
+              tenantId: input.tenantId,
+            });
+            result.succeeded++;
+          } else {
+            result.failed++;
+            result.errors.push({
+              violationId,
+              error: 'No suggested fix available',
+            });
+          }
+        } catch (error) {
+          result.failed++;
+          result.errors.push({
+            violationId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
       }
     }
 
@@ -639,10 +704,20 @@ export class StyleValidationService {
   /**
    * Get validation summary for a document
    */
-  async getValidationSummary(documentId: string): Promise<ValidationSummary | null> {
+  async getValidationSummary(documentId: string, tenantId: string): Promise<ValidationSummary | null> {
+    // Verify document belongs to tenant
+    const document = await prisma.editorialDocument.findFirst({
+      where: { id: documentId, tenantId },
+      select: { id: true },
+    });
+
+    if (!document) {
+      throw AppError.notFound('Document not found', 'DOCUMENT_NOT_FOUND');
+    }
+
     // Get the latest job for this document
     const job = await prisma.styleValidationJob.findFirst({
-      where: { documentId },
+      where: { documentId, tenantId },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -712,9 +787,9 @@ export class StyleValidationService {
   /**
    * Get job progress
    */
-  async getJobProgress(jobId: string): Promise<ValidationProgress | null> {
-    const job = await prisma.styleValidationJob.findUnique({
-      where: { id: jobId },
+  async getJobProgress(jobId: string, tenantId: string): Promise<ValidationProgress | null> {
+    const job = await prisma.styleValidationJob.findFirst({
+      where: { id: jobId, tenantId },
     });
 
     if (!job) {

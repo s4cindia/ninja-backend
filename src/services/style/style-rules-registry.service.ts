@@ -241,7 +241,11 @@ export class StyleRulesRegistryService {
     // Otherwise, use pattern matching
     if (rule.pattern) {
       const matches: RuleMatch[] = [];
-      const regex = new RegExp(rule.pattern.source, rule.pattern.flags);
+      // Ensure 'g' flag is present to prevent infinite loop with exec()
+      const flags = rule.pattern.flags.includes('g')
+        ? rule.pattern.flags
+        : rule.pattern.flags + 'g';
+      const regex = new RegExp(rule.pattern.source, flags);
       let match;
 
       while ((match = regex.exec(text)) !== null) {

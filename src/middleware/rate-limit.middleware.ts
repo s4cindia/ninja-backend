@@ -46,7 +46,9 @@ export function rateLimit(config: RateLimitConfig) {
       return next();
     }
 
-    const key = `${tenantId}:${req.path}`;
+    // Use route pattern instead of full path to prevent bypass via varying resource IDs
+    const routePath = req.route?.path ?? req.path;
+    const key = `${tenantId}:${req.baseUrl}${routePath}`;
     const now = Date.now();
 
     let entry = rateLimitStore.get(key);

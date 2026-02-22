@@ -38,13 +38,21 @@ export class EditorialAiClient {
 
   /**
    * Sanitize text to prevent prompt injection attacks
-   * Removes or escapes potentially malicious patterns
+   * Uses length-preserving replacements to maintain offset accuracy
    */
   private sanitizeForPrompt(text: string): string {
-    // Remove control characters except newlines and tabs
-    let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    // Helper to preserve length when replacing
+    const preserveLength = (replacement: string, originalLength: number): string => {
+      if (replacement.length >= originalLength) {
+        return replacement.slice(0, originalLength);
+      }
+      return replacement.padEnd(originalLength, ' ');
+    };
 
-    // Escape patterns that could be used for prompt injection
+    // Replace control characters with spaces (length-preserving)
+    let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ');
+
+    // Escape patterns that could be used for prompt injection (length-preserving)
     const injectionPatterns = [
       /\bignore\s+(all\s+)?(previous|above|prior)\s+instructions?\b/gi,
       /\bforget\s+(all\s+)?(previous|above|prior)\s+instructions?\b/gi,
@@ -58,11 +66,15 @@ export class EditorialAiClient {
     ];
 
     for (const pattern of injectionPatterns) {
-      sanitized = sanitized.replace(pattern, '[FILTERED]');
+      sanitized = sanitized.replace(pattern, (match) =>
+        preserveLength('[FILTERED]', match.length)
+      );
     }
 
-    // Limit consecutive special characters that could be used to confuse the model
-    sanitized = sanitized.replace(/[#*`]{10,}/g, (match) => match.substring(0, 5) + '...');
+    // Limit consecutive special characters (length-preserving)
+    sanitized = sanitized.replace(/[#*`]{10,}/g, (match) =>
+      preserveLength(match.substring(0, 5) + '...', match.length)
+    );
 
     return sanitized;
   }

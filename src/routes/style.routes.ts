@@ -25,6 +25,10 @@ import {
   testRuleSchema,
   createRuleSetSchema,
   updateRuleSetSchema,
+  jobIdParamSchema,
+  documentIdParamSchema,
+  ruleSetIdParamSchema,
+  testRulesDebugSchema,
 } from '../schemas/style.schemas';
 import { rateLimiters } from '../middleware/rate-limit.middleware';
 
@@ -80,6 +84,7 @@ router.post(
  */
 router.get(
   '/job/:jobId',
+  validate(jobIdParamSchema),
   (req, res, next) => styleController.getJobStatus(req, res, next)
 );
 
@@ -99,6 +104,7 @@ router.get(
  */
 router.get(
   '/document/:documentId/summary',
+  validate(documentIdParamSchema),
   (req, res, next) => styleController.getValidationSummary(req, res, next)
 );
 
@@ -141,6 +147,7 @@ router.post(
  */
 router.get(
   '/rule-sets/:ruleSetId/built-in',
+  validate(ruleSetIdParamSchema),
   (req, res, next) => styleController.getRuleSetRules(req, res, next)
 );
 
@@ -150,6 +157,7 @@ router.get(
  */
 router.post(
   '/debug/test-rules',
+  validate(testRulesDebugSchema),
   (req, res, next) => styleController.testRulesDebug(req, res, next)
 );
 

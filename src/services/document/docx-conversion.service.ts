@@ -20,13 +20,14 @@ import * as path from 'path';
 import * as os from 'os';
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
-// pdf-parse v1.1.1 - CommonJS import for PDF text extraction
-const pdfParse = require('pdf-parse') as (buffer: Buffer) => Promise<{
+import pdfParse from 'pdf-parse';
+import { logger } from '../../lib/logger';
+
+type PdfParseResult = {
   numpages: number;
   text: string;
   info: { Title?: string; Author?: string };
-}>;
-import { logger } from '../../lib/logger';
+};
 
 const execAsync = promisify(exec);
 
@@ -52,12 +53,12 @@ let pandocPath: string | null = null;
  * Check if Pandoc is available
  */
 async function isPandocAvailable(): Promise<boolean> {
-  // Try standard pandoc first
+  // Try standard pandoc first, then user-specific locations, then env-configured path
   const commands = [
     'pandoc',
     process.env.HOME ? `${process.env.HOME}/.local/bin/pandoc.exe` : '',
     process.env.USERPROFILE ? `${process.env.USERPROFILE}\\.local\\bin\\pandoc.exe` : '',
-    'C:\\Users\\sakthivelv\\.local\\bin\\pandoc.exe',
+    process.env.PANDOC_PATH || '',
   ].filter(Boolean);
 
   for (const cmd of commands) {
@@ -157,10 +158,12 @@ async function convertWithPandoc(docxPath: string, mediaMap: Map<string, string>
 
   // Replace image references with base64 data URLs
   mediaMap.forEach((dataUrl, fileName) => {
+    // Escape regex metacharacters in filename to prevent ReDoS
+    const safeFileName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Pandoc generates img src like "media/image1.png" or "./media/image1.png"
     const patterns = [
-      new RegExp(`src="[^"]*${fileName}"`, 'g'),
-      new RegExp(`src='[^']*${fileName}'`, 'g'),
+      new RegExp(`src="[^"]*${safeFileName}"`, 'g'),
+      new RegExp(`src='[^']*${safeFileName}'`, 'g'),
     ];
     patterns.forEach(pattern => {
       html = html.replace(pattern, `src="${dataUrl}"`);
@@ -691,7 +694,7 @@ export async function convertPdfToHtml(buffer: Buffer): Promise<ConversionResult
   const warnings: string[] = [];
 
   try {
-    const data = await pdfParse(buffer);
+    const data = (await pdfParse(buffer)) as PdfParseResult;
 
     // Split text into paragraphs (double newlines)
     const paragraphs: string[] = data.text

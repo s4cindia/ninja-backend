@@ -87,13 +87,21 @@ export class HouseRulesController {
       const page = parseInt(query.page as string) || 1;
       const pageSize = parseInt(query.pageSize as string) || 50;
 
-      // Get custom rule sets from database with pagination
-      const customResult = await houseStyleEngine.getRuleSets(tenantId, {
-        includeRules: query.includeRules === 'true',
-        activeOnly: query.activeOnly === 'true',
-        page,
-        pageSize,
-      });
+      // On page 1, adjust custom page size to account for built-in rule sets
+      const builtInCount = builtInRuleSets.length;
+      const adjustedPageSize = page === 1
+        ? Math.max(0, pageSize - builtInCount)
+        : pageSize;
+
+      // Get custom rule sets from database with adjusted pagination
+      const customResult = adjustedPageSize > 0
+        ? await houseStyleEngine.getRuleSets(tenantId, {
+            includeRules: query.includeRules === 'true',
+            activeOnly: query.activeOnly === 'true',
+            page,
+            pageSize: adjustedPageSize,
+          })
+        : { ruleSets: [], total: 0, page: 1, pageSize: adjustedPageSize };
 
       // Add isBuiltIn: false and ruleCount to custom rule sets
       const formattedCustomRuleSets = customResult.ruleSets.map((rs) => ({
@@ -111,9 +119,9 @@ export class HouseRulesController {
         success: true,
         data: {
           ruleSets: allRuleSets,
-          total: builtInRuleSets.length + customResult.total,
-          page: customResult.page,
-          pageSize: customResult.pageSize,
+          total: builtInCount + customResult.total,
+          page,
+          pageSize,
         },
       });
     } catch (error) {

@@ -17,6 +17,7 @@ import { validatorController } from '../controllers/validator/validator.controll
 import {
   listDocumentsQuerySchema,
   getDocumentParamsSchema,
+  getVersionParamsSchema,
 } from '../schemas/validator.schemas';
 
 const router = Router();
@@ -122,6 +123,7 @@ router.get(
  */
 router.get(
   '/documents/:documentId/versions/:versionId',
+  validate({ params: getVersionParamsSchema }),
   validatorController.getDocumentVersion.bind(validatorController)
 );
 
@@ -131,6 +133,7 @@ router.get(
  */
 router.post(
   '/documents/:documentId/versions/:versionId/restore',
+  validate({ params: getVersionParamsSchema }),
   validatorController.restoreDocumentVersion.bind(validatorController)
 );
 
