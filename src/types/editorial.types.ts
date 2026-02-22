@@ -70,10 +70,11 @@ export interface ParsedCitation {
 /** Style violation */
 export interface StyleViolation {
   rule: string;
-  ruleReference: string;  // e.g., "CMOS 6.28"
-  location: { start: number; end: number };
+  ruleReference: string;  // e.g., "CMOS 6.28", "APA 7 Section 4.12"
+  location: { start: number; end: number; lineNumber?: number };
   originalText: string;
   suggestedFix: string;
+  explanation?: string;  // Why this is a violation
   severity: 'error' | 'warning' | 'suggestion';
 }
 

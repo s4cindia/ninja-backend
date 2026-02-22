@@ -288,62 +288,413 @@ Respond with JSON only:`;
   /**
    * Validate text against style guide rules
    * Used by: Style Validation (US-7.1, US-7.2)
-   * @param text - Text to validate
+   * @param text - Full document text to validate
    * @param styleGuide - Style guide to use
    * @param customRules - Optional custom rules to apply
-   * @returns Array of style violations found
+   * @returns Array of style violations found with references
    */
   async validateStyle(
     text: string,
-    styleGuide: 'chicago' | 'apa' | 'mla' | 'custom',
+    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom',
     customRules?: string[]
   ): Promise<StyleViolation[]> {
-    const styleGuideName = {
-      chicago: 'Chicago Manual of Style (CMOS)',
-      apa: 'APA Publication Manual 7th Edition',
-      mla: 'MLA Handbook 9th Edition',
-      custom: 'Custom House Style',
-    }[styleGuide];
+    const styleGuideRules = this.getStyleGuideRules(styleGuide);
 
-    const customRulesText = customRules?.length 
-      ? `\n\nCUSTOM RULES TO ENFORCE:\n${customRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
-      : '';
+    // For large documents, process in chunks
+    const MAX_CHUNK_SIZE = 15000;
+    const allViolations: StyleViolation[] = [];
 
-    const prompt = `Validate this text against ${styleGuideName} style guidelines.${customRulesText}
+    if (text.length > MAX_CHUNK_SIZE) {
+      // Process in chunks for large documents
+      const chunks = this.splitTextIntoChunks(text, MAX_CHUNK_SIZE);
+      logger.info(`[Editorial AI] Processing ${chunks.length} chunks for style validation`);
 
-TEXT:
-${text.slice(0, 6000)}
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        logger.info(`[Editorial AI] Validating chunk ${i + 1}/${chunks.length} (offset: ${chunk.offset}, length: ${chunk.text.length})`);
 
-Check for violations including:
-- Punctuation and comma usage
-- Capitalization rules
-- Number formatting (spelled out vs. numerals)
-- Abbreviation usage
-- Quotation formatting
-- Hyphenation
-- Serial comma usage (if applicable)
-- Title capitalization
+        const chunkViolations = await this.validateTextChunk(
+          chunk.text,
+          chunk.offset,
+          chunk.lineOffset,
+          styleGuide,
+          styleGuideRules,
+          customRules
+        );
 
-Return a JSON array of violations, each with:
-- rule: name of the violated rule
-- ruleReference: specific style guide reference (e.g., "CMOS 6.28")
-- location: object with "start" and "end" character positions
-- originalText: the problematic text
-- suggestedFix: corrected version
-- severity: one of "error", "warning", "suggestion"
+        allViolations.push(...chunkViolations);
+      }
+    } else {
+      // Process entire document at once
+      const violations = await this.validateTextChunk(text, 0, 1, styleGuide, styleGuideRules, customRules);
+      allViolations.push(...violations);
+    }
 
-Respond with JSON array only:`;
+    logger.info(`[Editorial AI] Total violations found: ${allViolations.length}`);
+    return allViolations;
+  }
 
-    try {
-      const response = await geminiService.generateStructuredOutput<StyleViolation[]>(prompt, {
-        temperature: 0.1,
-        maxOutputTokens: 4000,
+  /**
+   * Split text into chunks at paragraph boundaries
+   */
+  private splitTextIntoChunks(text: string, maxChunkSize: number): Array<{ text: string; offset: number; lineOffset: number }> {
+    const chunks: Array<{ text: string; offset: number; lineOffset: number }> = [];
+    let currentOffset = 0;
+    let currentLineOffset = 1;
+
+    while (currentOffset < text.length) {
+      let endOffset = Math.min(currentOffset + maxChunkSize, text.length);
+
+      // Try to break at paragraph boundary
+      if (endOffset < text.length) {
+        const lastParagraph = text.lastIndexOf('\n\n', endOffset);
+        if (lastParagraph > currentOffset + maxChunkSize / 2) {
+          endOffset = lastParagraph + 2;
+        } else {
+          // Fall back to sentence boundary
+          const lastSentence = text.lastIndexOf('. ', endOffset);
+          if (lastSentence > currentOffset + maxChunkSize / 2) {
+            endOffset = lastSentence + 2;
+          }
+        }
+      }
+
+      const chunkText = text.slice(currentOffset, endOffset);
+      chunks.push({
+        text: chunkText,
+        offset: currentOffset,
+        lineOffset: currentLineOffset,
       });
 
-      return response.data;
+      // Count lines in this chunk for next chunk's line offset
+      currentLineOffset += (chunkText.match(/\n/g) || []).length;
+      currentOffset = endOffset;
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Validate a single chunk of text
+   */
+  private async validateTextChunk(
+    text: string,
+    charOffset: number,
+    lineOffset: number,
+    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom',
+    styleGuideRules: { name: string; referencePrefix: string; rules: string },
+    customRules?: string[]
+  ): Promise<StyleViolation[]> {
+    // Add line numbers to text for reference
+    const lines = text.split('\n');
+    const numberedText = lines.map((line, idx) => `[Line ${lineOffset + idx}] ${line}`).join('\n');
+
+    const customRulesText = customRules?.length
+      ? `\n\nCUSTOM HOUSE RULES TO ENFORCE:\n${customRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
+      : '';
+
+    const prompt = `You are an expert editorial style checker. Thoroughly validate this document against ${styleGuideRules.name}.
+
+STYLE GUIDE RULES TO CHECK:
+${styleGuideRules.rules}
+${customRulesText}
+
+DOCUMENT TEXT (with line numbers for reference):
+${numberedText}
+
+VALIDATION TASK:
+Carefully analyze EVERY sentence and paragraph for style violations. Check for:
+1. Punctuation errors (commas, semicolons, colons, dashes)
+2. Capitalization issues (titles, proper nouns, sentence starts)
+3. Number formatting (when to spell out vs use numerals)
+4. Abbreviation usage (first use, formatting)
+5. Grammar issues (subject-verb agreement, tense consistency)
+6. Word choice and terminology (preferred terms, avoid terms)
+7. Citation formatting (if applicable)
+8. Quotation formatting
+9. Hyphenation rules
+
+For EACH violation found, return:
+- rule: Specific rule name (e.g., "Serial Comma Required", "Spell Out Numbers Under 10")
+- ruleReference: Style guide reference (e.g., "${styleGuideRules.referencePrefix} 6.28" or "APA 7 Section 6.32")
+- lineNumber: The line number where the issue occurs (from [Line X] markers)
+- originalText: The EXACT problematic text (copy directly from document)
+- suggestedFix: The corrected version of the text
+- explanation: Brief explanation of why this is a violation
+- severity: "error" (must fix), "warning" (should fix), or "suggestion" (consider fixing)
+
+Return a JSON array. Be thorough - check every sentence. Example format:
+[
+  {
+    "rule": "Serial Comma",
+    "ruleReference": "CMOS 6.19",
+    "lineNumber": 5,
+    "originalText": "red, white and blue",
+    "suggestedFix": "red, white, and blue",
+    "explanation": "Add comma before 'and' in a series of three or more items",
+    "severity": "warning"
+  }
+]
+
+Return ONLY the JSON array, no other text:`;
+
+    try {
+      const response = await geminiService.generateStructuredOutput<Array<{
+        rule: string;
+        ruleReference: string;
+        lineNumber: number;
+        originalText: string;
+        suggestedFix: string;
+        explanation: string;
+        severity: string;
+      }>>(prompt, {
+        temperature: 0.1,
+        maxOutputTokens: 8000,
+      });
+
+      // Convert to StyleViolation format with proper offsets
+      return response.data.map(v => {
+        // Calculate character offset from line number
+        const targetLine = v.lineNumber - lineOffset;
+        let startOffset = charOffset;
+        for (let i = 0; i < Math.min(targetLine, lines.length); i++) {
+          startOffset += lines[i].length + 1; // +1 for newline
+        }
+
+        // Find the exact position of the original text within the line
+        if (targetLine >= 0 && targetLine < lines.length) {
+          const lineContent = lines[targetLine];
+          const posInLine = lineContent.indexOf(v.originalText);
+          if (posInLine >= 0) {
+            startOffset += posInLine;
+          }
+        }
+
+        return {
+          rule: v.rule,
+          ruleReference: v.ruleReference,
+          location: {
+            start: startOffset,
+            end: startOffset + v.originalText.length,
+            lineNumber: v.lineNumber,
+          },
+          originalText: v.originalText,
+          suggestedFix: v.suggestedFix,
+          explanation: v.explanation,
+          severity: v.severity as 'error' | 'warning' | 'suggestion',
+        };
+      });
     } catch (error) {
-      logger.error('[Editorial AI] Style validation failed', error instanceof Error ? error : undefined);
+      logger.error('[Editorial AI] Style validation chunk failed', error instanceof Error ? error : undefined);
       return [];
+    }
+  }
+
+  /**
+   * Get comprehensive style guide rules for AI validation
+   */
+  private getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom'): {
+    name: string;
+    referencePrefix: string;
+    rules: string;
+  } {
+    switch (styleGuide) {
+      case 'apa':
+        return {
+          name: 'APA Publication Manual 7th Edition',
+          referencePrefix: 'APA 7',
+          rules: `KEY APA 7TH EDITION RULES:
+
+NUMBERS:
+- Use words for numbers zero through nine
+- Use numerals for 10 and above
+- Never use apostrophe in number plurals (1970s, not 1970's)
+- Use % symbol with numerals (50%), spell out with words (fifty percent)
+- Use numerals for exact measurements, statistics, and mathematical expressions
+
+CAPITALIZATION:
+- Article/chapter titles: Sentence case (capitalize only first word and proper nouns)
+- Journal titles: Title case (capitalize major words)
+- Capitalize first word after colon in titles if it begins a complete sentence
+
+PUNCTUATION:
+- Use the serial (Oxford) comma before "and" in a series
+- Use double quotation marks for direct quotes
+- Place periods and commas inside quotation marks
+- Use en dash (–) for number ranges
+
+CITATIONS:
+- Use ampersand (&) in parenthetical citations, "and" in narrative citations
+- List up to 20 authors; for 21+, use first 19, ellipsis, then final author
+- Use "et al." after first citation for 3+ authors
+- DOI format: https://doi.org/xxxxx
+
+LANGUAGE:
+- Avoid contractions in formal writing
+- Use gender-neutral language (they/them for singular)
+- Avoid anthropomorphism (studies don't "argue" or "believe")
+- Prefer active voice over passive voice
+- Use "e.g.," and "i.e.," with comma following`,
+        };
+
+      case 'chicago':
+        return {
+          name: 'Chicago Manual of Style 17th Edition',
+          referencePrefix: 'CMOS',
+          rules: `KEY CHICAGO MANUAL OF STYLE RULES:
+
+NUMBERS:
+- Spell out numbers one through one hundred
+- Spell out round numbers (two hundred, three thousand)
+- Use numerals for exact figures in technical contexts
+- Use en dash (–) for ranges, not hyphen
+
+PUNCTUATION:
+- Use the serial (Oxford) comma before "and" in a series
+- Em dashes (—) without spaces around them
+- En dashes (–) for number ranges
+- Ellipsis: three spaced periods (. . .) in quoted material
+- Ibid. is discouraged; use shortened citations
+
+CAPITALIZATION:
+- Headline style for titles: Capitalize first, last, and all major words
+- Lowercase prepositions, conjunctions, articles unless first/last word
+- Capitalize first word after colon if it begins a complete sentence
+
+POSSESSIVES:
+- Add 's to singular nouns ending in s (James's, not James')
+- Exception: classical and biblical names (Moses', Jesus')
+
+GRAMMAR:
+- "That" for restrictive clauses (no comma)
+- "Which" for nonrestrictive clauses (with comma)
+- American English: "toward" not "towards", "among" not "amongst"
+
+CITATIONS:
+- Write out publishers' names in full
+- Invert author's name (Last, First)
+- Italicize book and journal titles
+- Quotation marks for article/chapter titles`,
+        };
+
+      case 'mla':
+        return {
+          name: 'MLA Handbook 9th Edition',
+          referencePrefix: 'MLA',
+          rules: `KEY MLA 9TH EDITION RULES:
+
+NUMBERS:
+- Spell out numbers that can be written in one or two words
+- Use numerals for numbers requiring more than two words
+- Use numerals for dates, page numbers, addresses
+
+FORMATTING:
+- Double-space throughout
+- 1-inch margins
+- 12-point standard font (Times New Roman or similar)
+- Include last name and page number in upper right
+
+CAPITALIZATION:
+- Title case for all titles: capitalize all major words
+- Lowercase prepositions, conjunctions, articles (unless first word)
+
+DATES:
+- Day Month Year format (15 Jan. 2024)
+- Abbreviate months longer than four letters: Jan., Feb., Mar., Apr., Aug., Sept., Oct., Nov., Dec.
+
+IN-TEXT CITATIONS:
+- Author's last name and page number (Smith 42)
+- No comma between author and page
+- Block quotes (4+ lines): indent 1/2 inch, no quotation marks
+
+WORKS CITED:
+- Alphabetical order by authors' last names
+- Hanging indent (first line flush, subsequent indented)
+- Only first author's name inverted (Last, First. Second Third.)
+- For 3+ authors: First author et al.
+
+TITLES:
+- Italicize titles of independently published works (books, journals)
+- Quotation marks for shorter works (articles, chapters)`,
+        };
+
+      case 'vancouver':
+        return {
+          name: 'Vancouver Style (ICMJE Recommendations)',
+          referencePrefix: 'Vancouver',
+          rules: `KEY VANCOUVER STYLE RULES:
+
+CITATIONS:
+- Number citations consecutively in order of first mention
+- Use Arabic numerals in parentheses (1) or superscript
+- Same number for repeated citations
+- References numbered in order of appearance (not alphabetical)
+
+AUTHOR NAMES:
+- Surname first, then initials (no periods between initials)
+- List first 6 authors, then "et al." for 7 or more
+- Example: Smith AB, Jones CD, Wilson EF, et al.
+
+JOURNAL TITLES:
+- Abbreviate according to NLM/MEDLINE standards
+- No periods in abbreviations
+- Example: N Engl J Med, JAMA, BMJ
+
+DATES:
+- Year Month Day format: 2024 Jan 15
+- Three-letter month abbreviations (no period)
+
+PAGE RANGES:
+- Use abbreviated form: 123-8 (not 123-128)
+- Drop common leading digits
+
+MEASUREMENTS:
+- Use SI units (metric)
+- kg, m, cm, L (not pounds, feet, gallons)
+
+DOI:
+- Include DOI at end when available
+- Format: doi:10.xxxx/xxxxx
+
+MEDICAL TERMINOLOGY:
+- Use standard medical terms in scientific context
+- Drug names: Use generic names, capitalize brand names
+- Abbreviate standard medical abbreviations without periods`,
+        };
+
+      default:
+        return {
+          name: 'General Academic Style',
+          referencePrefix: 'Style',
+          rules: `GENERAL ACADEMIC WRITING RULES:
+
+GRAMMAR:
+- Ensure subject-verb agreement
+- Avoid dangling modifiers
+- Use parallel structure in lists
+- Prefer active voice over passive voice
+
+PUNCTUATION:
+- Use serial comma in lists
+- Single space after periods
+- Proper use of semicolons and colons
+- Hyphenate compound adjectives before nouns
+
+NUMBERS:
+- Spell out numbers at start of sentences
+- Be consistent with number style throughout
+
+TERMINOLOGY:
+- Avoid redundant phrases (advance planning → planning)
+- Replace wordy phrases (in order to → to)
+- Avoid clichés and jargon
+- Define abbreviations on first use
+
+FORMATTING:
+- Consistent heading hierarchy
+- Proper quotation formatting
+- Appropriate use of italics and bold`,
+        };
     }
   }
 
