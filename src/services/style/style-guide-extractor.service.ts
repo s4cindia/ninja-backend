@@ -7,6 +7,7 @@
 
 import { geminiService } from '../ai/gemini.service';
 import { documentExtractor } from '../document/document-extractor.service';
+import { logger } from '../../lib/logger';
 import type { StyleCategory, StyleSeverity, HouseRuleType } from '@prisma/client';
 
 export interface ExtractedRule {
@@ -125,7 +126,7 @@ class StyleGuideExtractorService {
           allRules.push(...sectionRules);
         } catch (error) {
           warnings.push(`Failed to extract rules from section: ${section.title}`);
-          console.error('[StyleGuideExtractor] Section extraction error:', error);
+          logger.error('[StyleGuideExtractor] Section extraction error:', error);
         }
       }
 
@@ -156,7 +157,7 @@ class StyleGuideExtractorService {
         },
       };
     } catch (error) {
-      console.error('[StyleGuideExtractor] Extraction failed:', error);
+      logger.error('[StyleGuideExtractor] Extraction failed:', error);
       return {
         success: false,
         totalRulesExtracted: 0,
@@ -276,7 +277,7 @@ class StyleGuideExtractorService {
       // Parse JSON response
       const jsonMatch = response.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
-        console.warn('[StyleGuideExtractor] No JSON array found in response');
+        logger.warn('[StyleGuideExtractor] No JSON array found in response');
         return [];
       }
 
@@ -299,7 +300,7 @@ class StyleGuideExtractorService {
           examples: r.examples,
         }));
     } catch (error) {
-      console.error('[StyleGuideExtractor] AI extraction error:', error);
+      logger.error('[StyleGuideExtractor] AI extraction error:', error);
       return [];
     }
   }
@@ -355,7 +356,7 @@ class StyleGuideExtractorService {
 
       // Validate array length matches before merging
       if (enhancedRules.length !== rules.length) {
-        console.warn('[StyleGuideExtractor] AI returned different rule count, skipping enhancement');
+        logger.warn('[StyleGuideExtractor] AI returned different rule count, skipping enhancement');
         return rules;
       }
 
@@ -368,7 +369,7 @@ class StyleGuideExtractorService {
         severity: this.normalizeSeverity(r.severity),
       }));
     } catch (error) {
-      console.error('[StyleGuideExtractor] Enhancement error:', error);
+      logger.error('[StyleGuideExtractor] Enhancement error:', error);
       return rules;
     }
   }
