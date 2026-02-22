@@ -10,6 +10,7 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
+import safeRegex from 'safe-regex2';
 import type {
   HouseStyleRule,
   HouseRuleSet,
@@ -964,15 +965,16 @@ export class HouseStyleEngineService {
 
   /**
    * Check if a regex pattern is potentially unsafe (ReDoS vulnerable)
-   * Detects patterns with nested quantifiers that can cause catastrophic backtracking
+   * Uses safe-regex2 library for accurate detection of catastrophic backtracking patterns
    */
   private isUnsafeRegex(pattern: string): boolean {
-    // Detect nested quantifiers like (a+)+, (.*)+, (a*)+, etc.
-    const nestedQuantifierPattern = /\([^)]*[+*][^)]*\)[+*]/;
-    // Detect overlapping alternation with quantifiers like (a|aa)+
-    const overlappingAlternationPattern = /\([^)]*\|[^)]*\)[+*]/;
-
-    return nestedQuantifierPattern.test(pattern) || overlappingAlternationPattern.test(pattern);
+    try {
+      // safe-regex2 returns true if the pattern is SAFE, so we negate it
+      return !safeRegex(pattern);
+    } catch {
+      // If safe-regex2 throws, treat pattern as unsafe
+      return true;
+    }
   }
 }
 

@@ -8,6 +8,7 @@
 import { geminiService } from '../ai/gemini.service';
 import { documentExtractor } from '../document/document-extractor.service';
 import { logger } from '../../lib/logger';
+import pLimit from 'p-limit';
 import type { StyleCategory, StyleSeverity, HouseRuleType } from '@prisma/client';
 
 export interface ExtractedRule {
@@ -119,15 +120,22 @@ class StyleGuideExtractorService {
       // Step 2: Split into sections for processing
       const sections = this.splitIntoSections(extractedContent.text, extractedContent.pageCount);
 
-      // Step 3: Extract rules from each section using AI
-      for (const section of sections) {
-        try {
-          const sectionRules = await this.extractRulesFromSection(section);
-          allRules.push(...sectionRules);
-        } catch (error) {
-          warnings.push(`Failed to extract rules from section: ${section.title}`);
-          logger.error('[StyleGuideExtractor] Section extraction error:', error);
-        }
+      // Step 3: Extract rules from each section using AI (parallel with concurrency limit)
+      const limit = pLimit(3); // Limit to 3 concurrent AI calls to avoid rate limiting
+      const sectionPromises = sections.map(section =>
+        limit(async () => {
+          try {
+            return await this.extractRulesFromSection(section);
+          } catch (error) {
+            warnings.push(`Failed to extract rules from section: ${section.title}`);
+            logger.error('[StyleGuideExtractor] Section extraction error:', error);
+            return [];
+          }
+        })
+      );
+      const sectionResults = await Promise.all(sectionPromises);
+      for (const rules of sectionResults) {
+        allRules.push(...rules);
       }
 
       // Step 4: Deduplicate and categorize rules
