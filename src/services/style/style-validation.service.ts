@@ -73,6 +73,7 @@ export interface BulkFixResult {
 export interface ValidationSummary {
   jobId: string;
   documentId: string;
+  fileName?: string;
   status: JobStatus;
   progress: number;
   totalViolations: number;
@@ -251,54 +252,44 @@ export class StyleValidationService {
     let totalViolations = 0;
     const allMatches: RuleMatch[] = [];
 
+    // Helper to update both StyleValidationJob progress and call external callback
+    const updateProgress = async (progress: number, message: string) => {
+      await prisma.styleValidationJob.update({
+        where: { id: jobId },
+        data: { progress },
+      });
+      await onProgress?.(progress, message);
+    };
+
     try {
-      // Phase 1: Execute built-in rules (0-50%)
-      await onProgress?.(5, 'Starting rule-based validation');
+      // Skip built-in regex rules - use AI validation only for quality results
+      // Built-in rules generate too many false positives and slow down validation
+      await updateProgress(5, 'Starting AI-powered validation');
 
-      const builtInMatches = styleRulesRegistry.validateText(
-        text,
-        job.ruleSetIds,
-        { fullText: text, documentTitle: document.title ?? undefined }
-      );
-      // Add source to built-in matches
-      allMatches.push(...builtInMatches.map(m => ({ ...m, source: 'BUILT_IN' as const })));
+      // Get custom house rules for AI context (but don't run regex matching on them)
+      logger.info(`[Style Validation] Job ruleSetIds: ${JSON.stringify(job.ruleSetIds)}`);
 
-      await onProgress?.(30, `Found ${builtInMatches.length} rule-based matches`);
-
-      // Phase 2: Execute house rules from selected rule sets (50-70%)
-      // Get rules from selected custom rule sets (not just all active rules)
       const selectedCustomRuleSetIds = job.ruleSetIds.filter(id =>
         !['general', 'academic', 'chicago', 'apa', 'mla', 'ap', 'vancouver', 'nature', 'ieee'].includes(id)
       );
 
+      logger.info(`[Style Validation] Custom rule set IDs after filtering: ${JSON.stringify(selectedCustomRuleSetIds)}`);
+
       let houseRules: Awaited<ReturnType<typeof houseStyleEngine.getActiveRules>> = [];
 
       if (selectedCustomRuleSetIds.length > 0) {
-        // Get rules from specifically selected custom rule sets
         houseRules = await houseStyleEngine.getRulesFromSets(job.tenantId, selectedCustomRuleSetIds);
-        logger.info(`[Style Validation] Found ${houseRules.length} rules from ${selectedCustomRuleSetIds.length} selected custom rule sets`);
+        logger.info(`[Style Validation] Found ${houseRules.length} custom rules from DB: ${houseRules.map(r => r.name).join(', ')}`);
       } else {
-        // Fall back to all active house rules if no custom sets selected
-        houseRules = await houseStyleEngine.getActiveRules(job.tenantId);
+        logger.info(`[Style Validation] No custom rule sets selected - using style guide rules only`);
       }
 
-      if (houseRules.length > 0) {
-        await onProgress?.(35, `Checking ${houseRules.length} house rules`);
+      await updateProgress(10, 'Preparing AI validation');
 
-        const houseMatches = await houseStyleEngine.executeHouseRulesAsync(
-          houseRules,
-          text
-        );
-        // Add source to house rule matches
-        allMatches.push(...houseMatches.map(m => ({ ...m, source: 'HOUSE' as const })));
-
-        await onProgress?.(50, `Found ${houseMatches.length} house rule matches`);
-      }
-
-      // Phase 3: AI validation (70-90%)
+      // AI validation (main phase - 10-90%)
       const styleGuide = this.determineStyleGuide(job.ruleSetIds);
       logger.info(`[Style Validation] Starting AI validation with style guide: ${styleGuide}, rule sets: ${job.ruleSetIds.join(', ')}`);
-      await onProgress?.(55, `Running AI-powered ${styleGuide.toUpperCase()} validation`);
+      await updateProgress(55, `Running AI-powered ${styleGuide.toUpperCase()} validation`);
 
       try {
         // Build comprehensive custom rules text for AI
@@ -306,18 +297,34 @@ export class StyleValidationService {
 
         // Add house rule descriptions for AI context
         for (const rule of houseRules) {
-          const ruleDesc = rule.description
-            ? `${rule.name}: ${rule.description}`
-            : rule.name;
-          customRulesForAI.push(ruleDesc);
+          let ruleText = `[${rule.category}] ${rule.name}`;
 
-          // Add avoid terms if it's a terminology rule
-          if (rule.avoidTerms && rule.avoidTerms.length > 0) {
-            customRulesForAI.push(`Avoid: ${(rule.avoidTerms as string[]).join(', ')} → Use: ${rule.preferredTerm || 'alternative'}`);
+          if (rule.description) {
+            ruleText += `: ${rule.description}`;
           }
+
+          // Add preferred term info for terminology rules
+          if (rule.ruleType === 'TERMINOLOGY' && rule.preferredTerm) {
+            ruleText += ` REQUIRED TERM: "${rule.preferredTerm}" - Flag any variations or alternative phrasings.`;
+          }
+
+          // Add avoid terms if specified
+          if (rule.avoidTerms && (rule.avoidTerms as string[]).length > 0) {
+            ruleText += ` AVOID: ${(rule.avoidTerms as string[]).join(', ')}`;
+            if (rule.preferredTerm) {
+              ruleText += ` → USE: "${rule.preferredTerm}"`;
+            }
+          }
+
+          // Add pattern info if available
+          if (rule.pattern) {
+            ruleText += ` PATTERN: ${rule.pattern}`;
+          }
+
+          customRulesForAI.push(ruleText);
         }
 
-        logger.info(`[Style Validation] Sending ${customRulesForAI.length} custom rules to AI for validation`);
+        logger.info(`[Style Validation] Sending ${customRulesForAI.length} custom rules to AI: ${customRulesForAI.join(' | ')}`);
 
         const aiViolations = await editorialAi.validateStyle(
           text,
@@ -344,14 +351,20 @@ export class StyleValidationService {
           });
         }
 
-        await onProgress?.(80, `AI found ${aiViolations.length} additional issues`);
+        await updateProgress(80, `AI found ${aiViolations.length} additional issues`);
       } catch (aiError) {
         logger.error('[Style Validation] AI validation failed:', aiError);
-        await onProgress?.(80, 'AI validation failed - using rule-based results only');
+        await updateProgress(80, 'AI validation failed - using rule-based results only');
       }
 
       // Phase 4: Store violations (90-100%)
-      await onProgress?.(85, 'Storing violations');
+      await updateProgress(85, 'Storing violations');
+
+      // Clear previous violations for this document
+      await prisma.styleViolation.deleteMany({
+        where: { documentId: job.documentId },
+      });
+      logger.info(`[Style Validation] Cleared old violations for document ${job.documentId}`);
 
       // Deduplicate and sort
       const uniqueMatches = this.deduplicateMatches(allMatches);
@@ -392,7 +405,7 @@ export class StyleValidationService {
         },
       });
 
-      await onProgress?.(100, `Validation complete: ${totalViolations} violations found`);
+      await updateProgress(100, `Validation complete: ${totalViolations} violations found`);
 
       logger.info(
         `[Style Validation] Job ${jobId} completed with ${totalViolations} violations`
@@ -710,10 +723,10 @@ export class StyleValidationService {
    * Get validation summary for a document
    */
   async getValidationSummary(documentId: string, tenantId: string): Promise<ValidationSummary | null> {
-    // Verify document belongs to tenant
+    // Verify document belongs to tenant and get file name
     const document = await prisma.editorialDocument.findFirst({
       where: { id: documentId, tenantId },
-      select: { id: true },
+      select: { id: true, fileName: true, originalName: true },
     });
 
     if (!document) {
@@ -767,6 +780,7 @@ export class StyleValidationService {
     return {
       jobId: job.id,
       documentId,
+      fileName: document.originalName || document.fileName,
       status: job.status,
       progress: job.progress,
       totalViolations,
@@ -826,11 +840,17 @@ export class StyleValidationService {
 
   // Helper methods
 
-  private determineStyleGuide(ruleSetIds: string[]): 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom' {
+  private determineStyleGuide(ruleSetIds: string[]): 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom' {
+    // Check for specific style guides in priority order
     if (ruleSetIds.includes('chicago')) return 'chicago';
     if (ruleSetIds.includes('apa')) return 'apa';
     if (ruleSetIds.includes('mla')) return 'mla';
     if (ruleSetIds.includes('vancouver')) return 'vancouver';
+    if (ruleSetIds.includes('nature')) return 'nature';
+    if (ruleSetIds.includes('ieee')) return 'ieee';
+    if (ruleSetIds.includes('ap')) return 'ap';
+    if (ruleSetIds.includes('academic')) return 'academic';
+    if (ruleSetIds.includes('general')) return 'general';
     return 'custom';
   }
 

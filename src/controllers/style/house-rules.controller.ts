@@ -80,7 +80,10 @@ export class HouseRulesController {
         description: rs.description,
         styleGuide: rs.styleGuide,
         ruleCount: rs.rules.length,
+        _count: { rules: rs.rules.length },
         isBuiltIn: true,
+        isActive: true,
+        source: 'built-in',
       }));
 
       // Get pagination params

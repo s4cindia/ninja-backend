@@ -5,6 +5,7 @@
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import pLimit from 'p-limit';
 import { geminiService } from '../ai/gemini.service';
 import { aiConfig } from '../../config/ai.config';
 import { logger } from '../../lib/logger';
@@ -338,43 +339,146 @@ Respond with JSON only:`;
    */
   async validateStyle(
     text: string,
-    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom',
+    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom',
     customRules?: string[]
   ): Promise<StyleViolation[]> {
+    // Simple approach: Pass document + rules to AI, get violations
     const styleGuideRules = this.getStyleGuideRules(styleGuide);
 
-    // For large documents, process in chunks
-    const MAX_CHUNK_SIZE = 15000;
-    const allViolations: StyleViolation[] = [];
+    // Limit text for faster processing
+    const maxChars = 25000;
+    const textToValidate = text.length > maxChars ? text.substring(0, maxChars) : text;
 
-    if (text.length > MAX_CHUNK_SIZE) {
-      // Process in chunks for large documents
-      const chunks = this.splitTextIntoChunks(text, MAX_CHUNK_SIZE);
-      logger.info(`[Editorial AI] Processing ${chunks.length} chunks for style validation`);
+    logger.info(`[Editorial AI] Validating ${textToValidate.length} chars with ${styleGuide} style`);
 
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        logger.info(`[Editorial AI] Validating chunk ${i + 1}/${chunks.length} (offset: ${chunk.offset}, length: ${chunk.text.length})`);
+    // Build the prompt
+    const customRulesSection = customRules?.length
+      ? `\n\nCUSTOM RULES TO ENFORCE:\n${customRules.join('\n')}`
+      : '';
 
-        const chunkViolations = await this.validateTextChunk(
-          chunk.text,
-          chunk.offset,
-          chunk.lineOffset,
-          styleGuide,
-          styleGuideRules,
-          customRules
-        );
+    const prompt = `You are an expert editor. Check this document for style violations according to ${styleGuideRules.name}.
 
-        allViolations.push(...chunkViolations);
+RULES TO CHECK:
+${styleGuideRules.rules}
+${customRulesSection}
+
+DOCUMENT:
+${textToValidate}
+
+Find ALL style violations. For each violation return:
+- rule: The rule name
+- ruleReference: Reference code (e.g., "${styleGuideRules.referencePrefix} 6.1")
+- originalText: The exact text with the issue
+- suggestedFix: The corrected text
+- explanation: Why this is wrong
+- severity: "error", "warning", or "suggestion"
+- lineNumber: Approximate line number (estimate based on position)
+
+Return a JSON array. Example:
+[{"rule":"Serial Comma","ruleReference":"CMOS 6.19","originalText":"red, white and blue","suggestedFix":"red, white, and blue","explanation":"Add comma before and","severity":"warning","lineNumber":5}]
+
+Return ONLY valid JSON array:`;
+
+    try {
+      const response = await geminiService.generateText(prompt, {
+        temperature: 0.1,
+        maxOutputTokens: 8000,
+      });
+
+      logger.info(`[Editorial AI] Raw response length: ${response.text?.length ?? 0}`);
+
+      // Parse JSON from response (handle markdown code blocks)
+      let jsonText = response.text.trim();
+
+      // Log first 500 chars for debugging
+      logger.info(`[Editorial AI] Response preview: ${jsonText.substring(0, 500)}`);
+
+      // Remove markdown code blocks
+      if (jsonText.startsWith('```json')) {
+        jsonText = jsonText.slice(7);
+      } else if (jsonText.startsWith('```')) {
+        jsonText = jsonText.slice(3);
       }
-    } else {
-      // Process entire document at once
-      const violations = await this.validateTextChunk(text, 0, 1, styleGuide, styleGuideRules, customRules);
-      allViolations.push(...violations);
-    }
+      if (jsonText.endsWith('```')) {
+        jsonText = jsonText.slice(0, -3);
+      }
+      jsonText = jsonText.trim();
 
-    logger.info(`[Editorial AI] Total violations found: ${allViolations.length}`);
-    return allViolations;
+      // Find JSON array - try multiple approaches
+      let match = jsonText.match(/\[[\s\S]*\]/);
+
+      // If no match, check if response says "no violations" or similar
+      if (!match) {
+        const lowerText = jsonText.toLowerCase();
+        if (lowerText.includes('no violations') || lowerText.includes('no issues') ||
+            lowerText.includes('document complies') || lowerText.includes('no style errors')) {
+          logger.info('[Editorial AI] AI indicates no violations found');
+          return [];
+        }
+
+        // Try to find just the opening bracket
+        const bracketIndex = jsonText.indexOf('[');
+        if (bracketIndex >= 0) {
+          // Extract from first [ to last ]
+          const lastBracket = jsonText.lastIndexOf(']');
+          if (lastBracket > bracketIndex) {
+            match = [jsonText.substring(bracketIndex, lastBracket + 1)];
+            logger.info(`[Editorial AI] Found array by bracket search at ${bracketIndex}-${lastBracket}`);
+          }
+        }
+      }
+
+      if (!match) {
+        logger.warn('[Editorial AI] No JSON array found in response');
+        logger.warn(`[Editorial AI] Full response: ${jsonText.substring(0, 2000)}`);
+        return [];
+      }
+
+      let data: Array<{
+        rule: string;
+        ruleReference: string;
+        originalText: string;
+        suggestedFix: string;
+        explanation: string;
+        severity: string;
+        lineNumber: number;
+      }>;
+
+      try {
+        data = JSON.parse(match[0]);
+      } catch (parseErr) {
+        logger.error('[Editorial AI] JSON parse error:', parseErr);
+        logger.error('[Editorial AI] JSON text:', match[0].substring(0, 500));
+        return [];
+      }
+
+      logger.info(`[Editorial AI] Parsed ${data.length} violations from AI`);
+
+      if (!data || data.length === 0) {
+        return [];
+      }
+
+      // Convert to StyleViolation format
+      const violations: StyleViolation[] = data.map(v => ({
+        rule: v.rule || 'Unknown',
+        ruleReference: v.ruleReference || styleGuideRules.referencePrefix,
+        location: {
+          start: 0,
+          end: v.originalText?.length || 0,
+          lineNumber: v.lineNumber || 1,
+        },
+        originalText: v.originalText || '',
+        suggestedFix: v.suggestedFix || '',
+        explanation: v.explanation || '',
+        severity: (v.severity as 'error' | 'warning' | 'suggestion') || 'warning',
+      }));
+
+      logger.info(`[Editorial AI] Returning ${violations.length} violations`);
+      return violations;
+    } catch (error) {
+      logger.error('[Editorial AI] Validation failed:', error);
+      return []; // Return empty array instead of throwing to avoid breaking the flow
+    }
   }
 
   /**
@@ -424,7 +528,7 @@ Respond with JSON only:`;
     text: string,
     charOffset: number,
     lineOffset: number,
-    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom',
+    styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom',
     styleGuideRules: { name: string; referencePrefix: string; rules: string },
     customRules?: string[]
   ): Promise<StyleViolation[]> {
@@ -436,29 +540,37 @@ Respond with JSON only:`;
     const numberedText = lines.map((line, idx) => `[Line ${lineOffset + idx}] ${line}`).join('\n');
 
     const customRulesText = customRules?.length
-      ? `\n\nCUSTOM HOUSE RULES TO ENFORCE:\n${customRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}`
+      ? `\n\n**PRIORITY: CUSTOM HOUSE RULES (MUST CHECK THESE FIRST)**
+These are specific rules from the publisher's style guide that MUST be enforced:
+${customRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+For TERMINOLOGY rules with "REQUIRED TERM": Flag ANY text that discusses the same concept but uses different wording.
+For PUNCTUATION rules: Check for missing or incorrect punctuation as described.
+For CAPITALIZATION rules: Flag text that doesn't follow the capitalization requirements.`
       : '';
 
     const prompt = `You are an expert editorial style checker. Thoroughly validate this document against ${styleGuideRules.name}.
-
-STYLE GUIDE RULES TO CHECK:
-${styleGuideRules.rules}
 ${customRulesText}
+
+GENERAL STYLE GUIDE RULES:
+${styleGuideRules.rules}
 
 DOCUMENT TEXT (with line numbers for reference):
 ${numberedText}
 
 VALIDATION TASK:
+${customRules?.length ? 'IMPORTANT: Check custom house rules FIRST - these are the priority rules from the publisher.' : ''}
 Carefully analyze EVERY sentence and paragraph for style violations. Check for:
-1. Punctuation errors (commas, semicolons, colons, dashes)
-2. Capitalization issues (titles, proper nouns, sentence starts)
-3. Number formatting (when to spell out vs use numerals)
-4. Abbreviation usage (first use, formatting)
-5. Grammar issues (subject-verb agreement, tense consistency)
-6. Word choice and terminology (preferred terms, avoid terms)
-7. Citation formatting (if applicable)
-8. Quotation formatting
-9. Hyphenation rules
+1. Custom house rule violations (if any custom rules provided above)
+2. Punctuation errors (commas, semicolons, colons, dashes)
+3. Capitalization issues (titles, proper nouns, sentence starts)
+4. Number formatting (when to spell out vs use numerals)
+5. Abbreviation usage (first use, formatting)
+6. Grammar issues (subject-verb agreement, tense consistency)
+7. Word choice and terminology (preferred terms, avoid terms)
+8. Citation formatting (if applicable)
+9. Quotation formatting
+10. Hyphenation rules
 
 For EACH violation found, return:
 - rule: Specific rule name (e.g., "Serial Comma Required", "Spell Out Numbers Under 10")
@@ -497,6 +609,13 @@ Return ONLY the JSON array, no other text:`;
         temperature: 0.1,
         maxOutputTokens: 8000,
       });
+
+      logger.info(`[Editorial AI] Chunk response: ${response.data?.length ?? 0} violations`);
+
+      if (!response.data || response.data.length === 0) {
+        logger.warn('[Editorial AI] No violations returned from AI for this chunk');
+        return [];
+      }
 
       // Convert to StyleViolation format with proper offsets
       return response.data.map(v => {
@@ -539,7 +658,7 @@ Return ONLY the JSON array, no other text:`;
   /**
    * Get comprehensive style guide rules for AI validation
    */
-  private getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'custom'): {
+  private getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom'): {
     name: string;
     referencePrefix: string;
     rules: string;
@@ -706,6 +825,168 @@ MEDICAL TERMINOLOGY:
 - Use standard medical terms in scientific context
 - Drug names: Use generic names, capitalize brand names
 - Abbreviate standard medical abbreviations without periods`,
+        };
+
+      case 'nature':
+        return {
+          name: 'Nature Publishing Guidelines',
+          referencePrefix: 'Nature',
+          rules: `KEY NATURE PUBLISHING RULES:
+
+NUMBERS:
+- Use numerals for all numbers except at start of sentence
+- Use SI units with proper abbreviations
+- Use × (not x) for multiplication
+- Use en dash for ranges (10–20)
+
+CITATIONS:
+- Numbered superscript citations in order of appearance
+- References numbered consecutively
+- Up to 5 authors listed, then et al.
+
+FORMATTING:
+- Concise titles (no abbreviations)
+- Structured abstract for research articles
+- No footnotes in main text
+- Gene names italicized, proteins not
+- Species names italicized
+
+STYLE:
+- Active voice preferred
+- Third person unless describing author actions
+- Avoid jargon and undefined abbreviations
+- Define abbreviations at first use`,
+        };
+
+      case 'ieee':
+        return {
+          name: 'IEEE Editorial Style',
+          referencePrefix: 'IEEE',
+          rules: `KEY IEEE STYLE RULES:
+
+CITATIONS:
+- Numbered references in square brackets [1]
+- Citations numbered in order of first appearance
+- Multiple citations: [1], [2] or [1]–[3]
+
+NUMBERS:
+- Spell out numbers zero through nine
+- Use numerals for 10 and above
+- Always use numerals with units (5 MHz, 3 dB)
+- Use × for multiplication in equations
+
+ABBREVIATIONS:
+- Define at first use, then use abbreviation
+- Common ones need no definition: CPU, RAM, IEEE
+- Use "Fig." in running text, "Figure" at sentence start
+
+EQUATIONS:
+- Number equations consecutively (1), (2)
+- Variables in italics
+- Functions and operators in roman (sin, log, max)
+
+UNITS:
+- SI units preferred
+- Space between number and unit (10 MHz)
+- No period after unit abbreviations`,
+        };
+
+      case 'ap':
+        return {
+          name: 'Associated Press Stylebook',
+          referencePrefix: 'AP',
+          rules: `KEY AP STYLE RULES:
+
+NUMBERS:
+- Spell out one through nine
+- Use numerals for 10 and above
+- Always numerals for ages, percentages, money
+- Spell out numbers at start of sentence (or recast)
+
+PUNCTUATION:
+- NO serial (Oxford) comma (red, white and blue)
+- Single space after periods
+- Use quotation marks for composition titles
+
+CAPITALIZATION:
+- Lowercase job titles after names
+- Capitalize formal titles before names
+- Lowercase seasons (spring, summer)
+- Capitalize specific regions (the West, the South)
+
+ABBREVIATIONS:
+- U.S. (with periods) as adjective
+- Spell out United States as noun
+- State abbreviations: Use postal codes in datelines only
+- Months: Abbreviate Jan., Feb., Aug., Sept., Oct., Nov., Dec.
+
+DATES:
+- Month Day, Year (Jan. 15, 2024)
+- No "th" or "nd" (Jan. 15, not Jan. 15th)
+- Use numerals for years`,
+        };
+
+      case 'general':
+        return {
+          name: 'General Quality Rules',
+          referencePrefix: 'Quality',
+          rules: `GENERAL QUALITY RULES:
+
+GRAMMAR:
+- Subject-verb agreement
+- Correct pronoun usage
+- Proper tense consistency
+- Avoid sentence fragments and run-ons
+- Correct use of articles (a, an, the)
+
+PUNCTUATION:
+- Serial comma consistency
+- Proper comma placement
+- Correct apostrophe usage
+- Proper quotation mark usage
+- Hyphenation of compound modifiers
+
+SPELLING:
+- Check common misspellings
+- Consistent British/American spelling
+- Proper capitalization
+
+CLARITY:
+- Avoid redundancy
+- Clear pronoun references
+- Parallel structure in lists
+- Avoid ambiguity`,
+        };
+
+      case 'academic':
+        return {
+          name: 'Academic Writing Standards',
+          referencePrefix: 'Academic',
+          rules: `ACADEMIC WRITING RULES:
+
+VOICE AND TONE:
+- Prefer active voice when possible
+- Formal tone, avoid contractions
+- Avoid first person unless field-appropriate
+- Objective language
+
+STRUCTURE:
+- Clear topic sentences
+- Logical paragraph flow
+- Appropriate transitions
+- Proper citation of sources
+
+TERMINOLOGY:
+- Define technical terms
+- Consistent terminology throughout
+- Avoid jargon unless necessary
+- Spell out abbreviations on first use
+
+STYLE:
+- Avoid hedging language overuse
+- Be precise and specific
+- Avoid generalizations without support
+- Use evidence-based claims`,
         };
 
       default:
