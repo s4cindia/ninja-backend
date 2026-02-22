@@ -31,7 +31,6 @@ import documentRoutes from "./document.routes";
 import editorRoutes from "./editor.routes";
 import validatorRoutes from "./validator.routes";
 import styleRoutes from "./style.routes";
-import aiProxyRoutes from "./ai-proxy.routes";
 
 const router = Router();
 
@@ -116,6 +115,5 @@ router.use("/document", documentRoutes);
 router.use("/editor", editorRoutes);
 router.use("/validator", validatorRoutes);
 router.use("/style", styleRoutes);
-router.use("/ai-proxy", aiProxyRoutes);
 
 export default router;
