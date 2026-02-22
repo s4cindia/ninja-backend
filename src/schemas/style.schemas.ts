@@ -95,7 +95,11 @@ export const jobIdParamSchema = {
 
 export const ruleSetIdParamSchema = {
   params: z.object({
-    ruleSetId: z.string().min(1, 'Rule set ID is required'),
+    // Accept both built-in rule set IDs (strings like 'general', 'chicago') and custom UUIDs
+    ruleSetId: z.union([
+      ruleSetIdEnum,
+      z.string().uuid('Invalid rule set ID format'),
+    ]),
   }),
 };
 
@@ -147,7 +151,10 @@ export const getViolationsQuerySchema = {
     take: z
       .string()
       .optional()
-      .transform((v) => (v ? parseInt(v, 10) : 100)),
+      .transform((v) => {
+        const parsed = v ? parseInt(v, 10) : 100;
+        return Math.min(Math.max(parsed, 1), 200); // Cap between 1 and 200
+      }),
   }).optional(),
 };
 
@@ -176,9 +183,9 @@ export const ignoreViolationSchema = {
 };
 
 /**
- * Bulk action request body
+ * Bulk action request body for style violations
  */
-export const bulkActionSchema = {
+export const violationBulkActionSchema = {
   body: z.object({
     violationIds: z
       .array(z.string().uuid('Invalid violation ID'))
@@ -188,6 +195,9 @@ export const bulkActionSchema = {
     reason: z.string().max(500).optional(),
   }),
 };
+
+// Alias for backwards compatibility
+export const bulkActionSchema = violationBulkActionSchema;
 
 // ============================================
 // BODY SCHEMAS - HOUSE RULES

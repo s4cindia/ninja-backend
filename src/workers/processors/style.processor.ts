@@ -30,10 +30,14 @@ async function processStyleValidation(
 ): Promise<JobResult> {
   const jobId = job.id || job.name;
   const { options } = job.data;
-  const documentId = options?.documentId as string;
-  const ruleSetIds = (options?.ruleSetIds as string[]) || ['general'];
+
+  // Defensive type validation for job options
+  const documentId = typeof options?.documentId === 'string' ? options.documentId : undefined;
+  const ruleSetIds = Array.isArray(options?.ruleSetIds)
+    ? options.ruleSetIds.filter((id): id is string => typeof id === 'string')
+    : ['general'];
   // Use the pre-created validation job ID from the controller
-  const validationJobId = options?.validationJobId as string;
+  const validationJobId = typeof options?.validationJobId === 'string' ? options.validationJobId : undefined;
 
   if (!documentId) {
     throw new Error('Missing documentId in job options');
