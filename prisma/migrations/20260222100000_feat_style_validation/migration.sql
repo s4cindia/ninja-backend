@@ -1,23 +1,41 @@
--- CreateEnum
-CREATE TYPE "StyleGuideType" AS ENUM ('CHICAGO', 'APA', 'MLA', 'AP', 'VANCOUVER', 'IEEE', 'NATURE', 'ELSEVIER', 'CUSTOM');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "StyleGuideType" AS ENUM ('CHICAGO', 'APA', 'MLA', 'AP', 'VANCOUVER', 'IEEE', 'NATURE', 'ELSEVIER', 'CUSTOM');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateEnum
-CREATE TYPE "StyleCategory" AS ENUM ('PUNCTUATION', 'CAPITALIZATION', 'NUMBERS', 'ABBREVIATIONS', 'HYPHENATION', 'SPELLING', 'GRAMMAR', 'TERMINOLOGY', 'FORMATTING', 'CITATIONS', 'OTHER');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "StyleCategory" AS ENUM ('PUNCTUATION', 'CAPITALIZATION', 'NUMBERS', 'ABBREVIATIONS', 'HYPHENATION', 'SPELLING', 'GRAMMAR', 'TERMINOLOGY', 'FORMATTING', 'CITATIONS', 'OTHER');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateEnum
-CREATE TYPE "StyleSeverity" AS ENUM ('ERROR', 'WARNING', 'SUGGESTION');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "StyleSeverity" AS ENUM ('ERROR', 'WARNING', 'SUGGESTION');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateEnum
-CREATE TYPE "ViolationStatus" AS ENUM ('PENDING', 'FIXED', 'IGNORED', 'WONT_FIX', 'AUTO_FIXED');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "ViolationStatus" AS ENUM ('PENDING', 'FIXED', 'IGNORED', 'WONT_FIX', 'AUTO_FIXED');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateEnum
-CREATE TYPE "ViolationSource" AS ENUM ('AI', 'BUILT_IN', 'HOUSE');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "ViolationSource" AS ENUM ('AI', 'BUILT_IN', 'HOUSE');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateEnum
-CREATE TYPE "HouseRuleType" AS ENUM ('TERMINOLOGY', 'PATTERN', 'CAPITALIZATION', 'PUNCTUATION');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "HouseRuleType" AS ENUM ('TERMINOLOGY', 'PATTERN', 'CAPITALIZATION', 'PUNCTUATION');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- CreateTable
-CREATE TABLE "StyleValidationJob" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "StyleValidationJob" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
@@ -35,8 +53,8 @@ CREATE TABLE "StyleValidationJob" (
     CONSTRAINT "StyleValidationJob_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "StyleViolation" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "StyleViolation" (
     "id" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
     "jobId" TEXT,
@@ -66,8 +84,8 @@ CREATE TABLE "StyleViolation" (
     CONSTRAINT "StyleViolation_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "HouseRuleSet" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "HouseRuleSet" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -84,8 +102,8 @@ CREATE TABLE "HouseRuleSet" (
     CONSTRAINT "HouseRuleSet_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "HouseStyleRule" (
+-- CreateTable (idempotent)
+CREATE TABLE IF NOT EXISTS "HouseStyleRule" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "ruleSetId" TEXT,
@@ -107,74 +125,95 @@ CREATE TABLE "HouseStyleRule" (
     CONSTRAINT "HouseStyleRule_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "StyleValidationJob_tenantId_documentId_idx" ON "StyleValidationJob"("tenantId", "documentId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleValidationJob_tenantId_documentId_idx" ON "StyleValidationJob"("tenantId", "documentId");
 
--- CreateIndex
-CREATE INDEX "StyleValidationJob_status_idx" ON "StyleValidationJob"("status");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleValidationJob_status_idx" ON "StyleValidationJob"("status");
 
--- CreateIndex
-CREATE INDEX "StyleValidationJob_createdAt_idx" ON "StyleValidationJob"("createdAt");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleValidationJob_createdAt_idx" ON "StyleValidationJob"("createdAt");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_documentId_idx" ON "StyleViolation"("documentId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_documentId_idx" ON "StyleViolation"("documentId");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_source_idx" ON "StyleViolation"("source");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_source_idx" ON "StyleViolation"("source");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_jobId_idx" ON "StyleViolation"("jobId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_jobId_idx" ON "StyleViolation"("jobId");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_styleGuide_idx" ON "StyleViolation"("styleGuide");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_styleGuide_idx" ON "StyleViolation"("styleGuide");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_category_idx" ON "StyleViolation"("category");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_category_idx" ON "StyleViolation"("category");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_severity_idx" ON "StyleViolation"("severity");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_severity_idx" ON "StyleViolation"("severity");
 
--- CreateIndex
-CREATE INDEX "StyleViolation_status_idx" ON "StyleViolation"("status");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "StyleViolation_status_idx" ON "StyleViolation"("status");
 
--- CreateIndex
-CREATE UNIQUE INDEX "HouseRuleSet_tenantId_name_key" ON "HouseRuleSet"("tenantId", "name");
+-- CreateIndex (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "HouseRuleSet_tenantId_name_key" ON "HouseRuleSet"("tenantId", "name");
 
--- CreateIndex
-CREATE INDEX "HouseRuleSet_tenantId_idx" ON "HouseRuleSet"("tenantId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseRuleSet_tenantId_idx" ON "HouseRuleSet"("tenantId");
 
--- CreateIndex
-CREATE INDEX "HouseRuleSet_isActive_idx" ON "HouseRuleSet"("isActive");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseRuleSet_isActive_idx" ON "HouseRuleSet"("isActive");
 
--- CreateIndex
-CREATE INDEX "HouseStyleRule_tenantId_idx" ON "HouseStyleRule"("tenantId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseStyleRule_tenantId_idx" ON "HouseStyleRule"("tenantId");
 
--- CreateIndex
-CREATE INDEX "HouseStyleRule_ruleSetId_idx" ON "HouseStyleRule"("ruleSetId");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseStyleRule_ruleSetId_idx" ON "HouseStyleRule"("ruleSetId");
 
--- CreateIndex
-CREATE INDEX "HouseStyleRule_category_idx" ON "HouseStyleRule"("category");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseStyleRule_category_idx" ON "HouseStyleRule"("category");
 
--- CreateIndex
-CREATE INDEX "HouseStyleRule_isActive_idx" ON "HouseStyleRule"("isActive");
+-- CreateIndex (idempotent)
+CREATE INDEX IF NOT EXISTS "HouseStyleRule_isActive_idx" ON "HouseStyleRule"("isActive");
 
--- AddForeignKey
-ALTER TABLE "StyleValidationJob" ADD CONSTRAINT "StyleValidationJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "StyleValidationJob" ADD CONSTRAINT "StyleValidationJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "StyleValidationJob" ADD CONSTRAINT "StyleValidationJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "StyleValidationJob" ADD CONSTRAINT "StyleValidationJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "StyleViolation" ADD CONSTRAINT "StyleViolation_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "StyleViolation" ADD CONSTRAINT "StyleViolation_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "StyleViolation" ADD CONSTRAINT "StyleViolation_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "StyleValidationJob"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "StyleViolation" ADD CONSTRAINT "StyleViolation_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "StyleValidationJob"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "HouseRuleSet" ADD CONSTRAINT "HouseRuleSet_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "HouseRuleSet" ADD CONSTRAINT "HouseRuleSet_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "HouseStyleRule" ADD CONSTRAINT "HouseStyleRule_ruleSetId_fkey" FOREIGN KEY ("ruleSetId") REFERENCES "HouseRuleSet"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "HouseStyleRule" ADD CONSTRAINT "HouseStyleRule_ruleSetId_fkey" FOREIGN KEY ("ruleSetId") REFERENCES "HouseRuleSet"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
--- AddForeignKey
-ALTER TABLE "HouseStyleRule" ADD CONSTRAINT "HouseStyleRule_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "HouseStyleRule" ADD CONSTRAINT "HouseStyleRule_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
