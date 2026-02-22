@@ -137,8 +137,8 @@ async function processStyleValidation(
           error: errorMessage,
           completedAt: new Date(),
         },
-      }).catch(() => {
-        // Ignore errors updating status
+      }).catch((updateError) => {
+        logger.warn(`[Style Worker] Failed to update validation job status: ${updateError}`);
       });
     }
 
@@ -155,8 +155,8 @@ async function processStyleValidation(
           status: 'FAILED',
           error: errorMessage,
         },
-      }).catch(() => {
-        // Ignore errors updating job
+      }).catch((updateError) => {
+        logger.warn(`[Style Worker] Failed to update job status: ${updateError}`);
       });
     }
 

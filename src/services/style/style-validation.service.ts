@@ -353,30 +353,30 @@ export class StyleValidationService {
       // Deduplicate and sort
       const uniqueMatches = this.deduplicateMatches(allMatches);
 
-      // Store violations in database
-      for (const match of uniqueMatches) {
-        await prisma.styleViolation.create({
-          data: {
-            documentId: job.documentId,
-            jobId: job.id,
-            styleGuide: this.getStyleGuideFromRuleSet(job.ruleSetIds),
-            ruleId: match.ruleId,
-            ruleReference: match.ruleReference || null,
-            category: this.inferCategory(match.ruleId),
-            severity: this.inferSeverityFromMatch(match),
-            title: match.ruleName,
-            description: match.description,
-            startOffset: match.startOffset,
-            endOffset: match.endOffset,
-            paragraphIndex: match.lineNumber, // Store line number as paragraph index
-            originalText: match.matchedText,
-            suggestedText: match.suggestedFix || null,
-            status: 'PENDING',
-            source: match.source || 'BUILT_IN',
-          },
-        });
-        totalViolations++;
+      // Store violations in database using batch insert for performance
+      const violationData = uniqueMatches.map(match => ({
+        documentId: job.documentId,
+        jobId: job.id,
+        styleGuide: this.getStyleGuideFromRuleSet(job.ruleSetIds),
+        ruleId: match.ruleId,
+        ruleReference: match.ruleReference || null,
+        category: this.inferCategory(match.ruleId),
+        severity: this.inferSeverityFromMatch(match),
+        title: match.ruleName,
+        description: match.description,
+        startOffset: match.startOffset,
+        endOffset: match.endOffset,
+        paragraphIndex: match.lineNumber, // Store line number as paragraph index
+        originalText: match.matchedText,
+        suggestedText: match.suggestedFix || null,
+        status: 'PENDING' as const,
+        source: (match.source || 'BUILT_IN') as 'AI' | 'BUILT_IN' | 'HOUSE',
+      }));
+
+      if (violationData.length > 0) {
+        await prisma.styleViolation.createMany({ data: violationData });
       }
+      totalViolations = uniqueMatches.length;
 
       // Update job status
       await prisma.styleValidationJob.update({
