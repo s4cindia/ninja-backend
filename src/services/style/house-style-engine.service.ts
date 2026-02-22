@@ -753,9 +753,21 @@ export class HouseStyleEngineService {
       };
     }
 
+    // ReDoS protection: Validate pattern before execution
+    if (rule.pattern && (rule.ruleType === 'PATTERN' || rule.ruleType === 'PUNCTUATION')) {
+      if (this.isUnsafeRegex(rule.pattern)) {
+        return {
+          matches: [],
+          executionTimeMs: Date.now() - startTime,
+          patternValid: false,
+          error: 'Pattern contains potentially catastrophic backtracking. Avoid nested quantifiers like (a+)+ or (.*)+',
+        };
+      }
+    }
+
     try {
       if (rule.ruleType === 'PATTERN' && rule.pattern) {
-        // Test regex pattern
+        // Test regex pattern (already validated above)
         const regex = new RegExp(rule.pattern, 'gi');
         let match;
 
