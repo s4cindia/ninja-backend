@@ -353,10 +353,16 @@ class StyleGuideExtractorService {
 
       const enhancedRules = JSON.parse(jsonMatch[0]) as ExtractedRule[];
 
+      // Validate array length matches before merging
+      if (enhancedRules.length !== rules.length) {
+        console.warn('[StyleGuideExtractor] AI returned different rule count, skipping enhancement');
+        return rules;
+      }
+
       // Validate enhanced rules
       return enhancedRules.map((r, i) => ({
-        ...rules[i],
-        ...r,
+        ...(rules[i] || {}),
+        ...(r || {}),
         category: this.normalizeCategory(r.category),
         ruleType: this.normalizeRuleType(r.ruleType),
         severity: this.normalizeSeverity(r.severity),

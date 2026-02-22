@@ -135,17 +135,28 @@ export class HouseStyleEngineService {
       );
     }
 
-    const ruleSet = await prisma.houseRuleSet.create({
-      data: {
-        tenantId,
-        name: input.name,
-        description: input.description || null,
-        baseStyleGuide: input.baseStyleGuide || null,
-        source: input.source || 'manual',
-        sourceFile: input.sourceFile || null,
-        isDefault: input.isDefault ?? false,
-        createdBy: userId,
-      },
+    // Use transaction to ensure atomic default flag update
+    const ruleSet = await prisma.$transaction(async (tx) => {
+      // If setting as default, unset any existing default first
+      if (input.isDefault) {
+        await tx.houseRuleSet.updateMany({
+          where: { tenantId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.houseRuleSet.create({
+        data: {
+          tenantId,
+          name: input.name,
+          description: input.description || null,
+          baseStyleGuide: input.baseStyleGuide || null,
+          source: input.source || 'manual',
+          sourceFile: input.sourceFile || null,
+          isDefault: input.isDefault ?? false,
+          createdBy: userId,
+        },
+      });
     });
 
     logger.info(`[House Style] Created rule set ${ruleSet.id} for tenant ${tenantId}`);
@@ -178,15 +189,26 @@ export class HouseStyleEngineService {
       }
     }
 
-    const updated = await prisma.houseRuleSet.update({
-      where: { id: ruleSetId },
-      data: {
-        ...(input.name !== undefined && { name: input.name }),
-        ...(input.description !== undefined && { description: input.description }),
-        ...(input.baseStyleGuide !== undefined && { baseStyleGuide: input.baseStyleGuide }),
-        ...(input.isActive !== undefined && { isActive: input.isActive }),
-        ...(input.isDefault !== undefined && { isDefault: input.isDefault }),
-      },
+    // Use transaction to ensure atomic default flag update
+    const updated = await prisma.$transaction(async (tx) => {
+      // If setting as default, unset any existing default first
+      if (input.isDefault === true) {
+        await tx.houseRuleSet.updateMany({
+          where: { tenantId, isDefault: true, id: { not: ruleSetId } },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.houseRuleSet.update({
+        where: { id: ruleSetId },
+        data: {
+          ...(input.name !== undefined && { name: input.name }),
+          ...(input.description !== undefined && { description: input.description }),
+          ...(input.baseStyleGuide !== undefined && { baseStyleGuide: input.baseStyleGuide }),
+          ...(input.isActive !== undefined && { isActive: input.isActive }),
+          ...(input.isDefault !== undefined && { isDefault: input.isDefault }),
+        },
+      });
     });
 
     logger.info(`[House Style] Updated rule set ${ruleSetId}`);
@@ -224,24 +246,43 @@ export class HouseStyleEngineService {
 
   async getRuleSets(
     tenantId: string,
-    options?: { includeRules?: boolean; activeOnly?: boolean }
-  ): Promise<RuleSetWithRules[]> {
+    options?: {
+      includeRules?: boolean;
+      activeOnly?: boolean;
+      page?: number;
+      pageSize?: number;
+    }
+  ): Promise<{ ruleSets: RuleSetWithRules[]; total: number; page: number; pageSize: number }> {
     const where: Record<string, unknown> = { tenantId };
+    const page = options?.page || 1;
+    const pageSize = Math.min(options?.pageSize || 50, 100); // Max 100 per page
 
     if (options?.activeOnly) {
       where.isActive = true;
     }
 
-    return prisma.houseRuleSet.findMany({
-      where,
-      include: {
-        rules: options?.includeRules ? {
-          orderBy: [{ category: 'asc' }, { name: 'asc' }],
-        } : false,
-        _count: { select: { rules: true } },
-      },
-      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-    }) as Promise<RuleSetWithRules[]>;
+    const [ruleSets, total] = await Promise.all([
+      prisma.houseRuleSet.findMany({
+        where,
+        include: {
+          rules: options?.includeRules ? {
+            orderBy: [{ category: 'asc' }, { name: 'asc' }],
+          } : false,
+          _count: { select: { rules: true } },
+        },
+        orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.houseRuleSet.count({ where }),
+    ]);
+
+    return {
+      ruleSets: ruleSets as RuleSetWithRules[],
+      total,
+      page,
+      pageSize,
+    };
   }
 
   async importRulesToSet(
@@ -341,6 +382,14 @@ export class HouseStyleEngineService {
           'INVALID_PATTERN'
         );
       }
+
+      // ReDoS protection: Check for potentially catastrophic patterns
+      if (this.isUnsafeRegex(input.pattern)) {
+        throw AppError.badRequest(
+          'Pattern contains potentially catastrophic backtracking. Avoid nested quantifiers like (a+)+ or (.*)+',
+          'UNSAFE_PATTERN'
+        );
+      }
     }
 
     // Validate terminology rule has required fields
@@ -410,6 +459,14 @@ export class HouseStyleEngineService {
           'INVALID_PATTERN'
         );
       }
+
+      // ReDoS protection
+      if (this.isUnsafeRegex(input.pattern)) {
+        throw AppError.badRequest(
+          'Pattern contains potentially catastrophic backtracking. Avoid nested quantifiers like (a+)+ or (.*)+',
+          'UNSAFE_PATTERN'
+        );
+      }
     }
 
     // Validate terminology rule has required fields
@@ -474,6 +531,14 @@ export class HouseStyleEngineService {
         throw AppError.badRequest(
           `Invalid regex pattern: ${error instanceof Error ? error.message : 'Unknown error'}`,
           'INVALID_PATTERN'
+        );
+      }
+
+      // ReDoS protection
+      if (this.isUnsafeRegex(input.pattern)) {
+        throw AppError.badRequest(
+          'Pattern contains potentially catastrophic backtracking. Avoid nested quantifiers like (a+)+ or (.*)+',
+          'UNSAFE_PATTERN'
         );
       }
     }
@@ -677,6 +742,17 @@ export class HouseStyleEngineService {
     let patternValid = true;
     let error: string | undefined;
 
+    // ReDoS protection: Limit input size
+    const MAX_INPUT_SIZE = 100000; // 100KB
+    if (sampleText.length > MAX_INPUT_SIZE) {
+      return {
+        matches: [],
+        executionTimeMs: Date.now() - startTime,
+        patternValid: false,
+        error: `Input text too large (${sampleText.length} chars). Maximum allowed: ${MAX_INPUT_SIZE} chars`,
+      };
+    }
+
     try {
       if (rule.ruleType === 'PATTERN' && rule.pattern) {
         // Test regex pattern
@@ -719,7 +795,7 @@ export class HouseStyleEngineService {
         // Test capitalization rules with avoidTerms
         for (const term of rule.avoidTerms || []) {
           // Check for incorrect capitalization
-          const regex = new RegExp(`\\b${term}\\b`, 'g');
+          const regex = new RegExp(`\\b${this.escapeRegex(term)}\\b`, 'g');
           let match;
 
           while ((match = regex.exec(sampleText)) !== null) {
@@ -768,19 +844,12 @@ export class HouseStyleEngineService {
     };
   }
 
-  executeHouseRules(rules: HouseStyleRule[], text: string): RuleMatch[] {
-    const allMatches: RuleMatch[] = [];
-
-    for (const rule of rules) {
-      if (!rule.isActive) continue;
-
-      const result = this.testRule(rule, text);
-      // Note: testRule returns a Promise, but we need sync execution
-      // For actual execution, use executeHouseRulesAsync
-      void result; // Suppress unused warning
-    }
-
-    return allMatches;
+  /**
+   * @deprecated Use executeHouseRulesAsync instead. This method does not work correctly
+   * because testRule is async and cannot be called synchronously.
+   */
+  executeHouseRules(_rules: HouseStyleRule[], _text: string): RuleMatch[] {
+    throw new Error('executeHouseRules is deprecated. Use executeHouseRulesAsync instead.');
   }
 
   async executeHouseRulesAsync(
@@ -801,6 +870,19 @@ export class HouseStyleEngineService {
 
   private escapeRegex(string: string): string {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Check if a regex pattern is potentially unsafe (ReDoS vulnerable)
+   * Detects patterns with nested quantifiers that can cause catastrophic backtracking
+   */
+  private isUnsafeRegex(pattern: string): boolean {
+    // Detect nested quantifiers like (a+)+, (.*)+, (a*)+, etc.
+    const nestedQuantifierPattern = /\([^)]*[+*][^)]*\)[+*]/;
+    // Detect overlapping alternation with quantifiers like (a|aa)+
+    const overlappingAlternationPattern = /\([^)]*\|[^)]*\)[+*]/;
+
+    return nestedQuantifierPattern.test(pattern) || overlappingAlternationPattern.test(pattern);
   }
 }
 

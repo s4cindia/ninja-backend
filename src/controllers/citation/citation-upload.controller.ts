@@ -1824,7 +1824,16 @@ export class CitationUploadController {
       );
       const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
 
-      const where = { tenantId };
+      // Filter to only return documents uploaded for citation analysis
+      // Citation uploads have job type CITATION_DETECTION
+      const where = {
+        tenantId,
+        job: {
+          is: {
+            type: 'CITATION_DETECTION' as const,
+          },
+        },
+      };
 
       const [total, documents] = await Promise.all([
         prisma.editorialDocument.count({ where }),

@@ -59,7 +59,7 @@ export const createChangeSchema = z.object({
   beforeText: z.string().optional(),
   afterText: z.string().optional(),
   reason: z.string().optional(),
-  sourceType: z.enum(['auto', 'manual', 'ai_suggestion', 'onlyoffice']).optional(),
+  sourceType: z.enum(['auto', 'manual', 'ai_suggestion']).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).refine((data) => data.endOffset >= data.startOffset, {
   message: 'endOffset must be greater than or equal to startOffset',

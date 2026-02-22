@@ -10,6 +10,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../../lib/logger';
 import { styleValidation, type ViolationFilters } from '../../services/style/style-validation.service';
 import { styleRulesRegistry } from '../../services/style/style-rules-registry.service';
 import { getStyleQueue, JOB_TYPES } from '../../queues';
@@ -39,11 +40,12 @@ export class StyleController {
         });
       }
 
-      // Queue the validation job
-      // TODO: Fix BullMQ worker issue - force sync mode for now
+      // Queue the validation job (uses sync mode if Redis/BullMQ is not available)
       const styleQueue = getStyleQueue();
-      const forceSyncMode = true; // Temporary fix
-      if (!styleQueue || forceSyncMode) {
+      const useSyncMode = !styleQueue;
+
+      if (useSyncMode) {
+        logger.info('[Style Controller] Using sync mode (Redis not configured)');
         // If no queue, run synchronously
         const job = await styleValidation.startValidation(tenantId, userId, {
           documentId: body.documentId,
@@ -59,8 +61,14 @@ export class StyleController {
         };
 
         // Execute immediately in background with progress tracking
-        styleValidation.executeValidation(job.id, onProgress).catch((error) => {
-          console.error('[Style Controller] Validation failed:', error);
+        styleValidation.executeValidation(job.id, onProgress).catch(async (error) => {
+          logger.error('[Style Controller] Validation failed:', error);
+          // Update job status to failed
+          try {
+            await styleValidation.updateJobProgress(job.id, -1, `Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          } catch {
+            // Ignore progress update errors
+          }
         });
 
         return res.status(202).json({

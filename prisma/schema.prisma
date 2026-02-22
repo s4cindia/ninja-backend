@@ -1191,6 +1191,7 @@ model StyleViolation {
   suggestedText String?
 
   status        ViolationStatus @default(PENDING)
+  source        ViolationSource @default(BUILT_IN)  // Where the violation was detected from
   appliedFix    String?         // The actual fix text that was applied
   fixedAt       DateTime?
   fixedBy       String?
@@ -1201,6 +1202,7 @@ model StyleViolation {
   createdAt DateTime @default(now())
 
   @@index([documentId])
+  @@index([source])
   @@index([jobId])
   @@index([styleGuide])
   @@index([category])
@@ -1246,6 +1248,12 @@ enum ViolationStatus {
   IGNORED
   WONT_FIX
   AUTO_FIXED
+}
+
+enum ViolationSource {
+  AI        // Detected by AI validation
+  BUILT_IN  // Detected by built-in style rules
+  HOUSE     // Detected by custom house rules
 }
 
 // Custom Rule Set - A named collection of rules

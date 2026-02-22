@@ -124,7 +124,13 @@ export class StyleValidationService {
         if (fileBuffer) {
           // Determine file extension from original name or storage path
           const originalName = document.originalName || document.storagePath;
-          const ext = originalName.toLowerCase().endsWith('.pdf') ? '.pdf' : '.docx';
+          const lowerName = originalName.toLowerCase();
+          let ext = '.docx'; // default
+          if (lowerName.endsWith('.pdf')) ext = '.pdf';
+          else if (lowerName.endsWith('.doc')) ext = '.doc';
+          else if (lowerName.endsWith('.docx')) ext = '.docx';
+          else if (lowerName.endsWith('.txt')) ext = '.txt';
+          else if (lowerName.endsWith('.rtf')) ext = '.rtf';
           const tempPath = path.join(os.tmpdir(), `style-extract-${input.documentId}${ext}`);
           fs.writeFileSync(tempPath, fileBuffer);
 
@@ -251,7 +257,8 @@ export class StyleValidationService {
         job.ruleSetIds,
         { fullText: text, documentTitle: document.title ?? undefined }
       );
-      allMatches.push(...builtInMatches);
+      // Add source to built-in matches
+      allMatches.push(...builtInMatches.map(m => ({ ...m, source: 'BUILT_IN' as const })));
 
       await onProgress?.(30, `Found ${builtInMatches.length} rule-based matches`);
 
@@ -279,7 +286,8 @@ export class StyleValidationService {
           houseRules,
           text
         );
-        allMatches.push(...houseMatches);
+        // Add source to house rule matches
+        allMatches.push(...houseMatches.map(m => ({ ...m, source: 'HOUSE' as const })));
 
         await onProgress?.(50, `Found ${houseMatches.length} house rule matches`);
       }
@@ -329,6 +337,7 @@ export class StyleValidationService {
             ruleReference: v.ruleReference,
             description: v.explanation || `${v.ruleReference}: ${v.originalText} → ${v.suggestedFix}`,
             explanation: v.explanation,
+            source: 'AI',
           });
         }
 
@@ -363,6 +372,7 @@ export class StyleValidationService {
             originalText: match.matchedText,
             suggestedText: match.suggestedFix || null,
             status: 'PENDING',
+            source: match.source || 'BUILT_IN',
           },
         });
         totalViolations++;
@@ -540,6 +550,14 @@ export class StyleValidationService {
 
     if (!violation) {
       throw AppError.notFound('Violation not found', 'VIOLATION_NOT_FOUND');
+    }
+
+    // Check if already resolved for consistency with other methods
+    if (violation.status !== 'PENDING') {
+      throw AppError.badRequest(
+        `Violation is already ${violation.status.toLowerCase()}`,
+        'ALREADY_RESOLVED'
+      );
     }
 
     const updated = await prisma.styleViolation.update({

@@ -179,7 +179,11 @@ export class StyleGuideUploadController {
       // Validate file type
       if (!['.pdf', '.docx', '.doc'].includes(ext)) {
         // Clean up uploaded file
-        fs.unlinkSync(file.path);
+        try {
+          await fs.promises.unlink(file.path);
+        } catch {
+          // Ignore cleanup errors
+        }
         return res.status(400).json({
           success: false,
           error: { code: 'INVALID_FILE_TYPE', message: 'Only PDF and Word documents are supported' },
@@ -188,15 +192,22 @@ export class StyleGuideUploadController {
 
       const fileType = ext === '.pdf' ? 'pdf' : 'docx';
 
-      // Extract rules from document
-      const extractionResult = await styleGuideExtractor.extractFromDocument(
-        file.path,
-        file.originalname,
-        fileType
-      );
-
-      // Clean up uploaded file
-      fs.unlinkSync(file.path);
+      let extractionResult;
+      try {
+        // Extract rules from document
+        extractionResult = await styleGuideExtractor.extractFromDocument(
+          file.path,
+          file.originalname,
+          fileType
+        );
+      } finally {
+        // Always clean up uploaded file
+        try {
+          await fs.promises.unlink(file.path);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
 
       if (!extractionResult.success) {
         return res.status(422).json({

@@ -58,6 +58,9 @@ export const ruleSetIdEnum = z.enum([
   'academic',
   'chicago',
   'apa',
+  'mla',
+  'ap',
+  'vancouver',
   'nature',
   'ieee',
 ]);
@@ -106,7 +109,7 @@ export const startValidationSchema = {
       .transform((val) => (val && val.length > 0 ? val : ['general'])),
     styleGuide: styleGuideTypeEnum.optional(),
     includeHouseRules: z.boolean().default(true),
-    useAiValidation: z.boolean().default(true),
+    useAiValidation: z.boolean().default(false), // Default to false to avoid unexpected AI costs
   }),
 };
 
@@ -317,6 +320,44 @@ export const testRuleSchema = {
 };
 
 // ============================================
+// BODY SCHEMAS - RULE SETS
+// ============================================
+
+/**
+ * Create rule set request body
+ */
+export const createRuleSetSchema = {
+  body: z.object({
+    name: z
+      .string()
+      .min(1, 'Name is required')
+      .max(200, 'Name too long'),
+    description: z.string().max(1000).optional(),
+    baseStyleGuide: styleGuideTypeEnum.optional(),
+    isDefault: z.boolean().default(false),
+  }),
+};
+
+/**
+ * Update rule set request body
+ */
+export const updateRuleSetSchema = {
+  params: z.object({
+    ruleSetId: z.string().uuid('Invalid rule set ID format'),
+  }),
+  body: z.object({
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(1000).optional().nullable(),
+    baseStyleGuide: styleGuideTypeEnum.optional().nullable(),
+    isActive: z.boolean().optional(),
+    isDefault: z.boolean().optional(),
+  }).refine(
+    (data) => Object.values(data).some((v) => v !== undefined),
+    { message: 'At least one field must be provided for update' }
+  ),
+};
+
+// ============================================
 // TYPE EXPORTS
 // ============================================
 
@@ -336,3 +377,6 @@ export type CreateHouseRuleBody = z.infer<typeof createHouseRuleSchema.body>;
 export type UpdateHouseRuleBody = z.infer<typeof updateHouseRuleSchema.body>;
 export type ImportRulesBody = z.infer<typeof importRulesSchema.body>;
 export type TestRuleBody = z.infer<typeof testRuleSchema.body>;
+
+export type CreateRuleSetBody = z.infer<typeof createRuleSetSchema.body>;
+export type UpdateRuleSetBody = z.infer<typeof updateRuleSetSchema.body>;

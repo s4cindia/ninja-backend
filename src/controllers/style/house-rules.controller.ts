@@ -64,7 +64,7 @@ export class HouseRulesController {
   async listRuleSets(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
       const tenantId = req.user?.tenantId;
-      const query = req.query as { includeRules?: string; activeOnly?: string; customOnly?: string };
+      const query = req.query as { includeRules?: string; activeOnly?: string; customOnly?: string; page?: string; pageSize?: string };
 
       if (!tenantId) {
         return res.status(401).json({
@@ -83,27 +83,37 @@ export class HouseRulesController {
         isBuiltIn: true,
       }));
 
-      // Get custom rule sets from database
-      const customRuleSets = await houseStyleEngine.getRuleSets(tenantId, {
+      // Get pagination params
+      const page = parseInt(query.page as string) || 1;
+      const pageSize = parseInt(query.pageSize as string) || 50;
+
+      // Get custom rule sets from database with pagination
+      const customResult = await houseStyleEngine.getRuleSets(tenantId, {
         includeRules: query.includeRules === 'true',
         activeOnly: query.activeOnly === 'true',
+        page,
+        pageSize,
       });
 
       // Add isBuiltIn: false and ruleCount to custom rule sets
-      const formattedCustomRuleSets = customRuleSets.map((rs) => ({
+      const formattedCustomRuleSets = customResult.ruleSets.map((rs) => ({
         ...rs,
         ruleCount: rs._count?.rules || 0,
         isBuiltIn: false,
       }));
 
-      // Combine both lists
-      const allRuleSets = [...builtInRuleSets, ...formattedCustomRuleSets];
+      // Combine both lists (built-in only on first page)
+      const allRuleSets = page === 1
+        ? [...builtInRuleSets, ...formattedCustomRuleSets]
+        : formattedCustomRuleSets;
 
       return res.status(200).json({
         success: true,
         data: {
           ruleSets: allRuleSets,
-          total: allRuleSets.length,
+          total: builtInRuleSets.length + customResult.total,
+          page: customResult.page,
+          pageSize: customResult.pageSize,
         },
       });
     } catch (error) {
@@ -539,6 +549,15 @@ export class HouseRulesController {
    */
   async testRule(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+      }
+
       const body = req.body as TestRuleBody;
 
       const result = await houseStyleEngine.testRule(

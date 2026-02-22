@@ -23,11 +23,21 @@ import {
   getHouseRulesQuerySchema,
   importRulesSchema,
   testRuleSchema,
+  createRuleSetSchema,
+  updateRuleSetSchema,
 } from '../schemas/style.schemas';
+import { rateLimiters } from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
 // Configure multer for file uploads
+const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+];
+const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.doc'];
+
 const upload = multer({
   dest: path.join(os.tmpdir(), 'style-guide-uploads'),
   limits: {
@@ -35,7 +45,10 @@ const upload = multer({
   },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (['.pdf', '.docx', '.doc'].includes(ext)) {
+    const isValidExt = ALLOWED_EXTENSIONS.includes(ext);
+    const isValidMime = ALLOWED_MIME_TYPES.includes(file.mimetype);
+
+    if (isValidExt && isValidMime) {
       cb(null, true);
     } else {
       cb(new Error('Only PDF and Word documents are allowed'));
@@ -56,6 +69,7 @@ router.use(authenticate);
  */
 router.post(
   '/validate',
+  rateLimiters.styleValidation,
   validate(startValidationSchema),
   (req, res, next) => styleController.startValidation(req, res, next)
 );
@@ -149,6 +163,7 @@ router.post(
  */
 router.post(
   '/upload-guide',
+  rateLimiters.styleGuideUpload,
   upload.single('file'),
   (req, res, next) => styleGuideUploadController.uploadStyleGuide(req, res, next)
 );
@@ -190,6 +205,7 @@ router.post(
  */
 router.post(
   '/rule-sets',
+  validate(createRuleSetSchema),
   (req, res, next) => houseRulesController.createRuleSet(req, res, next)
 );
 
@@ -217,6 +233,7 @@ router.get(
  */
 router.put(
   '/rule-sets/:ruleSetId',
+  validate(updateRuleSetSchema),
   (req, res, next) => houseRulesController.updateRuleSet(req, res, next)
 );
 

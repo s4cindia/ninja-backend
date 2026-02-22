@@ -67,6 +67,9 @@ export interface ParsedCitation {
   rawText: string;
 }
 
+/** Source of style violation detection */
+export type ViolationSource = 'ai' | 'built-in' | 'house';
+
 /** Style violation */
 export interface StyleViolation {
   rule: string;
@@ -76,6 +79,7 @@ export interface StyleViolation {
   suggestedFix: string;
   explanation?: string;  // Why this is a violation
   severity: 'error' | 'warning' | 'suggestion';
+  source?: ViolationSource;  // Where the violation was detected from
 }
 
 /** Paraphrase detection result */

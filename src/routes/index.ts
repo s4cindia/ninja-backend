@@ -28,7 +28,6 @@ import citationRoutes from "../services/citation/citation.routes";
 import citationManagementRoutes from "./citation-management.routes";
 import pdfRemediationRoutes from "./pdf-remediation.routes";
 import documentRoutes from "./document.routes";
-import editorRoutes from "./editor.routes";
 import validatorRoutes from "./validator.routes";
 import styleRoutes from "./style.routes";
 
@@ -112,7 +111,6 @@ router.use("/citation", citationRoutes);
 router.use("/citation-management", citationManagementRoutes);
 router.use("/pdf", pdfRemediationRoutes);
 router.use("/document", documentRoutes);
-router.use("/editor", editorRoutes);
 router.use("/validator", validatorRoutes);
 router.use("/style", styleRoutes);
 

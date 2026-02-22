@@ -37,6 +37,37 @@ export class EditorialAiClient {
   }
 
   /**
+   * Sanitize text to prevent prompt injection attacks
+   * Removes or escapes potentially malicious patterns
+   */
+  private sanitizeForPrompt(text: string): string {
+    // Remove control characters except newlines and tabs
+    let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+    // Escape patterns that could be used for prompt injection
+    const injectionPatterns = [
+      /\bignore\s+(all\s+)?(previous|above|prior)\s+instructions?\b/gi,
+      /\bforget\s+(all\s+)?(previous|above|prior)\s+instructions?\b/gi,
+      /\bdisregard\s+(all\s+)?(previous|above|prior)\s+instructions?\b/gi,
+      /\bnew\s+instructions?\s*:/gi,
+      /\bsystem\s*:\s*/gi,
+      /\bassistant\s*:\s*/gi,
+      /\bhuman\s*:\s*/gi,
+      /\buser\s*:\s*/gi,
+      /```\s*(system|assistant|user|human)/gi,
+    ];
+
+    for (const pattern of injectionPatterns) {
+      sanitized = sanitized.replace(pattern, '[FILTERED]');
+    }
+
+    // Limit consecutive special characters that could be used to confuse the model
+    sanitized = sanitized.replace(/[#*`]{10,}/g, (match) => match.substring(0, 5) + '...');
+
+    return sanitized;
+  }
+
+  /**
    * Generate semantic embeddings for text chunks
    * Used by: Plagiarism Detection (US-1.1)
    * @param chunks - Array of text chunks to embed
@@ -385,8 +416,11 @@ Respond with JSON only:`;
     styleGuideRules: { name: string; referencePrefix: string; rules: string },
     customRules?: string[]
   ): Promise<StyleViolation[]> {
+    // Sanitize text to prevent prompt injection
+    const sanitizedText = this.sanitizeForPrompt(text);
+
     // Add line numbers to text for reference
-    const lines = text.split('\n');
+    const lines = sanitizedText.split('\n');
     const numberedText = lines.map((line, idx) => `[Line ${lineOffset + idx}] ${line}`).join('\n');
 
     const customRulesText = customRules?.length
