@@ -240,7 +240,7 @@ ORM: Prisma
 Async Pattern: async/await (no callbacks)
 File Naming: kebab-case for files, PascalCase for classes
 Base Path: All code in src/
-AI Provider: Google Gemini (existing gemini.service.ts)
+AI Providers: Claude AI (style validation, citation) + Google Gemini (embeddings, general)
 ```
 
 ### Module Ownership (Parallel Development)
@@ -258,7 +258,7 @@ AI Provider: Google Gemini (existing gemini.service.ts)
 ### Shared Infrastructure Files (Ambai owns)
 ```
 src/services/shared/
-├── editorial-ai-client.ts   # Gemini wrapper for Editorial
+├── editorial-ai-client.ts   # Claude + Gemini wrapper for Editorial
 ├── document-parser.ts       # PDF/EPUB/DOCX/XML parser
 ├── report-generator.ts      # Validation report output
 └── index.ts                 # Central exports
@@ -268,7 +268,7 @@ src/services/shared/
 
 | Purpose | Library |
 |---------|---------|
-| AI | `@google/generative-ai` (Gemini) |
+| AI | `@google/generative-ai` (Gemini), `@anthropic-ai/sdk` (Claude) |
 | EPUB | `adm-zip`, `fast-xml-parser` |
 | PDF | `pdf-lib`, `pdfjs-dist` |
 | Validation | EPUBCheck, ACE by DAISY |

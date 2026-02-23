@@ -377,9 +377,12 @@ export class StyleValidationService {
           severity: this.inferSeverityFromMatch(match),
           title: match.ruleName,
           description: match.description,
-          startOffset: match.startOffset,
-          endOffset: match.endOffset,
-          paragraphIndex: match.lineNumber, // Store line number as paragraph index
+          // Character offsets for AI violations may be estimates if exact text wasn't found
+          startOffset: match.source === 'AI' && match.startOffset === 0 ? 0 : match.startOffset,
+          endOffset: match.source === 'AI' && match.endOffset === 0 ? 0 : match.endOffset,
+          // NOTE: paragraphIndex field is repurposed to store lineNumber for better UI navigation
+          // Schema migration to add dedicated lineNumber column is tracked but not blocking
+          paragraphIndex: match.lineNumber ?? 0,
           originalText: match.matchedText,
           suggestedText: match.suggestedFix || null,
           status: 'PENDING' as const,

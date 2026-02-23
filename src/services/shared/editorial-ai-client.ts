@@ -24,6 +24,14 @@ import type {
 const EMBEDDING_MODEL = 'text-embedding-004';
 const EMBEDDING_DIMENSIONS = 768;
 
+// Delay between chunk processing to avoid rate limiting
+const CHUNK_PROCESSING_DELAY_MS = 500;
+
+// Structural delimiters for prompt injection protection
+// These wrap user content to clearly separate it from instructions
+const USER_CONTENT_START = '<<<USER_CONTENT_START>>>';
+const USER_CONTENT_END = '<<<USER_CONTENT_END>>>';
+
 export class EditorialAiClient {
   private embeddingClient: GoogleGenerativeAI | null = null;
 
@@ -392,7 +400,7 @@ Respond with JSON only:`;
 
       // Small delay between chunks to avoid rate limiting
       if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, CHUNK_PROCESSING_DELAY_MS));
       }
     }
 
@@ -468,6 +476,8 @@ For PUNCTUATION rules: Check for missing or incorrect punctuation as described.
 For CAPITALIZATION rules: Flag text that doesn't follow the capitalization requirements.`
       : '';
 
+    // Use structural delimiters to clearly separate user content from instructions
+    // This helps prevent prompt injection attacks
     const prompt = `You are an expert editorial style checker. Thoroughly validate this document against ${styleGuideRules.name}.
 ${customRulesText}
 
@@ -475,7 +485,9 @@ GENERAL STYLE GUIDE RULES:
 ${styleGuideRules.rules}
 
 DOCUMENT TEXT (with line numbers for reference):
+${USER_CONTENT_START}
 ${numberedText}
+${USER_CONTENT_END}
 
 VALIDATION TASK:
 ${customRules?.length ? 'IMPORTANT: Check custom house rules FIRST - these are the priority rules from the publisher.' : ''}

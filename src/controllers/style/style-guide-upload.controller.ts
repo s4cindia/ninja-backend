@@ -289,12 +289,14 @@ export class StyleGuideUploadController {
         });
       }
 
-      const savedRules = [];
       const errors: Array<{ ruleName: string; error: string }> = [];
 
-      // Add each rule to the rule set with normalized values
-      for (const rule of rules) {
-        try {
+      // Convert rules to RulesExport format for batch import (avoids N+1 queries)
+      const rulesExport = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        tenantId,
+        rules: rules.map((rule: { name: string; description?: string; category: string; ruleType: string; pattern?: string; preferredTerm?: string; avoidTerms?: string[]; severity: string }) => {
           // Normalize category, ruleType, and severity to handle typos
           const normalizedCategory = normalizeCategory(rule.category);
           const normalizedRuleType = normalizeRuleType(rule.ruleType);
@@ -302,29 +304,39 @@ export class StyleGuideUploadController {
 
           logger.debug(`[Style Upload] Normalizing rule "${rule.name}": category ${rule.category} -> ${normalizedCategory}`);
 
-          const savedRule = await houseStyleEngine.createRuleInSet(tenantId, userId, ruleSet.id, {
+          return {
             name: rule.name,
             description: rule.description || `Extracted from ${sourceDocumentName || 'uploaded document'}`,
             category: normalizedCategory as 'PUNCTUATION' | 'CAPITALIZATION' | 'NUMBERS' | 'ABBREVIATIONS' | 'HYPHENATION' | 'SPELLING' | 'GRAMMAR' | 'TERMINOLOGY' | 'FORMATTING' | 'CITATIONS' | 'OTHER',
             ruleType: normalizedRuleType as 'TERMINOLOGY' | 'PATTERN' | 'CAPITALIZATION' | 'PUNCTUATION',
-            pattern: rule.pattern || undefined,
-            preferredTerm: rule.preferredTerm || undefined,
+            pattern: rule.pattern || null,
+            preferredTerm: rule.preferredTerm || null,
             avoidTerms: rule.avoidTerms || [],
             severity: normalizedSeverity as 'ERROR' | 'WARNING' | 'SUGGESTION',
             isActive: true,
-          });
-          savedRules.push(savedRule);
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-          logger.warn(`[Style Upload] Failed to save rule "${rule.name}": ${errorMsg}`);
-          errors.push({
-            ruleName: rule.name,
-            error: errorMsg,
-          });
-        }
+            baseStyleGuide: null,
+            overridesRule: null,
+          };
+        }),
+      };
+
+      // Use batch import to avoid N+1 queries
+      const importResult = await houseStyleEngine.importRulesToSet(
+        tenantId,
+        userId,
+        ruleSet.id,
+        rulesExport
+      );
+
+      // Convert import errors to expected format
+      for (const error of importResult.errors) {
+        errors.push({
+          ruleName: error.replace(/^Rule \d+: "([^"]+)".*$/, '$1'),
+          error: error,
+        });
       }
 
-      logger.info(`[Style Upload] Saved ${savedRules.length} rules to set "${finalRuleSetName}", ${errors.length} errors`);
+      logger.info(`[Style Upload] Saved ${importResult.imported} rules to set "${finalRuleSetName}", ${errors.length} errors`);
 
       return res.status(200).json({
         success: true,
@@ -334,7 +346,7 @@ export class StyleGuideUploadController {
             name: ruleSet.name,
             description: ruleSet.description,
           },
-          savedCount: savedRules.length,
+          savedCount: importResult.imported,
           errorCount: errors.length,
           errors,
         },

@@ -122,7 +122,18 @@ export function rateLimit(config: RateLimitConfig) {
   if (useRedis) {
     logger.info('[RateLimit] Using Redis-backed rate limiting');
   } else {
-    logger.warn('[RateLimit] Redis not configured, using in-memory rate limiting (not suitable for multi-instance)');
+    // CRITICAL WARNING: In-memory rate limiting doesn't work across multiple instances
+    // Each instance maintains its own counter, so rate limits may be exceeded cluster-wide
+    const isProduction = process.env.NODE_ENV === 'production';
+    if (isProduction) {
+      logger.error(
+        '[RateLimit] ⚠️ PRODUCTION WARNING: Using in-memory rate limiting! ' +
+        'Rate limits will NOT be enforced correctly in multi-instance deployments. ' +
+        'Configure REDIS_URL for proper rate limiting in production.'
+      );
+    } else {
+      logger.warn('[RateLimit] Redis not configured, using in-memory rate limiting (not suitable for multi-instance)');
+    }
   }
 
   return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {

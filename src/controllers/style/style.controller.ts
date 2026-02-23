@@ -60,7 +60,11 @@ export class StyleController {
           await styleValidation.updateJobProgress(job.id, progress, message);
         };
 
-        // Execute immediately in background with progress tracking
+        // IMPORTANT: Update job status to PROCESSING before fire-and-forget
+        // This prevents race condition where server crash leaves job in QUEUED forever
+        await styleValidation.updateJobProgress(job.id, 0, 'Starting validation');
+
+        // Execute in background with progress tracking
         styleValidation.executeValidation(job.id, onProgress).catch(async (error) => {
           logger.error('[Style Controller] Validation failed:', error);
           // Update job status to failed
@@ -75,7 +79,7 @@ export class StyleController {
           success: true,
           data: {
             jobId: job.id,
-            status: job.status,
+            status: 'PROCESSING', // Return PROCESSING since we're about to start
             message: 'Validation started',
           },
         });
@@ -373,10 +377,20 @@ export class StyleController {
    * Get available rule sets
    * GET /api/v1/style/rule-sets
    */
-  async getRuleSets(_req: Request, res: Response, next: NextFunction) {
+  async getRuleSets(req: AuthenticatedRequest, res: Response, next: NextFunction) {
     try {
+      // Require authentication to access rule sets
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+      }
+
       const ruleSets = styleRulesRegistry.getAllRuleSets();
 
+      // Only count rules with actual patterns or validators (exclude empty stubs)
       return res.status(200).json({
         success: true,
         data: {
@@ -385,7 +399,7 @@ export class StyleController {
             name: rs.name,
             description: rs.description,
             styleGuide: rs.styleGuide,
-            ruleCount: rs.rules.length,
+            ruleCount: rs.rules.filter(r => r.pattern || r.validator).length,
           })),
         },
       });
