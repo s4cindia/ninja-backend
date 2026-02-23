@@ -370,29 +370,37 @@ export class StyleValidationService {
       const uniqueMatches = this.deduplicateMatches(allMatches);
 
       // Store violations in database using batch insert for performance
-      const violationData = uniqueMatches.map(match => ({
-        documentId: job.documentId,
-        jobId: job.id,
-        styleGuide: this.getStyleGuideFromRuleSet(job.ruleSetIds),
-        ruleId: match.ruleId,
-        ruleReference: match.ruleReference || null,
-        category: this.inferCategory(match.ruleId),
-        severity: this.inferSeverityFromMatch(match),
-        title: match.ruleName,
-        description: match.description,
-        startOffset: match.startOffset,
-        endOffset: match.endOffset,
-        paragraphIndex: match.lineNumber, // Store line number as paragraph index
-        originalText: match.matchedText,
-        suggestedText: match.suggestedFix || null,
-        status: 'PENDING' as const,
-        source: (match.source || 'BUILT_IN') as 'AI' | 'BUILT_IN' | 'HOUSE',
-      }));
+      const violationData = uniqueMatches
+        .map(match => ({
+          documentId: job.documentId,
+          jobId: job.id,
+          styleGuide: this.getStyleGuideFromRuleSet(job.ruleSetIds),
+          ruleId: match.ruleId,
+          ruleReference: match.ruleReference || null,
+          category: this.inferCategory(match.ruleId),
+          severity: this.inferSeverityFromMatch(match),
+          title: match.ruleName,
+          description: match.description,
+          startOffset: match.startOffset,
+          endOffset: match.endOffset,
+          paragraphIndex: match.lineNumber, // Store line number as paragraph index
+          originalText: match.matchedText,
+          suggestedText: match.suggestedFix || null,
+          status: 'PENDING' as const,
+          source: (match.source || 'BUILT_IN') as 'AI' | 'BUILT_IN' | 'HOUSE',
+        }))
+        // Filter out violations where original and suggested text are identical
+        .filter(v => {
+          if (!v.suggestedText) return true; // Keep if no suggestion
+          const original = v.originalText?.trim() || '';
+          const suggested = v.suggestedText.trim();
+          return original !== suggested; // Only keep if they differ
+        });
 
       if (violationData.length > 0) {
         await prisma.styleViolation.createMany({ data: violationData });
       }
-      totalViolations = uniqueMatches.length;
+      totalViolations = violationData.length;
 
       // Update job status
       await prisma.styleValidationJob.update({

@@ -6,6 +6,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { geminiService } from '../ai/gemini.service';
+import { claudeService } from '../ai/claude.service';
 import { aiConfig } from '../../config/ai.config';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
@@ -379,61 +380,10 @@ Return a JSON array. Example:
 Return ONLY valid JSON array:`;
 
     try {
-      const response = await geminiService.generateText(prompt, {
-        temperature: 0.1,
-        maxOutputTokens: 8000,
-      });
+      // Use Claude AI for better JSON handling
+      logger.info(`[Editorial AI] Using Claude for style validation`);
 
-      logger.info(`[Editorial AI] Raw response length: ${response.text?.length ?? 0}`);
-
-      // Parse JSON from response (handle markdown code blocks)
-      let jsonText = response.text.trim();
-
-      // Log first 500 chars for debugging
-      logger.info(`[Editorial AI] Response preview: ${jsonText.substring(0, 500)}`);
-
-      // Remove markdown code blocks
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.slice(7);
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.slice(3);
-      }
-      if (jsonText.endsWith('```')) {
-        jsonText = jsonText.slice(0, -3);
-      }
-      jsonText = jsonText.trim();
-
-      // Find JSON array - try multiple approaches
-      let match = jsonText.match(/\[[\s\S]*\]/);
-
-      // If no match, check if response says "no violations" or similar
-      if (!match) {
-        const lowerText = jsonText.toLowerCase();
-        if (lowerText.includes('no violations') || lowerText.includes('no issues') ||
-            lowerText.includes('document complies') || lowerText.includes('no style errors')) {
-          logger.info('[Editorial AI] AI indicates no violations found');
-          return [];
-        }
-
-        // Try to find just the opening bracket
-        const bracketIndex = jsonText.indexOf('[');
-        if (bracketIndex >= 0) {
-          // Extract from first [ to last ]
-          const lastBracket = jsonText.lastIndexOf(']');
-          if (lastBracket > bracketIndex) {
-            match = [jsonText.substring(bracketIndex, lastBracket + 1)];
-            logger.info(`[Editorial AI] Found array by bracket search at ${bracketIndex}-${lastBracket}`);
-          }
-        }
-      }
-
-      if (!match) {
-        logger.warn('[Editorial AI] No JSON array found in response');
-        logger.warn(`[Editorial AI] Full response: ${jsonText.substring(0, 2000)}`);
-        return [];
-      }
-
-      let data: Array<{
+      const data = await claudeService.generateJSON<Array<{
         rule: string;
         ruleReference: string;
         originalText: string;
@@ -441,17 +391,14 @@ Return ONLY valid JSON array:`;
         explanation: string;
         severity: string;
         lineNumber: number;
-      }>;
+      }>>(prompt, {
+        model: 'sonnet', // Sonnet supports larger outputs than Haiku
+        temperature: 0.1,
+        maxTokens: 8000,
+        systemPrompt: 'You are an expert editor. Analyze documents for style violations and return results as a JSON array only. No explanations or markdown.',
+      });
 
-      try {
-        data = JSON.parse(match[0]);
-      } catch (parseErr) {
-        logger.error('[Editorial AI] JSON parse error:', parseErr);
-        logger.error('[Editorial AI] JSON text:', match[0].substring(0, 500));
-        return [];
-      }
-
-      logger.info(`[Editorial AI] Parsed ${data.length} violations from AI`);
+      logger.info(`[Editorial AI] Claude returned ${data?.length ?? 0} violations`);
 
       if (!data || data.length === 0) {
         return [];
