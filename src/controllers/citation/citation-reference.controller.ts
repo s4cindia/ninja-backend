@@ -360,6 +360,18 @@ export class CitationReferenceController {
         return;
       }
 
+      // Validate URL param resolves to the same document as the reference
+      // This prevents data inconsistency if URL param (which may be jobId) doesn't match
+      const resolvedDoc = await resolveDocumentSimple(documentId, tenantId);
+      if (!resolvedDoc || resolvedDoc.id !== referenceToDelete.documentId) {
+        logger.warn(`[CitationReference] Document mismatch: URL param resolved to ${resolvedDoc?.id}, reference belongs to ${referenceToDelete.documentId}`);
+        res.status(400).json({
+          success: false,
+          error: { code: 'DOCUMENT_MISMATCH', message: 'Document ID mismatch between URL and reference' }
+        });
+        return;
+      }
+
       const allReferences = referenceToDelete.document.referenceListEntries;
       const deletedPosition = parseInt(referenceToDelete.sortKey) || 0;
       const affectedCitationIds = referenceToDelete.citationLinks.map(link => link.citationId);
@@ -437,12 +449,12 @@ export class CitationReferenceController {
           `);
         }
 
-        // Update citations using parameterized queries within the transaction
-        // The transaction boundary provides atomicity and reduces network round trips
-        for (const u of citationUpdates) {
-          await tx.citation.update({
-            where: { id: u.id },
-            data: { rawText: u.newRawText }
+        // Update citations using batched updateMany for efficiency
+        // Group by new text value to minimize database round trips: O(k) where k = distinct text values
+        for (const [newRawText, ids] of citationsByNewText) {
+          await tx.citation.updateMany({
+            where: { id: { in: ids } },
+            data: { rawText: newRawText }
           });
         }
 
