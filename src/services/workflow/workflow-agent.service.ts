@@ -835,7 +835,6 @@ class WorkflowAgentService {
     // Build verification data matching manual workflow approach
     const verificationData = allCriteriaSummary.items.map(criterion => {
       // Check if we have validation data for this criterion
-      const hasValidationData = criteriaMap.has(criterion.criterionId);
       const validationData = criteriaMap.get(criterion.criterionId);
 
       let verificationStatus: string;

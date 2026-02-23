@@ -27,9 +27,21 @@ class WorkflowService {
       },
     });
 
-    // Auto-trigger workflow processing
+    // Auto-trigger workflow processing via queue, with fallback to direct processing
     logger.info(`[Workflow] Auto-triggering workflow ${id}`);
-    await enqueueWorkflowEvent(id, 'PREPROCESS');
+    try {
+      await enqueueWorkflowEvent(id, 'PREPROCESS');
+    } catch (queueErr) {
+      logger.warn(`[Workflow] Queue unavailable, falling back to direct processing: ${queueErr}`);
+      // Fire-and-forget direct processing so workflow record is still returned immediately
+      import('./workflow-agent.service').then(({ workflowAgentService }) => {
+        workflowAgentService.processWorkflowState(id).catch(err => {
+          logger.error(`[Workflow] Direct processing failed for ${id}:`, err);
+        });
+      }).catch(err => {
+        logger.error(`[Workflow] Failed to import workflow agent service for ${id}:`, err);
+      });
+    }
 
     return workflow;
   }
