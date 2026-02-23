@@ -480,7 +480,7 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'AI_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving AI review for batch workflow ${workflow.id}`);
-      await enqueueWorkflowEvent(workflow.id, 'AI_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      await enqueueWorkflowEvent(workflow.id, 'AI_ACCEPTED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
 
@@ -629,7 +629,7 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'REMEDIATION_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving remediation review for batch workflow ${workflow.id}`);
-      await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_APPROVED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
 
@@ -766,7 +766,7 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'CONFORMANCE_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving conformance review for batch workflow ${workflow.id}`);
-      await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_APPROVED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
 
@@ -1012,7 +1012,7 @@ class WorkflowAgentService {
           phase: 'certify',
         });
       }
-      await enqueueWorkflowEvent(workflow.id, 'ACR_DONE', { autoApproved: true, batchAutoApproval: true });
+      await enqueueWorkflowEvent(workflow.id, 'ACR_SIGNED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
 
