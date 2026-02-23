@@ -378,6 +378,17 @@ router.post(
 );
 
 /**
+ * POST /api/v1/citation-management/document/:documentId/dismiss-changes
+ * Dismiss specific changes by their IDs (mark as reverted)
+ * - Body: { changeIds: string[] }
+ */
+router.post(
+  '/document/:documentId/dismiss-changes',
+  validate(documentIdParamSchema),
+  citationManagementController.dismissChanges.bind(citationManagementController)
+);
+
+/**
  * POST /api/v1/citation-management/document/:documentId/create-links
  * Create citation-reference links for existing documents
  * - Links numeric citations to their referenced entries

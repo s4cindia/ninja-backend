@@ -417,6 +417,7 @@ export class CitationReferenceController {
         `${safeAuthorsArray(referenceToDelete.authors).join(', ') || 'Unknown'} (${referenceToDelete.year || 'n.d.'}). ${referenceToDelete.title || 'Untitled'}`;
 
       // Execute all database operations in a single transaction
+      // Increased timeout to handle many citation updates (default 5s is too short)
       await prisma.$transaction(async (tx) => {
         // Delete the reference
         await tx.referenceListEntry.delete({ where: { id: referenceId } });
@@ -436,21 +437,20 @@ export class CitationReferenceController {
           `);
         }
 
-        // Batch update citations grouped by new text value
-        // Uses updateMany for groups with same target value (more efficient than individual updates)
-        for (const [newRawText, ids] of citationsByNewText) {
-          if (ids.length === 1) {
-            await tx.citation.update({
-              where: { id: ids[0] },
-              data: { rawText: newRawText }
-            });
-          } else {
-            // Batch update multiple citations with same new text
-            await tx.citation.updateMany({
-              where: { id: { in: ids } },
-              data: { rawText: newRawText }
-            });
-          }
+        // Batch update citations using raw SQL for efficiency (same pattern as references)
+        // This is O(1) instead of O(N) individual Prisma calls that cause transaction timeout
+        if (citationUpdates.length > 0) {
+          const citationCaseStatements = citationUpdates
+            .map(u => `WHEN id = '${u.id}' THEN '${u.newRawText.replace(/'/g, "''")}'`)
+            .join(' ');
+          const citationIds = citationUpdates.map(u => `'${u.id}'`).join(',');
+
+          await tx.$executeRawUnsafe(`
+            UPDATE "Citation"
+            SET "rawText" = CASE ${citationCaseStatements} END,
+                "updatedAt" = NOW()
+            WHERE id IN (${citationIds})
+          `);
         }
 
         // Create CitationChange record for the deleted reference
@@ -464,9 +464,12 @@ export class CitationReferenceController {
           ? deletedRefText
           : `[${deletedPosition}] ${deletedRefText}`;
 
+        // Use actual document ID from reference (URL param might be jobId)
+        const actualDocumentId = referenceToDelete.documentId;
+
         await tx.citationChange.create({
           data: {
-            documentId,
+            documentId: actualDocumentId,
             citationId: null,
             changeType: 'DELETE',
             beforeText: deleteBeforeText,
@@ -527,7 +530,7 @@ export class CitationReferenceController {
           if (citation.rawText) {
             await tx.citationChange.create({
               data: {
-                documentId,
+                documentId: actualDocumentId,
                 citationId: citation.id,
                 changeType: 'DELETE',
                 beforeText: citation.rawText,
@@ -556,7 +559,7 @@ export class CitationReferenceController {
 
         if (uniqueRenumberChanges.size > 0) {
           const renumberChanges = [...uniqueRenumberChanges.entries()].map(([oldText, newText]) => ({
-            documentId,
+            documentId: actualDocumentId,
             citationId: null,
             changeType: 'RENUMBER' as const,
             beforeText: oldText,
@@ -600,7 +603,7 @@ export class CitationReferenceController {
 
           if (Object.keys(updateData).length > 0) {
             await tx.editorialDocumentContent.update({
-              where: { documentId },
+              where: { documentId: actualDocumentId },
               data: updateData
             });
 
@@ -1290,6 +1293,64 @@ export class CitationReferenceController {
   }
 
   /**
+   * POST /api/v1/citation-management/document/:documentId/dismiss-changes
+   * Dismiss specific changes by their IDs (mark as reverted without undoing the actual change)
+   */
+  async dismissChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId } = req.params;
+      const { changeIds } = req.body as { changeIds: string[] };
+      const { tenantId } = req.user!;
+
+      if (!changeIds || !Array.isArray(changeIds) || changeIds.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_INPUT', message: 'changeIds array is required' }
+        });
+        return;
+      }
+
+      logger.info(`[CitationReference] Dismissing ${changeIds.length} changes for document ${documentId}`);
+
+      const document = await resolveDocumentSimple(documentId, tenantId);
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      const resolvedDocId = document.id;
+
+      // Mark selected changes as reverted (soft delete - keeps history)
+      const result = await prisma.citationChange.updateMany({
+        where: {
+          id: { in: changeIds },
+          documentId: resolvedDocId,
+          isReverted: false
+        },
+        data: {
+          isReverted: true
+        }
+      });
+
+      logger.info(`[CitationReference] Dismissed ${result.count} changes for document ${resolvedDocId}`);
+
+      res.json({
+        success: true,
+        data: {
+          message: `Dismissed ${result.count} change(s)`,
+          dismissedCount: result.count
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * POST /api/v1/citation-management/document/:documentId/create-links
    * Create citation-reference links for existing documents that don't have them
    *
@@ -1714,15 +1775,18 @@ export class CitationReferenceController {
   }
 
   private updateCitationNumbersWithDeletion(rawText: string, oldToNewMap: Map<number, number | null>): string {
+    // When all numbers in a citation are deleted:
+    // - Single citation like [1] or (1) → remove entirely (empty string)
+    // - Multiple citation like [1,2] with only some deleted → keep remaining numbers
     let updated = rawText.replace(/\[(\d+(?:\s*[-–—,]\s*\d+)*)\]/g, (_match, nums) => {
       const newNums = this.remapNumbersWithDeletion(nums, oldToNewMap);
-      if (newNums.length === 0) return '[orphaned]';
+      if (newNums.length === 0) return ''; // Remove citation entirely
       return `[${this.formatNumberList(newNums)}]`;
     });
 
     updated = updated.replace(/\((\d+(?:\s*[-–—,]\s*\d+)*)\)/g, (_match, nums) => {
       const newNums = this.remapNumbersWithDeletion(nums, oldToNewMap);
-      if (newNums.length === 0) return '(orphaned)';
+      if (newNums.length === 0) return ''; // Remove citation entirely
       return `(${this.formatNumberList(newNums)})`;
     });
 
@@ -1849,9 +1913,10 @@ export class CitationReferenceController {
     };
 
     // Process bracket citations [N]
+    // When all numbers deleted: remove citation entirely (empty string)
     let result = text.replace(bracketPattern, (match, nums) => {
       const remapped = remapAndFormat(nums);
-      if (remapped === null) return '[orphaned]';
+      if (remapped === null) return ''; // Remove citation entirely
       const newCitation = `[${remapped}]`;
       if (newCitation !== match) {
         replacements.push({ original: match, replacement: newCitation });
@@ -1860,9 +1925,10 @@ export class CitationReferenceController {
     });
 
     // Process parenthetical citations (N)
+    // When all numbers deleted: remove citation entirely (empty string)
     result = result.replace(parenPattern, (match, nums) => {
       const remapped = remapAndFormat(nums);
-      if (remapped === null) return '(orphaned)';
+      if (remapped === null) return ''; // Remove citation entirely
       const newCitation = `(${remapped})`;
       if (newCitation !== match) {
         replacements.push({ original: match, replacement: newCitation });
