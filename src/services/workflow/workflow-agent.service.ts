@@ -472,12 +472,14 @@ class WorkflowAgentService {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting AI review (HITL gate)`);
 
     // Emit WebSocket event to notify frontend
-    websocketService.emitHITLRequired({
-      workflowId: workflow.id,
-      gate: 'AI_REVIEW',
-      itemCount: 0, // AI review items count (TODO: get actual count from workflow data)
-      deepLink: `/workflow/${workflow.id}/hitl/ai-review`,
-    });
+    if (config.features.enableWebSocket) {
+      websocketService.emitHITLRequired({
+        workflowId: workflow.id,
+        gate: 'AI_REVIEW',
+        itemCount: 0, // AI review items count (TODO: get actual count from workflow data)
+        deepLink: `/workflow/${workflow.id}/hitl/ai-review`,
+      });
+    }
   }
 
   /**
@@ -612,12 +614,14 @@ class WorkflowAgentService {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting remediation review (HITL gate)`);
 
     // Emit WebSocket event to notify frontend
-    websocketService.emitHITLRequired({
-      workflowId: workflow.id,
-      gate: 'REMEDIATION_REVIEW',
-      itemCount: 0, // TODO: get actual count from workflow data
-      deepLink: `/workflow/${workflow.id}/hitl/remediation`,
-    });
+    if (config.features.enableWebSocket) {
+      websocketService.emitHITLRequired({
+        workflowId: workflow.id,
+        gate: 'REMEDIATION_REVIEW',
+        itemCount: 0, // TODO: get actual count from workflow data
+        deepLink: `/workflow/${workflow.id}/hitl/remediation-review`,
+      });
+    }
   }
 
   /**
@@ -679,12 +683,19 @@ class WorkflowAgentService {
       );
     }
 
+    // Fetch current job output before update to avoid TOCTOU race condition
+    const currentJob = await prisma.job.findUnique({
+      where: { id: stateData.jobId },
+      select: { output: true },
+    });
+    const currentOutput = (currentJob?.output as Record<string, unknown>) ?? {};
+
     // Update job with verification results
     await prisma.job.update({
       where: { id: stateData.jobId },
       data: {
         output: {
-          ...(await prisma.job.findUnique({ where: { id: stateData.jobId } }).then(j => j?.output as Record<string, unknown>)),
+          ...currentOutput,
           verificationAudit: verificationResult,
         } as unknown as Prisma.InputJsonValue,
       },
@@ -733,12 +744,14 @@ class WorkflowAgentService {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting conformance review (HITL gate)`);
 
     // Emit WebSocket event to notify frontend
-    websocketService.emitHITLRequired({
-      workflowId: workflow.id,
-      gate: 'CONFORMANCE_REVIEW',
-      itemCount: 0, // TODO: get actual count from workflow data
-      deepLink: `/workflow/${workflow.id}/hitl/conformance`,
-    });
+    if (config.features.enableWebSocket) {
+      websocketService.emitHITLRequired({
+        workflowId: workflow.id,
+        gate: 'CONFORMANCE_REVIEW',
+        itemCount: 0, // TODO: get actual count from workflow data
+        deepLink: `/workflow/${workflow.id}/hitl/conformance-review`,
+      });
+    }
   }
 
   /**
@@ -961,12 +974,14 @@ class WorkflowAgentService {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting ACR signoff (HITL gate - manual approval)`);
 
     // Emit WebSocket event to notify frontend
-    websocketService.emitHITLRequired({
-      workflowId: workflow.id,
-      gate: 'ACR_SIGNOFF',
-      itemCount: 1, // Single ACR document to sign off
-      deepLink: `/workflow/${workflow.id}/hitl/acr-signoff`,
-    });
+    if (config.features.enableWebSocket) {
+      websocketService.emitHITLRequired({
+        workflowId: workflow.id,
+        gate: 'ACR_SIGNOFF',
+        itemCount: 1, // Single ACR document to sign off
+        deepLink: `/workflow/${workflow.id}/hitl/acr-signoff`,
+      });
+    }
   }
 }
 

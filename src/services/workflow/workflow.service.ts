@@ -132,15 +132,19 @@ class WorkflowService {
       stateDataKeys: Object.keys(mergedStateData),
     });
 
-    // Emit WebSocket state change event
+    // Emit WebSocket state change event (best-effort — never break state transition)
     if (config.features.enableWebSocket && config.features.emitAllTransitions) {
-      websocketService.emitStateChange({
-        workflowId,
-        from: fromState as import('../../types/workflow-contracts').WorkflowState,
-        to: newState as import('../../types/workflow-contracts').WorkflowState,
-        timestamp: new Date().toISOString(),
-        phase: this.computePhase(newState),
-      });
+      try {
+        websocketService.emitStateChange({
+          workflowId,
+          from: fromState as import('../../types/workflow-contracts').WorkflowState,
+          to: newState as import('../../types/workflow-contracts').WorkflowState,
+          timestamp: new Date().toISOString(),
+          phase: this.computePhase(newState),
+        });
+      } catch (err) {
+        logger.warn(`[Workflow] WebSocket emit failed for ${workflowId}`, err);
+      }
     }
 
     return updated;
