@@ -17,6 +17,7 @@ import { validatorController } from '../controllers/validator/validator.controll
 import {
   listDocumentsQuerySchema,
   getDocumentParamsSchema,
+  getVersionParamsSchema,
 } from '../schemas/validator.schemas';
 
 const router = Router();
@@ -28,13 +29,17 @@ const upload = multer({
     fileSize: 50 * 1024 * 1024, // 50MB
   },
   fileFilter: (_req, file, cb) => {
-    if (
+    const isDocx =
       file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      file.originalname.toLowerCase().endsWith('.docx')
-    ) {
+      file.originalname.toLowerCase().endsWith('.docx');
+    const isPdf =
+      file.mimetype === 'application/pdf' ||
+      file.originalname.toLowerCase().endsWith('.pdf');
+
+    if (isDocx || isPdf) {
       cb(null, true);
     } else {
-      cb(new Error('Only DOCX files are allowed'));
+      cb(new Error('Only DOCX and PDF files are supported'));
     }
   },
 });
@@ -70,6 +75,86 @@ router.get(
   '/documents/:documentId',
   validate({ params: getDocumentParamsSchema }),
   validatorController.getDocument.bind(validatorController)
+);
+
+/**
+ * GET /api/v1/validator/documents/:documentId/content
+ * Get document content as HTML for editing
+ */
+router.get(
+  '/documents/:documentId/content',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.getDocumentContent.bind(validatorController)
+);
+
+/**
+ * GET /api/v1/validator/documents/:documentId/file
+ * Get raw file (PDF or DOCX) for viewing/download
+ */
+router.get(
+  '/documents/:documentId/file',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.getDocumentFile.bind(validatorController)
+);
+
+/**
+ * PUT /api/v1/validator/documents/:documentId/content
+ * Save document content (HTML)
+ */
+router.put(
+  '/documents/:documentId/content',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.saveDocumentContent.bind(validatorController)
+);
+
+/**
+ * GET /api/v1/validator/documents/:documentId/versions
+ * Get version history for a document
+ */
+router.get(
+  '/documents/:documentId/versions',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.getDocumentVersions.bind(validatorController)
+);
+
+/**
+ * GET /api/v1/validator/documents/:documentId/versions/:versionId
+ * Get a specific version's content
+ */
+router.get(
+  '/documents/:documentId/versions/:versionId',
+  validate({ params: getVersionParamsSchema }),
+  validatorController.getDocumentVersion.bind(validatorController)
+);
+
+/**
+ * POST /api/v1/validator/documents/:documentId/versions/:versionId/restore
+ * Restore document to a specific version
+ */
+router.post(
+  '/documents/:documentId/versions/:versionId/restore',
+  validate({ params: getVersionParamsSchema }),
+  validatorController.restoreDocumentVersion.bind(validatorController)
+);
+
+/**
+ * GET /api/v1/validator/documents/:documentId/export
+ * Export document as DOCX with formatting preserved
+ */
+router.get(
+  '/documents/:documentId/export',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.exportDocument.bind(validatorController)
+);
+
+/**
+ * POST /api/v1/validator/documents/:documentId/clear-cache
+ * Clear cached HTML content to force re-conversion from original DOCX
+ */
+router.post(
+  '/documents/:documentId/clear-cache',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.clearContentCache.bind(validatorController)
 );
 
 export default router;

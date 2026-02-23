@@ -26,7 +26,7 @@ import {
 // Valid status values for validation
 const VALID_STATUS_VALUES = Object.values(DocumentChangeStatus);
 const VALID_CHANGE_TYPES = Object.values(DocumentChangeType);
-const VALID_SOURCE_TYPES = ['auto', 'manual', 'ai_suggestion', 'onlyoffice'];
+const VALID_SOURCE_TYPES = ['auto', 'manual', 'ai_suggestion'];
 
 export class TrackChangesController {
   /**

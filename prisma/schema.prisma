@@ -16,13 +16,15 @@ model Tenant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users            User[]
-  jobs             Job[]
-  products         Product[]
-  batches          Batch[]
-  editorialDocs    EditorialDocument[]
-  houseStyleRules  HouseStyleRule[]
-  editorialReports EditorialReport[]
+  users               User[]
+  jobs                Job[]
+  products            Product[]
+  batches             Batch[]
+  editorialDocs       EditorialDocument[]
+  houseRuleSets       HouseRuleSet[]
+  houseStyleRules     HouseStyleRule[]
+  editorialReports    EditorialReport[]
+  styleValidationJobs StyleValidationJob[]
 }
 
 model User {
@@ -701,6 +703,7 @@ model EditorialDocument {
   chunks               EditorialTextChunk[]
   citations            Citation[]
   styleViolations      StyleViolation[]
+  styleValidationJobs  StyleValidationJob[]      @relation("StyleValidationJobs")
   plagiarismMatches    PlagiarismMatch[]
   references           Reference[]
   editorialReports     EditorialReport[]
@@ -1143,10 +1146,36 @@ enum MatchReviewStatus {
   DISMISSED
 }
 
+model StyleValidationJob {
+  id              String    @id @default(uuid())
+  tenantId        String
+  documentId      String
+  status          JobStatus @default(QUEUED)
+  ruleSetIds      String[]  // Rule sets to apply (e.g., ["academic", "nature", "custom"])
+  progress        Int       @default(0)
+  totalRules      Int       @default(0)
+  violationsFound Int       @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  error           String?
+  createdAt       DateTime  @default(now())
+  createdBy       String
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  document   EditorialDocument @relation("StyleValidationJobs", fields: [documentId], references: [id], onDelete: Cascade)
+  violations StyleViolation[]
+
+  @@index([tenantId, documentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model StyleViolation {
   id         String            @id @default(uuid())
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  jobId      String?
+  job        StyleValidationJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
 
   styleGuide    StyleGuideType
   ruleId        String?
@@ -1166,13 +1195,19 @@ model StyleViolation {
   suggestedText String?
 
   status        ViolationStatus @default(PENDING)
+  source        ViolationSource @default(BUILT_IN)  // Where the violation was detected from
+  appliedFix    String?         // The actual fix text that was applied
   fixedAt       DateTime?
   fixedBy       String?
   ignoredReason String?
+  resolvedBy    String?
+  resolvedAt    DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([documentId])
+  @@index([source])
+  @@index([jobId])
   @@index([styleGuide])
   @@index([category])
   @@index([severity])
@@ -1184,6 +1219,10 @@ enum StyleGuideType {
   APA
   MLA
   AP
+  VANCOUVER
+  IEEE
+  NATURE
+  ELSEVIER
   CUSTOM
 }
 
@@ -1212,11 +1251,51 @@ enum ViolationStatus {
   FIXED
   IGNORED
   WONT_FIX
+  AUTO_FIXED
+}
+
+enum ViolationSource {
+  AI        // Detected by AI validation
+  BUILT_IN  // Detected by built-in style rules
+  HOUSE     // Detected by custom house rules
+}
+
+// Custom Rule Set - A named collection of rules
+model HouseRuleSet {
+  id          String  @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+
+  // Base style guide this set is based on (optional)
+  baseStyleGuide StyleGuideType?
+
+  // Source of the rules (manual, uploaded, imported)
+  source     String  @default("manual")
+  sourceFile String? // Original filename if uploaded
+
+  isActive  Boolean  @default(true)
+  isDefault Boolean  @default(false) // Default set for tenant
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rules  HouseStyleRule[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([isActive])
 }
 
 model HouseStyleRule {
   id       String @id @default(uuid())
   tenantId String
+
+  // Rule set this rule belongs to (optional for backward compatibility)
+  ruleSetId String?
+  ruleSet   HouseRuleSet? @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
 
   name        String
   description String?
@@ -1240,6 +1319,7 @@ model HouseStyleRule {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([ruleSetId])
   @@index([category])
   @@index([isActive])
 }
