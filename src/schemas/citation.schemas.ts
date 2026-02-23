@@ -281,6 +281,20 @@ export const exportDocumentSchema = {
   })
 };
 
+/**
+ * Dismiss specific changes by their IDs
+ */
+export const dismissChangesSchema = {
+  params: z.object({
+    documentId: z.string().uuid('Invalid document ID format')
+  }),
+  body: z.object({
+    changeIds: z.array(z.string().uuid('Invalid change ID format'))
+      .min(1, 'At least one change ID is required')
+      .max(100, 'Cannot dismiss more than 100 changes at once')
+  })
+};
+
 // ============================================
 // TYPE EXPORTS
 // ============================================
@@ -298,3 +312,4 @@ export type DebugStyleConversionBody = z.infer<typeof debugStyleConversionSchema
 export type AnalysisQuery = z.infer<NonNullable<typeof analysisQuerySchema.query>>;
 export type PreviewChangesQuery = z.infer<NonNullable<typeof previewChangesSchema.query>>;
 export type ValidateDoisQuery = z.infer<NonNullable<typeof validateDoisSchema.query>>;
+export type DismissChangesBody = z.infer<typeof dismissChangesSchema.body>;

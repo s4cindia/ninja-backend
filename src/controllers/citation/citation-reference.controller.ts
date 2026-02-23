@@ -437,20 +437,13 @@ export class CitationReferenceController {
           `);
         }
 
-        // Batch update citations using raw SQL for efficiency (same pattern as references)
-        // This is O(1) instead of O(N) individual Prisma calls that cause transaction timeout
-        if (citationUpdates.length > 0) {
-          const citationCaseStatements = citationUpdates
-            .map(u => `WHEN id = '${u.id}' THEN '${u.newRawText.replace(/'/g, "''")}'`)
-            .join(' ');
-          const citationIds = citationUpdates.map(u => `'${u.id}'`).join(',');
-
-          await tx.$executeRawUnsafe(`
-            UPDATE "Citation"
-            SET "rawText" = CASE ${citationCaseStatements} END,
-                "updatedAt" = NOW()
-            WHERE id IN (${citationIds})
-          `);
+        // Update citations using parameterized queries within the transaction
+        // The transaction boundary provides atomicity and reduces network round trips
+        for (const u of citationUpdates) {
+          await tx.citation.update({
+            where: { id: u.id },
+            data: { rawText: u.newRawText }
+          });
         }
 
         // Create CitationChange record for the deleted reference
@@ -1299,16 +1292,9 @@ export class CitationReferenceController {
   async dismissChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { documentId } = req.params;
+      // Validated by Zod schema: 1-100 UUIDs required
       const { changeIds } = req.body as { changeIds: string[] };
       const { tenantId } = req.user!;
-
-      if (!changeIds || !Array.isArray(changeIds) || changeIds.length === 0) {
-        res.status(400).json({
-          success: false,
-          error: { code: 'INVALID_INPUT', message: 'changeIds array is required' }
-        });
-        return;
-      }
 
       logger.info(`[CitationReference] Dismissing ${changeIds.length} changes for document ${documentId}`);
 
