@@ -4,7 +4,10 @@ import { WorkflowInstance, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { workflowConfigService } from './workflow-config.service';
 import { HitlGateConfig } from '../../types/workflow-config.types';
+import { enqueueWorkflowEvent } from '../../queues/workflow.queue';
 import { logger } from '../../lib/logger';
+import { websocketService } from './websocket.service';
+import { config } from '../../config';
 
 class WorkflowService {
   async createWorkflow(
@@ -13,7 +16,7 @@ class WorkflowService {
     batchId?: string,
   ): Promise<WorkflowInstance> {
     const id = crypto.randomUUID();
-    return prisma.workflowInstance.create({
+    const workflow = await prisma.workflowInstance.create({
       data: {
         id,
         fileId,
@@ -23,6 +26,25 @@ class WorkflowService {
         stateData: {},
       },
     });
+
+    // Auto-trigger workflow processing via queue, with fallback to direct processing
+    logger.info(`[Workflow] Auto-triggering workflow ${id}`);
+    try {
+      await enqueueWorkflowEvent(id, 'PREPROCESS');
+    } catch (queueErr) {
+      logger.warn(`[Workflow] Queue unavailable, falling back to direct processing: ${queueErr}`);
+      // Fire-and-forget async IIFE — do not await so workflow record is returned immediately
+      (async () => {
+        try {
+          const { workflowAgentService } = await import('./workflow-agent.service');
+          await workflowAgentService.processWorkflowState(id);
+        } catch (err) {
+          logger.error(`[Workflow] Direct processing failed for ${id}:`, err);
+        }
+      })();
+    }
+
+    return workflow;
   }
 
   async getWorkflow(workflowId: string): Promise<WorkflowInstance | null> {
@@ -69,6 +91,16 @@ class WorkflowService {
       throw new Error(`Invalid transition: ${event} from ${fromState}`);
     }
 
+    // Enhanced logging for state transitions
+    logger.info(`[Workflow] Transition: ${fromState} --[${event}]--> ${newState}`, {
+      workflowId,
+      fromState,
+      event,
+      toState: newState,
+      payload: payload ? Object.keys(payload) : [],
+      timestamp: new Date().toISOString(),
+    });
+
     const mergedStateData = {
       ...(instance.stateData as Record<string, unknown>),
       ...payload,
@@ -93,6 +125,28 @@ class WorkflowService {
         },
       }),
     ]);
+
+    logger.info(`[Workflow] State persisted: ${workflowId} is now in ${newState}`, {
+      workflowId,
+      currentState: updated.currentState,
+      completedAt: updated.completedAt,
+      stateDataKeys: Object.keys(mergedStateData),
+    });
+
+    // Emit WebSocket state change event (best-effort — never break state transition)
+    if (config.features.enableWebSocket && config.features.emitAllTransitions) {
+      try {
+        websocketService.emitStateChange({
+          workflowId,
+          from: fromState as import('../../types/workflow-contracts').WorkflowState,
+          to: newState as import('../../types/workflow-contracts').WorkflowState,
+          timestamp: new Date().toISOString(),
+          phase: this.computePhase(newState),
+        });
+      } catch (err) {
+        logger.warn(`[Workflow] WebSocket emit failed for ${workflowId}`, err);
+      }
+    }
 
     return updated;
   }

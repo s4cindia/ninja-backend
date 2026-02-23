@@ -12,6 +12,7 @@ import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
+import { websocketService } from './services/workflow/websocket.service';
 import { logger } from './lib/logger';
 
 const app: Express = express();
@@ -56,6 +57,15 @@ app.use(helmet({
   crossOriginResourcePolicy: false,
   crossOriginEmbedderPolicy: false,
   crossOriginOpenerPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", 'ws:', 'wss:', 'http:', 'https:'],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+    },
+  },
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -74,6 +84,11 @@ app.get('/health', (req, res) => {
     version: config.version,
     redis: redisAvailable ? 'connected' : 'not_configured',
     workers: redisAvailable ? 'enabled' : 'disabled',
+    websocket: {
+      enabled: config.features.enableWebSocket,
+      connections: config.features.enableWebSocket ? websocketService.getConnectionCount() : 0,
+      rooms: config.features.enableWebSocket ? websocketService.getRoomCount() : 0,
+    },
   });
 });
 
@@ -97,7 +112,14 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   sseService.initialize().catch(err => {
     logger.error('Failed to initialize SSE service', err as Error);
   });
-  
+
+  if (config.features.enableWebSocket) {
+    websocketService.initialize(server);
+    logger.info('✅ WebSocket service initialized');
+  } else {
+    logger.info('⚠️  WebSocket service disabled (ENABLE_WEBSOCKET=false)');
+  }
+
   startWorkers();
 });
 

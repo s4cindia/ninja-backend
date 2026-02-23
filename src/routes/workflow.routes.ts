@@ -22,6 +22,7 @@ router.get('/:id/timeline', workflowController.getTimeline.bind(workflowControll
 // HITL gates
 router.post('/:id/hitl/ai-review', workflowController.submitAIReview.bind(workflowController));
 router.post('/:id/hitl/remediation-fix', workflowController.submitRemediationFix.bind(workflowController));
+router.post('/:id/hitl/remediation-review', workflowController.submitRemediationReview.bind(workflowController));
 router.post('/:id/hitl/conformance-review', workflowController.submitConformanceReview.bind(workflowController));
 router.post('/:id/hitl/acr-signoff', workflowController.submitACRSignoff.bind(workflowController));
 

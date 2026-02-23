@@ -7,6 +7,7 @@ import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
 import { processCitationJob } from './processors/citation.processor';
+import { startWorkflowWorker } from '../queues/workflow.queue';
 import { processStyleJob } from './processors/style.processor';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
@@ -89,6 +90,20 @@ export function startWorkers(): void {
         logger.error('[BatchProcessingWorker] Worker error:', err);
       });
       workers.push(batchProcessingWorker);
+
+      // Workflow automation worker
+      const workflowWorker = startWorkflowWorker();
+      workflowWorker.on('completed', (job) => {
+        logger.info(`🔄 Workflow event ${job.id} completed`);
+      });
+      workflowWorker.on('failed', (job, err) => {
+        logger.error(`🔄 Workflow event ${job?.id} failed: ${err.message}`);
+      });
+      workflowWorker.on('error', (err) => {
+        logger.error('[WorkflowWorker] Worker error:', err);
+      });
+      workers.push(workflowWorker);
+      logger.info('✅ Workflow automation worker started');
     }
   }
 

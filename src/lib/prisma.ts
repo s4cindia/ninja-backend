@@ -44,3 +44,4 @@ process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
 export default prisma;
+export { Prisma };

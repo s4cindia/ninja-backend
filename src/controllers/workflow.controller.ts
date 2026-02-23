@@ -3,6 +3,7 @@ import {
   startWorkflowSchema,
   aiReviewDecisionSchema,
   remediationFixSchema,
+  remediationReviewSchema,
   conformanceReviewSchema,
   acrSignoffSchema,
   workflowParamsSchema,
@@ -12,7 +13,7 @@ import {
   WorkflowState,
 } from '../types/workflow-contracts';
 import type { WorkflowStatusResponse } from '../types/workflow-contracts';
-import prisma from '../lib/prisma';
+import prisma, { Prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 // TODO: workflowService lives on feature/wf-state-machine — resolves after T1 merges
@@ -22,6 +23,9 @@ import { workflowService } from '../services/workflow/workflow.service';
 // TODO: hitlOrchestratorService lives on feature/wf-hitl-gateway — resolves after T2 merges
 // @ts-ignore
 import { hitlOrchestratorService } from '../services/workflow/hitl-orchestrator.service';
+
+// Remediation service for creating remediation plans
+import { remediationService } from '../services/epub/remediation.service';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -142,9 +146,13 @@ class WorkflowController {
         loopCount: workflow.loopCount,
         createdBy: workflow.createdBy,
         batchId: workflow.batchId ?? undefined,
+        stateData: workflow.stateData as Record<string, unknown> | undefined,
       };
 
-      res.status(200).json(response);
+      res.status(200).json({
+        success: true,
+        data: response,
+      });
     } catch (err) {
       serverError(res, err, 'GET_WORKFLOW_FAILED');
     }
@@ -200,9 +208,28 @@ class WorkflowController {
       const { id } = req.params;
       const events = await prisma.workflowEvent.findMany({
         where: { workflowId: id },
-        orderBy: { timestamp: 'asc' },
+        orderBy: { timestamp: 'desc' },
       });
-      res.status(200).json({ workflowId: id, events });
+
+      logger.info(`[Timeline] Found ${events.length} events for workflow ${id}`);
+
+      // Map database fields to frontend interface
+      const mappedEvents = events.map(event => ({
+        id: event.id,
+        workflowId: event.workflowId,
+        type: event.eventType,
+        from: event.fromState || undefined,
+        to: event.toState || undefined,
+        timestamp: event.timestamp instanceof Date ? event.timestamp.toISOString() : event.timestamp,
+        metadata: event.payload as Record<string, unknown> | undefined,
+      }));
+
+      logger.info(`[Timeline] Returning ${mappedEvents.length} mapped events`);
+
+      res.status(200).json({
+        success: true,
+        data: { workflowId: id, events: mappedEvents },
+      });
     } catch (err) {
       serverError(res, err, 'GET_TIMELINE_FAILED');
     }
@@ -218,16 +245,58 @@ class WorkflowController {
         return;
       }
       const { decisions } = parsed.data;
-      const result = await hitlOrchestratorService.submitDecisions(
-        id,
-        HITLGate.AI_REVIEW,
-        decisions,
-        req.user!.id,
-        async (event: string) => {
-          await workflowService.transition(id, event);
+
+      // Get workflow
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+      });
+
+      if (!workflow) {
+        res.status(404).json({ error: 'Workflow not found' });
+        return;
+      }
+
+      // Store AI review decisions in workflow state
+      await prisma.workflowInstance.update({
+        where: { id },
+        data: {
+          stateData: {
+            ...(workflow.stateData as Record<string, unknown>),
+            aiReviewDecisions: decisions,
+            aiReviewedBy: req.user!.id,
+            aiReviewedAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonValue,
         },
-      );
-      res.status(200).json({ gateComplete: result.gateComplete });
+      });
+
+      logger.info(`[WorkflowController] AI Review completed for workflow ${id} by user ${req.user!.id}`);
+      logger.info(`[WorkflowController] Decisions: ${decisions.length} items reviewed`);
+
+      // Create remediation plan before transitioning to AUTO_REMEDIATION
+      const stateData = workflow.stateData as { jobId?: string };
+      if (stateData.jobId) {
+        logger.info(`[WorkflowController] Creating remediation plan for job ${stateData.jobId}`);
+        await remediationService.createRemediationPlan(stateData.jobId);
+        logger.info(`[WorkflowController] Remediation plan created successfully`);
+      } else {
+        logger.warn(`[WorkflowController] No jobId found in workflow state, skipping remediation plan creation`);
+      }
+
+      // Transition workflow to continue (AWAITING_AI_REVIEW -> AUTO_REMEDIATION)
+      await workflowService.transition(id, 'AI_ACCEPTED');
+
+      // Trigger workflow agent to process the new AUTO_REMEDIATION state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      // Run async without blocking response
+      workflowAgentService.processWorkflowState(id).catch(err => {
+        logger.error(`[WorkflowController] Failed to process AUTO_REMEDIATION state for ${id}`, err);
+      });
+
+      res.status(200).json({
+        success: true,
+        gateComplete: true,
+        message: 'AI Review submitted successfully',
+      });
     } catch (err) {
       serverError(res, err, 'SUBMIT_AI_REVIEW_FAILED');
     }
@@ -270,6 +339,62 @@ class WorkflowController {
     }
   }
 
+  /** POST /workflows/:id/hitl/remediation-review */
+  async submitRemediationReview(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const parsed = remediationReviewSchema.safeParse(req.body);
+      if (!parsed.success) {
+        badRequest(res, 'Invalid remediation review payload', parsed.error.flatten());
+        return;
+      }
+      const { notes } = parsed.data;
+
+      // Get workflow
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+      });
+
+      if (!workflow) {
+        res.status(404).json({ error: 'Workflow not found' });
+        return;
+      }
+
+      // Store remediation review acceptance in workflow state
+      await prisma.workflowInstance.update({
+        where: { id },
+        data: {
+          stateData: {
+            ...(workflow.stateData as Record<string, unknown>),
+            remediationReviewNotes: notes,
+            remediationReviewedBy: req.user!.id,
+            remediationReviewedAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      logger.info(`[WorkflowController] Remediation review accepted for workflow ${id} by user ${req.user!.id}`);
+
+      // Transition workflow to continue (AWAITING_REMEDIATION_REVIEW -> VERIFICATION_AUDIT)
+      await workflowService.transition(id, 'REMEDIATION_APPROVED');
+
+      // Trigger workflow agent to process the new VERIFICATION_AUDIT state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      // Run async without blocking response
+      workflowAgentService.processWorkflowState(id).catch(err => {
+        logger.error(`[WorkflowController] Failed to process VERIFICATION_AUDIT state for ${id}`, err);
+      });
+
+      res.status(200).json({
+        success: true,
+        gateComplete: true,
+        message: 'Remediation review accepted successfully',
+      });
+    } catch (err) {
+      serverError(res, err, 'SUBMIT_REMEDIATION_REVIEW_FAILED');
+    }
+  }
+
   /** POST /workflows/:id/hitl/conformance-review */
   async submitConformanceReview(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
@@ -280,21 +405,41 @@ class WorkflowController {
         return;
       }
       const { decisions } = parsed.data;
-      const result = await hitlOrchestratorService.submitDecisions(
-        id,
-        HITLGate.CONFORMANCE_REVIEW,
-        decisions.map(d => ({
-          itemId: d.criterionId,
-          decision: d.decision === 'CONFIRM' ? HITLAction.ACCEPT : HITLAction.OVERRIDE,
-          modifiedValue: d.overrideValue,
-          justification: d.justification,
-        })),
-        req.user!.id,
-        async (event: string) => {
-          await workflowService.transition(id, event);
+
+      // Get workflow
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+      });
+
+      if (!workflow) {
+        res.status(404).json({ error: 'Workflow not found' });
+        return;
+      }
+
+      // Store conformance review decisions in workflow state
+      await prisma.workflowInstance.update({
+        where: { id },
+        data: {
+          stateData: {
+            ...(workflow.stateData as Record<string, unknown>),
+            conformanceReviewDecisions: decisions,
+            conformanceReviewedBy: req.user!.id,
+            conformanceReviewedAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonValue,
         },
-      );
-      res.status(200).json({ gateComplete: result.gateComplete });
+      });
+
+      logger.info(`[WorkflowController] Conformance Review completed for workflow ${id} by user ${req.user!.id}`);
+      logger.info(`[WorkflowController] Decisions: ${decisions.length} criteria reviewed`);
+
+      // Transition workflow to continue (AWAITING_CONFORMANCE_REVIEW -> ACR_GENERATION)
+      await workflowService.transition(id, 'CONFORMANCE_APPROVED');
+
+      // Trigger workflow agent to process the new ACR_GENERATION state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      await workflowAgentService.processWorkflowState(id);
+
+      res.status(200).json({ success: true, gateComplete: true });
     } catch (err) {
       serverError(res, err, 'SUBMIT_CONFORMANCE_REVIEW_FAILED');
     }
@@ -316,21 +461,40 @@ class WorkflowController {
         return;
       }
 
-      await hitlOrchestratorService.submitDecisions(
-        id,
-        HITLGate.ACR_SIGNOFF,
-        [{
-          itemId: id, // Use workflow ID as item ID for ACR signoff
-          decision: HITLAction.ACCEPT,
-          modifiedValue: { attestation, notes },
-        }],
-        req.user!.id,
-        async (event: string) => {
-          await workflowService.transition(id, event);
-        },
-      );
+      // Get workflow
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+      });
 
-      res.status(200).json({ message: 'ACR signed off successfully' });
+      if (!workflow) {
+        res.status(404).json({ error: 'Workflow not found' });
+        return;
+      }
+
+      // Store ACR signoff in workflow state
+      await prisma.workflowInstance.update({
+        where: { id },
+        data: {
+          stateData: {
+            ...(workflow.stateData as Record<string, unknown>),
+            acrSignoffAttestation: attestation,
+            acrSignoffNotes: notes,
+            acrSignedOffBy: req.user!.id,
+            acrSignedOffAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      logger.info(`[WorkflowController] ACR Sign-Off completed for workflow ${id} by user ${req.user!.id}`);
+
+      // Transition workflow to complete (AWAITING_ACR_SIGNOFF -> COMPLETED)
+      await workflowService.transition(id, 'ACR_SIGNED');
+
+      // Trigger workflow agent to process the COMPLETED state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      await workflowAgentService.processWorkflowState(id);
+
+      res.status(200).json({ message: 'ACR signed off successfully', success: true });
     } catch (err) {
       serverError(res, err, 'SUBMIT_ACR_SIGNOFF_FAILED');
     }

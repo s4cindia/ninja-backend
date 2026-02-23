@@ -170,6 +170,11 @@ export interface RemediationFixRequest {
   };
 }
 
+/** POST /api/v1/workflows/:id/hitl/remediation-review */
+export interface RemediationReviewRequest {
+  notes?: string;
+}
+
 /** POST /api/v1/workflows/:id/hitl/conformance-review */
 export interface ConformanceReviewRequest {
   decisions: Array<{
@@ -225,6 +230,7 @@ export interface WorkflowStatusResponse {
   loopCount: number;
   createdBy: string;
   batchId?: string;
+  stateData?: Record<string, unknown>;
 }
 
 /** GET /api/v1/workflows/:id/timeline */
@@ -342,7 +348,7 @@ export const startWorkflowSchema = z.object({
 
 export const aiReviewDecisionSchema = z.object({
   decisions: z.array(z.object({
-    itemId: z.string().uuid(),
+    itemId: z.string().min(1, 'Item ID required'),
     decision: hitlActionSchema,
     modifiedValue: z.unknown().optional(),
     justification: z.string().optional(),
@@ -356,6 +362,10 @@ export const remediationFixSchema = z.object({
     after: z.unknown(),
     notes: z.string().optional(),
   }),
+});
+
+export const remediationReviewSchema = z.object({
+  notes: z.string().optional(),
 });
 
 export const conformanceReviewSchema = z.object({

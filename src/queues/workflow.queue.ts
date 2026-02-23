@@ -1,6 +1,9 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { getBullMQConnection } from './index';
 import { logger } from '../lib/logger';
+import { websocketService } from '../services/workflow/websocket.service';
+import prisma from '../lib/prisma';
+import { config } from '../config';
 
 interface WorkflowJobData {
   workflowId: string;
@@ -47,7 +50,48 @@ export function startWorkflowWorker(): Worker {
       const { workflowService } = await import('../services/workflow/workflow.service');
       await workflowService.transition(workflowId, event, payload as never);
 
+      logger.info(`[Queue Worker] State transition completed for workflow ${workflowId}`);
+
+      // Trigger workflow agent to process new state
+      const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
+      await workflowAgentService.processWorkflowState(workflowId);
+
       logger.info(`[Queue Worker] Completed ${event} for workflow ${workflowId}`);
+
+      // Emit batch progress if this workflow is part of a batch
+      if (config.features.enableWebSocket && config.features.emitBatchProgress) {
+        const workflow = await prisma.workflowInstance.findUnique({
+          where: { id: workflowId },
+          select: { batchId: true },
+        });
+
+        if (workflow?.batchId) {
+          const batchStats = await prisma.workflowInstance.groupBy({
+            by: ['currentState'],
+            where: { batchId: workflow.batchId },
+            _count: true,
+          });
+
+          const total = batchStats.reduce((sum, s) => sum + s._count, 0);
+          const completed = batchStats.find(s => s.currentState === 'COMPLETED')?._count || 0;
+          const failed = batchStats.find(s => s.currentState === 'FAILED')?._count || 0;
+
+          const currentStages: Record<string, number> = {};
+          batchStats.forEach(s => {
+            if (s.currentState !== 'COMPLETED' && s.currentState !== 'FAILED') {
+              currentStages[s.currentState] = s._count;
+            }
+          });
+
+          websocketService.emitBatchProgress({
+            batchId: workflow.batchId,
+            completed,
+            total,
+            currentStages,
+            failedCount: failed,
+          });
+        }
+      }
     },
     {
       connection: getConnection(),
