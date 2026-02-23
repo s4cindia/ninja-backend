@@ -8,6 +8,7 @@ import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
 import { processCitationJob } from './processors/citation.processor';
 import { startWorkflowWorker } from '../queues/workflow.queue';
+import { processStyleJob } from './processors/style.processor';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
 
@@ -43,6 +44,13 @@ export function startWorkers(): void {
     concurrency: 2,
   });
   if (citationWorker) workers.push(citationWorker);
+
+  const styleWorker = createWorker({
+    queueName: QUEUE_NAMES.STYLE_PROCESSING,
+    processor: processStyleJob,
+    concurrency: 2,
+  });
+  if (styleWorker) workers.push(styleWorker);
 
   if (isRedisConfigured()) {
     const connection = getBullMQConnection();

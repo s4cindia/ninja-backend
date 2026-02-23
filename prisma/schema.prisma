@@ -16,13 +16,15 @@ model Tenant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  users            User[]
-  jobs             Job[]
-  products         Product[]
-  batches          Batch[]
-  editorialDocs    EditorialDocument[]
-  houseStyleRules  HouseStyleRule[]
-  editorialReports EditorialReport[]
+  users               User[]
+  jobs                Job[]
+  products            Product[]
+  batches             Batch[]
+  editorialDocs       EditorialDocument[]
+  houseRuleSets       HouseRuleSet[]
+  houseStyleRules     HouseStyleRule[]
+  editorialReports    EditorialReport[]
+  styleValidationJobs StyleValidationJob[]
 }
 
 model User {
@@ -48,6 +50,7 @@ model User {
   batchWorkflows      BatchWorkflow[]
   hitlDecisions       HITLDecision[]
   remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
+  editorSessions      EditorSession[]
 
   @@index([tenantId])
   @@index([email])
@@ -700,6 +703,7 @@ model EditorialDocument {
   chunks               EditorialTextChunk[]
   citations            Citation[]
   styleViolations      StyleViolation[]
+  styleValidationJobs  StyleValidationJob[]      @relation("StyleValidationJobs")
   plagiarismMatches    PlagiarismMatch[]
   references           Reference[]
   editorialReports     EditorialReport[]
@@ -707,6 +711,10 @@ model EditorialDocument {
   citationChanges      CitationChange[]
   referenceListEntries ReferenceListEntry[]
   documentContent      EditorialDocumentContent?
+  documentVersions     DocumentVersion[]
+  documentChanges      DocumentChange[]
+  editorSessions       EditorSession[]
+  complianceChecks     ComplianceCheck[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -1138,10 +1146,36 @@ enum MatchReviewStatus {
   DISMISSED
 }
 
+model StyleValidationJob {
+  id              String    @id @default(uuid())
+  tenantId        String
+  documentId      String
+  status          JobStatus @default(QUEUED)
+  ruleSetIds      String[]  // Rule sets to apply (e.g., ["academic", "nature", "custom"])
+  progress        Int       @default(0)
+  totalRules      Int       @default(0)
+  violationsFound Int       @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  error           String?
+  createdAt       DateTime  @default(now())
+  createdBy       String
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  document   EditorialDocument @relation("StyleValidationJobs", fields: [documentId], references: [id], onDelete: Cascade)
+  violations StyleViolation[]
+
+  @@index([tenantId, documentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model StyleViolation {
   id         String            @id @default(uuid())
   documentId String
   document   EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  jobId      String?
+  job        StyleValidationJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
 
   styleGuide    StyleGuideType
   ruleId        String?
@@ -1161,13 +1195,19 @@ model StyleViolation {
   suggestedText String?
 
   status        ViolationStatus @default(PENDING)
+  source        ViolationSource @default(BUILT_IN)  // Where the violation was detected from
+  appliedFix    String?         // The actual fix text that was applied
   fixedAt       DateTime?
   fixedBy       String?
   ignoredReason String?
+  resolvedBy    String?
+  resolvedAt    DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([documentId])
+  @@index([source])
+  @@index([jobId])
   @@index([styleGuide])
   @@index([category])
   @@index([severity])
@@ -1179,6 +1219,10 @@ enum StyleGuideType {
   APA
   MLA
   AP
+  VANCOUVER
+  IEEE
+  NATURE
+  ELSEVIER
   CUSTOM
 }
 
@@ -1207,11 +1251,51 @@ enum ViolationStatus {
   FIXED
   IGNORED
   WONT_FIX
+  AUTO_FIXED
+}
+
+enum ViolationSource {
+  AI        // Detected by AI validation
+  BUILT_IN  // Detected by built-in style rules
+  HOUSE     // Detected by custom house rules
+}
+
+// Custom Rule Set - A named collection of rules
+model HouseRuleSet {
+  id          String  @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+
+  // Base style guide this set is based on (optional)
+  baseStyleGuide StyleGuideType?
+
+  // Source of the rules (manual, uploaded, imported)
+  source     String  @default("manual")
+  sourceFile String? // Original filename if uploaded
+
+  isActive  Boolean  @default(true)
+  isDefault Boolean  @default(false) // Default set for tenant
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rules  HouseStyleRule[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([isActive])
 }
 
 model HouseStyleRule {
   id       String @id @default(uuid())
   tenantId String
+
+  // Rule set this rule belongs to (optional for backward compatibility)
+  ruleSetId String?
+  ruleSet   HouseRuleSet? @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
 
   name        String
   description String?
@@ -1235,6 +1319,7 @@ model HouseStyleRule {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([ruleSetId])
   @@index([category])
   @@index([isActive])
 }
@@ -1382,4 +1467,148 @@ model WorkflowEvent {
   timestamp  DateTime         @default(now())
 
   @@index([workflowId, timestamp])
+}
+
+// ============================================================
+// DOCUMENT VERSION CONTROL & TRACK CHANGES (Style/Compliance Module)
+// ============================================================
+
+model DocumentVersion {
+  id           String   @id @default(uuid())
+  documentId   String
+  version      Int
+  createdAt    DateTime @default(now())
+  createdBy    String
+  changeLog    Json     // Array of field-level changes
+  snapshot     Json     // Full document state or delta
+  snapshotType String   @default("full") // "full" | "delta"
+
+  document     EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  changes      DocumentChange[]
+
+  @@unique([documentId, version])
+  @@index([documentId])
+  @@index([createdAt])
+}
+
+model DocumentChange {
+  id           String             @id @default(uuid())
+  documentId   String
+  versionId    String?
+  document     EditorialDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version      DocumentVersion?   @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  changeType   DocumentChangeType
+  status       DocumentChangeStatus @default(PENDING)
+  startOffset  Int
+  endOffset    Int
+  beforeText   String?      @db.Text
+  afterText    String?      @db.Text
+  reason       String?      // "style_fix", "citation_update", "manual", "compliance_fix"
+  sourceType   String?      // "auto", "manual", "ai_suggestion", "onlyoffice"
+  metadata     Json?        // Additional change metadata (e.g., style rule ID, compliance rule)
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  createdBy    String
+
+  @@index([documentId, status])
+  @@index([documentId, createdAt])
+  @@index([versionId])
+}
+
+enum DocumentChangeType {
+  INSERT
+  DELETE
+  FORMAT
+  REPLACE
+  STYLE_FIX
+  COMPLIANCE_FIX
+}
+
+enum DocumentChangeStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  AUTO_APPLIED
+}
+
+// ============================================================
+// JOURNAL/BOOK COMPLIANCE CHECKER
+// ============================================================
+
+model ComplianceTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String?  // null = system templates (pre-built)
+  name        String   // "Nature Submission", "IEEE Journal", "Elsevier Standard"
+  publisher   String?  // "Nature Publishing Group", "IEEE", "Elsevier"
+  type        String   // "journal", "book", "conference"
+  description String?
+  rules       Json     // Array of compliance rules
+  isActive    Boolean  @default(true)
+  isSystem    Boolean  @default(false) // true for pre-built templates
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?
+
+  checks ComplianceCheck[]
+
+  @@index([tenantId])
+  @@index([type])
+  @@index([isActive])
+  @@index([publisher])
+}
+
+model ComplianceCheck {
+  id          String    @id @default(uuid())
+  documentId  String
+  document    EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  templateId  String
+  template    ComplianceTemplate @relation(fields: [templateId], references: [id])
+  status      JobStatus @default(QUEUED)
+  results     Json?     // Detailed compliance results
+  score       Float?    // Overall compliance score (0-100)
+  passedRules Int       @default(0)
+  failedRules Int       @default(0)
+  warnings    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  createdBy   String
+
+  @@index([documentId])
+  @@index([templateId])
+  @@index([status])
+  @@index([documentId, templateId])
+}
+
+// ============================================================
+// ONLYOFFICE EDITOR SESSIONS
+// ============================================================
+
+model EditorSession {
+  id           String              @id @default(uuid())
+  documentId   String
+  userId       String
+  sessionKey   String              @unique // OnlyOffice document key
+  status       EditorSessionStatus @default(ACTIVE)
+  lastActivity DateTime            @default(now())
+  createdAt    DateTime            @default(now())
+  expiresAt    DateTime
+  metadata     Json?               // OnlyOffice session metadata
+
+  document     EditorialDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([userId])
+  @@index([status])
+}
+
+enum EditorSessionStatus {
+  ACTIVE
+  EDITING
+  SAVING
+  SAVED
+  CLOSED
+  EXPIRED
+  ERROR
 }

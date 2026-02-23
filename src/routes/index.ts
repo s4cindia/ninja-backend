@@ -29,6 +29,9 @@ import citationManagementRoutes from "./citation-management.routes";
 import pdfRemediationRoutes from "./pdf-remediation.routes";
 import hitlRoutes from "./workflow/hitl.routes";
 import workflowRoutes from "./workflow.routes";
+import documentRoutes from "./document.routes";
+import validatorRoutes from "./validator.routes";
+import styleRoutes from "./style.routes";
 
 const router = Router();
 
@@ -111,5 +114,8 @@ router.use("/citation-management", citationManagementRoutes);
 router.use("/pdf", pdfRemediationRoutes);
 router.use("/workflows", workflowRoutes);
 router.use("/workflow/hitl", hitlRoutes);
+router.use("/document", documentRoutes);
+router.use("/validator", validatorRoutes);
+router.use("/style", styleRoutes);
 
 export default router;

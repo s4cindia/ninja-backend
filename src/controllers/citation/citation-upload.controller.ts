@@ -1787,6 +1787,89 @@ export class CitationUploadController {
 
     return ranges.join(', ');
   }
+
+  /**
+   * GET /api/v1/citation-management/documents
+   * List editorial documents for the current user's tenant with pagination
+   *
+   * Query params:
+   * - limit: number (default 50, max 100)
+   * - offset: number (default 0)
+   *
+   * COORDINATION NOTE: This endpoint was added to support the Editorial Dashboard
+   * feature (PR #217 - Editorial Services Module 1). It is a read-only listing
+   * endpoint that does not modify citation data. The Editorial Dashboard uses this
+   * to display recent Citation Management documents alongside Validator documents.
+   *
+   * This is placed in the citation-upload controller to keep citation-related
+   * document listing in one place, but could be refactored to a shared editorial
+   * documents controller if cross-module listing becomes more complex.
+   */
+  async getDocuments(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+
+      const { tenantId } = req.user;
+
+      // Parse pagination params with defaults and limits
+      const limit = Math.min(
+        Math.max(1, parseInt(req.query.limit as string, 10) || 50),
+        100
+      );
+      const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
+
+      // Filter to only return documents uploaded for citation analysis
+      // Citation uploads have job type CITATION_DETECTION
+      const where = {
+        tenantId,
+        job: {
+          is: {
+            type: 'CITATION_DETECTION' as const,
+          },
+        },
+      };
+
+      const [total, documents] = await Promise.all([
+        prisma.editorialDocument.count({ where }),
+        prisma.editorialDocument.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            fileName: true,
+            originalName: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          take: limit,
+          skip: offset,
+        }),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          documents,
+          pagination: {
+            total,
+            limit,
+            offset,
+            hasMore: offset + documents.length < total,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] getDocuments failed:', error);
+      next(error);
+    }
+  }
 }
 
 export const citationUploadController = new CitationUploadController();

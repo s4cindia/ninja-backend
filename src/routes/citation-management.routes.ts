@@ -26,6 +26,7 @@ import {
   exportDocumentSchema,
   previewChangesSchema,
   validateDoisSchema,
+  dismissChangesSchema,
 } from '../schemas/citation.schemas';
 
 // Rate limiter for file uploads: 10 uploads per 15 minutes per user
@@ -194,6 +195,15 @@ router.get(
 // ============================================
 // DOCUMENT MANAGEMENT
 // ============================================
+
+/**
+ * GET /api/v1/citation-management/documents
+ * List all documents for the current user's tenant
+ */
+router.get(
+  '/documents',
+  citationManagementController.getDocuments.bind(citationManagementController)
+);
 
 /**
  * POST /api/v1/citation-management/upload
@@ -366,6 +376,17 @@ router.post(
   '/document/:documentId/reset-changes',
   validate(documentIdParamSchema),
   citationManagementController.resetChanges.bind(citationManagementController)
+);
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/dismiss-changes
+ * Dismiss specific changes by their IDs (mark as reverted)
+ * - Body: { changeIds: string[] } (1-100 UUIDs)
+ */
+router.post(
+  '/document/:documentId/dismiss-changes',
+  validate(dismissChangesSchema),
+  citationManagementController.dismissChanges.bind(citationManagementController)
 );
 
 /**
