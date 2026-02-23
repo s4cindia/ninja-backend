@@ -350,14 +350,34 @@ class ConfidenceAnalyzerService {
   }
 
   getDefaultCriteriaSummary(): ConfidenceSummary {
+    // All WCAG 2.1 Level A & AA criteria (50 total)
     const allCriteria = [
-      '1.1.1', '1.2.1', '1.2.2', '1.2.3', '1.3.1', '1.3.2', '1.3.3',
-      '1.4.1', '1.4.3', '1.4.4', '1.4.5', '1.4.6',
-      '2.1.1', '2.1.2', '2.2.1', '2.2.2', '2.3.1',
-      '2.4.1', '2.4.2', '2.4.3', '2.4.4', '2.4.5', '2.4.6', '2.4.7',
-      '3.1.1', '3.1.2', '3.2.1', '3.2.2', '3.2.3', '3.2.4',
-      '3.3.1', '3.3.2', '3.3.3', '3.3.4',
-      '4.1.1', '4.1.2', '4.1.3'
+      // 1.1 Text Alternatives (Level A)
+      '1.1.1',
+      // 1.2 Time-based Media
+      '1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.2.5', // A, A, A, AA, AA
+      // 1.3 Adaptable
+      '1.3.1', '1.3.2', '1.3.3', '1.3.4', '1.3.5', // A, A, A, AA (2.1), AA (2.1)
+      // 1.4 Distinguishable
+      '1.4.1', '1.4.2', '1.4.3', '1.4.4', '1.4.5', '1.4.10', '1.4.11', '1.4.12', '1.4.13', // A, A, AA, AA, AA, AA (2.1), AA (2.1), AA (2.1), AA (2.1)
+      // 2.1 Keyboard Accessible
+      '2.1.1', '2.1.2', '2.1.4', // A, A, A (2.1)
+      // 2.2 Enough Time
+      '2.2.1', '2.2.2', // A, A
+      // 2.3 Seizures and Physical Reactions
+      '2.3.1', // A
+      // 2.4 Navigable
+      '2.4.1', '2.4.2', '2.4.3', '2.4.4', '2.4.5', '2.4.6', '2.4.7', // A, A, A, A, AA, AA, AA
+      // 2.5 Input Modalities (WCAG 2.1)
+      '2.5.1', '2.5.2', '2.5.3', '2.5.4', // A (2.1), A (2.1), A (2.1), A (2.1)
+      // 3.1 Readable
+      '3.1.1', '3.1.2', // A, AA
+      // 3.2 Predictable
+      '3.2.1', '3.2.2', '3.2.3', '3.2.4', // A, A, AA, AA
+      // 3.3 Input Assistance
+      '3.3.1', '3.3.2', '3.3.3', '3.3.4', // A, A, AA, AA
+      // 4.1 Compatible
+      '4.1.1', '4.1.2', '4.1.3' // A, A, AA
     ];
 
     const items = allCriteria.map(criterionId => this.analyzeConfidence(criterionId));
@@ -375,20 +395,30 @@ class ConfidenceAnalyzerService {
 
   private getWcagCriterionName(criterionId: string): string {
     const criterionNames: Record<string, string> = {
+      // Level A & AA criteria (WCAG 2.1)
       '1.1.1': 'Non-text Content',
       '1.2.1': 'Audio-only and Video-only (Prerecorded)',
       '1.2.2': 'Captions (Prerecorded)',
       '1.2.3': 'Audio Description or Media Alternative (Prerecorded)',
+      '1.2.4': 'Captions (Live)',
+      '1.2.5': 'Audio Description (Prerecorded)',
       '1.3.1': 'Info and Relationships',
       '1.3.2': 'Meaningful Sequence',
       '1.3.3': 'Sensory Characteristics',
+      '1.3.4': 'Orientation', // WCAG 2.1
+      '1.3.5': 'Identify Input Purpose', // WCAG 2.1
       '1.4.1': 'Use of Color',
+      '1.4.2': 'Audio Control',
       '1.4.3': 'Contrast (Minimum)',
       '1.4.4': 'Resize Text',
       '1.4.5': 'Images of Text',
-      '1.4.6': 'Contrast (Enhanced)',
+      '1.4.10': 'Reflow', // WCAG 2.1
+      '1.4.11': 'Non-text Contrast', // WCAG 2.1
+      '1.4.12': 'Text Spacing', // WCAG 2.1
+      '1.4.13': 'Content on Hover or Focus', // WCAG 2.1
       '2.1.1': 'Keyboard',
       '2.1.2': 'No Keyboard Trap',
+      '2.1.4': 'Character Key Shortcuts', // WCAG 2.1
       '2.2.1': 'Timing Adjustable',
       '2.2.2': 'Pause, Stop, Hide',
       '2.3.1': 'Three Flashes or Below Threshold',
@@ -399,6 +429,10 @@ class ConfidenceAnalyzerService {
       '2.4.5': 'Multiple Ways',
       '2.4.6': 'Headings and Labels',
       '2.4.7': 'Focus Visible',
+      '2.5.1': 'Pointer Gestures', // WCAG 2.1
+      '2.5.2': 'Pointer Cancellation', // WCAG 2.1
+      '2.5.3': 'Label in Name', // WCAG 2.1
+      '2.5.4': 'Motion Actuation', // WCAG 2.1
       '3.1.1': 'Language of Page',
       '3.1.2': 'Language of Parts',
       '3.2.1': 'On Focus',

@@ -9,6 +9,7 @@ import {
 } from '../../types/workflow-contracts';
 import { logger } from '../../lib/logger';
 import { config } from '../../config';
+import prisma from '../../lib/prisma';
 
 class WebSocketService {
   private io: Server | null = null;
@@ -28,7 +29,7 @@ class WebSocketService {
     this.io.on('connection', socket => {
       logger.info(`[WebSocket] Client connected: ${socket.id}`);
 
-      socket.on('subscribe:workflow', (workflowId: string) => {
+      socket.on('subscribe:workflow', async (workflowId: string) => {
         // Validate UUID format
         if (!this.UUID_REGEX.test(workflowId)) {
           socket.emit('error', { message: 'Invalid workflow ID format' });
@@ -47,7 +48,40 @@ class WebSocketService {
         socket.join(`workflow:${workflowId}`);
         rooms.add(`workflow:${workflowId}`);
         this.subscriptions.set(socket.id, rooms);
-        logger.debug(`[WebSocket] Socket ${socket.id} subscribed to workflow:${workflowId} (${rooms.size}/${this.MAX_SUBSCRIPTIONS})`);
+        logger.info(`[WebSocket] Socket ${socket.id} subscribed to workflow:${workflowId} (${rooms.size}/${this.MAX_SUBSCRIPTIONS})`);
+
+        // Send current HITL status immediately if workflow is waiting at a gate
+        try {
+          const workflow = await prisma.workflowInstance.findUnique({
+            where: { id: workflowId },
+            select: { currentState: true },
+          });
+
+          if (workflow) {
+            const hitlStates: Record<string, string> = {
+              'AWAITING_AI_REVIEW': 'ai-review',
+              'AWAITING_REMEDIATION_REVIEW': 'remediation-review',
+              'AWAITING_CONFORMANCE_REVIEW': 'conformance-review',
+              'AWAITING_ACR_SIGNOFF': 'acr-signoff',
+            };
+
+            const gate = hitlStates[workflow.currentState];
+            if (gate) {
+              logger.info(`[WebSocket] Workflow ${workflowId} is at HITL gate ${gate}, emitting to new subscriber ${socket.id}`);
+
+              // Emit HITL event directly to this socket
+              socket.emit('workflow:hitl-required', {
+                workflowId,
+                gate,
+                itemCount: 0,
+                deepLink: `/workflow/${workflowId}/hitl/${gate}`,
+              } as HITLRequiredEvent);
+            }
+          }
+        } catch (error) {
+          logger.error(`[WebSocket] Failed to check workflow HITL status for ${workflowId}:`, error);
+          // Don't fail the subscription, just log the error
+        }
       });
 
       socket.on('subscribe:batch', (batchId: string) => {
@@ -69,7 +103,7 @@ class WebSocketService {
         socket.join(`batch:${batchId}`);
         rooms.add(`batch:${batchId}`);
         this.subscriptions.set(socket.id, rooms);
-        logger.debug(`[WebSocket] Socket ${socket.id} subscribed to batch:${batchId} (${rooms.size}/${this.MAX_SUBSCRIPTIONS})`);
+        logger.info(`[WebSocket] Socket ${socket.id} subscribed to batch:${batchId} (${rooms.size}/${this.MAX_SUBSCRIPTIONS})`);
       });
 
       socket.on('disconnect', () => {
@@ -80,23 +114,38 @@ class WebSocketService {
   }
 
   emitStateChange(event: WorkflowStateChangeEvent): void {
-    this.io?.to(`workflow:${event.workflowId}`).emit('workflow:state-change', event);
+    const room = `workflow:${event.workflowId}`;
+    const subscriberCount = this.getSubscriberCount(room);
+    logger.info(`[WebSocket] Emitting state-change: ${event.from} → ${event.to} (${subscriberCount} subscribers)`);
+    this.io?.to(room).emit('workflow:state-change', event);
   }
 
   emitHITLRequired(event: HITLRequiredEvent): void {
-    this.io?.to(`workflow:${event.workflowId}`).emit('workflow:hitl-required', event);
+    const room = `workflow:${event.workflowId}`;
+    const subscriberCount = this.getSubscriberCount(room);
+    logger.info(`[WebSocket] Emitting HITL required: ${event.gate} (${subscriberCount} subscribers)`);
+    this.io?.to(room).emit('workflow:hitl-required', event);
   }
 
   emitRemediationProgress(event: RemediationProgressEvent): void {
-    this.io?.to(`workflow:${event.workflowId}`).emit('workflow:remediation-progress', event);
+    const room = `workflow:${event.workflowId}`;
+    const subscriberCount = this.getSubscriberCount(room);
+    logger.info(`[WebSocket] Emitting remediation progress: ${event.autoFixed}/${event.total} (${subscriberCount} subscribers)`);
+    this.io?.to(room).emit('workflow:remediation-progress', event);
   }
 
   emitError(event: WorkflowErrorEvent): void {
-    this.io?.to(`workflow:${event.workflowId}`).emit('workflow:error', event);
+    const room = `workflow:${event.workflowId}`;
+    const subscriberCount = this.getSubscriberCount(room);
+    logger.info(`[WebSocket] Emitting error: ${event.error} (${subscriberCount} subscribers)`);
+    this.io?.to(room).emit('workflow:error', event);
   }
 
   emitBatchProgress(event: BatchProgressEvent): void {
-    this.io?.to(`batch:${event.batchId}`).emit('batch:progress', event);
+    const room = `batch:${event.batchId}`;
+    const subscriberCount = this.getSubscriberCount(room);
+    logger.info(`[WebSocket] Emitting batch progress: ${event.completed}/${event.total} (${subscriberCount} subscribers)`);
+    this.io?.to(room).emit('batch:progress', event);
   }
 
   /**

@@ -14,7 +14,6 @@ import { epubAuditService } from '../epub/epub-audit.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoRemediationService } from '../epub/auto-remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
-import { acrService } from '../acr.service';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
 
@@ -471,7 +470,14 @@ class WorkflowAgentService {
    */
   private async handleAwaitingAiReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting AI review (HITL gate)`);
-    // No automated action - HITL gate handles this
+
+    // Emit WebSocket event to notify frontend
+    websocketService.emitHITLRequired({
+      workflowId: workflow.id,
+      gate: 'AI_REVIEW',
+      itemCount: 0, // AI review items count (TODO: get actual count from workflow data)
+      deepLink: `/workflow/${workflow.id}/hitl/ai-review`,
+    });
   }
 
   /**
@@ -604,7 +610,14 @@ class WorkflowAgentService {
    */
   private async handleAwaitingRemediationReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting remediation review (HITL gate)`);
-    // No automated action - HITL gate handles this
+
+    // Emit WebSocket event to notify frontend
+    websocketService.emitHITLRequired({
+      workflowId: workflow.id,
+      gate: 'REMEDIATION_REVIEW',
+      itemCount: 0, // TODO: get actual count from workflow data
+      deepLink: `/workflow/${workflow.id}/hitl/remediation`,
+    });
   }
 
   /**
@@ -718,12 +731,19 @@ class WorkflowAgentService {
    */
   private async handleAwaitingConformanceReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting conformance review (HITL gate)`);
-    // No automated action - HITL gate handles this
+
+    // Emit WebSocket event to notify frontend
+    websocketService.emitHITLRequired({
+      workflowId: workflow.id,
+      gate: 'CONFORMANCE_REVIEW',
+      itemCount: 0, // TODO: get actual count from workflow data
+      deepLink: `/workflow/${workflow.id}/hitl/conformance`,
+    });
   }
 
   /**
    * Handle ACR_GENERATION state.
-   * Generates Accessibility Conformance Report (ACR/VPAT).
+   * Generates Accessibility Conformance Report (ACR/VPAT) using AI analysis and conformance results.
    */
   private async handleAcrGeneration(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Generating ACR for workflow ${workflow.id}`);
@@ -737,43 +757,184 @@ class WorkflowAgentService {
       throw new Error(`File ${workflow.fileId} not found`);
     }
 
-    // Get latest job associated with this workflow
-    // Jobs store fileId in their input JSON field
-    const jobs = await prisma.job.findMany({
-      where: { tenantId: file.tenantId },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
+    // Get job ID from workflow state
+    const stateData = workflow.stateData as { jobId?: string };
+    const jobId = stateData.jobId;
 
-    // Find job that references this file in its input
-    const job = jobs.find(j => {
-      const input = j.input as { fileId?: string };
-      return input.fileId === workflow.fileId;
-    });
-
-    if (!job) {
-      logger.warn(`[WorkflowAgent] No job found for file ${workflow.fileId}, skipping ACR generation`);
-      // Continue workflow without ACR
+    if (!jobId) {
+      logger.warn(`[WorkflowAgent] No job ID in workflow state, skipping ACR generation`);
       await enqueueWorkflowEvent(workflow.id, 'ACR_DONE');
       return;
     }
 
-    // Generate ACR using ACR service
     // Use International Edition which satisfies US Section 508, EU EN 301 549, and WCAG
     const edition = 'international';
     const documentTitle = file.filename;
 
-    logger.info(`[WorkflowAgent] Creating ACR analysis: edition=${edition}, documentTitle=${documentTitle}`);
+    logger.info(`[WorkflowAgent] Creating ACR with AI analysis results: edition=${edition}, jobId=${jobId}`);
 
-    const acrResult = await acrService.createAcrAnalysis(
-      workflow.createdBy,
+    // Get job with validation results to analyze confidence
+    const jobWithValidation = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: {
+        validationResults: {
+          include: {
+            issues: true
+          }
+        }
+      }
+    });
+
+    if (!jobWithValidation) {
+      throw new Error(`Job ${jobId} not found for ACR generation`);
+    }
+
+    // Import services needed for ACR generation
+    const { confidenceAnalyzerService } = await import('../acr/confidence-analyzer.service');
+
+    // Build validation results for confidence analysis (same logic as confidence.controller.ts)
+    const criteriaMap = new Map<string, { criterionId: string; wcagCriterion: string; status: string }>();
+
+    for (const result of jobWithValidation.validationResults || []) {
+      const details = result.details as Record<string, unknown> | null;
+
+      if (details && typeof details === 'object') {
+        const criteriaFromDetails = details.criteriaChecked as string[] | undefined;
+        if (criteriaFromDetails && Array.isArray(criteriaFromDetails)) {
+          for (const criterionId of criteriaFromDetails) {
+            if (!criteriaMap.has(criterionId)) {
+              criteriaMap.set(criterionId, {
+                criterionId,
+                wcagCriterion: criterionId,
+                status: result.passed ? 'pass' : 'fail'
+              });
+            }
+          }
+        }
+      }
+
+      if (result.issues && result.issues.length > 0) {
+        for (const issue of result.issues) {
+          if (issue.wcagCriteria) {
+            criteriaMap.set(issue.wcagCriteria, {
+              criterionId: issue.wcagCriteria,
+              wcagCriterion: issue.wcagCriteria,
+              status: 'fail'
+            });
+          }
+        }
+      }
+    }
+
+    // ALWAYS analyze ALL 50 WCAG 2.1 Level A & AA criteria (same as manual workflow)
+    // Get default summary which includes all criteria, then enhance with validation results
+    const allCriteriaSummary = confidenceAnalyzerService.getDefaultCriteriaSummary();
+
+    logger.info(`[WorkflowAgent] Analyzing all ${allCriteriaSummary.items.length} WCAG 2.1 criteria`);
+
+    // Build verification data matching manual workflow approach
+    const verificationData = allCriteriaSummary.items.map(criterion => {
+      // Check if we have validation data for this criterion
+      const hasValidationData = criteriaMap.has(criterion.criterionId);
+      const validationData = criteriaMap.get(criterion.criterionId);
+
+      let verificationStatus: string;
+      let confidence: number;
+      let verificationMethod: string;
+      let verificationNotes: string | undefined;
+
+      // Priority 1: Actual validation results (EPUBCheck + ACE)
+      if (validationData && validationData.status === 'pass') {
+        // Validation passed - high confidence
+        verificationStatus = 'verified_pass';
+        confidence = 95;
+        verificationMethod = 'Automated Validation';
+        verificationNotes = 'Passed automated accessibility checks';
+      } else if (validationData && validationData.status === 'fail') {
+        // Validation failed - low confidence, needs review
+        verificationStatus = 'needs_review';
+        confidence = 20;
+        verificationMethod = 'Automated Validation';
+        verificationNotes = 'Issues detected - requires manual review';
+      }
+      // Priority 2: Confidence analyzer assessment (same as manual workflow)
+      else if (criterion.confidenceLevel === 'HIGH') {
+        // High-confidence auto-verifiable criteria
+        verificationStatus = 'verified_pass';
+        confidence = criterion.confidencePercentage; // already 0-100 scale
+        verificationMethod = 'AI Analysis';
+        verificationNotes = criterion.reason || 'Automated analysis indicates compliance';
+      } else if (criterion.confidenceLevel === 'MEDIUM') {
+        // Medium-confidence criteria
+        verificationStatus = 'needs_review';
+        confidence = criterion.confidencePercentage; // already 0-100 scale
+        verificationMethod = 'AI Analysis';
+        verificationNotes = criterion.reason || 'Requires verification';
+      } else if (criterion.confidenceLevel === 'LOW') {
+        // Low-confidence criteria
+        verificationStatus = 'needs_review';
+        confidence = criterion.confidencePercentage; // already 0-100 scale
+        verificationMethod = 'AI Analysis';
+        verificationNotes = criterion.reason || 'Limited automation - manual review recommended';
+      } else {
+        // Manual review required
+        verificationStatus = 'needs_review';
+        confidence = 0;
+        verificationMethod = 'Manual Review';
+        verificationNotes = criterion.reason || 'Manual verification required';
+      }
+
+      return {
+        criterionId: criterion.criterionId,
+        verificationStatus,
+        verificationMethod,
+        verificationNotes,
+        isNotApplicable: false,
+        naReason: undefined,
+        naSuggestion: undefined,
+        confidence,
+      };
+    });
+
+    // Count by confidence levels (matching manual workflow stats)
+    const highConfidenceCount = verificationData.filter(v => v.confidence >= 90).length;
+    const mediumConfidenceCount = verificationData.filter(v => v.confidence >= 70 && v.confidence < 90).length;
+    const lowConfidenceCount = verificationData.filter(v => v.confidence < 70 && v.confidence > 0).length;
+    const manualReviewCount = verificationData.filter(v => v.confidence === 0).length;
+
+    logger.info(`[WorkflowAgent] Built verification data: ${verificationData.length} total criteria`);
+    logger.info(`[WorkflowAgent] Confidence distribution: ${highConfidenceCount} high (≥90%), ${mediumConfidenceCount} medium (70-89%), ${lowConfidenceCount} low (<70%), ${manualReviewCount} manual review (0%)`);
+
+    // Debug: Log sample of each category
+    if (highConfidenceCount > 0) {
+      const sample = verificationData.filter(v => v.confidence >= 90).slice(0, 3).map(v => `${v.criterionId}: ${v.confidence}%`).join(', ');
+      logger.info(`[WorkflowAgent] High confidence sample: ${sample}`);
+    }
+    if (mediumConfidenceCount > 0) {
+      const sample = verificationData.filter(v => v.confidence >= 70 && v.confidence < 90).slice(0, 3).map(v => `${v.criterionId}: ${v.confidence}%`).join(', ');
+      logger.info(`[WorkflowAgent] Medium confidence sample: ${sample}`);
+    }
+    if (lowConfidenceCount > 0) {
+      const sample = verificationData.filter(v => v.confidence < 70 && v.confidence > 0).slice(0, 3).map(v => `${v.criterionId}: ${v.confidence}%`).join(', ');
+      logger.info(`[WorkflowAgent] Low confidence sample: ${sample}`);
+    }
+
+    // Create ACR using verification data (same as manual workflow)
+    const { acrReportReviewService } = await import('../acr/acr-report-review.service');
+    const acrResult = await acrReportReviewService.initializeReportFromVerification(
+      jobId,
       file.tenantId,
-      job.id,
+      workflow.createdBy,
       edition,
+      verificationData,
       documentTitle
     );
 
-    logger.info(`[WorkflowAgent] ACR generated: acrJobId=${acrResult.acrJob.id}, criteria=${acrResult.criteriaCount}`);
+    if (!acrResult || !acrResult.acrJobId) {
+      throw new Error('Failed to generate ACR: initializeReportFromVerification returned invalid result');
+    }
+
+    logger.info(`[WorkflowAgent] ACR generated with verification data: acrJobId=${acrResult.acrJobId}, imported=${acrResult.imported}`);
 
     // Store ACR reference in workflow state
     await prisma.workflowInstance.update({
@@ -781,11 +942,11 @@ class WorkflowAgentService {
       data: {
         stateData: {
           ...(workflow.stateData as Record<string, unknown>),
-          acrJobId: acrResult.acrJob.id,
+          acrJobId: acrResult.acrJobId,
           acrEdition: edition,
-          acrCriteriaCount: acrResult.criteriaCount,
+          acrCriteriaCount: acrResult.totalCriteria,
           acrGeneratedAt: new Date().toISOString(),
-          jobId: job.id,
+          jobId: jobId,
         } as unknown as Prisma.InputJsonValue,
       },
     });
@@ -799,7 +960,14 @@ class WorkflowAgentService {
    */
   private async handleAwaitingAcrSignoff(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting ACR signoff (HITL gate - manual approval)`);
-    // No automated action - manual approval required
+
+    // Emit WebSocket event to notify frontend
+    websocketService.emitHITLRequired({
+      workflowId: workflow.id,
+      gate: 'ACR_SIGNOFF',
+      itemCount: 1, // Single ACR document to sign off
+      deepLink: `/workflow/${workflow.id}/hitl/acr-signoff`,
+    });
   }
 }
 
