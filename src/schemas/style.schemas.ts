@@ -381,6 +381,46 @@ export const updateRuleSetSchema = {
 };
 
 // ============================================
+// BODY SCHEMAS - STYLE GUIDE UPLOAD
+// ============================================
+
+/**
+ * Save extracted rules request body
+ */
+export const saveExtractedRulesSchema = {
+  body: z.object({
+    rules: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(200),
+          description: z.string().max(1000).optional(),
+          category: z.string(),
+          ruleType: z.string(),
+          pattern: z.string().max(500).optional(),
+          preferredTerm: z.string().max(200).optional(),
+          avoidTerms: z.array(z.string()).optional(),
+          severity: z.string().optional(),
+        })
+      )
+      .min(1, 'At least one rule is required')
+      .max(500, 'Maximum 500 rules per request'),
+    sourceDocumentName: z.string().max(255).optional(),
+    ruleSetName: z.string().min(1).max(200).optional(),
+    ruleSetDescription: z.string().max(1000).optional(),
+    baseStyleGuide: styleGuideTypeEnum.optional(),
+  }),
+};
+
+/**
+ * Import best practices request body
+ */
+export const importBestPracticesSchema = {
+  body: z.object({
+    ruleNames: z.array(z.string().max(200)).max(100).optional(),
+  }).optional(),
+};
+
+// ============================================
 // TYPE EXPORTS
 // ============================================
 
@@ -403,3 +443,6 @@ export type TestRuleBody = z.infer<typeof testRuleSchema.body>;
 
 export type CreateRuleSetBody = z.infer<typeof createRuleSetSchema.body>;
 export type UpdateRuleSetBody = z.infer<typeof updateRuleSetSchema.body>;
+
+export type SaveExtractedRulesBody = z.infer<typeof saveExtractedRulesSchema.body>;
+export type ImportBestPracticesBody = z.infer<typeof importBestPracticesSchema.body>;

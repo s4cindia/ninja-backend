@@ -5,7 +5,6 @@
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import pLimit from 'p-limit';
 import { geminiService } from '../ai/gemini.service';
 import { aiConfig } from '../../config/ai.config';
 import { logger } from '../../lib/logger';

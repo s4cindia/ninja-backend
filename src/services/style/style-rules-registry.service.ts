@@ -59,15 +59,18 @@ const ACADEMIC_RULESET: RuleSet = {
   ],
 };
 
+// Rules that are too aggressive and generate many false positives
+const NOISY_RULE_IDS = ['num-spell-out-small', 'gram-passive-voice', 'cap-sentence-start'];
+
 const GENERAL_RULESET: RuleSet = {
   id: 'general',
   name: 'General Quality',
   description: 'Basic grammar, spelling, and punctuation rules',
   rules: [
     ...PUNCTUATION_RULES,
-    ...CAPITALIZATION_RULES,
-    ...GRAMMAR_RULES,
-    ...NUMBER_RULES,
+    ...CAPITALIZATION_RULES.filter(r => !NOISY_RULE_IDS.includes(r.id)),
+    ...GRAMMAR_RULES.filter(r => !NOISY_RULE_IDS.includes(r.id)),
+    ...NUMBER_RULES.filter(r => !NOISY_RULE_IDS.includes(r.id)),
     ...ABBREVIATION_RULES,
     ...WRITING_QUALITY_RULES,
   ],

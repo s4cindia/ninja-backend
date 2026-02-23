@@ -178,7 +178,8 @@ export class QueueService {
   }
 
   async updateJobProgress(jobId: string, progress: number): Promise<void> {
-    await prisma.job.update({
+    // Use updateMany to gracefully handle non-existent jobs (e.g., StyleValidationJob uses different table)
+    await prisma.job.updateMany({
       where: { id: jobId },
       data: { progress },
     });
@@ -205,7 +206,8 @@ export class QueueService {
       updateData.error = data.error;
     }
 
-    await prisma.job.update({
+    // Use updateMany to gracefully handle non-existent jobs (e.g., StyleValidationJob uses different table)
+    await prisma.job.updateMany({
       where: { id: jobId },
       data: updateData,
     });

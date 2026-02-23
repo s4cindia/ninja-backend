@@ -28,7 +28,10 @@ import {
   jobIdParamSchema,
   documentIdParamSchema,
   ruleSetIdParamSchema,
+  ruleIdParamSchema,
   testRulesDebugSchema,
+  saveExtractedRulesSchema,
+  importBestPracticesSchema,
 } from '../schemas/style.schemas';
 import { rateLimiters } from '../middleware/rate-limit.middleware';
 
@@ -182,6 +185,7 @@ router.post(
  */
 router.post(
   '/save-extracted-rules',
+  validate(saveExtractedRulesSchema),
   (req, res, next) => styleGuideUploadController.saveExtractedRules(req, res, next)
 );
 
@@ -200,6 +204,7 @@ router.get(
  */
 router.post(
   '/import-best-practices',
+  validate(importBestPracticesSchema),
   (req, res, next) => styleGuideUploadController.importBestPractices(req, res, next)
 );
 
@@ -232,6 +237,7 @@ router.get(
  */
 router.get(
   '/rule-sets/:ruleSetId',
+  validate(ruleSetIdParamSchema),
   (req, res, next) => houseRulesController.getRuleSet(req, res, next)
 );
 
@@ -251,6 +257,7 @@ router.put(
  */
 router.delete(
   '/rule-sets/:ruleSetId',
+  validate(ruleSetIdParamSchema),
   (req, res, next) => houseRulesController.deleteRuleSet(req, res, next)
 );
 
@@ -333,6 +340,7 @@ router.post(
  */
 router.get(
   '/house-rules/:ruleId',
+  validate(ruleIdParamSchema),
   (req, res, next) => houseRulesController.getRule(req, res, next)
 );
 
@@ -352,6 +360,7 @@ router.put(
  */
 router.delete(
   '/house-rules/:ruleId',
+  validate(ruleIdParamSchema),
   (req, res, next) => houseRulesController.deleteRule(req, res, next)
 );
 
