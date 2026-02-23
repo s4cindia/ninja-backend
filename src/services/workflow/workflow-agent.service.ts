@@ -281,20 +281,20 @@ class WorkflowAgentService {
 
       // Transition to FAILED state
       try {
-        await workflowService.transition(workflowId, 'ERROR', {
+        const transitioned = await workflowService.transition(workflowId, 'ERROR', {
           errorMessage: error instanceof Error ? error.message : String(error),
           errorStack: error instanceof Error ? error.stack : undefined,
           failedAt: new Date().toISOString(),
         });
 
-        // Emit WebSocket error event
+        // Emit WebSocket error event using actual post-transition state
         if (config.features.enableWebSocket) {
           websocketService.emitError({
             workflowId,
             error: error instanceof Error ? error.message : String(error),
-            state: 'FAILED',
+            state: transitioned.currentState as import('../../types/workflow-contracts').WorkflowState,
             retryable: true,
-            retryCount: 0, // Retry count not available in catch block
+            retryCount: transitioned.retryCount,
           });
         }
       } catch (transitionError) {

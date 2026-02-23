@@ -33,14 +33,15 @@ class WorkflowService {
       await enqueueWorkflowEvent(id, 'PREPROCESS');
     } catch (queueErr) {
       logger.warn(`[Workflow] Queue unavailable, falling back to direct processing: ${queueErr}`);
-      // Fire-and-forget direct processing so workflow record is still returned immediately
-      import('./workflow-agent.service').then(({ workflowAgentService }) => {
-        workflowAgentService.processWorkflowState(id).catch(err => {
+      // Fire-and-forget async IIFE — do not await so workflow record is returned immediately
+      (async () => {
+        try {
+          const { workflowAgentService } = await import('./workflow-agent.service');
+          await workflowAgentService.processWorkflowState(id);
+        } catch (err) {
           logger.error(`[Workflow] Direct processing failed for ${id}:`, err);
-        });
-      }).catch(err => {
-        logger.error(`[Workflow] Failed to import workflow agent service for ${id}:`, err);
-      });
+        }
+      })();
     }
 
     return workflow;
