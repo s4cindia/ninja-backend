@@ -1024,15 +1024,18 @@ class DOCXProcessorService {
       return { xml: documentXML, found: false, deletedText: '' };
     }
 
-    // Build deletion markup
+    // Build deletion markup - use w:del to mark entire paragraph content as deleted
+    // When user accepts changes in Word, the paragraph will be removed and list renumbers
     const pPrMatch = pContent.match(/^(<w:pPr>[\s\S]*?<\/w:pPr>)/);
     const pProps = pPrMatch ? pPrMatch[1] : '';
 
+    // Proper Track Changes structure: <w:del><w:r><w:delText>...</w:delText></w:r></w:del>
+    // Note: w:del wrapper already signals deletion - explicit w:strike is redundant and could double-style
     const delMarkup =
       `<w:del w:id="${revisionId}" w:author="${author}" w:date="${revisionDate}">` +
-      `<w:r><w:rPr><w:highlight w:val="red"/></w:rPr><w:delText>${this.escapeXml(combinedText)}</w:delText></w:r></w:del>`;
+      `<w:r><w:delText>${this.escapeXml(combinedText)}</w:delText></w:r></w:del>`;
 
-    const newParagraph = `${pStart}${pProps}<w:r>${delMarkup}</w:r>${pEnd}`;
+    const newParagraph = `${pStart}${pProps}${delMarkup}${pEnd}`;
 
     return {
       xml: documentXML.replace(fullMatch, newParagraph),

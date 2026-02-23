@@ -48,6 +48,7 @@ export const citationManagementController = {
   deleteReference: citationReferenceController.deleteReference.bind(citationReferenceController),
   editReference: citationReferenceController.editReference.bind(citationReferenceController),
   resetChanges: citationReferenceController.resetChanges.bind(citationReferenceController),
+  dismissChanges: citationReferenceController.dismissChanges.bind(citationReferenceController),
   createCitationLinks: citationReferenceController.createCitationLinks.bind(citationReferenceController),
   resequenceByAppearance: citationReferenceController.resequenceByAppearance.bind(citationReferenceController),
 

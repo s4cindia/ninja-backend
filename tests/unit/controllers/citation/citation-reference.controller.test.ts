@@ -311,3 +311,85 @@ describe('collapseToRanges', () => {
     expect(collapseToRanges([])).toBe('');
   });
 });
+
+// ============================================
+// dismissChanges Schema Validation Tests
+// ============================================
+
+import { z } from 'zod';
+
+// Recreate the schema for testing validation logic
+const dismissChangesSchema = z.object({
+  changeIds: z.array(z.string().uuid('Invalid change ID format'))
+    .min(1, 'At least one change ID is required')
+    .max(100, 'Cannot dismiss more than 100 changes at once')
+});
+
+describe('dismissChanges schema validation', () => {
+  it('should accept valid changeIds array with UUIDs', () => {
+    const validInput = {
+      changeIds: [
+        '550e8400-e29b-41d4-a716-446655440000',
+        '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
+      ]
+    };
+    const result = dismissChangesSchema.safeParse(validInput);
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject empty changeIds array', () => {
+    const invalidInput = { changeIds: [] };
+    const result = dismissChangesSchema.safeParse(invalidInput);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toBe('At least one change ID is required');
+    }
+  });
+
+  it('should reject missing changeIds', () => {
+    const invalidInput = {};
+    const result = dismissChangesSchema.safeParse(invalidInput);
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject non-UUID strings', () => {
+    const invalidInput = { changeIds: ['not-a-uuid', 'also-not-valid'] };
+    const result = dismissChangesSchema.safeParse(invalidInput);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toBe('Invalid change ID format');
+    }
+  });
+
+  it('should reject array with more than 100 items', () => {
+    const tooManyIds = Array.from({ length: 101 }, (_, i) =>
+      `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`
+    );
+    const invalidInput = { changeIds: tooManyIds };
+    const result = dismissChangesSchema.safeParse(invalidInput);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toBe('Cannot dismiss more than 100 changes at once');
+    }
+  });
+
+  it('should accept exactly 100 items', () => {
+    const maxIds = Array.from({ length: 100 }, (_, i) =>
+      `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`
+    );
+    const validInput = { changeIds: maxIds };
+    const result = dismissChangesSchema.safeParse(validInput);
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject mixed valid and invalid UUIDs', () => {
+    const invalidInput = {
+      changeIds: [
+        '550e8400-e29b-41d4-a716-446655440000',
+        'invalid-uuid'
+      ]
+    };
+    const result = dismissChangesSchema.safeParse(invalidInput);
+    expect(result.success).toBe(false);
+  });
+});
