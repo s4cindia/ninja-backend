@@ -12,7 +12,8 @@ import {
   HITLAction,
   WorkflowState,
 } from '../types/workflow-contracts';
-import type { WorkflowStatusResponse } from '../types/workflow-contracts';
+import type { WorkflowStatusResponse, BatchAutoApprovalPolicy } from '../types/workflow-contracts';
+import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import prisma, { Prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -508,8 +509,36 @@ class WorkflowController {
         badRequest(res, 'Invalid batch payload', parsed.error.flatten());
         return;
       }
-      const { name, fileIds, concurrency } = parsed.data;
+      const { name, fileIds, concurrency, autoApprovalPolicy } = parsed.data;
       const userId = req.user!.id;
+      const tenantId = req.user!.tenantId;
+
+      // Validate auto-approval policy against tenant settings
+      if (autoApprovalPolicy) {
+        const tenantConfig = await workflowConfigService.getEffectiveConfig(tenantId);
+        const allowFullyHeadless = tenantConfig.batchPolicy?.allowFullyHeadless ?? false;
+
+        if (!allowFullyHeadless) {
+          // Require at least one gate to use 'require-manual'
+          const gates = autoApprovalPolicy.gates;
+          const allAutoAccept = (
+            (gates.AI_REVIEW ?? 'require-manual') === 'auto-accept' &&
+            (gates.REMEDIATION_REVIEW ?? 'require-manual') === 'auto-accept' &&
+            (gates.CONFORMANCE_REVIEW ?? 'require-manual') === 'auto-accept' &&
+            (gates.ACR_SIGNOFF ?? 'require-manual') === 'auto-accept'
+          );
+
+          if (allAutoAccept) {
+            badRequest(
+              res,
+              'Fully headless batches (all gates auto-accept) are not permitted for this tenant. ' +
+              'At least one HITL gate must remain as require-manual, or contact your administrator to enable fully headless mode.',
+              {}
+            );
+            return;
+          }
+        }
+      }
 
       const batch = await prisma.batchWorkflow.create({
         data: {
@@ -518,6 +547,7 @@ class WorkflowController {
           concurrency,
           status: 'PENDING',
           createdBy: userId,
+          ...(autoApprovalPolicy ? { autoApprovalPolicy: autoApprovalPolicy as unknown as Prisma.InputJsonValue } : {}),
         },
       });
 
@@ -527,9 +557,143 @@ class WorkflowController {
         ),
       );
 
-      res.status(201).json({ batchId: batch.id, workflowCount: fileIds.length });
+      res.status(201).json({
+        batchId: batch.id,
+        workflowCount: fileIds.length,
+        autoApprovalPolicy: autoApprovalPolicy ?? null,
+      });
     } catch (err) {
       serverError(res, err, 'START_BATCH_FAILED');
+    }
+  }
+
+  /** POST /workflows/batch/:batchId/pause */
+  async pauseBatch(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId } = req.params;
+
+      const batch = await prisma.batchWorkflow.findUnique({
+        where: { id: batchId },
+        include: { workflows: { select: { id: true, currentState: true } } },
+      });
+
+      if (!batch) {
+        res.status(404).json({ success: false, error: { message: 'Batch not found' } });
+        return;
+      }
+
+      if (['COMPLETED', 'CANCELLED'].includes(batch.status)) {
+        badRequest(res, `Cannot pause a batch in ${batch.status} status`, {});
+        return;
+      }
+
+      const NON_TERMINAL = [
+        'UPLOAD_RECEIVED', 'PREPROCESSING', 'RUNNING_EPUBCHECK', 'RUNNING_ACE',
+        'RUNNING_AI_ANALYSIS', 'AWAITING_AI_REVIEW', 'AUTO_REMEDIATION',
+        'AWAITING_REMEDIATION_REVIEW', 'VERIFICATION_AUDIT', 'CONFORMANCE_MAPPING',
+        'AWAITING_CONFORMANCE_REVIEW', 'ACR_GENERATION', 'AWAITING_ACR_SIGNOFF', 'RETRYING',
+      ];
+
+      const pauseable = batch.workflows.filter(w => NON_TERMINAL.includes(w.currentState));
+
+      const { enqueueWorkflowEvent } = await import('../queues/workflow.queue');
+      await Promise.all(pauseable.map(w => enqueueWorkflowEvent(w.id, 'PAUSE')));
+
+      await prisma.batchWorkflow.update({
+        where: { id: batchId },
+        data: { status: 'PAUSED' },
+      });
+
+      res.status(200).json({
+        success: true,
+        pausedCount: pauseable.length,
+        message: `Paused ${pauseable.length} workflows in batch`,
+      });
+    } catch (err) {
+      serverError(res, err, 'PAUSE_BATCH_FAILED');
+    }
+  }
+
+  /** POST /workflows/batch/:batchId/resume */
+  async resumeBatch(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId } = req.params;
+
+      const batch = await prisma.batchWorkflow.findUnique({
+        where: { id: batchId },
+        include: { workflows: { select: { id: true, currentState: true } } },
+      });
+
+      if (!batch) {
+        res.status(404).json({ success: false, error: { message: 'Batch not found' } });
+        return;
+      }
+
+      if (batch.status !== 'PAUSED') {
+        badRequest(res, `Batch is not paused (current status: ${batch.status})`, {});
+        return;
+      }
+
+      const paused = batch.workflows.filter(w => w.currentState === 'PAUSED');
+
+      const { enqueueWorkflowEvent } = await import('../queues/workflow.queue');
+      await Promise.all(paused.map(w => enqueueWorkflowEvent(w.id, 'RESUME')));
+
+      await prisma.batchWorkflow.update({
+        where: { id: batchId },
+        data: { status: 'PROCESSING' },
+      });
+
+      res.status(200).json({
+        success: true,
+        resumedCount: paused.length,
+        message: `Resumed ${paused.length} workflows in batch`,
+      });
+    } catch (err) {
+      serverError(res, err, 'RESUME_BATCH_FAILED');
+    }
+  }
+
+  /** POST /workflows/batch/:batchId/retry-failed */
+  async retryFailedBatch(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId } = req.params;
+
+      const batch = await prisma.batchWorkflow.findUnique({
+        where: { id: batchId },
+        include: { workflows: { select: { id: true, currentState: true } } },
+      });
+
+      if (!batch) {
+        res.status(404).json({ success: false, error: { message: 'Batch not found' } });
+        return;
+      }
+
+      const failed = batch.workflows.filter(w => w.currentState === 'FAILED');
+
+      if (failed.length === 0) {
+        res.status(200).json({ success: true, retriedCount: 0, message: 'No failed workflows to retry' });
+        return;
+      }
+
+      const { enqueueWorkflowEvent } = await import('../queues/workflow.queue');
+      await Promise.all(failed.map(w => enqueueWorkflowEvent(w.id, 'RETRY')));
+
+      // Set batch back to processing if it was in a terminal-ish state
+      if (['PAUSED', 'COMPLETED'].includes(batch.status)) {
+        await prisma.batchWorkflow.update({
+          where: { id: batchId },
+          data: { status: 'PROCESSING' },
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        retriedCount: failed.length,
+        message: `Retrying ${failed.length} failed workflows in batch`,
+      });
+    } catch (err) {
+      serverError(res, err, 'RETRY_FAILED_BATCH_FAILED');
     }
   }
 
@@ -539,7 +703,7 @@ class WorkflowController {
       const { batchId } = req.params;
       const batch = await prisma.batchWorkflow.findUnique({
         where: { id: batchId },
-        include: { workflows: true },
+        include: { workflows: { select: { currentState: true } } },
       });
 
       if (!batch) {
@@ -584,6 +748,7 @@ class WorkflowController {
         },
         startedAt: batch.startedAt.toISOString(),
         completedAt: batch.completedAt?.toISOString(),
+        autoApprovalPolicy: (batch.autoApprovalPolicy as BatchAutoApprovalPolicy | null) ?? null,
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');

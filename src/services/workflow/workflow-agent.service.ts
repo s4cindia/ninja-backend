@@ -16,6 +16,7 @@ import { autoRemediationService } from '../epub/auto-remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
+import type { BatchAutoApprovalPolicy } from '../../types/workflow-contracts';
 
 /**
  * Workflow automation agent service.
@@ -297,6 +298,11 @@ class WorkflowAgentService {
             retryCount: transitioned.retryCount,
           });
         }
+
+        // Apply batch error strategy if this workflow belongs to a batch
+        if (transitioned.batchId) {
+          await this.handleBatchWorkflowError(transitioned, error);
+        }
       } catch (transitionError) {
         logger.error(`[WorkflowAgent] Failed to transition to ERROR state:`, transitionError);
       }
@@ -471,6 +477,13 @@ class WorkflowAgentService {
   private async handleAwaitingAiReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting AI review (HITL gate)`);
 
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'AI_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving AI review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'AI_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
+
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
       websocketService.emitHITLRequired({
@@ -613,6 +626,13 @@ class WorkflowAgentService {
   private async handleAwaitingRemediationReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting remediation review (HITL gate)`);
 
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'REMEDIATION_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving remediation review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
+
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
       websocketService.emitHITLRequired({
@@ -742,6 +762,13 @@ class WorkflowAgentService {
    */
   private async handleAwaitingConformanceReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting conformance review (HITL gate)`);
+
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'CONFORMANCE_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving conformance review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_REVIEW_DONE', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
 
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
@@ -973,6 +1000,22 @@ class WorkflowAgentService {
   private async handleAwaitingAcrSignoff(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting ACR signoff (HITL gate - manual approval)`);
 
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'ACR_SIGNOFF')) {
+      logger.info(`[WorkflowAgent] Auto-approving ACR signoff for batch workflow ${workflow.id}`);
+      if (config.features.enableWebSocket) {
+        websocketService.emitStateChange({
+          workflowId: workflow.id,
+          from: 'AWAITING_ACR_SIGNOFF',
+          to: 'COMPLETED',
+          timestamp: new Date().toISOString(),
+          phase: 'certify',
+        });
+      }
+      await enqueueWorkflowEvent(workflow.id, 'ACR_DONE', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
+
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
       websocketService.emitHITLRequired({
@@ -981,6 +1024,129 @@ class WorkflowAgentService {
         itemCount: 1, // Single ACR document to sign off
         deepLink: `/workflow/${workflow.id}/hitl/acr-signoff`,
       });
+    }
+  }
+
+  /**
+   * Check whether the batch auto-approval policy permits skipping a specific HITL gate.
+   *
+   * @param workflow - Current workflow instance (must have batchId set).
+   * @param gate - The HITL gate key to check.
+   * @returns True if the batch policy has 'auto-accept' for this gate.
+   */
+  private async shouldAutoApprove(
+    workflow: WorkflowInstance,
+    gate: keyof BatchAutoApprovalPolicy['gates']
+  ): Promise<boolean> {
+    if (!workflow.batchId) return false;
+
+    const batch = await prisma.batchWorkflow.findUnique({
+      where: { id: workflow.batchId },
+      select: { autoApprovalPolicy: true },
+    });
+
+    if (!batch?.autoApprovalPolicy) return false;
+
+    const policy = batch.autoApprovalPolicy as unknown as BatchAutoApprovalPolicy;
+    return policy.gates[gate] === 'auto-accept';
+  }
+
+  /**
+   * Handle a workflow error according to the batch's configured error strategy.
+   * Called from the main error handler when the workflow belongs to a batch.
+   *
+   * Strategies:
+   *  - 'pause-batch'     — pause all RUNNING/AWAITING siblings.
+   *  - 'continue-others' — do nothing; siblings keep processing independently.
+   *  - 'fail-batch'      — cancel all non-terminal siblings immediately.
+   */
+  private async handleBatchWorkflowError(
+    workflow: WorkflowInstance,
+    error: unknown
+  ): Promise<void> {
+    if (!workflow.batchId) return;
+
+    const batch = await prisma.batchWorkflow.findUnique({
+      where: { id: workflow.batchId },
+      select: { autoApprovalPolicy: true, status: true },
+    });
+
+    if (!batch?.autoApprovalPolicy) return;
+
+    const policy = batch.autoApprovalPolicy as unknown as BatchAutoApprovalPolicy;
+    const strategy = policy.onError;
+
+    logger.info(
+      `[WorkflowAgent] Batch error strategy '${strategy}' triggered for batch ${workflow.batchId}` +
+      ` after workflow ${workflow.id} failed`,
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+
+    const NON_TERMINAL_STATES = [
+      'UPLOAD_RECEIVED', 'PREPROCESSING', 'RUNNING_EPUBCHECK', 'RUNNING_ACE',
+      'RUNNING_AI_ANALYSIS', 'AWAITING_AI_REVIEW', 'AUTO_REMEDIATION',
+      'AWAITING_REMEDIATION_REVIEW', 'VERIFICATION_AUDIT', 'CONFORMANCE_MAPPING',
+      'AWAITING_CONFORMANCE_REVIEW', 'ACR_GENERATION', 'AWAITING_ACR_SIGNOFF',
+      'RETRYING',
+    ];
+
+    if (strategy === 'pause-batch') {
+      // Pause all non-terminal siblings
+      const siblings = await prisma.workflowInstance.findMany({
+        where: {
+          batchId: workflow.batchId,
+          id: { not: workflow.id },
+          currentState: { in: NON_TERMINAL_STATES },
+        },
+        select: { id: true },
+      });
+
+      await Promise.all(
+        siblings.map(s => enqueueWorkflowEvent(s.id, 'PAUSE').catch(err =>
+          logger.error(`[WorkflowAgent] Failed to pause sibling ${s.id}:`, err)
+        ))
+      );
+
+      await prisma.batchWorkflow.update({
+        where: { id: workflow.batchId },
+        data: { status: 'PAUSED' },
+      });
+
+      logger.info(
+        `[WorkflowAgent] Paused ${siblings.length} sibling workflows and set batch status to PAUSED`
+      );
+
+    } else if (strategy === 'fail-batch') {
+      // Cancel all non-terminal siblings
+      const siblings = await prisma.workflowInstance.findMany({
+        where: {
+          batchId: workflow.batchId,
+          id: { not: workflow.id },
+          currentState: { in: NON_TERMINAL_STATES },
+        },
+        select: { id: true },
+      });
+
+      await Promise.all(
+        siblings.map(s => enqueueWorkflowEvent(s.id, 'CANCEL').catch(err =>
+          logger.error(`[WorkflowAgent] Failed to cancel sibling ${s.id}:`, err)
+        ))
+      );
+
+      await prisma.batchWorkflow.update({
+        where: { id: workflow.batchId },
+        data: { status: 'CANCELLED', completedAt: new Date() },
+      });
+
+      logger.info(
+        `[WorkflowAgent] Cancelled ${siblings.length} sibling workflows and set batch status to CANCELLED`
+      );
+
+    } else {
+      // 'continue-others' — do nothing, siblings continue independently
+      logger.info(
+        `[WorkflowAgent] Batch error strategy 'continue-others': siblings continue processing`
+      );
     }
   }
 }

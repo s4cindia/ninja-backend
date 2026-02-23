@@ -9,6 +9,9 @@ router.use(authenticate);
 // Batch routes MUST come before /:id to avoid Express matching 'batch' as an id param
 router.post('/batch', workflowController.startBatch.bind(workflowController));
 router.get('/batch/:batchId', workflowController.getBatchDashboard.bind(workflowController));
+router.post('/batch/:batchId/pause', workflowController.pauseBatch.bind(workflowController));
+router.post('/batch/:batchId/resume', workflowController.resumeBatch.bind(workflowController));
+router.post('/batch/:batchId/retry-failed', workflowController.retryFailedBatch.bind(workflowController));
 
 // Workflow CRUD & lifecycle
 router.post('/', workflowController.startWorkflow.bind(workflowController));

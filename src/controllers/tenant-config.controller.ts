@@ -24,6 +24,10 @@ const workflowConfigUpdateSchema = z.object({
     backoffMs: z.number().int().positive().optional(),
     retryableStates: z.array(z.string()).optional(),
   }).optional(),
+  batchPolicy: z.object({
+    /** When true, tenants may create fully headless batches with all gates set to auto-accept. */
+    allowFullyHeadless: z.boolean().optional(),
+  }).optional(),
 }).strict();
 
 type WorkflowConfigUpdate = z.infer<typeof workflowConfigUpdateSchema>;
@@ -127,6 +131,17 @@ export class TenantConfigController {
         updatedWorkflow.autoRetry = {
           ...currentRetry,
           ...updates.autoRetry,
+        };
+      }
+
+      if (updates.batchPolicy) {
+        const currentBatchPolicy = (currentWorkflow.batchPolicy && typeof currentWorkflow.batchPolicy === 'object')
+          ? (currentWorkflow.batchPolicy as Record<string, unknown>)
+          : {};
+
+        updatedWorkflow.batchPolicy = {
+          ...currentBatchPolicy,
+          ...updates.batchPolicy,
         };
       }
 
