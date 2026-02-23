@@ -482,8 +482,8 @@ export class StyleValidationService {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         where: where as any,
         orderBy: [{ severity: 'asc' }, { startOffset: 'asc' }],
-        skip: pagination?.skip || 0,
-        take: pagination?.take || 100,
+        skip: pagination?.skip ?? 0,
+        take: Math.min(pagination?.take ?? 100, 500), // Max 500 per request
       }),
       prisma.styleViolation.count({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

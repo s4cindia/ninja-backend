@@ -255,8 +255,8 @@ export class HouseStyleEngineService {
     }
   ): Promise<{ ruleSets: RuleSetWithRules[]; total: number; page: number; pageSize: number }> {
     const where: Record<string, unknown> = { tenantId };
-    const page = options?.page || 1;
-    const pageSize = Math.min(options?.pageSize || 50, 100); // Max 100 per page
+    const page = Math.max(options?.page ?? 1, 1); // Ensure page >= 1
+    const pageSize = Math.min(Math.max(options?.pageSize ?? 50, 1), 100); // 1-100 range
 
     if (options?.activeOnly) {
       where.isActive = true;

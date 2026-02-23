@@ -342,95 +342,62 @@ Respond with JSON only:`;
     styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom',
     customRules?: string[]
   ): Promise<StyleViolation[]> {
-    // Simple approach: Pass document + rules to AI, get violations
     const styleGuideRules = this.getStyleGuideRules(styleGuide);
+    const maxChunkSize = 20000; // Process in 20K chunks for full document coverage
 
-    // Limit text for faster processing
-    const maxChars = 25000;
-    const isTruncated = text.length > maxChars;
-    const truncatedText = isTruncated ? text.substring(0, maxChars) : text;
-    // Sanitize text to prevent prompt injection
-    const textToValidate = this.sanitizeForPrompt(truncatedText);
+    logger.info(`[Editorial AI] Validating ${text.length} chars with ${styleGuide} style`);
 
-    if (isTruncated) {
-      logger.warn(`[Editorial AI] Document truncated from ${text.length} to ${maxChars} chars. Violations beyond this point will not be detected.`);
+    // For small documents, process directly
+    if (text.length <= maxChunkSize) {
+      return this.validateTextChunk(text, 0, 1, styleGuide, styleGuideRules, customRules);
     }
-    logger.info(`[Editorial AI] Validating ${textToValidate.length} chars with ${styleGuide} style`);
 
-    // Build the prompt
-    const customRulesSection = customRules?.length
-      ? `\n\nCUSTOM RULES TO ENFORCE:\n${customRules.join('\n')}`
-      : '';
+    // For large documents, split into chunks and process each
+    const chunks = this.splitTextIntoChunks(text, maxChunkSize);
+    logger.info(`[Editorial AI] Document split into ${chunks.length} chunks for processing`);
 
-    const prompt = `You are an expert editor. Check this document for style violations according to ${styleGuideRules.name}.
+    const allViolations: StyleViolation[] = [];
 
-RULES TO CHECK:
-${styleGuideRules.rules}
-${customRulesSection}
+    // Process chunks sequentially to avoid rate limits
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      logger.info(`[Editorial AI] Processing chunk ${i + 1}/${chunks.length} (offset: ${chunk.offset}, lines from: ${chunk.lineOffset})`);
 
-DOCUMENT:
-${textToValidate}
+      try {
+        const chunkViolations = await this.validateTextChunk(
+          chunk.text,
+          chunk.offset,
+          chunk.lineOffset,
+          styleGuide,
+          styleGuideRules,
+          customRules
+        );
 
-Find ALL style violations. For each violation return:
-- rule: The rule name
-- ruleReference: Reference code (e.g., "${styleGuideRules.referencePrefix} 6.1")
-- originalText: The exact text with the issue
-- suggestedFix: The corrected text
-- explanation: Why this is wrong
-- severity: "error", "warning", or "suggestion"
-- lineNumber: Approximate line number (estimate based on position)
+        // Adjust offsets for the chunk position in the full document
+        const adjustedViolations = chunkViolations.map(v => ({
+          ...v,
+          location: {
+            ...v.location,
+            start: v.location.start + chunk.offset,
+            end: v.location.end + chunk.offset,
+          },
+        }));
 
-Return a JSON array. Example:
-[{"rule":"Serial Comma","ruleReference":"CMOS 6.19","originalText":"red, white and blue","suggestedFix":"red, white, and blue","explanation":"Add comma before and","severity":"warning","lineNumber":5}]
-
-Return ONLY valid JSON array:`;
-
-    try {
-      // Use Claude AI for better JSON handling
-      logger.info(`[Editorial AI] Using Claude for style validation`);
-
-      const data = await claudeService.generateJSON<Array<{
-        rule: string;
-        ruleReference: string;
-        originalText: string;
-        suggestedFix: string;
-        explanation: string;
-        severity: string;
-        lineNumber: number;
-      }>>(prompt, {
-        model: 'sonnet', // Sonnet supports larger outputs than Haiku
-        temperature: 0.1,
-        maxTokens: 8000,
-        systemPrompt: 'You are an expert editor. Analyze documents for style violations and return results as a JSON array only. No explanations or markdown.',
-      });
-
-      logger.info(`[Editorial AI] Claude returned ${data?.length ?? 0} violations`);
-
-      if (!data || data.length === 0) {
-        return [];
+        allViolations.push(...adjustedViolations);
+        logger.info(`[Editorial AI] Chunk ${i + 1} found ${chunkViolations.length} violations`);
+      } catch (error) {
+        logger.error(`[Editorial AI] Error processing chunk ${i + 1}:`, error);
+        // Continue with other chunks even if one fails
       }
 
-      // Convert to StyleViolation format
-      const violations: StyleViolation[] = data.map(v => ({
-        rule: v.rule || 'Unknown',
-        ruleReference: v.ruleReference || styleGuideRules.referencePrefix,
-        location: {
-          start: 0,
-          end: v.originalText?.length || 0,
-          lineNumber: v.lineNumber || 1,
-        },
-        originalText: v.originalText || '',
-        suggestedFix: v.suggestedFix || '',
-        explanation: v.explanation || '',
-        severity: (v.severity as 'error' | 'warning' | 'suggestion') || 'warning',
-      }));
-
-      logger.info(`[Editorial AI] Returning ${violations.length} violations`);
-      return violations;
-    } catch (error) {
-      logger.error('[Editorial AI] Validation failed:', error);
-      return []; // Return empty array instead of throwing to avoid breaking the flow
+      // Small delay between chunks to avoid rate limiting
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
+
+    logger.info(`[Editorial AI] Total violations found: ${allViolations.length}`);
+    return allViolations;
   }
 
   /**
@@ -549,7 +516,10 @@ Return a JSON array. Be thorough - check every sentence. Example format:
 Return ONLY the JSON array, no other text:`;
 
     try {
-      const response = await geminiService.generateStructuredOutput<Array<{
+      // Use Claude for better JSON handling and style validation
+      logger.info(`[Editorial AI] Using Claude for style validation chunk`);
+
+      const data = await claudeService.generateJSON<Array<{
         rule: string;
         ruleReference: string;
         lineNumber: number;
@@ -558,32 +528,53 @@ Return ONLY the JSON array, no other text:`;
         explanation: string;
         severity: string;
       }>>(prompt, {
+        model: 'sonnet', // Sonnet supports larger outputs
         temperature: 0.1,
-        maxOutputTokens: 8000,
+        maxTokens: 8000,
+        systemPrompt: 'You are an expert editor. Analyze documents for style violations and return results as a JSON array only. No explanations or markdown.',
       });
 
-      logger.info(`[Editorial AI] Chunk response: ${response.data?.length ?? 0} violations`);
+      logger.info(`[Editorial AI] Claude returned ${data?.length ?? 0} violations`);
 
-      if (!response.data || response.data.length === 0) {
+      if (!data || data.length === 0) {
         logger.warn('[Editorial AI] No violations returned from AI for this chunk');
         return [];
       }
 
-      // Convert to StyleViolation format with proper offsets
-      return response.data.map(v => {
-        // Calculate character offset from line number
-        const targetLine = v.lineNumber - lineOffset;
-        let startOffset = charOffset;
-        for (let i = 0; i < Math.min(targetLine, lines.length); i++) {
-          startOffset += lines[i].length + 1; // +1 for newline
-        }
+      const response = { data };
 
-        // Find the exact position of the original text within the line
-        if (targetLine >= 0 && targetLine < lines.length) {
-          const lineContent = lines[targetLine];
-          const posInLine = lineContent.indexOf(v.originalText);
-          if (posInLine >= 0) {
-            startOffset += posInLine;
+      // Convert to StyleViolation format with accurate character offsets
+      return response.data.map(v => {
+        // Strategy: Search for originalText in the chunk, prioritizing near the reported line
+        const originalText = v.originalText || '';
+        let foundOffset = -1;
+        let foundLineNumber = v.lineNumber;
+
+        // First, try to find the exact text in the entire chunk
+        const directIndex = sanitizedText.indexOf(originalText);
+        if (directIndex >= 0) {
+          foundOffset = charOffset + directIndex;
+          // Calculate actual line number from found position
+          const textBeforeMatch = sanitizedText.substring(0, directIndex);
+          foundLineNumber = lineOffset + (textBeforeMatch.match(/\n/g) || []).length;
+        } else {
+          // Fallback: try case-insensitive search
+          const lowerText = sanitizedText.toLowerCase();
+          const lowerOriginal = originalText.toLowerCase();
+          const caseInsensitiveIndex = lowerText.indexOf(lowerOriginal);
+          if (caseInsensitiveIndex >= 0) {
+            foundOffset = charOffset + caseInsensitiveIndex;
+            const textBeforeMatch = sanitizedText.substring(0, caseInsensitiveIndex);
+            foundLineNumber = lineOffset + (textBeforeMatch.match(/\n/g) || []).length;
+          } else {
+            // Last fallback: use AI-reported line number estimate
+            const targetLine = v.lineNumber - lineOffset;
+            let estimatedOffset = charOffset;
+            for (let i = 0; i < Math.min(targetLine, lines.length); i++) {
+              estimatedOffset += lines[i].length + 1;
+            }
+            foundOffset = estimatedOffset;
+            logger.debug(`[Editorial AI] Could not find exact text "${originalText.substring(0, 30)}..." in chunk, using estimated offset`);
           }
         }
 
@@ -591,9 +582,9 @@ Return ONLY the JSON array, no other text:`;
           rule: v.rule,
           ruleReference: v.ruleReference,
           location: {
-            start: startOffset,
-            end: startOffset + v.originalText.length,
-            lineNumber: v.lineNumber,
+            start: foundOffset,
+            end: foundOffset + originalText.length,
+            lineNumber: foundLineNumber,
           },
           originalText: v.originalText,
           suggestedFix: v.suggestedFix,

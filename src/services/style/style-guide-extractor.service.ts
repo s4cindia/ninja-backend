@@ -338,14 +338,43 @@ class StyleGuideExtractorService {
 
   /**
    * Enhance rules with better categorization using AI
+   * Processes large rule sets in batches of 50
    */
   private async enhanceRules(rules: ExtractedRule[]): Promise<ExtractedRule[]> {
     if (rules.length === 0) return rules;
-    if (rules.length > 50) {
-      // Skip enhancement for large rule sets to save API calls
-      return rules;
+
+    const BATCH_SIZE = 50;
+
+    // Process in batches if more than BATCH_SIZE rules
+    if (rules.length > BATCH_SIZE) {
+      logger.info(`[StyleGuideExtractor] Processing ${rules.length} rules in batches of ${BATCH_SIZE}`);
+      const enhancedRules: ExtractedRule[] = [];
+
+      for (let i = 0; i < rules.length; i += BATCH_SIZE) {
+        const batch = rules.slice(i, i + BATCH_SIZE);
+        try {
+          const enhancedBatch = await this.enhanceBatch(batch);
+          enhancedRules.push(...enhancedBatch);
+          // Small delay between batches to avoid rate limits
+          if (i + BATCH_SIZE < rules.length) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+          }
+        } catch (error) {
+          logger.error(`[StyleGuideExtractor] Batch ${Math.floor(i / BATCH_SIZE) + 1} enhancement failed, using original rules`, error);
+          enhancedRules.push(...batch);
+        }
+      }
+
+      return enhancedRules;
     }
 
+    return this.enhanceBatch(rules);
+  }
+
+  /**
+   * Enhance a single batch of rules (max 50)
+   */
+  private async enhanceBatch(rules: ExtractedRule[]): Promise<ExtractedRule[]> {
     try {
       const prompt = CATEGORIZATION_PROMPT.replace('{rules}', JSON.stringify(rules, null, 2));
 
