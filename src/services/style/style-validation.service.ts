@@ -19,7 +19,7 @@ import { citationStorageService } from '../citation/citation-storage.service';
 import { documentExtractor } from '../document/document-extractor.service';
 import * as path from 'path';
 import * as os from 'os';
-import * as fs from 'fs';
+import fs from 'fs/promises';
 import { nanoid } from 'nanoid';
 import type {
   StyleValidationJob,
@@ -136,7 +136,7 @@ export class StyleValidationService {
           else if (lowerName.endsWith('.txt')) ext = '.txt';
           else if (lowerName.endsWith('.rtf')) ext = '.rtf';
           const tempPath = path.join(os.tmpdir(), `style-extract-${input.documentId}-${nanoid(8)}${ext}`);
-          fs.writeFileSync(tempPath, fileBuffer);
+          await fs.writeFile(tempPath, fileBuffer);
 
           try {
             // Extract text
@@ -165,8 +165,10 @@ export class StyleValidationService {
             logger.info(`[Style Validation] Extracted ${fullText.length} characters from document ${input.documentId}`);
           } finally {
             // Clean up temp file
-            if (fs.existsSync(tempPath)) {
-              fs.unlinkSync(tempPath);
+            try {
+              await fs.unlink(tempPath);
+            } catch {
+              // Ignore cleanup errors
             }
           }
         }
@@ -483,7 +485,7 @@ export class StyleValidationService {
         where: where as any,
         orderBy: [{ severity: 'asc' }, { startOffset: 'asc' }],
         skip: pagination?.skip ?? 0,
-        take: Math.min(pagination?.take ?? 100, 500), // Max 500 per request
+        take: Math.min(pagination?.take ?? 100, 200), // Max 200 per request (matches schema)
       }),
       prisma.styleViolation.count({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -841,16 +843,13 @@ export class StyleValidationService {
   /**
    * Update job progress in database
    */
-  async updateJobProgress(jobId: string, progress: number, currentPhase: string): Promise<void> {
+  async updateJobProgress(jobId: string, progress: number, _currentPhase: string): Promise<void> {
     await prisma.styleValidationJob.update({
       where: { id: jobId },
-      data: {
-        progress,
-        // Store current phase in a way that can be retrieved (using error field temporarily)
-        // or just log it since the main purpose is to update progress
-      },
+      data: { progress },
     });
-    logger.debug(`[Style Validation] Job ${jobId} progress: ${progress}% - ${currentPhase}`);
+    // Phase is logged but not stored - progress percentage is sufficient for UI
+    logger.debug(`[Style Validation] Job ${jobId} progress: ${progress}% - ${_currentPhase}`);
   }
 
   // Helper methods
