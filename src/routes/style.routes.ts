@@ -157,12 +157,15 @@ router.get(
 /**
  * Debug: Test rules against sample text
  * POST /api/v1/style/debug/test-rules
+ * Only available in non-production environments
  */
-router.post(
-  '/debug/test-rules',
-  validate(testRulesDebugSchema),
-  (req, res, next) => styleController.testRulesDebug(req, res, next)
-);
+if (process.env.NODE_ENV !== 'production') {
+  router.post(
+    '/debug/test-rules',
+    validate(testRulesDebugSchema),
+    (req, res, next) => styleController.testRulesDebug(req, res, next)
+  );
+}
 
 // ============================================
 // STYLE GUIDE UPLOAD ROUTES

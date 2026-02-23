@@ -832,8 +832,8 @@ export class HouseStyleEngineService {
       };
     }
 
-    // ReDoS protection: Validate pattern before execution
-    if (rule.pattern && (rule.ruleType === 'PATTERN' || rule.ruleType === 'PUNCTUATION')) {
+    // ReDoS protection: Validate pattern before execution for ANY rule with a pattern
+    if (rule.pattern) {
       if (this.isUnsafeRegex(rule.pattern)) {
         return {
           matches: [],

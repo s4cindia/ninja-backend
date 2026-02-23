@@ -347,8 +347,14 @@ Respond with JSON only:`;
 
     // Limit text for faster processing
     const maxChars = 25000;
-    const textToValidate = text.length > maxChars ? text.substring(0, maxChars) : text;
+    const isTruncated = text.length > maxChars;
+    const truncatedText = isTruncated ? text.substring(0, maxChars) : text;
+    // Sanitize text to prevent prompt injection
+    const textToValidate = this.sanitizeForPrompt(truncatedText);
 
+    if (isTruncated) {
+      logger.warn(`[Editorial AI] Document truncated from ${text.length} to ${maxChars} chars. Violations beyond this point will not be detected.`);
+    }
     logger.info(`[Editorial AI] Validating ${textToValidate.length} chars with ${styleGuide} style`);
 
     // Build the prompt

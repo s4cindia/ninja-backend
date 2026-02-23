@@ -360,12 +360,6 @@ export class StyleValidationService {
       // Phase 4: Store violations (90-100%)
       await updateProgress(85, 'Storing violations');
 
-      // Clear previous violations for this document
-      await prisma.styleViolation.deleteMany({
-        where: { documentId: job.documentId },
-      });
-      logger.info(`[Style Validation] Cleared old violations for document ${job.documentId}`);
-
       // Deduplicate and sort
       const uniqueMatches = this.deduplicateMatches(allMatches);
 
@@ -397,9 +391,22 @@ export class StyleValidationService {
           return original !== suggested; // Only keep if they differ
         });
 
-      if (violationData.length > 0) {
-        await prisma.styleViolation.createMany({ data: violationData });
-      }
+      // Use transaction to ensure atomic delete+create
+      // Only delete PENDING violations - preserve FIXED, IGNORED, WONT_FIX from previous reviews
+      await prisma.$transaction(async (tx) => {
+        const deletedCount = await tx.styleViolation.deleteMany({
+          where: {
+            documentId: job.documentId,
+            status: 'PENDING', // Only delete pending violations
+          },
+        });
+        logger.info(`[Style Validation] Cleared ${deletedCount.count} pending violations for document ${job.documentId}`);
+
+        if (violationData.length > 0) {
+          await tx.styleViolation.createMany({ data: violationData });
+        }
+      });
+
       totalViolations = violationData.length;
 
       // Update job status
