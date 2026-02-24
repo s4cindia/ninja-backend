@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Server as HTTPServer } from 'http';
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { AddressInfo } from 'net';
-import type { WorkflowState, HITLGate } from '../../../../src/types/workflow-contracts';
+import type { WorkflowState, HITLGate } from '@/types/workflow-contracts';
 
 describe('WebSocketService', () => {
   let httpServer: HTTPServer;
@@ -29,7 +29,7 @@ describe('WebSocketService', () => {
 
   describe('initialization', () => {
     it('should initialize with HTTP server', (done) => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
 
       websocketService.initialize(httpServer);
 
@@ -43,7 +43,7 @@ describe('WebSocketService', () => {
     });
 
     it('should accept WebSocket and polling transports', (done) => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
 
       clientSocket = ioClient(`http://localhost:${port}`, {
@@ -59,7 +59,7 @@ describe('WebSocketService', () => {
 
   describe('subscription handling', () => {
     beforeEach(() => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
     });
 
@@ -145,7 +145,7 @@ describe('WebSocketService', () => {
 
   describe('event emission', () => {
     beforeEach(() => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
     });
 
@@ -166,7 +166,7 @@ describe('WebSocketService', () => {
 
         // Emit event after subscription
         setTimeout(() => {
-          const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+          const { websocketService } = require('@/services/workflow/websocket.service');
           websocketService.emitStateChange({
             workflowId,
             from: 'PREPROCESSING' as WorkflowState,
@@ -193,7 +193,7 @@ describe('WebSocketService', () => {
         });
 
         setTimeout(() => {
-          const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+          const { websocketService } = require('@/services/workflow/websocket.service');
           websocketService.emitHITLRequired({
             workflowId,
             gate: 'AI_REVIEW' as HITLGate,
@@ -220,7 +220,7 @@ describe('WebSocketService', () => {
         });
 
         setTimeout(() => {
-          const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+          const { websocketService } = require('@/services/workflow/websocket.service');
           websocketService.emitRemediationProgress({
             workflowId,
             autoFixed: 10,
@@ -248,7 +248,7 @@ describe('WebSocketService', () => {
         });
 
         setTimeout(() => {
-          const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+          const { websocketService } = require('@/services/workflow/websocket.service');
           websocketService.emitError({
             workflowId,
             error: 'EPUBCheck validation failed',
@@ -276,7 +276,7 @@ describe('WebSocketService', () => {
         });
 
         setTimeout(() => {
-          const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+          const { websocketService } = require('@/services/workflow/websocket.service');
           websocketService.emitBatchProgress({
             batchId,
             completed: 5,
@@ -315,7 +315,7 @@ describe('WebSocketService', () => {
       });
 
       setTimeout(() => {
-        const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+        const { websocketService } = require('@/services/workflow/websocket.service');
         websocketService.emitStateChange({
           workflowId: workflowId1,
           from: 'PREPROCESSING' as WorkflowState,
@@ -337,7 +337,7 @@ describe('WebSocketService', () => {
 
   describe('metrics', () => {
     it('should return connection count', () => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
 
       const count = websocketService.getConnectionCount();
@@ -346,7 +346,7 @@ describe('WebSocketService', () => {
     });
 
     it('should return room count', () => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
 
       const count = websocketService.getRoomCount();
@@ -355,7 +355,7 @@ describe('WebSocketService', () => {
     });
 
     it('should return subscriber count for room', () => {
-      const { websocketService } = require('../../../../src/services/workflow/websocket.service');
+      const { websocketService } = require('@/services/workflow/websocket.service');
       websocketService.initialize(httpServer);
 
       const count = websocketService.getSubscriberCount('workflow:123');
