@@ -257,6 +257,13 @@ class WorkflowController {
         return;
       }
 
+      // Idempotency: if the workflow already advanced past this gate, return success
+      if (workflow.currentState !== WorkflowState.AWAITING_AI_REVIEW) {
+        logger.info(`[WorkflowController] AI review submitted but workflow ${id} is in state ${workflow.currentState} (already past gate) — returning idempotent success`);
+        res.status(200).json({ success: true, gateComplete: true, message: 'Gate already complete' });
+        return;
+      }
+
       // Store AI review decisions in workflow state
       await prisma.workflowInstance.update({
         where: { id },
@@ -361,6 +368,13 @@ class WorkflowController {
         return;
       }
 
+      // Idempotency: if the workflow already advanced past this gate, return success
+      if (workflow.currentState !== WorkflowState.AWAITING_REMEDIATION_REVIEW) {
+        logger.info(`[WorkflowController] Remediation review submitted but workflow ${id} is in state ${workflow.currentState} (already past gate) — returning idempotent success`);
+        res.status(200).json({ success: true, gateComplete: true, message: 'Gate already complete' });
+        return;
+      }
+
       // Store remediation review acceptance in workflow state
       await prisma.workflowInstance.update({
         where: { id },
@@ -417,6 +431,13 @@ class WorkflowController {
         return;
       }
 
+      // Idempotency: if the workflow already advanced past this gate, return success
+      if (workflow.currentState !== WorkflowState.AWAITING_CONFORMANCE_REVIEW) {
+        logger.info(`[WorkflowController] Conformance review submitted but workflow ${id} is in state ${workflow.currentState} (already past gate) — returning idempotent success`);
+        res.status(200).json({ success: true, gateComplete: true, message: 'Gate already complete' });
+        return;
+      }
+
       // Store conformance review decisions in workflow state
       await prisma.workflowInstance.update({
         where: { id },
@@ -469,6 +490,13 @@ class WorkflowController {
 
       if (!workflow) {
         res.status(404).json({ error: 'Workflow not found' });
+        return;
+      }
+
+      // Idempotency: if the workflow already advanced past this gate, return success
+      if (workflow.currentState !== WorkflowState.AWAITING_ACR_SIGNOFF) {
+        logger.info(`[WorkflowController] ACR sign-off submitted but workflow ${id} is in state ${workflow.currentState} (already past gate) — returning idempotent success`);
+        res.status(200).json({ success: true, gateComplete: true, message: 'Gate already complete' });
         return;
       }
 
@@ -703,7 +731,17 @@ class WorkflowController {
       const { batchId } = req.params;
       const batch = await prisma.batchWorkflow.findUnique({
         where: { id: batchId },
-        include: { workflows: { select: { currentState: true } } },
+        include: {
+          workflows: {
+            select: {
+              id: true,
+              currentState: true,
+              errorMessage: true,
+              file: { select: { filename: true, originalName: true } },
+            },
+            orderBy: { startedAt: 'asc' },
+          },
+        },
       });
 
       if (!batch) {
@@ -734,6 +772,31 @@ class WorkflowController {
         if (state === WorkflowState.FAILED) errorCount++;
       }
 
+      const failedWorkflows = batch.workflows
+        .filter(w => w.currentState === 'FAILED')
+        .map(w => ({
+          id: w.id,
+          filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
+          errorMessage: w.errorMessage ?? null,
+        }));
+
+      // Map each HITL gate state to its URL slug
+      const GATE_STATE_TO_SLUG: Record<string, string> = {
+        [WorkflowState.AWAITING_AI_REVIEW]: 'ai-review',
+        [WorkflowState.AWAITING_REMEDIATION_REVIEW]: 'remediation-review',
+        [WorkflowState.AWAITING_CONFORMANCE_REVIEW]: 'conformance-review',
+        [WorkflowState.AWAITING_ACR_SIGNOFF]: 'acr-signoff',
+      };
+      const HITL_STATES = Object.keys(GATE_STATE_TO_SLUG);
+      const hitlWaiting = batch.workflows
+        .filter(w => HITL_STATES.includes(w.currentState))
+        .map(w => ({
+          workflowId: w.id,
+          filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
+          gate: w.currentState.replace('AWAITING_', '').replace(/_/g, ' '),
+          reviewUrl: `/workflow/${w.id}/hitl/${GATE_STATE_TO_SLUG[w.currentState]}`,
+        }));
+
       res.status(200).json({
         id: batch.id,
         name: batch.name,
@@ -749,6 +812,8 @@ class WorkflowController {
         startedAt: batch.startedAt.toISOString(),
         completedAt: batch.completedAt?.toISOString(),
         autoApprovalPolicy: (batch.autoApprovalPolicy as BatchAutoApprovalPolicy | null) ?? null,
+        failedWorkflows,
+        hitlWaiting,
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');

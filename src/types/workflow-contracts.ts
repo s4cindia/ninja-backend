@@ -377,7 +377,7 @@ export const hitlActionSchema = z.enum([
 ]);
 
 export const startWorkflowSchema = z.object({
-  fileId: z.string().uuid('fileId must be a valid UUID'),
+  fileId: z.string().min(1, 'fileId is required'),
   vpatEditions: z.array(z.string()).optional(),
 });
 
@@ -406,9 +406,10 @@ export const remediationReviewSchema = z.object({
 export const conformanceReviewSchema = z.object({
   decisions: z.array(z.object({
     criterionId: z.string(),
-    decision: z.enum(['CONFIRM', 'OVERRIDE']),
+    decision: z.enum(['supports', 'partially_supports', 'does_not_support', 'not_applicable', 'CONFIRM', 'OVERRIDE']),
     overrideValue: z.string().optional(),
     justification: z.string().optional(),
+    notes: z.string().optional(),
   })).min(1),
 });
 
@@ -436,7 +437,7 @@ export const batchAutoApprovalPolicySchema = z.object({
 
 export const startBatchSchema = z.object({
   name: z.string().min(1, 'Batch name is required'),
-  fileIds: z.array(z.string().uuid()).min(1, 'At least one file required'),
+  fileIds: z.array(z.string().min(1)).min(1, 'At least one file required'),
   concurrency: z.number().int().min(1).max(10).default(3),
   vpatEditions: z.array(z.string()).optional(),
   autoApprovalPolicy: batchAutoApprovalPolicySchema.optional(),
