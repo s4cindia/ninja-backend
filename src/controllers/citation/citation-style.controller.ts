@@ -17,6 +17,53 @@ import { doiValidationService } from '../../services/citation/doi-validation.ser
 import { resolveDocumentSimple } from './document-resolver';
 import { buildRefIdToNumberMap, getRefNumber } from '../../utils/citation.utils';
 
+/**
+ * Build a full reference string from component fields so the AI gets actual
+ * bibliographic data to reformat (not just a title).
+ */
+function buildRawTextFromComponents(ref: {
+  authors?: unknown;
+  year?: string | null;
+  title?: string | null;
+  journalName?: string | null;
+  volume?: string | null;
+  issue?: string | null;
+  pages?: string | null;
+  doi?: string | null;
+  publisher?: string | null;
+  formattedApa?: string | null;
+}): string {
+  // If formattedApa already looks like a full reference (has multiple fields), use it
+  const formatted = ref.formattedApa || '';
+  if (formatted.length > 50 && /\d{4}/.test(formatted)) {
+    return formatted;
+  }
+
+  // Otherwise, build from components
+  const parts: string[] = [];
+  const authors = Array.isArray(ref.authors) ? (ref.authors as string[]).join(', ') : '';
+  if (authors) parts.push(authors);
+  if (ref.year) parts.push(`(${ref.year}).`);
+  if (ref.title) parts.push(`${ref.title}.`);
+  if (ref.journalName) {
+    let journalPart = ref.journalName;
+    if (ref.volume) {
+      journalPart += `, ${ref.volume}`;
+      if (ref.issue) journalPart += `(${ref.issue})`;
+    }
+    if (ref.pages) journalPart += `, ${ref.pages}`;
+    journalPart += '.';
+    parts.push(journalPart);
+  } else if (ref.publisher) {
+    parts.push(`${ref.publisher}.`);
+  }
+  if (ref.doi) parts.push(`https://doi.org/${ref.doi}`);
+
+  const built = parts.join(' ');
+  // If we managed to build something more substantial than just the title, use it
+  return built.length > (ref.title?.length || 0) + 10 ? built : (formatted || ref.title || '');
+}
+
 export class CitationStyleController {
   /**
    * POST /api/v1/citation-management/document/:documentId/convert-style
@@ -58,7 +105,11 @@ export class CitationStyleController {
         where: { id: baseDoc.id, tenantId },
         include: {
           referenceListEntries: { orderBy: { sortKey: 'asc' } },
-          citations: true
+          citations: {
+            include: {
+              referenceListEntries: true  // Join table links citation→reference
+            }
+          }
         }
       });
 
@@ -83,7 +134,7 @@ export class CitationStyleController {
       const serviceReferences: ReferenceEntry[] = references.map((ref, index) => ({
         id: ref.id,
         number: index + 1,
-        rawText: ref.formattedApa || ref.title || '',
+        rawText: buildRawTextFromComponents(ref),
         components: {
           authors: ref.authors as string[] | undefined,
           year: ref.year ?? undefined,
@@ -99,6 +150,9 @@ export class CitationStyleController {
         detectedStyle: document.referenceListStyle as CitationStyle | undefined,
         citedBy: []
       }));
+
+      // Build refId→number map from sorted references for join-table lookups
+      const refIdToNumber = buildRefIdToNumberMap(references);
 
       // Map Prisma citations to service format
       const serviceCitations: InTextCitation[] = document.citations.map(cit => {
@@ -121,9 +175,18 @@ export class CitationStyleController {
           format = 'superscript';
         }
 
-        // Extract reference numbers from citation text
-        const numberMatches = cit.rawText.match(/\d+/g);
-        const numbers = numberMatches ? numberMatches.map(n => parseInt(n, 10)) : [];
+        // Use join table (ReferenceListEntryCitation) to get linked reference numbers
+        const citWithRefs = cit as typeof cit & { referenceListEntries?: Array<{ referenceListEntryId: string }> };
+        const linkedRefIds = citWithRefs.referenceListEntries?.map(link => link.referenceListEntryId) || [];
+        let numbers = linkedRefIds
+          .map(refId => refIdToNumber.get(refId))
+          .filter((num): num is number => num !== undefined);
+
+        // Fall back to text extraction only if join table yields nothing
+        if (numbers.length === 0) {
+          const numberMatches = cit.rawText.match(/\d+/g);
+          numbers = numberMatches ? numberMatches.map(n => parseInt(n, 10)) : [];
+        }
 
         return {
           id: cit.id,
@@ -131,6 +194,7 @@ export class CitationStyleController {
           type: typeMap[cit.citationType] || 'numeric',
           format,
           numbers,
+          linkedRefId: linkedRefIds[0],  // Primary linked reference ID
           position: {
             paragraph: cit.paragraphIndex ?? 0,
             sentence: 0,
@@ -157,18 +221,37 @@ export class CitationStyleController {
         error?: string;
       }> = [];
 
+      // Map target style to the correct database column
+      const styleColumnMap: Record<string, string> = {
+        'APA': 'formattedApa',
+        'MLA': 'formattedMla',
+        'Chicago': 'formattedChicago',
+        'Vancouver': 'formattedVancouver',
+        'IEEE': 'formattedIeee',
+        'Harvard': 'formattedApa',   // No dedicated column, use formattedApa
+        'AMA': 'formattedApa'        // No dedicated column, use formattedApa
+      };
+      const targetColumn = styleColumnMap[targetStyle] || 'formattedApa';
+
       // Update references in database and track changes
       for (const change of conversionResult.changes) {
         const originalRef = references.find(r => r.id === change.referenceId);
         if (!originalRef) continue;
 
         try {
-          // Update the reference with converted text
+          // Update the reference with converted text in the correct style column
+          // Always update formattedApa as the "active/current" formatted text,
+          // plus the style-specific column if different
+          const updateData: Record<string, string> = {
+            formattedApa: change.newFormat
+          };
+          if (targetColumn !== 'formattedApa') {
+            updateData[targetColumn] = change.newFormat;
+          }
+
           await prisma.referenceListEntry.update({
             where: { id: change.referenceId },
-            data: {
-              formattedApa: change.newFormat
-            }
+            data: updateData
           });
 
           conversionResults.push({
@@ -202,12 +285,21 @@ export class CitationStyleController {
         }
       }
 
-      // Store in-text citation conversions for track changes
+      // Map targetStyle to Prisma CitationStyle enum (uppercase)
+      const prismaStyleMap: Record<string, string> = {
+        'APA': 'APA', 'MLA': 'MLA', 'Chicago': 'CHICAGO',
+        'Vancouver': 'VANCOUVER', 'IEEE': 'IEEE', 'Harvard': 'HARVARD', 'AMA': 'APA'
+      };
+      const prismaStyle = prismaStyleMap[targetStyle] || 'UNKNOWN';
+
+      // Store in-text citation conversions for track changes AND update Citation.rawText
       // Use document.id (the resolved actual document ID) not documentId (which may be a job ID)
       for (const citConversion of conversionResult.citationConversions) {
+        // Store change with citationId for proper export tracking
         await prisma.citationChange.create({
           data: {
             documentId: document.id,
+            citationId: citConversion.citationId || null,
             changeType: 'INTEXT_STYLE_CONVERSION',
             beforeText: citConversion.oldText,
             afterText: citConversion.newText,
@@ -215,6 +307,29 @@ export class CitationStyleController {
             isReverted: false
           }
         });
+
+        // Update Citation.rawText using ID-based lookup when available
+        if (citConversion.citationId) {
+          await prisma.citation.update({
+            where: { id: citConversion.citationId },
+            data: {
+              rawText: citConversion.newText,
+              detectedStyle: prismaStyle as import('@prisma/client').CitationStyle
+            }
+          });
+        } else {
+          // Fallback to text matching for conversions without citationId
+          const matchingCitations = document.citations.filter(c => c.rawText === citConversion.oldText);
+          for (const cit of matchingCitations) {
+            await prisma.citation.update({
+              where: { id: cit.id },
+              data: {
+                rawText: citConversion.newText,
+                detectedStyle: prismaStyle as import('@prisma/client').CitationStyle
+              }
+            });
+          }
+        }
       }
 
       // Update document style
