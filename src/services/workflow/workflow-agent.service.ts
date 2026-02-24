@@ -1102,15 +1102,6 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'ACR_SIGNOFF')) {
       logger.info(`[WorkflowAgent] Auto-approving ACR signoff for batch workflow ${workflow.id}`);
-      if (config.features.enableWebSocket) {
-        websocketService.emitStateChange({
-          workflowId: workflow.id,
-          from: 'AWAITING_ACR_SIGNOFF',
-          to: 'COMPLETED',
-          timestamp: new Date().toISOString(),
-          phase: 'certify',
-        });
-      }
       await enqueueWorkflowEvent(workflow.id, 'ACR_SIGNED', { autoApproved: true, batchAutoApproval: true });
       return;
     }

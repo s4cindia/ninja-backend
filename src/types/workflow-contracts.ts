@@ -212,9 +212,10 @@ export interface RemediationReviewRequest {
 export interface ConformanceReviewRequest {
   decisions: Array<{
     criterionId: string;
-    decision: 'CONFIRM' | 'OVERRIDE';
-    overrideValue?: string;            // New conformance level
-    justification?: string;            // Required for OVERRIDE
+    decision: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | 'CONFIRM' | 'OVERRIDE';
+    overrideValue?: string;
+    justification?: string;
+    notes?: string;
   }>;
 }
 
