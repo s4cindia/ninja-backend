@@ -10,6 +10,7 @@ import {
   TenantSettings,
   JobWorkflowOptions,
   HitlGateConfig,
+  BatchPolicyTenantConfig,
   DEFAULT_WORKFLOW_CONFIG,
 } from '../../types/workflow-config.types';
 
@@ -189,6 +190,7 @@ class WorkflowConfigService {
           enabled: typeof workflow.enabled === 'boolean' ? workflow.enabled : false,
           hitlGates: this.parseHitlGates(workflow.hitlGates),
           autoRetry: this.parseAutoRetry(workflow.autoRetry),
+          batchPolicy: this.parseBatchPolicy(workflow.batchPolicy),
         },
       };
     }
@@ -222,6 +224,23 @@ class WorkflowConfigService {
     }
 
     return result;
+  }
+
+  /**
+   * Parse batch policy configuration with validation.
+   */
+  private parseBatchPolicy(policy: unknown): BatchPolicyTenantConfig | undefined {
+    if (!policy || typeof policy !== 'object') {
+      return undefined;
+    }
+
+    const parsed = policy as Record<string, unknown>;
+
+    return {
+      allowFullyHeadless: typeof parsed.allowFullyHeadless === 'boolean'
+        ? parsed.allowFullyHeadless
+        : false,
+    };
   }
 
   /**
@@ -270,6 +289,13 @@ class WorkflowConfigService {
       merged.autoRetry = {
         ...merged.autoRetry,
         ...tenantConfig.autoRetry,
+      };
+    }
+
+    if (tenantConfig.batchPolicy) {
+      merged.batchPolicy = {
+        ...merged.batchPolicy,
+        ...tenantConfig.batchPolicy,
       };
     }
 

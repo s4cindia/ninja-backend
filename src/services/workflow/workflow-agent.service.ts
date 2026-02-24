@@ -13,9 +13,14 @@ import { s3Service } from '../s3.service';
 import { epubAuditService } from '../epub/epub-audit.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoRemediationService } from '../epub/auto-remediation.service';
+import { remediationService } from '../epub/remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
+import { pdfRemediationService } from '../pdf/pdf-remediation.service';
+import { acrGeneratorService } from '../acr/acr-generator.service';
+import type { AuditIssueInput } from '../acr/wcag-issue-mapper.service';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
+import type { BatchAutoApprovalPolicy } from '../../types/workflow-contracts';
 
 /**
  * Workflow automation agent service.
@@ -264,6 +269,12 @@ class WorkflowAgentService {
           await this.handleAwaitingAcrSignoff(workflow);
           break;
 
+        case 'RETRYING':
+          // Immediately advance to PREPROCESSING to restart the workflow
+          logger.info(`[WorkflowAgent] Auto-advancing RETRYING workflow ${workflow.id} to PREPROCESSING`);
+          await enqueueWorkflowEvent(workflow.id, 'RETRY_EXECUTE');
+          break;
+
         case 'COMPLETED':
         case 'FAILED':
         case 'CANCELLED':
@@ -296,6 +307,11 @@ class WorkflowAgentService {
             retryable: true,
             retryCount: transitioned.retryCount,
           });
+        }
+
+        // Apply batch error strategy if this workflow belongs to a batch
+        if (transitioned.batchId) {
+          await this.handleBatchWorkflowError(transitioned, error);
         }
       } catch (transitionError) {
         logger.error(`[WorkflowAgent] Failed to transition to ERROR state:`, transitionError);
@@ -471,6 +487,13 @@ class WorkflowAgentService {
   private async handleAwaitingAiReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting AI review (HITL gate)`);
 
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'AI_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving AI review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'AI_ACCEPTED', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
+
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
       websocketService.emitHITLRequired({
@@ -510,6 +533,24 @@ class WorkflowAgentService {
 
     // Run appropriate remediation service
     const isEpub = file.mimeType.includes('epub');
+
+    // Ensure a remediation plan exists before running auto-remediation.
+    // The plan is normally created by the old batch pipeline but must be
+    // created explicitly in the agentic workflow.
+    if (isEpub) {
+      const existingPlan = await remediationService.getRemediationPlan(stateData.jobId);
+      if (!existingPlan) {
+        logger.info(`[WorkflowAgent] No remediation plan found for job ${stateData.jobId}, creating one`);
+        await remediationService.createRemediationPlan(stateData.jobId);
+      }
+    } else {
+      try {
+        await pdfRemediationService.getRemediationPlan(stateData.jobId);
+      } catch {
+        logger.info(`[WorkflowAgent] No PDF remediation plan found for job ${stateData.jobId}, creating one`);
+        await pdfRemediationService.createRemediationPlan(stateData.jobId);
+      }
+    }
 
     if (isEpub) {
       // EPUB remediation
@@ -612,6 +653,13 @@ class WorkflowAgentService {
    */
   private async handleAwaitingRemediationReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting remediation review (HITL gate)`);
+
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'REMEDIATION_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving remediation review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_APPROVED', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
 
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
@@ -724,15 +772,86 @@ class WorkflowAgentService {
 
   /**
    * Handle CONFORMANCE_MAPPING state.
-   * Maps accessibility issues to WCAG/Section 508 criteria.
+   * Maps accessibility audit issues to WCAG 2.1 criteria for human review.
    */
   private async handleConformanceMapping(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Running conformance mapping for workflow ${workflow.id}`);
 
-    // NOTE: Actual conformance mapping happens in ACR service
-    // This is placeholder - actual integration will map issues to standards
+    const stateData = workflow.stateData as { jobId?: string };
+    if (!stateData.jobId) {
+      throw new Error('Job ID not found in workflow state');
+    }
 
-    logger.info(`[WorkflowAgent] Conformance mapping completed (placeholder)`);
+    // Load the audit job output to get the issues
+    const job = await prisma.job.findUnique({
+      where: { id: stateData.jobId },
+      select: { output: true },
+    });
+
+    if (!job?.output) {
+      throw new Error('Audit results not found for conformance mapping');
+    }
+
+    const auditData = job.output as Record<string, unknown>;
+
+    // EPUB audits use combinedIssues; PDF audits use issues
+    const rawIssues = (
+      (auditData.combinedIssues as unknown[]) ??
+      (auditData.issues as unknown[]) ??
+      []
+    ) as Array<Record<string, unknown>>;
+
+    // Normalise to AuditIssueInput
+    const auditIssues: AuditIssueInput[] = rawIssues.map((issue, idx) => ({
+      id: (issue.id as string) ?? `issue-${idx}`,
+      ruleId: (issue.ruleId as string) ?? (issue.code as string) ?? 'unknown',
+      impact: (issue.impact as string) ?? (issue.severity as string) ?? 'moderate',
+      message: (issue.message as string) ?? (issue.description as string) ?? '',
+      filePath: (issue.filePath as string) ?? (issue.location as string) ?? '',
+      htmlSnippet: (issue.htmlSnippet as string) ?? null,
+      xpath: (issue.xpath as string) ?? null,
+    }));
+
+    logger.info(`[WorkflowAgent] Mapping ${auditIssues.length} issues to WCAG criteria`);
+
+    // Generate per-criterion conformance using the ACR confidence engine
+    const criteriaResults = await acrGeneratorService.generateConfidenceAnalysis(
+      'VPAT2.5-INT',
+      auditIssues
+    );
+
+    // Map to the shape the ConformanceReviewPage expects
+    const statusToAiConformance = (
+      status: string
+    ): 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' => {
+      if (status === 'pass') return 'supports';
+      if (status === 'fail') return 'does_not_support';
+      if (status === 'needs_review') return 'partially_supports';
+      return 'not_applicable';
+    };
+
+    const conformanceMappings = criteriaResults.map(c => ({
+      criterionId: c.criterionId,
+      title: c.name,
+      level: c.level,
+      aiConformance: statusToAiConformance(c.status),
+      confidence: c.confidenceScore / 100, // store as 0-1
+      reasoning: c.remarks,
+      issueCount: c.issueCount ?? 0,
+    }));
+
+    // Persist mappings in workflow state
+    await prisma.workflowInstance.update({
+      where: { id: workflow.id },
+      data: {
+        stateData: {
+          ...(workflow.stateData as Record<string, unknown>),
+          conformanceMappings,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    logger.info(`[WorkflowAgent] Conformance mapping completed: ${conformanceMappings.length} criteria`);
     await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_DONE');
   }
 
@@ -742,6 +861,13 @@ class WorkflowAgentService {
    */
   private async handleAwaitingConformanceReview(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting conformance review (HITL gate)`);
+
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'CONFORMANCE_REVIEW')) {
+      logger.info(`[WorkflowAgent] Auto-approving conformance review for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_APPROVED', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
 
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
@@ -973,6 +1099,13 @@ class WorkflowAgentService {
   private async handleAwaitingAcrSignoff(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Workflow ${workflow.id} awaiting ACR signoff (HITL gate - manual approval)`);
 
+    // Check if batch policy auto-approves this gate
+    if (await this.shouldAutoApprove(workflow, 'ACR_SIGNOFF')) {
+      logger.info(`[WorkflowAgent] Auto-approving ACR signoff for batch workflow ${workflow.id}`);
+      await enqueueWorkflowEvent(workflow.id, 'ACR_SIGNED', { autoApproved: true, batchAutoApproval: true });
+      return;
+    }
+
     // Emit WebSocket event to notify frontend
     if (config.features.enableWebSocket) {
       websocketService.emitHITLRequired({
@@ -981,6 +1114,129 @@ class WorkflowAgentService {
         itemCount: 1, // Single ACR document to sign off
         deepLink: `/workflow/${workflow.id}/hitl/acr-signoff`,
       });
+    }
+  }
+
+  /**
+   * Check whether the batch auto-approval policy permits skipping a specific HITL gate.
+   *
+   * @param workflow - Current workflow instance (must have batchId set).
+   * @param gate - The HITL gate key to check.
+   * @returns True if the batch policy has 'auto-accept' for this gate.
+   */
+  private async shouldAutoApprove(
+    workflow: WorkflowInstance,
+    gate: keyof BatchAutoApprovalPolicy['gates']
+  ): Promise<boolean> {
+    if (!workflow.batchId) return false;
+
+    const batch = await prisma.batchWorkflow.findUnique({
+      where: { id: workflow.batchId },
+      select: { autoApprovalPolicy: true },
+    });
+
+    if (!batch?.autoApprovalPolicy) return false;
+
+    const policy = batch.autoApprovalPolicy as unknown as BatchAutoApprovalPolicy;
+    return policy.gates[gate] === 'auto-accept';
+  }
+
+  /**
+   * Handle a workflow error according to the batch's configured error strategy.
+   * Called from the main error handler when the workflow belongs to a batch.
+   *
+   * Strategies:
+   *  - 'pause-batch'     — pause all RUNNING/AWAITING siblings.
+   *  - 'continue-others' — do nothing; siblings keep processing independently.
+   *  - 'fail-batch'      — cancel all non-terminal siblings immediately.
+   */
+  private async handleBatchWorkflowError(
+    workflow: WorkflowInstance,
+    error: unknown
+  ): Promise<void> {
+    if (!workflow.batchId) return;
+
+    const batch = await prisma.batchWorkflow.findUnique({
+      where: { id: workflow.batchId },
+      select: { autoApprovalPolicy: true, status: true },
+    });
+
+    if (!batch?.autoApprovalPolicy) return;
+
+    const policy = batch.autoApprovalPolicy as unknown as BatchAutoApprovalPolicy;
+    const strategy = policy.onError;
+
+    logger.info(
+      `[WorkflowAgent] Batch error strategy '${strategy}' triggered for batch ${workflow.batchId}` +
+      ` after workflow ${workflow.id} failed`,
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+
+    const NON_TERMINAL_STATES = [
+      'UPLOAD_RECEIVED', 'PREPROCESSING', 'RUNNING_EPUBCHECK', 'RUNNING_ACE',
+      'RUNNING_AI_ANALYSIS', 'AWAITING_AI_REVIEW', 'AUTO_REMEDIATION',
+      'AWAITING_REMEDIATION_REVIEW', 'VERIFICATION_AUDIT', 'CONFORMANCE_MAPPING',
+      'AWAITING_CONFORMANCE_REVIEW', 'ACR_GENERATION', 'AWAITING_ACR_SIGNOFF',
+      'RETRYING',
+    ];
+
+    if (strategy === 'pause-batch') {
+      // Pause all non-terminal siblings
+      const siblings = await prisma.workflowInstance.findMany({
+        where: {
+          batchId: workflow.batchId,
+          id: { not: workflow.id },
+          currentState: { in: NON_TERMINAL_STATES },
+        },
+        select: { id: true },
+      });
+
+      await Promise.all(
+        siblings.map(s => enqueueWorkflowEvent(s.id, 'PAUSE').catch(err =>
+          logger.error(`[WorkflowAgent] Failed to pause sibling ${s.id}:`, err)
+        ))
+      );
+
+      await prisma.batchWorkflow.update({
+        where: { id: workflow.batchId },
+        data: { status: 'PAUSED' },
+      });
+
+      logger.info(
+        `[WorkflowAgent] Paused ${siblings.length} sibling workflows and set batch status to PAUSED`
+      );
+
+    } else if (strategy === 'fail-batch') {
+      // Cancel all non-terminal siblings
+      const siblings = await prisma.workflowInstance.findMany({
+        where: {
+          batchId: workflow.batchId,
+          id: { not: workflow.id },
+          currentState: { in: NON_TERMINAL_STATES },
+        },
+        select: { id: true },
+      });
+
+      await Promise.all(
+        siblings.map(s => enqueueWorkflowEvent(s.id, 'CANCEL').catch(err =>
+          logger.error(`[WorkflowAgent] Failed to cancel sibling ${s.id}:`, err)
+        ))
+      );
+
+      await prisma.batchWorkflow.update({
+        where: { id: workflow.batchId },
+        data: { status: 'CANCELLED', completedAt: new Date() },
+      });
+
+      logger.info(
+        `[WorkflowAgent] Cancelled ${siblings.length} sibling workflows and set batch status to CANCELLED`
+      );
+
+    } else {
+      // 'continue-others' — do nothing, siblings continue independently
+      logger.info(
+        `[WorkflowAgent] Batch error strategy 'continue-others': siblings continue processing`
+      );
     }
   }
 }

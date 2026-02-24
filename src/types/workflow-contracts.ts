@@ -96,6 +96,39 @@ export const ConfidenceLevel = {
 export type ConfidenceLevel = typeof ConfidenceLevel[keyof typeof ConfidenceLevel];
 
 // ============================================================
+// BATCH AGENTIC POLICY TYPES
+// ============================================================
+
+/**
+ * Per-gate approval policy for batch agentic workflows.
+ * 'auto-accept' — gate is skipped (machine approves automatically).
+ * 'require-manual' — gate pauses for human review (default behavior).
+ */
+export type BatchGatePolicy = 'auto-accept' | 'require-manual';
+
+/**
+ * Error handling strategy when a workflow within a batch fails.
+ * 'pause-batch'     — pause all non-terminal sibling workflows.
+ * 'continue-others' — only the failing workflow is marked FAILED; others continue.
+ * 'fail-batch'      — immediately cancel all non-terminal sibling workflows.
+ */
+export type BatchErrorStrategy = 'pause-batch' | 'continue-others' | 'fail-batch';
+
+/**
+ * Defines the automatic-approval and error-handling behaviour for a batch run.
+ * Stored in BatchWorkflow.autoApprovalPolicy (JSON).
+ */
+export interface BatchAutoApprovalPolicy {
+  gates: {
+    AI_REVIEW?: BatchGatePolicy;
+    REMEDIATION_REVIEW?: BatchGatePolicy;
+    CONFORMANCE_REVIEW?: BatchGatePolicy;
+    ACR_SIGNOFF?: BatchGatePolicy;
+  };
+  onError: BatchErrorStrategy;
+}
+
+// ============================================================
 // CORE DOMAIN INTERFACES
 // ============================================================
 
@@ -179,9 +212,10 @@ export interface RemediationReviewRequest {
 export interface ConformanceReviewRequest {
   decisions: Array<{
     criterionId: string;
-    decision: 'CONFIRM' | 'OVERRIDE';
-    overrideValue?: string;            // New conformance level
-    justification?: string;            // Required for OVERRIDE
+    decision: 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' | 'CONFIRM' | 'OVERRIDE';
+    overrideValue?: string;
+    justification?: string;
+    notes?: string;
   }>;
 }
 
@@ -200,6 +234,7 @@ export interface StartBatchRequest {
   fileIds: string[];
   concurrency?: number;                // Default: 3
   vpatEditions?: string[];
+  autoApprovalPolicy?: BatchAutoApprovalPolicy;
 }
 
 // ============================================================
@@ -270,6 +305,7 @@ export interface BatchDashboardResponse {
   };
   startedAt: string;
   completedAt?: string;
+  autoApprovalPolicy?: BatchAutoApprovalPolicy;
 }
 
 // ============================================================
@@ -342,7 +378,7 @@ export const hitlActionSchema = z.enum([
 ]);
 
 export const startWorkflowSchema = z.object({
-  fileId: z.string().uuid('fileId must be a valid UUID'),
+  fileId: z.string().min(1, 'fileId is required'),
   vpatEditions: z.array(z.string()).optional(),
 });
 
@@ -371,9 +407,10 @@ export const remediationReviewSchema = z.object({
 export const conformanceReviewSchema = z.object({
   decisions: z.array(z.object({
     criterionId: z.string(),
-    decision: z.enum(['CONFIRM', 'OVERRIDE']),
+    decision: z.enum(['supports', 'partially_supports', 'does_not_support', 'not_applicable', 'CONFIRM', 'OVERRIDE']),
     overrideValue: z.string().optional(),
     justification: z.string().optional(),
+    notes: z.string().optional(),
   })).min(1),
 });
 
@@ -385,11 +422,26 @@ export const acrSignoffSchema = z.object({
   notes: z.string().optional(),
 });
 
+export const batchGatePolicySchema = z.enum(['auto-accept', 'require-manual']);
+
+export const batchErrorStrategySchema = z.enum(['pause-batch', 'continue-others', 'fail-batch']);
+
+export const batchAutoApprovalPolicySchema = z.object({
+  gates: z.object({
+    AI_REVIEW: batchGatePolicySchema.optional(),
+    REMEDIATION_REVIEW: batchGatePolicySchema.optional(),
+    CONFORMANCE_REVIEW: batchGatePolicySchema.optional(),
+    ACR_SIGNOFF: batchGatePolicySchema.optional(),
+  }),
+  onError: batchErrorStrategySchema,
+});
+
 export const startBatchSchema = z.object({
   name: z.string().min(1, 'Batch name is required'),
-  fileIds: z.array(z.string().uuid()).min(1, 'At least one file required'),
+  fileIds: z.array(z.string().min(1)).min(1, 'At least one file required'),
   concurrency: z.number().int().min(1).max(10).default(3),
   vpatEditions: z.array(z.string()).optional(),
+  autoApprovalPolicy: batchAutoApprovalPolicySchema.optional(),
 });
 
 export const workflowParamsSchema = z.object({

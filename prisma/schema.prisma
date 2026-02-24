@@ -1400,15 +1400,16 @@ model WorkflowInstance {
 }
 
 model BatchWorkflow {
-  id          String    @id @default(uuid())
-  name        String
-  totalFiles  Int
-  concurrency Int       @default(3)
-  status      String    @default("PENDING")
-  createdBy   String
-  user        User      @relation(fields: [createdBy], references: [id])
-  startedAt   DateTime  @default(now())
-  completedAt DateTime?
+  id                 String    @id @default(uuid())
+  name               String
+  totalFiles         Int
+  concurrency        Int       @default(3)
+  status             String    @default("PENDING")
+  createdBy          String
+  user               User      @relation(fields: [createdBy], references: [id])
+  startedAt          DateTime  @default(now())
+  completedAt        DateTime?
+  autoApprovalPolicy Json?
 
   workflows WorkflowInstance[]
 

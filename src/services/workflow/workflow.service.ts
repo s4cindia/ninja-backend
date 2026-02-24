@@ -113,6 +113,9 @@ class WorkflowService {
           currentState: newState,
           stateData: mergedStateData as unknown as Prisma.InputJsonValue,
           ...(newState === 'COMPLETED' ? { completedAt: new Date() } : {}),
+          ...(newState === 'FAILED' && payload?.errorMessage
+            ? { errorMessage: String((payload as Record<string, unknown>).errorMessage) }
+            : {}),
         },
       }),
       prisma.workflowEvent.create({
