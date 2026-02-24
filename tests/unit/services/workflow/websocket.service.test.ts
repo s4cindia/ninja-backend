@@ -20,48 +20,53 @@ describe('WebSocketService', () => {
   let port: number;
   let clientSocket: ClientSocket;
 
-  beforeEach((done) => {
+  beforeEach(() => new Promise<void>((resolve) => {
     httpServer = createServer();
     httpServer.listen(() => {
       port = (httpServer.address() as AddressInfo).port;
       websocketService.initialize(httpServer);
-      done();
+      resolve();
     });
-  });
+  }));
 
-  afterEach((done) => {
+  afterEach(() => new Promise<void>((resolve) => {
     if (clientSocket?.connected) {
       clientSocket.disconnect();
     }
-    // Close the io server before the http server to avoid lingering handles
-    (websocketService as unknown as { io: { close: () => void } | null }).io?.close();
-    httpServer.close(done);
-  });
+    // Close the socket.io server before the http server
+    (websocketService as unknown as { io: { close: (cb: () => void) => void } | null }).io?.close(() => {
+      httpServer.close(() => resolve());
+    });
+    // If io is null, just close the http server
+    if (!(websocketService as unknown as { io: unknown }).io) {
+      httpServer.close(() => resolve());
+    }
+  }));
 
   describe('initialization', () => {
-    it('should initialize with HTTP server', (done) => {
+    it('should initialize with HTTP server', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
         expect(clientSocket.connected).toBe(true);
-        done();
+        resolve();
       });
-    });
+    }));
 
-    it('should accept WebSocket and polling transports', (done) => {
+    it('should accept WebSocket and polling transports', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`, {
         transports: ['websocket', 'polling'],
       });
 
       clientSocket.on('connect', () => {
         expect(clientSocket.connected).toBe(true);
-        done();
+        resolve();
       });
-    });
+    }));
   });
 
   describe('subscription handling', () => {
-    it('should allow subscription to workflow room with valid UUID', (done) => {
+    it('should allow subscription to workflow room with valid UUID', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       const workflowId = '12345678-1234-1234-1234-123456789012';
@@ -72,12 +77,12 @@ describe('WebSocketService', () => {
         // Wait a bit for subscription to process
         setTimeout(() => {
           // If no error emitted, subscription succeeded
-          done();
+          resolve();
         }, 100);
       });
-    });
+    }));
 
-    it('should allow subscription to batch room with valid UUID', (done) => {
+    it('should allow subscription to batch room with valid UUID', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       const batchId = '87654321-4321-4321-4321-210987654321';
@@ -86,38 +91,38 @@ describe('WebSocketService', () => {
         clientSocket.emit('subscribe:batch', batchId);
 
         setTimeout(() => {
-          done();
+          resolve();
         }, 100);
       });
-    });
+    }));
 
-    it('should reject subscription with invalid workflow UUID', (done) => {
+    it('should reject subscription with invalid workflow UUID', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
         clientSocket.on('error', (error: Record<string, unknown>) => {
           expect((error as { message: string }).message).toBe('Invalid workflow ID format');
-          done();
+          resolve();
         });
 
         clientSocket.emit('subscribe:workflow', 'invalid-uuid');
       });
-    });
+    }));
 
-    it('should reject subscription with invalid batch UUID', (done) => {
+    it('should reject subscription with invalid batch UUID', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
         clientSocket.on('error', (error: Record<string, unknown>) => {
           expect((error as { message: string }).message).toBe('Invalid batch ID format');
-          done();
+          resolve();
         });
 
         clientSocket.emit('subscribe:batch', 'not-a-uuid');
       });
-    });
+    }));
 
-    it('should enforce max 10 subscriptions per socket', (done) => {
+    it('should enforce max 10 subscriptions per socket', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
 
       clientSocket.on('connect', () => {
@@ -130,7 +135,7 @@ describe('WebSocketService', () => {
         // 11th subscription should fail
         clientSocket.on('error', (error: Record<string, unknown>) => {
           expect((error as { message: string }).message).toContain('Too many subscriptions');
-          done();
+          resolve();
         });
 
         setTimeout(() => {
@@ -138,11 +143,11 @@ describe('WebSocketService', () => {
           clientSocket.emit('subscribe:workflow', uuid);
         }, 200);
       });
-    });
+    }));
   });
 
   describe('event emission', () => {
-    it('should emit state change event to subscribed workflow room', (done) => {
+    it('should emit state change event to subscribed workflow room', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
       const workflowId = '12345678-1234-1234-1234-123456789012';
 
@@ -154,7 +159,7 @@ describe('WebSocketService', () => {
           expect(event.from).toBe('PREPROCESSING');
           expect(event.to).toBe('RUNNING_EPUBCHECK');
           expect(event.phase).toBe('audit');
-          done();
+          resolve();
         });
 
         // Emit event after subscription
@@ -168,9 +173,9 @@ describe('WebSocketService', () => {
           });
         }, 100);
       });
-    });
+    }));
 
-    it('should emit HITL required event to subscribed workflow room', (done) => {
+    it('should emit HITL required event to subscribed workflow room', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
       const workflowId = '12345678-1234-1234-1234-123456789012';
 
@@ -181,7 +186,7 @@ describe('WebSocketService', () => {
           expect(event.workflowId).toBe(workflowId);
           expect(event.gate).toBe('AI_REVIEW');
           expect(event.itemCount).toBe(5);
-          done();
+          resolve();
         });
 
         setTimeout(() => {
@@ -193,9 +198,9 @@ describe('WebSocketService', () => {
           });
         }, 100);
       });
-    });
+    }));
 
-    it('should emit remediation progress event', (done) => {
+    it('should emit remediation progress event', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
       const workflowId = '12345678-1234-1234-1234-123456789012';
 
@@ -207,7 +212,7 @@ describe('WebSocketService', () => {
           expect(event.autoFixed).toBe(10);
           expect(event.manualPending).toBe(3);
           expect(event.total).toBe(13);
-          done();
+          resolve();
         });
 
         setTimeout(() => {
@@ -220,9 +225,9 @@ describe('WebSocketService', () => {
           });
         }, 100);
       });
-    });
+    }));
 
-    it('should emit error event', (done) => {
+    it('should emit error event', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
       const workflowId = '12345678-1234-1234-1234-123456789012';
 
@@ -234,7 +239,7 @@ describe('WebSocketService', () => {
           expect(event.error).toBe('EPUBCheck validation failed');
           expect(event.state).toBe('FAILED');
           expect(event.retryable).toBe(true);
-          done();
+          resolve();
         });
 
         setTimeout(() => {
@@ -247,9 +252,9 @@ describe('WebSocketService', () => {
           });
         }, 100);
       });
-    });
+    }));
 
-    it('should emit batch progress event', (done) => {
+    it('should emit batch progress event', () => new Promise<void>((resolve) => {
       clientSocket = ioClient(`http://localhost:${port}`);
       const batchId = '12345678-1234-1234-1234-123456789012';
 
@@ -261,7 +266,7 @@ describe('WebSocketService', () => {
           expect(event.completed).toBe(5);
           expect(event.total).toBe(10);
           expect(event.failedCount).toBe(1);
-          done();
+          resolve();
         });
 
         setTimeout(() => {
@@ -274,9 +279,9 @@ describe('WebSocketService', () => {
           });
         }, 100);
       });
-    });
+    }));
 
-    it('should NOT emit to unsubscribed clients', (done) => {
+    it('should NOT emit to unsubscribed clients', () => new Promise<void>((resolve) => {
       const client1 = ioClient(`http://localhost:${port}`);
       const client2 = ioClient(`http://localhost:${port}`);
 
@@ -316,10 +321,10 @@ describe('WebSocketService', () => {
           expect(client2Received).toBe(false);
           client1.disconnect();
           client2.disconnect();
-          done();
+          resolve();
         }, 100);
       }, 200);
-    });
+    }));
   });
 
   describe('metrics', () => {
