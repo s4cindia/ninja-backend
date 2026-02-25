@@ -3136,6 +3136,27 @@ class DOCXProcessorService {
             }
           }
 
+          // Handle REFERENCE_REORDER - full reference section reordering by content matching
+          if (change.type === 'REFERENCE_REORDER' && change.beforeText) {
+            try {
+              const refOrder = JSON.parse(change.beforeText) as Array<{ position: number; contentStart: string }>;
+              for (const ref of refOrder) {
+                // Use dummy old positions so all entries are processed
+                // contentStart is used for paragraph matching; position determines final order
+                referenceReorderMap.push({
+                  oldPosition: 0, // not used for matching
+                  newPosition: ref.position,
+                  content: ref.contentStart,
+                  contentStart: ref.contentStart
+                });
+              }
+              logger.info(`[DOCXProcessor] REFERENCE_REORDER: ${refOrder.length} references to reorder`);
+            } catch (e) {
+              logger.warn(`[DOCXProcessor] Failed to parse REFERENCE_REORDER data`, e);
+            }
+            continue;
+          }
+
           // Handle RENUMBER changes for reference list - collect for reordering
           if (change.type === 'RENUMBER' && change.beforeText && change.afterText) {
             const beforeMatch = change.beforeText.match(/^\[(\d+)\]\s*(.+)$/s);

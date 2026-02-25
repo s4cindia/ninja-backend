@@ -9,6 +9,7 @@
  * - POST /document/:documentId/resequence - Resequence by appearance
  */
 
+import { randomUUID } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Prisma, PrismaPromise } from '@prisma/client';
 import prisma from '../../lib/prisma';
@@ -282,6 +283,51 @@ export class CitationReferenceController {
         if (renumberChanges.length > 0) {
           await prisma.citationChange.createMany({ data: renumberChanges });
         }
+        // Note: Reference section reordering is handled at export time via REFERENCE_REORDER
+        // in the export controller, which builds a complete reorder map from the current DB state.
+
+        // Update existing INTEXT_STYLE_CONVERSION changes to reflect new numbering
+        // When refs are reordered, the afterText of style conversions becomes stale
+        // e.g., Chicago: (2)→² must become (3)→³ if ref 2 moved to position 3
+        const activeStyleConversions = await prisma.citationChange.findMany({
+          where: {
+            documentId,
+            changeType: 'INTEXT_STYLE_CONVERSION',
+            isReverted: false,
+            citationId: { not: null }
+          }
+        });
+
+        if (activeStyleConversions.length > 0) {
+          const styleUpdateOps: PrismaPromise<unknown>[] = [];
+
+          for (const sc of activeStyleConversions) {
+            const citUpdate = citationUpdates.find(u => u.id === sc.citationId);
+            if (!citUpdate) continue; // Citation wasn't affected by reorder
+
+            // Update beforeText to match citation's new rawText
+            const newBeforeText = citUpdate.newRawText;
+
+            // Rebuild afterText using the citation's new number in the same style format
+            const newAfterText = this.rebuildStyledText(
+              sc.afterText || '', citUpdate.newRawText
+            );
+
+            if (newBeforeText !== sc.beforeText || newAfterText !== sc.afterText) {
+              logger.info(`[CitationReference] Updating INTEXT_STYLE_CONVERSION for citation ${sc.citationId}: before "${sc.beforeText}"→"${newBeforeText}", after "${sc.afterText}"→"${newAfterText}"`);
+              styleUpdateOps.push(
+                prisma.citationChange.update({
+                  where: { id: sc.id },
+                  data: { beforeText: newBeforeText, afterText: newAfterText }
+                })
+              );
+            }
+          }
+
+          if (styleUpdateOps.length > 0) {
+            await prisma.$transaction(styleUpdateOps);
+          }
+        }
       }
 
       // Fetch and return updated data
@@ -480,10 +526,41 @@ export class CitationReferenceController {
             beforeText: deleteBeforeText,
             afterText: '', // Empty for deletions - no "after" text
             // Store structured metadata separately for export processing
+            // Includes full reference data for undo/dismiss restore
             metadata: {
               position: deletedPosition,
               style: docStyle,
-              isFootnoteStyle: isChicagoStyle
+              isFootnoteStyle: isChicagoStyle,
+              // Full reference data for undo restore
+              referenceId: referenceId,
+              referenceData: {
+                authors: referenceToDelete.authors,
+                year: referenceToDelete.year,
+                title: referenceToDelete.title,
+                sourceType: referenceToDelete.sourceType,
+                journalName: referenceToDelete.journalName,
+                volume: referenceToDelete.volume,
+                issue: referenceToDelete.issue,
+                pages: referenceToDelete.pages,
+                publisher: referenceToDelete.publisher,
+                doi: referenceToDelete.doi,
+                url: referenceToDelete.url,
+                enrichmentSource: referenceToDelete.enrichmentSource,
+                enrichmentConfidence: referenceToDelete.enrichmentConfidence,
+                formattedApa: referenceToDelete.formattedApa,
+                formattedMla: referenceToDelete.formattedMla,
+                formattedChicago: referenceToDelete.formattedChicago,
+                formattedVancouver: referenceToDelete.formattedVancouver,
+                formattedIeee: referenceToDelete.formattedIeee,
+                sortKey: referenceToDelete.sortKey,
+              },
+              // Store the old→new number map for reversing renumber
+              renumberMap: Object.fromEntries(oldToNewNumber),
+              // Store citation text updates for restoration
+              citationUpdates: citationUpdates.map(u => ({ id: u.id, oldRawText: u.oldRawText, newRawText: u.newRawText })),
+              // Store original fullHtml/fullText for perfect restoration
+              oldFullHtml: referenceToDelete.document.documentContent?.fullHtml || null,
+              oldFullText: referenceToDelete.document.documentContent?.fullText || null,
             },
             appliedBy: 'user',
             isReverted: false
@@ -1299,7 +1376,9 @@ export class CitationReferenceController {
 
   /**
    * POST /api/v1/citation-management/document/:documentId/dismiss-changes
-   * Dismiss specific changes by their IDs (mark as reverted without undoing the actual change)
+   * Dismiss specific changes by their IDs.
+   * For DELETE changes: performs a full undo (recreates reference, restores citations, restores HTML).
+   * For other changes: marks as reverted (soft dismiss).
    */
   async dismissChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
@@ -1322,25 +1401,233 @@ export class CitationReferenceController {
 
       const resolvedDocId = document.id;
 
-      // Mark selected changes as reverted (soft delete - keeps history)
-      const result = await prisma.citationChange.updateMany({
+      // Fetch the actual changes to check if any are DELETE type
+      const changes = await prisma.citationChange.findMany({
         where: {
           id: { in: changeIds },
           documentId: resolvedDocId,
           isReverted: false
-        },
-        data: {
-          isReverted: true
         }
       });
 
-      logger.info(`[CitationReference] Dismissed ${result.count} changes for document ${resolvedDocId}`);
+      if (changes.length === 0) {
+        res.json({
+          success: true,
+          data: { message: 'No changes to dismiss', dismissedCount: 0 }
+        });
+        return;
+      }
+
+      // Check for DELETE changes that need full undo (appliedBy: 'user' means it's the reference deletion)
+      const deleteChanges = changes.filter(c => c.changeType === 'DELETE' && c.appliedBy === 'user');
+      const nonDeleteChangeIds = changes.filter(c => !(c.changeType === 'DELETE' && c.appliedBy === 'user')).map(c => c.id);
+
+      let totalDismissed = 0;
+      let referencesRestored = 0;
+
+      // Handle full undo for DELETE changes
+      for (const deleteChange of deleteChanges) {
+        const metadata = deleteChange.metadata as Record<string, unknown> | null;
+        const deletedPosition = (metadata?.position as number) || 0;
+        const hasFullData = !!metadata?.referenceData;
+
+        // Build reference data: from stored metadata (new format) or parsed from beforeText (legacy)
+        let refData: Record<string, unknown>;
+        let refId: string;
+        let storedCitationUpdates: Array<{ id: string; oldRawText: string; newRawText: string }>;
+        let oldFullHtml: string | null;
+        let oldFullText: string | null;
+
+        if (hasFullData) {
+          refData = metadata!.referenceData as Record<string, unknown>;
+          refId = metadata!.referenceId as string;
+          storedCitationUpdates = (metadata!.citationUpdates || []) as Array<{ id: string; oldRawText: string; newRawText: string }>;
+          oldFullHtml = metadata!.oldFullHtml as string | null;
+          oldFullText = metadata!.oldFullText as string | null;
+        } else {
+          // Legacy DELETE change: parse reference from beforeText
+          logger.info(`[CitationReference] Legacy DELETE change ${deleteChange.id}: parsing reference from beforeText`);
+          const parsed = this.parseReferenceFromBeforeText(deleteChange.beforeText || '', deletedPosition);
+          // Use a fractional sortKey that slots BEFORE the current ref at this position
+          // e.g., position 2 → "0001.5" so it sorts between "0001" and "0002"
+          const insertSortKey = deletedPosition > 1
+            ? String(deletedPosition - 1).padStart(4, '0') + '.5'
+            : '0000.5';
+          refData = {
+            ...parsed,
+            sortKey: insertSortKey,
+            enrichmentSource: 'restored',
+            enrichmentConfidence: 0,
+          };
+          refId = randomUUID();
+          storedCitationUpdates = [];
+          oldFullHtml = null;
+          oldFullText = null;
+
+          // For legacy changes, find related system DELETE changes to restore citation text
+          const deleteAppliedAt = deleteChange.appliedAt;
+          const timeWindowMs = 5000;
+          const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
+          const windowEnd = new Date(deleteAppliedAt.getTime() + timeWindowMs);
+          const relatedSystemDeletes = await prisma.citationChange.findMany({
+            where: {
+              documentId: resolvedDocId,
+              changeType: 'DELETE',
+              appliedBy: 'system',
+              appliedAt: { gte: windowStart, lte: windowEnd },
+              citationId: { not: null }
+            }
+          });
+          for (const sysDel of relatedSystemDeletes) {
+            if (sysDel.citationId && sysDel.beforeText) {
+              storedCitationUpdates.push({
+                id: sysDel.citationId,
+                oldRawText: sysDel.beforeText,
+                newRawText: ''
+              });
+            }
+          }
+          logger.info(`[CitationReference] Found ${relatedSystemDeletes.length} related system DELETE changes for citation restoration`);
+        }
+
+        logger.info(`[CitationReference] Full undo of DELETE change ${deleteChange.id}: restoring reference at position ${deletedPosition} (${hasFullData ? 'full metadata' : 'legacy parsed'})`);
+
+        await prisma.$transaction(async (tx) => {
+          // 1. Use a temporary sortKey to avoid conflicts, will be fixed in step 2
+          await tx.referenceListEntry.create({
+            data: {
+              id: refId,
+              documentId: resolvedDocId,
+              sortKey: '9999', // Temporary, overwritten in step 2
+              authors: (refData.authors || []) as Prisma.InputJsonValue,
+              year: (refData.year as string) || null,
+              title: (refData.title as string) || '',
+              sourceType: (refData.sourceType as string) && (refData.sourceType as string) !== 'unknown'
+                ? (refData.sourceType as string) : 'journal_article',
+              journalName: (refData.journalName as string) || null,
+              volume: (refData.volume as string) || null,
+              issue: (refData.issue as string) || null,
+              pages: (refData.pages as string) || null,
+              publisher: (refData.publisher as string) || null,
+              doi: (refData.doi as string) || null,
+              url: (refData.url as string) || null,
+              enrichmentSource: (refData.enrichmentSource as string) || 'manual',
+              enrichmentConfidence: (refData.enrichmentConfidence as number) || 0,
+              formattedApa: (refData.formattedApa as string) || null,
+              formattedMla: (refData.formattedMla as string) || null,
+              formattedChicago: (refData.formattedChicago as string) || null,
+              formattedVancouver: (refData.formattedVancouver as string) || null,
+              formattedIeee: (refData.formattedIeee as string) || null,
+            }
+          });
+          logger.info(`[CitationReference] Recreated ReferenceListEntry ${refId}`);
+
+          // 2. Insert the restored ref at its original position and re-number all
+          // Get existing refs (excluding the restored one) in their current order
+          const existingRefs = await tx.referenceListEntry.findMany({
+            where: { documentId: resolvedDocId, id: { not: refId } },
+            orderBy: { sortKey: 'asc' }
+          });
+
+          // Insert restored ref at its original position (1-indexed)
+          const insertIdx = Math.max(0, Math.min(deletedPosition - 1, existingRefs.length));
+          const ordered = [...existingRefs];
+          ordered.splice(insertIdx, 0, { id: refId } as typeof existingRefs[0]);
+
+          // Assign sequential sortKeys
+          if (ordered.length > 0) {
+            const caseStatements = ordered
+              .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
+              .join(' ');
+            const allRefIds = ordered.map(ref => `'${ref.id}'`).join(',');
+
+            await tx.$executeRawUnsafe(`
+              UPDATE "ReferenceListEntry"
+              SET "sortKey" = CASE ${caseStatements} END
+              WHERE id IN (${allRefIds})
+            `);
+            logger.info(`[CitationReference] Inserted restored ref at position ${deletedPosition}, re-sorted ${ordered.length} references`);
+          }
+
+          // 3. Restore citation rawText values from stored citationUpdates
+          // For citations whose rawText was cleared to "", restore the original text
+          for (const update of storedCitationUpdates) {
+            const currentCitation = await tx.citation.findUnique({ where: { id: update.id } });
+            if (currentCitation && (!currentCitation.rawText || currentCitation.rawText === '')) {
+              await tx.citation.update({
+                where: { id: update.id },
+                data: { rawText: update.oldRawText }
+              });
+              logger.info(`[CitationReference] Restored citation ${update.id} rawText to "${update.oldRawText}"`);
+            }
+          }
+
+          // 4. Restore fullHtml/fullText from stored originals (only available for new-format changes)
+          if (oldFullHtml || oldFullText) {
+            const updateData: { fullHtml?: string; fullText?: string } = {};
+            if (oldFullHtml) updateData.fullHtml = oldFullHtml;
+            if (oldFullText) updateData.fullText = oldFullText;
+
+            await tx.editorialDocumentContent.update({
+              where: { documentId: resolvedDocId },
+              data: updateData
+            });
+            logger.info(`[CitationReference] Restored fullHtml/fullText from stored originals`);
+          }
+
+          // 5. Mark the DELETE change and all related changes (RENUMBER, system DELETE) as reverted
+          const deleteAppliedAt = deleteChange.appliedAt;
+          const timeWindowMs = 5000;
+          const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
+          const windowEnd = new Date(deleteAppliedAt.getTime() + timeWindowMs);
+
+          await tx.citationChange.updateMany({
+            where: {
+              documentId: resolvedDocId,
+              isReverted: false,
+              appliedAt: { gte: windowStart, lte: windowEnd },
+              changeType: { in: ['DELETE', 'RENUMBER'] }
+            },
+            data: { isReverted: true }
+          });
+          logger.info(`[CitationReference] Marked DELETE and related RENUMBER changes as reverted`);
+        }, { timeout: 30000 });
+
+        // 6. Rebuild citation-reference links outside the transaction
+        try {
+          await this.rebuildCitationLinks(resolvedDocId, tenantId);
+          logger.info(`[CitationReference] Rebuilt citation-reference links after restore`);
+        } catch (linkError) {
+          logger.warn(`[CitationReference] rebuildCitationLinks failed after restore`, linkError instanceof Error ? linkError : undefined);
+        }
+
+        referencesRestored++;
+        totalDismissed++;
+      }
+
+      // Handle non-DELETE changes with simple soft dismiss
+      if (nonDeleteChangeIds.length > 0) {
+        const result = await prisma.citationChange.updateMany({
+          where: {
+            id: { in: nonDeleteChangeIds },
+            documentId: resolvedDocId,
+            isReverted: false
+          },
+          data: { isReverted: true }
+        });
+        totalDismissed += result.count;
+      }
+
+      logger.info(`[CitationReference] Dismissed ${totalDismissed} changes (${referencesRestored} DELETE undone) for document ${resolvedDocId}`);
 
       res.json({
         success: true,
         data: {
-          message: `Dismissed ${result.count} change(s)`,
-          dismissedCount: result.count
+          message: referencesRestored > 0
+            ? `Restored ${referencesRestored} deleted reference(s) and dismissed ${totalDismissed} change(s)`
+            : `Dismissed ${totalDismissed} change(s)`,
+          dismissedCount: totalDismissed,
+          referencesRestored
         }
       });
     } catch (error) {
@@ -1388,57 +1675,170 @@ export class CitationReferenceController {
         return;
       }
 
-      // Build reference number to ID map
+      // === Links are the source of truth (tracker) ===
+      // Preserve healthy links. Detect and repair corrupted links using fullHtml as ground truth.
+
       const refNumToId = new Map<number, string>();
       for (const ref of document.referenceListEntries) {
         const num = parseInt(ref.sortKey) || 0;
         refNumToId.set(num, ref.id);
       }
 
-      // Create links for numeric citations
-      const linkData: { citationId: string; referenceListEntryId: string }[] = [];
-      for (const citation of document.citations) {
-        if (citation.citationType === 'NUMERIC') {
-          const nums = citation.rawText.match(/\d+/g);
-          if (nums) {
-            for (const numStr of nums) {
-              const num = parseInt(numStr, 10);
-              const refId = refNumToId.get(num);
-              if (refId) {
-                linkData.push({
-                  citationId: citation.id,
-                  referenceListEntryId: refId
+      // Get existing links
+      const existingLinks = await prisma.referenceListEntryCitation.findMany({
+        where: { citationId: { in: document.citations.map(c => c.id) } }
+      });
+      const citationLinks = new Map<string, string[]>();
+      for (const link of existingLinks) {
+        const refs = citationLinks.get(link.citationId) || [];
+        refs.push(link.referenceListEntryId);
+        citationLinks.set(link.citationId, refs);
+      }
+
+      // Detect corruption: duplicate rawText across citations, or rawText that doesn't match fullHtml
+      const rawTextCounts = new Map<string, number>();
+      for (const c of document.citations) {
+        if (c.citationType === 'NUMERIC') {
+          rawTextCounts.set(c.rawText, (rawTextCounts.get(c.rawText) || 0) + 1);
+        }
+      }
+      const hasDuplicates = [...rawTextCounts.values()].some(count => count > 1);
+
+      // Load fullHtml to find actual citation markers in the document
+      const docContent = await prisma.editorialDocumentContent.findUnique({
+        where: { documentId: baseDoc.id }
+      });
+      const fullHtml = docContent?.fullHtml || '';
+
+      // Extract actual citation numbers from fullHtml (parenthetical: "(1)", "(2)" etc.)
+      const citationPattern = /\((\d+)\)/g;
+      const foundInHtml: { num: number; pos: number }[] = [];
+      let match;
+      while ((match = citationPattern.exec(fullHtml)) !== null) {
+        const num = parseInt(match[1], 10);
+        // Only consider numbers within the reference range (avoid year numbers etc.)
+        if (num >= 1 && num <= document.referenceListEntries.length) {
+          foundInHtml.push({ num, pos: match.index });
+        }
+      }
+
+      let rawTextUpdated = 0;
+      let linksRepaired = 0;
+      let linksCreated = 0;
+
+      // If corruption detected AND we can match citations to fullHtml markers, repair
+      if (hasDuplicates && foundInHtml.length >= document.citations.filter(c => c.citationType === 'NUMERIC').length) {
+        logger.info(`[CitationReference] Detected corrupted rawText (duplicates found). Repairing using fullHtml (${foundInHtml.length} markers found)`);
+
+        // Citations are ordered by reading position (paragraphIndex, startOffset)
+        // fullHtml markers are ordered by position in HTML
+        // Match them 1:1 by reading order
+        const numericCitations = document.citations.filter(c => c.citationType === 'NUMERIC');
+
+        for (let i = 0; i < numericCitations.length && i < foundInHtml.length; i++) {
+          const citation = numericCitations[i];
+          const htmlMarker = foundInHtml[i];
+          const expectedRawText = `(${htmlMarker.num})`;
+          const expectedRefId = refNumToId.get(htmlMarker.num);
+
+          // Update rawText if stale
+          if (citation.rawText !== expectedRawText) {
+            logger.info(`[CitationReference] Repairing rawText for citation ${citation.id}: "${citation.rawText}" → "${expectedRawText}"`);
+            await prisma.citation.update({
+              where: { id: citation.id },
+              data: { rawText: expectedRawText }
+            });
+            citation.rawText = expectedRawText;
+            rawTextUpdated++;
+          }
+
+          // Repair link if pointing to wrong reference
+          if (expectedRefId) {
+            const currentRefs = citationLinks.get(citation.id) || [];
+            if (currentRefs.length !== 1 || currentRefs[0] !== expectedRefId) {
+              // Delete wrong links for this citation
+              await prisma.referenceListEntryCitation.deleteMany({
+                where: { citationId: citation.id }
+              });
+              // Create correct link
+              await prisma.referenceListEntryCitation.create({
+                data: { citationId: citation.id, referenceListEntryId: expectedRefId }
+              });
+              linksRepaired++;
+              logger.info(`[CitationReference] Repaired link for citation ${citation.id}: now → ref ${htmlMarker.num}`);
+            }
+          }
+        }
+      } else {
+        // No corruption — preserve existing links, only add missing ones
+
+        // Phase 1: For citations WITH healthy links, refresh rawText from the linked ref's position
+        const refIdToNumber = new Map<string, number>();
+        for (const ref of document.referenceListEntries) {
+          refIdToNumber.set(ref.id, parseInt(ref.sortKey) || 0);
+        }
+
+        for (const citation of document.citations) {
+          const linkedRefIds = citationLinks.get(citation.id);
+          if (linkedRefIds && linkedRefIds.length > 0 && citation.citationType === 'NUMERIC') {
+            const nums = linkedRefIds
+              .map(refId => refIdToNumber.get(refId))
+              .filter((n): n is number => n !== undefined)
+              .sort((a, b) => a - b);
+
+            if (nums.length > 0) {
+              const expectedRawText = nums.length === 1
+                ? `(${nums[0]})`
+                : `(${nums.join(', ')})`;
+
+              if (citation.rawText !== expectedRawText) {
+                logger.info(`[CitationReference] Refreshing rawText for citation ${citation.id}: "${citation.rawText}" → "${expectedRawText}"`);
+                await prisma.citation.update({
+                  where: { id: citation.id },
+                  data: { rawText: expectedRawText }
                 });
+                citation.rawText = expectedRawText;
+                rawTextUpdated++;
               }
             }
           }
         }
+
+        // Phase 2: For citations WITHOUT links, create links based on rawText number
+        const newLinkData: { citationId: string; referenceListEntryId: string }[] = [];
+        for (const citation of document.citations) {
+          const linkedRefIds = citationLinks.get(citation.id);
+          if ((!linkedRefIds || linkedRefIds.length === 0) && citation.citationType === 'NUMERIC') {
+            const nums = citation.rawText.match(/\d+/g);
+            if (nums) {
+              for (const numStr of nums) {
+                const num = parseInt(numStr, 10);
+                const refId = refNumToId.get(num);
+                if (refId) {
+                  newLinkData.push({ citationId: citation.id, referenceListEntryId: refId });
+                }
+              }
+            }
+          }
+        }
+
+        if (newLinkData.length > 0) {
+          await prisma.referenceListEntryCitation.createMany({
+            data: newLinkData,
+            skipDuplicates: true
+          });
+          linksCreated = newLinkData.length;
+        }
       }
 
-      // Delete existing links first (to reset)
-      const refIds = document.referenceListEntries.map(r => r.id);
-      if (refIds.length > 0) {
-        await prisma.referenceListEntryCitation.deleteMany({
-          where: { referenceListEntryId: { in: refIds } }
-        });
-      }
-
-      // Create new links
-      let linksCreated = 0;
-      if (linkData.length > 0) {
-        await prisma.referenceListEntryCitation.createMany({
-          data: linkData,
-          skipDuplicates: true
-        });
-        linksCreated = linkData.length;
-      }
-
-      logger.info(`[CitationReference] Created ${linksCreated} citation-reference links for document ${documentId}`);
+      logger.info(`[CitationReference] Refresh complete for ${documentId}: ${rawTextUpdated} rawText updated, ${linksRepaired} links repaired, ${linksCreated} new links`);
 
       res.json({
         success: true,
         data: {
-          message: `Created ${linksCreated} citation-reference links`,
+          message: `Refreshed: ${rawTextUpdated} rawText updated, ${linksRepaired} links repaired, ${linksCreated} new links`,
+          rawTextUpdated,
+          linksRepaired,
           linksCreated
         }
       });
@@ -1758,6 +2158,45 @@ export class CitationReferenceController {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  /**
+   * Rebuild styled citation text using the number from newRawText.
+   * Detects the format of the existing afterText (superscript, bracket, parenthesis)
+   * and produces the same format with the new number.
+   * Author-year formats are left unchanged since reorder doesn't affect them.
+   */
+  private rebuildStyledText(afterText: string, newRawText: string): string {
+    const SUPERSCRIPT_DIGITS = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    const SUPER_TO_DIGIT: Record<string, string> = {
+      '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+      '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
+    };
+
+    // Extract number from newRawText: "(3)" → 3, "[3]" → 3
+    const numMatch = newRawText.match(/\d+/);
+    if (!numMatch) return afterText; // Can't extract number, leave unchanged
+
+    const newNum = parseInt(numMatch[0], 10);
+
+    // Detect format of afterText
+    const isSuperscript = afterText.length > 0 && [...afterText].every(ch => ch in SUPER_TO_DIGIT);
+    if (isSuperscript) {
+      return String(newNum).split('').map(d => SUPERSCRIPT_DIGITS[parseInt(d, 10)]).join('');
+    }
+
+    // Bracket format: [N]
+    if (/^\[\d+\]$/.test(afterText)) {
+      return `[${newNum}]`;
+    }
+
+    // Parenthesis format: (N)
+    if (/^\(\d+\)$/.test(afterText)) {
+      return `(${newNum})`;
+    }
+
+    // Author-year or unrecognized format — leave unchanged
+    return afterText;
+  }
+
   private updateCitationNumbers(rawText: string, oldToNewMap: Map<number, number>): string {
     let updated = rawText.replace(/\[(\d+(?:\s*[-–—,]\s*\d+)*)\]/g, (_match, nums) => {
       const newNums = this.remapNumbers(nums, oldToNewMap);
@@ -1770,6 +2209,62 @@ export class CitationReferenceController {
     });
 
     return updated;
+  }
+
+  /**
+   * Parse reference data from DELETE change beforeText for legacy undo support.
+   * Handles APA format: "[N] Authors (Year). Title" and plain: "Authors (Year). Title"
+   */
+  private parseReferenceFromBeforeText(beforeText: string, _position: number): Record<string, unknown> {
+    // Strip [N] prefix if present
+    let text = beforeText.replace(/^\[\d+\]\s*/, '').trim();
+
+    // Try to extract year: "(2021)" pattern
+    let year: string | null = null;
+    const yearMatch = text.match(/\((\d{4})\)/);
+    if (yearMatch) {
+      year = yearMatch[1];
+    }
+
+    // Try to split: "Authors (Year). Title..."
+    let authorsStr = '';
+    let title = text;
+
+    if (yearMatch) {
+      const yearIdx = text.indexOf(yearMatch[0]);
+      authorsStr = text.substring(0, yearIdx).trim().replace(/,\s*$/, '');
+      // Title is everything after "(Year). "
+      const afterYear = text.substring(yearIdx + yearMatch[0].length).replace(/^\.\s*/, '').trim();
+      if (afterYear) {
+        title = afterYear;
+      }
+    }
+
+    // Parse authors into array
+    const authors: string[] = [];
+    if (authorsStr) {
+      // Split by ", " but keep "LastName, F." together
+      // Simple approach: split by "., " which separates APA authors
+      const parts = authorsStr.split(/\.,\s*/);
+      for (const part of parts) {
+        const cleaned = part.trim().replace(/\.$/, '').trim();
+        if (cleaned) {
+          authors.push(cleaned.includes('.') ? cleaned : cleaned + '.');
+        }
+      }
+      // If no splits worked, use the whole string as one author
+      if (authors.length === 0 && authorsStr) {
+        authors.push(authorsStr);
+      }
+    }
+
+    return {
+      authors: authors.length > 0 ? authors : [],
+      year,
+      title: title || beforeText,
+      sourceType: 'journal_article',
+      formattedApa: beforeText.replace(/^\[\d+\]\s*/, '').trim() || null,
+    };
   }
 
   private updateCitationNumbersWithDeletion(rawText: string, oldToNewMap: Map<number, number | null>): string {
@@ -1910,29 +2405,68 @@ export class CitationReferenceController {
       return this.formatNumberList(result);
     };
 
-    // Process bracket citations [N]
-    // When all numbers deleted: remove citation entirely (empty string)
-    let result = text.replace(bracketPattern, (match, nums) => {
-      const remapped = remapAndFormat(nums);
-      if (remapped === null) return ''; // Remove citation entirely
-      const newCitation = `[${remapped}]`;
-      if (newCitation !== match) {
-        replacements.push({ original: match, replacement: newCitation });
+    // Helper: clean up whitespace around deleted citations
+    // "text (1). More" → "text. More" (not "text . More")
+    const cleanDeletion = (fullText: string, matchStart: number, matchEnd: number): { start: number; end: number } => {
+      let start = matchStart;
+      let end = matchEnd;
+      // If there's a space before the deleted citation, consume it
+      if (start > 0 && fullText[start - 1] === ' ') {
+        start--;
       }
-      return newCitation;
-    });
+      return { start, end };
+    };
+
+    // Process bracket citations [N]
+    // When all numbers deleted: remove citation and adjacent space
+    let result = '';
+    let lastIndex = 0;
+    let bracketMatch: RegExpExecArray | null;
+    bracketPattern.lastIndex = 0;
+    while ((bracketMatch = bracketPattern.exec(text)) !== null) {
+      const remapped = remapAndFormat(bracketMatch[1]);
+      if (remapped === null) {
+        // Remove citation and clean up adjacent space
+        const { start } = cleanDeletion(text, bracketMatch.index, bracketMatch.index + bracketMatch[0].length);
+        result += text.slice(lastIndex, start);
+        lastIndex = bracketMatch.index + bracketMatch[0].length;
+        replacements.push({ original: bracketMatch[0], replacement: '' });
+      } else {
+        const newCitation = `[${remapped}]`;
+        result += text.slice(lastIndex, bracketMatch.index) + newCitation;
+        lastIndex = bracketMatch.index + bracketMatch[0].length;
+        if (newCitation !== bracketMatch[0]) {
+          replacements.push({ original: bracketMatch[0], replacement: newCitation });
+        }
+      }
+    }
+    result += text.slice(lastIndex);
 
     // Process parenthetical citations (N)
-    // When all numbers deleted: remove citation entirely (empty string)
-    result = result.replace(parenPattern, (match, nums) => {
-      const remapped = remapAndFormat(nums);
-      if (remapped === null) return ''; // Remove citation entirely
-      const newCitation = `(${remapped})`;
-      if (newCitation !== match) {
-        replacements.push({ original: match, replacement: newCitation });
+    // When all numbers deleted: remove citation and adjacent space
+    const textAfterBrackets = result;
+    result = '';
+    lastIndex = 0;
+    let parenMatch: RegExpExecArray | null;
+    parenPattern.lastIndex = 0;
+    while ((parenMatch = parenPattern.exec(textAfterBrackets)) !== null) {
+      const remapped = remapAndFormat(parenMatch[1]);
+      if (remapped === null) {
+        // Remove citation and clean up adjacent space
+        const { start } = cleanDeletion(textAfterBrackets, parenMatch.index, parenMatch.index + parenMatch[0].length);
+        result += textAfterBrackets.slice(lastIndex, start);
+        lastIndex = parenMatch.index + parenMatch[0].length;
+        replacements.push({ original: parenMatch[0], replacement: '' });
+      } else {
+        const newCitation = `(${remapped})`;
+        result += textAfterBrackets.slice(lastIndex, parenMatch.index) + newCitation;
+        lastIndex = parenMatch.index + parenMatch[0].length;
+        if (newCitation !== parenMatch[0]) {
+          replacements.push({ original: parenMatch[0], replacement: newCitation });
+        }
       }
-      return newCitation;
-    });
+    }
+    result += textAfterBrackets.slice(lastIndex);
 
     if (replacements.length > 0) {
       logger.info(`[CitationReference] Updated ${replacements.length} citations in HTML content`);

@@ -37,6 +37,7 @@ export function getRefNumber(
  */
 export interface FormattedCitation {
   id: string;
+  changeId?: string;  // CitationChange ID for dismiss operations
   rawText: string;
   citationType: string;
   paragraphIndex: number | null;
@@ -80,6 +81,7 @@ export function formatCitationWithChanges(
   },
   refIdToNumber: Map<string, number>,
   change?: {
+    id?: string;
     changeType: string;
     beforeText: string | null;
     afterText: string | null;
@@ -97,6 +99,11 @@ export function formatCitationWithChanges(
     else if (change.changeType === 'REFERENCE_STYLE_CONVERSION') changeType = 'style';
     else if (change.changeType === 'DELETE') changeType = 'deleted';
     else changeType = change.changeType.toLowerCase();
+
+    // Override to unchanged if before and after text are identical (no actual change)
+    if (change.beforeText && change.afterText && change.beforeText === change.afterText) {
+      changeType = 'unchanged';
+    }
   }
 
   // A citation is NOT orphaned if:
@@ -107,6 +114,7 @@ export function formatCitationWithChanges(
 
   return {
     id: citation.id,
+    changeId: change?.id,
     rawText: citation.rawText,
     citationType: citation.citationType,
     paragraphIndex: citation.paragraphIndex,

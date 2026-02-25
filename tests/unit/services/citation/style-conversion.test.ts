@@ -27,6 +27,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
       create: vi.fn(),
       findMany: vi.fn(),
       deleteMany: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
   },
 }));

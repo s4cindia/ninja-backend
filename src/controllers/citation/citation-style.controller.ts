@@ -233,6 +233,20 @@ export class CitationStyleController {
       };
       const targetColumn = styleColumnMap[targetStyle] || 'formattedApa';
 
+      // Revert previous style conversion changes before creating new ones
+      // This prevents stale changes from accumulating after multiple conversions
+      const revertedCount = await prisma.citationChange.updateMany({
+        where: {
+          documentId: document.id,
+          changeType: { in: ['REFERENCE_STYLE_CONVERSION', 'INTEXT_STYLE_CONVERSION'] },
+          isReverted: false
+        },
+        data: { isReverted: true }
+      });
+      if (revertedCount.count > 0) {
+        logger.info(`[CitationStyle] Reverted ${revertedCount.count} previous style conversion changes`);
+      }
+
       // Update references in database and track changes
       for (const change of conversionResult.changes) {
         const originalRef = references.find(r => r.id === change.referenceId);
