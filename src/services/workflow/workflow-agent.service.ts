@@ -20,7 +20,12 @@ import { acrGeneratorService } from '../acr/acr-generator.service';
 import type { AuditIssueInput } from '../acr/wcag-issue-mapper.service';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
-import type { BatchAutoApprovalPolicy } from '../../types/workflow-contracts';
+import type {
+  BatchAutoApprovalPolicy,
+  ConditionalGatePolicy,
+  PolicyConditions,
+} from '../../types/workflow-contracts';
+import { categorizeIssue } from './issue-categorizer.service';
 
 /**
  * Workflow automation agent service.
@@ -1120,9 +1125,16 @@ class WorkflowAgentService {
   /**
    * Check whether the batch auto-approval policy permits skipping a specific HITL gate.
    *
+   * Supports Phase 1 (string) and Phase 2 (ConditionalGatePolicy object) formats:
+   *  - 'auto-accept'                    → always approve
+   *  - 'require-manual'                 → never approve
+   *  - { mode: 'auto-accept' }          → always approve
+   *  - { mode: 'require-manual' }       → never approve
+   *  - { mode: 'conditional', conditions } → evaluate conditions
+   *
    * @param workflow - Current workflow instance (must have batchId set).
-   * @param gate - The HITL gate key to check.
-   * @returns True if the batch policy has 'auto-accept' for this gate.
+   * @param gate     - The HITL gate key to check.
+   * @returns True if the gate should be auto-approved.
    */
   private async shouldAutoApprove(
     workflow: WorkflowInstance,
@@ -1138,7 +1150,157 @@ class WorkflowAgentService {
     if (!batch?.autoApprovalPolicy) return false;
 
     const policy = batch.autoApprovalPolicy as unknown as BatchAutoApprovalPolicy;
-    return policy.gates[gate] === 'auto-accept';
+    const gatePolicy = policy.gates[gate];
+
+    if (!gatePolicy) return false;
+
+    // Phase 1: simple string
+    if (typeof gatePolicy === 'string') {
+      return gatePolicy === 'auto-accept';
+    }
+
+    // Phase 2: ConditionalGatePolicy object
+    const conditional = gatePolicy as ConditionalGatePolicy;
+
+    if (conditional.mode === 'auto-accept') return true;
+    if (conditional.mode === 'require-manual') return false;
+
+    if (conditional.mode === 'conditional') {
+      return this.evaluateConditions(workflow, gate, conditional.conditions ?? {});
+    }
+
+    return false;
+  }
+
+  /**
+   * Evaluate Phase 2 conditional policy conditions for a HITL gate.
+   *
+   * Conditions supported:
+   *  - minConfidence: auditScore / 100 must be >= threshold
+   *  - issueTypeRules: ALL issues in the workflow must be covered by a
+   *    non-'manual' rule; if any issue has no rule or rule === 'manual',
+   *    returns false (requires human review).
+   *
+   * When issueTypeRules passes, auto-decisions are written to workflow stateData.
+   */
+  private async evaluateConditions(
+    workflow: WorkflowInstance,
+    gate: keyof BatchAutoApprovalPolicy['gates'],
+    conditions: PolicyConditions
+  ): Promise<boolean> {
+    const stateData = workflow.stateData as Record<string, unknown>;
+
+    // --- minConfidence check ---
+    if (conditions.minConfidence !== undefined) {
+      // auditScore is stored as 0–100; convert to 0–1 for comparison
+      const rawScore = stateData.auditScore as number | undefined;
+      if (rawScore === undefined) {
+        logger.info(
+          `[WorkflowAgent] minConfidence check skipped for ${workflow.id}: no auditScore in stateData`
+        );
+        return false;
+      }
+      const score = rawScore / 100;
+      if (score < conditions.minConfidence) {
+        logger.info(
+          `[WorkflowAgent] Workflow ${workflow.id} confidence ${score.toFixed(2)} < ` +
+          `threshold ${conditions.minConfidence} at gate ${gate} — requiring manual review`
+        );
+        return false;
+      }
+      logger.info(
+        `[WorkflowAgent] Workflow ${workflow.id} confidence ${score.toFixed(2)} >= ` +
+        `threshold ${conditions.minConfidence} at gate ${gate}`
+      );
+    }
+
+    // --- issueTypeRules check (AI_REVIEW gate only) ---
+    if (conditions.issueTypeRules && gate === 'AI_REVIEW') {
+      const jobId = stateData.jobId as string | undefined;
+      if (!jobId) {
+        logger.info(`[WorkflowAgent] issueTypeRules check skipped for ${workflow.id}: no jobId`);
+        return false;
+      }
+
+      const job = await prisma.job.findUnique({
+        where: { id: jobId },
+        select: { output: true },
+      });
+
+      const output = job?.output as Record<string, unknown> | null;
+      const rawIssues = (
+        (output?.combinedIssues as unknown[]) ??
+        (output?.issues as unknown[]) ??
+        []
+      ) as Array<Record<string, unknown>>;
+
+      if (rawIssues.length === 0) {
+        // No issues — nothing to block auto-approval
+        logger.info(`[WorkflowAgent] No issues found for workflow ${workflow.id} — auto-approving`);
+        return true;
+      }
+
+      // Check whether every issue can be auto-handled
+      const unhandled = rawIssues.filter(issue => {
+        const code = (issue.ruleId ?? issue.code ?? issue.id ?? '') as string;
+        const category = categorizeIssue(code);
+        const rule = conditions.issueTypeRules![category] ?? conditions.issueTypeRules!['other'];
+        return !rule || rule === 'manual';
+      });
+
+      if (unhandled.length > 0) {
+        logger.info(
+          `[WorkflowAgent] Workflow ${workflow.id} has ${unhandled.length} issue(s) ` +
+          `requiring manual review based on issueTypeRules at gate ${gate}`
+        );
+        return false;
+      }
+
+      // All issues are covered — write auto-decisions to workflow state
+      await this.applyIssueTypeDecisions(workflow, rawIssues, conditions.issueTypeRules);
+    }
+
+    return true;
+  }
+
+  /**
+   * Persist auto-decisions derived from issueTypeRules into workflow stateData.
+   * Decisions are stored as `aiReviewDecisions` so downstream steps can read them
+   * the same way as manually submitted decisions.
+   */
+  private async applyIssueTypeDecisions(
+    workflow: WorkflowInstance,
+    issues: Array<Record<string, unknown>>,
+    rules: Record<string, 'auto-accept' | 'auto-reject' | 'manual'>
+  ): Promise<void> {
+    const decisions = issues.map(issue => {
+      const code = (issue.ruleId ?? issue.code ?? issue.id ?? '') as string;
+      const category = categorizeIssue(code);
+      const rule = rules[category] ?? rules['other'] ?? 'manual';
+      return {
+        itemId: (issue.id as string) ?? code,
+        decision: rule === 'auto-accept' ? 'ACCEPT' : 'REJECT',
+        modifiedValue: null,
+        justification: `Batch policy auto-${rule} for category: ${category}`,
+      };
+    });
+
+    await prisma.workflowInstance.update({
+      where: { id: workflow.id },
+      data: {
+        stateData: {
+          ...(workflow.stateData as Record<string, unknown>),
+          aiReviewDecisions: decisions,
+          aiReviewDecisionsSource: 'batch-policy-issue-type-rules',
+          aiReviewDecisionsAppliedAt: new Date().toISOString(),
+        } as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      },
+    });
+
+    logger.info(
+      `[WorkflowAgent] Applied ${decisions.length} issue-type-rule decisions ` +
+      `to workflow ${workflow.id}`
+    );
   }
 
   /**

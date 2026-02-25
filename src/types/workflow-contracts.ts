@@ -100,11 +100,40 @@ export type ConfidenceLevel = typeof ConfidenceLevel[keyof typeof ConfidenceLeve
 // ============================================================
 
 /**
- * Per-gate approval policy for batch agentic workflows.
- * 'auto-accept' — gate is skipped (machine approves automatically).
- * 'require-manual' — gate pauses for human review (default behavior).
+ * Phase 1: simple per-gate mode string.
+ * Phase 2: extended to support conditional mode with threshold/type conditions.
  */
-export type BatchGatePolicy = 'auto-accept' | 'require-manual';
+export type GatePolicyMode = 'auto-accept' | 'conditional' | 'require-manual';
+
+/**
+ * Conditions evaluated when gate mode is 'conditional'.
+ * All specified conditions must pass for the gate to be auto-approved.
+ *
+ * minConfidence  — average audit score (0.0–1.0) must meet or exceed this value.
+ * issueTypeRules — per-issue-category rules; ALL issues must be covered for auto-approval.
+ *                  'auto-accept' | 'auto-reject' — handled automatically.
+ *                  'manual'                       — forces human review.
+ */
+export interface PolicyConditions {
+  minConfidence?: number;  // 0.0–1.0
+  issueTypeRules?: Record<string, 'auto-accept' | 'auto-reject' | 'manual'>;
+}
+
+/**
+ * Phase 2 gate policy object.
+ * Used when more than a simple on/off decision is needed.
+ */
+export interface ConditionalGatePolicy {
+  mode: GatePolicyMode;
+  conditions?: PolicyConditions;
+}
+
+/**
+ * Per-gate approval policy for batch agentic workflows.
+ * Phase 1 (string):  'auto-accept' | 'require-manual'
+ * Phase 2 (object):  { mode: 'conditional', conditions: { minConfidence?, issueTypeRules? } }
+ */
+export type BatchGatePolicy = 'auto-accept' | 'require-manual' | ConditionalGatePolicy;
 
 /**
  * Error handling strategy when a workflow within a batch fails.
@@ -422,7 +451,23 @@ export const acrSignoffSchema = z.object({
   notes: z.string().optional(),
 });
 
-export const batchGatePolicySchema = z.enum(['auto-accept', 'require-manual']);
+export const gatePolicyModeSchema = z.enum(['auto-accept', 'conditional', 'require-manual']);
+
+export const policyConditionsSchema = z.object({
+  minConfidence: z.number().min(0).max(1).optional(),
+  issueTypeRules: z.record(z.string(), z.enum(['auto-accept', 'auto-reject', 'manual'])).optional(),
+});
+
+export const conditionalGatePolicySchema = z.object({
+  mode: gatePolicyModeSchema,
+  conditions: policyConditionsSchema.optional(),
+});
+
+// Phase 1 backward-compatible: string or Phase 2 object
+export const batchGatePolicySchema = z.union([
+  z.enum(['auto-accept', 'require-manual']),
+  conditionalGatePolicySchema,
+]);
 
 export const batchErrorStrategySchema = z.enum(['pause-batch', 'continue-others', 'fail-batch']);
 
