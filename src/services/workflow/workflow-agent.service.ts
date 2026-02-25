@@ -911,8 +911,28 @@ class WorkflowAgentService {
       return;
     }
 
-    // Use International Edition which satisfies US Section 508, EU EN 301 549, and WCAG
-    const edition = 'international';
+    // Resolve edition and ACR metadata from batch config, or fall back to defaults
+    let edition = 'international';
+    let vendor: string | undefined;
+    let contactEmail: string | undefined;
+
+    if (workflow.batchId) {
+      const batch = await prisma.batchWorkflow.findUnique({ where: { id: workflow.batchId } });
+      const stored = batch?.autoApprovalPolicy as Record<string, unknown> | null;
+      const acrConfig = stored?.acrConfig as { vendor?: string; contactEmail?: string; edition?: string } | undefined;
+      if (acrConfig?.edition) {
+        const EDITION_MAP: Record<string, string> = {
+          'VPAT2.5-WCAG': 'wcag',
+          'VPAT2.5-508':  '508',
+          'VPAT2.5-EU':   'eu',
+          'VPAT2.5-INT':  'international',
+        };
+        edition = EDITION_MAP[acrConfig.edition] ?? 'international';
+      }
+      if (acrConfig?.vendor) vendor = acrConfig.vendor;
+      if (acrConfig?.contactEmail) contactEmail = acrConfig.contactEmail;
+    }
+
     const documentTitle = file.filename;
 
     logger.info(`[WorkflowAgent] Creating ACR with AI analysis results: edition=${edition}, jobId=${jobId}`);
@@ -1079,7 +1099,7 @@ class WorkflowAgentService {
 
     logger.info(`[WorkflowAgent] ACR generated with verification data: acrJobId=${acrResult.acrJobId}, imported=${acrResult.imported}`);
 
-    // Store ACR reference in workflow state
+    // Store ACR reference and metadata in workflow state
     await prisma.workflowInstance.update({
       where: { id: workflow.id },
       data: {
@@ -1090,6 +1110,8 @@ class WorkflowAgentService {
           acrCriteriaCount: acrResult.totalCriteria,
           acrGeneratedAt: new Date().toISOString(),
           jobId: jobId,
+          ...(vendor ? { acrVendor: vendor } : {}),
+          ...(contactEmail ? { acrContactEmail: contactEmail } : {}),
         } as unknown as Prisma.InputJsonValue,
       },
     });

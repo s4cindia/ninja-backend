@@ -12,7 +12,7 @@ import {
   HITLAction,
   WorkflowState,
 } from '../types/workflow-contracts';
-import type { WorkflowStatusResponse, BatchAutoApprovalPolicy } from '../types/workflow-contracts';
+import type { WorkflowStatusResponse, BatchAutoApprovalPolicy, AcrBatchConfig } from '../types/workflow-contracts';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import prisma, { Prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -537,7 +537,7 @@ class WorkflowController {
         badRequest(res, 'Invalid batch payload', parsed.error.flatten());
         return;
       }
-      const { name, fileIds, concurrency, autoApprovalPolicy } = parsed.data;
+      const { name, fileIds, concurrency, autoApprovalPolicy, acrConfig } = parsed.data;
       const userId = req.user!.id;
       const tenantId = req.user!.tenantId;
 
@@ -568,6 +568,11 @@ class WorkflowController {
         }
       }
 
+      // Merge acrConfig into the autoApprovalPolicy JSON field (no schema migration needed)
+      const policyJson = (autoApprovalPolicy || acrConfig)
+        ? { ...(autoApprovalPolicy ?? {}), ...(acrConfig ? { acrConfig } : {}) } as unknown as Prisma.InputJsonValue
+        : undefined;
+
       const batch = await prisma.batchWorkflow.create({
         data: {
           name,
@@ -575,7 +580,7 @@ class WorkflowController {
           concurrency,
           status: 'PENDING',
           createdBy: userId,
-          ...(autoApprovalPolicy ? { autoApprovalPolicy: autoApprovalPolicy as unknown as Prisma.InputJsonValue } : {}),
+          ...(policyJson !== undefined ? { autoApprovalPolicy: policyJson } : {}),
         },
       });
 
@@ -737,6 +742,7 @@ class WorkflowController {
               id: true,
               currentState: true,
               errorMessage: true,
+              stateData: true,
               file: { select: { filename: true, originalName: true } },
             },
             orderBy: { startedAt: 'asc' },
@@ -780,6 +786,18 @@ class WorkflowController {
           errorMessage: w.errorMessage ?? null,
         }));
 
+      const completedWorkflows = batch.workflows
+        .filter(w => w.currentState === 'COMPLETED')
+        .map(w => {
+          const sd = w.stateData as Record<string, unknown> | null;
+          return {
+            workflowId: w.id,
+            filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
+            acrJobId: (sd?.acrJobId as string | undefined) ?? null,
+            jobId: (sd?.jobId as string | undefined) ?? null,
+          };
+        });
+
       // Map each HITL gate state to its URL slug
       const GATE_STATE_TO_SLUG: Record<string, string> = {
         [WorkflowState.AWAITING_AI_REVIEW]: 'ai-review',
@@ -812,7 +830,9 @@ class WorkflowController {
         startedAt: batch.startedAt.toISOString(),
         completedAt: batch.completedAt?.toISOString(),
         autoApprovalPolicy: (batch.autoApprovalPolicy as BatchAutoApprovalPolicy | null) ?? null,
+        acrConfig: ((batch.autoApprovalPolicy as Record<string, unknown> | null)?.acrConfig as AcrBatchConfig | undefined) ?? null,
         failedWorkflows,
+        completedWorkflows,
         hitlWaiting,
       });
     } catch (err) {

@@ -481,12 +481,22 @@ export const batchAutoApprovalPolicySchema = z.object({
   onError: batchErrorStrategySchema,
 });
 
+export const acrBatchConfigSchema = z.object({
+  vendor: z.string().min(1, 'Vendor name is required'),
+  contactEmail: z.string().email('Valid email required'),
+  edition: z.enum(['VPAT2.5-WCAG', 'VPAT2.5-508', 'VPAT2.5-EU', 'VPAT2.5-INT']).default('VPAT2.5-WCAG'),
+  mode: z.enum(['individual', 'aggregate']).default('individual'),
+  aggregationStrategy: z.enum(['conservative', 'optimistic']).default('conservative'),
+});
+
+export type AcrBatchConfig = z.infer<typeof acrBatchConfigSchema>;
+
 export const startBatchSchema = z.object({
   name: z.string().min(1, 'Batch name is required'),
   fileIds: z.array(z.string().min(1)).min(1, 'At least one file required'),
   concurrency: z.number().int().min(1).max(10).default(3),
-  vpatEditions: z.array(z.string()).optional(),
   autoApprovalPolicy: batchAutoApprovalPolicySchema.optional(),
+  acrConfig: acrBatchConfigSchema.optional(),
 });
 
 export const workflowParamsSchema = z.object({
