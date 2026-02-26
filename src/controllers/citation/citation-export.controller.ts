@@ -16,32 +16,7 @@ import { docxProcessorService } from '../../services/citation/docx-processor.ser
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
-import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
-
-/** Extract sorted number array from citation text like "(1, 2)", "[3-5]", "(2–4)" */
-function extractCitationNumbers(text: string): number[] {
-  const inner = text.replace(/^[[(]|[)\]]$/g, '').trim();
-  const nums: number[] = [];
-  for (const part of inner.split(',')) {
-    const rangeMatch = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
-    if (rangeMatch) {
-      const start = parseInt(rangeMatch[1], 10);
-      const end = parseInt(rangeMatch[2], 10);
-      for (let i = start; i <= end; i++) nums.push(i);
-    } else {
-      const n = parseInt(part.trim(), 10);
-      if (!isNaN(n)) nums.push(n);
-    }
-  }
-  return nums.sort((a, b) => a - b);
-}
-
-/** Check if two citation texts represent the same numbers */
-function citationNumbersMatch(a: string, b: string): boolean {
-  const numsA = extractCitationNumbers(a);
-  const numsB = extractCitationNumbers(b);
-  return numsA.length > 0 && numsA.length === numsB.length && numsA.every((n, i) => n === numsB[i]);
-}
+import { buildRefIdToNumberMap, formatCitationWithChanges, citationNumbersMatch } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
@@ -419,9 +394,10 @@ export class CitationExportController {
       // When reorder + delete stack, citationId-based RENUMBER (from reorder) have stale
       // afterText. Text-based RENUMBER (from delete) represent the subsequent transformation.
       // Chain them to get cumulative original→current, then skip text-based duplicates.
+      // Match text-based RENUMBER for both parenthetical "(N)" and bracket "[N]" formats
       const textBasedInTextRenumber = changes.filter(c =>
         c.changeType === 'RENUMBER' && !c.citationId &&
-        c.beforeText && /^\(\d+\)$/.test(c.beforeText)
+        c.beforeText && /^[[(]\d+[)\]]$/.test(c.beforeText)
       );
       const skipTextBasedRenumber = textBasedInTextRenumber.length > 0 && activeRenumbers.size > 0;
 
@@ -607,8 +583,10 @@ export class CitationExportController {
       // We provide ALL references with their desired order (sortKey) and content for matching.
       // The DOCX processor finds each paragraph by content and rearranges them.
       // Only emit when there are actual RENUMBER or DELETE changes that affect reference order.
+      // Only emit REFERENCE_REORDER when there are actual ordering changes (RENUMBER or DELETE).
+      // REFERENCE_SECTION_EDIT alone (style-only edits) should not trigger reordering.
       const hasOrderChanges = changesToApply.some(c =>
-        c.type === 'RENUMBER' || c.type === 'DELETE' || c.type === 'REFERENCE_SECTION_EDIT'
+        c.type === 'RENUMBER' || c.type === 'DELETE'
       );
       if (hasOrderChanges && document.referenceListEntries.length > 1) {
         const styleCode = normalizeStyleCode(document.referenceListStyle);
@@ -622,9 +600,11 @@ export class CitationExportController {
             || ref.formattedApa
             || `${(ref.authors as string[] || []).join(', ')} (${ref.year}). ${ref.title}`;
 
-          // Extract first author last name for robust matching
-          const authorMatch = refContent.match(/^([A-Z][a-z]+)/);
-          const contentStart = authorMatch ? authorMatch[1] : refContent.substring(0, 30);
+          // Use a normalized prefix for matching (reduces collisions for same-author entries)
+          const contentStart = refContent
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 120);
 
           referenceOrder.push({ position: i + 1, contentStart });
         }

@@ -18,19 +18,11 @@ import prisma from '../../lib/prisma';
 type TransactionClient = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 import { logger } from '../../lib/logger';
 
-/** Validate that all IDs are valid UUIDs before use in raw SQL */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function assertValidUUIDs(ids: string[]): void {
-  for (const id of ids) {
-    if (!UUID_RE.test(id)) {
-      throw new Error(`Invalid UUID format: ${id}`);
-    }
-  }
-}
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
+import { extractCitationNumbers } from '../../utils/citation.utils';
 
 /**
  * Safely extract authors array from Prisma JsonValue
@@ -301,7 +293,7 @@ export class CitationReferenceController {
         // e.g., Chicago: (2)→² must become (3)→³ if ref 2 moved to position 3
         const activeStyleConversions = await prisma.citationChange.findMany({
           where: {
-            documentId,
+            documentId: baseDoc.id,
             changeType: 'INTEXT_STYLE_CONVERSION',
             isReverted: false,
             citationId: { not: null }
@@ -490,22 +482,14 @@ export class CitationReferenceController {
         // Delete the reference
         await tx.referenceListEntry.delete({ where: { id: referenceId } });
 
-        // Batch renumber remaining references using raw SQL for efficiency
-        // This is O(1) instead of O(N) individual updates
+        // Batch renumber remaining references using individual updates
         if (remainingReferences.length > 0) {
-          // Validate UUIDs before interpolation to prevent SQL injection
-          assertValidUUIDs(remainingReferences.map(ref => ref.id));
-
-          const caseStatements = remainingReferences
-            .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
-            .join(' ');
-          const refIds = remainingReferences.map(ref => `'${ref.id}'`).join(',');
-
-          await tx.$executeRawUnsafe(`
-            UPDATE "ReferenceListEntry"
-            SET "sortKey" = CASE ${caseStatements} END
-            WHERE id IN (${refIds})
-          `);
+          for (let i = 0; i < remainingReferences.length; i++) {
+            await tx.referenceListEntry.update({
+              where: { id: remainingReferences[i].id },
+              data: { sortKey: String(i + 1).padStart(4, '0') }
+            });
+          }
         }
 
         // Update citations using batched updateMany for efficiency
@@ -1556,19 +1540,12 @@ export class CitationReferenceController {
 
           // Assign sequential sortKeys
           if (ordered.length > 0) {
-            // Validate UUIDs before interpolation to prevent SQL injection
-            assertValidUUIDs(ordered.map(ref => ref.id));
-
-            const caseStatements = ordered
-              .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
-              .join(' ');
-            const allRefIds = ordered.map(ref => `'${ref.id}'`).join(',');
-
-            await tx.$executeRawUnsafe(`
-              UPDATE "ReferenceListEntry"
-              SET "sortKey" = CASE ${caseStatements} END
-              WHERE id IN (${allRefIds})
-            `);
+            for (let i = 0; i < ordered.length; i++) {
+              await tx.referenceListEntry.update({
+                where: { id: ordered[i].id },
+                data: { sortKey: String(i + 1).padStart(4, '0') }
+              });
+            }
             logger.info(`[CitationReference] Inserted restored ref at position ${deletedPosition}, re-sorted ${ordered.length} references`);
           }
 
@@ -1784,7 +1761,9 @@ export class CitationReferenceController {
         for (let i = 0; i < numericCitations.length && i < foundInHtml.length; i++) {
           const citation = numericCitations[i];
           const htmlMarker = foundInHtml[i];
-          const expectedRawText = `(${htmlMarker.num})`;
+          // Preserve original delimiter style (brackets vs parentheses)
+          const useBrackets = citation.rawText.trim().startsWith('[');
+          const expectedRawText = useBrackets ? `[${htmlMarker.num}]` : `(${htmlMarker.num})`;
           const expectedRefId = refNumToId.get(htmlMarker.num);
 
           // Update rawText if stale
@@ -1833,9 +1812,10 @@ export class CitationReferenceController {
               .sort((a, b) => a - b);
 
             if (nums.length > 0) {
-              const expectedRawText = nums.length === 1
-                ? `(${nums[0]})`
-                : `(${nums.join(', ')})`;
+              // Preserve original delimiter style (brackets vs parentheses)
+              const useBrackets = citation.rawText.trim().startsWith('[');
+              const inner = nums.length === 1 ? `${nums[0]}` : nums.join(', ');
+              const expectedRawText = useBrackets ? `[${inner}]` : `(${inner})`;
 
               if (citation.rawText !== expectedRawText) {
                 logger.info(`[CitationReference] Refreshing rawText for citation ${citation.id}: "${citation.rawText}" → "${expectedRawText}"`);
@@ -1855,14 +1835,12 @@ export class CitationReferenceController {
         for (const citation of document.citations) {
           const linkedRefIds = citationLinks.get(citation.id);
           if ((!linkedRefIds || linkedRefIds.length === 0) && citation.citationType === 'NUMERIC') {
-            const nums = citation.rawText.match(/\d+/g);
-            if (nums) {
-              for (const numStr of nums) {
-                const num = parseInt(numStr, 10);
-                const refId = refNumToId.get(num);
-                if (refId) {
-                  newLinkData.push({ citationId: citation.id, referenceListEntryId: refId });
-                }
+            // Use extractCitationNumbers to handle ranges like "[3-5]" → [3,4,5]
+            const nums = extractCitationNumbers(citation.rawText);
+            for (const num of nums) {
+              const refId = refNumToId.get(num);
+              if (refId) {
+                newLinkData.push({ citationId: citation.id, referenceListEntryId: refId });
               }
             }
           }
@@ -2221,8 +2199,8 @@ export class CitationReferenceController {
       '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
     };
 
-    // Extract all numbers from newRawText: "(3)" → [3], "(1, 2)" → [1, 2], "[3-5]" → [3, 5]
-    const allNums = [...newRawText.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+    // Extract all numbers from newRawText, expanding ranges: "(3)" → [3], "(1, 2)" → [1, 2], "[3-5]" → [3, 4, 5]
+    const allNums = extractCitationNumbers(newRawText);
     if (allNums.length === 0) return afterText; // Can't extract numbers, leave unchanged
 
     // Helper: convert a single number to superscript

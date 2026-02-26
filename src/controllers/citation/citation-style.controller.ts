@@ -15,7 +15,7 @@ import { CitationStyle, aiFormatConverterService } from '../../services/citation
 import { ReferenceEntry, InTextCitation } from '../../services/citation/ai-citation-detector.service';
 import { doiValidationService } from '../../services/citation/doi-validation.service';
 import { resolveDocumentSimple } from './document-resolver';
-import { buildRefIdToNumberMap, getRefNumber } from '../../utils/citation.utils';
+import { buildRefIdToNumberMap, getRefNumber, extractCitationNumbers } from '../../utils/citation.utils';
 
 /**
  * Build a full reference string from component fields so the AI gets actual
@@ -188,10 +188,14 @@ export class CitationStyleController {
           .map(refId => refIdToNumber.get(refId))
           .filter((num): num is number => num !== undefined);
 
-        // Fall back to text extraction only if join table yields nothing
+        // Fall back to text extraction only for numeric citation types
+        // (avoids extracting years from author-year citations like "Smith, 2021")
         if (numbers.length === 0) {
-          const numberMatches = cit.rawText.match(/\d+/g);
-          numbers = numberMatches ? numberMatches.map(n => parseInt(n, 10)) : [];
+          const numericCitationTypes = ['NUMERIC', 'FOOTNOTE', 'ENDNOTE', 'REFERENCE'];
+          if (numericCitationTypes.includes(cit.citationType)) {
+            numbers = extractCitationNumbers(cit.rawText)
+              .filter(n => Number.isFinite(n) && n > 0 && n <= references.length);
+          }
         }
 
         return {
@@ -306,9 +310,10 @@ export class CitationStyleController {
       }
 
       // Map targetStyle to Prisma CitationStyle enum (uppercase)
+      // Note: AMA has no dedicated enum value; mapped to UNKNOWN to avoid misclassification
       const prismaStyleMap: Record<string, string> = {
         'APA': 'APA', 'MLA': 'MLA', 'Chicago': 'CHICAGO',
-        'Vancouver': 'VANCOUVER', 'IEEE': 'IEEE', 'Harvard': 'HARVARD', 'AMA': 'APA'
+        'Vancouver': 'VANCOUVER', 'IEEE': 'IEEE', 'Harvard': 'HARVARD', 'AMA': 'UNKNOWN'
       };
       const prismaStyle = prismaStyleMap[targetStyle] || 'UNKNOWN';
 

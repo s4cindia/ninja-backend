@@ -4,6 +4,37 @@
  */
 
 /**
+ * Extract sorted number array from citation text like "(1, 2)", "[3-5]", "(2–4)".
+ * Handles brackets, parentheses, comma-separated lists, and hyphen/en-dash ranges.
+ */
+export function extractCitationNumbers(text: string): number[] {
+  const inner = text.replace(/^[[(]|[)\]]$/g, '').trim();
+  const nums: number[] = [];
+  for (const part of inner.split(',')) {
+    const trimmed = part.trim();
+    // Only accept whole-token numbers or ranges (reject parts with extra letters)
+    const rangeMatch = trimmed.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      for (let i = start; i <= end; i++) nums.push(i);
+    } else if (/^\d+$/.test(trimmed)) {
+      nums.push(parseInt(trimmed, 10));
+    }
+  }
+  return nums.sort((a, b) => a - b);
+}
+
+/**
+ * Check if two citation texts represent the same numbers
+ */
+export function citationNumbersMatch(a: string, b: string): boolean {
+  const numsA = extractCitationNumbers(a);
+  const numsB = extractCitationNumbers(b);
+  return numsA.length > 0 && numsA.length === numsB.length && numsA.every((n, i) => n === numsB[i]);
+}
+
+/**
  * Build a map of reference ID to 1-indexed reference number
  * @param references - Array of references with id property
  * @returns Map of reference ID to reference number (1-indexed)
@@ -101,7 +132,8 @@ export function formatCitationWithChanges(
     else changeType = change.changeType.toLowerCase();
 
     // Override to unchanged if before and after text are identical (no actual change)
-    if (change.beforeText && change.afterText && change.beforeText === change.afterText) {
+    // Use nullish checks so empty-string → empty-string is correctly handled
+    if (change.beforeText != null && change.afterText != null && change.beforeText === change.afterText) {
       changeType = 'unchanged';
     }
   }

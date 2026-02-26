@@ -3154,8 +3154,8 @@ class DOCXProcessorService {
                   // Skip if this looks like an in-text citation paragraph (short, contains parentheses)
                   if (para.combinedText.length < 100 && para.combinedText.includes('(') && para.combinedText.includes(')')) {
                     // Check if this is actually a reference entry, not just a citation
-                    // Reference entries typically have author, year, title pattern
-                    if (!para.combinedText.match(/\(\d{4}\)\./)) {
+                    // Reference entries have a year pattern (various formats: "(2020).", "2020.", "(2020),")
+                    if (!/\b(19|20)\d{2}\b/.test(para.combinedText)) {
                       continue; // Skip this, likely an in-text citation
                     }
                   }
@@ -3191,18 +3191,31 @@ class DOCXProcessorService {
           // Handle REFERENCE_REORDER - full reference section reordering by content matching
           if (change.type === 'REFERENCE_REORDER' && change.beforeText) {
             try {
-              const refOrder = JSON.parse(change.beforeText) as Array<{ position: number; contentStart: string }>;
-              for (let ri = 0; ri < refOrder.length; ri++) {
-                const ref = refOrder[ri];
-                // contentStart is used for paragraph matching; position determines final order
+              const parsed = JSON.parse(change.beforeText);
+              if (!Array.isArray(parsed)) {
+                logger.warn('[DOCXProcessor] REFERENCE_REORDER payload is not an array');
+                continue;
+              }
+              let validCount = 0;
+              for (let ri = 0; ri < parsed.length; ri++) {
+                const ref = parsed[ri];
+                if (
+                  typeof ref?.position !== 'number' ||
+                  typeof ref?.contentStart !== 'string' ||
+                  ref.contentStart.trim().length === 0
+                ) {
+                  logger.warn('[DOCXProcessor] Skipping invalid REFERENCE_REORDER entry', ref);
+                  continue;
+                }
                 referenceReorderMap.push({
                   oldPosition: ri + 1,
                   newPosition: ref.position,
                   content: ref.contentStart,
                   contentStart: ref.contentStart
                 });
+                validCount++;
               }
-              logger.info(`[DOCXProcessor] REFERENCE_REORDER: ${refOrder.length} references to reorder`);
+              logger.info(`[DOCXProcessor] REFERENCE_REORDER: ${validCount} valid references to reorder`);
             } catch (e) {
               logger.warn(`[DOCXProcessor] Failed to parse REFERENCE_REORDER data`, e);
             }

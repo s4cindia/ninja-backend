@@ -945,16 +945,17 @@ Return ONLY the style name (one word): APA, MLA, Chicago, Vancouver, IEEE, or Ha
       const contextEnd = Math.min(text.length, startPos + fullMatch.length + 30);
       const context = text.substring(contextStart, contextEnd);
 
-      // Calculate paragraph index from \n\n splits
+      // Calculate paragraph index from \n\n splits, accounting for variable separator lengths
       let paraIdx = 0;
       let offset = 0;
-      const paragraphs = text.split(/\n\n+/);
-      for (let i = 0; i < paragraphs.length; i++) {
-        if (startPos >= offset && startPos < offset + paragraphs[i].length) {
-          paraIdx = i;
+      const parts = text.split(/(\n\n+)/); // Capture separators to get actual lengths
+      for (let i = 0; i < parts.length; i += 2) {
+        const para = parts[i];
+        if (startPos >= offset && startPos < offset + para.length) {
+          paraIdx = i / 2;
           break;
         }
-        offset += paragraphs[i].length + 2;
+        offset += para.length + (parts[i + 1]?.length || 0);
       }
 
       const format = match[1] === '[' ? 'bracket' : 'parenthesis';
