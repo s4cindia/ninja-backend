@@ -907,6 +907,41 @@ class DOCXProcessorService {
   }
 
   /**
+   * Generate format variants of a citation text for cross-format matching.
+   * E.g., "(1, 2)" → ["[1, 2]", "[1,2]", "(1,2)"], "(2-4)" → ["[2-4]", "[2–4]", ...]
+   */
+  private generateCitationFormatVariants(text: string): string[] {
+    const variants: string[] = [];
+    const inner = text.replace(/^[[(]|[)\]]$/g, '').trim();
+    const nums: number[] = [];
+    for (const part of inner.split(',')) {
+      const rangeMatch = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
+      if (rangeMatch) {
+        for (let i = parseInt(rangeMatch[1]); i <= parseInt(rangeMatch[2]); i++) nums.push(i);
+      } else {
+        const n = parseInt(part.trim(), 10);
+        if (!isNaN(n)) nums.push(n);
+      }
+    }
+    if (nums.length === 0) return variants;
+
+    const isRange = nums.length >= 2 && nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    const formats = [nums.join(', '), nums.join(',')];
+    if (isRange) {
+      formats.push(`${nums[0]}-${nums[nums.length - 1]}`);
+      formats.push(`${nums[0]}\u2013${nums[nums.length - 1]}`);
+    }
+
+    for (const fmt of formats) {
+      const bracket = `[${fmt}]`;
+      const paren = `(${fmt})`;
+      if (bracket !== text && !variants.includes(bracket)) variants.push(bracket);
+      if (paren !== text && !variants.includes(paren)) variants.push(paren);
+    }
+    return variants;
+  }
+
+  /**
    * Extract all paragraphs from document XML with their combined text content.
    * This handles text split across multiple <w:t> elements due to formatting.
    */
@@ -2862,6 +2897,23 @@ class DOCXProcessorService {
           }
 
           if (!found) {
+            // Try format variants: brackets↔parens, spacing, ranges
+            const variants = this.generateCitationFormatVariants(change.beforeText);
+            for (const variant of variants) {
+              const varResult = this.replaceCitationUniversal(bodyXML, variant, placeholder);
+              bodyXML = varResult.xml;
+              if (varResult.count > 0) {
+                logger.info(`[DOCXProcessor] ✓ Replaced variant "${variant}" (for "${change.beforeText}") with placeholder (${varResult.count}x)`);
+                // Update oldText to show the actual DOCX text in track changes
+                const phInfo = placeholders.get(placeholder);
+                if (phInfo) phInfo.oldText = variant;
+                found = true;
+                break;
+              }
+            }
+          }
+
+          if (!found) {
             logger.warn(`[DOCXProcessor] ✗ Could not find "${change.beforeText}" in document body`);
           }
         }
@@ -3140,11 +3192,11 @@ class DOCXProcessorService {
           if (change.type === 'REFERENCE_REORDER' && change.beforeText) {
             try {
               const refOrder = JSON.parse(change.beforeText) as Array<{ position: number; contentStart: string }>;
-              for (const ref of refOrder) {
-                // Use dummy old positions so all entries are processed
+              for (let ri = 0; ri < refOrder.length; ri++) {
+                const ref = refOrder[ri];
                 // contentStart is used for paragraph matching; position determines final order
                 referenceReorderMap.push({
-                  oldPosition: 0, // not used for matching
+                  oldPosition: ri + 1,
                   newPosition: ref.position,
                   content: ref.contentStart,
                   contentStart: ref.contentStart

@@ -18,6 +18,31 @@ import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/
 import { resolveDocumentSimple } from './document-resolver';
 import { buildRefIdToNumberMap, formatCitationWithChanges } from '../../utils/citation.utils';
 
+/** Extract sorted number array from citation text like "(1, 2)", "[3-5]", "(2–4)" */
+function extractCitationNumbers(text: string): number[] {
+  const inner = text.replace(/^[[(]|[)\]]$/g, '').trim();
+  const nums: number[] = [];
+  for (const part of inner.split(',')) {
+    const rangeMatch = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      for (let i = start; i <= end; i++) nums.push(i);
+    } else {
+      const n = parseInt(part.trim(), 10);
+      if (!isNaN(n)) nums.push(n);
+    }
+  }
+  return nums.sort((a, b) => a - b);
+}
+
+/** Check if two citation texts represent the same numbers */
+function citationNumbersMatch(a: string, b: string): boolean {
+  const numsA = extractCitationNumbers(a);
+  const numsB = extractCitationNumbers(b);
+  return numsA.length > 0 && numsA.length === numsB.length && numsA.every((n, i) => n === numsB[i]);
+}
+
 export class CitationExportController {
   /**
    * GET /api/v1/citation-management/document/:documentId/preview
@@ -106,7 +131,7 @@ export class CitationExportController {
         for (const citation of citations) {
           const mapEntry = citationToChange.get(citation.id);
 
-          if (mapEntry && mapEntry.changeType === 'RENUMBER' && mapEntry.afterText !== citation.rawText) {
+          if (mapEntry && mapEntry.changeType === 'RENUMBER' && !citationNumbersMatch(mapEntry.afterText || '', citation.rawText || '')) {
             // Stale entry — chain through text transforms to find current rawText
             let current = mapEntry.afterText;
             const visited = new Set<string>();
@@ -116,9 +141,9 @@ export class CitationExportController {
               // Stop as soon as we reach the citation's current rawText
               // Without this, the chain may pass through the correct value
               // and continue to a further transform (e.g., "(3)"→"(2)"→"(1)" when rawText="(2)")
-              if (current === citation.rawText) break;
+              if (citationNumbersMatch(current || '', citation.rawText || '')) break;
             }
-            if (current === citation.rawText) {
+            if (citationNumbersMatch(current || '', citation.rawText || '')) {
               // Update Map: keep original beforeText, set afterText to current rawText
               citationToChange.set(citation.id, { ...mapEntry, afterText: current });
               logger.info(`[CitationExport] Reconciled stale change for citationId=${citation.id}: "${mapEntry.beforeText}" → "${current}" (was "${mapEntry.afterText}")`);
@@ -126,7 +151,7 @@ export class CitationExportController {
           } else if (!mapEntry && citation.rawText) {
             // No Map entry — check if a text transform's afterText matches this citation
             for (const [before, after] of textTransforms) {
-              if (after === citation.rawText && before !== after) {
+              if (citationNumbersMatch(after, citation.rawText || '') && before !== after) {
                 const sourceChange = textRenumberChanges.find(
                   c => c.beforeText === before && c.afterText === after
                 );
@@ -177,13 +202,26 @@ export class CitationExportController {
         });
       }
 
-      // Include reference-level DELETE changes (citationId: null, appliedBy: 'user')
-      // as synthetic entries so the frontend can display and dismiss them
+      // Collect reference-level DELETE changes (citationId: null, appliedBy: 'user')
+      // into a dedicated array for cleaner API separation
       const refDeleteChanges = changes.filter(c =>
         c.changeType === 'DELETE' && c.appliedBy === 'user' && !c.citationId
       );
+      const deletedReferences: Array<{
+        id: string;
+        changeId: string;
+        position: number;
+        originalText: string;
+      }> = [];
       for (const delChange of refDeleteChanges) {
         const position = (delChange.metadata as Record<string, unknown>)?.position as number || 0;
+        deletedReferences.push({
+          id: `ref-delete-${delChange.id}`,
+          changeId: delChange.id,
+          position,
+          originalText: delChange.beforeText || '',
+        });
+        // Also add to formattedCitations for backward compatibility with existing frontend
         formattedCitations.push({
           id: `ref-delete-${delChange.id}`,
           changeId: delChange.id,
@@ -221,7 +259,9 @@ export class CitationExportController {
           summary,
           changes: changesByType,
           // Add citations array for frontend track changes display
-          citations: formattedCitations
+          citations: formattedCitations,
+          // Dedicated array for deleted references (cleaner than synthetic REFERENCE_DELETE in citations)
+          deletedReferences
         }
       });
     } catch (error) {
@@ -322,40 +362,56 @@ export class CitationExportController {
         }
       }
 
-      // Reverted in-text RENUMBER: citationId → original beforeText (what's in the DOCX)
-      const revertedRenumbers = await prisma.citationChange.findMany({
+      // Fetch all reverted changes in a single query for both RENUMBER and REFERENCE_STYLE_CONVERSION.
+      // RENUMBER: citationId → original beforeText (what's in the DOCX)
+      // REFERENCE_STYLE_CONVERSION: When style conversions stack (Vancouver→APA reverted, then APA→Chicago active),
+      // the active change's beforeText is APA but the DOCX has Vancouver. We chain back to the original.
+      const revertedChanges = await prisma.citationChange.findMany({
         where: {
           documentId: resolvedDocId,
           isReverted: true,
-          changeType: 'RENUMBER',
+          changeType: { in: ['RENUMBER', 'REFERENCE_STYLE_CONVERSION'] },
           citationId: { not: null }
         },
         orderBy: { appliedAt: 'asc' }
       });
       const revertedBeforeText = new Map<string, string>();
-      for (const rc of revertedRenumbers) {
-        if (rc.citationId && rc.beforeText && !revertedBeforeText.has(rc.citationId)) {
-          revertedBeforeText.set(rc.citationId, rc.beforeText);
+      const revertedRefBeforeText = new Map<string, string>();
+      for (const rc of revertedChanges) {
+        if (rc.citationId && rc.beforeText) {
+          if (rc.changeType === 'RENUMBER' && !revertedBeforeText.has(rc.citationId)) {
+            revertedBeforeText.set(rc.citationId, rc.beforeText);
+          }
+          if (rc.changeType === 'REFERENCE_STYLE_CONVERSION' && !revertedRefBeforeText.has(rc.citationId)) {
+            revertedRefBeforeText.set(rc.citationId, rc.beforeText);
+          }
         }
       }
 
-      // Reverted REFERENCE_STYLE_CONVERSION: referenceId → original beforeText (what's in the DOCX)
-      // When style conversions stack (Vancouver→APA reverted, then APA→Chicago active),
-      // the active change's beforeText is APA but the DOCX has Vancouver.
-      // We need to chain back to the original Vancouver text.
-      const revertedRefStyleConversions = await prisma.citationChange.findMany({
-        where: {
-          documentId: resolvedDocId,
-          isReverted: true,
-          changeType: 'REFERENCE_STYLE_CONVERSION',
-          citationId: { not: null }
-        },
-        orderBy: { appliedAt: 'asc' }
-      });
-      const revertedRefBeforeText = new Map<string, string>();
-      for (const rc of revertedRefStyleConversions) {
-        if (rc.citationId && rc.beforeText && !revertedRefBeforeText.has(rc.citationId)) {
-          revertedRefBeforeText.set(rc.citationId, rc.beforeText);
+      // === Match text-based RENUMBER to INTEXT_STYLE_CONVERSION by text ===
+      // When RENUMBER changes have no citationId (text-based from delete), match them to
+      // INTEXT_STYLE_CONVERSION changes where RENUMBER.afterText ≈ STYLE.beforeText (by numbers).
+      // This enables the merge below to chain: original DOCX text → style-converted text.
+      const consumedTextRenumberIds = new Set<string>();
+      const allTextBasedRenumbers = changes.filter(c =>
+        c.changeType === 'RENUMBER' && !c.citationId && c.beforeText && c.afterText
+      );
+
+      if (allTextBasedRenumbers.length > 0 && activeStyleConversions.size > 0) {
+        for (const [citId, styleConv] of activeStyleConversions) {
+          if (activeRenumbers.has(citId)) continue; // already has citationId-based RENUMBER
+          const matchingRenumber = allTextBasedRenumbers.find(r =>
+            !consumedTextRenumberIds.has(r.id) &&
+            citationNumbersMatch(r.afterText || '', styleConv.beforeText)
+          );
+          if (matchingRenumber) {
+            activeRenumbers.set(citId, {
+              beforeText: matchingRenumber.beforeText!,
+              afterText: matchingRenumber.afterText!
+            });
+            consumedTextRenumberIds.add(matchingRenumber.id);
+            logger.info(`[CitationExport] Matched text-based RENUMBER "${matchingRenumber.beforeText}" → "${matchingRenumber.afterText}" to INTEXT_STYLE for citation ${citId}`);
+          }
         }
       }
 
@@ -457,6 +513,11 @@ export class CitationExportController {
           }
         }
 
+        // Skip text-based RENUMBER consumed by INTEXT_STYLE_CONVERSION merge
+        if (consumedTextRenumberIds.has(c.id)) {
+          continue;
+        }
+
         // Handle REFERENCE_EDIT with metadata (manual edits)
         if (c.changeType === 'REFERENCE_EDIT' && !c.citationId && c.metadata) {
           const metadata = c.metadata as Record<string, unknown>;
@@ -545,7 +606,11 @@ export class CitationExportController {
       // Phase 4 of the DOCX processor reorders reference paragraphs using REFERENCE_REORDER changes.
       // We provide ALL references with their desired order (sortKey) and content for matching.
       // The DOCX processor finds each paragraph by content and rearranges them.
-      if (document.referenceListEntries.length > 1) {
+      // Only emit when there are actual RENUMBER or DELETE changes that affect reference order.
+      const hasOrderChanges = changesToApply.some(c =>
+        c.type === 'RENUMBER' || c.type === 'DELETE' || c.type === 'REFERENCE_SECTION_EDIT'
+      );
+      if (hasOrderChanges && document.referenceListEntries.length > 1) {
         const styleCode = normalizeStyleCode(document.referenceListStyle);
         const formattedCol = getFormattedColumn(styleCode);
 

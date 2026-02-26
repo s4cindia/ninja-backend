@@ -328,6 +328,10 @@ class AICitationDetectorService {
       accumulatedUsage.completionTokens += citationUsage.completionTokens;
       logger.info(`[AI Citation Detector] Found ${inTextCitations.length} in-text citations`);
 
+      // Step 1b: Regex gap-fill — catch numeric citations the AI may have missed
+      this.fillMissedNumericCitations(sanitizedText, inTextCitations);
+      logger.info(`[AI Citation Detector] After gap-fill: ${inTextCitations.length} in-text citations`);
+
       // Step 2: Extract reference list using AI
       const { references, usage: refUsage } = await this.extractReferenceList(sanitizedText);
       accumulatedUsage.promptTokens += refUsage.promptTokens;
@@ -856,6 +860,129 @@ Return ONLY the style name (one word): APA, MLA, Chicago, Vancouver, IEEE, or Ha
       missingReferences: issues.filter(i => i.type === 'missing_reference').length,
       unusedReferences: issues.filter(i => i.type === 'unused_reference').length
     };
+  }
+
+  /**
+   * Regex gap-fill: find numeric citations the AI missed and add them.
+   * Scans for patterns like (1), [1], (7, 8), [3-5], (2, 3, 4) that aren't
+   * already covered by an AI-detected citation at the same position.
+   * Excludes journal volume/issue numbers preceded by a digit (e.g., "6(7)").
+   */
+  private fillMissedNumericCitations(text: string, citations: InTextCitation[]): void {
+    // Build set of reference numbers already covered by AI-detected citations
+    // AI returns approximate startChar positions, so position-based dedup is unreliable.
+    // Instead, only add citations containing reference numbers the AI completely missed.
+    const coveredNumbers = new Set<number>();
+    for (const c of citations) {
+      if (c.numbers) {
+        for (const n of c.numbers) coveredNumbers.add(n);
+      }
+    }
+
+    logger.info(`[AI Citation Detector] Gap-fill: AI covered reference numbers: {${[...coveredNumbers].sort((a, b) => a - b).join(', ')}}`);
+
+    // Regex: numeric citations in brackets or parens, NOT preceded by a digit
+    // Matches: (1), [1], (7, 8), [3-5], (2, 3, 4), [1,2,3], (3–5)
+    const citationPattern = /(?<!\d)([[(])(\d+(?:\s*[,–-]\s*\d+)*)([)\]])/g;
+    let match;
+    let addedCount = 0;
+
+    while ((match = citationPattern.exec(text)) !== null) {
+      const fullMatch = match[0];
+      const startPos = match.index;
+
+      // Parse numbers from the match
+      const inner = match[2];
+      const nums: number[] = [];
+      for (const part of inner.split(',')) {
+        const rangeMatch = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
+        if (rangeMatch) {
+          const s = parseInt(rangeMatch[1], 10);
+          const e = parseInt(rangeMatch[2], 10);
+          if (e > s && e - s < 50) {
+            for (let i = s; i <= e; i++) nums.push(i);
+          }
+        } else {
+          const n = parseInt(part.trim(), 10);
+          if (!isNaN(n)) nums.push(n);
+        }
+      }
+
+      // Skip if no valid numbers or if all numbers look like years
+      if (nums.length === 0 || nums.every(n => n >= 1900 && n <= 2100)) continue;
+
+      // Skip single numbers > 100 that aren't plausible citation numbers
+      if (nums.length === 1 && nums[0] > 100) continue;
+
+      // For compound citations (2+ numbers like "(4, 5)" or "(7, 8)"), don't rely on
+      // individual number coverage — the AI may have "covered" numbers from false
+      // positives in the reference list (e.g., journal volume "47(4)" detected as citation).
+      // Instead, only skip if AI already found a citation with these exact numbers.
+      const isCompound = nums.length >= 2;
+      if (isCompound) {
+        const sortedNums = [...nums].sort((a, b) => a - b);
+        const numsKey = sortedNums.join(',');
+        const alreadyDetected = citations.some(c => {
+          if (!c.numbers || c.numbers.length === 0) return false;
+          const cNums = [...c.numbers].sort((a, b) => a - b);
+          return cNums.join(',') === numsKey;
+        });
+        if (alreadyDetected) continue;
+      } else {
+        // For single-number citations, use number-based dedup
+        const hasNewNumber = nums.some(n => !coveredNumbers.has(n));
+        if (!hasNewNumber) continue;
+      }
+
+      // Skip if preceded by volume;issue pattern like "2009;6(7)"
+      const before = text.substring(Math.max(0, startPos - 30), startPos);
+      if (/\d+;\d*$/.test(before)) continue;
+      // Skip if preceded by dot+digit like ".6(7)" (volume notation)
+      if (/\.\d+$/.test(text.substring(Math.max(0, startPos - 5), startPos))) continue;
+
+      // Get context
+      const contextStart = Math.max(0, startPos - 30);
+      const contextEnd = Math.min(text.length, startPos + fullMatch.length + 30);
+      const context = text.substring(contextStart, contextEnd);
+
+      // Calculate paragraph index from \n\n splits
+      let paraIdx = 0;
+      let offset = 0;
+      const paragraphs = text.split(/\n\n+/);
+      for (let i = 0; i < paragraphs.length; i++) {
+        if (startPos >= offset && startPos < offset + paragraphs[i].length) {
+          paraIdx = i;
+          break;
+        }
+        offset += paragraphs[i].length + 2;
+      }
+
+      const format = match[1] === '[' ? 'bracket' : 'parenthesis';
+
+      citations.push({
+        id: `citation-gapfill-${addedCount + 1}`,
+        text: fullMatch,
+        position: {
+          paragraph: paraIdx,
+          sentence: 0,
+          startChar: startPos,
+          endChar: startPos + fullMatch.length,
+        },
+        type: 'numeric',
+        format: format as 'bracket' | 'parenthesis',
+        numbers: nums,
+        context: context.trim(),
+      });
+
+      // Mark these numbers as covered so we only add the first occurrence
+      for (const n of nums) coveredNumbers.add(n);
+      addedCount++;
+      logger.info(`[AI Citation Detector] Gap-fill: added "${fullMatch}" with numbers [${nums.join(', ')}]`);
+    }
+
+    if (addedCount > 0) {
+      logger.info(`[AI Citation Detector] Gap-fill added ${addedCount} missed numeric citations`);
+    }
   }
 }
 

@@ -33,15 +33,21 @@ function buildRawTextFromComponents(ref: {
   publisher?: string | null;
   formattedApa?: string | null;
 }): string {
-  // If formattedApa already looks like a full reference (has multiple fields), use it
+  // Count how many bibliographic fields are populated to decide if formattedApa is usable.
+  // A real formatted reference has author+year+title at minimum (3+ fields).
+  const hasAuthors = Array.isArray(ref.authors) && (ref.authors as unknown[]).length > 0;
+  const populatedFields = [hasAuthors, ref.year, ref.title, ref.journalName, ref.publisher, ref.doi]
+    .filter(Boolean).length;
+
+  // If formattedApa exists and we have 3+ structured fields, trust the formatted text
   const formatted = ref.formattedApa || '';
-  if (formatted.length > 50 && /\d{4}/.test(formatted)) {
+  if (formatted && populatedFields >= 3) {
     return formatted;
   }
 
   // Otherwise, build from components
   const parts: string[] = [];
-  const authors = Array.isArray(ref.authors) ? (ref.authors as string[]).join(', ') : '';
+  const authors = hasAuthors ? (ref.authors as string[]).join(', ') : '';
   if (authors) parts.push(authors);
   if (ref.year) parts.push(`(${ref.year}).`);
   if (ref.title) parts.push(`${ref.title}.`);
@@ -60,8 +66,8 @@ function buildRawTextFromComponents(ref: {
   if (ref.doi) parts.push(`https://doi.org/${ref.doi}`);
 
   const built = parts.join(' ');
-  // If we managed to build something more substantial than just the title, use it
-  return built.length > (ref.title?.length || 0) + 10 ? built : (formatted || ref.title || '');
+  // Use built text if we have more than just the title (structural check)
+  return populatedFields >= 2 ? built : (formatted || ref.title || '');
 }
 
 export class CitationStyleController {

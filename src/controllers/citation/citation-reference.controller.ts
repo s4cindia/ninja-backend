@@ -17,6 +17,16 @@ import prisma from '../../lib/prisma';
 // Type for Prisma transaction client
 type TransactionClient = Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 import { logger } from '../../lib/logger';
+
+/** Validate that all IDs are valid UUIDs before use in raw SQL */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function assertValidUUIDs(ids: string[]): void {
+  for (const id of ids) {
+    if (!UUID_RE.test(id)) {
+      throw new Error(`Invalid UUID format: ${id}`);
+    }
+  }
+}
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
@@ -483,6 +493,9 @@ export class CitationReferenceController {
         // Batch renumber remaining references using raw SQL for efficiency
         // This is O(1) instead of O(N) individual updates
         if (remainingReferences.length > 0) {
+          // Validate UUIDs before interpolation to prevent SQL injection
+          assertValidUUIDs(remainingReferences.map(ref => ref.id));
+
           const caseStatements = remainingReferences
             .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
             .join(' ');
@@ -808,9 +821,13 @@ export class CitationReferenceController {
     logger.info(`[CitationReference] rebuildLinks: Processing ${document.citations.length} citations`);
     for (const citation of document.citations) {
       logger.info(`[CitationReference] rebuildLinks: Citation "${citation.rawText.substring(0, 40)}" type=${citation.citationType}`);
-      // Handle numeric citations (e.g., "[1]", "[1,2]", "[3-5]")
-      const nums = this.expandCitationNumbers(citation.rawText);
-      if (nums.length > 0) {
+
+      // Use citationType as the primary signal to choose matching strategy,
+      // not just text heuristics — prevents year-number false positives
+      const isNumericType = ['NUMERIC', 'FOOTNOTE', 'ENDNOTE'].includes(citation.citationType);
+      if (isNumericType) {
+        // Handle numeric citations (e.g., "[1]", "[1,2]", "[3-5]")
+        const nums = this.expandCitationNumbers(citation.rawText);
         for (const num of nums) {
           const refId = refNumToId.get(num);
           if (refId) {
@@ -822,8 +839,8 @@ export class CitationReferenceController {
           }
         }
       }
-      // Handle parenthetical author-year citations (e.g., "(Smith, 2020)", "(Smith & Jones, 2021)")
-      else if (citation.citationType === 'PARENTHETICAL') {
+      // Handle parenthetical/narrative author-year citations (e.g., "(Smith, 2020)", "(Smith & Jones, 2021)")
+      else if (citation.citationType === 'PARENTHETICAL' || citation.citationType === 'NARRATIVE') {
         // Normalize citation text for matching:
         // "(Bommasani, R. et al., 2026)" -> "bommasani et al. 2026"
         const normalizedText = citation.rawText
@@ -1424,6 +1441,7 @@ export class CitationReferenceController {
 
       let totalDismissed = 0;
       let referencesRestored = 0;
+      let linkRebuildWarning: string | undefined;
 
       // Handle full undo for DELETE changes
       for (const deleteChange of deleteChanges) {
@@ -1464,7 +1482,9 @@ export class CitationReferenceController {
           oldFullHtml = null;
           oldFullText = null;
 
-          // For legacy changes, find related system DELETE changes to restore citation text
+          // For legacy changes (without stored citationUpdates), find related system-generated
+          // DELETE changes within a 5-second window to restore citation text.
+          // This window groups changes that were created atomically in the same operation.
           const deleteAppliedAt = deleteChange.appliedAt;
           const timeWindowMs = 5000;
           const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
@@ -1536,6 +1556,9 @@ export class CitationReferenceController {
 
           // Assign sequential sortKeys
           if (ordered.length > 0) {
+            // Validate UUIDs before interpolation to prevent SQL injection
+            assertValidUUIDs(ordered.map(ref => ref.id));
+
             const caseStatements = ordered
               .map((ref, index) => `WHEN id = '${ref.id}' THEN '${String(index + 1).padStart(4, '0')}'`)
               .join(' ');
@@ -1550,14 +1573,15 @@ export class CitationReferenceController {
           }
 
           // 3. Restore citation rawText values from stored citationUpdates
-          // For citations whose rawText was cleared to "", restore the original text
+          // Restore ALL affected citations: both DELETE-cleared (rawText='') and RENUMBER-updated ones
+          // Must match by ID without filtering on current rawText, since RENUMBER changes
+          // set rawText to a new value (e.g., "(1, 2)" → "(1)"), not to empty string
           for (const update of storedCitationUpdates) {
-            const currentCitation = await tx.citation.findUnique({ where: { id: update.id } });
-            if (currentCitation && (!currentCitation.rawText || currentCitation.rawText === '')) {
-              await tx.citation.update({
-                where: { id: update.id },
-                data: { rawText: update.oldRawText }
-              });
+            const result = await tx.citation.updateMany({
+              where: { id: update.id },
+              data: { rawText: update.oldRawText }
+            });
+            if (result.count > 0) {
               logger.info(`[CitationReference] Restored citation ${update.id} rawText to "${update.oldRawText}"`);
             }
           }
@@ -1575,7 +1599,16 @@ export class CitationReferenceController {
             logger.info(`[CitationReference] Restored fullHtml/fullText from stored originals`);
           }
 
-          // 5. Mark the DELETE change and all related changes (RENUMBER, system DELETE) as reverted
+          // 5. Mark the DELETE change and all related system-generated changes as reverted.
+          // The 5-second time window is a legacy heuristic to group the main DELETE with
+          // system-generated RENUMBER changes that were created in the same operation.
+          // We narrow with appliedBy='system' so that only machine-generated side-effects
+          // are bulk-reverted — the main DELETE change is reverted by ID.
+          await tx.citationChange.update({
+            where: { id: deleteChange.id },
+            data: { isReverted: true }
+          });
+
           const deleteAppliedAt = deleteChange.appliedAt;
           const timeWindowMs = 5000;
           const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
@@ -1585,12 +1618,13 @@ export class CitationReferenceController {
             where: {
               documentId: resolvedDocId,
               isReverted: false,
+              appliedBy: 'system',
               appliedAt: { gte: windowStart, lte: windowEnd },
               changeType: { in: ['DELETE', 'RENUMBER'] }
             },
             data: { isReverted: true }
           });
-          logger.info(`[CitationReference] Marked DELETE and related RENUMBER changes as reverted`);
+          logger.info(`[CitationReference] Marked DELETE and related system RENUMBER changes as reverted`);
         }, { timeout: 30000 });
 
         // 6. Rebuild citation-reference links outside the transaction
@@ -1598,7 +1632,9 @@ export class CitationReferenceController {
           await this.rebuildCitationLinks(resolvedDocId, tenantId);
           logger.info(`[CitationReference] Rebuilt citation-reference links after restore`);
         } catch (linkError) {
-          logger.warn(`[CitationReference] rebuildCitationLinks failed after restore`, linkError instanceof Error ? linkError : undefined);
+          const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
+          linkRebuildWarning = `Citation-reference links may be stale after restore. Error: ${errorMessage}. Refresh to reconcile.`;
+          logger.warn(`[CitationReference] rebuildCitationLinks failed after restore - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
         }
 
         referencesRestored++;
@@ -1627,7 +1663,8 @@ export class CitationReferenceController {
             ? `Restored ${referencesRestored} deleted reference(s) and dismissed ${totalDismissed} change(s)`
             : `Dismissed ${totalDismissed} change(s)`,
           dismissedCount: totalDismissed,
-          referencesRestored
+          referencesRestored,
+          ...(linkRebuildWarning && { warning: linkRebuildWarning })
         }
       });
     } catch (error) {
@@ -1695,14 +1732,23 @@ export class CitationReferenceController {
         citationLinks.set(link.citationId, refs);
       }
 
-      // Detect corruption: duplicate rawText across citations, or rawText that doesn't match fullHtml
+      // Detect corruption: duplicate rawText across citations that don't already have links.
+      // IMPORTANT: Repeated citations like (2) appearing twice are LEGITIMATE (same ref cited
+      // at different positions). Only flag corruption when citations lack links AND have duplicates,
+      // indicating a failed reorder/delete that didn't update rawTexts properly.
+      const numericCits = document.citations.filter(c => c.citationType === 'NUMERIC');
+      const citsWithLinks = numericCits.filter(c => citationLinks.has(c.id) && (citationLinks.get(c.id)?.length || 0) > 0);
+      const citsWithoutLinks = numericCits.filter(c => !citationLinks.has(c.id) || (citationLinks.get(c.id)?.length || 0) === 0);
+
+      // Only check for duplicates among citations WITHOUT links (those are potentially corrupted)
       const rawTextCounts = new Map<string, number>();
-      for (const c of document.citations) {
-        if (c.citationType === 'NUMERIC') {
-          rawTextCounts.set(c.rawText, (rawTextCounts.get(c.rawText) || 0) + 1);
-        }
+      for (const c of citsWithoutLinks) {
+        rawTextCounts.set(c.rawText, (rawTextCounts.get(c.rawText) || 0) + 1);
       }
-      const hasDuplicates = [...rawTextCounts.values()].some(count => count > 1);
+      // Corruption = unlinked citations with duplicate rawTexts AND most citations lack links
+      // If most citations already have links, the duplicates are legitimate repeated citations
+      const hasDuplicates = [...rawTextCounts.values()].some(count => count > 1) &&
+        citsWithoutLinks.length > citsWithLinks.length;
 
       // Load fullHtml to find actual citation markers in the document
       const docContent = await prisma.editorialDocumentContent.findUnique({
@@ -1727,13 +1773,13 @@ export class CitationReferenceController {
       let linksCreated = 0;
 
       // If corruption detected AND we can match citations to fullHtml markers, repair
-      if (hasDuplicates && foundInHtml.length >= document.citations.filter(c => c.citationType === 'NUMERIC').length) {
-        logger.info(`[CitationReference] Detected corrupted rawText (duplicates found). Repairing using fullHtml (${foundInHtml.length} markers found)`);
+      if (hasDuplicates && foundInHtml.length >= numericCits.length) {
+        logger.info(`[CitationReference] Detected corrupted rawText (duplicates found, ${citsWithoutLinks.length} unlinked). Repairing using fullHtml (${foundInHtml.length} markers found)`);
 
         // Citations are ordered by reading position (paragraphIndex, startOffset)
         // fullHtml markers are ordered by position in HTML
         // Match them 1:1 by reading order
-        const numericCitations = document.citations.filter(c => c.citationType === 'NUMERIC');
+        const numericCitations = numericCits;
 
         for (let i = 0; i < numericCitations.length && i < foundInHtml.length; i++) {
           const citation = numericCitations[i];
@@ -2128,10 +2174,13 @@ export class CitationReferenceController {
       // Note: This runs outside the main transaction. If it fails, the main changes
       // are already committed but links may be stale. Log warning for reconciliation.
       let linksCreated = 0;
+      let linkRebuildWarning: string | undefined;
       try {
         linksCreated = await this.rebuildCitationLinks(document.id, tenantId);
       } catch (linkError) {
-        logger.warn(`[CitationReference] rebuildCitationLinks failed after resequence - links may be stale for document ${document.id}. Manual reconciliation may be needed.`, linkError instanceof Error ? linkError : undefined);
+        const errorMessage = linkError instanceof Error ? linkError.message : 'Unknown error';
+        linkRebuildWarning = `Citation-reference links may be stale. Error: ${errorMessage}. Refresh to reconcile.`;
+        logger.warn(`[CitationReference] rebuildCitationLinks failed after resequence - ${linkRebuildWarning}`, linkError instanceof Error ? linkError : undefined);
       }
 
       logger.info(`[CitationReference] Resequenced: ${referenceUpdates.length} references, ${citationUpdates.length} citations, ${linksCreated} links for document ${documentId}`);
@@ -2142,7 +2191,8 @@ export class CitationReferenceController {
           message: 'References resequenced by appearance order',
           mapping: Object.fromEntries(oldToNewNumber),
           citationsUpdated: citationUpdates.length,
-          linksRebuilt: linksCreated
+          linksRebuilt: linksCreated,
+          ...(linkRebuildWarning && { warning: linkRebuildWarning })
         }
       });
     } catch (error) {
@@ -2171,26 +2221,36 @@ export class CitationReferenceController {
       '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9'
     };
 
-    // Extract number from newRawText: "(3)" → 3, "[3]" → 3
-    const numMatch = newRawText.match(/\d+/);
-    if (!numMatch) return afterText; // Can't extract number, leave unchanged
+    // Extract all numbers from newRawText: "(3)" → [3], "(1, 2)" → [1, 2], "[3-5]" → [3, 5]
+    const allNums = [...newRawText.matchAll(/\d+/g)].map(m => parseInt(m[0], 10));
+    if (allNums.length === 0) return afterText; // Can't extract numbers, leave unchanged
 
-    const newNum = parseInt(numMatch[0], 10);
+    // Helper: convert a single number to superscript
+    const toSuperscript = (n: number): string =>
+      String(n).split('').map(d => SUPERSCRIPT_DIGITS[parseInt(d, 10)]).join('');
 
     // Detect format of afterText
-    const isSuperscript = afterText.length > 0 && [...afterText].every(ch => ch in SUPER_TO_DIGIT);
-    if (isSuperscript) {
-      return String(newNum).split('').map(d => SUPERSCRIPT_DIGITS[parseInt(d, 10)]).join('');
+    // Superscript: all chars are superscript digits or common separators (comma, space)
+    const isSuperscript = afterText.length > 0 &&
+      [...afterText].every(ch => ch in SUPER_TO_DIGIT || ch === ',' || ch === ' ');
+    if (isSuperscript && [...afterText].some(ch => ch in SUPER_TO_DIGIT)) {
+      // Detect separator from original afterText
+      const hasSep = afterText.includes(',');
+      return allNums.map(toSuperscript).join(hasSep ? ',' : '');
     }
 
-    // Bracket format: [N]
-    if (/^\[\d+\]$/.test(afterText)) {
-      return `[${newNum}]`;
+    // Bracket format: [N] or [N, M] or [N-M] (digits with commas, hyphens, en-dashes, spaces)
+    if (/^\[[\d\s,\-–—]+\]$/.test(afterText)) {
+      const inner = afterText.slice(1, -1);
+      const sep = inner.includes(',') ? ', ' : inner.match(/[-–—]/) ? '-' : ', ';
+      return `[${allNums.join(sep)}]`;
     }
 
-    // Parenthesis format: (N)
-    if (/^\(\d+\)$/.test(afterText)) {
-      return `(${newNum})`;
+    // Parenthesis format: (N) or (N, M) or (N-M)
+    if (/^\([\d\s,\-–—]+\)$/.test(afterText)) {
+      const inner = afterText.slice(1, -1);
+      const sep = inner.includes(',') ? ', ' : inner.match(/[-–—]/) ? '-' : ', ';
+      return `(${allNums.join(sep)})`;
     }
 
     // Author-year or unrecognized format — leave unchanged
