@@ -790,14 +790,15 @@ class WorkflowController {
         .filter(w => w.currentState === 'COMPLETED')
         .map(w => {
           const sd = w.stateData as Record<string, unknown> | null;
-          const isEpub = w.file?.mimeType?.includes('epub') ?? true;
+          const mime = w.file?.mimeType?.toLowerCase() ?? '';
+          const fileType = mime.includes('epub') ? 'epub' : mime.includes('pdf') ? 'pdf' : null;
           return {
             workflowId: w.id,
             filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
             acrJobId: (sd?.acrJobId as string | undefined) ?? null,
             jobId: (sd?.jobId as string | undefined) ?? null,
             remediatedFileName: (sd?.remediatedFileName as string | undefined) ?? null,
-            fileType: isEpub ? 'epub' : 'pdf',
+            fileType,
           };
         });
 
@@ -848,9 +849,13 @@ class WorkflowController {
       const { id } = req.params;
       const workflow = await prisma.workflowInstance.findUnique({
         where: { id },
-        select: { stateData: true },
+        select: {
+          stateData: true,
+          file: { select: { tenantId: true, storageType: true } },
+        },
       });
-      if (!workflow) {
+      // 404 for both not-found and cross-tenant access
+      if (!workflow || workflow.file?.tenantId !== req.user?.tenantId) {
         res.status(404).json({ success: false, error: { message: 'Workflow not found' } });
         return;
       }
@@ -859,6 +864,11 @@ class WorkflowController {
       const fileName = sd?.remediatedFileName as string | undefined;
       if (!filePath || !fileName) {
         res.status(404).json({ success: false, error: { message: 'No remediated file available' } });
+        return;
+      }
+      if (workflow.file?.storageType === 'S3') {
+        // S3 — redirect to a pre-signed URL or stream via SDK (not implemented here)
+        res.status(501).json({ success: false, error: { message: 'S3 download not yet supported via this endpoint' } });
         return;
       }
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
