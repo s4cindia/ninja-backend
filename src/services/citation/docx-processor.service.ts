@@ -3154,8 +3154,10 @@ class DOCXProcessorService {
                   // Skip if this looks like an in-text citation paragraph (short, contains parentheses)
                   if (para.combinedText.length < 100 && para.combinedText.includes('(') && para.combinedText.includes(')')) {
                     // Check if this is actually a reference entry, not just a citation
-                    // Reference entries have a year pattern (various formats: "(2020).", "2020.", "(2020),")
-                    if (!/\b(19|20)\d{2}\b/.test(para.combinedText)) {
+                    // Reference entries typically have: a year, a period after the year, and length > 40 chars
+                    const hasYear = /\b(19|20)\d{2}\b/.test(para.combinedText);
+                    const hasRefStructure = para.combinedText.length > 40 && /\.\s/.test(para.combinedText);
+                    if (!hasYear || !hasRefStructure) {
                       continue; // Skip this, likely an in-text citation
                     }
                   }

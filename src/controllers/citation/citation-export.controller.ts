@@ -544,8 +544,9 @@ export class CitationExportController {
           continue;
         }
 
-        // Skip [N] format ref-section RENUMBER — handled by REFERENCE_REORDER below
-        if (c.changeType === 'RENUMBER' && c.beforeText && /^\[\d+\]/.test(c.beforeText)) {
+        // Skip ref-section bracket RENUMBER (e.g. "[1] Author...") — handled by REFERENCE_REORDER below
+        // Only skip non-citationId entries where beforeText has content after the bracket number
+        if (c.changeType === 'RENUMBER' && !c.citationId && c.beforeText && /^\[\d+\]\s+/.test(c.beforeText)) {
           continue;
         }
 
