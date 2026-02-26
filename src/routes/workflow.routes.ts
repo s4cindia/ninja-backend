@@ -13,6 +13,11 @@ router.post('/batch/:batchId/pause', workflowController.pauseBatch.bind(workflow
 router.post('/batch/:batchId/resume', workflowController.resumeBatch.bind(workflowController));
 router.post('/batch/:batchId/retry-failed', workflowController.retryFailedBatch.bind(workflowController));
 
+// Batch HITL cluster review
+router.get('/batch/:batchId/hitl/:gate/clusters', workflowController.getBatchHITLClusters.bind(workflowController));
+router.put('/batch/:batchId/hitl/cluster/:clusterId/decision', workflowController.updateClusterDecision.bind(workflowController));
+router.post('/batch/:batchId/hitl/:gate/apply-decisions', workflowController.applyBatchDecisions.bind(workflowController));
+
 // Workflow CRUD & lifecycle
 router.post('/', workflowController.startWorkflow.bind(workflowController));
 router.get('/:id', workflowController.getWorkflowStatus.bind(workflowController));

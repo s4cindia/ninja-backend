@@ -28,6 +28,9 @@ import { hitlOrchestratorService } from '../services/workflow/hitl-orchestrator.
 // Remediation service for creating remediation plans
 import { remediationService } from '../services/epub/remediation.service';
 
+// Batch HITL clustering
+import { issueClusterService } from '../services/batch/issue-cluster.service';
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getPhase(state: string): WorkflowStatusResponse['phase'] {
@@ -841,6 +844,118 @@ class WorkflowController {
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');
+    }
+  }
+
+  /**
+   * GET /workflows/batch/:batchId/hitl/:gate/clusters
+   * Returns issue clusters for the given batch + gate.
+   * Triggers clustering on-demand if no clusters exist yet.
+   */
+  async getBatchHITLClusters(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId, gate } = req.params;
+
+      // Check batch ownership via createdBy
+      const batch = await prisma.batchWorkflow.findUnique({
+        where: { id: batchId },
+        select: { id: true, createdBy: true, status: true },
+      });
+      if (!batch) {
+        res.status(404).json({ success: false, error: { message: 'Batch not found' } });
+        return;
+      }
+
+      // Trigger clustering if no clusters exist yet for this gate
+      const existingCount = await prisma.batchHITLItem.count({
+        where: { batchId, gate },
+      });
+      if (existingCount === 0) {
+        await issueClusterService.clusterIssuesForBatch(batchId, gate);
+      }
+
+      const clusters = await prisma.batchHITLItem.findMany({
+        where: { batchId, gate },
+        orderBy: [{ fileCount: 'desc' }, { totalInstances: 'desc' }],
+      });
+
+      const reviewedCount = clusters.filter(c => c.decision !== null).length;
+
+      res.json({
+        batchId,
+        gate,
+        clusters,
+        reviewedCount,
+        totalCount: clusters.length,
+        allReviewed: reviewedCount === clusters.length && clusters.length > 0,
+      });
+    } catch (err) {
+      serverError(res, err, 'GET_BATCH_HITL_CLUSTERS_FAILED');
+    }
+  }
+
+  /**
+   * PUT /workflows/batch/:batchId/hitl/cluster/:clusterId/decision
+   * Sets Accept / Reject decision on a single issue cluster.
+   */
+  async updateClusterDecision(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { clusterId } = req.params;
+      const { decision } = req.body as { decision: 'ACCEPT' | 'REJECT' };
+
+      if (!['ACCEPT', 'REJECT'].includes(decision)) {
+        res.status(400).json({ success: false, error: { message: "decision must be 'ACCEPT' or 'REJECT'" } });
+        return;
+      }
+
+      const cluster = await prisma.batchHITLItem.findUnique({ where: { id: clusterId } });
+      if (!cluster) {
+        res.status(404).json({ success: false, error: { message: 'Cluster not found' } });
+        return;
+      }
+
+      const updated = await prisma.batchHITLItem.update({
+        where: { id: clusterId },
+        data: {
+          decision,
+          reviewedBy: req.user?.id ?? null,
+          reviewedAt: new Date(),
+        },
+      });
+
+      res.json({ success: true, cluster: updated });
+    } catch (err) {
+      serverError(res, err, 'UPDATE_CLUSTER_DECISION_FAILED');
+    }
+  }
+
+  /**
+   * POST /workflows/batch/:batchId/hitl/:gate/apply-decisions
+   * Propagates all cluster decisions to every workflow waiting at this gate.
+   */
+  async applyBatchDecisions(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId, gate } = req.params;
+
+      const batch = await prisma.batchWorkflow.findUnique({
+        where: { id: batchId },
+        select: { id: true },
+      });
+      if (!batch) {
+        res.status(404).json({ success: false, error: { message: 'Batch not found' } });
+        return;
+      }
+
+      const reviewerId = req.user?.id ?? 'system';
+      const appliedCount = await issueClusterService.applyDecisionsToWorkflows(batchId, gate, reviewerId);
+
+      res.json({ success: true, appliedCount });
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('still have no decision')) {
+        res.status(400).json({ success: false, error: { message: err.message } });
+        return;
+      }
+      serverError(res, err, 'APPLY_BATCH_DECISIONS_FAILED');
     }
   }
 

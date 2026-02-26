@@ -49,6 +49,7 @@ model User {
   workflowInstances   WorkflowInstance[]
   batchWorkflows      BatchWorkflow[]
   hitlDecisions       HITLDecision[]
+  batchHITLReviews    BatchHITLItem[]
   remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
   editorSessions      EditorSession[]
 
@@ -1412,9 +1413,31 @@ model BatchWorkflow {
   autoApprovalPolicy Json?
 
   workflows WorkflowInstance[]
+  hitlItems BatchHITLItem[]
 
   @@index([status])
   @@index([createdBy])
+}
+
+model BatchHITLItem {
+  id                   String        @id @default(uuid())
+  batchId              String
+  batch                BatchWorkflow @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  gate                 String
+  issueCode            String
+  issueTitle           String
+  severity             String        @default("moderate")
+  fileCount            Int           @default(0)
+  totalInstances       Int           @default(0)
+  representativeIssues Json          @default("[]")
+  decision             String?
+  reviewedBy           String?
+  reviewer             User?         @relation(fields: [reviewedBy], references: [id])
+  reviewedAt           DateTime?
+  createdAt            DateTime      @default(now())
+
+  @@unique([batchId, gate, issueCode])
+  @@index([batchId, gate])
 }
 
 model HITLDecision {
