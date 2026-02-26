@@ -482,14 +482,14 @@ export class CitationReferenceController {
         // Delete the reference
         await tx.referenceListEntry.delete({ where: { id: referenceId } });
 
-        // Batch renumber remaining references using individual updates
+        // Batch renumber remaining references using concurrent updates
         if (remainingReferences.length > 0) {
-          for (let i = 0; i < remainingReferences.length; i++) {
-            await tx.referenceListEntry.update({
-              where: { id: remainingReferences[i].id },
+          await Promise.all(remainingReferences.map((ref, i) =>
+            tx.referenceListEntry.update({
+              where: { id: ref.id },
               data: { sortKey: String(i + 1).padStart(4, '0') }
-            });
-          }
+            })
+          ));
         }
 
         // Update citations using batched updateMany for efficiency
@@ -1301,6 +1301,8 @@ export class CitationReferenceController {
       const { referencesReverted, changesDeleted } = await prisma.$transaction(async (tx) => {
         let reverted = 0;
 
+        // Batch revert all references concurrently to reduce N+1 queries
+        const revertPromises: Promise<unknown>[] = [];
         for (const [refId, change] of earliestChangeByRefId) {
           const metadata = change.metadata as {
             referenceId?: string;
@@ -1324,32 +1326,36 @@ export class CitationReferenceController {
           };
 
           if (metadata.oldValues) {
-            // This will throw and rollback the entire transaction if it fails
-            await tx.referenceListEntry.update({
-              where: { id: refId },
-              data: {
-                authors: metadata.oldValues.authors as Prisma.InputJsonValue,
-                year: metadata.oldValues.year,
-                title: metadata.oldValues.title || '',
-                publisher: metadata.oldValues.publisher,
-                journalName: metadata.oldValues.journalName,
-                volume: metadata.oldValues.volume,
-                issue: metadata.oldValues.issue,
-                pages: metadata.oldValues.pages,
-                doi: metadata.oldValues.doi,
-                url: metadata.oldValues.url,
-                formattedApa: metadata.oldValues.formattedApa,
-                formattedMla: metadata.oldValues.formattedMla,
-                formattedChicago: metadata.oldValues.formattedChicago,
-                formattedVancouver: metadata.oldValues.formattedVancouver,
-                formattedIeee: metadata.oldValues.formattedIeee,
-                isEdited: false,
-                editedAt: null
-              }
-            });
+            revertPromises.push(
+              tx.referenceListEntry.update({
+                where: { id: refId },
+                data: {
+                  authors: metadata.oldValues.authors as Prisma.InputJsonValue,
+                  year: metadata.oldValues.year,
+                  title: metadata.oldValues.title || '',
+                  publisher: metadata.oldValues.publisher,
+                  journalName: metadata.oldValues.journalName,
+                  volume: metadata.oldValues.volume,
+                  issue: metadata.oldValues.issue,
+                  pages: metadata.oldValues.pages,
+                  doi: metadata.oldValues.doi,
+                  url: metadata.oldValues.url,
+                  formattedApa: metadata.oldValues.formattedApa,
+                  formattedMla: metadata.oldValues.formattedMla,
+                  formattedChicago: metadata.oldValues.formattedChicago,
+                  formattedVancouver: metadata.oldValues.formattedVancouver,
+                  formattedIeee: metadata.oldValues.formattedIeee,
+                  isEdited: false,
+                  editedAt: null
+                }
+              })
+            );
             reverted++;
-            logger.info(`[CitationReference] Reverted reference ${refId} to original values (from earliest change)`);
           }
+        }
+        if (revertPromises.length > 0) {
+          await Promise.all(revertPromises);
+          logger.info(`[CitationReference] Batch-reverted ${reverted} references to original values`);
         }
 
         // Delete all CitationChange records for this document
@@ -1538,28 +1544,33 @@ export class CitationReferenceController {
           const ordered = [...existingRefs];
           ordered.splice(insertIdx, 0, { id: refId } as typeof existingRefs[0]);
 
-          // Assign sequential sortKeys
+          // Assign sequential sortKeys concurrently
           if (ordered.length > 0) {
-            for (let i = 0; i < ordered.length; i++) {
-              await tx.referenceListEntry.update({
-                where: { id: ordered[i].id },
+            await Promise.all(ordered.map((ref, i) =>
+              tx.referenceListEntry.update({
+                where: { id: ref.id },
                 data: { sortKey: String(i + 1).padStart(4, '0') }
-              });
-            }
+              })
+            ));
             logger.info(`[CitationReference] Inserted restored ref at position ${deletedPosition}, re-sorted ${ordered.length} references`);
           }
 
           // 3. Restore citation rawText values from stored citationUpdates
           // Restore ALL affected citations: both DELETE-cleared (rawText='') and RENUMBER-updated ones
-          // Must match by ID without filtering on current rawText, since RENUMBER changes
-          // set rawText to a new value (e.g., "(1, 2)" → "(1)"), not to empty string
+          // Group by oldRawText to batch updates and reduce N+1 queries
+          const citationsByOldText = new Map<string, string[]>();
           for (const update of storedCitationUpdates) {
+            const ids = citationsByOldText.get(update.oldRawText) || [];
+            ids.push(update.id);
+            citationsByOldText.set(update.oldRawText, ids);
+          }
+          for (const [oldRawText, ids] of citationsByOldText) {
             const result = await tx.citation.updateMany({
-              where: { id: update.id },
-              data: { rawText: update.oldRawText }
+              where: { id: { in: ids } },
+              data: { rawText: oldRawText }
             });
             if (result.count > 0) {
-              logger.info(`[CitationReference] Restored citation ${update.id} rawText to "${update.oldRawText}"`);
+              logger.info(`[CitationReference] Batch-restored ${result.count} citations to rawText="${oldRawText}"`);
             }
           }
 
@@ -2220,15 +2231,15 @@ export class CitationReferenceController {
     // Bracket format: [N] or [N, M] or [N-M] (digits with commas, hyphens, en-dashes, spaces)
     if (/^\[[\d\s,\-–—]+\]$/.test(afterText)) {
       const inner = afterText.slice(1, -1);
-      const sep = inner.includes(',') ? ', ' : inner.match(/[-–—]/) ? '-' : ', ';
-      return `[${allNums.join(sep)}]`;
+      const isRange = inner.match(/[-–—]/) && !inner.includes(',');
+      return `[${isRange ? this.formatNumberList(allNums) : allNums.join(', ')}]`;
     }
 
     // Parenthesis format: (N) or (N, M) or (N-M)
     if (/^\([\d\s,\-–—]+\)$/.test(afterText)) {
       const inner = afterText.slice(1, -1);
-      const sep = inner.includes(',') ? ', ' : inner.match(/[-–—]/) ? '-' : ', ';
-      return `(${allNums.join(sep)})`;
+      const isRange = inner.match(/[-–—]/) && !inner.includes(',');
+      return `(${isRange ? this.formatNumberList(allNums) : allNums.join(', ')})`;
     }
 
     // Author-year or unrecognized format — leave unchanged
@@ -2296,12 +2307,17 @@ export class CitationReferenceController {
       }
     }
 
+    const formattedText = beforeText.replace(/^\[\d+\]\s*/, '').trim() || null;
     return {
       authors: authors.length > 0 ? authors : [],
       year,
       title: title || beforeText,
       sourceType: 'journal_article',
-      formattedApa: beforeText.replace(/^\[\d+\]\s*/, '').trim() || null,
+      formattedApa: formattedText,
+      formattedMla: formattedText,
+      formattedChicago: formattedText,
+      formattedVancouver: formattedText,
+      formattedIeee: formattedText,
     };
   }
 
@@ -2451,6 +2467,9 @@ export class CitationReferenceController {
       // If there's a space before the deleted citation, consume it
       if (start > 0 && fullText[start - 1] === ' ') {
         start--;
+      } else if (start === 0 && end < fullText.length && fullText[end] === ' ') {
+        // Citation at text start: consume trailing space instead
+        end++;
       }
       return { start, end };
     };

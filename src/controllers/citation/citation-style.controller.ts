@@ -238,10 +238,13 @@ export class CitationStyleController {
         'Chicago': 'formattedChicago',
         'Vancouver': 'formattedVancouver',
         'IEEE': 'formattedIeee',
-        'Harvard': 'formattedApa',   // No dedicated column, use formattedApa
-        'AMA': 'formattedApa'        // No dedicated column, use formattedApa
+        'Harvard': 'formattedApa',
+        'AMA': 'formattedApa'
       };
       const targetColumn = styleColumnMap[targetStyle] || 'formattedApa';
+      if (targetStyle === 'Harvard' || targetStyle === 'AMA') {
+        logger.warn(`[CitationStyle] No dedicated DB column for ${targetStyle}; storing in formattedApa (will overwrite existing APA format)`);
+      }
 
       // Revert previous style conversion changes before creating new ones
       // This prevents stale changes from accumulating after multiple conversions

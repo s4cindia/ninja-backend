@@ -197,11 +197,12 @@ export class CitationExportController {
           originalText: delChange.beforeText || '',
         });
         // Also add to formattedCitations for backward compatibility with existing frontend
+        // Use citationType 'NUMERIC' (valid Prisma enum) with changeType 'deleted' to signal ref deletion
         formattedCitations.push({
           id: `ref-delete-${delChange.id}`,
           changeId: delChange.id,
           rawText: '',
-          citationType: 'REFERENCE_DELETE',
+          citationType: 'NUMERIC',
           paragraphIndex: null,
           referenceNumber: position,
           linkedReferenceIds: [],
