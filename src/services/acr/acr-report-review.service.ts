@@ -371,16 +371,22 @@ class AcrReportReviewService {
   async getReportForReview(jobId: string) {
     logger.info(`[ACR Report Review] Fetching report for job ${jobId}`);
 
-    // Always fetch the LATEST version (most recently created)
-    const acrJob = await prisma.acrJob.findFirst({
-      where: { jobId },
-      orderBy: { createdAt: 'desc' }, // Get most recent draft
-      include: {
-        criteria: {
-          orderBy: { criterionNumber: 'asc' }
-        }
-      }
+    const criteriaInclude = { criteria: { orderBy: { criterionNumber: 'asc' } } } as const;
+
+    // Try by AcrJob.id first (used when coming from batch workflow dashboard)
+    let acrJob = await prisma.acrJob.findUnique({
+      where: { id: jobId },
+      include: criteriaInclude,
     });
+
+    // Fall back to searching by jobId FK (used from standard ACR workflow page)
+    if (!acrJob) {
+      acrJob = await prisma.acrJob.findFirst({
+        where: { jobId },
+        orderBy: { createdAt: 'desc' },
+        include: criteriaInclude,
+      });
+    }
 
     if (!acrJob) {
       throw new Error(`ACR Job not found for jobId: ${jobId}`);

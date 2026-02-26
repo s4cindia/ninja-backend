@@ -19,12 +19,15 @@ export function getRedisClient(): Redis {
     const options: Record<string, unknown> = {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
+      connectTimeout: 10_000,
+      keepAlive: 30_000,
       retryStrategy: (times: number) => {
-        if (times > 3) {
-          console.error('Redis connection failed after 3 retries');
+        if (times > 20) {
+          console.error('Redis connection failed after 20 retries — giving up');
           return null;
         }
-        return Math.min(times * 200, 1000);
+        const jitter = Math.floor(Math.random() * 500);
+        return Math.min(times * 500, 10_000) + jitter;
       },
     };
 

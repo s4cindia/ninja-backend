@@ -12,7 +12,7 @@ import {
   HITLAction,
   WorkflowState,
 } from '../types/workflow-contracts';
-import type { WorkflowStatusResponse, BatchAutoApprovalPolicy } from '../types/workflow-contracts';
+import type { WorkflowStatusResponse, BatchAutoApprovalPolicy, AcrBatchConfig } from '../types/workflow-contracts';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import prisma, { Prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -537,7 +537,7 @@ class WorkflowController {
         badRequest(res, 'Invalid batch payload', parsed.error.flatten());
         return;
       }
-      const { name, fileIds, concurrency, autoApprovalPolicy } = parsed.data;
+      const { name, fileIds, concurrency, autoApprovalPolicy, acrConfig } = parsed.data;
       const userId = req.user!.id;
       const tenantId = req.user!.tenantId;
 
@@ -568,6 +568,11 @@ class WorkflowController {
         }
       }
 
+      // Merge acrConfig into the autoApprovalPolicy JSON field (no schema migration needed)
+      const policyJson = (autoApprovalPolicy || acrConfig)
+        ? { ...(autoApprovalPolicy ?? {}), ...(acrConfig ? { acrConfig } : {}) } as unknown as Prisma.InputJsonValue
+        : undefined;
+
       const batch = await prisma.batchWorkflow.create({
         data: {
           name,
@@ -575,7 +580,7 @@ class WorkflowController {
           concurrency,
           status: 'PENDING',
           createdBy: userId,
-          ...(autoApprovalPolicy ? { autoApprovalPolicy: autoApprovalPolicy as unknown as Prisma.InputJsonValue } : {}),
+          ...(policyJson !== undefined ? { autoApprovalPolicy: policyJson } : {}),
         },
       });
 
@@ -737,7 +742,8 @@ class WorkflowController {
               id: true,
               currentState: true,
               errorMessage: true,
-              file: { select: { filename: true, originalName: true } },
+              stateData: true,
+              file: { select: { filename: true, originalName: true, mimeType: true } },
             },
             orderBy: { startedAt: 'asc' },
           },
@@ -780,6 +786,22 @@ class WorkflowController {
           errorMessage: w.errorMessage ?? null,
         }));
 
+      const completedWorkflows = batch.workflows
+        .filter(w => w.currentState === 'COMPLETED')
+        .map(w => {
+          const sd = w.stateData as Record<string, unknown> | null;
+          const mime = w.file?.mimeType?.toLowerCase() ?? '';
+          const fileType = mime.includes('epub') ? 'epub' : mime.includes('pdf') ? 'pdf' : null;
+          return {
+            workflowId: w.id,
+            filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
+            acrJobId: (sd?.acrJobId as string | undefined) ?? null,
+            jobId: (sd?.jobId as string | undefined) ?? null,
+            remediatedFileName: (sd?.remediatedFileName as string | undefined) ?? null,
+            fileType,
+          };
+        });
+
       // Map each HITL gate state to its URL slug
       const GATE_STATE_TO_SLUG: Record<string, string> = {
         [WorkflowState.AWAITING_AI_REVIEW]: 'ai-review',
@@ -812,11 +834,48 @@ class WorkflowController {
         startedAt: batch.startedAt.toISOString(),
         completedAt: batch.completedAt?.toISOString(),
         autoApprovalPolicy: (batch.autoApprovalPolicy as BatchAutoApprovalPolicy | null) ?? null,
+        acrConfig: ((batch.autoApprovalPolicy as Record<string, unknown> | null)?.acrConfig as AcrBatchConfig | undefined) ?? null,
         failedWorkflows,
+        completedWorkflows,
         hitlWaiting,
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');
+    }
+  }
+
+  async downloadRemediatedFile(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+        select: {
+          stateData: true,
+          file: { select: { tenantId: true, storageType: true } },
+        },
+      });
+      // 404 for both not-found and cross-tenant access
+      if (!workflow || workflow.file?.tenantId !== req.user?.tenantId) {
+        res.status(404).json({ success: false, error: { message: 'Workflow not found' } });
+        return;
+      }
+      const sd = workflow.stateData as Record<string, unknown> | null;
+      const filePath = sd?.remediatedFilePath as string | undefined;
+      const fileName = sd?.remediatedFileName as string | undefined;
+      if (!filePath || !fileName) {
+        res.status(404).json({ success: false, error: { message: 'No remediated file available' } });
+        return;
+      }
+      if (workflow.file?.storageType === 'S3') {
+        // S3 — redirect to a pre-signed URL or stream via SDK (not implemented here)
+        res.status(501).json({ success: false, error: { message: 'S3 download not yet supported via this endpoint' } });
+        return;
+      }
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.sendFile(filePath, { root: '/' });
+    } catch (err) {
+      serverError(res, err, 'DOWNLOAD_REMEDIATED_FILE_FAILED');
     }
   }
 }

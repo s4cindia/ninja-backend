@@ -83,6 +83,9 @@ interface BullMQConnectionOptions {
   username?: string;
   maxRetriesPerRequest: null;
   enableReadyCheck: boolean;
+  connectTimeout: number;
+  keepAlive: number;
+  retryStrategy: (times: number) => number | null;
   tls?: {
     rejectUnauthorized: boolean;
   };
@@ -90,20 +93,20 @@ interface BullMQConnectionOptions {
 
 function getBullMQConnection(): BullMQConnectionOptions | null {
   const redisUrl = getRedisUrl();
-  
+
   if (!redisUrl) {
     return null;
   }
 
   const useTls = redisUrl.startsWith('rediss://') || redisUrl.includes('upstash');
   let connectionUrl = redisUrl;
-  
+
   if (redisUrl.startsWith('rediss://')) {
     connectionUrl = redisUrl.replace('rediss://', 'redis://');
   }
 
   const url = new URL(connectionUrl);
-  
+
   const options: BullMQConnectionOptions = {
     host: url.hostname,
     port: parseInt(url.port || '6379', 10),
@@ -111,6 +114,19 @@ function getBullMQConnection(): BullMQConnectionOptions | null {
     username: url.username || undefined,
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
+    // Give TLS handshakes 10 s before declaring a timeout
+    connectTimeout: 10_000,
+    // Send TCP keepalive every 30 s so cloud providers (Upstash, ElastiCache)
+    // don't silently drop idle connections
+    keepAlive: 30_000,
+    // Jittered exponential back-off prevents all workers from thundering-herd
+    // reconnecting simultaneously after a shared connection drop.
+    // Times out permanently after 20 attempts (~3 min total).
+    retryStrategy: (times: number) => {
+      if (times > 20) return null;
+      const jitter = Math.floor(Math.random() * 500);
+      return Math.min(times * 500, 10_000) + jitter;
+    },
   };
 
   if (useTls) {

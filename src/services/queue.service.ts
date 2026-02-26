@@ -129,6 +129,7 @@ export class QueueService {
         type: true,
         status: true,
         progress: true,
+        input: true,
         output: true,
         error: true,
         createdAt: true,
