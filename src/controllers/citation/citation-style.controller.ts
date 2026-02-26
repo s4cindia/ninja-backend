@@ -337,9 +337,10 @@ export class CitationStyleController {
         });
 
         // Update Citation.rawText using ID-based lookup when available
+        // Scope to current document to prevent cross-document writes
         if (citConversion.citationId) {
           await prisma.citation.update({
-            where: { id: citConversion.citationId },
+            where: { id: citConversion.citationId, documentId: document.id },
             data: {
               rawText: citConversion.newText,
               detectedStyle: prismaStyle as import('@prisma/client').CitationStyle
