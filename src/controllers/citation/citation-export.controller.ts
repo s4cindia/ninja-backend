@@ -601,7 +601,8 @@ export class CitationExportController {
             || ref.formattedApa
             || `${(ref.authors as string[] || []).join(', ')} (${ref.year}). ${ref.title}`;
 
-          // Use a normalized prefix for matching (reduces collisions for same-author entries)
+          // Use a normalized prefix for matching
+          // TODO: Consider hash-based matching to eliminate collision risk for same-author entries
           const contentStart = refContent
             .replace(/\s+/g, ' ')
             .trim()
@@ -631,8 +632,9 @@ export class CitationExportController {
         modifiedBuffer = originalBuffer;
       }
 
-      // Use original filename
-      const exportName = document.originalName;
+      // Append _modified suffix to prevent overwriting the original file
+      const baseName = document.originalName.replace(/\.docx$/i, '');
+      const exportName = `${baseName}_modified.docx`;
 
       // Send file
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');

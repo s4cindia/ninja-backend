@@ -24,6 +24,9 @@ import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 import { extractCitationNumbers } from '../../utils/citation.utils';
 
+/** Transaction timeout for operations that may update many citations/references (default 5s is too short) */
+const TRANSACTION_TIMEOUT_MS = 30000;
+
 /**
  * Safely extract authors array from Prisma JsonValue
  * @param authors - Prisma JsonValue that may be string[], string, or other types
@@ -556,6 +559,8 @@ export class CitationReferenceController {
               // Store citation text updates for restoration
               citationUpdates: citationUpdates.map(u => ({ id: u.id, oldRawText: u.oldRawText, newRawText: u.newRawText })),
               // Store original fullHtml/fullText for perfect restoration
+              // TODO: For large documents, consider storing content snapshots in a dedicated table
+              // or S3 to avoid bloating the CitationChange metadata column
               oldFullHtml: referenceToDelete.document.documentContent?.fullHtml || null,
               oldFullText: referenceToDelete.document.documentContent?.fullText || null,
             },
@@ -1464,7 +1469,7 @@ export class CitationReferenceController {
           refData = {
             ...parsed,
             sortKey: insertSortKey,
-            enrichmentSource: 'restored',
+            enrichmentSource: 'restored', // Free-form string field; other values: 'ai', 'crossref', 'none', 'manual'
             enrichmentConfidence: 0,
           };
           refId = randomUUID();
@@ -1475,6 +1480,8 @@ export class CitationReferenceController {
           // For legacy changes (without stored citationUpdates), find related system-generated
           // DELETE changes within a 5-second window to restore citation text.
           // This window groups changes that were created atomically in the same operation.
+          // TODO: Replace time-window heuristic with a batchId stored on all changes created
+          // in the same operation, to avoid cross-contamination under high load or slow DB writes
           const deleteAppliedAt = deleteChange.appliedAt;
           const timeWindowMs = 5000;
           const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
@@ -1613,7 +1620,7 @@ export class CitationReferenceController {
             data: { isReverted: true }
           });
           logger.info(`[CitationReference] Marked DELETE and related system RENUMBER changes as reverted`);
-        }, { timeout: 30000 });
+        }, { timeout: TRANSACTION_TIMEOUT_MS });
 
         // 6. Rebuild citation-reference links outside the transaction
         try {

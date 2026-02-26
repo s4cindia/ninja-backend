@@ -369,6 +369,11 @@ export class CitationStyleController {
 
       const successCount = conversionResults.filter(r => r.success).length;
 
+      const warnings: string[] = [];
+      if (targetStyle === 'Harvard' || targetStyle === 'AMA') {
+        warnings.push(`No dedicated database column for ${targetStyle}; the APA column is used to store ${targetStyle}-formatted text. A subsequent APA conversion will overwrite it.`);
+      }
+
       res.json({
         success: true,
         data: {
@@ -378,7 +383,8 @@ export class CitationStyleController {
           totalConverted: successCount,
           totalFailed: references.length - successCount,
           inTextCitationChanges: conversionResult.citationConversions.length,
-          citationConversions: conversionResult.citationConversions
+          citationConversions: conversionResult.citationConversions,
+          ...(warnings.length > 0 && { warnings })
         }
       });
     } catch (error) {

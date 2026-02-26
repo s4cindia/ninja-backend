@@ -30,6 +30,8 @@ export function extractCitationNumbers(text: string): number[] {
 /**
  * Check if two citation texts represent the same numbers
  */
+// Intentionally returns false for empty-vs-empty (numsA.length > 0 guard)
+// so that two non-citation strings are not considered a match
 export function citationNumbersMatch(a: string, b: string): boolean {
   const numsA = extractCitationNumbers(a);
   const numsB = extractCitationNumbers(b);
