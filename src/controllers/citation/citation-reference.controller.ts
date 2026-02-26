@@ -2491,9 +2491,9 @@ export class CitationReferenceController {
       const remapped = remapAndFormat(bracketMatch[1]);
       if (remapped === null) {
         // Remove citation and clean up adjacent space
-        const { start } = cleanDeletion(text, bracketMatch.index, bracketMatch.index + bracketMatch[0].length);
+        const { start, end } = cleanDeletion(text, bracketMatch.index, bracketMatch.index + bracketMatch[0].length);
         result += text.slice(lastIndex, start);
-        lastIndex = bracketMatch.index + bracketMatch[0].length;
+        lastIndex = end;
         replacements.push({ original: bracketMatch[0], replacement: '' });
       } else {
         const newCitation = `[${remapped}]`;
@@ -2517,9 +2517,9 @@ export class CitationReferenceController {
       const remapped = remapAndFormat(parenMatch[1]);
       if (remapped === null) {
         // Remove citation and clean up adjacent space
-        const { start } = cleanDeletion(textAfterBrackets, parenMatch.index, parenMatch.index + parenMatch[0].length);
+        const { start, end } = cleanDeletion(textAfterBrackets, parenMatch.index, parenMatch.index + parenMatch[0].length);
         result += textAfterBrackets.slice(lastIndex, start);
-        lastIndex = parenMatch.index + parenMatch[0].length;
+        lastIndex = end;
         replacements.push({ original: parenMatch[0], replacement: '' });
       } else {
         const newCitation = `(${remapped})`;
