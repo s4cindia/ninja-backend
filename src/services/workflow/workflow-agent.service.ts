@@ -933,7 +933,7 @@ class WorkflowAgentService {
       if (acrConfig?.contactEmail) contactEmail = acrConfig.contactEmail;
     }
 
-    const documentTitle = file.filename;
+    const documentTitle = file.originalName ?? file.filename;
 
     logger.info(`[WorkflowAgent] Creating ACR with AI analysis results: edition=${edition}, jobId=${jobId}`);
 

@@ -743,7 +743,7 @@ class WorkflowController {
               currentState: true,
               errorMessage: true,
               stateData: true,
-              file: { select: { filename: true, originalName: true } },
+              file: { select: { filename: true, originalName: true, mimeType: true } },
             },
             orderBy: { startedAt: 'asc' },
           },
@@ -790,11 +790,14 @@ class WorkflowController {
         .filter(w => w.currentState === 'COMPLETED')
         .map(w => {
           const sd = w.stateData as Record<string, unknown> | null;
+          const isEpub = w.file?.mimeType?.includes('epub') ?? true;
           return {
             workflowId: w.id,
             filename: w.file?.originalName ?? w.file?.filename ?? 'Unknown file',
             acrJobId: (sd?.acrJobId as string | undefined) ?? null,
             jobId: (sd?.jobId as string | undefined) ?? null,
+            remediatedFileName: (sd?.remediatedFileName as string | undefined) ?? null,
+            fileType: isEpub ? 'epub' : 'pdf',
           };
         });
 
@@ -837,6 +840,32 @@ class WorkflowController {
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');
+    }
+  }
+
+  async downloadRemediatedFile(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id },
+        select: { stateData: true },
+      });
+      if (!workflow) {
+        res.status(404).json({ success: false, error: { message: 'Workflow not found' } });
+        return;
+      }
+      const sd = workflow.stateData as Record<string, unknown> | null;
+      const filePath = sd?.remediatedFilePath as string | undefined;
+      const fileName = sd?.remediatedFileName as string | undefined;
+      if (!filePath || !fileName) {
+        res.status(404).json({ success: false, error: { message: 'No remediated file available' } });
+        return;
+      }
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.sendFile(filePath, { root: '/' });
+    } catch (err) {
+      serverError(res, err, 'DOWNLOAD_REMEDIATED_FILE_FAILED');
     }
   }
 }
