@@ -907,6 +907,41 @@ class DOCXProcessorService {
   }
 
   /**
+   * Generate format variants of a citation text for cross-format matching.
+   * E.g., "(1, 2)" → ["[1, 2]", "[1,2]", "(1,2)"], "(2-4)" → ["[2-4]", "[2–4]", ...]
+   */
+  private generateCitationFormatVariants(text: string): string[] {
+    const variants: string[] = [];
+    const inner = text.replace(/^[[(]|[)\]]$/g, '').trim();
+    const nums: number[] = [];
+    for (const part of inner.split(',')) {
+      const rangeMatch = part.trim().match(/^(\d+)\s*[-–]\s*(\d+)$/);
+      if (rangeMatch) {
+        for (let i = parseInt(rangeMatch[1]); i <= parseInt(rangeMatch[2]); i++) nums.push(i);
+      } else {
+        const n = parseInt(part.trim(), 10);
+        if (!isNaN(n)) nums.push(n);
+      }
+    }
+    if (nums.length === 0) return variants;
+
+    const isRange = nums.length >= 2 && nums.every((n, i) => i === 0 || n === nums[i - 1] + 1);
+    const formats = [nums.join(', '), nums.join(',')];
+    if (isRange) {
+      formats.push(`${nums[0]}-${nums[nums.length - 1]}`);
+      formats.push(`${nums[0]}\u2013${nums[nums.length - 1]}`);
+    }
+
+    for (const fmt of formats) {
+      const bracket = `[${fmt}]`;
+      const paren = `(${fmt})`;
+      if (bracket !== text && !variants.includes(bracket)) variants.push(bracket);
+      if (paren !== text && !variants.includes(paren)) variants.push(paren);
+    }
+    return variants;
+  }
+
+  /**
    * Extract all paragraphs from document XML with their combined text content.
    * This handles text split across multiple <w:t> elements due to formatting.
    */
@@ -2862,6 +2897,23 @@ class DOCXProcessorService {
           }
 
           if (!found) {
+            // Try format variants: brackets↔parens, spacing, ranges
+            const variants = this.generateCitationFormatVariants(change.beforeText);
+            for (const variant of variants) {
+              const varResult = this.replaceCitationUniversal(bodyXML, variant, placeholder);
+              bodyXML = varResult.xml;
+              if (varResult.count > 0) {
+                logger.info(`[DOCXProcessor] ✓ Replaced variant "${variant}" (for "${change.beforeText}") with placeholder (${varResult.count}x)`);
+                // Update oldText to show the actual DOCX text in track changes
+                const phInfo = placeholders.get(placeholder);
+                if (phInfo) phInfo.oldText = variant;
+                found = true;
+                break;
+              }
+            }
+          }
+
+          if (!found) {
             logger.warn(`[DOCXProcessor] ✗ Could not find "${change.beforeText}" in document body`);
           }
         }
@@ -3102,8 +3154,8 @@ class DOCXProcessorService {
                   // Skip if this looks like an in-text citation paragraph (short, contains parentheses)
                   if (para.combinedText.length < 100 && para.combinedText.includes('(') && para.combinedText.includes(')')) {
                     // Check if this is actually a reference entry, not just a citation
-                    // Reference entries typically have author, year, title pattern
-                    if (!para.combinedText.match(/\(\d{4}\)\./)) {
+                    // Reference entries have a year pattern (various formats: "(2020).", "2020.", "(2020),")
+                    if (!/\b(19|20)\d{2}\b/.test(para.combinedText)) {
                       continue; // Skip this, likely an in-text citation
                     }
                   }
@@ -3134,6 +3186,40 @@ class DOCXProcessorService {
               logger.warn(`[DOCXProcessor] Search patterns tried: ${searchPatterns.slice(0, 3).map(t => `"${t.substring(0, 30)}..."`).join(', ')}`);
               logger.warn(`[DOCXProcessor] Available paragraphs: ${paragraphs.length}`);
             }
+          }
+
+          // Handle REFERENCE_REORDER - full reference section reordering by content matching
+          if (change.type === 'REFERENCE_REORDER' && change.beforeText) {
+            try {
+              const parsed = JSON.parse(change.beforeText);
+              if (!Array.isArray(parsed)) {
+                logger.warn('[DOCXProcessor] REFERENCE_REORDER payload is not an array');
+                continue;
+              }
+              let validCount = 0;
+              for (let ri = 0; ri < parsed.length; ri++) {
+                const ref = parsed[ri];
+                if (
+                  !Number.isInteger(ref?.position) || ref.position < 1 ||
+                  typeof ref?.contentStart !== 'string' ||
+                  ref.contentStart.trim().length === 0
+                ) {
+                  logger.warn('[DOCXProcessor] Skipping invalid REFERENCE_REORDER entry', ref);
+                  continue;
+                }
+                referenceReorderMap.push({
+                  oldPosition: ri + 1,
+                  newPosition: ref.position,
+                  content: ref.contentStart,
+                  contentStart: ref.contentStart
+                });
+                validCount++;
+              }
+              logger.info(`[DOCXProcessor] REFERENCE_REORDER: ${validCount} valid references to reorder`);
+            } catch (e) {
+              logger.warn(`[DOCXProcessor] Failed to parse REFERENCE_REORDER data`, e);
+            }
+            continue;
           }
 
           // Handle RENUMBER changes for reference list - collect for reordering

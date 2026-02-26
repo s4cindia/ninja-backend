@@ -10,6 +10,7 @@ import { ReferenceEntry, InTextCitation } from './ai-citation-detector.service';
 export type CitationStyle = 'APA' | 'MLA' | 'Chicago' | 'Vancouver' | 'IEEE' | 'Harvard' | 'AMA';
 
 export interface CitationConversionInfo {
+  citationId?: string;   // ID of the Citation record for ID-based DB updates
   oldText: string;       // Original in-text citation, e.g., "(1)"
   newText: string;       // Converted in-text citation, e.g., "(Smith, 2020)"
   referenceNumber: number;
@@ -487,7 +488,8 @@ Return ONLY a JSON array with NO additional text:
   ): Promise<{ convertedCitations: InTextCitation[]; citationConversions: CitationConversionInfo[] }> {
     const inTextFormat = this.getInTextFormat(targetStyle);
     const citationConversions: CitationConversionInfo[] = [];
-    const processedTexts = new Set<string>(); // Avoid duplicate conversions
+    const processedIds = new Set<string>();    // Track by citation ID to avoid processing same citation twice
+    const processedTexts = new Set<string>();  // Track unique text conversions for the output list
 
     logger.info(`[Format Converter] Converting ${citations.length} in-text citations to ${targetStyle} (format: ${inTextFormat})`);
 
@@ -508,28 +510,31 @@ Return ONLY a JSON array with NO additional text:
         return citation;
       }
 
-      // Skip if already processed this exact citation text
-      if (processedTexts.has(originalText)) {
+      // Skip if already processed this citation by ID
+      if (processedIds.has(citation.id)) {
         return citation;
       }
+      processedIds.add(citation.id);
 
       // Detect if this is an author-year citation (e.g., "(Floridi, 2014)" or "(Smith & Jones, 2021)")
       const isAuthorYearCitation = this.detectAuthorYearCitation(originalText);
 
-      // Extract reference numbers - different logic for author-year vs numeric citations
+      // Prefer pre-set numbers from controller (populated via join table)
       let numbers = [...(citation.numbers || [])];
 
-      if (isAuthorYearCitation) {
-        // For author-year citations, find matching references by author name and year
-        numbers = this.matchAuthorYearToReferences(originalText, convertedRefs);
-        logger.info(`[Format Converter] Author-year citation "${originalText}" matched to refs: [${numbers.join(', ')}]`);
-      } else if (numbers.length === 0) {
-        // For numeric citations, extract numbers from text
-        // Handle ranges like [3-5] or [3–5] (with en-dash) which should expand to 3, 4, 5
-        numbers = this.extractAndExpandNumbers(originalText, convertedRefs.length);
-        if (numbers.length > 0) {
-          logger.info(`[Format Converter] Extracted/expanded numbers from "${originalText}": [${numbers.join(', ')}]`);
+      // Only fall back to text matching if join-table numbers are empty
+      if (numbers.length === 0) {
+        if (isAuthorYearCitation) {
+          numbers = this.matchAuthorYearToReferences(originalText, convertedRefs);
+          logger.info(`[Format Converter] Author-year citation "${originalText}" matched to refs: [${numbers.join(', ')}]`);
+        } else {
+          numbers = this.extractAndExpandNumbers(originalText, convertedRefs.length);
+          if (numbers.length > 0) {
+            logger.info(`[Format Converter] Extracted/expanded numbers from "${originalText}": [${numbers.join(', ')}]`);
+          }
         }
+      } else {
+        logger.info(`[Format Converter] Using join-table numbers for "${originalText}": [${numbers.join(', ')}]`);
       }
 
       if (numbers.length === 0) {
@@ -592,14 +597,19 @@ Return ONLY a JSON array with NO additional text:
       }
 
       // Only add to conversions if text actually changed
-      if (newText !== originalText && !processedTexts.has(originalText)) {
-        processedTexts.add(originalText);
+      if (newText !== originalText) {
+        // Each citation gets its own conversion entry with its citationId
         citationConversions.push({
+          citationId: citation.id,
           oldText: originalText,
           newText: newText,
           referenceNumber: numbers[0] || 0
         });
-        logger.info(`[Format Converter] In-text citation: "${originalText}" → "${newText}"`);
+
+        if (!processedTexts.has(originalText)) {
+          processedTexts.add(originalText);
+          logger.info(`[Format Converter] In-text citation: "${originalText}" → "${newText}"`);
+        }
       }
 
       return {

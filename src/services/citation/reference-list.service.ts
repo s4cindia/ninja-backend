@@ -228,7 +228,11 @@ export function normalizeStyleCode(style: string | null | undefined): string {
 }
 
 /**
- * Get the database column name for formatted text based on style code
+ * Get the database column name for formatted text based on style code.
+ *
+ * Known limitation: Styles without a dedicated DB column (e.g., Harvard, AMA)
+ * fall back to 'formattedApa'. To support additional styles, add a corresponding
+ * column to the ReferenceListEntry model and extend this mapping.
  */
 export function getFormattedColumn(styleCode: string): string {
   const columns: Record<string, string> = {

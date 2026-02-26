@@ -140,7 +140,8 @@ describe('AICitationDetectorService', () => {
     });
 
     it('should handle malformed AI responses for citations', async () => {
-      const documentText = 'Document [1].';
+      // Use text without numeric citation patterns so gap-fill doesn't find any
+      const documentText = 'Document with some content but no citations.';
 
       // Mock generate for style detection
       vi.mocked(claudeService.generate).mockResolvedValue({ text: 'Unknown' } as any);
