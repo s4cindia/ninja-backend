@@ -17,6 +17,8 @@ export function extractCitationNumbers(text: string): number[] {
     if (rangeMatch) {
       const start = parseInt(rangeMatch[1], 10);
       const end = parseInt(rangeMatch[2], 10);
+      // Guard against pathological ranges (e.g. "[1-10000000]")
+      if (end - start > 200) continue;
       for (let i = start; i <= end; i++) nums.push(i);
     } else if (/^\d+$/.test(trimmed)) {
       nums.push(parseInt(trimmed, 10));

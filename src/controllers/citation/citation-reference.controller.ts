@@ -1734,11 +1734,11 @@ export class CitationReferenceController {
       const fullHtml = docContent?.fullHtml || '';
 
       // Extract actual citation numbers from fullHtml (parenthetical: "(1)", "(2)" etc.)
-      const citationPattern = /\((\d+)\)/g;
+      const citationPattern = /(?:\((\d+)\)|\[(\d+)\])/g;
       const foundInHtml: { num: number; pos: number }[] = [];
       let match;
       while ((match = citationPattern.exec(fullHtml)) !== null) {
-        const num = parseInt(match[1], 10);
+        const num = parseInt(match[1] || match[2], 10);
         // Only consider numbers within the reference range (avoid year numbers etc.)
         if (num >= 1 && num <= document.referenceListEntries.length) {
           foundInHtml.push({ num, pos: match.index });

@@ -3200,7 +3200,7 @@ class DOCXProcessorService {
               for (let ri = 0; ri < parsed.length; ri++) {
                 const ref = parsed[ri];
                 if (
-                  typeof ref?.position !== 'number' ||
+                  !Number.isInteger(ref?.position) || ref.position < 1 ||
                   typeof ref?.contentStart !== 'string' ||
                   ref.contentStart.trim().length === 0
                 ) {

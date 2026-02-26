@@ -397,7 +397,7 @@ export class CitationExportController {
       // Match text-based RENUMBER for both parenthetical "(N)" and bracket "[N]" formats
       const textBasedInTextRenumber = changes.filter(c =>
         c.changeType === 'RENUMBER' && !c.citationId &&
-        c.beforeText && /^[[(]\d+[)\]]$/.test(c.beforeText)
+        c.beforeText && /^[[(][\d\s,\-–—]+[)\]]$/.test(c.beforeText)
       );
       const skipTextBasedRenumber = textBasedInTextRenumber.length > 0 && activeRenumbers.size > 0;
 
@@ -551,7 +551,7 @@ export class CitationExportController {
         // Skip text-based (N) in-text RENUMBER when already folded into citationId-based ones
         // This prevents duplicate replacements that cancel each other out
         if (skipTextBasedRenumber && c.changeType === 'RENUMBER' && !c.citationId &&
-            c.beforeText && /^\(\d+\)$/.test(c.beforeText)) {
+            c.beforeText && /^[[(][\d\s,\-–—]+[)\]]$/.test(c.beforeText)) {
           continue;
         }
 
