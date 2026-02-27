@@ -282,9 +282,12 @@ export class ValidatorController {
         logger.info(`[Validator] Returning cached HTML for document: ${documentId}`);
 
         // Mark document as PARSED if still UPLOADED (backfill for docs cached before this code)
+        // Hoist updated values so the response can use them instead of the stale snapshot
+        let backfilledWordCount: number | null = null;
+        let backfilledCompletedAt: Date | null = null;
         if (document.status === 'UPLOADED') {
           const now = new Date();
-          const cachedWordCount = document.documentContent.fullHtml
+          backfilledWordCount = document.documentContent.fullHtml
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
             .replace(/<[^>]*>/g, ' ')
@@ -292,18 +295,31 @@ export class ValidatorController {
             .trim()
             .split(/\s+/)
             .filter(Boolean).length;
-          await Promise.all([
+          backfilledCompletedAt = now;
+          const updates: Promise<unknown>[] = [
             prisma.editorialDocument.update({
               where: { id: documentId },
-              data: { status: 'PARSED', wordCount: cachedWordCount, updatedAt: now },
+              data: { status: 'PARSED', wordCount: backfilledWordCount, updatedAt: now },
             }),
-            prisma.job.update({
-              where: { id: document.jobId },
-              data: { status: 'COMPLETED', completedAt: now },
-            }),
-          ]);
-          logger.info(`[Validator] Backfilled document ${documentId} as PARSED, wordCount=${cachedWordCount}`);
+          ];
+          if (document.jobId) {
+            updates.push(
+              prisma.job.update({
+                where: { id: document.jobId },
+                data: { status: 'COMPLETED', completedAt: now },
+              })
+            );
+          }
+          await Promise.all(updates);
+          logger.info(`[Validator] Backfilled document ${documentId} as PARSED, wordCount=${backfilledWordCount}`);
         }
+
+        // Use backfilled values when available, otherwise fall back to the original snapshot
+        const responseWordCount = backfilledWordCount ?? document.wordCount;
+        const completedAt = backfilledCompletedAt ?? document.job?.completedAt;
+        const responseProcessingTime = document.job?.createdAt && completedAt
+          ? new Date(completedAt).getTime() - new Date(document.job.createdAt).getTime()
+          : null;
 
         res.json({
           success: true,
@@ -312,10 +328,8 @@ export class ValidatorController {
             content: document.documentContent.fullHtml,
             fileName: document.originalName,
             fileSize: document.fileSize,
-            wordCount: document.wordCount,
-            processingTime: document.job?.createdAt && document.job?.completedAt
-              ? new Date(document.job.completedAt).getTime() - new Date(document.job.createdAt).getTime()
-              : null,
+            wordCount: responseWordCount,
+            processingTime: responseProcessingTime,
           },
         });
         return;
@@ -376,25 +390,27 @@ export class ValidatorController {
       });
 
       // Update document stats and mark as PARSED on first conversion
+      let conversionCompletedAt: Date | null = null;
       if (document.status === 'UPLOADED') {
-        const now = new Date();
+        conversionCompletedAt = new Date();
         await Promise.all([
           prisma.editorialDocument.update({
             where: { id: documentId },
             data: {
               status: 'PARSED',
               wordCount: result.metadata.wordCount,
-              updatedAt: now,
+              updatedAt: conversionCompletedAt,
             },
           }),
           prisma.job.update({
             where: { id: document.jobId },
-            data: { status: 'COMPLETED', completedAt: now },
+            data: { status: 'COMPLETED', completedAt: conversionCompletedAt },
           }),
         ]);
         logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
       }
 
+      const effectiveCompletedAt = conversionCompletedAt ?? document.job?.completedAt;
       res.json({
         success: true,
         data: {
@@ -403,8 +419,8 @@ export class ValidatorController {
           fileName: document.originalName,
           fileSize: document.fileSize,
           wordCount: result.metadata.wordCount,
-          processingTime: document.job?.createdAt && document.job?.completedAt
-            ? new Date(document.job.completedAt).getTime() - new Date(document.job.createdAt).getTime()
+          processingTime: document.job?.createdAt && effectiveCompletedAt
+            ? new Date(effectiveCompletedAt).getTime() - new Date(document.job.createdAt).getTime()
             : null,
           conversionWarnings: result.warnings,
           metadata: result.metadata,

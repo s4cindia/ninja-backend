@@ -15,6 +15,7 @@ import prisma from '../lib/prisma';
 
 let workers: Worker[] = [];
 let watchdogInterval: ReturnType<typeof setInterval> | null = null;
+let isRecovering = false;
 
 // How often the watchdog checks for stuck jobs (3 minutes)
 const WATCHDOG_INTERVAL_MS = 3 * 60 * 1000;
@@ -34,7 +35,12 @@ const MAX_RECOVERY_ATTEMPTS = 3;
  */
 async function recoverStaleJobs(): Promise<void> {
   if (!areQueuesAvailable()) return;
+  if (isRecovering) {
+    logger.debug('[Recovery] Skipping — previous recovery still in progress');
+    return;
+  }
 
+  isRecovering = true;
   try {
     const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_MS);
 
@@ -149,6 +155,8 @@ async function recoverStaleJobs(): Promise<void> {
     }
   } catch (err) {
     logger.error('[Recovery] Stale job recovery failed:', err);
+  } finally {
+    isRecovering = false;
   }
 }
 

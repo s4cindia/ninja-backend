@@ -25,6 +25,11 @@ import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 import { extractCitationNumbers } from '../../utils/citation.utils';
 
+/** Type guard: true when auth middleware has populated req.user */
+function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
+  return !!req.user && typeof (req.user as unknown as Record<string, unknown>).tenantId === 'string';
+}
+
 /** Transaction timeout for operations that may update many citations/references (default 5s is too short) */
 const TRANSACTION_TIMEOUT_MS = 30000;
 
@@ -159,9 +164,13 @@ export class CitationReferenceController {
    */
   async reorderReferences(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
       const { referenceId, newPosition, sortBy } = req.body;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Reordering references for ${documentId}`);
 
@@ -413,8 +422,12 @@ export class CitationReferenceController {
    */
   async deleteReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId, referenceId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Deleting reference ${referenceId} from document ${documentId}`);
 
@@ -951,10 +964,14 @@ export class CitationReferenceController {
    */
   async editReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId, referenceId } = req.params;
       // Body is pre-validated by editReferenceSchema middleware
       const updates: EditReferenceBody = req.body;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Editing reference ${referenceId} in document ${documentId}`);
 
@@ -1071,26 +1088,52 @@ export class CitationReferenceController {
                 .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
               return initials ? `${last}, ${initials}` : last;
             });
-            // APA uses "&" before the last author for 2+ authors
+            // Build the correct author string based on style conventions
             let correctAuthorStr: string;
-            if (correctAuthorParts.length === 1) {
-              correctAuthorStr = correctAuthorParts[0];
-            } else if (correctAuthorParts.length === 2) {
-              correctAuthorStr = `${correctAuthorParts[0]}, & ${correctAuthorParts[1]}`;
+            if (styleCode === 'ieee') {
+              // IEEE: comma-separated, no ampersand (e.g., "F. M. Last, F. Last2")
+              // IEEE puts initials BEFORE last name
+              const ieeeParts = parsedAuthors.map(a => {
+                const last = a.lastName || 'Unknown';
+                const first = a.firstName || '';
+                const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
+                  .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
+                return initials ? `${initials} ${last}` : last;
+              });
+              correctAuthorStr = ieeeParts.join(', ');
             } else {
-              const allButLast = correctAuthorParts.slice(0, -1).join(', ');
-              correctAuthorStr = `${allButLast}, & ${correctAuthorParts[correctAuthorParts.length - 1]}`;
+              // APA: "Last, F. M." with "&" before the last author
+              if (correctAuthorParts.length === 1) {
+                correctAuthorStr = correctAuthorParts[0];
+              } else if (correctAuthorParts.length === 2) {
+                correctAuthorStr = `${correctAuthorParts[0]}, & ${correctAuthorParts[1]}`;
+              } else {
+                const allButLast = correctAuthorParts.slice(0, -1).join(', ');
+                correctAuthorStr = `${allButLast}, & ${correctAuthorParts[correctAuthorParts.length - 1]}`;
+              }
             }
 
-            // Replace author portion: everything before " (YYYY)" or before the title
+            // Replace author portion in the formatted output
             const formatted = formatResult.formatted;
-            // APA pattern: "Authors (Year). Title..."
-            const yearMatch = formatted.match(/\s*\(\d{4}[a-z]?\)/);
-            if (yearMatch && yearMatch.index !== undefined) {
-              const oldAuthorPortion = formatted.substring(0, yearMatch.index);
-              if (oldAuthorPortion !== correctAuthorStr) {
-                formatResult.formatted = correctAuthorStr + formatted.substring(yearMatch.index);
-                logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+            if (styleCode === 'ieee') {
+              // IEEE pattern: "Authors, "Title," ..."
+              const titleMatch = formatted.match(/,\s*"/);
+              if (titleMatch && titleMatch.index !== undefined) {
+                const oldAuthorPortion = formatted.substring(0, titleMatch.index);
+                if (oldAuthorPortion !== correctAuthorStr) {
+                  formatResult.formatted = correctAuthorStr + formatted.substring(titleMatch.index);
+                  logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+                }
+              }
+            } else {
+              // APA pattern: "Authors (Year). Title..."
+              const yearMatch = formatted.match(/\s*\(\d{4}[a-z]?\)/);
+              if (yearMatch && yearMatch.index !== undefined) {
+                const oldAuthorPortion = formatted.substring(0, yearMatch.index);
+                if (oldAuthorPortion !== correctAuthorStr) {
+                  formatResult.formatted = correctAuthorStr + formatted.substring(yearMatch.index);
+                  logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+                }
               }
             }
           }
@@ -1369,8 +1412,12 @@ export class CitationReferenceController {
    */
   async resetChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Resetting citation changes for ${documentId}`);
 
@@ -1387,8 +1434,161 @@ export class CitationReferenceController {
 
       const resolvedDocId = document.id;
 
-      // First, find and revert any REFERENCE_EDIT changes
-      // Order by appliedAt ASC to get the earliest (original) change first for each reference
+      // Step 1: Restore any deleted references (DELETE changes) before wiping change records.
+      // Without this, the metadata needed to recreate deleted references would be lost.
+      const deleteChanges = await prisma.citationChange.findMany({
+        where: {
+          documentId: resolvedDocId,
+          changeType: 'DELETE',
+          appliedBy: 'user',
+          isReverted: false
+        }
+      });
+
+      let referencesRestored = 0;
+      if (deleteChanges.length > 0) {
+        logger.info(`[CitationReference] Reset: restoring ${deleteChanges.length} deleted reference(s)`);
+        // Delegate each DELETE undo to dismissChanges by collecting the change IDs
+        // and calling the dismiss endpoint logic inline
+        try {
+          for (const deleteChange of deleteChanges) {
+            const metadata = deleteChange.metadata as Record<string, unknown> | null;
+            const deletedPosition = (metadata?.position as number) || 0;
+            const hasFullData = !!metadata?.referenceData;
+
+            let refData: Record<string, unknown>;
+            let refId: string;
+            let storedCitationUpdates: Array<{ id: string; oldRawText: string; newRawText: string }>;
+            let oldFullHtml: string | null;
+            let oldFullText: string | null;
+
+            if (hasFullData) {
+              refData = metadata!.referenceData as Record<string, unknown>;
+              refId = metadata!.referenceId as string;
+              storedCitationUpdates = (metadata!.citationUpdates || []) as Array<{ id: string; oldRawText: string; newRawText: string }>;
+              oldFullHtml = metadata!.oldFullHtml as string | null;
+              oldFullText = metadata!.oldFullText as string | null;
+            } else {
+              // Legacy DELETE change: parse reference from beforeText
+              const parsed = this.parseReferenceFromBeforeText(deleteChange.beforeText || '', deletedPosition);
+              const insertSortKey = deletedPosition > 1
+                ? String(deletedPosition - 1).padStart(4, '0') + '.5'
+                : '0000.5';
+              refData = { ...parsed, sortKey: insertSortKey, enrichmentSource: 'restored', enrichmentConfidence: 0 };
+              refId = randomUUID();
+              storedCitationUpdates = [];
+              oldFullHtml = null;
+              oldFullText = null;
+
+              // Legacy: find related system DELETE changes within 5s window
+              const deleteAppliedAt = deleteChange.appliedAt;
+              const timeWindowMs = 5000;
+              const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
+              const windowEnd = new Date(deleteAppliedAt.getTime() + timeWindowMs);
+              const relatedSystemDeletes = await prisma.citationChange.findMany({
+                where: {
+                  documentId: resolvedDocId,
+                  changeType: 'DELETE',
+                  appliedBy: 'system',
+                  appliedAt: { gte: windowStart, lte: windowEnd },
+                  citationId: { not: null }
+                }
+              });
+              for (const sysDel of relatedSystemDeletes) {
+                if (sysDel.citationId && sysDel.beforeText) {
+                  storedCitationUpdates.push({ id: sysDel.citationId, oldRawText: sysDel.beforeText, newRawText: '' });
+                }
+              }
+            }
+
+            await prisma.$transaction(async (tx) => {
+              // Recreate the reference
+              await tx.referenceListEntry.create({
+                data: {
+                  id: refId,
+                  documentId: resolvedDocId,
+                  sortKey: '9999',
+                  authors: (refData.authors || []) as Prisma.InputJsonValue,
+                  year: (refData.year as string) || null,
+                  title: (refData.title as string) || '',
+                  sourceType: (refData.sourceType as string) && (refData.sourceType as string) !== 'unknown'
+                    ? (refData.sourceType as string) : 'journal_article',
+                  journalName: (refData.journalName as string) || null,
+                  volume: (refData.volume as string) || null,
+                  issue: (refData.issue as string) || null,
+                  pages: (refData.pages as string) || null,
+                  publisher: (refData.publisher as string) || null,
+                  doi: (refData.doi as string) || null,
+                  url: (refData.url as string) || null,
+                  enrichmentSource: (refData.enrichmentSource as string) || 'manual',
+                  enrichmentConfidence: (refData.enrichmentConfidence as number) || 0,
+                  formattedApa: (refData.formattedApa as string) || null,
+                  formattedMla: (refData.formattedMla as string) || null,
+                  formattedChicago: (refData.formattedChicago as string) || null,
+                  formattedVancouver: (refData.formattedVancouver as string) || null,
+                  formattedIeee: (refData.formattedIeee as string) || null,
+                }
+              });
+
+              // Re-sort all references to insert restored ref at its original position
+              const existingRefs = await tx.referenceListEntry.findMany({
+                where: { documentId: resolvedDocId, id: { not: refId } },
+                orderBy: { sortKey: 'asc' }
+              });
+              const insertIdx = Math.max(0, Math.min(deletedPosition - 1, existingRefs.length));
+              const ordered = [...existingRefs];
+              ordered.splice(insertIdx, 0, { id: refId } as typeof existingRefs[0]);
+              if (ordered.length > 0) {
+                await Promise.all(ordered.map((ref, i) =>
+                  tx.referenceListEntry.update({
+                    where: { id: ref.id },
+                    data: { sortKey: String(i + 1).padStart(4, '0') }
+                  })
+                ));
+              }
+
+              // Restore citation rawText values
+              const citationsByOldText = new Map<string, string[]>();
+              for (const update of storedCitationUpdates) {
+                const ids = citationsByOldText.get(update.oldRawText) || [];
+                ids.push(update.id);
+                citationsByOldText.set(update.oldRawText, ids);
+              }
+              for (const [oldRawText, ids] of citationsByOldText) {
+                await tx.citation.updateMany({
+                  where: { id: { in: ids } },
+                  data: { rawText: oldRawText }
+                });
+              }
+
+              // Restore fullHtml/fullText if available
+              if (oldFullHtml || oldFullText) {
+                const updateData: { fullHtml?: string; fullText?: string } = {};
+                if (oldFullHtml) updateData.fullHtml = oldFullHtml;
+                if (oldFullText) updateData.fullText = oldFullText;
+                await tx.editorialDocumentContent.update({
+                  where: { documentId: resolvedDocId },
+                  data: updateData
+                });
+              }
+            }, { timeout: TRANSACTION_TIMEOUT_MS });
+
+            referencesRestored++;
+            logger.info(`[CitationReference] Reset: restored deleted reference ${refId} at position ${deletedPosition}`);
+          }
+
+          // Rebuild citation-reference links after restores
+          try {
+            await this.rebuildCitationLinks(resolvedDocId, tenantId);
+          } catch (linkErr) {
+            logger.warn(`[CitationReference] Reset: link rebuild failed after restore`, linkErr instanceof Error ? linkErr : undefined);
+          }
+        } catch (restoreErr) {
+          logger.error(`[CitationReference] Reset: failed to restore some deleted references`, restoreErr instanceof Error ? restoreErr : undefined);
+        }
+      }
+
+      // Step 2: Revert REFERENCE_EDIT changes (restore edited fields to original values)
       const referenceEditChanges = await prisma.citationChange.findMany({
         where: {
           documentId: resolvedDocId,
@@ -1400,7 +1600,6 @@ export class CitationReferenceController {
       });
 
       // Group by referenceId and only use the EARLIEST change's oldValues (true original state)
-      // This handles the case where a reference was edited multiple times
       const earliestChangeByRefId = new Map<string, typeof referenceEditChanges[0]>();
       for (const change of referenceEditChanges) {
         if (change.metadata && typeof change.metadata === 'object') {
@@ -1411,12 +1610,10 @@ export class CitationReferenceController {
         }
       }
 
-      // Wrap entire revert + delete in a transaction to ensure atomicity
-      // If any revert fails, the entire operation rolls back
+      // Step 3: Revert edits + delete all CitationChange records in a single transaction
       const { referencesReverted, changesDeleted } = await prisma.$transaction(async (tx) => {
         let reverted = 0;
 
-        // Batch revert all references concurrently to reduce N+1 queries
         const revertPromises: Promise<unknown>[] = [];
         for (const [refId, change] of earliestChangeByRefId) {
           const metadata = change.metadata as {
@@ -1481,14 +1678,15 @@ export class CitationReferenceController {
         return { referencesReverted: reverted, changesDeleted: result.count };
       });
 
-      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references for document ${resolvedDocId}`);
+      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references, restored ${referencesRestored} deleted references for document ${resolvedDocId}`);
 
       res.json({
         success: true,
         data: {
-          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s).`,
+          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s), restored ${referencesRestored} deleted reference(s).`,
           deletedCount: changesDeleted,
-          referencesReverted
+          referencesReverted,
+          referencesRestored
         }
       });
     } catch (error) {
@@ -1504,10 +1702,14 @@ export class CitationReferenceController {
    */
   async dismissChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
       // Validated by Zod schema: 1-100 UUIDs required
       const { changeIds } = req.body as { changeIds: string[] };
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Dismissing ${changeIds.length} changes for document ${documentId}`);
 
@@ -1785,8 +1987,12 @@ export class CitationReferenceController {
    */
   async createCitationLinks(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Creating citation-reference links for ${documentId}`);
 
@@ -2007,8 +2213,12 @@ export class CitationReferenceController {
    */
   async resequenceByAppearance(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Resequencing references by appearance for ${documentId}`);
 
@@ -2319,8 +2529,12 @@ export class CitationReferenceController {
    */
   async validateReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId, referenceId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Validating reference ${referenceId} against CrossRef`);
 
@@ -2638,6 +2852,15 @@ export class CitationReferenceController {
         field: 'publisher',
         currentValue: reference.publisher || '',
         correctValue: crossref.publisher
+      });
+    }
+
+    // DOI
+    if (crossref.doi && normalize(reference.doi) !== normalize(crossref.doi)) {
+      discrepancies.push({
+        field: 'doi',
+        currentValue: reference.doi || '',
+        correctValue: crossref.doi
       });
     }
 

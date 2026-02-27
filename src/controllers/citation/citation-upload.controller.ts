@@ -1689,11 +1689,12 @@ export class CitationUploadController {
           where: { id: documentId }
         });
 
-        // Delete the associated job if it exists
+        // Delete the associated job and its FK-dependent records if it exists
         if (document.jobId) {
-          await tx.job.delete({
-            where: { id: document.jobId }
-          });
+          await tx.validationResult.deleteMany({ where: { jobId: document.jobId } });
+          await tx.artifact.deleteMany({ where: { jobId: document.jobId } });
+          await tx.remediationChange.deleteMany({ where: { jobId: document.jobId } });
+          await tx.job.delete({ where: { id: document.jobId } });
         }
       });
 

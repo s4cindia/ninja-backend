@@ -421,14 +421,16 @@ export class JobController {
         throw AppError.notFound('Job not found', ErrorCodes.JOB_NOT_FOUND);
       }
 
-      // Clean up S3 file if document exists
-      if (job.editorialDocument?.storagePath) {
-        try {
-          await s3Service.deleteFile(job.editorialDocument.storagePath);
-        } catch (s3Error) {
-          logger.warn(`[Job] Failed to delete S3 file ${job.editorialDocument.storagePath}:`, s3Error);
-        }
+      // Best-effort: cancel any in-flight BullMQ work before removing DB records
+      try {
+        await queueService.cancelJob(jobId, tenantId);
+      } catch {
+        // Job may already be completed/failed/cancelled — safe to ignore
+        logger.debug(`[Job] Queue cancellation skipped for ${jobId} (likely already finished)`);
       }
+
+      // Capture storage path before transaction deletes the document record
+      const storagePath = job.editorialDocument?.storagePath;
 
       await prisma.$transaction(async (tx) => {
         if (job.editorialDocument) {
@@ -445,6 +447,15 @@ export class JobController {
         await tx.remediationChange.deleteMany({ where: { jobId } });
         await tx.job.delete({ where: { id: jobId } });
       });
+
+      // Clean up S3 file after DB commit so a failed transaction doesn't orphan data
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+        } catch (s3Error) {
+          logger.warn(`[Job] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
 
       logger.info(`[Job] Permanently deleted job ${jobId}`);
 

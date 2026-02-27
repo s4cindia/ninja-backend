@@ -3483,7 +3483,8 @@ class DOCXProcessorService {
       // Unmatched paragraphs (e.g., modified by REFERENCE_SECTION_EDIT track changes)
       // must be preserved — append them after the matched/reordered paragraphs.
       if (sortedByNewPos.length > 0) {
-        const matchedXmlSet = new Set(sortedByNewPos.map(s => s.para.xml));
+        // Use array indices as stable identity — xml strings may be duplicated across paragraphs
+        const matchedIndices = new Set(sortedByNewPos.map(s => paragraphs.indexOf(s.para)));
 
         // Find the range of ALL reference paragraphs (first to last)
         const firstPara = paragraphs[0];
@@ -3495,13 +3496,11 @@ class DOCXProcessorService {
             const endIdx = xml.indexOf(lastPara.xml) + lastPara.xml.length;
             if (endIdx > startIdx) {
               // Collect unmatched paragraphs that fall within the range
-              const unmatchedXml = paragraphs
-                .filter(p => !matchedXmlSet.has(p.xml))
-                .map(p => p.xml)
-                .join('');
+              const unmatchedParas = paragraphs.filter((_p, i) => !matchedIndices.has(i));
+              const unmatchedXml = unmatchedParas.map(p => p.xml).join('');
 
               if (unmatchedXml) {
-                logger.info(`[DOCXProcessor] Preserving ${paragraphs.filter(p => !matchedXmlSet.has(p.xml)).length} unmatched paragraph(s) in reference section`);
+                logger.info(`[DOCXProcessor] Preserving ${unmatchedParas.length} unmatched paragraph(s) in reference section`);
               }
 
               const before = xml.substring(0, startIdx);

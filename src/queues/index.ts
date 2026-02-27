@@ -10,6 +10,8 @@ import os from 'os';
 // Set QUEUE_PREFIX in .env to override (e.g., "staging", "prod").
 // In production, uses BullMQ's default prefix ("bull") so existing queues continue working.
 // In development, uses the machine's hostname for isolation.
+// NOTE: Ephemeral/CI environments will leave orphaned keys in Redis (prefix:hostname:*).
+// Clean up with: redis-cli --scan --pattern "<hostname>:*" | xargs redis-cli DEL
 const QUEUE_PREFIX = process.env.QUEUE_PREFIX || (process.env.NODE_ENV === 'production' ? 'bull' : os.hostname());
 
 export { QUEUE_PREFIX };
