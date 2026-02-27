@@ -22,6 +22,59 @@ import { normalizeSuperscripts } from '../../utils/unicode';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
+// Mammoth style map for academic/journal DOCX files
+// Maps custom Word styles (used by publishers like Mattioli, Elsevier, etc.) to semantic HTML
+const MAMMOTH_STYLE_MAP = [
+  // === Paragraph styles ===
+  // Article structure
+  "p[style-name='AT'] => h1:fresh",
+  "p[style-name='Title'] => h1.title:fresh",
+  "p[style-name='H1'] => h2:fresh",
+  "p[style-name='AH'] => h2:fresh",
+  "p[style-name='BH'] => h3:fresh",
+  "p[style-name='CH'] => h4:fresh",
+  "p[style-name='REFH'] => h3:fresh",
+  "p[style-name='Heading 1'] => h1:fresh",
+  "p[style-name='Heading 2'] => h2:fresh",
+  "p[style-name='Heading 3'] => h3:fresh",
+  "p[style-name='Heading 4'] => h4:fresh",
+  // Metadata
+  "p[style-name='NMP'] => p.journal-meta:fresh",
+  "p[style-name='AN'] => p.article-note:fresh",
+  "p[style-name='AAU'] => p.authors:fresh",
+  "p[style-name='AAFF'] => p.affiliations:fresh",
+  "p[style-name='ABS'] => p.abstract:fresh",
+  "p[style-name='Abstract'] => p.abstract:fresh",
+  "p[style-name='KW'] => p.keywords:fresh",
+  // Body text
+  "p[style-name='TX'] => p:fresh",
+  "p[style-name='TXL'] => p:fresh",
+  "p[style-name='BP'] => p:fresh",
+  "p[style-name='FP'] => p:fresh",
+  // References
+  "p[style-name='REF'] => p.reference:fresh",
+  "p[style-name='NR'] => p.reference:fresh",
+  // Figures / captions
+  "p[style-name='FIG'] => p.figure:fresh",
+  "p[style-name='FGC'] => p.figure-caption:fresh",
+  "p[style-name='FC'] => p.figure-caption:fresh",
+  // Other academic sections
+  "p[style-name='COI'] => p:fresh",
+  "p[style-name='ADR'] => p:fresh",
+  "p[style-name='ADRF'] => p:fresh",
+  // === Run (character) styles ===
+  "r[style-name='bold'] => strong",
+  "r[style-name='italic'] => em",
+  "r[style-name='superscript'] => sup",
+  "r[style-name='italicsuperscript'] => sup",
+  "r[style-name='bolditalic'] => strong",
+  "r[style-name='FGN'] => strong",
+  "r[style-name='FigureCitation'] => em",
+  // Built-in formatting (mammoth defaults, listed explicitly for clarity)
+  "b => strong",
+  "i => em",
+];
+
 // Security constants for DOCX processing
 // Aligned with memoryConfig for consistent limits
 const SECURITY_LIMITS = {
@@ -511,7 +564,10 @@ class DOCXProcessorService {
         logger.info(`[DOCX Processor] Extracting text in-memory (${Math.round(buffer.length / 1024)}KB)`);
 
         const textResult = await mammoth.extractRawText({ buffer });
-        const htmlResult = await mammoth.convertToHtml({ buffer });
+        const htmlResult = await mammoth.convertToHtml({ buffer }, {
+          includeDefaultStyleMap: true,
+          styleMap: MAMMOTH_STYLE_MAP,
+        });
 
         recordSuccess();
 
@@ -544,7 +600,10 @@ class DOCXProcessorService {
 
         // Process using file path instead of buffer (reduces memory footprint)
         const textResult = await mammoth.extractRawText({ path: tempFile.path });
-        const htmlResult = await mammoth.convertToHtml({ path: tempFile.path });
+        const htmlResult = await mammoth.convertToHtml({ path: tempFile.path }, {
+          includeDefaultStyleMap: true,
+          styleMap: MAMMOTH_STYLE_MAP,
+        });
 
         recordSuccess();
 
@@ -2006,7 +2065,10 @@ class DOCXProcessorService {
         let matchedRef: ReferenceEntry | null = null;
         for (const ref of currentReferences) {
           if (ref.authors && ref.authors[0]) {
-            const authorLastName = ref.authors[0].split(/[,\s]/)[0];
+            const a0 = String(ref.authors[0]).trim();
+            const authorLastName = a0.includes(',')
+              ? a0.substring(0, a0.indexOf(',')).trim()
+              : (a0.split(/\s+/).pop() || '');
             // Guard against empty or too-short author names that would create unsafe regex patterns
             // \b\b (empty) matches at every word boundary, causing wrong replacements
             if (!authorLastName || authorLastName.length < 2) {
@@ -2780,7 +2842,10 @@ class DOCXProcessorService {
                 const authors = oldValues.authors as string[];
                 if (authors.length > 0) {
                   // Extract last name from first author
-                  authorLastName = String(authors[0]).split(/[,\s]/)[0];
+                  const a0 = String(authors[0]).trim();
+                  authorLastName = a0.includes(',')
+                    ? a0.substring(0, a0.indexOf(',')).trim()
+                    : (a0.split(/\s+/).pop() || '');
                   logger.info(`[DOCXProcessor] Using author from metadata: "${authorLastName}"`);
                 }
               }
@@ -3156,8 +3221,9 @@ class DOCXProcessorService {
                     // Check if this is actually a reference entry, not just a citation
                     // Reference entries typically have: a year, a period after the year, and length > 40 chars
                     const hasYear = /\b(19|20)\d{2}\b/.test(para.combinedText);
+                    const hasUndated = /\bn\.d\.?\b/i.test(para.combinedText);
                     const hasRefStructure = para.combinedText.length > 40 && /\.\s/.test(para.combinedText);
-                    if (!hasYear || !hasRefStructure) {
+                    if (!hasYear && !hasUndated && !hasRefStructure) {
                       continue; // Skip this, likely an in-text citation
                     }
                   }
@@ -3420,27 +3486,39 @@ class DOCXProcessorService {
       }).join('');
 
       // Replace the original paragraphs with reordered ones
-      // Find the range of original paragraphs
+      // IMPORTANT: Include ALL paragraphs in the range, not just matched ones.
+      // Unmatched paragraphs (e.g., modified by REFERENCE_SECTION_EDIT track changes)
+      // must be preserved — append them after the matched/reordered paragraphs.
       if (sortedByNewPos.length > 0) {
-        const firstPara = paragraphs.find(p =>
-          sortedByNewPos.some(s => s.para.content === p.content)
-        );
-        const lastPara = [...paragraphs].reverse().find(p =>
-          sortedByNewPos.some(s => s.para.content === p.content)
-        );
+        // Find the range of ALL reference paragraphs (first to last)
+        // Use deterministic offsets from the parser instead of xml.indexOf() which can
+        // match duplicate paragraph XML elsewhere in the document.
+        const firstPara = paragraphs[0];
+        const lastPara = paragraphs[paragraphs.length - 1];
+        const afterHeaderOffset = refHeaderIndex + refSectionMatch[0].length;
 
         if (firstPara && lastPara) {
-          // Replace in the XML
-          const startIdx = xml.indexOf(firstPara.xml);
-          if (startIdx > 0) {
-            // Find the end of the last paragraph
-            const endIdx = xml.indexOf(lastPara.xml) + lastPara.xml.length;
-            if (endIdx > startIdx) {
-              const before = xml.substring(0, startIdx);
-              const after = xml.substring(endIdx);
-              xml = before + reorderedXml + after;
-              logger.info('[DOCXProcessor] Successfully reordered reference section');
+          const startIdx = afterHeaderOffset + firstPara.index;
+          const endIdx = afterHeaderOffset + lastPara.index + lastPara.xml.length;
+          if (startIdx > 0 && endIdx > startIdx) {
+            // Collect unmatched from the *actual XML slice* being replaced
+            const rangeXml = xml.substring(startIdx, endIdx);
+            const allParasInRange = Array.from(rangeXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)).map(m => ({
+              xml: m[0],
+              absIndex: startIdx + (m.index ?? 0),
+            }));
+            const matchedAbsIndices = new Set(sortedByNewPos.map(s => afterHeaderOffset + s.para.index));
+            const unmatchedParas = allParasInRange.filter(p => !matchedAbsIndices.has(p.absIndex));
+            const unmatchedXml = unmatchedParas.map(p => p.xml).join('');
+
+            if (unmatchedXml) {
+              logger.info(`[DOCXProcessor] Preserving ${unmatchedParas.length} unmatched paragraph(s) in reference section`);
             }
+
+            const before = xml.substring(0, startIdx);
+            const after = xml.substring(endIdx);
+            xml = before + reorderedXml + unmatchedXml + after;
+            logger.info('[DOCXProcessor] Successfully reordered reference section');
           }
         }
       }

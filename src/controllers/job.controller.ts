@@ -7,6 +7,8 @@ import { JobType } from '../queues';
 import { workflowService } from '../services/workflow/workflow.service';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { logger } from '../lib/logger';
+import { s3Service } from '../services/s3.service';
+import { isAuthenticated } from '../utils/auth';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -78,7 +80,7 @@ export class JobController {
    */
   async create(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -144,7 +146,7 @@ export class JobController {
    */
   async list(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -202,15 +204,27 @@ export class JobController {
                 title: true,
               },
             },
+            editorialDocument: {
+              select: { id: true, originalName: true },
+            },
           },
         }),
         prisma.job.count({ where }),
       ]);
 
-      const normalizedJobs = jobs.map(job => ({
-        ...job,
-        output: normalizeJobOutput(job.output),
-      }));
+      const normalizedJobs = jobs.map(({ editorialDocument, ...rest }) => {
+        const output = normalizeJobOutput(rest.output);
+        // Include document filename in output so frontend can display it
+        if (editorialDocument?.originalName && !output.fileName) {
+          output.fileName = editorialDocument.originalName;
+        }
+        return {
+          ...rest,
+          output,
+          // Include documentId so frontend can navigate to the correct editor
+          ...(editorialDocument?.id && { documentId: editorialDocument.id }),
+        };
+      });
 
       res.json({
         success: true,
@@ -236,7 +250,7 @@ export class JobController {
    */
   async get(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -259,7 +273,7 @@ export class JobController {
    */
   async getStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -300,7 +314,7 @@ export class JobController {
    */
   async getResults(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -372,7 +386,7 @@ export class JobController {
    */
   async cancel(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -388,6 +402,80 @@ export class JobController {
   }
 
   /**
+   * Permanently deletes a job and all associated data.
+   */
+  async permanentDelete(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!isAuthenticated(req)) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const { id: jobId } = req.params;
+      const { tenantId } = req.user;
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+        include: { editorialDocument: { select: { id: true, storagePath: true } } },
+      });
+
+      if (!job) {
+        throw AppError.notFound('Job not found', ErrorCodes.JOB_NOT_FOUND);
+      }
+
+      // Best-effort: cancel any in-flight BullMQ work before removing DB records
+      try {
+        await queueService.cancelJob(jobId, tenantId);
+      } catch (err) {
+        const isExpected = err instanceof AppError && (err.statusCode === 404 || err.statusCode === 400);
+        if (isExpected) {
+          logger.debug(`[Job] Queue cancellation skipped for ${jobId} (likely already finished)`);
+        } else {
+          logger.warn(`[Job] Unexpected queue cancellation error for ${jobId}:`, err instanceof Error ? err : undefined);
+        }
+      }
+
+      // Capture storage path before transaction deletes the document record
+      const storagePath = job.editorialDocument?.storagePath;
+
+      await prisma.$transaction(async (tx) => {
+        if (job.editorialDocument) {
+          const docId = job.editorialDocument.id;
+          await tx.citationChange.deleteMany({ where: { documentId: docId } });
+          await tx.referenceListEntryCitation.deleteMany({ where: { citation: { documentId: docId } } });
+          await tx.citation.deleteMany({ where: { documentId: docId } });
+          await tx.referenceListEntry.deleteMany({ where: { documentId: docId } });
+          await tx.editorialDocumentContent.deleteMany({ where: { documentId: docId } });
+          await tx.editorialDocument.delete({ where: { id: docId } });
+        }
+        // Delete Issue rows before ValidationResult (Issue has FK to ValidationResult, no cascade)
+        const vrIds = await tx.validationResult.findMany({ where: { jobId }, select: { id: true } });
+        if (vrIds.length > 0) {
+          await tx.issue.deleteMany({ where: { validationResultId: { in: vrIds.map(v => v.id) } } });
+        }
+        await tx.validationResult.deleteMany({ where: { jobId } });
+        await tx.artifact.deleteMany({ where: { jobId } });
+        await tx.remediationChange.deleteMany({ where: { jobId } });
+        await tx.job.delete({ where: { id: jobId } });
+      });
+
+      // Clean up S3 file after DB commit so a failed transaction doesn't orphan data
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+        } catch (s3Error) {
+          logger.warn(`[Job] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
+
+      logger.info(`[Job] Permanently deleted job ${jobId}`);
+
+      res.json({ success: true, data: { jobId } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Gets job statistics for the tenant's dashboard.
    * Returns counts by status and type, plus recent jobs.
    * @param req - Request object (uses tenant from authenticated user)
@@ -395,7 +483,7 @@ export class JobController {
    */
   async getStats(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 

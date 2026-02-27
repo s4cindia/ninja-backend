@@ -21,18 +21,13 @@ import { aiCitationDetectorService } from '../../services/citation/ai-citation-d
 import { docxProcessorService } from '../../services/citation/docx-processor.service';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
+import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { normalizeSuperscripts } from '../../utils/unicode';
 import { claudeService } from '../../services/ai/claude.service';
+import { isAuthenticated } from '../../utils/auth';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-
-/** Type guard to validate authenticated user exists on request */
-function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
-  return req.user !== undefined &&
-         typeof req.user.tenantId === 'string' &&
-         typeof req.user.id === 'string';
-}
 
 /**
  * Match author-year citation text to reference entries
@@ -75,7 +70,11 @@ function matchAuthorYearCitation(
           // Check if any author's last name matches
           const hasMatchingAuthor = ref.authors.some(author => {
             // Extract last name (first part before comma, or first word)
-            const lastName = author.split(/[,\s]/)[0].toLowerCase();
+            const trimmed = author.trim();
+            const lastName = (trimmed.includes(',')
+              ? trimmed.substring(0, trimmed.indexOf(',')).trim()
+              : trimmed.split(/\s+/).pop() || ''
+            ).toLowerCase();
             // Use startsWith to handle abbreviations without false positives
             // e.g., "Smith" matches "Smi" but not "S" matching "Smith"
             return lastName === authorName || lastName.startsWith(authorName) || authorName.startsWith(lastName);
@@ -1029,24 +1028,41 @@ export class CitationUploadController {
         }
       }
 
+      // Determine the correct formatted column for the document's current style
+      const currentStyleCode = normalizeStyleCode(document.referenceListStyle);
+      const currentFormattedColumn = getFormattedColumn(currentStyleCode);
+
       // Format references for response
-      const formattedReferences = references.map((ref, index) => ({
-        id: ref.id,
-        number: index + 1,
-        authors: ref.authors,
-        year: ref.year,
-        title: ref.title,
-        sourceType: ref.sourceType,
-        journalName: ref.journalName,
-        volume: ref.volume,
-        issue: ref.issue,
-        pages: ref.pages,
-        doi: ref.doi,
-        url: ref.url,
-        publisher: ref.publisher,
-        formattedText: refIdToConvertedText.get(ref.id) || ref.formattedApa || null,
-        citationCount: ref.citationLinks.length
-      }));
+      // Priority: DB formatted column for current style (updated after edits) > style conversion text > formattedApa fallback
+      const formattedReferences = references.map((ref, index) => {
+        const dbFormatted = (ref as Record<string, unknown>)[currentFormattedColumn] as string | null;
+        // If the reference was edited, the DB column is most up-to-date (editReference regenerates it)
+        // Only use style conversion text if DB column is empty (pre-conversion state)
+        const rawText = (ref.isEdited ? dbFormatted : null)
+          || refIdToConvertedText.get(ref.id)
+          || dbFormatted
+          || ref.formattedApa
+          || null;
+        // Strip asterisks (AI italic markers) for display — UI renders plain text
+        const formattedText = rawText ? rawText.replace(/\*/g, '') : null;
+        return {
+          id: ref.id,
+          number: index + 1,
+          authors: ref.authors,
+          year: ref.year,
+          title: ref.title,
+          sourceType: ref.sourceType,
+          journalName: ref.journalName,
+          volume: ref.volume,
+          issue: ref.issue,
+          pages: ref.pages,
+          doi: ref.doi,
+          url: ref.url,
+          publisher: ref.publisher,
+          formattedText,
+          citationCount: ref.citationLinks.length
+        };
+      });
 
       // Build map from reference ID to reference number (1-based index)
       const refIdToNumber = new Map<string, number>();
@@ -1054,9 +1070,12 @@ export class CitationUploadController {
         refIdToNumber.set(references[i].id, i + 1);
       }
 
+      // Filter out citations with empty rawText (orphaned citations from reference deletion)
+      const activeCitations = document.citations.filter(c => c.rawText && c.rawText.trim() !== '');
+
       // Format citations for response
       // Include linked reference IDs from the ReferenceListEntryCitation join table
-      const formattedCitations = document.citations.map(c => {
+      const formattedCitations = activeCitations.map(c => {
         // Get linked reference IDs from the join table
         const linkedRefIds = c.referenceListEntries?.map(link => link.referenceListEntryId) || [];
         // Get linked reference numbers for display
@@ -1095,14 +1114,19 @@ export class CitationUploadController {
             id: document.id,
             filename: document.originalName,
             status: document.status,
+            fileSize: document.fileSize,
             wordCount: document.wordCount,
             pageCount: document.pageCount,
             fullText: document.documentContent?.fullText || '',
             fullHtml: document.documentContent?.fullHtml || '',
+            processingTime: document.job?.createdAt && document.job?.completedAt
+              ? new Date(document.job.completedAt).getTime() - new Date(document.job.createdAt).getTime()
+              : null,
             statistics: {
               // Count individual citation numbers, not just records
               // [1, 2] counts as 2, [3-5] counts as 3
-              totalCitations: this.countIndividualCitations(document.citations),
+              // Uses activeCitations to exclude orphaned citations from deleted references
+              totalCitations: this.countIndividualCitations(activeCitations),
               totalReferences: references.length
             }
           },
@@ -1517,6 +1541,9 @@ export class CitationUploadController {
         where: { jobId }
       });
 
+      // Capture storage path before transaction deletes the record
+      const storagePath = document?.storagePath;
+
       // Delete in correct order to respect foreign key constraints
       await prisma.$transaction(async (tx) => {
         if (document) {
@@ -1559,6 +1586,16 @@ export class CitationUploadController {
         });
       });
 
+      // Clean up S3 file after DB transaction succeeds
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+          logger.info(`[Citation Upload] Deleted S3 file: ${storagePath}`);
+        } catch (s3Error) {
+          logger.warn(`[Citation Upload] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
+
       logger.info(`[Citation Upload] Deleted job ${jobId} and associated data`);
 
       res.json({
@@ -1571,6 +1608,108 @@ export class CitationUploadController {
       });
     } catch (error) {
       logger.error('[Citation Upload] Delete job failed:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /api/v1/citation-management/document/:documentId
+   * Delete a document and its associated job/data
+   */
+  async deleteDocument(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+        });
+        return;
+      }
+      const { tenantId } = req.user;
+      const { documentId } = req.params;
+
+      logger.info(`[Citation Upload] Deleting document ${documentId}`);
+
+      // Find the document and verify tenant ownership
+      const document = await prisma.editorialDocument.findFirst({
+        where: {
+          id: documentId,
+          tenantId,
+        }
+      });
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' }
+        });
+        return;
+      }
+
+      // Capture storage path before transaction deletes the record
+      const storagePath = document.storagePath;
+
+      // Delete document and all related records in transaction
+      await prisma.$transaction(async (tx) => {
+        // Delete citation changes
+        await tx.citationChange.deleteMany({
+          where: { documentId }
+        });
+
+        // Delete citation-reference links
+        await tx.referenceListEntryCitation.deleteMany({
+          where: {
+            citation: { documentId }
+          }
+        });
+
+        // Delete citations
+        await tx.citation.deleteMany({
+          where: { documentId }
+        });
+
+        // Delete reference list entries
+        await tx.referenceListEntry.deleteMany({
+          where: { documentId }
+        });
+
+        // Delete document content
+        await tx.editorialDocumentContent.deleteMany({
+          where: { documentId }
+        });
+
+        // Delete the document
+        await tx.editorialDocument.delete({
+          where: { id: documentId }
+        });
+
+        // Delete the associated job and its FK-dependent records if it exists
+        if (document.jobId) {
+          await tx.validationResult.deleteMany({ where: { jobId: document.jobId } });
+          await tx.artifact.deleteMany({ where: { jobId: document.jobId } });
+          await tx.remediationChange.deleteMany({ where: { jobId: document.jobId } });
+          await tx.job.delete({ where: { id: document.jobId } });
+        }
+      });
+
+      // Clean up S3 file after DB commit so a failed transaction doesn't orphan data
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+          logger.info(`[Citation Upload] Deleted S3 file: ${storagePath}`);
+        } catch (s3Error) {
+          logger.warn(`[Citation Upload] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
+
+      logger.info(`[Citation Upload] Deleted document ${documentId} and associated data`);
+
+      res.json({
+        success: true,
+        data: { documentId }
+      });
+    } catch (error) {
+      logger.error('[Citation Upload] Delete document failed:', error);
       next(error);
     }
   }
@@ -1844,9 +1983,18 @@ export class CitationUploadController {
             id: true,
             fileName: true,
             originalName: true,
+            fileSize: true,
+            wordCount: true,
+            pageCount: true,
             status: true,
             createdAt: true,
             updatedAt: true,
+            job: {
+              select: {
+                createdAt: true,
+                completedAt: true,
+              },
+            },
           },
           take: limit,
           skip: offset,

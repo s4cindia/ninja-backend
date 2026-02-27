@@ -20,9 +20,11 @@ import { logger } from '../../lib/logger';
 
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
+import { crossRefService, type EnrichedMetadata } from '../../services/citation/crossref.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
-import { extractCitationNumbers } from '../../utils/citation.utils';
+import { extractCitationNumbers, buildFormattedReference } from '../../utils/citation.utils';
+import { isAuthenticated } from '../../utils/auth';
 
 /** Transaction timeout for operations that may update many citations/references (default 5s is too short) */
 const TRANSACTION_TIMEOUT_MS = 30000;
@@ -50,8 +52,41 @@ function parseAuthorsToArray(authors: Prisma.JsonValue): Array<{ firstName?: str
 
   return authors.map(a => {
     if (typeof a === 'string') {
-      // Simple string author - treat as last name
-      return { lastName: a };
+      // Parse string author into firstName/lastName
+      // "Floridi, L." or "Floridi, Luciano" → lastName: "Floridi", firstName: "L." or "Luciano"
+      // "Luciano Floridi" → lastName: "Floridi", firstName: "Luciano"
+      // "Floridi" → lastName: "Floridi"
+      const trimmed = a.trim();
+      if (trimmed.includes(',')) {
+        const [last, ...rest] = trimmed.split(',');
+        return { lastName: last.trim(), firstName: rest.join(',').trim() || undefined };
+      }
+      const parts = trimmed.split(/\s+/);
+      if (parts.length === 1) {
+        return { lastName: parts[0] };
+      }
+      // Check if trailing word(s) are initials (e.g., "Bommasani R", "Brown TB", "Bender EM")
+      // Initials: single uppercase letter, 2-3 uppercase letters (concatenated), or dotted (A.B.)
+      const lastPart = parts[parts.length - 1];
+      const isInitials = /^[A-Z]\.?$/.test(lastPart)           // "R" or "R."
+        || /^[A-Z]{2,3}$/.test(lastPart)                       // "TB", "EM", "ARM"
+        || /^([A-Z]\.){1,3}$/.test(lastPart)                   // "T.B.", "E.M."
+        || /^[A-Z]\.[A-Z]\.?$/.test(lastPart);                 // "T.B" (missing trailing dot)
+      if (isInitials) {
+        // Trailing initials: "Bommasani R" → lastName: Bommasani, firstName: R
+        return { lastName: parts[0], firstName: parts.slice(1).join(' ') || undefined };
+      }
+      // Multiple words without comma: last word is the last name (e.g., "Luciano Floridi" → Floridi)
+      // Exception: if second-to-last word is a particle (van, de, von, etc.), include it
+      const particles = new Set(['van', 'von', 'de', 'del', 'della', 'di', 'la', 'le', 'el', 'al', 'bin', 'ibn']);
+      let lastNameStart = parts.length - 1;
+      while (lastNameStart > 0 && particles.has(parts[lastNameStart - 1].toLowerCase())) {
+        lastNameStart--;
+      }
+      return {
+        lastName: parts.slice(lastNameStart).join(' '),
+        firstName: parts.slice(0, lastNameStart).join(' ') || undefined
+      };
     }
     if (a && typeof a === 'object' && 'lastName' in a) {
       return {
@@ -79,14 +114,19 @@ function formatAuthorsForInTextCitation(
     return 'Unknown';
   }
 
-  // Extract last names, stripping any initials that may be included
-  // Handles: "Bommasani R" -> "Bommasani", "Bommasani, R." -> "Bommasani", "Bommasani EM" -> "Bommasani"
+  // Extract last names for in-text citation display
+  // parseAuthorsToArray now properly separates firstName/lastName, so just use lastName directly
+  // Strip trailing initials/punctuation that may still be present (e.g., "Bommasani R" → "Bommasani")
   const lastNames = authors.map(a => {
     const lastName = a.lastName || 'Unknown';
-    // Extract just the surname (first word before comma, space+initial, or space+uppercase)
-    // Pattern: Take everything before a comma, or before " X" where X is uppercase (initial)
-    const surnameMatch = lastName.match(/^([A-Za-z\-']+)/);
-    return surnameMatch ? surnameMatch[1] : lastName;
+    // If lastName contains a comma, take only the part before (e.g., "Floridi, L." → "Floridi")
+    if (lastName.includes(',')) {
+      return lastName.split(',')[0].trim();
+    }
+    // If lastName is a multi-word name (e.g., "van Gogh"), keep it as-is
+    // Only strip trailing single uppercase initials (e.g., "Bommasani R" → "Bommasani")
+    const stripped = lastName.replace(/\s+[A-Z]\.?$/, '').trim();
+    return stripped || lastName;
   });
   const style = (styleCode || 'apa').toLowerCase();
 
@@ -120,9 +160,13 @@ export class CitationReferenceController {
    */
   async reorderReferences(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
       const { referenceId, newPosition, sortBy } = req.body;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Reordering references for ${documentId}`);
 
@@ -374,8 +418,12 @@ export class CitationReferenceController {
    */
   async deleteReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId, referenceId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Deleting reference ${referenceId} from document ${documentId}`);
 
@@ -588,9 +636,15 @@ export class CitationReferenceController {
         // If no explicit links, find citations by matching author surname + year
         if (affectedCitations.length === 0 && referenceToDelete.year) {
           const authors = safeAuthorsArray(referenceToDelete.authors);
-          const firstAuthor = authors?.[0] || '';
-          // Extract surname (handles "Smith, J." -> "Smith" or "Smith J" -> "Smith")
-          const surname = firstAuthor.split(/[,\s]/)[0];
+          const firstAuthor = (authors?.[0] || '').trim();
+          // Extract surname: "Last, F." → "Last", "Luciano Floridi" → "Floridi"
+          let surname = '';
+          if (firstAuthor.includes(',')) {
+            surname = firstAuthor.substring(0, firstAuthor.indexOf(',')).trim();
+          } else {
+            const parts = firstAuthor.split(/\s+/);
+            surname = parts[parts.length - 1] || '';
+          }
           const year = referenceToDelete.year;
 
           if (surname) {
@@ -912,10 +966,14 @@ export class CitationReferenceController {
    */
   async editReference(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId, referenceId } = req.params;
       // Body is pre-validated by editReferenceSchema middleware
       const updates: EditReferenceBody = req.body;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Editing reference ${referenceId} in document ${documentId}`);
 
@@ -1007,14 +1065,119 @@ export class CitationReferenceController {
       };
 
       // Call formatReference to regenerate the formatted text
-      // On failure, continue without formatted text update but still create REFERENCE_EDIT records
+      // On failure, use deterministic fallback so the formatted column always gets updated
       let formatResult: { formatted: string } | null = null;
       try {
         formatResult = await referenceListService.formatReference(entryForFormatting, styleCode);
         logger.info(`[CitationReference] Format result received successfully`);
+
+        // POST-PROCESSING: AI (Claude Haiku) often drops middle initials when formatting authors.
+        // e.g., "Emily M. Bender" → "Bender, E." instead of "Bender, E. M."
+        // Fix: For initial-based styles (APA, IEEE), replace the author portion in the AI output
+        // with a deterministically built author string that preserves ALL initials.
+        // This runs on EVERY edit (not just author changes) because the AI reformats the entire
+        // reference and can drop initials even on title-only edits.
+        // Skip for full-name styles (Chicago, MLA) to avoid breaking their formatting.
+        const initialBasedStyles = ['apa7', 'ieee'];
+        if (formatResult && initialBasedStyles.includes(styleCode)) {
+          const parsedAuthors = parseAuthorsToArray(updatedReference.authors);
+          if (parsedAuthors.length > 0) {
+            // Build correct author string with all initials preserved (APA/IEEE style: "Last, F. M.")
+            const correctAuthorParts = parsedAuthors.map(a => {
+              const last = a.lastName || 'Unknown';
+              const first = a.firstName || '';
+              const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
+                .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
+              return initials ? `${last}, ${initials}` : last;
+            });
+            // Build the correct author string based on style conventions
+            let correctAuthorStr: string;
+            if (styleCode === 'ieee') {
+              // IEEE: comma-separated, no ampersand (e.g., "F. M. Last, F. Last2")
+              // IEEE puts initials BEFORE last name
+              const ieeeParts = parsedAuthors.map(a => {
+                const last = a.lastName || 'Unknown';
+                const first = a.firstName || '';
+                const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
+                  .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
+                return initials ? `${initials} ${last}` : last;
+              });
+              correctAuthorStr = ieeeParts.join(', ');
+            } else {
+              // APA: "Last, F. M." with "&" before the last author
+              if (correctAuthorParts.length === 1) {
+                correctAuthorStr = correctAuthorParts[0];
+              } else if (correctAuthorParts.length === 2) {
+                correctAuthorStr = `${correctAuthorParts[0]}, & ${correctAuthorParts[1]}`;
+              } else {
+                const allButLast = correctAuthorParts.slice(0, -1).join(', ');
+                correctAuthorStr = `${allButLast}, & ${correctAuthorParts[correctAuthorParts.length - 1]}`;
+              }
+            }
+
+            // Replace author portion in the formatted output
+            const formatted = formatResult.formatted;
+            if (styleCode === 'ieee') {
+              // IEEE pattern: "Authors, "Title," ..."
+              const titleMatch = formatted.match(/,\s*"/);
+              if (titleMatch && titleMatch.index !== undefined) {
+                const oldAuthorPortion = formatted.substring(0, titleMatch.index);
+                if (oldAuthorPortion !== correctAuthorStr) {
+                  formatResult.formatted = correctAuthorStr + formatted.substring(titleMatch.index);
+                  logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+                }
+              }
+            } else {
+              // APA pattern: "Authors (Year). Title..."
+              const yearMatch = formatted.match(/\s*\(\d{4}[a-z]?\)/);
+              if (yearMatch && yearMatch.index !== undefined) {
+                const oldAuthorPortion = formatted.substring(0, yearMatch.index);
+                if (oldAuthorPortion !== correctAuthorStr) {
+                  formatResult.formatted = correctAuthorStr + formatted.substring(yearMatch.index);
+                  logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+                }
+              }
+            }
+          }
+        }
       } catch (formatError) {
-        logger.error(`[CitationReference] formatReference failed - continuing without formatted text update:`, formatError instanceof Error ? formatError : undefined);
-        // formatResult remains null, which is handled below
+        logger.error(`[CitationReference] formatReference failed - using deterministic fallback:`, formatError instanceof Error ? formatError : undefined);
+      }
+
+      // Validate AI output: if the year field was updated but the AI text doesn't
+      // contain the correct year, the AI likely picked up a stale year from the
+      // journal/conference name. Fall back to deterministic in that case.
+      if (formatResult && updatedReference.year) {
+        const yearStr = updatedReference.year;
+        // Check the publication year portion (not embedded in journal names).
+        // Vancouver: "Journal. YYYY;", APA: "(YYYY).", Chicago: "(YYYY)", IEEE: ", YYYY."
+        const yearInText = formatResult.formatted.includes(`. ${yearStr}`) ||
+                           formatResult.formatted.includes(`(${yearStr})`) ||
+                           formatResult.formatted.includes(`, ${yearStr}.`) ||
+                           formatResult.formatted.includes(`; ${yearStr}`);
+        if (!yearInText) {
+          logger.warn(`[CitationReference] AI formatted text missing year ${yearStr} — overriding with deterministic fallback`);
+          formatResult = null;
+        }
+      }
+
+      // CRITICAL: If AI formatting failed or was invalidated, build deterministic formatted text
+      // so export can detect changes. Uses the same shared utility as the export controller.
+      if (!formatResult) {
+        const fallbackText = buildFormattedReference({
+          authors: Array.isArray(updatedReference.authors) ? updatedReference.authors : [],
+          year: updatedReference.year,
+          title: updatedReference.title,
+          journalName: updatedReference.journalName,
+          volume: updatedReference.volume,
+          issue: updatedReference.issue,
+          pages: updatedReference.pages,
+          doi: updatedReference.doi,
+          url: updatedReference.url,
+          publisher: updatedReference.publisher,
+        }, styleCode);
+        formatResult = { formatted: fallbackText };
+        logger.warn(`[CitationReference] Using deterministic fallback: "${fallbackText.substring(0, 80)}..."`);
       }
 
       // Check if any field changed - store for potential revert
@@ -1259,8 +1422,12 @@ export class CitationReferenceController {
    */
   async resetChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Resetting citation changes for ${documentId}`);
 
@@ -1277,8 +1444,162 @@ export class CitationReferenceController {
 
       const resolvedDocId = document.id;
 
-      // First, find and revert any REFERENCE_EDIT changes
-      // Order by appliedAt ASC to get the earliest (original) change first for each reference
+      // Step 1: Restore any deleted references (DELETE changes) before wiping change records.
+      // Without this, the metadata needed to recreate deleted references would be lost.
+      const deleteChanges = await prisma.citationChange.findMany({
+        where: {
+          documentId: resolvedDocId,
+          changeType: 'DELETE',
+          appliedBy: 'user',
+          isReverted: false
+        }
+      });
+
+      let referencesRestored = 0;
+      if (deleteChanges.length > 0) {
+        logger.info(`[CitationReference] Reset: restoring ${deleteChanges.length} deleted reference(s)`);
+        // Delegate each DELETE undo to dismissChanges by collecting the change IDs
+        // and calling the dismiss endpoint logic inline
+        try {
+          for (const deleteChange of deleteChanges) {
+            const metadata = deleteChange.metadata as Record<string, unknown> | null;
+            const deletedPosition = (metadata?.position as number) || 0;
+            const hasFullData = !!metadata?.referenceData;
+
+            let refData: Record<string, unknown>;
+            let refId: string;
+            let storedCitationUpdates: Array<{ id: string; oldRawText: string; newRawText: string }>;
+            let oldFullHtml: string | null;
+            let oldFullText: string | null;
+
+            if (hasFullData) {
+              refData = metadata!.referenceData as Record<string, unknown>;
+              refId = metadata!.referenceId as string;
+              storedCitationUpdates = (metadata!.citationUpdates || []) as Array<{ id: string; oldRawText: string; newRawText: string }>;
+              oldFullHtml = metadata!.oldFullHtml as string | null;
+              oldFullText = metadata!.oldFullText as string | null;
+            } else {
+              // Legacy DELETE change: parse reference from beforeText
+              const parsed = this.parseReferenceFromBeforeText(deleteChange.beforeText || '', deletedPosition);
+              const insertSortKey = deletedPosition > 1
+                ? String(deletedPosition - 1).padStart(4, '0') + '.5'
+                : '0000.5';
+              refData = { ...parsed, sortKey: insertSortKey, enrichmentSource: 'restored', enrichmentConfidence: 0 };
+              refId = randomUUID();
+              storedCitationUpdates = [];
+              oldFullHtml = null;
+              oldFullText = null;
+
+              // Legacy: find related system DELETE changes within 5s window
+              const deleteAppliedAt = deleteChange.appliedAt;
+              const timeWindowMs = 5000;
+              const windowStart = new Date(deleteAppliedAt.getTime() - timeWindowMs);
+              const windowEnd = new Date(deleteAppliedAt.getTime() + timeWindowMs);
+              const relatedSystemDeletes = await prisma.citationChange.findMany({
+                where: {
+                  documentId: resolvedDocId,
+                  changeType: 'DELETE',
+                  appliedBy: 'system',
+                  appliedAt: { gte: windowStart, lte: windowEnd },
+                  citationId: { not: null }
+                }
+              });
+              for (const sysDel of relatedSystemDeletes) {
+                if (sysDel.citationId && sysDel.beforeText) {
+                  storedCitationUpdates.push({ id: sysDel.citationId, oldRawText: sysDel.beforeText, newRawText: '' });
+                }
+              }
+            }
+
+            await prisma.$transaction(async (tx) => {
+              // Recreate the reference
+              await tx.referenceListEntry.create({
+                data: {
+                  id: refId,
+                  documentId: resolvedDocId,
+                  sortKey: '9999',
+                  authors: (refData.authors || []) as Prisma.InputJsonValue,
+                  year: (refData.year as string) || null,
+                  title: (refData.title as string) || '',
+                  sourceType: (refData.sourceType as string) && (refData.sourceType as string) !== 'unknown'
+                    ? (refData.sourceType as string) : 'journal_article',
+                  journalName: (refData.journalName as string) || null,
+                  volume: (refData.volume as string) || null,
+                  issue: (refData.issue as string) || null,
+                  pages: (refData.pages as string) || null,
+                  publisher: (refData.publisher as string) || null,
+                  doi: (refData.doi as string) || null,
+                  url: (refData.url as string) || null,
+                  enrichmentSource: (refData.enrichmentSource as string) || 'manual',
+                  enrichmentConfidence: (refData.enrichmentConfidence as number) || 0,
+                  formattedApa: (refData.formattedApa as string) || null,
+                  formattedMla: (refData.formattedMla as string) || null,
+                  formattedChicago: (refData.formattedChicago as string) || null,
+                  formattedVancouver: (refData.formattedVancouver as string) || null,
+                  formattedIeee: (refData.formattedIeee as string) || null,
+                }
+              });
+
+              // Re-sort all references to insert restored ref at its original position
+              const existingRefs = await tx.referenceListEntry.findMany({
+                where: { documentId: resolvedDocId, id: { not: refId } },
+                orderBy: { sortKey: 'asc' }
+              });
+              const insertIdx = Math.max(0, Math.min(deletedPosition - 1, existingRefs.length));
+              const ordered = [...existingRefs];
+              ordered.splice(insertIdx, 0, { id: refId } as typeof existingRefs[0]);
+              if (ordered.length > 0) {
+                await Promise.all(ordered.map((ref, i) =>
+                  tx.referenceListEntry.update({
+                    where: { id: ref.id },
+                    data: { sortKey: String(i + 1).padStart(4, '0') }
+                  })
+                ));
+              }
+
+              // Restore citation rawText values
+              const citationsByOldText = new Map<string, string[]>();
+              for (const update of storedCitationUpdates) {
+                const ids = citationsByOldText.get(update.oldRawText) || [];
+                ids.push(update.id);
+                citationsByOldText.set(update.oldRawText, ids);
+              }
+              for (const [oldRawText, ids] of citationsByOldText) {
+                await tx.citation.updateMany({
+                  where: { id: { in: ids } },
+                  data: { rawText: oldRawText }
+                });
+              }
+
+              // Restore fullHtml/fullText if available
+              if (oldFullHtml || oldFullText) {
+                const updateData: { fullHtml?: string; fullText?: string } = {};
+                if (oldFullHtml) updateData.fullHtml = oldFullHtml;
+                if (oldFullText) updateData.fullText = oldFullText;
+                await tx.editorialDocumentContent.update({
+                  where: { documentId: resolvedDocId },
+                  data: updateData
+                });
+              }
+            }, { timeout: TRANSACTION_TIMEOUT_MS });
+
+            referencesRestored++;
+            logger.info(`[CitationReference] Reset: restored deleted reference ${refId} at position ${deletedPosition}`);
+          }
+
+          // Rebuild citation-reference links after restores
+          try {
+            await this.rebuildCitationLinks(resolvedDocId, tenantId);
+          } catch (linkErr) {
+            logger.warn(`[CitationReference] Reset: link rebuild failed after restore`, linkErr instanceof Error ? linkErr : undefined);
+          }
+        } catch (restoreErr) {
+          logger.error(`[CitationReference] Reset: failed to restore deleted references — aborting reset to preserve undo metadata`, restoreErr instanceof Error ? restoreErr : undefined);
+          throw restoreErr;
+        }
+      }
+
+      // Step 2: Revert REFERENCE_EDIT changes (restore edited fields to original values)
       const referenceEditChanges = await prisma.citationChange.findMany({
         where: {
           documentId: resolvedDocId,
@@ -1290,7 +1611,6 @@ export class CitationReferenceController {
       });
 
       // Group by referenceId and only use the EARLIEST change's oldValues (true original state)
-      // This handles the case where a reference was edited multiple times
       const earliestChangeByRefId = new Map<string, typeof referenceEditChanges[0]>();
       for (const change of referenceEditChanges) {
         if (change.metadata && typeof change.metadata === 'object') {
@@ -1301,12 +1621,10 @@ export class CitationReferenceController {
         }
       }
 
-      // Wrap entire revert + delete in a transaction to ensure atomicity
-      // If any revert fails, the entire operation rolls back
+      // Step 3: Revert edits + delete all CitationChange records in a single transaction
       const { referencesReverted, changesDeleted } = await prisma.$transaction(async (tx) => {
         let reverted = 0;
 
-        // Batch revert all references concurrently to reduce N+1 queries
         const revertPromises: Promise<unknown>[] = [];
         for (const [refId, change] of earliestChangeByRefId) {
           const metadata = change.metadata as {
@@ -1371,14 +1689,15 @@ export class CitationReferenceController {
         return { referencesReverted: reverted, changesDeleted: result.count };
       });
 
-      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references for document ${resolvedDocId}`);
+      logger.info(`[CitationReference] Deleted ${changesDeleted} CitationChange records, reverted ${referencesReverted} references, restored ${referencesRestored} deleted references for document ${resolvedDocId}`);
 
       res.json({
         success: true,
         data: {
-          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s).`,
+          message: `Reset complete. Deleted ${changesDeleted} change records, reverted ${referencesReverted} reference(s), restored ${referencesRestored} deleted reference(s).`,
           deletedCount: changesDeleted,
-          referencesReverted
+          referencesReverted,
+          referencesRestored
         }
       });
     } catch (error) {
@@ -1394,10 +1713,14 @@ export class CitationReferenceController {
    */
   async dismissChanges(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
       // Validated by Zod schema: 1-100 UUIDs required
       const { changeIds } = req.body as { changeIds: string[] };
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Dismissing ${changeIds.length} changes for document ${documentId}`);
 
@@ -1675,8 +1998,12 @@ export class CitationReferenceController {
    */
   async createCitationLinks(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Creating citation-reference links for ${documentId}`);
 
@@ -1897,8 +2224,12 @@ export class CitationReferenceController {
    */
   async resequenceByAppearance(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
       const { documentId } = req.params;
-      const { tenantId } = req.user!;
+      const { tenantId } = req.user;
 
       logger.info(`[CitationReference] Resequencing references by appearance for ${documentId}`);
 
@@ -2194,6 +2525,410 @@ export class CitationReferenceController {
     } catch (error) {
       next(error);
     }
+  }
+
+  // ============================================
+  // Reference Validation (CrossRef)
+  // ============================================
+
+  /**
+   * POST /api/v1/citation-management/document/:documentId/reference/:referenceId/validate
+   * Validate a single reference against CrossRef database
+   *
+   * Returns field-level discrepancies between the stored reference and CrossRef metadata.
+   * Uses DOI lookup (high confidence) if DOI exists, otherwise falls back to title+author search.
+   */
+  async validateReference(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!isAuthenticated(req)) {
+        res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
+      const { documentId, referenceId } = req.params;
+      const { tenantId } = req.user;
+
+      logger.info(`[CitationReference] Validating reference ${referenceId} against CrossRef`);
+
+      // Fetch the reference
+      const reference = await prisma.referenceListEntry.findUnique({
+        where: { id: referenceId },
+        include: { document: true }
+      });
+
+      if (!reference) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify tenant ownership
+      if (reference.document.tenantId !== tenantId) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify document match
+      const resolvedDoc = await resolveDocumentSimple(documentId, tenantId);
+      if (!resolvedDoc || resolvedDoc.id !== reference.documentId) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'DOCUMENT_MISMATCH', message: 'Document ID mismatch between URL and reference' }
+        });
+        return;
+      }
+
+      // Try CrossRef lookup
+      let crossrefResult: EnrichedMetadata | null = null;
+      let lookupMethod: 'doi' | 'search' = 'search';
+
+      if (reference.doi) {
+        // Direct DOI lookup — high confidence
+        lookupMethod = 'doi';
+        crossrefResult = await crossRefService.lookupByDoi(reference.doi);
+      }
+
+      if (!crossrefResult) {
+        // Fallback: search using title (most discriminating) + first author last name + year
+        lookupMethod = 'search';
+        const title = (reference.title || '').trim();
+        const authors = safeAuthorsArray(reference.authors);
+        // Extract first author's last name: "Last, F." → "Last", "Luciano Floridi" → "Floridi"
+        let firstAuthorLast = '';
+        if (authors.length > 0) {
+          const a = authors[0].trim();
+          if (a.includes(',')) {
+            firstAuthorLast = a.substring(0, a.indexOf(',')).trim();
+          } else {
+            const parts = a.split(/\s+/);
+            firstAuthorLast = parts[parts.length - 1] || '';
+          }
+        }
+        const year = reference.year || '';
+
+        // Build query: title is primary, author/year help narrow
+        const queryParts = [title, firstAuthorLast, year].filter(p => p.length > 0);
+        const searchQuery = queryParts.join(' ').trim();
+
+        if (searchQuery.length < 5) {
+          res.json({
+            success: true,
+            data: {
+              status: 'not_found',
+              message: 'Insufficient reference data to search CrossRef',
+              referenceId
+            }
+          });
+          return;
+        }
+
+        const searchResults = await crossRefService.search(searchQuery, 5);
+
+        // Find the best match using composite scoring: title + author + year
+        if (searchResults.length > 0) {
+          const titleNorm = title.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+          // Extract last names from current reference for author comparison
+          const currentLastNames = authors.map(a => {
+            const trimmed = a.trim();
+            if (trimmed.includes(',')) return trimmed.substring(0, trimmed.indexOf(',')).trim().toLowerCase();
+            const parts = trimmed.split(/\s+/);
+            return (parts[parts.length - 1] || '').toLowerCase();
+          });
+          const currentYear = reference.year || '';
+
+          let bestMatch: EnrichedMetadata | null = null;
+          let bestScore = 0;
+
+          for (const result of searchResults) {
+            let score = 0;
+
+            // Title similarity (0-0.5 weight) — most important signal
+            if (titleNorm.length > 0) {
+              const resultTitleNorm = (result.title || '').toLowerCase().replace(/[^a-z0-9\s]/g, '');
+              score += this.titleSimilarity(titleNorm, resultTitleNorm) * 0.5;
+            }
+
+            // Author similarity (0-0.3 weight) — check last name overlap
+            const resultLastNames = result.authors.map(a => (a.lastName || '').toLowerCase());
+            if (currentLastNames.length > 0 && resultLastNames.length > 0) {
+              const authorOverlap = currentLastNames.filter(n => resultLastNames.includes(n)).length;
+              const authorScore = authorOverlap / Math.max(currentLastNames.length, resultLastNames.length);
+              score += authorScore * 0.3;
+            }
+
+            // Year match (0-0.2 weight)
+            if (currentYear && result.year) {
+              const yearDiff = Math.abs(parseInt(currentYear) - parseInt(result.year));
+              if (yearDiff === 0) score += 0.2;
+              else if (yearDiff <= 1) score += 0.1;
+              else if (yearDiff <= 2) score += 0.05;
+            }
+
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = result;
+            }
+          }
+
+          // Compute whether author or year contributed to the score.
+          // A pure title-only match (high title, zero author/year) is unreliable
+          // because many papers share similar titles across different authors.
+          const bestResultLastNames = bestMatch ? bestMatch.authors.map(a => (a.lastName || '').toLowerCase()) : [];
+          const hasAuthorOverlap = currentLastNames.some(n => bestResultLastNames.includes(n));
+          const hasYearOverlap = !!(currentYear && bestMatch?.year &&
+            Math.abs(parseInt(currentYear) - parseInt(bestMatch.year)) <= 1);
+
+          if (bestMatch && bestScore >= 0.7) {
+            // Very high composite score — accept even without author/year overlap
+            crossrefResult = bestMatch;
+            logger.info(`[CitationReference] Search matched (high score) with composite score ${bestScore.toFixed(2)}`);
+          } else if (bestMatch && bestScore >= 0.45 && (hasAuthorOverlap || hasYearOverlap)) {
+            // Moderate score — require at least author or year corroboration
+            crossrefResult = bestMatch;
+            logger.info(`[CitationReference] Search matched with composite score ${bestScore.toFixed(2)} (author=${hasAuthorOverlap}, year=${hasYearOverlap})`);
+          } else {
+            logger.info(`[CitationReference] No good match found. Best composite score: ${bestScore.toFixed(2)}, author=${hasAuthorOverlap}, year=${hasYearOverlap}`);
+          }
+        }
+      }
+
+      if (!crossrefResult) {
+        res.json({
+          success: true,
+          data: {
+            status: 'not_found',
+            message: 'Reference not found in CrossRef database',
+            referenceId
+          }
+        });
+        return;
+      }
+
+      // Compare fields and find discrepancies (style-aware for authors)
+      const styleCode = normalizeStyleCode(reference.document.referenceListStyle);
+      const discrepancies = this.compareReferenceFields(reference, crossrefResult, styleCode);
+      const suggestedDoi = !reference.doi && crossrefResult.doi ? crossrefResult.doi : undefined;
+
+      const status = discrepancies.length === 0 && !suggestedDoi ? 'verified' : 'discrepancies_found';
+
+      res.json({
+        success: true,
+        data: {
+          status,
+          referenceId,
+          lookupMethod,
+          confidence: crossrefResult.confidence,
+          discrepancies,
+          suggestedDoi,
+          crossrefMetadata: {
+            authors: crossrefResult.authors.map(a =>
+              [a.firstName, a.lastName].filter(Boolean).join(' ')
+            ),
+            title: crossrefResult.title,
+            year: crossrefResult.year,
+            journalName: crossrefResult.journalName,
+            volume: crossrefResult.volume,
+            issue: crossrefResult.issue,
+            pages: crossrefResult.pages,
+            doi: crossrefResult.doi,
+            url: crossrefResult.url,
+            publisher: crossrefResult.publisher,
+            sourceType: crossrefResult.sourceType
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Compare stored reference fields with CrossRef metadata.
+   * Returns array of discrepancies (field name, current value, correct value).
+   *
+   * Author comparison is style-aware: for initial-based styles (APA, IEEE),
+   * authors are normalized to "Last, F. M." format before comparing so that
+   * "Bender, E. M." and "Emily M. Bender" are NOT flagged as discrepancies
+   * when they produce identical formatted output.
+   */
+  private compareReferenceFields(
+    reference: { authors: unknown; year: string | null; title: string | null; journalName: string | null; volume: string | null; issue: string | null; pages: string | null; doi: string | null; publisher: string | null },
+    crossref: EnrichedMetadata,
+    styleCode: string = 'apa7'
+  ): Array<{ field: string; currentValue: string; correctValue: string; note?: string }> {
+    const discrepancies: Array<{ field: string; currentValue: string; correctValue: string; note?: string }> = [];
+
+    const normalize = (val: string | null | undefined): string => (val || '').trim().toLowerCase();
+    const normalizeTitle = (val: string | null | undefined): string =>
+      normalize(val).replace(/[.,;:!?'"]+$/g, '');
+
+    // Authors comparison — style-aware normalization
+    // For initial-based styles (APA, IEEE), convert both sides to "last, f. m." format
+    // so that "Bender, E. M." and "Emily M. Bender" are treated as equivalent.
+    const initialBasedStyles = ['apa7', 'ieee'];
+    const isInitialBased = initialBasedStyles.includes(styleCode);
+
+    const parsedCurrent = parseAuthorsToArray(reference.authors as import('@prisma/client').Prisma.JsonValue);
+    const parsedCrossref = crossref.authors.map(a => ({
+      firstName: a.firstName || undefined,
+      lastName: a.lastName || ''
+    }));
+
+    if (parsedCurrent.length > 0 && parsedCrossref.length > 0) {
+      const formatForComparison = (author: { firstName?: string; lastName: string }): string => {
+        const last = (author.lastName || '').trim().toLowerCase();
+        const first = (author.firstName || '').trim();
+
+        if (!first) return last;
+
+        if (isInitialBased) {
+          // Convert to initials: "Emily M." → "e. m.", "E. M." → "e. m.", "EM" → "e. m."
+          const initials = first.split(/[\s.]+/).filter(p => p.length > 0)
+            .map(p => {
+              // Handle concatenated initials like "EM" → ["E", "M"]
+              if (/^[A-Z]{2,3}$/.test(p)) {
+                return p.split('').map(c => `${c.toLowerCase()}.`).join(' ');
+              }
+              return `${p.charAt(0).toLowerCase()}.`;
+            }).join(' ');
+          return `${last}, ${initials}`;
+        }
+
+        // Full-name styles: normalize to "last, first" lowercase
+        return `${last}, ${first.toLowerCase()}`;
+      };
+
+      const currentFormatted = parsedCurrent.map(a => formatForComparison(a));
+      const crossrefFormatted = parsedCrossref.map(a => formatForComparison(a));
+
+      // Compare without sorting first — preserves author order
+      const currentStr = currentFormatted.join('; ');
+      const crossrefStr = crossrefFormatted.join('; ');
+
+      if (currentStr !== crossrefStr) {
+        // Show raw display values in the discrepancy (not the normalized comparison values)
+        const currentAuthors = safeAuthorsArray(reference.authors);
+        const crossrefAuthors = crossref.authors.map(a =>
+          [a.firstName, a.lastName].filter(Boolean).join(' ')
+        );
+
+        // Distinguish missing/extra authors from mere reordering
+        const currentSorted = [...currentFormatted].sort();
+        const crossrefSorted = [...crossrefFormatted].sort();
+        const isOrderOnly = currentSorted.join('; ') === crossrefSorted.join('; ');
+
+        discrepancies.push({
+          field: 'authors',
+          currentValue: currentAuthors.join(', '),
+          correctValue: crossrefAuthors.join(', '),
+          ...(isOrderOnly ? { note: 'author order differs' } : {})
+        });
+      }
+    }
+
+    // Year
+    if (crossref.year && normalize(reference.year) !== normalize(crossref.year)) {
+      discrepancies.push({
+        field: 'year',
+        currentValue: reference.year || '',
+        correctValue: crossref.year
+      });
+    }
+
+    // Title (fuzzy — ignore trailing punctuation and case)
+    if (crossref.title && normalizeTitle(reference.title) !== normalizeTitle(crossref.title)) {
+      discrepancies.push({
+        field: 'title',
+        currentValue: reference.title || '',
+        correctValue: crossref.title
+      });
+    }
+
+    // Journal
+    if (crossref.journalName && normalize(reference.journalName) !== normalize(crossref.journalName)) {
+      discrepancies.push({
+        field: 'journalName',
+        currentValue: reference.journalName || '',
+        correctValue: crossref.journalName
+      });
+    }
+
+    // Volume
+    if (crossref.volume && normalize(reference.volume) !== normalize(crossref.volume)) {
+      discrepancies.push({
+        field: 'volume',
+        currentValue: reference.volume || '',
+        correctValue: crossref.volume
+      });
+    }
+
+    // Issue
+    if (crossref.issue && normalize(reference.issue) !== normalize(crossref.issue)) {
+      discrepancies.push({
+        field: 'issue',
+        currentValue: reference.issue || '',
+        correctValue: crossref.issue
+      });
+    }
+
+    // Pages
+    if (crossref.pages && normalize(reference.pages) !== normalize(crossref.pages)) {
+      discrepancies.push({
+        field: 'pages',
+        currentValue: reference.pages || '',
+        correctValue: crossref.pages
+      });
+    }
+
+    // Publisher
+    if (crossref.publisher && normalize(reference.publisher) !== normalize(crossref.publisher)) {
+      discrepancies.push({
+        field: 'publisher',
+        currentValue: reference.publisher || '',
+        correctValue: crossref.publisher
+      });
+    }
+
+    // DOI
+    if (crossref.doi && normalize(reference.doi) !== normalize(crossref.doi)) {
+      discrepancies.push({
+        field: 'doi',
+        currentValue: reference.doi || '',
+        correctValue: crossref.doi
+      });
+    }
+
+    return discrepancies;
+  }
+
+  /**
+   * Calculate word-level Jaccard similarity between two normalized titles.
+   * Returns 0-1 where 1 = identical word sets, 0 = no overlap.
+   */
+  private static readonly STOPWORDS = new Set([
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her',
+    'was', 'one', 'our', 'out', 'its', 'has', 'had', 'how', 'may', 'who',
+    'did', 'get', 'use', 'new', 'any', 'from', 'with', 'that', 'this',
+    'been', 'have', 'will', 'each', 'than', 'they', 'into', 'also', 'more',
+    'some', 'when', 'very', 'what', 'about', 'which', 'their', 'other',
+  ]);
+
+  private titleSimilarity(a: string, b: string): number {
+    const filter = (w: string) => w.length > 2 && !CitationReferenceController.STOPWORDS.has(w);
+    const wordsA = new Set(a.split(/\s+/).filter(filter));
+    const wordsB = new Set(b.split(/\s+/).filter(filter));
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+    let intersection = 0;
+    for (const word of wordsA) {
+      if (wordsB.has(word)) intersection++;
+    }
+    const union = new Set([...wordsA, ...wordsB]).size;
+    return union > 0 ? intersection / union : 0;
   }
 
   // ============================================

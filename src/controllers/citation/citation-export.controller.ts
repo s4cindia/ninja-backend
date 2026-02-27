@@ -16,7 +16,7 @@ import { docxProcessorService } from '../../services/citation/docx-processor.ser
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
-import { buildRefIdToNumberMap, formatCitationWithChanges, citationNumbersMatch } from '../../utils/citation.utils';
+import { buildRefIdToNumberMap, formatCitationWithChanges, citationNumbersMatch, buildFormattedReference } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
@@ -481,6 +481,10 @@ export class CitationExportController {
         // own beforeText is correct — it will be added in the loop below
       }
 
+      // Deterministic formatting — delegates to shared utility to stay in sync with
+      // the reference controller's fallback formatting (prevents DOCX match divergence).
+      const buildFormatted = buildFormattedReference;
+
       // STEP 2: Process remaining changes
       for (const c of changes) {
         // Skip RENUMBER and INTEXT_STYLE_CONVERSION that were merged
@@ -509,20 +513,49 @@ export class CitationExportController {
               const oldFormatted = (oldValues as Record<string, unknown>)[formattedColumn] as string | undefined;
               const newFormatted = (currentRef as Record<string, unknown>)[formattedColumn] as string | undefined;
 
-              if (!oldFormatted) {
-                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - old formatted text missing for style "${styleCode}"`);
+              // Check if metadata-level fields changed (author, year, title, publisher, DOI, etc.)
+              const newValues = metadata.newValues as Record<string, unknown> | undefined;
+              const fieldsChanged = newValues && (
+                JSON.stringify(oldValues.authors) !== JSON.stringify(newValues.authors) ||
+                oldValues.year !== newValues.year ||
+                oldValues.title !== newValues.title ||
+                oldValues.journalName !== newValues.journalName ||
+                oldValues.volume !== newValues.volume ||
+                oldValues.issue !== newValues.issue ||
+                oldValues.pages !== newValues.pages ||
+                oldValues.doi !== newValues.doi ||
+                oldValues.url !== newValues.url ||
+                oldValues.publisher !== newValues.publisher
+              );
+
+              let cleanOld: string;
+              let cleanNew: string;
+
+              if (fieldsChanged) {
+                // Always use deterministic rebuild when fields changed — this captures
+                // ALL field changes (publisher, DOI, year, etc.) regardless of whether
+                // formatted text exists or reflects the changes.
+                cleanOld = buildFormatted(oldValues, styleCode);
+                cleanNew = buildFormatted(newValues!, styleCode);
+                logger.info(`[CitationExport] Fields changed — using deterministic rebuild (${styleCode})`);
+                logger.info(`[CitationExport]   old: "${cleanOld.substring(0, 100)}..."`);
+                logger.info(`[CitationExport]   new: "${cleanNew.substring(0, 100)}..."`);
+              } else if (oldFormatted && newFormatted) {
+                // No field changes but formatted text differs (e.g., AI reformatted)
+                cleanOld = oldFormatted.replace(/\*/g, '');
+                cleanNew = newFormatted.replace(/\*/g, '');
+              } else {
+                // No field changes AND formatted text missing — nothing to diff
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - no field changes and formatted text missing for style "${styleCode}"`);
                 continue;
               }
-              if (!newFormatted) {
-                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - new formatted text missing for style "${styleCode}"`);
-                continue;
-              }
-              if (oldFormatted !== newFormatted) {
+
+              if (cleanOld !== cleanNew) {
                 changesToApply.push({
                   type: 'REFERENCE_SECTION_EDIT',
-                  beforeText: oldFormatted,
-                  afterText: newFormatted,
-                  metadata: { referenceId, isReferenceSection: true }
+                  beforeText: cleanOld,
+                  afterText: cleanNew,
+                  metadata: { referenceId, isReferenceSection: true, oldValues }
                 });
               }
             }
@@ -533,12 +566,14 @@ export class CitationExportController {
         // Handle REFERENCE_STYLE_CONVERSION — route to reference section
         // Chain through reverted conversions to get original DOCX text as beforeText
         if (c.changeType === 'REFERENCE_STYLE_CONVERSION' && c.beforeText && c.afterText) {
-          const originalBeforeText = (c.citationId && revertedRefBeforeText.get(c.citationId)) || c.beforeText;
-          logger.info(`[CitationExport] Adding ref style conversion: "${originalBeforeText.substring(0, 50)}..." → "${c.afterText.substring(0, 50)}..."`);
+          // Strip asterisks (AI italic markers) from both sides — DOCX uses XML run properties for italics
+          const cleanBeforeText = ((c.citationId && revertedRefBeforeText.get(c.citationId)) || c.beforeText).replace(/\*/g, '');
+          const cleanAfterText = c.afterText.replace(/\*/g, '');
+          logger.info(`[CitationExport] Adding ref style conversion: "${cleanBeforeText.substring(0, 50)}..." → "${cleanAfterText.substring(0, 50)}..."`);
           changesToApply.push({
             type: 'REFERENCE_SECTION_EDIT',
-            beforeText: originalBeforeText,
-            afterText: c.afterText,
+            beforeText: cleanBeforeText,
+            afterText: cleanAfterText,
             metadata: c.citationId ? { referenceId: c.citationId, isReferenceSection: true } : null
           });
           continue;
@@ -594,22 +629,40 @@ export class CitationExportController {
         const styleCode = normalizeStyleCode(document.referenceListStyle);
         const formattedCol = getFormattedColumn(styleCode);
 
+        // Build map of referenceId → afterText for references modified by REFERENCE_SECTION_EDIT.
+        // Phase 2.1 of the DOCX processor replaces the paragraph text with the afterText,
+        // so Phase 4 REFERENCE_REORDER must match against the afterText (not the original column text).
+        const editedRefAfterText = new Map<string, string>();
+        for (const c of changesToApply) {
+          if (c.type === 'REFERENCE_SECTION_EDIT' && c.metadata?.referenceId) {
+            editedRefAfterText.set(c.metadata.referenceId as string, c.afterText);
+          }
+        }
+
         const referenceOrder: Array<{ position: number; contentStart: string }> = [];
         for (let i = 0; i < document.referenceListEntries.length; i++) {
           const ref = document.referenceListEntries[i];
-          // Use the post-conversion formatted text for paragraph matching
-          const refContent = (ref as Record<string, unknown>)[formattedCol] as string
+
+          // If this reference was edited (REFERENCE_SECTION_EDIT), use the afterText for matching
+          // because the DOCX paragraph will contain the afterText after Phase 2.1 applies track changes.
+          // Otherwise use the formatted column text (which matches the original DOCX paragraph).
+          const editedText = editedRefAfterText.get(ref.id);
+          const refContent = editedText
+            || (ref as Record<string, unknown>)[formattedCol] as string
             || ref.formattedApa
             || `${(ref.authors as string[] || []).join(', ')} (${ref.year}). ${ref.title}`;
 
           // Use a normalized prefix for matching
-          // TODO: Consider hash-based matching to eliminate collision risk for same-author entries
           const contentStart = refContent
+            .replace(/\*/g, '')
             .replace(/\s+/g, ' ')
             .trim()
             .substring(0, 120);
 
           referenceOrder.push({ position: i + 1, contentStart });
+          if (editedText) {
+            logger.info(`[CitationExport] REFERENCE_REORDER: ref ${ref.id.substring(0, 8)} using edited afterText for matching`);
+          }
         }
 
         changesToApply.push({
