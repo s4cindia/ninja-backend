@@ -32,6 +32,10 @@ const MAX_RECOVERY_ATTEMPTS = 3;
  * re-queues them (up to MAX_RECOVERY_ATTEMPTS times) or marks them as FAILED.
  *
  * Called both on startup and periodically by the watchdog interval.
+ *
+ * NOTE: Currently only re-queues to the citation queue. Documents stuck due to
+ * style processing failures will be marked FAILED after MAX_RECOVERY_ATTEMPTS
+ * but not re-routed to the style queue. Extend when style queue recovery is needed.
  */
 async function recoverStaleJobs(): Promise<void> {
   if (!areQueuesAvailable()) return;
@@ -130,13 +134,8 @@ async function recoverStaleJobs(): Promise<void> {
           },
         });
 
-        // Point document to the new job and reset status
-        await prisma.editorialDocument.update({
-          where: { id: doc.id },
-          data: { status: 'QUEUED', jobId: newJob.id },
-        });
-
-        // Add to BullMQ queue with the new job ID
+        // Add to BullMQ queue first — if this fails, the document stays in its
+        // current stale state and will be retried on the next watchdog cycle.
         await citationQueue.add(
           `citation-${doc.id}`,
           {
@@ -147,6 +146,12 @@ async function recoverStaleJobs(): Promise<void> {
           },
           { jobId: newJob.id, priority: 1 }
         );
+
+        // Only update the document after the queue job exists
+        await prisma.editorialDocument.update({
+          where: { id: doc.id },
+          data: { status: 'QUEUED', jobId: newJob.id },
+        });
 
         logger.info(`[Recovery] Successfully re-queued document ${doc.id} with new job ${newJob.id}`);
       } catch (err) {

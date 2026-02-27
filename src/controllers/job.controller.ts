@@ -9,6 +9,11 @@ import { workflowConfigService } from '../services/workflow/workflow-config.serv
 import { logger } from '../lib/logger';
 import { s3Service } from '../services/s3.service';
 
+/** Type guard: narrows req to include typed user with tenantId/id */
+function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
+  return !!req.user && typeof (req.user as unknown as Record<string, unknown>).tenantId === 'string';
+}
+
 /**
  * Represents the normalized structure of a job's output data.
  * Contains accessibility validation results and issue summaries.
@@ -79,7 +84,7 @@ export class JobController {
    */
   async create(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -145,7 +150,7 @@ export class JobController {
    */
   async list(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -249,7 +254,7 @@ export class JobController {
    */
   async get(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -272,7 +277,7 @@ export class JobController {
    */
   async getStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -313,7 +318,7 @@ export class JobController {
    */
   async getResults(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -385,7 +390,7 @@ export class JobController {
    */
   async cancel(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -405,7 +410,7 @@ export class JobController {
    */
   async permanentDelete(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 
@@ -424,9 +429,13 @@ export class JobController {
       // Best-effort: cancel any in-flight BullMQ work before removing DB records
       try {
         await queueService.cancelJob(jobId, tenantId);
-      } catch {
-        // Job may already be completed/failed/cancelled — safe to ignore
-        logger.debug(`[Job] Queue cancellation skipped for ${jobId} (likely already finished)`);
+      } catch (err) {
+        const isExpected = err instanceof AppError && (err.statusCode === 404 || err.statusCode === 400);
+        if (isExpected) {
+          logger.debug(`[Job] Queue cancellation skipped for ${jobId} (likely already finished)`);
+        } else {
+          logger.warn(`[Job] Unexpected queue cancellation error for ${jobId}:`, err instanceof Error ? err : undefined);
+        }
       }
 
       // Capture storage path before transaction deletes the document record
@@ -473,7 +482,7 @@ export class JobController {
    */
   async getStats(req: Request, res: Response, next: NextFunction) {
     try {
-      if (!req.user) {
+      if (!isAuthenticated(req)) {
         throw AppError.unauthorized('Not authenticated');
       }
 

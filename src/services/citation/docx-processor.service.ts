@@ -3487,27 +3487,28 @@ class DOCXProcessorService {
         const matchedIndices = new Set(sortedByNewPos.map(s => paragraphs.indexOf(s.para)));
 
         // Find the range of ALL reference paragraphs (first to last)
+        // Use deterministic offsets from the parser instead of xml.indexOf() which can
+        // match duplicate paragraph XML elsewhere in the document.
         const firstPara = paragraphs[0];
         const lastPara = paragraphs[paragraphs.length - 1];
+        const afterHeaderOffset = refHeaderIndex + refSectionMatch[0].length;
 
         if (firstPara && lastPara) {
-          const startIdx = xml.indexOf(firstPara.xml);
-          if (startIdx > 0) {
-            const endIdx = xml.indexOf(lastPara.xml) + lastPara.xml.length;
-            if (endIdx > startIdx) {
-              // Collect unmatched paragraphs that fall within the range
-              const unmatchedParas = paragraphs.filter((_p, i) => !matchedIndices.has(i));
-              const unmatchedXml = unmatchedParas.map(p => p.xml).join('');
+          const startIdx = afterHeaderOffset + firstPara.index;
+          const endIdx = afterHeaderOffset + lastPara.index + lastPara.xml.length;
+          if (startIdx > 0 && endIdx > startIdx) {
+            // Collect unmatched paragraphs that fall within the range
+            const unmatchedParas = paragraphs.filter((_p, i) => !matchedIndices.has(i));
+            const unmatchedXml = unmatchedParas.map(p => p.xml).join('');
 
-              if (unmatchedXml) {
-                logger.info(`[DOCXProcessor] Preserving ${unmatchedParas.length} unmatched paragraph(s) in reference section`);
-              }
-
-              const before = xml.substring(0, startIdx);
-              const after = xml.substring(endIdx);
-              xml = before + reorderedXml + unmatchedXml + after;
-              logger.info('[DOCXProcessor] Successfully reordered reference section');
+            if (unmatchedXml) {
+              logger.info(`[DOCXProcessor] Preserving ${unmatchedParas.length} unmatched paragraph(s) in reference section`);
             }
+
+            const before = xml.substring(0, startIdx);
+            const after = xml.substring(endIdx);
+            xml = before + reorderedXml + unmatchedXml + after;
+            logger.info('[DOCXProcessor] Successfully reordered reference section');
           }
         }
       }

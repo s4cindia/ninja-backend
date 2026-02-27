@@ -23,7 +23,7 @@ import { referenceListService, normalizeStyleCode, getFormattedColumn } from '..
 import { crossRefService, type EnrichedMetadata } from '../../services/citation/crossref.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
-import { extractCitationNumbers } from '../../utils/citation.utils';
+import { extractCitationNumbers, buildFormattedReference } from '../../utils/citation.utils';
 
 /** Type guard: true when auth middleware has populated req.user */
 function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
@@ -1142,30 +1142,38 @@ export class CitationReferenceController {
         logger.error(`[CitationReference] formatReference failed - using deterministic fallback:`, formatError instanceof Error ? formatError : undefined);
       }
 
-      // CRITICAL: If AI formatting failed, build deterministic formatted text so export can detect changes
-      // Without this, the formatted column stays unchanged and the reference section edit is lost
+      // Validate AI output: if the year field was updated but the AI text doesn't
+      // contain the correct year, the AI likely picked up a stale year from the
+      // journal/conference name. Fall back to deterministic in that case.
+      if (formatResult && updatedReference.year) {
+        const yearStr = updatedReference.year;
+        // Check the publication year portion (not embedded in journal names).
+        // Vancouver: "Journal. YYYY;", APA: "(YYYY).", Chicago: "(YYYY)", IEEE: ", YYYY."
+        const yearInText = formatResult.formatted.includes(`. ${yearStr}`) ||
+                           formatResult.formatted.includes(`(${yearStr})`) ||
+                           formatResult.formatted.includes(`, ${yearStr}.`) ||
+                           formatResult.formatted.includes(`; ${yearStr}`);
+        if (!yearInText) {
+          logger.warn(`[CitationReference] AI formatted text missing year ${yearStr} — overriding with deterministic fallback`);
+          formatResult = null;
+        }
+      }
+
+      // CRITICAL: If AI formatting failed or was invalidated, build deterministic formatted text
+      // so export can detect changes. Uses the same shared utility as the export controller.
       if (!formatResult) {
-        const parsedAuthors = parseAuthorsToArray(updatedReference.authors);
-        const authorStr = parsedAuthors.length > 0
-          ? parsedAuthors.map(a => {
-              const last = a.lastName || 'Unknown';
-              const first = a.firstName || '';
-              // Convert full names to initials for APA-style: "Emily M." → "E. M.", "Timnit" → "T."
-              const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
-                .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
-              return initials ? `${last}, ${initials}` : last;
-            }).join(', ')
-          : 'Unknown Author';
-        const yr = updatedReference.year ? ` (${updatedReference.year}).` : '.';
-        const ttl = updatedReference.title ? ` ${updatedReference.title}.` : '';
-        const jnl = updatedReference.journalName ? ` ${updatedReference.journalName}` : '';
-        const vol = updatedReference.volume ? `, ${updatedReference.volume}` : '';
-        const iss = updatedReference.issue ? `(${updatedReference.issue})` : '';
-        const pg = updatedReference.pages ? `, ${updatedReference.pages}` : '';
-        const doiStr = updatedReference.doi ? ` https://doi.org/${updatedReference.doi}` : '';
-        const pub = updatedReference.publisher && !updatedReference.journalName ? ` ${updatedReference.publisher}` : '';
-        const source = `${jnl}${pub}${vol}${iss}${pg}`;
-        const fallbackText = `${authorStr}${yr}${ttl}${source ? `${source}.` : ''}${doiStr}`.trim();
+        const fallbackText = buildFormattedReference({
+          authors: Array.isArray(updatedReference.authors) ? updatedReference.authors : [],
+          year: updatedReference.year,
+          title: updatedReference.title,
+          journalName: updatedReference.journalName,
+          volume: updatedReference.volume,
+          issue: updatedReference.issue,
+          pages: updatedReference.pages,
+          doi: updatedReference.doi,
+          url: updatedReference.url,
+          publisher: updatedReference.publisher,
+        }, styleCode);
         formatResult = { formatted: fallbackText };
         logger.warn(`[CitationReference] Using deterministic fallback: "${fallbackText.substring(0, 80)}..."`);
       }
@@ -1584,7 +1592,8 @@ export class CitationReferenceController {
             logger.warn(`[CitationReference] Reset: link rebuild failed after restore`, linkErr instanceof Error ? linkErr : undefined);
           }
         } catch (restoreErr) {
-          logger.error(`[CitationReference] Reset: failed to restore some deleted references`, restoreErr instanceof Error ? restoreErr : undefined);
+          logger.error(`[CitationReference] Reset: failed to restore deleted references — aborting reset to preserve undo metadata`, restoreErr instanceof Error ? restoreErr : undefined);
+          throw restoreErr;
         }
       }
 
@@ -2651,18 +2660,24 @@ export class CitationReferenceController {
             }
           }
 
-          // Require composite score >= 0.45 AND at least some author or year overlap.
-          // Pure title-only matches (high title, zero author/year) are unreliable.
-          const hasTitleOnly = bestScore >= 0.4 && bestScore < 0.5;
-          if (bestMatch && bestScore >= 0.45 && !hasTitleOnly) {
-            crossrefResult = bestMatch;
-            logger.info(`[CitationReference] Search matched with composite score ${bestScore.toFixed(2)}`);
-          } else if (bestMatch && bestScore >= 0.7) {
-            // Very high composite score — accept even without author overlap
+          // Compute whether author or year contributed to the score.
+          // A pure title-only match (high title, zero author/year) is unreliable
+          // because many papers share similar titles across different authors.
+          const bestResultLastNames = bestMatch ? bestMatch.authors.map(a => (a.lastName || '').toLowerCase()) : [];
+          const hasAuthorOverlap = currentLastNames.some(n => bestResultLastNames.includes(n));
+          const hasYearOverlap = !!(currentYear && bestMatch?.year &&
+            Math.abs(parseInt(currentYear) - parseInt(bestMatch.year)) <= 1);
+
+          if (bestMatch && bestScore >= 0.7) {
+            // Very high composite score — accept even without author/year overlap
             crossrefResult = bestMatch;
             logger.info(`[CitationReference] Search matched (high score) with composite score ${bestScore.toFixed(2)}`);
+          } else if (bestMatch && bestScore >= 0.45 && (hasAuthorOverlap || hasYearOverlap)) {
+            // Moderate score — require at least author or year corroboration
+            crossrefResult = bestMatch;
+            logger.info(`[CitationReference] Search matched with composite score ${bestScore.toFixed(2)} (author=${hasAuthorOverlap}, year=${hasYearOverlap})`);
           } else {
-            logger.info(`[CitationReference] No good match found. Best composite score: ${bestScore.toFixed(2)}`);
+            logger.info(`[CitationReference] No good match found. Best composite score: ${bestScore.toFixed(2)}, author=${hasAuthorOverlap}, year=${hasYearOverlap}`);
           }
         }
       }
@@ -2730,8 +2745,8 @@ export class CitationReferenceController {
     reference: { authors: unknown; year: string | null; title: string | null; journalName: string | null; volume: string | null; issue: string | null; pages: string | null; doi: string | null; publisher: string | null },
     crossref: EnrichedMetadata,
     styleCode: string = 'apa7'
-  ): Array<{ field: string; currentValue: string; correctValue: string }> {
-    const discrepancies: Array<{ field: string; currentValue: string; correctValue: string }> = [];
+  ): Array<{ field: string; currentValue: string; correctValue: string; note?: string }> {
+    const discrepancies: Array<{ field: string; currentValue: string; correctValue: string; note?: string }> = [];
 
     const normalize = (val: string | null | undefined): string => (val || '').trim().toLowerCase();
     const normalizeTitle = (val: string | null | undefined): string =>
@@ -2773,8 +2788,10 @@ export class CitationReferenceController {
         return `${last}, ${first.toLowerCase()}`;
       };
 
-      const currentFormatted = parsedCurrent.map(a => formatForComparison(a)).sort();
-      const crossrefFormatted = parsedCrossref.map(a => formatForComparison(a)).sort();
+      const currentFormatted = parsedCurrent.map(a => formatForComparison(a));
+      const crossrefFormatted = parsedCrossref.map(a => formatForComparison(a));
+
+      // Compare without sorting first — preserves author order
       const currentStr = currentFormatted.join('; ');
       const crossrefStr = crossrefFormatted.join('; ');
 
@@ -2784,10 +2801,17 @@ export class CitationReferenceController {
         const crossrefAuthors = crossref.authors.map(a =>
           [a.firstName, a.lastName].filter(Boolean).join(' ')
         );
+
+        // Distinguish missing/extra authors from mere reordering
+        const currentSorted = [...currentFormatted].sort();
+        const crossrefSorted = [...crossrefFormatted].sort();
+        const isOrderOnly = currentSorted.join('; ') === crossrefSorted.join('; ');
+
         discrepancies.push({
           field: 'authors',
           currentValue: currentAuthors.join(', '),
-          correctValue: crossrefAuthors.join(', ')
+          correctValue: crossrefAuthors.join(', '),
+          ...(isOrderOnly ? { note: 'author order differs' } : {})
         });
       }
     }

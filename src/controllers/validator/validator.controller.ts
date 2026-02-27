@@ -5,7 +5,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import prisma from '../../lib/prisma';
+import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { docxConversionService } from '../../services/document/docx-conversion.service';
@@ -296,21 +296,21 @@ export class ValidatorController {
             .split(/\s+/)
             .filter(Boolean).length;
           backfilledCompletedAt = now;
-          const updates: Promise<unknown>[] = [
+          const txOps: Prisma.PrismaPromise<unknown>[] = [
             prisma.editorialDocument.update({
               where: { id: documentId },
               data: { status: 'PARSED', wordCount: backfilledWordCount, updatedAt: now },
             }),
           ];
           if (document.jobId) {
-            updates.push(
+            txOps.push(
               prisma.job.update({
                 where: { id: document.jobId },
                 data: { status: 'COMPLETED', completedAt: now },
               })
             );
           }
-          await Promise.all(updates);
+          await prisma.$transaction(txOps);
           logger.info(`[Validator] Backfilled document ${documentId} as PARSED, wordCount=${backfilledWordCount}`);
         }
 
@@ -393,7 +393,7 @@ export class ValidatorController {
       let conversionCompletedAt: Date | null = null;
       if (document.status === 'UPLOADED') {
         conversionCompletedAt = new Date();
-        await Promise.all([
+        await prisma.$transaction([
           prisma.editorialDocument.update({
             where: { id: documentId },
             data: {

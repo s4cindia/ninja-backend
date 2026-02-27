@@ -4,6 +4,98 @@
  */
 
 /**
+ * Build a deterministic formatted reference string from field values and style code.
+ * Used by both the export controller (DOCX track-change diffing) and the reference
+ * controller (fallback when AI formatting fails). Having a single implementation
+ * ensures both paths produce identical output, preventing DOCX match failures.
+ */
+export function buildFormattedReference(vals: Record<string, unknown>, style: string): string {
+  const authArr = Array.isArray(vals.authors) ? (vals.authors as string[]) : [];
+  const yr = vals.year ? String(vals.year) : '';
+  const ttl = vals.title ? String(vals.title) : '';
+  const jnl = vals.journalName ? String(vals.journalName) : '';
+  const vol = vals.volume ? String(vals.volume) : '';
+  const iss = vals.issue ? String(vals.issue) : '';
+  const pg = vals.pages ? String(vals.pages) : '';
+  const doiStr = vals.doi ? String(vals.doi) : '';
+  const urlStr = vals.url ? String(vals.url) : '';
+  const pub = vals.publisher ? String(vals.publisher) : '';
+
+  if (style === 'vancouver' || style === 'ama') {
+    const authorStr = authArr.length > 0
+      ? authArr.map(a => String(a).trim()).join(', ')
+      : 'Unknown Author';
+    const source = jnl ? `${jnl}. ${yr}` : yr;
+    const volIssPg = vol
+      ? `;${vol}${iss ? `(${iss})` : ''}${pg ? `:${pg}` : ''}`
+      : (pg ? `:${pg}` : '');
+    const doiPart = doiStr ? ` doi: ${doiStr}` : (urlStr ? ` Available from: ${urlStr}` : '');
+    const pubPart = pub ? ` ${pub}.` : '';
+    return `${authorStr}. ${ttl}. ${source}${volIssPg}.${pubPart}${doiPart}`.trim();
+  } else if (style === 'apa7') {
+    const authorStr = authArr.length > 0
+      ? authArr.map((a: string) => {
+          const trimmed = String(a).trim();
+          if (trimmed.includes(',')) return trimmed;
+          const parts = trimmed.split(/\s+/);
+          if (parts.length === 1) return parts[0];
+          const lastName = parts[0];
+          const initials = parts.slice(1).map(p => `${p.charAt(0)}.`).join(' ');
+          return `${lastName}, ${initials}`;
+        }).join(', ')
+      : 'Unknown Author';
+    const source = jnl ? `${jnl}` : '';
+    const volPart = vol ? `, ${vol}` : '';
+    const issPart = iss ? `(${iss})` : '';
+    const pgPart = pg ? `, ${pg}` : '';
+    const doiPart = doiStr ? ` https://doi.org/${doiStr}` : (urlStr ? ` ${urlStr}` : '');
+    const pubPart = pub ? ` ${pub}.` : '';
+    return `${authorStr} (${yr}). ${ttl}. ${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
+  } else if (style === 'chicago17' || style.startsWith('chicago')) {
+    const authorStr = authArr.length > 0
+      ? authArr.map(a => String(a).trim()).join(', ')
+      : 'Unknown Author';
+    const volPart = vol ? ` ${vol}` : '';
+    const issPart = iss ? `, no. ${iss}` : '';
+    const yrPart = yr ? ` (${yr})` : '';
+    const pgPart = pg ? `: ${pg}` : '';
+    const doiPart = doiStr ? ` https://doi.org/${doiStr}.` : (urlStr ? ` ${urlStr}.` : '');
+    const pubPart = pub ? ` ${pub}.` : '';
+    return `${authorStr}. "${ttl}." ${jnl}${volPart}${issPart}${yrPart}${pgPart}.${pubPart}${doiPart}`.trim();
+  } else if (style === 'ieee') {
+    const authorStr = authArr.length > 0
+      ? authArr.map((a: string) => {
+          const trimmed = String(a).trim();
+          const parts = trimmed.split(/\s+/);
+          if (parts.length === 1) return parts[0];
+          const lastName = parts[0];
+          const initials = parts.slice(1).map(p => `${p.charAt(0)}.`).join(' ');
+          return `${initials} ${lastName}`;
+        }).join(', ')
+      : 'Unknown Author';
+    const volPart = vol ? `vol. ${vol}` : '';
+    const issPart = iss ? `no. ${iss}` : '';
+    const pgPart = pg ? `pp. ${pg}` : '';
+    const fmtParts = [volPart, issPart, pgPart, yr].filter(Boolean).join(', ');
+    const doiPart = doiStr ? ` doi: ${doiStr}` : (urlStr ? ` [Online]. Available: ${urlStr}` : '');
+    const pubPart = pub ? ` ${pub}.` : '';
+    return `${authorStr}, "${ttl}," ${jnl}, ${fmtParts}.${pubPart}${doiPart}`.trim();
+  } else {
+    // Generic / APA-like fallback
+    const authorStr = authArr.length > 0
+      ? authArr.map(a => String(a).trim()).join(', ')
+      : 'Unknown Author';
+    const source = jnl ? ` ${jnl}` : '';
+    const volPart = vol ? `, ${vol}` : '';
+    const issPart = iss ? `(${iss})` : '';
+    const pgPart = pg ? `, ${pg}` : '';
+    const doiPart = doiStr ? ` https://doi.org/${doiStr}` : (urlStr ? ` ${urlStr}` : '');
+    const pubPart = pub ? ` ${pub}.` : '';
+    return `${authorStr} (${yr}). ${ttl}.${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
+  }
+}
+
+/**
  * Extract sorted number array from citation text like "(1, 2)", "[3-5]", "(2–4)".
  * Handles brackets, parentheses, comma-separated lists, and hyphen/en-dash ranges.
  */

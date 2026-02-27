@@ -16,7 +16,7 @@ import { docxProcessorService } from '../../services/citation/docx-processor.ser
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { resolveDocumentSimple } from './document-resolver';
-import { buildRefIdToNumberMap, formatCitationWithChanges, citationNumbersMatch } from '../../utils/citation.utils';
+import { buildRefIdToNumberMap, formatCitationWithChanges, citationNumbersMatch, buildFormattedReference } from '../../utils/citation.utils';
 
 export class CitationExportController {
   /**
@@ -481,95 +481,9 @@ export class CitationExportController {
         // own beforeText is correct — it will be added in the loop below
       }
 
-      // Build deterministic formatted text from reference fields.
-      // Extracted outside the loop to avoid re-creating the closure on every iteration.
-      const buildFormatted = (vals: Record<string, unknown>, style: string) => {
-        const authArr = Array.isArray(vals.authors) ? (vals.authors as string[]) : [];
-        const yr = vals.year ? String(vals.year) : '';
-        const ttl = vals.title ? String(vals.title) : '';
-        const jnl = vals.journalName ? String(vals.journalName) : '';
-        const vol = vals.volume ? String(vals.volume) : '';
-        const iss = vals.issue ? String(vals.issue) : '';
-        const pg = vals.pages ? String(vals.pages) : '';
-        const doiStr = vals.doi ? String(vals.doi) : '';
-        const urlStr = vals.url ? String(vals.url) : '';
-        const pub = vals.publisher ? String(vals.publisher) : '';
-
-        // URL is emitted as a fallback when DOI is absent, so URL-only edits
-        // still produce a visible diff in the formatted reference.
-
-        if (style === 'vancouver' || style === 'ama') {
-          const authorStr = authArr.length > 0
-            ? authArr.map(a => String(a).trim()).join(', ')
-            : 'Unknown Author';
-          const source = jnl ? `${jnl}. ${yr}` : yr;
-          const volIssPg = vol
-            ? `;${vol}${iss ? `(${iss})` : ''}${pg ? `:${pg}` : ''}`
-            : (pg ? `:${pg}` : '');
-          const doiPart = doiStr ? ` doi: ${doiStr}` : (urlStr ? ` Available from: ${urlStr}` : '');
-          const pubPart = pub ? ` ${pub}.` : '';
-          return `${authorStr}. ${ttl}. ${source}${volIssPg}.${pubPart}${doiPart}`.trim();
-        } else if (style === 'apa7') {
-          const authorStr = authArr.length > 0
-            ? authArr.map((a: string) => {
-                const trimmed = String(a).trim();
-                if (trimmed.includes(',')) return trimmed;
-                const parts = trimmed.split(/\s+/);
-                if (parts.length === 1) return parts[0];
-                const lastName = parts[0];
-                const initials = parts.slice(1).map(p => `${p.charAt(0)}.`).join(' ');
-                return `${lastName}, ${initials}`;
-              }).join(', ')
-            : 'Unknown Author';
-          const source = jnl ? `${jnl}` : '';
-          const volPart = vol ? `, ${vol}` : '';
-          const issPart = iss ? `(${iss})` : '';
-          const pgPart = pg ? `, ${pg}` : '';
-          const doiPart = doiStr ? ` https://doi.org/${doiStr}` : (urlStr ? ` ${urlStr}` : '');
-          const pubPart = pub ? ` ${pub}.` : '';
-          return `${authorStr} (${yr}). ${ttl}. ${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
-        } else if (style === 'chicago17' || style.startsWith('chicago')) {
-          const authorStr = authArr.length > 0
-            ? authArr.map(a => String(a).trim()).join(', ')
-            : 'Unknown Author';
-          const volPart = vol ? ` ${vol}` : '';
-          const issPart = iss ? `, no. ${iss}` : '';
-          const yrPart = yr ? ` (${yr})` : '';
-          const pgPart = pg ? `: ${pg}` : '';
-          const doiPart = doiStr ? ` https://doi.org/${doiStr}.` : (urlStr ? ` ${urlStr}.` : '');
-          const pubPart = pub ? ` ${pub}.` : '';
-          return `${authorStr}. "${ttl}." ${jnl}${volPart}${issPart}${yrPart}${pgPart}.${pubPart}${doiPart}`.trim();
-        } else if (style === 'ieee') {
-          const authorStr = authArr.length > 0
-            ? authArr.map((a: string) => {
-                const trimmed = String(a).trim();
-                const parts = trimmed.split(/\s+/);
-                if (parts.length === 1) return parts[0];
-                const lastName = parts[0];
-                const initials = parts.slice(1).map(p => `${p.charAt(0)}.`).join(' ');
-                return `${initials} ${lastName}`;
-              }).join(', ')
-            : 'Unknown Author';
-          const volPart = vol ? `vol. ${vol}` : '';
-          const issPart = iss ? `no. ${iss}` : '';
-          const pgPart = pg ? `pp. ${pg}` : '';
-          const parts = [volPart, issPart, pgPart, yr].filter(Boolean).join(', ');
-          const doiPart = doiStr ? ` doi: ${doiStr}` : (urlStr ? ` [Online]. Available: ${urlStr}` : '');
-          const pubPart = pub ? ` ${pub}.` : '';
-          return `${authorStr}, "${ttl}," ${jnl}, ${parts}.${pubPart}${doiPart}`.trim();
-        } else {
-          const authorStr = authArr.length > 0
-            ? authArr.map(a => String(a).trim()).join(', ')
-            : 'Unknown Author';
-          const source = jnl ? ` ${jnl}` : '';
-          const volPart = vol ? `, ${vol}` : '';
-          const issPart = iss ? `(${iss})` : '';
-          const pgPart = pg ? `, ${pg}` : '';
-          const doiPart = doiStr ? ` https://doi.org/${doiStr}` : (urlStr ? ` ${urlStr}` : '');
-          const pubPart = pub ? ` ${pub}.` : '';
-          return `${authorStr} (${yr}). ${ttl}.${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
-        }
-      };
+      // Deterministic formatting — delegates to shared utility to stay in sync with
+      // the reference controller's fallback formatting (prevents DOCX match divergence).
+      const buildFormatted = buildFormattedReference;
 
       // STEP 2: Process remaining changes
       for (const c of changes) {
@@ -599,44 +513,41 @@ export class CitationExportController {
               const oldFormatted = (oldValues as Record<string, unknown>)[formattedColumn] as string | undefined;
               const newFormatted = (currentRef as Record<string, unknown>)[formattedColumn] as string | undefined;
 
-              if (!oldFormatted) {
-                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - old formatted text missing for style "${styleCode}"`);
-                continue;
-              }
-              if (!newFormatted) {
-                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - new formatted text missing for style "${styleCode}"`);
-                continue;
-              }
-              // Strip asterisks (AI italic markers) — DOCX uses XML run properties for italics, not asterisks
-              let cleanOld = oldFormatted.replace(/\*/g, '');
-              let cleanNew = newFormatted.replace(/\*/g, '');
+              // Check if metadata-level fields changed (author, year, title, publisher, DOI, etc.)
+              const newValues = metadata.newValues as Record<string, unknown> | undefined;
+              const fieldsChanged = newValues && (
+                JSON.stringify(oldValues.authors) !== JSON.stringify(newValues.authors) ||
+                oldValues.year !== newValues.year ||
+                oldValues.title !== newValues.title ||
+                oldValues.journalName !== newValues.journalName ||
+                oldValues.volume !== newValues.volume ||
+                oldValues.issue !== newValues.issue ||
+                oldValues.pages !== newValues.pages ||
+                oldValues.doi !== newValues.doi ||
+                oldValues.url !== newValues.url ||
+                oldValues.publisher !== newValues.publisher
+              );
 
-              // If formatted text looks identical but metadata shows field changes,
-              // rebuild formatted text deterministically to ensure the change is captured.
-              // This handles cases where AI formatting produces identical output despite different input
-              // (e.g., "Emily M. Bender" and "Bender, E. M." both → "Bender, E." in APA).
-              if (cleanOld === cleanNew) {
-                const newValues = metadata.newValues as Record<string, unknown> | undefined;
-                const fieldsChanged = newValues && (
-                  JSON.stringify(oldValues.authors) !== JSON.stringify(newValues.authors) ||
-                  oldValues.year !== newValues.year ||
-                  oldValues.title !== newValues.title ||
-                  oldValues.journalName !== newValues.journalName ||
-                  oldValues.volume !== newValues.volume ||
-                  oldValues.issue !== newValues.issue ||
-                  oldValues.pages !== newValues.pages ||
-                  oldValues.doi !== newValues.doi ||
-                  oldValues.url !== newValues.url ||
-                  oldValues.publisher !== newValues.publisher
-                );
+              let cleanOld: string;
+              let cleanNew: string;
 
-                if (fieldsChanged) {
-                  cleanOld = buildFormatted(oldValues, styleCode);
-                  cleanNew = buildFormatted(newValues!, styleCode);
-                  logger.info(`[CitationExport] Formatted text identical but fields changed — using deterministic rebuild (${styleCode})`);
-                  logger.info(`[CitationExport]   old: "${cleanOld.substring(0, 100)}..."`);
-                  logger.info(`[CitationExport]   new: "${cleanNew.substring(0, 100)}..."`);
-                }
+              if (fieldsChanged) {
+                // Always use deterministic rebuild when fields changed — this captures
+                // ALL field changes (publisher, DOI, year, etc.) regardless of whether
+                // formatted text exists or reflects the changes.
+                cleanOld = buildFormatted(oldValues, styleCode);
+                cleanNew = buildFormatted(newValues!, styleCode);
+                logger.info(`[CitationExport] Fields changed — using deterministic rebuild (${styleCode})`);
+                logger.info(`[CitationExport]   old: "${cleanOld.substring(0, 100)}..."`);
+                logger.info(`[CitationExport]   new: "${cleanNew.substring(0, 100)}..."`);
+              } else if (oldFormatted && newFormatted) {
+                // No field changes but formatted text differs (e.g., AI reformatted)
+                cleanOld = oldFormatted.replace(/\*/g, '');
+                cleanNew = newFormatted.replace(/\*/g, '');
+              } else {
+                // No field changes AND formatted text missing — nothing to diff
+                logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - no field changes and formatted text missing for style "${styleCode}"`);
+                continue;
               }
 
               if (cleanOld !== cleanNew) {
@@ -655,13 +566,13 @@ export class CitationExportController {
         // Handle REFERENCE_STYLE_CONVERSION — route to reference section
         // Chain through reverted conversions to get original DOCX text as beforeText
         if (c.changeType === 'REFERENCE_STYLE_CONVERSION' && c.beforeText && c.afterText) {
-          const originalBeforeText = (c.citationId && revertedRefBeforeText.get(c.citationId)) || c.beforeText;
-          // Strip asterisks (AI italic markers) from afterText — DOCX uses XML run properties for italics
+          // Strip asterisks (AI italic markers) from both sides — DOCX uses XML run properties for italics
+          const cleanBeforeText = ((c.citationId && revertedRefBeforeText.get(c.citationId)) || c.beforeText).replace(/\*/g, '');
           const cleanAfterText = c.afterText.replace(/\*/g, '');
-          logger.info(`[CitationExport] Adding ref style conversion: "${originalBeforeText.substring(0, 50)}..." → "${cleanAfterText.substring(0, 50)}..."`);
+          logger.info(`[CitationExport] Adding ref style conversion: "${cleanBeforeText.substring(0, 50)}..." → "${cleanAfterText.substring(0, 50)}..."`);
           changesToApply.push({
             type: 'REFERENCE_SECTION_EDIT',
-            beforeText: originalBeforeText,
+            beforeText: cleanBeforeText,
             afterText: cleanAfterText,
             metadata: c.citationId ? { referenceId: c.citationId, isReferenceSection: true } : null
           });

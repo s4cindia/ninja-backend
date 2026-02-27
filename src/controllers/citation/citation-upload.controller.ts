@@ -1543,15 +1543,8 @@ export class CitationUploadController {
         where: { jobId }
       });
 
-      // Clean up S3 file before DB transaction
-      if (document?.storagePath) {
-        try {
-          await s3Service.deleteFile(document.storagePath);
-          logger.info(`[Citation Upload] Deleted S3 file: ${document.storagePath}`);
-        } catch (s3Error) {
-          logger.warn(`[Citation Upload] Failed to delete S3 file ${document.storagePath}:`, s3Error);
-        }
-      }
+      // Capture storage path before transaction deletes the record
+      const storagePath = document?.storagePath;
 
       // Delete in correct order to respect foreign key constraints
       await prisma.$transaction(async (tx) => {
@@ -1594,6 +1587,16 @@ export class CitationUploadController {
           where: { id: jobId }
         });
       });
+
+      // Clean up S3 file after DB transaction succeeds
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+          logger.info(`[Citation Upload] Deleted S3 file: ${storagePath}`);
+        } catch (s3Error) {
+          logger.warn(`[Citation Upload] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
 
       logger.info(`[Citation Upload] Deleted job ${jobId} and associated data`);
 
