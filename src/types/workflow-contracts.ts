@@ -100,11 +100,40 @@ export type ConfidenceLevel = typeof ConfidenceLevel[keyof typeof ConfidenceLeve
 // ============================================================
 
 /**
- * Per-gate approval policy for batch agentic workflows.
- * 'auto-accept' — gate is skipped (machine approves automatically).
- * 'require-manual' — gate pauses for human review (default behavior).
+ * Phase 1: simple per-gate mode string.
+ * Phase 2: extended to support conditional mode with threshold/type conditions.
  */
-export type BatchGatePolicy = 'auto-accept' | 'require-manual';
+export type GatePolicyMode = 'auto-accept' | 'conditional' | 'require-manual';
+
+/**
+ * Conditions evaluated when gate mode is 'conditional'.
+ * All specified conditions must pass for the gate to be auto-approved.
+ *
+ * minConfidence  — average audit score (0.0–1.0) must meet or exceed this value.
+ * issueTypeRules — per-issue-category rules; ALL issues must be covered for auto-approval.
+ *                  'auto-accept' | 'auto-reject' — handled automatically.
+ *                  'manual'                       — forces human review.
+ */
+export interface PolicyConditions {
+  minConfidence?: number;  // 0.0–1.0
+  issueTypeRules?: Record<string, 'auto-accept' | 'auto-reject' | 'manual'>;
+}
+
+/**
+ * Phase 2 gate policy object.
+ * Used when more than a simple on/off decision is needed.
+ */
+export interface ConditionalGatePolicy {
+  mode: GatePolicyMode;
+  conditions?: PolicyConditions;
+}
+
+/**
+ * Per-gate approval policy for batch agentic workflows.
+ * Phase 1 (string):  'auto-accept' | 'require-manual'
+ * Phase 2 (object):  { mode: 'conditional', conditions: { minConfidence?, issueTypeRules? } }
+ */
+export type BatchGatePolicy = 'auto-accept' | 'require-manual' | ConditionalGatePolicy;
 
 /**
  * Error handling strategy when a workflow within a batch fails.
@@ -422,7 +451,23 @@ export const acrSignoffSchema = z.object({
   notes: z.string().optional(),
 });
 
-export const batchGatePolicySchema = z.enum(['auto-accept', 'require-manual']);
+export const gatePolicyModeSchema = z.enum(['auto-accept', 'conditional', 'require-manual']);
+
+export const policyConditionsSchema = z.object({
+  minConfidence: z.number().min(0).max(1).optional(),
+  issueTypeRules: z.record(z.string(), z.enum(['auto-accept', 'auto-reject', 'manual'])).optional(),
+});
+
+export const conditionalGatePolicySchema = z.object({
+  mode: gatePolicyModeSchema,
+  conditions: policyConditionsSchema.optional(),
+});
+
+// Phase 1 backward-compatible: string or Phase 2 object
+export const batchGatePolicySchema = z.union([
+  z.enum(['auto-accept', 'require-manual']),
+  conditionalGatePolicySchema,
+]);
 
 export const batchErrorStrategySchema = z.enum(['pause-batch', 'continue-others', 'fail-batch']);
 
@@ -436,12 +481,22 @@ export const batchAutoApprovalPolicySchema = z.object({
   onError: batchErrorStrategySchema,
 });
 
+export const acrBatchConfigSchema = z.object({
+  vendor: z.string().min(1, 'Vendor name is required'),
+  contactEmail: z.string().email('Valid email required'),
+  edition: z.enum(['VPAT2.5-WCAG', 'VPAT2.5-508', 'VPAT2.5-EU', 'VPAT2.5-INT']).default('VPAT2.5-WCAG'),
+  mode: z.enum(['individual', 'aggregate']).default('individual'),
+  aggregationStrategy: z.enum(['conservative', 'optimistic']).default('conservative'),
+});
+
+export type AcrBatchConfig = z.infer<typeof acrBatchConfigSchema>;
+
 export const startBatchSchema = z.object({
   name: z.string().min(1, 'Batch name is required'),
   fileIds: z.array(z.string().min(1)).min(1, 'At least one file required'),
   concurrency: z.number().int().min(1).max(10).default(3),
-  vpatEditions: z.array(z.string()).optional(),
   autoApprovalPolicy: batchAutoApprovalPolicySchema.optional(),
+  acrConfig: acrBatchConfigSchema.optional(),
 });
 
 export const workflowParamsSchema = z.object({

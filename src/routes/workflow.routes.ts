@@ -22,6 +22,9 @@ router.post('/:id/cancel', workflowController.cancelWorkflow.bind(workflowContro
 router.post('/:id/retry', workflowController.retryWorkflow.bind(workflowController));
 router.get('/:id/timeline', workflowController.getTimeline.bind(workflowController));
 
+// Remediated file download
+router.get('/:id/download', workflowController.downloadRemediatedFile.bind(workflowController));
+
 // HITL gates
 router.post('/:id/hitl/ai-review', workflowController.submitAIReview.bind(workflowController));
 router.post('/:id/hitl/remediation-fix', workflowController.submitRemediationFix.bind(workflowController));
