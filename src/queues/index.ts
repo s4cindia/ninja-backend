@@ -2,7 +2,6 @@ import { Queue, QueueEvents } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
 import { getRedisUrl } from '../config/redis.config';
 import { logger } from '../lib/logger';
-import os from 'os';
 
 // Queue prefix isolates queues per environment when multiple developers
 // share the same Redis instance (e.g., Upstash). Each machine gets its own
