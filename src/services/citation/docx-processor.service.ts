@@ -22,6 +22,59 @@ import { normalizeSuperscripts } from '../../utils/unicode';
 // InTextCitation type reserved for future use
 import { referenceStyleUpdaterService } from './reference-style-updater.service';
 
+// Mammoth style map for academic/journal DOCX files
+// Maps custom Word styles (used by publishers like Mattioli, Elsevier, etc.) to semantic HTML
+const MAMMOTH_STYLE_MAP = [
+  // === Paragraph styles ===
+  // Article structure
+  "p[style-name='AT'] => h1:fresh",
+  "p[style-name='Title'] => h1.title:fresh",
+  "p[style-name='H1'] => h2:fresh",
+  "p[style-name='AH'] => h2:fresh",
+  "p[style-name='BH'] => h3:fresh",
+  "p[style-name='CH'] => h4:fresh",
+  "p[style-name='REFH'] => h3:fresh",
+  "p[style-name='Heading 1'] => h1:fresh",
+  "p[style-name='Heading 2'] => h2:fresh",
+  "p[style-name='Heading 3'] => h3:fresh",
+  "p[style-name='Heading 4'] => h4:fresh",
+  // Metadata
+  "p[style-name='NMP'] => p.journal-meta:fresh",
+  "p[style-name='AN'] => p.article-note:fresh",
+  "p[style-name='AAU'] => p.authors:fresh",
+  "p[style-name='AAFF'] => p.affiliations:fresh",
+  "p[style-name='ABS'] => p.abstract:fresh",
+  "p[style-name='Abstract'] => p.abstract:fresh",
+  "p[style-name='KW'] => p.keywords:fresh",
+  // Body text
+  "p[style-name='TX'] => p:fresh",
+  "p[style-name='TXL'] => p:fresh",
+  "p[style-name='BP'] => p:fresh",
+  "p[style-name='FP'] => p:fresh",
+  // References
+  "p[style-name='REF'] => p.reference:fresh",
+  "p[style-name='NR'] => p.reference:fresh",
+  // Figures / captions
+  "p[style-name='FIG'] => p.figure:fresh",
+  "p[style-name='FGC'] => p.figure-caption:fresh",
+  "p[style-name='FC'] => p.figure-caption:fresh",
+  // Other academic sections
+  "p[style-name='COI'] => p:fresh",
+  "p[style-name='ADR'] => p:fresh",
+  "p[style-name='ADRF'] => p:fresh",
+  // === Run (character) styles ===
+  "r[style-name='bold'] => strong",
+  "r[style-name='italic'] => em",
+  "r[style-name='superscript'] => sup",
+  "r[style-name='italicsuperscript'] => sup",
+  "r[style-name='bolditalic'] => strong",
+  "r[style-name='FGN'] => strong",
+  "r[style-name='FigureCitation'] => em",
+  // Built-in formatting (mammoth defaults, listed explicitly for clarity)
+  "b => strong",
+  "i => em",
+];
+
 // Security constants for DOCX processing
 // Aligned with memoryConfig for consistent limits
 const SECURITY_LIMITS = {
@@ -511,7 +564,10 @@ class DOCXProcessorService {
         logger.info(`[DOCX Processor] Extracting text in-memory (${Math.round(buffer.length / 1024)}KB)`);
 
         const textResult = await mammoth.extractRawText({ buffer });
-        const htmlResult = await mammoth.convertToHtml({ buffer });
+        const htmlResult = await mammoth.convertToHtml({ buffer }, {
+          includeDefaultStyleMap: true,
+          styleMap: MAMMOTH_STYLE_MAP,
+        });
 
         recordSuccess();
 
@@ -544,7 +600,10 @@ class DOCXProcessorService {
 
         // Process using file path instead of buffer (reduces memory footprint)
         const textResult = await mammoth.extractRawText({ path: tempFile.path });
-        const htmlResult = await mammoth.convertToHtml({ path: tempFile.path });
+        const htmlResult = await mammoth.convertToHtml({ path: tempFile.path }, {
+          includeDefaultStyleMap: true,
+          styleMap: MAMMOTH_STYLE_MAP,
+        });
 
         recordSuccess();
 
@@ -3420,25 +3479,34 @@ class DOCXProcessorService {
       }).join('');
 
       // Replace the original paragraphs with reordered ones
-      // Find the range of original paragraphs
+      // IMPORTANT: Include ALL paragraphs in the range, not just matched ones.
+      // Unmatched paragraphs (e.g., modified by REFERENCE_SECTION_EDIT track changes)
+      // must be preserved — append them after the matched/reordered paragraphs.
       if (sortedByNewPos.length > 0) {
-        const firstPara = paragraphs.find(p =>
-          sortedByNewPos.some(s => s.para.content === p.content)
-        );
-        const lastPara = [...paragraphs].reverse().find(p =>
-          sortedByNewPos.some(s => s.para.content === p.content)
-        );
+        const matchedXmlSet = new Set(sortedByNewPos.map(s => s.para.xml));
+
+        // Find the range of ALL reference paragraphs (first to last)
+        const firstPara = paragraphs[0];
+        const lastPara = paragraphs[paragraphs.length - 1];
 
         if (firstPara && lastPara) {
-          // Replace in the XML
           const startIdx = xml.indexOf(firstPara.xml);
           if (startIdx > 0) {
-            // Find the end of the last paragraph
             const endIdx = xml.indexOf(lastPara.xml) + lastPara.xml.length;
             if (endIdx > startIdx) {
+              // Collect unmatched paragraphs that fall within the range
+              const unmatchedXml = paragraphs
+                .filter(p => !matchedXmlSet.has(p.xml))
+                .map(p => p.xml)
+                .join('');
+
+              if (unmatchedXml) {
+                logger.info(`[DOCXProcessor] Preserving ${paragraphs.filter(p => !matchedXmlSet.has(p.xml)).length} unmatched paragraph(s) in reference section`);
+              }
+
               const before = xml.substring(0, startIdx);
               const after = xml.substring(endIdx);
-              xml = before + reorderedXml + after;
+              xml = before + reorderedXml + unmatchedXml + after;
               logger.info('[DOCXProcessor] Successfully reordered reference section');
             }
           }

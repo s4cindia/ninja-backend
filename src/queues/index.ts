@@ -2,6 +2,17 @@ import { Queue, QueueEvents } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
 import { getRedisUrl } from '../config/redis.config';
 import { logger } from '../lib/logger';
+import os from 'os';
+
+// Queue prefix isolates queues per environment when multiple developers
+// share the same Redis instance (e.g., Upstash). Each machine gets its own
+// set of queues so workers don't steal jobs from other environments.
+// Set QUEUE_PREFIX in .env to override (e.g., "staging", "prod").
+// In production, uses BullMQ's default prefix ("bull") so existing queues continue working.
+// In development, uses the machine's hostname for isolation.
+const QUEUE_PREFIX = process.env.QUEUE_PREFIX || (process.env.NODE_ENV === 'production' ? 'bull' : os.hostname());
+
+export { QUEUE_PREFIX };
 
 export const QUEUE_NAMES = {
   ACCESSIBILITY: 'accessibility-validation',
@@ -166,30 +177,33 @@ function ensureQueuesInitialized(): void {
     return;
   }
 
+  const prefix = QUEUE_PREFIX;
+
   _accessibilityQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.ACCESSIBILITY,
-    { connection, defaultJobOptions }
+    { connection, defaultJobOptions, prefix }
   );
 
   _vpatQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.VPAT,
-    { connection, defaultJobOptions }
+    { connection, defaultJobOptions, prefix }
   );
 
   _fileProcessingQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.FILE_PROCESSING,
-    { connection, defaultJobOptions }
+    { connection, defaultJobOptions, prefix }
   );
 
   _batchQueue = new Queue<BatchJobData, BatchJobResult>(
     QUEUE_NAMES.BATCH_REMEDIATION,
-    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 } }
+    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 }, prefix }
   );
 
   _batchProcessingQueue = new Queue<BatchProcessingJobData, BatchProcessingJobResult>(
     QUEUE_NAMES.BATCH_PROCESSING,
     {
       connection,
+      prefix,
       defaultJobOptions: {
         attempts: 1,
         removeOnComplete: {
@@ -204,37 +218,37 @@ function ensureQueuesInitialized(): void {
   );
 
   _accessibilityQueueEvents = new QueueEvents(QUEUE_NAMES.ACCESSIBILITY, {
-    connection,
+    connection, prefix,
   });
 
   _vpatQueueEvents = new QueueEvents(QUEUE_NAMES.VPAT, {
-    connection,
+    connection, prefix,
   });
 
   _fileProcessingQueueEvents = new QueueEvents(QUEUE_NAMES.FILE_PROCESSING, {
-    connection,
+    connection, prefix,
   });
 
   _citationQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.CITATION_PROCESSING,
-    { connection, defaultJobOptions }
+    { connection, defaultJobOptions, prefix }
   );
 
   _citationQueueEvents = new QueueEvents(QUEUE_NAMES.CITATION_PROCESSING, {
-    connection,
+    connection, prefix,
   });
 
   _styleQueue = new Queue<JobData, JobResult>(
     QUEUE_NAMES.STYLE_PROCESSING,
-    { connection, defaultJobOptions }
+    { connection, defaultJobOptions, prefix }
   );
 
   _styleQueueEvents = new QueueEvents(QUEUE_NAMES.STYLE_PROCESSING, {
-    connection,
+    connection, prefix,
   });
 
   _initialized = true;
-  logger.info('📦 BullMQ queues initialized with TLS support');
+  logger.info(`📦 BullMQ queues initialized (prefix: "${prefix}")`);
 }
 
 export function getAccessibilityQueue(): Queue<JobData, JobResult> {

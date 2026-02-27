@@ -20,6 +20,7 @@ import { logger } from '../../lib/logger';
 
 import { referenceReorderingService } from '../../services/citation/reference-reordering.service';
 import { referenceListService, normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
+import { crossRefService, type EnrichedMetadata } from '../../services/citation/crossref.service';
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 import { extractCitationNumbers } from '../../utils/citation.utils';
@@ -50,8 +51,41 @@ function parseAuthorsToArray(authors: Prisma.JsonValue): Array<{ firstName?: str
 
   return authors.map(a => {
     if (typeof a === 'string') {
-      // Simple string author - treat as last name
-      return { lastName: a };
+      // Parse string author into firstName/lastName
+      // "Floridi, L." or "Floridi, Luciano" → lastName: "Floridi", firstName: "L." or "Luciano"
+      // "Luciano Floridi" → lastName: "Floridi", firstName: "Luciano"
+      // "Floridi" → lastName: "Floridi"
+      const trimmed = a.trim();
+      if (trimmed.includes(',')) {
+        const [last, ...rest] = trimmed.split(',');
+        return { lastName: last.trim(), firstName: rest.join(',').trim() || undefined };
+      }
+      const parts = trimmed.split(/\s+/);
+      if (parts.length === 1) {
+        return { lastName: parts[0] };
+      }
+      // Check if trailing word(s) are initials (e.g., "Bommasani R", "Brown TB", "Bender EM")
+      // Initials: single uppercase letter, 2-3 uppercase letters (concatenated), or dotted (A.B.)
+      const lastPart = parts[parts.length - 1];
+      const isInitials = /^[A-Z]\.?$/.test(lastPart)           // "R" or "R."
+        || /^[A-Z]{2,3}$/.test(lastPart)                       // "TB", "EM", "ARM"
+        || /^([A-Z]\.){1,3}$/.test(lastPart)                   // "T.B.", "E.M."
+        || /^[A-Z]\.[A-Z]\.?$/.test(lastPart);                 // "T.B" (missing trailing dot)
+      if (isInitials) {
+        // Trailing initials: "Bommasani R" → lastName: Bommasani, firstName: R
+        return { lastName: parts[0], firstName: parts.slice(1).join(' ') || undefined };
+      }
+      // Multiple words without comma: last word is the last name (e.g., "Luciano Floridi" → Floridi)
+      // Exception: if second-to-last word is a particle (van, de, von, etc.), include it
+      const particles = new Set(['van', 'von', 'de', 'del', 'della', 'di', 'la', 'le', 'el', 'al', 'bin', 'ibn']);
+      let lastNameStart = parts.length - 1;
+      while (lastNameStart > 0 && particles.has(parts[lastNameStart - 1].toLowerCase())) {
+        lastNameStart--;
+      }
+      return {
+        lastName: parts.slice(lastNameStart).join(' '),
+        firstName: parts.slice(0, lastNameStart).join(' ') || undefined
+      };
     }
     if (a && typeof a === 'object' && 'lastName' in a) {
       return {
@@ -79,14 +113,19 @@ function formatAuthorsForInTextCitation(
     return 'Unknown';
   }
 
-  // Extract last names, stripping any initials that may be included
-  // Handles: "Bommasani R" -> "Bommasani", "Bommasani, R." -> "Bommasani", "Bommasani EM" -> "Bommasani"
+  // Extract last names for in-text citation display
+  // parseAuthorsToArray now properly separates firstName/lastName, so just use lastName directly
+  // Strip trailing initials/punctuation that may still be present (e.g., "Bommasani R" → "Bommasani")
   const lastNames = authors.map(a => {
     const lastName = a.lastName || 'Unknown';
-    // Extract just the surname (first word before comma, space+initial, or space+uppercase)
-    // Pattern: Take everything before a comma, or before " X" where X is uppercase (initial)
-    const surnameMatch = lastName.match(/^([A-Za-z\-']+)/);
-    return surnameMatch ? surnameMatch[1] : lastName;
+    // If lastName contains a comma, take only the part before (e.g., "Floridi, L." → "Floridi")
+    if (lastName.includes(',')) {
+      return lastName.split(',')[0].trim();
+    }
+    // If lastName is a multi-word name (e.g., "van Gogh"), keep it as-is
+    // Only strip trailing single uppercase initials (e.g., "Bommasani R" → "Bommasani")
+    const stripped = lastName.replace(/\s+[A-Z]\.?$/, '').trim();
+    return stripped || lastName;
   });
   const style = (styleCode || 'apa').toLowerCase();
 
@@ -1007,14 +1046,85 @@ export class CitationReferenceController {
       };
 
       // Call formatReference to regenerate the formatted text
-      // On failure, continue without formatted text update but still create REFERENCE_EDIT records
+      // On failure, use deterministic fallback so the formatted column always gets updated
       let formatResult: { formatted: string } | null = null;
       try {
         formatResult = await referenceListService.formatReference(entryForFormatting, styleCode);
         logger.info(`[CitationReference] Format result received successfully`);
+
+        // POST-PROCESSING: AI (Claude Haiku) often drops middle initials when formatting authors.
+        // e.g., "Emily M. Bender" → "Bender, E." instead of "Bender, E. M."
+        // Fix: For initial-based styles (APA, IEEE), replace the author portion in the AI output
+        // with a deterministically built author string that preserves ALL initials.
+        // This runs on EVERY edit (not just author changes) because the AI reformats the entire
+        // reference and can drop initials even on title-only edits.
+        // Skip for full-name styles (Chicago, MLA) to avoid breaking their formatting.
+        const initialBasedStyles = ['apa7', 'ieee'];
+        if (formatResult && initialBasedStyles.includes(styleCode)) {
+          const parsedAuthors = parseAuthorsToArray(updatedReference.authors);
+          if (parsedAuthors.length > 0) {
+            // Build correct author string with all initials preserved (APA/IEEE style: "Last, F. M.")
+            const correctAuthorParts = parsedAuthors.map(a => {
+              const last = a.lastName || 'Unknown';
+              const first = a.firstName || '';
+              const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
+                .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
+              return initials ? `${last}, ${initials}` : last;
+            });
+            // APA uses "&" before the last author for 2+ authors
+            let correctAuthorStr: string;
+            if (correctAuthorParts.length === 1) {
+              correctAuthorStr = correctAuthorParts[0];
+            } else if (correctAuthorParts.length === 2) {
+              correctAuthorStr = `${correctAuthorParts[0]}, & ${correctAuthorParts[1]}`;
+            } else {
+              const allButLast = correctAuthorParts.slice(0, -1).join(', ');
+              correctAuthorStr = `${allButLast}, & ${correctAuthorParts[correctAuthorParts.length - 1]}`;
+            }
+
+            // Replace author portion: everything before " (YYYY)" or before the title
+            const formatted = formatResult.formatted;
+            // APA pattern: "Authors (Year). Title..."
+            const yearMatch = formatted.match(/\s*\(\d{4}[a-z]?\)/);
+            if (yearMatch && yearMatch.index !== undefined) {
+              const oldAuthorPortion = formatted.substring(0, yearMatch.index);
+              if (oldAuthorPortion !== correctAuthorStr) {
+                formatResult.formatted = correctAuthorStr + formatted.substring(yearMatch.index);
+                logger.info(`[CitationReference] Post-processed authors for ${styleCode}: "${oldAuthorPortion}" → "${correctAuthorStr}"`);
+              }
+            }
+          }
+        }
       } catch (formatError) {
-        logger.error(`[CitationReference] formatReference failed - continuing without formatted text update:`, formatError instanceof Error ? formatError : undefined);
-        // formatResult remains null, which is handled below
+        logger.error(`[CitationReference] formatReference failed - using deterministic fallback:`, formatError instanceof Error ? formatError : undefined);
+      }
+
+      // CRITICAL: If AI formatting failed, build deterministic formatted text so export can detect changes
+      // Without this, the formatted column stays unchanged and the reference section edit is lost
+      if (!formatResult) {
+        const parsedAuthors = parseAuthorsToArray(updatedReference.authors);
+        const authorStr = parsedAuthors.length > 0
+          ? parsedAuthors.map(a => {
+              const last = a.lastName || 'Unknown';
+              const first = a.firstName || '';
+              // Convert full names to initials for APA-style: "Emily M." → "E. M.", "Timnit" → "T."
+              const initials = first ? first.split(/[\s.]+/).filter(p => p.length > 0)
+                .map(p => p.length === 1 ? `${p}.` : `${p.charAt(0)}.`).join(' ') : '';
+              return initials ? `${last}, ${initials}` : last;
+            }).join(', ')
+          : 'Unknown Author';
+        const yr = updatedReference.year ? ` (${updatedReference.year}).` : '.';
+        const ttl = updatedReference.title ? ` ${updatedReference.title}.` : '';
+        const jnl = updatedReference.journalName ? ` ${updatedReference.journalName}` : '';
+        const vol = updatedReference.volume ? `, ${updatedReference.volume}` : '';
+        const iss = updatedReference.issue ? `(${updatedReference.issue})` : '';
+        const pg = updatedReference.pages ? `, ${updatedReference.pages}` : '';
+        const doiStr = updatedReference.doi ? ` https://doi.org/${updatedReference.doi}` : '';
+        const pub = updatedReference.publisher && !updatedReference.journalName ? ` ${updatedReference.publisher}` : '';
+        const source = `${jnl}${pub}${vol}${iss}${pg}`;
+        const fallbackText = `${authorStr}${yr}${ttl}${source ? `${source}.` : ''}${doiStr}`.trim();
+        formatResult = { formatted: fallbackText };
+        logger.warn(`[CitationReference] Using deterministic fallback: "${fallbackText.substring(0, 80)}..."`);
       }
 
       // Check if any field changed - store for potential revert
@@ -2194,6 +2304,361 @@ export class CitationReferenceController {
     } catch (error) {
       next(error);
     }
+  }
+
+  // ============================================
+  // Reference Validation (CrossRef)
+  // ============================================
+
+  /**
+   * POST /api/v1/citation-management/document/:documentId/reference/:referenceId/validate
+   * Validate a single reference against CrossRef database
+   *
+   * Returns field-level discrepancies between the stored reference and CrossRef metadata.
+   * Uses DOI lookup (high confidence) if DOI exists, otherwise falls back to title+author search.
+   */
+  async validateReference(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { documentId, referenceId } = req.params;
+      const { tenantId } = req.user!;
+
+      logger.info(`[CitationReference] Validating reference ${referenceId} against CrossRef`);
+
+      // Fetch the reference
+      const reference = await prisma.referenceListEntry.findUnique({
+        where: { id: referenceId },
+        include: { document: true }
+      });
+
+      if (!reference) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify tenant ownership
+      if (reference.document.tenantId !== tenantId) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Reference not found' }
+        });
+        return;
+      }
+
+      // Verify document match
+      const resolvedDoc = await resolveDocumentSimple(documentId, tenantId);
+      if (!resolvedDoc || resolvedDoc.id !== reference.documentId) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'DOCUMENT_MISMATCH', message: 'Document ID mismatch between URL and reference' }
+        });
+        return;
+      }
+
+      // Try CrossRef lookup
+      let crossrefResult: EnrichedMetadata | null = null;
+      let lookupMethod: 'doi' | 'search' = 'search';
+
+      if (reference.doi) {
+        // Direct DOI lookup — high confidence
+        lookupMethod = 'doi';
+        crossrefResult = await crossRefService.lookupByDoi(reference.doi);
+      }
+
+      if (!crossrefResult) {
+        // Fallback: search using title (most discriminating) + first author last name + year
+        lookupMethod = 'search';
+        const title = (reference.title || '').trim();
+        const authors = safeAuthorsArray(reference.authors);
+        // Extract first author's last name only (e.g. "Brown, T. B." → "Brown")
+        const firstAuthorLast = authors.length > 0
+          ? authors[0].split(/[,\s]+/)[0]
+          : '';
+        const year = reference.year || '';
+
+        // Build query: title is primary, author/year help narrow
+        const queryParts = [title, firstAuthorLast, year].filter(p => p.length > 0);
+        const searchQuery = queryParts.join(' ').trim();
+
+        if (searchQuery.length < 5) {
+          res.json({
+            success: true,
+            data: {
+              status: 'not_found',
+              message: 'Insufficient reference data to search CrossRef',
+              referenceId
+            }
+          });
+          return;
+        }
+
+        const searchResults = await crossRefService.search(searchQuery, 5);
+
+        // Find the best match using composite scoring: title + author + year
+        if (searchResults.length > 0) {
+          const titleNorm = title.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+          // Extract last names from current reference for author comparison
+          const currentLastNames = authors.map(a => a.split(/[,\s]+/)[0].toLowerCase());
+          const currentYear = reference.year || '';
+
+          let bestMatch: EnrichedMetadata | null = null;
+          let bestScore = 0;
+
+          for (const result of searchResults) {
+            let score = 0;
+
+            // Title similarity (0-0.5 weight) — most important signal
+            if (titleNorm.length > 0) {
+              const resultTitleNorm = (result.title || '').toLowerCase().replace(/[^a-z0-9\s]/g, '');
+              score += this.titleSimilarity(titleNorm, resultTitleNorm) * 0.5;
+            }
+
+            // Author similarity (0-0.3 weight) — check last name overlap
+            const resultLastNames = result.authors.map(a => (a.lastName || '').toLowerCase());
+            if (currentLastNames.length > 0 && resultLastNames.length > 0) {
+              const authorOverlap = currentLastNames.filter(n => resultLastNames.includes(n)).length;
+              const authorScore = authorOverlap / Math.max(currentLastNames.length, resultLastNames.length);
+              score += authorScore * 0.3;
+            }
+
+            // Year match (0-0.2 weight)
+            if (currentYear && result.year) {
+              const yearDiff = Math.abs(parseInt(currentYear) - parseInt(result.year));
+              if (yearDiff === 0) score += 0.2;
+              else if (yearDiff <= 1) score += 0.1;
+              else if (yearDiff <= 2) score += 0.05;
+            }
+
+            if (score > bestScore) {
+              bestScore = score;
+              bestMatch = result;
+            }
+          }
+
+          // Require composite score >= 0.45 AND at least some author or year overlap.
+          // Pure title-only matches (high title, zero author/year) are unreliable.
+          const hasTitleOnly = bestScore >= 0.4 && bestScore < 0.5;
+          if (bestMatch && bestScore >= 0.45 && !hasTitleOnly) {
+            crossrefResult = bestMatch;
+            logger.info(`[CitationReference] Search matched with composite score ${bestScore.toFixed(2)}`);
+          } else if (bestMatch && bestScore >= 0.7) {
+            // Very high composite score — accept even without author overlap
+            crossrefResult = bestMatch;
+            logger.info(`[CitationReference] Search matched (high score) with composite score ${bestScore.toFixed(2)}`);
+          } else {
+            logger.info(`[CitationReference] No good match found. Best composite score: ${bestScore.toFixed(2)}`);
+          }
+        }
+      }
+
+      if (!crossrefResult) {
+        res.json({
+          success: true,
+          data: {
+            status: 'not_found',
+            message: 'Reference not found in CrossRef database',
+            referenceId
+          }
+        });
+        return;
+      }
+
+      // Compare fields and find discrepancies (style-aware for authors)
+      const styleCode = normalizeStyleCode(reference.document.referenceListStyle);
+      const discrepancies = this.compareReferenceFields(reference, crossrefResult, styleCode);
+      const suggestedDoi = !reference.doi && crossrefResult.doi ? crossrefResult.doi : undefined;
+
+      const status = discrepancies.length === 0 && !suggestedDoi ? 'verified' : 'discrepancies_found';
+
+      res.json({
+        success: true,
+        data: {
+          status,
+          referenceId,
+          lookupMethod,
+          confidence: crossrefResult.confidence,
+          discrepancies,
+          suggestedDoi,
+          crossrefMetadata: {
+            authors: crossrefResult.authors.map(a =>
+              [a.firstName, a.lastName].filter(Boolean).join(' ')
+            ),
+            title: crossrefResult.title,
+            year: crossrefResult.year,
+            journalName: crossrefResult.journalName,
+            volume: crossrefResult.volume,
+            issue: crossrefResult.issue,
+            pages: crossrefResult.pages,
+            doi: crossrefResult.doi,
+            url: crossrefResult.url,
+            publisher: crossrefResult.publisher,
+            sourceType: crossrefResult.sourceType
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Compare stored reference fields with CrossRef metadata.
+   * Returns array of discrepancies (field name, current value, correct value).
+   *
+   * Author comparison is style-aware: for initial-based styles (APA, IEEE),
+   * authors are normalized to "Last, F. M." format before comparing so that
+   * "Bender, E. M." and "Emily M. Bender" are NOT flagged as discrepancies
+   * when they produce identical formatted output.
+   */
+  private compareReferenceFields(
+    reference: { authors: unknown; year: string | null; title: string | null; journalName: string | null; volume: string | null; issue: string | null; pages: string | null; doi: string | null; publisher: string | null },
+    crossref: EnrichedMetadata,
+    styleCode: string = 'apa7'
+  ): Array<{ field: string; currentValue: string; correctValue: string }> {
+    const discrepancies: Array<{ field: string; currentValue: string; correctValue: string }> = [];
+
+    const normalize = (val: string | null | undefined): string => (val || '').trim().toLowerCase();
+    const normalizeTitle = (val: string | null | undefined): string =>
+      normalize(val).replace(/[.,;:!?'"]+$/g, '');
+
+    // Authors comparison — style-aware normalization
+    // For initial-based styles (APA, IEEE), convert both sides to "last, f. m." format
+    // so that "Bender, E. M." and "Emily M. Bender" are treated as equivalent.
+    const initialBasedStyles = ['apa7', 'ieee'];
+    const isInitialBased = initialBasedStyles.includes(styleCode);
+
+    const parsedCurrent = parseAuthorsToArray(reference.authors as import('@prisma/client').Prisma.JsonValue);
+    const parsedCrossref = crossref.authors.map(a => ({
+      firstName: a.firstName || undefined,
+      lastName: a.lastName || ''
+    }));
+
+    if (parsedCurrent.length > 0 && parsedCrossref.length > 0) {
+      const formatForComparison = (author: { firstName?: string; lastName: string }): string => {
+        const last = (author.lastName || '').trim().toLowerCase();
+        const first = (author.firstName || '').trim();
+
+        if (!first) return last;
+
+        if (isInitialBased) {
+          // Convert to initials: "Emily M." → "e. m.", "E. M." → "e. m.", "EM" → "e. m."
+          const initials = first.split(/[\s.]+/).filter(p => p.length > 0)
+            .map(p => {
+              // Handle concatenated initials like "EM" → ["E", "M"]
+              if (/^[A-Z]{2,3}$/.test(p)) {
+                return p.split('').map(c => `${c.toLowerCase()}.`).join(' ');
+              }
+              return `${p.charAt(0).toLowerCase()}.`;
+            }).join(' ');
+          return `${last}, ${initials}`;
+        }
+
+        // Full-name styles: normalize to "last, first" lowercase
+        return `${last}, ${first.toLowerCase()}`;
+      };
+
+      const currentFormatted = parsedCurrent.map(a => formatForComparison(a)).sort();
+      const crossrefFormatted = parsedCrossref.map(a => formatForComparison(a)).sort();
+      const currentStr = currentFormatted.join('; ');
+      const crossrefStr = crossrefFormatted.join('; ');
+
+      if (currentStr !== crossrefStr) {
+        // Show raw display values in the discrepancy (not the normalized comparison values)
+        const currentAuthors = safeAuthorsArray(reference.authors);
+        const crossrefAuthors = crossref.authors.map(a =>
+          [a.firstName, a.lastName].filter(Boolean).join(' ')
+        );
+        discrepancies.push({
+          field: 'authors',
+          currentValue: currentAuthors.join(', '),
+          correctValue: crossrefAuthors.join(', ')
+        });
+      }
+    }
+
+    // Year
+    if (crossref.year && normalize(reference.year) !== normalize(crossref.year)) {
+      discrepancies.push({
+        field: 'year',
+        currentValue: reference.year || '',
+        correctValue: crossref.year
+      });
+    }
+
+    // Title (fuzzy — ignore trailing punctuation and case)
+    if (crossref.title && normalizeTitle(reference.title) !== normalizeTitle(crossref.title)) {
+      discrepancies.push({
+        field: 'title',
+        currentValue: reference.title || '',
+        correctValue: crossref.title
+      });
+    }
+
+    // Journal
+    if (crossref.journalName && normalize(reference.journalName) !== normalize(crossref.journalName)) {
+      discrepancies.push({
+        field: 'journalName',
+        currentValue: reference.journalName || '',
+        correctValue: crossref.journalName
+      });
+    }
+
+    // Volume
+    if (crossref.volume && normalize(reference.volume) !== normalize(crossref.volume)) {
+      discrepancies.push({
+        field: 'volume',
+        currentValue: reference.volume || '',
+        correctValue: crossref.volume
+      });
+    }
+
+    // Issue
+    if (crossref.issue && normalize(reference.issue) !== normalize(crossref.issue)) {
+      discrepancies.push({
+        field: 'issue',
+        currentValue: reference.issue || '',
+        correctValue: crossref.issue
+      });
+    }
+
+    // Pages
+    if (crossref.pages && normalize(reference.pages) !== normalize(crossref.pages)) {
+      discrepancies.push({
+        field: 'pages',
+        currentValue: reference.pages || '',
+        correctValue: crossref.pages
+      });
+    }
+
+    // Publisher
+    if (crossref.publisher && normalize(reference.publisher) !== normalize(crossref.publisher)) {
+      discrepancies.push({
+        field: 'publisher',
+        currentValue: reference.publisher || '',
+        correctValue: crossref.publisher
+      });
+    }
+
+    return discrepancies;
+  }
+
+  /**
+   * Calculate word-level Jaccard similarity between two normalized titles.
+   * Returns 0-1 where 1 = identical word sets, 0 = no overlap.
+   */
+  private titleSimilarity(a: string, b: string): number {
+    const wordsA = new Set(a.split(/\s+/).filter(w => w.length > 2));
+    const wordsB = new Set(b.split(/\s+/).filter(w => w.length > 2));
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+    let intersection = 0;
+    for (const word of wordsA) {
+      if (wordsB.has(word)) intersection++;
+    }
+    const union = new Set([...wordsA, ...wordsB]).size;
+    return union > 0 ? intersection / union : 0;
   }
 
   // ============================================

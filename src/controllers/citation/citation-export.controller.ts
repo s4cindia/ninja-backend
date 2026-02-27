@@ -517,12 +517,140 @@ export class CitationExportController {
                 logger.warn(`[CitationExport] Skipping REFERENCE_EDIT - new formatted text missing for style "${styleCode}"`);
                 continue;
               }
-              if (oldFormatted !== newFormatted) {
+              // Strip asterisks (AI italic markers) — DOCX uses XML run properties for italics, not asterisks
+              let cleanOld = oldFormatted.replace(/\*/g, '');
+              let cleanNew = newFormatted.replace(/\*/g, '');
+
+              // If formatted text looks identical but metadata shows field changes,
+              // rebuild formatted text deterministically to ensure the change is captured.
+              // This handles cases where AI formatting produces identical output despite different input
+              // (e.g., "Emily M. Bender" and "Bender, E. M." both → "Bender, E." in APA).
+              if (cleanOld === cleanNew) {
+                const newValues = metadata.newValues as Record<string, unknown> | undefined;
+                const fieldsChanged = newValues && (
+                  JSON.stringify(oldValues.authors) !== JSON.stringify(newValues.authors) ||
+                  oldValues.year !== newValues.year ||
+                  oldValues.title !== newValues.title ||
+                  oldValues.journalName !== newValues.journalName ||
+                  oldValues.volume !== newValues.volume ||
+                  oldValues.issue !== newValues.issue ||
+                  oldValues.pages !== newValues.pages ||
+                  oldValues.doi !== newValues.doi ||
+                  oldValues.publisher !== newValues.publisher
+                );
+
+                if (fieldsChanged) {
+                  // Build deterministic formatted text from both old and new reference fields.
+                  // This ensures the diff only shows actual field changes, not AI formatting differences.
+                  // Format must match the document's citation style so the export retains original styling.
+
+                  const buildFormatted = (vals: Record<string, unknown>) => {
+                    const authArr = Array.isArray(vals.authors) ? (vals.authors as string[]) : [];
+                    const yr = vals.year ? String(vals.year) : '';
+                    const ttl = vals.title ? String(vals.title) : '';
+                    const jnl = vals.journalName ? String(vals.journalName) : '';
+                    const vol = vals.volume ? String(vals.volume) : '';
+                    const iss = vals.issue ? String(vals.issue) : '';
+                    const pg = vals.pages ? String(vals.pages) : '';
+                    const doiStr = vals.doi ? String(vals.doi) : '';
+                    const pub = vals.publisher ? String(vals.publisher) : '';
+
+                    // Authors are stored as ["LastName Initials", ...] (e.g., "Painter CA")
+                    // Keep them as-is for Vancouver/ABM; reformat for APA/Chicago/IEEE
+                    if (styleCode === 'vancouver' || styleCode === 'ama') {
+                      // Vancouver: AuthorLast IN, Author2Last IN. Title. Journal. Year;Vol(Issue):Pages. Publisher. doi: DOI
+                      const authorStr = authArr.length > 0
+                        ? authArr.map(a => String(a).trim()).join(', ')
+                        : 'Unknown Author';
+                      const source = jnl ? `${jnl}. ${yr}` : yr;
+                      const volIssPg = vol
+                        ? `;${vol}${iss ? `(${iss})` : ''}${pg ? `:${pg}` : ''}`
+                        : (pg ? `:${pg}` : '');
+                      const doiPart = doiStr ? ` doi: ${doiStr}` : '';
+                      const pubPart = pub ? ` ${pub}.` : '';
+                      return `${authorStr}. ${ttl}. ${source}${volIssPg}.${pubPart}${doiPart}`.trim();
+                    } else if (styleCode === 'apa7') {
+                      // APA 7: LastName, I. N., LastName2, I. N. (Year). Title. Journal, Vol(Issue), Pages. Publisher. https://doi.org/DOI
+                      const authorStr = authArr.length > 0
+                        ? authArr.map((a: string) => {
+                            const trimmed = String(a).trim();
+                            if (trimmed.includes(',')) return trimmed;
+                            const parts = trimmed.split(/\s+/);
+                            if (parts.length === 1) return parts[0];
+                            // Assume "LastName Initials" format; convert initials to "I. N." style
+                            const lastName = parts[0];
+                            const initials = parts.slice(1).map(p => p.length <= 2 ? `${p.charAt(0)}.` : `${p.charAt(0)}.`).join(' ');
+                            return `${lastName}, ${initials}`;
+                          }).join(', ')
+                        : 'Unknown Author';
+                      const source = jnl ? `${jnl}` : '';
+                      const volPart = vol ? `, ${vol}` : '';
+                      const issPart = iss ? `(${iss})` : '';
+                      const pgPart = pg ? `, ${pg}` : '';
+                      const doiPart = doiStr ? ` https://doi.org/${doiStr}` : '';
+                      const pubPart = pub ? ` ${pub}.` : '';
+                      return `${authorStr} (${yr}). ${ttl}. ${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
+                    } else if (styleCode === 'chicago') {
+                      // Chicago: LastName, FirstName, FirstName2 LastName2. "Title." Journal Vol, no. Issue (Year): Pages. Publisher. https://doi.org/DOI.
+                      const authorStr = authArr.length > 0
+                        ? authArr.map(a => String(a).trim()).join(', ')
+                        : 'Unknown Author';
+                      const volPart = vol ? ` ${vol}` : '';
+                      const issPart = iss ? `, no. ${iss}` : '';
+                      const yrPart = yr ? ` (${yr})` : '';
+                      const pgPart = pg ? `: ${pg}` : '';
+                      const doiPart = doiStr ? ` https://doi.org/${doiStr}.` : '';
+                      const pubPart = pub ? ` ${pub}.` : '';
+                      return `${authorStr}. "${ttl}." ${jnl}${volPart}${issPart}${yrPart}${pgPart}.${pubPart}${doiPart}`.trim();
+                    } else if (styleCode === 'ieee') {
+                      // IEEE: I. N. LastName, "Title," Journal, vol. Vol, no. Issue, pp. Pages, Year. doi: DOI
+                      const authorStr = authArr.length > 0
+                        ? authArr.map((a: string) => {
+                            const trimmed = String(a).trim();
+                            const parts = trimmed.split(/\s+/);
+                            if (parts.length === 1) return parts[0];
+                            const lastName = parts[0];
+                            const initials = parts.slice(1).map(p => `${p.charAt(0)}.`).join(' ');
+                            return `${initials} ${lastName}`;
+                          }).join(', ')
+                        : 'Unknown Author';
+                      const volPart = vol ? `vol. ${vol}` : '';
+                      const issPart = iss ? `no. ${iss}` : '';
+                      const pgPart = pg ? `pp. ${pg}` : '';
+                      const parts = [volPart, issPart, pgPart, yr].filter(Boolean).join(', ');
+                      const doiPart = doiStr ? ` doi: ${doiStr}` : '';
+                      const pubPart = pub ? ` ${pub}.` : '';
+                      return `${authorStr}, "${ttl}," ${jnl}, ${parts}.${pubPart}${doiPart}`.trim();
+                    } else {
+                      // Generic fallback for unknown styles (MLA, Harvard, etc.)
+                      const authorStr = authArr.length > 0
+                        ? authArr.map(a => String(a).trim()).join(', ')
+                        : 'Unknown Author';
+                      const source = jnl ? ` ${jnl}` : '';
+                      const volPart = vol ? `, ${vol}` : '';
+                      const issPart = iss ? `(${iss})` : '';
+                      const pgPart = pg ? `, ${pg}` : '';
+                      const doiPart = doiStr ? ` https://doi.org/${doiStr}` : '';
+                      const pubPart = pub ? ` ${pub}.` : '';
+                      return `${authorStr} (${yr}). ${ttl}.${source}${volPart}${issPart}${pgPart}.${pubPart}${doiPart}`.trim();
+                    }
+                  };
+
+                  const newValues = metadata.newValues as Record<string, unknown>;
+                  cleanOld = buildFormatted(oldValues);
+                  cleanNew = buildFormatted(newValues);
+                  logger.info(`[CitationExport] Formatted text identical but fields changed — using deterministic rebuild (${styleCode})`);
+                  logger.info(`[CitationExport]   old: "${cleanOld.substring(0, 100)}..."`);
+                  logger.info(`[CitationExport]   new: "${cleanNew.substring(0, 100)}..."`);
+                }
+              }
+
+              if (cleanOld !== cleanNew) {
                 changesToApply.push({
                   type: 'REFERENCE_SECTION_EDIT',
-                  beforeText: oldFormatted,
-                  afterText: newFormatted,
-                  metadata: { referenceId, isReferenceSection: true }
+                  beforeText: cleanOld,
+                  afterText: cleanNew,
+                  metadata: { referenceId, isReferenceSection: true, oldValues }
                 });
               }
             }
@@ -534,11 +662,13 @@ export class CitationExportController {
         // Chain through reverted conversions to get original DOCX text as beforeText
         if (c.changeType === 'REFERENCE_STYLE_CONVERSION' && c.beforeText && c.afterText) {
           const originalBeforeText = (c.citationId && revertedRefBeforeText.get(c.citationId)) || c.beforeText;
-          logger.info(`[CitationExport] Adding ref style conversion: "${originalBeforeText.substring(0, 50)}..." → "${c.afterText.substring(0, 50)}..."`);
+          // Strip asterisks (AI italic markers) from afterText — DOCX uses XML run properties for italics
+          const cleanAfterText = c.afterText.replace(/\*/g, '');
+          logger.info(`[CitationExport] Adding ref style conversion: "${originalBeforeText.substring(0, 50)}..." → "${cleanAfterText.substring(0, 50)}..."`);
           changesToApply.push({
             type: 'REFERENCE_SECTION_EDIT',
             beforeText: originalBeforeText,
-            afterText: c.afterText,
+            afterText: cleanAfterText,
             metadata: c.citationId ? { referenceId: c.citationId, isReferenceSection: true } : null
           });
           continue;
@@ -594,22 +724,40 @@ export class CitationExportController {
         const styleCode = normalizeStyleCode(document.referenceListStyle);
         const formattedCol = getFormattedColumn(styleCode);
 
+        // Build map of referenceId → afterText for references modified by REFERENCE_SECTION_EDIT.
+        // Phase 2.1 of the DOCX processor replaces the paragraph text with the afterText,
+        // so Phase 4 REFERENCE_REORDER must match against the afterText (not the original column text).
+        const editedRefAfterText = new Map<string, string>();
+        for (const c of changesToApply) {
+          if (c.type === 'REFERENCE_SECTION_EDIT' && c.metadata?.referenceId) {
+            editedRefAfterText.set(c.metadata.referenceId as string, c.afterText);
+          }
+        }
+
         const referenceOrder: Array<{ position: number; contentStart: string }> = [];
         for (let i = 0; i < document.referenceListEntries.length; i++) {
           const ref = document.referenceListEntries[i];
-          // Use the post-conversion formatted text for paragraph matching
-          const refContent = (ref as Record<string, unknown>)[formattedCol] as string
+
+          // If this reference was edited (REFERENCE_SECTION_EDIT), use the afterText for matching
+          // because the DOCX paragraph will contain the afterText after Phase 2.1 applies track changes.
+          // Otherwise use the formatted column text (which matches the original DOCX paragraph).
+          const editedText = editedRefAfterText.get(ref.id);
+          const refContent = editedText
+            || (ref as Record<string, unknown>)[formattedCol] as string
             || ref.formattedApa
             || `${(ref.authors as string[] || []).join(', ')} (${ref.year}). ${ref.title}`;
 
           // Use a normalized prefix for matching
-          // TODO: Consider hash-based matching to eliminate collision risk for same-author entries
           const contentStart = refContent
+            .replace(/\*/g, '')
             .replace(/\s+/g, ' ')
             .trim()
             .substring(0, 120);
 
           referenceOrder.push({ position: i + 1, contentStart });
+          if (editedText) {
+            logger.info(`[CitationExport] REFERENCE_REORDER: ref ${ref.id.substring(0, 8)} using edited afterText for matching`);
+          }
         }
 
         changesToApply.push({

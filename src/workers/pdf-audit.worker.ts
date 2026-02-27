@@ -15,7 +15,7 @@
 import { Job, Worker } from 'bullmq';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { JobData, JobResult, JOB_TYPES, getBullMQConnection, QUEUE_NAMES } from '../queues';
+import { JobData, JobResult, JOB_TYPES, getBullMQConnection, QUEUE_NAMES, QUEUE_PREFIX } from '../queues';
 import { queueService } from '../services/queue.service';
 import { logger } from '../lib/logger';
 import { isRedisConfigured } from '../lib/redis';
@@ -302,6 +302,7 @@ export function createPdfAuditWorker(): Worker<PdfAuditJobData, PdfAuditResult> 
         connection,
         concurrency: 3, // Max 3 concurrent PDF audits
         autorun: true,
+        prefix: QUEUE_PREFIX,
       }
     );
 

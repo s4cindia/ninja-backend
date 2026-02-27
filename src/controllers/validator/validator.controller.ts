@@ -153,9 +153,17 @@ export class ValidatorController {
             fileName: true,
             originalName: true,
             fileSize: true,
+            wordCount: true,
+            pageCount: true,
             status: true,
             createdAt: true,
             updatedAt: true,
+            job: {
+              select: {
+                createdAt: true,
+                completedAt: true,
+              },
+            },
           },
         }),
         prisma.editorialDocument.count({ where: whereClause }),
@@ -240,12 +248,22 @@ export class ValidatorController {
         where: { id: documentId, tenantId },
         select: {
           id: true,
+          status: true,
+          jobId: true,
           storagePath: true,
           storageType: true,
           originalName: true,
+          fileSize: true,
+          wordCount: true,
           documentContent: {
             select: {
               fullHtml: true,
+            },
+          },
+          job: {
+            select: {
+              createdAt: true,
+              completedAt: true,
             },
           },
         },
@@ -262,12 +280,42 @@ export class ValidatorController {
       // If we have cached HTML content, return it
       if (document.documentContent?.fullHtml) {
         logger.info(`[Validator] Returning cached HTML for document: ${documentId}`);
+
+        // Mark document as PARSED if still UPLOADED (backfill for docs cached before this code)
+        if (document.status === 'UPLOADED') {
+          const now = new Date();
+          const cachedWordCount = document.documentContent.fullHtml
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean).length;
+          await Promise.all([
+            prisma.editorialDocument.update({
+              where: { id: documentId },
+              data: { status: 'PARSED', wordCount: cachedWordCount, updatedAt: now },
+            }),
+            prisma.job.update({
+              where: { id: document.jobId },
+              data: { status: 'COMPLETED', completedAt: now },
+            }),
+          ]);
+          logger.info(`[Validator] Backfilled document ${documentId} as PARSED, wordCount=${cachedWordCount}`);
+        }
+
         res.json({
           success: true,
           data: {
             documentId: document.id,
             content: document.documentContent.fullHtml,
             fileName: document.originalName,
+            fileSize: document.fileSize,
+            wordCount: document.wordCount,
+            processingTime: document.job?.createdAt && document.job?.completedAt
+              ? new Date(document.job.completedAt).getTime() - new Date(document.job.createdAt).getTime()
+              : null,
           },
         });
         return;
@@ -327,12 +375,37 @@ export class ValidatorController {
         },
       });
 
+      // Update document stats and mark as PARSED on first conversion
+      if (document.status === 'UPLOADED') {
+        const now = new Date();
+        await Promise.all([
+          prisma.editorialDocument.update({
+            where: { id: documentId },
+            data: {
+              status: 'PARSED',
+              wordCount: result.metadata.wordCount,
+              updatedAt: now,
+            },
+          }),
+          prisma.job.update({
+            where: { id: document.jobId },
+            data: { status: 'COMPLETED', completedAt: now },
+          }),
+        ]);
+        logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
+      }
+
       res.json({
         success: true,
         data: {
           documentId: document.id,
           content: htmlContent,
           fileName: document.originalName,
+          fileSize: document.fileSize,
+          wordCount: result.metadata.wordCount,
+          processingTime: document.job?.createdAt && document.job?.completedAt
+            ? new Date(document.job.completedAt).getTime() - new Date(document.job.createdAt).getTime()
+            : null,
           conversionWarnings: result.warnings,
           metadata: result.metadata,
         },

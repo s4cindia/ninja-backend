@@ -303,6 +303,16 @@ router.delete(
 );
 
 /**
+ * DELETE /api/v1/citation-management/document/:documentId
+ * Delete a document and its associated job/data
+ */
+router.delete(
+  '/document/:documentId',
+  validate(documentIdParamSchema),
+  citationManagementController.deleteDocument.bind(citationManagementController)
+);
+
+/**
  * GET /api/v1/citation-management/document/:documentId/analysis
  * Get complete citation analysis results
  */
@@ -412,6 +422,28 @@ router.post(
   '/document/:documentId/resequence',
   validate(documentIdParamSchema),
   citationManagementController.resequenceByAppearance.bind(citationManagementController)
+);
+
+// ============================================
+// SINGLE REFERENCE VALIDATION (CrossRef)
+// ============================================
+
+/**
+ * POST /api/v1/citation-management/document/:documentId/reference/:referenceId/validate
+ * Validate a single reference against CrossRef database
+ * - If DOI exists: direct lookup (high confidence)
+ * - If no DOI: title+author search (finds reference and discovers DOI)
+ *
+ * Returns:
+ * - status: 'verified' | 'discrepancies_found' | 'not_found'
+ * - discrepancies[]: { field, currentValue, correctValue }
+ * - suggestedDoi: string (if DOI was missing but found)
+ * - crossrefMetadata: full metadata from CrossRef
+ */
+router.post(
+  '/document/:documentId/reference/:referenceId/validate',
+  validate(documentReferenceParamsSchema),
+  citationManagementController.validateReference.bind(citationManagementController)
 );
 
 // ============================================

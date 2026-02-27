@@ -7,6 +7,7 @@ import { JobType } from '../queues';
 import { workflowService } from '../services/workflow/workflow.service';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { logger } from '../lib/logger';
+import { s3Service } from '../services/s3.service';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -202,15 +203,27 @@ export class JobController {
                 title: true,
               },
             },
+            editorialDocument: {
+              select: { id: true, originalName: true },
+            },
           },
         }),
         prisma.job.count({ where }),
       ]);
 
-      const normalizedJobs = jobs.map(job => ({
-        ...job,
-        output: normalizeJobOutput(job.output),
-      }));
+      const normalizedJobs = jobs.map(({ editorialDocument, ...rest }) => {
+        const output = normalizeJobOutput(rest.output);
+        // Include document filename in output so frontend can display it
+        if (editorialDocument?.originalName && !output.fileName) {
+          output.fileName = editorialDocument.originalName;
+        }
+        return {
+          ...rest,
+          output,
+          // Include documentId so frontend can navigate to the correct editor
+          ...(editorialDocument?.id && { documentId: editorialDocument.id }),
+        };
+      });
 
       res.json({
         success: true,
@@ -382,6 +395,60 @@ export class JobController {
         success: true,
         message: 'Job cancelled successfully',
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Permanently deletes a job and all associated data.
+   */
+  async permanentDelete(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const { id: jobId } = req.params;
+      const { tenantId } = req.user;
+
+      const job = await prisma.job.findFirst({
+        where: { id: jobId, tenantId },
+        include: { editorialDocument: { select: { id: true, storagePath: true } } },
+      });
+
+      if (!job) {
+        throw AppError.notFound('Job not found', ErrorCodes.JOB_NOT_FOUND);
+      }
+
+      // Clean up S3 file if document exists
+      if (job.editorialDocument?.storagePath) {
+        try {
+          await s3Service.deleteFile(job.editorialDocument.storagePath);
+        } catch (s3Error) {
+          logger.warn(`[Job] Failed to delete S3 file ${job.editorialDocument.storagePath}:`, s3Error);
+        }
+      }
+
+      await prisma.$transaction(async (tx) => {
+        if (job.editorialDocument) {
+          const docId = job.editorialDocument.id;
+          await tx.citationChange.deleteMany({ where: { documentId: docId } });
+          await tx.referenceListEntryCitation.deleteMany({ where: { citation: { documentId: docId } } });
+          await tx.citation.deleteMany({ where: { documentId: docId } });
+          await tx.referenceListEntry.deleteMany({ where: { documentId: docId } });
+          await tx.editorialDocumentContent.deleteMany({ where: { documentId: docId } });
+          await tx.editorialDocument.delete({ where: { id: docId } });
+        }
+        await tx.validationResult.deleteMany({ where: { jobId } });
+        await tx.artifact.deleteMany({ where: { jobId } });
+        await tx.remediationChange.deleteMany({ where: { jobId } });
+        await tx.job.delete({ where: { id: jobId } });
+      });
+
+      logger.info(`[Job] Permanently deleted job ${jobId}`);
+
+      res.json({ success: true, data: { jobId } });
     } catch (error) {
       next(error);
     }
