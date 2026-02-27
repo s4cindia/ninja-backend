@@ -24,11 +24,7 @@ import { crossRefService, type EnrichedMetadata } from '../../services/citation/
 import type { EditReferenceBody } from '../../schemas/citation.schemas';
 import { resolveDocumentSimple } from './document-resolver';
 import { extractCitationNumbers, buildFormattedReference } from '../../utils/citation.utils';
-
-/** Type guard: true when auth middleware has populated req.user */
-function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
-  return !!req.user && typeof (req.user as unknown as Record<string, unknown>).tenantId === 'string';
-}
+import { isAuthenticated } from '../../utils/auth';
 
 /** Transaction timeout for operations that may update many citations/references (default 5s is too short) */
 const TRANSACTION_TIMEOUT_MS = 30000;
@@ -640,9 +636,15 @@ export class CitationReferenceController {
         // If no explicit links, find citations by matching author surname + year
         if (affectedCitations.length === 0 && referenceToDelete.year) {
           const authors = safeAuthorsArray(referenceToDelete.authors);
-          const firstAuthor = authors?.[0] || '';
-          // Extract surname (handles "Smith, J." -> "Smith" or "Smith J" -> "Smith")
-          const surname = firstAuthor.split(/[,\s]/)[0];
+          const firstAuthor = (authors?.[0] || '').trim();
+          // Extract surname: "Last, F." → "Last", "Luciano Floridi" → "Floridi"
+          let surname = '';
+          if (firstAuthor.includes(',')) {
+            surname = firstAuthor.substring(0, firstAuthor.indexOf(',')).trim();
+          } else {
+            const parts = firstAuthor.split(/\s+/);
+            surname = parts[parts.length - 1] || '';
+          }
           const year = referenceToDelete.year;
 
           if (surname) {
@@ -2595,10 +2597,17 @@ export class CitationReferenceController {
         lookupMethod = 'search';
         const title = (reference.title || '').trim();
         const authors = safeAuthorsArray(reference.authors);
-        // Extract first author's last name only (e.g. "Brown, T. B." → "Brown")
-        const firstAuthorLast = authors.length > 0
-          ? authors[0].split(/[,\s]+/)[0]
-          : '';
+        // Extract first author's last name: "Last, F." → "Last", "Luciano Floridi" → "Floridi"
+        let firstAuthorLast = '';
+        if (authors.length > 0) {
+          const a = authors[0].trim();
+          if (a.includes(',')) {
+            firstAuthorLast = a.substring(0, a.indexOf(',')).trim();
+          } else {
+            const parts = a.split(/\s+/);
+            firstAuthorLast = parts[parts.length - 1] || '';
+          }
+        }
         const year = reference.year || '';
 
         // Build query: title is primary, author/year help narrow
@@ -2623,7 +2632,12 @@ export class CitationReferenceController {
         if (searchResults.length > 0) {
           const titleNorm = title.toLowerCase().replace(/[^a-z0-9\s]/g, '');
           // Extract last names from current reference for author comparison
-          const currentLastNames = authors.map(a => a.split(/[,\s]+/)[0].toLowerCase());
+          const currentLastNames = authors.map(a => {
+            const trimmed = a.trim();
+            if (trimmed.includes(',')) return trimmed.substring(0, trimmed.indexOf(',')).trim().toLowerCase();
+            const parts = trimmed.split(/\s+/);
+            return (parts[parts.length - 1] || '').toLowerCase();
+          });
           const currentYear = reference.year || '';
 
           let bestMatch: EnrichedMetadata | null = null;
@@ -2895,9 +2909,18 @@ export class CitationReferenceController {
    * Calculate word-level Jaccard similarity between two normalized titles.
    * Returns 0-1 where 1 = identical word sets, 0 = no overlap.
    */
+  private static readonly STOPWORDS = new Set([
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her',
+    'was', 'one', 'our', 'out', 'its', 'has', 'had', 'how', 'may', 'who',
+    'did', 'get', 'use', 'new', 'any', 'from', 'with', 'that', 'this',
+    'been', 'have', 'will', 'each', 'than', 'they', 'into', 'also', 'more',
+    'some', 'when', 'very', 'what', 'about', 'which', 'their', 'other',
+  ]);
+
   private titleSimilarity(a: string, b: string): number {
-    const wordsA = new Set(a.split(/\s+/).filter(w => w.length > 2));
-    const wordsB = new Set(b.split(/\s+/).filter(w => w.length > 2));
+    const filter = (w: string) => w.length > 2 && !CitationReferenceController.STOPWORDS.has(w);
+    const wordsA = new Set(a.split(/\s+/).filter(filter));
+    const wordsB = new Set(b.split(/\s+/).filter(filter));
     if (wordsA.size === 0 || wordsB.size === 0) return 0;
 
     let intersection = 0;

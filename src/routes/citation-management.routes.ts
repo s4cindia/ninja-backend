@@ -429,7 +429,7 @@ router.post(
 // ============================================
 
 /**
- * POST /api/v1/citation-management/document/:documentId/reference/:referenceId/validate
+ * GET /api/v1/citation-management/document/:documentId/reference/:referenceId/validate
  * Validate a single reference against CrossRef database
  * - If DOI exists: direct lookup (high confidence)
  * - If no DOI: title+author search (finds reference and discovers DOI)
@@ -440,7 +440,7 @@ router.post(
  * - suggestedDoi: string (if DOI was missing but found)
  * - crossrefMetadata: full metadata from CrossRef
  */
-router.post(
+router.get(
   '/document/:documentId/reference/:referenceId/validate',
   validate(documentReferenceParamsSchema),
   citationManagementController.validateReference.bind(citationManagementController)

@@ -134,24 +134,32 @@ async function recoverStaleJobs(): Promise<void> {
           },
         });
 
-        // Add to BullMQ queue first — if this fails, the document stays in its
-        // current stale state and will be retried on the next watchdog cycle.
-        await citationQueue.add(
-          `citation-${doc.id}`,
-          {
-            type: JOB_TYPES.CITATION_DETECTION,
-            tenantId,
-            userId,
-            options: { documentId: doc.id },
-          },
-          { jobId: newJob.id, priority: 1 }
-        );
-
-        // Only update the document after the queue job exists
+        // Update document first so recoveryCount is always read from the new job.
+        // If enqueue fails, revert the document so it stays in stale state for next cycle.
         await prisma.editorialDocument.update({
           where: { id: doc.id },
           data: { status: 'QUEUED', jobId: newJob.id },
         });
+
+        try {
+          await citationQueue.add(
+            `citation-${doc.id}`,
+            {
+              type: JOB_TYPES.CITATION_DETECTION,
+              tenantId,
+              userId,
+              options: { documentId: doc.id },
+            },
+            { jobId: newJob.id, priority: 1 }
+          );
+        } catch (queueErr) {
+          // Revert document so next watchdog cycle can retry
+          await prisma.editorialDocument.update({
+            where: { id: doc.id },
+            data: { status: doc.status, ...(oldJobId ? { jobId: oldJobId } : {}) },
+          }).catch(() => { /* best-effort revert */ });
+          throw queueErr;
+        }
 
         logger.info(`[Recovery] Successfully re-queued document ${doc.id} with new job ${newJob.id}`);
       } catch (err) {

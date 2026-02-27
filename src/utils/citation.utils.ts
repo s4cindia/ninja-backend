@@ -10,7 +10,16 @@
  * ensures both paths produce identical output, preventing DOCX match failures.
  */
 export function buildFormattedReference(vals: Record<string, unknown>, style: string): string {
-  const authArr = Array.isArray(vals.authors) ? (vals.authors as string[]) : [];
+  // Normalize authors: handle both string[] and { firstName, lastName }[] formats
+  const rawAuthors = Array.isArray(vals.authors) ? vals.authors : [];
+  const authArr: string[] = rawAuthors.map((a: unknown) => {
+    if (typeof a === 'string') return a;
+    if (a && typeof a === 'object' && 'lastName' in a) {
+      const obj = a as { firstName?: string; lastName: string };
+      return obj.firstName ? `${obj.lastName}, ${obj.firstName}` : obj.lastName;
+    }
+    return String(a);
+  });
   const yr = vals.year ? String(vals.year) : '';
   const ttl = vals.title ? String(vals.title) : '';
   const jnl = vals.journalName ? String(vals.journalName) : '';

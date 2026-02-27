@@ -7,12 +7,9 @@ import os from 'os';
 // Queue prefix isolates queues per environment when multiple developers
 // share the same Redis instance (e.g., Upstash). Each machine gets its own
 // set of queues so workers don't steal jobs from other environments.
-// Set QUEUE_PREFIX in .env to override (e.g., "staging", "prod").
-// In production, uses BullMQ's default prefix ("bull") so existing queues continue working.
-// In development, uses the machine's hostname for isolation.
-// NOTE: Ephemeral/CI environments will leave orphaned keys in Redis (prefix:hostname:*).
-// Clean up with: redis-cli --scan --pattern "<hostname>:*" | xargs redis-cli DEL
-const QUEUE_PREFIX = process.env.QUEUE_PREFIX || (process.env.NODE_ENV === 'production' ? 'bull' : os.hostname());
+// Set QUEUE_PREFIX in .env to override (e.g., hostname for dev isolation).
+// Defaults to 'bull' (BullMQ standard) to avoid orphaning existing queues.
+const QUEUE_PREFIX = process.env.QUEUE_PREFIX || 'bull';
 
 export { QUEUE_PREFIX };
 

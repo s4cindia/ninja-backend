@@ -8,11 +8,7 @@ import { workflowService } from '../services/workflow/workflow.service';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { logger } from '../lib/logger';
 import { s3Service } from '../services/s3.service';
-
-/** Type guard: narrows req to include typed user with tenantId/id */
-function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
-  return !!req.user && typeof (req.user as unknown as Record<string, unknown>).tenantId === 'string';
-}
+import { isAuthenticated } from '../utils/auth';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -450,6 +446,11 @@ export class JobController {
           await tx.referenceListEntry.deleteMany({ where: { documentId: docId } });
           await tx.editorialDocumentContent.deleteMany({ where: { documentId: docId } });
           await tx.editorialDocument.delete({ where: { id: docId } });
+        }
+        // Delete Issue rows before ValidationResult (Issue has FK to ValidationResult, no cascade)
+        const vrIds = await tx.validationResult.findMany({ where: { jobId }, select: { id: true } });
+        if (vrIds.length > 0) {
+          await tx.issue.deleteMany({ where: { validationResultId: { in: vrIds.map(v => v.id) } } });
         }
         await tx.validationResult.deleteMany({ where: { jobId } });
         await tx.artifact.deleteMany({ where: { jobId } });

@@ -24,16 +24,10 @@ import { getCitationQueue, areQueuesAvailable, JOB_TYPES } from '../../queues';
 import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/reference-list.service';
 import { normalizeSuperscripts } from '../../utils/unicode';
 import { claudeService } from '../../services/ai/claude.service';
+import { isAuthenticated } from '../../utils/auth';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-
-/** Type guard to validate authenticated user exists on request */
-function isAuthenticated(req: Request): req is Request & { user: { tenantId: string; id: string } } {
-  return req.user !== undefined &&
-         typeof req.user.tenantId === 'string' &&
-         typeof req.user.id === 'string';
-}
 
 /**
  * Match author-year citation text to reference entries
@@ -76,7 +70,11 @@ function matchAuthorYearCitation(
           // Check if any author's last name matches
           const hasMatchingAuthor = ref.authors.some(author => {
             // Extract last name (first part before comma, or first word)
-            const lastName = author.split(/[,\s]/)[0].toLowerCase();
+            const trimmed = author.trim();
+            const lastName = (trimmed.includes(',')
+              ? trimmed.substring(0, trimmed.indexOf(',')).trim()
+              : trimmed.split(/\s+/).pop() || ''
+            ).toLowerCase();
             // Use startsWith to handle abbreviations without false positives
             // e.g., "Smith" matches "Smi" but not "S" matching "Smith"
             return lastName === authorName || lastName.startsWith(authorName) || authorName.startsWith(lastName);
@@ -1648,15 +1646,8 @@ export class CitationUploadController {
         return;
       }
 
-      // Clean up S3 file
-      if (document.storagePath) {
-        try {
-          await s3Service.deleteFile(document.storagePath);
-          logger.info(`[Citation Upload] Deleted S3 file: ${document.storagePath}`);
-        } catch (s3Error) {
-          logger.warn(`[Citation Upload] Failed to delete S3 file ${document.storagePath}:`, s3Error);
-        }
-      }
+      // Capture storage path before transaction deletes the record
+      const storagePath = document.storagePath;
 
       // Delete document and all related records in transaction
       await prisma.$transaction(async (tx) => {
@@ -1700,6 +1691,16 @@ export class CitationUploadController {
           await tx.job.delete({ where: { id: document.jobId } });
         }
       });
+
+      // Clean up S3 file after DB commit so a failed transaction doesn't orphan data
+      if (storagePath) {
+        try {
+          await s3Service.deleteFile(storagePath);
+          logger.info(`[Citation Upload] Deleted S3 file: ${storagePath}`);
+        } catch (s3Error) {
+          logger.warn(`[Citation Upload] Failed to delete S3 file ${storagePath}:`, s3Error);
+        }
+      }
 
       logger.info(`[Citation Upload] Deleted document ${documentId} and associated data`);
 

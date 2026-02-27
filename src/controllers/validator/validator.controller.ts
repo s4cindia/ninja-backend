@@ -291,6 +291,12 @@ export class ValidatorController {
             .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
             .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
             .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
             .replace(/\s+/g, ' ')
             .trim()
             .split(/\s+/)
@@ -393,7 +399,7 @@ export class ValidatorController {
       let conversionCompletedAt: Date | null = null;
       if (document.status === 'UPLOADED') {
         conversionCompletedAt = new Date();
-        await prisma.$transaction([
+        const txOps: Prisma.PrismaPromise<unknown>[] = [
           prisma.editorialDocument.update({
             where: { id: documentId },
             data: {
@@ -402,11 +408,16 @@ export class ValidatorController {
               updatedAt: conversionCompletedAt,
             },
           }),
-          prisma.job.update({
-            where: { id: document.jobId },
-            data: { status: 'COMPLETED', completedAt: conversionCompletedAt },
-          }),
-        ]);
+        ];
+        if (document.jobId) {
+          txOps.push(
+            prisma.job.update({
+              where: { id: document.jobId },
+              data: { status: 'COMPLETED', completedAt: conversionCompletedAt },
+            }),
+          );
+        }
+        await prisma.$transaction(txOps);
         logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
       }
 

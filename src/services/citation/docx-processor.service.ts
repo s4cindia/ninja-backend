@@ -2065,7 +2065,10 @@ class DOCXProcessorService {
         let matchedRef: ReferenceEntry | null = null;
         for (const ref of currentReferences) {
           if (ref.authors && ref.authors[0]) {
-            const authorLastName = ref.authors[0].split(/[,\s]/)[0];
+            const a0 = String(ref.authors[0]).trim();
+            const authorLastName = a0.includes(',')
+              ? a0.substring(0, a0.indexOf(',')).trim()
+              : (a0.split(/\s+/).pop() || '');
             // Guard against empty or too-short author names that would create unsafe regex patterns
             // \b\b (empty) matches at every word boundary, causing wrong replacements
             if (!authorLastName || authorLastName.length < 2) {
@@ -2839,7 +2842,10 @@ class DOCXProcessorService {
                 const authors = oldValues.authors as string[];
                 if (authors.length > 0) {
                   // Extract last name from first author
-                  authorLastName = String(authors[0]).split(/[,\s]/)[0];
+                  const a0 = String(authors[0]).trim();
+                  authorLastName = a0.includes(',')
+                    ? a0.substring(0, a0.indexOf(',')).trim()
+                    : (a0.split(/\s+/).pop() || '');
                   logger.info(`[DOCXProcessor] Using author from metadata: "${authorLastName}"`);
                 }
               }
@@ -3215,8 +3221,9 @@ class DOCXProcessorService {
                     // Check if this is actually a reference entry, not just a citation
                     // Reference entries typically have: a year, a period after the year, and length > 40 chars
                     const hasYear = /\b(19|20)\d{2}\b/.test(para.combinedText);
+                    const hasUndated = /\bn\.d\.?\b/i.test(para.combinedText);
                     const hasRefStructure = para.combinedText.length > 40 && /\.\s/.test(para.combinedText);
-                    if (!hasYear || !hasRefStructure) {
+                    if (!hasYear && !hasUndated && !hasRefStructure) {
                       continue; // Skip this, likely an in-text citation
                     }
                   }
@@ -3483,9 +3490,6 @@ class DOCXProcessorService {
       // Unmatched paragraphs (e.g., modified by REFERENCE_SECTION_EDIT track changes)
       // must be preserved — append them after the matched/reordered paragraphs.
       if (sortedByNewPos.length > 0) {
-        // Use array indices as stable identity — xml strings may be duplicated across paragraphs
-        const matchedIndices = new Set(sortedByNewPos.map(s => paragraphs.indexOf(s.para)));
-
         // Find the range of ALL reference paragraphs (first to last)
         // Use deterministic offsets from the parser instead of xml.indexOf() which can
         // match duplicate paragraph XML elsewhere in the document.
@@ -3497,8 +3501,14 @@ class DOCXProcessorService {
           const startIdx = afterHeaderOffset + firstPara.index;
           const endIdx = afterHeaderOffset + lastPara.index + lastPara.xml.length;
           if (startIdx > 0 && endIdx > startIdx) {
-            // Collect unmatched paragraphs that fall within the range
-            const unmatchedParas = paragraphs.filter((_p, i) => !matchedIndices.has(i));
+            // Collect unmatched from the *actual XML slice* being replaced
+            const rangeXml = xml.substring(startIdx, endIdx);
+            const allParasInRange = Array.from(rangeXml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)).map(m => ({
+              xml: m[0],
+              absIndex: startIdx + (m.index ?? 0),
+            }));
+            const matchedAbsIndices = new Set(sortedByNewPos.map(s => afterHeaderOffset + s.para.index));
+            const unmatchedParas = allParasInRange.filter(p => !matchedAbsIndices.has(p.absIndex));
             const unmatchedXml = unmatchedParas.map(p => p.xml).join('');
 
             if (unmatchedXml) {
