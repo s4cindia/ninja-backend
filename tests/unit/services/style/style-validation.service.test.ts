@@ -92,7 +92,6 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { editorialAi } from '../../../../src/services/shared/editorial-ai-client';
 import { claudeService } from '../../../../src/services/ai/claude.service';
 import { styleValidation as styleValidationService } from '../../../../src/services/style/style-validation.service';
 
