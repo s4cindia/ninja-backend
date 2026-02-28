@@ -232,11 +232,37 @@ export function checkFootnoteEndnoteRefs(text: string, html: string, contentType
   }
 
   // Check for duplicates (in markers specifically)
-  // Note: Set already dedupes, but we should check the raw counts from text
+  // Reuse the same extraction logic to stay consistent with the affiliation filter
   const markerCounts = new Map<number, number>();
   if ($) {
+    const fullHtml = $.html() || '';
+    const isJournal = contentType === 'JOURNAL_ARTICLE';
+
+    // Count <sup> markers (applying journal affiliation filter)
     $('sup').each((_i, el) => {
-      const num = parseInt($(el).text().trim(), 10);
+      const supText = $(el).text().trim();
+      const num = parseInt(supText, 10);
+      if (!isNaN(num) && num > 0) {
+        if (isJournal) {
+          const elHtml = $.html(el) || '';
+          const pos = fullHtml.indexOf(elHtml);
+          if (pos >= 0 && pos < 2000) {
+            const surroundStart = Math.max(0, pos - 300);
+            const surroundEnd = Math.min(fullHtml.length, pos + 300);
+            const surroundingText = fullHtml.slice(surroundStart, surroundEnd).replace(/<[^>]*>/g, ' ');
+            if (AFFILIATION_KEYWORDS.test(surroundingText)) {
+              return; // Skip affiliation superscript
+            }
+          }
+        }
+        markerCounts.set(num, (markerCounts.get(num) || 0) + 1);
+      }
+    });
+
+    // Also count <a> anchor-based markers
+    $('a[href^="#fn"], a[href^="#footnote"], a[href^="#endnote"], a[href^="#note"]').each((_i, el) => {
+      const anchorText = $(el).text().trim();
+      const num = parseInt(anchorText, 10);
       if (!isNaN(num) && num > 0) {
         markerCounts.set(num, (markerCounts.get(num) || 0) + 1);
       }

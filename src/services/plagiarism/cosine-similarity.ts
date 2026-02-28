@@ -32,6 +32,8 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * E.g., "the quick brown fox" with n=3 → {"the quick brown", "quick brown fox"}
  */
 function getShingles(text: string, n: number = 3): Set<string> {
+  if (n <= 0) return new Set<string>();
+
   const words = text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean);
   const shingles = new Set<string>();
 

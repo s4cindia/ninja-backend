@@ -6,6 +6,10 @@ export function splitTextIntoChunks(
   text: string,
   maxChunkSize = 20_000
 ): Array<{ text: string; offset: number }> {
+  if (maxChunkSize <= 0) {
+    throw new Error(`maxChunkSize must be positive, got ${maxChunkSize}`);
+  }
+
   const chunks: Array<{ text: string; offset: number }> = [];
   let currentOffset = 0;
 

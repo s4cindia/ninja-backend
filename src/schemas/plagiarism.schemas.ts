@@ -91,12 +91,12 @@ export const getMatchesQuerySchema = z.object({
   page: z.string().optional().transform((val) => {
     if (!val) return 1;
     const parsed = parseInt(val, 10);
-    return Math.max(parsed, 1);
+    return isNaN(parsed) ? 1 : Math.max(parsed, 1);
   }),
   limit: z.string().optional().transform((val) => {
     if (!val) return 50;
     const parsed = parseInt(val, 10);
-    return Math.min(Math.max(parsed, 1), 100);
+    return isNaN(parsed) ? 50 : Math.min(Math.max(parsed, 1), 100);
   }),
 });
 

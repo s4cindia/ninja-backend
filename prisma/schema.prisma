@@ -1681,7 +1681,7 @@ model IntegrityCheckJob {
   tenantId    String
   documentId  String
   status      JobStatus @default(QUEUED)
-  checkTypes  String[]
+  checkTypes  IntegrityCheckType[]
   progress    Int       @default(0)
   totalChecks Int       @default(0)
   issuesFound Int       @default(0)

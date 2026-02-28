@@ -120,9 +120,6 @@ async function startCheck(
     return { jobId: existingJob.id };
   }
 
-  // Clear previous matches for this document (tenant-verified above)
-  await prisma.plagiarismMatch.deleteMany({ where: { documentId } });
-
   const job = await prisma.plagiarismCheckJob.create({
     data: {
       tenantId,
@@ -303,11 +300,14 @@ async function executeCheck(
       }
     }
 
-    // Batch insert all matches
-    if (allMatchData.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await prisma.plagiarismMatch.createMany({ data: allMatchData as any });
-    }
+    // Atomically replace old matches with new results
+    await prisma.$transaction(async (tx) => {
+      await tx.plagiarismMatch.deleteMany({ where: { documentId } });
+      if (allMatchData.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await tx.plagiarismMatch.createMany({ data: allMatchData as any });
+      }
+    });
 
     // Complete
     await prisma.plagiarismCheckJob.update({

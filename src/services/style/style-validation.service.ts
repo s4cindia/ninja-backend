@@ -379,6 +379,7 @@ IMPORTANT:
                   description: v.explanation || `${v.ruleReference}: ${v.originalText} → ${v.suggestedFix}`,
                   explanation: v.explanation,
                   source: 'AI',
+                  aiSeverity: v.severity,
                 });
               }
               logger.info(`[Style Validation] Chunk ${i + 1}/${chunks.length}: ${chunkViolations.length} violations`);
@@ -400,7 +401,12 @@ IMPORTANT:
         await updateProgress(80, `AI found ${allMatches.length} issues`);
       } catch (aiError) {
         logger.error('[Style Validation] AI validation failed:', aiError);
-        await updateProgress(80, 'AI validation failed');
+        // If no matches were collected from earlier chunks, fail the job
+        if (allMatches.length === 0) {
+          throw aiError instanceof Error ? aiError : new Error('AI validation failed');
+        }
+        // Otherwise continue with partial results
+        await updateProgress(80, 'AI validation partially failed, saving collected results');
       }
 
       // Phase 4: Store violations (90-100%)
@@ -936,7 +942,15 @@ IMPORTANT:
   }
 
   private inferSeverityFromMatch(match: RuleMatch): StyleSeverity {
-    // If the match has explicit severity info from AI (in description/explanation)
+    // Use AI-provided severity when available
+    if (match.aiSeverity) {
+      const normalized = match.aiSeverity.toLowerCase().trim();
+      if (normalized === 'error') return 'ERROR';
+      if (normalized === 'warning') return 'WARNING';
+      if (normalized === 'suggestion') return 'SUGGESTION';
+    }
+
+    // Fallback heuristic when AI severity is missing
     if (match.description?.toLowerCase().includes('error') ||
         match.explanation?.toLowerCase().includes('must fix')) {
       return 'ERROR';
@@ -947,10 +961,8 @@ IMPORTANT:
       return 'SUGGESTION';
     }
 
-    // For AI-detected rules, try to infer from the rule name
     if (match.ruleId.startsWith('ai-')) {
       const ruleLower = match.ruleName.toLowerCase();
-      // Grammar and punctuation errors are usually more severe
       if (ruleLower.includes('error') || ruleLower.includes('incorrect') ||
           ruleLower.includes('missing') || ruleLower.includes('required')) {
         return 'ERROR';
@@ -961,7 +973,6 @@ IMPORTANT:
       }
     }
 
-    // Default to warning
     return 'WARNING';
   }
 
