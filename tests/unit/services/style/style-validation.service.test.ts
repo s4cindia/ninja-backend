@@ -97,11 +97,11 @@ import { styleValidation as styleValidationService } from '../../../../src/servi
 
 describe('StyleValidationService', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   describe('executeValidation', () => {

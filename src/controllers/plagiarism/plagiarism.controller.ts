@@ -159,16 +159,9 @@ export class PlagiarismController {
       const { matchId } = req.params;
       const body = req.body as ReviewMatchBody;
       const userId = req.user?.id;
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
-        });
-      }
-
       const tenantId = req.user?.tenantId;
-      if (!tenantId) {
+
+      if (!userId || !tenantId) {
         return res.status(401).json({
           success: false,
           error: { code: 'UNAUTHORIZED', message: 'Authentication required' },

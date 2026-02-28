@@ -14,7 +14,11 @@ import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 import { styleRulesRegistry, type RuleMatch } from './style-rules-registry.service';
 import { houseStyleEngine } from './house-style-engine.service';
-import { editorialAi } from '../shared/editorial-ai-client';
+import { getStyleGuideRulesText } from '../shared/editorial-ai-client';
+// Claude is the designated AI provider for Editorial Services (style validation).
+// We call claudeService directly here because the orchestration logic (chunking,
+// progress tracking, house-rules merging, DB storage) lives in this service,
+// not in the shared EditorialAiClient wrapper.
 import { claudeService } from '../ai/claude.service';
 import { splitTextIntoChunks } from '../../utils/text-chunker';
 import { citationStorageService } from '../citation/citation-storage.service';
@@ -285,7 +289,7 @@ export class StyleValidationService {
 
       // Determine style guide and get rules
       const styleGuide = this.determineStyleGuide(job.ruleSetIds);
-      const styleGuideRules = editorialAi.getStyleGuideRules(styleGuide);
+      const styleGuideRules = getStyleGuideRulesText(styleGuide);
 
       // Build house rules text
       const houseRulesText = houseRules.map(rule => {

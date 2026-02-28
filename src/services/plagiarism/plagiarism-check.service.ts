@@ -12,6 +12,7 @@
  * 4. Store results as PlagiarismMatch records
  */
 
+import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
@@ -31,7 +32,10 @@ interface DetectedMatch {
   reasoning: string;
 }
 
-const CHUNK_DELAY_MS = 500;
+/** Strip delimiter sequences to prevent prompt injection from document content. */
+function sanitizeForPrompt(text: string): string {
+  return text.replace(/<<<CONTENT_START>>>/g, '<<CONTENT_START>>').replace(/<<<CONTENT_END>>>/g, '<<CONTENT_END>>');
+}
 
 /**
  * Analyze a text chunk for content copied from external published sources.
@@ -41,7 +45,7 @@ async function detectExternalPlagiarism(text: string, contentType?: string): Pro
 
 DOCUMENT TEXT:
 <<<CONTENT_START>>>
-${text}
+${sanitizeForPrompt(text)}
 <<<CONTENT_END>>>
 
 Analyze this text for passages that appear to be copied, paraphrased, or closely derived from known published sources (academic papers, books, websites, articles).
@@ -111,22 +115,31 @@ async function startCheck(
   });
   if (!doc) throw AppError.notFound('Document not found');
 
-  // Prevent duplicate concurrent jobs for the same document/tenant
-  const existingJob = await prisma.plagiarismCheckJob.findFirst({
-    where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
-    select: { id: true },
+  // Per-tenant concurrency cap: max 2 active plagiarism jobs at a time
+  const MAX_CONCURRENT_JOBS = 2;
+  const activeJobCount = await prisma.plagiarismCheckJob.count({
+    where: { tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
   });
-  if (existingJob) {
-    return { jobId: existingJob.id };
+  if (activeJobCount >= MAX_CONCURRENT_JOBS) {
+    throw AppError.badRequest(`Maximum ${MAX_CONCURRENT_JOBS} concurrent plagiarism checks allowed per tenant`);
   }
 
-  const job = await prisma.plagiarismCheckJob.create({
-    data: {
-      tenantId,
-      documentId,
-      status: 'QUEUED',
-      progress: 0,
-    },
+  // Atomically check-then-create to prevent duplicate concurrent jobs
+  const job = await prisma.$transaction(async (tx) => {
+    const existingJob = await tx.plagiarismCheckJob.findFirst({
+      where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
+      select: { id: true },
+    });
+    if (existingJob) return existingJob;
+
+    return tx.plagiarismCheckJob.create({
+      data: {
+        tenantId,
+        documentId,
+        status: 'QUEUED',
+        progress: 0,
+      },
+    });
   });
 
   // Execute asynchronously
@@ -227,19 +240,7 @@ async function executeCheck(
     logger.info(`[PlagiarismCheck] Document split into ${aiChunks.length} AI chunk(s) for analysis`);
 
     // Analyze each AI chunk for external plagiarism using Claude
-    const allMatchData: Array<{
-      documentId: string;
-      sourceChunkId: string;
-      matchedChunkId: string;
-      matchType: string;
-      similarityScore: number;
-      classification: string;
-      confidence: number;
-      aiReasoning: string;
-      sourceText: string;
-      matchedText: string;
-      status: string;
-    }> = [];
+    const allMatchData: Prisma.PlagiarismMatchCreateManyInput[] = [];
     const progressPerChunk = 80 / Math.max(aiChunks.length, 1);
 
     for (let i = 0; i < aiChunks.length; i++) {
@@ -263,17 +264,18 @@ async function executeCheck(
           ].filter(Boolean).join(' ');
 
           const validSourceTypes = ['EXTERNAL_WEB', 'EXTERNAL_ACADEMIC', 'EXTERNAL_PUBLISHER'] as const;
-          const sourceType = validSourceTypes.includes(match.sourceType as typeof validSourceTypes[number])
-            ? match.sourceType
+          type ValidSourceType = typeof validSourceTypes[number];
+          const sourceType: ValidSourceType = validSourceTypes.includes(match.sourceType as ValidSourceType)
+            ? (match.sourceType as ValidSourceType)
             : 'EXTERNAL_ACADEMIC';
 
           allMatchData.push({
             documentId,
             sourceChunkId: dbChunk.id,
-            matchedChunkId: dbChunk.id,
+            matchedChunkId: null,
             matchType: sourceType,
             similarityScore: match.similarityScore,
-            classification: match.matchType,
+            classification: match.matchType as Prisma.PlagiarismMatchCreateManyInput['classification'],
             confidence: match.confidence,
             aiReasoning: match.reasoning,
             sourceText: match.passageFromDocument.slice(0, 2000),
@@ -294,18 +296,31 @@ async function executeCheck(
         });
       }
 
-      // Rate-limit delay between chunks
+      // Minimal delay between chunks; back off more on rate limits
       if (i < aiChunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY_MS));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
-    // Atomically replace old matches with new results
+    // Replace only unreviewed (PENDING) matches; preserve human-reviewed decisions
     await prisma.$transaction(async (tx) => {
-      await tx.plagiarismMatch.deleteMany({ where: { documentId } });
+      // Only delete matches that haven't been reviewed by a human
+      await tx.plagiarismMatch.deleteMany({ where: { documentId, status: 'PENDING' } });
+
       if (allMatchData.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await tx.plagiarismMatch.createMany({ data: allMatchData as any });
+        // Fetch reviewed matches that were kept so we can avoid inserting duplicates
+        const reviewedMatches = await tx.plagiarismMatch.findMany({
+          where: { documentId },
+          select: { sourceText: true },
+        });
+        const reviewedSourceTexts = new Set(reviewedMatches.map(m => m.sourceText));
+
+        // Filter out new matches whose sourceText duplicates a kept reviewed match
+        const newMatches = allMatchData.filter(m => !reviewedSourceTexts.has(m.sourceText));
+
+        if (newMatches.length > 0) {
+          await tx.plagiarismMatch.createMany({ data: newMatches });
+        }
       }
     });
 
@@ -317,6 +332,9 @@ async function executeCheck(
         progress: 100,
         matchesFound: allMatchData.length,
         completedAt: new Date(),
+        metadata: {
+          disclaimer: 'AI-assisted similarity detection. Results are not verified plagiarism and should be reviewed by a human editor.',
+        },
       },
     });
 
@@ -378,23 +396,20 @@ async function getMatches(
   const limit = options?.limit ?? 50;
   const skip = (page - 1) * limit;
 
-  const where: Record<string, unknown> = { documentId };
-  if (options?.matchType) where.matchType = options.matchType;
-  if (options?.classification) where.classification = options.classification;
-  if (options?.status) where.status = options.status;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const typedWhere = where as any;
+  const where: Prisma.PlagiarismMatchWhereInput = { documentId };
+  if (options?.matchType) where.matchType = options.matchType as Prisma.EnumPlagiarismMatchTypeFilter;
+  if (options?.classification) where.classification = options.classification as Prisma.EnumPlagiarismClassificationFilter;
+  if (options?.status) where.status = options.status as Prisma.EnumMatchReviewStatusFilter;
 
   const [matches, total] = await Promise.all([
     prisma.plagiarismMatch.findMany({
-      where: typedWhere,
+      where,
       orderBy: [{ similarityScore: 'desc' }, { createdAt: 'desc' }],
       skip,
       take: limit,
     }),
     prisma.plagiarismMatch.count({
-      where: typedWhere,
+      where,
     }),
   ]);
 
@@ -502,6 +517,28 @@ async function bulkReview(
   return { updated: result.count };
 }
 
+/**
+ * Mark stale PROCESSING/QUEUED jobs as FAILED.
+ * Call on server startup to recover from crashes.
+ */
+async function cleanupStaleJobs(maxAgeMs = 30 * 60 * 1000): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const result = await prisma.plagiarismCheckJob.updateMany({
+    where: {
+      status: { in: ['QUEUED', 'PROCESSING'] },
+      createdAt: { lt: cutoff },
+    },
+    data: {
+      status: 'FAILED',
+      metadata: { error: 'Job timed out (stale cleanup)' },
+    },
+  });
+  if (result.count > 0) {
+    logger.info(`[PlagiarismCheck] Cleaned up ${result.count} stale job(s)`);
+  }
+  return result.count;
+}
+
 export const plagiarismCheckService = {
   startCheck,
   getJobStatus,
@@ -509,4 +546,5 @@ export const plagiarismCheckService = {
   getSummary,
   reviewMatch,
   bulkReview,
+  cleanupStaleJobs,
 };

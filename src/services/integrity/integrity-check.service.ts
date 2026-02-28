@@ -6,10 +6,11 @@
  * it identify real issues, reducing false positives from rule-based checks.
  */
 
+import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
-import { aiIntegrityCheck } from './checks/ai-integrity.check';
+import { aiIntegrityCheck, VALID_CHECK_TYPES } from './checks/ai-integrity.check';
 
 export interface CheckResult {
   checkType: string;
@@ -29,29 +30,8 @@ export interface CheckResult {
   metadata: Record<string, unknown>;
 }
 
-const ALL_CHECK_TYPES = [
-  'FIGURE_REF',
-  'TABLE_REF',
-  'EQUATION_REF',
-  'BOX_REF',
-  'CITATION_REF',
-  'SECTION_NUMBERING',
-  'FIGURE_NUMBERING',
-  'TABLE_NUMBERING',
-  'EQUATION_NUMBERING',
-  'UNIT_CONSISTENCY',
-  'ABBREVIATION',
-  'CROSS_REF',
-  'DUPLICATE_CONTENT',
-  'HEADING_HIERARCHY',
-  'ALT_TEXT',
-  'TABLE_STRUCTURE',
-  'FOOTNOTE_REF',
-  'TOC_CONSISTENCY',
-  'ISBN_FORMAT',
-  'DOI_FORMAT',
-  'TERMINOLOGY',
-];
+// Reuse the single source of truth from ai-integrity.check.ts
+const ALL_CHECK_TYPES = [...VALID_CHECK_TYPES];
 
 /**
  * Start an integrity check job.
@@ -72,24 +52,33 @@ async function startCheck(
     ? checkTypes.filter(t => ALL_CHECK_TYPES.includes(t))
     : ALL_CHECK_TYPES;
 
-  // Prevent duplicate concurrent jobs for the same document/tenant
-  const existingJob = await prisma.integrityCheckJob.findFirst({
-    where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
-    select: { id: true },
+  // Per-tenant concurrency cap: max 2 active integrity jobs at a time
+  const MAX_CONCURRENT_JOBS = 2;
+  const activeJobCount = await prisma.integrityCheckJob.count({
+    where: { tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
   });
-  if (existingJob) {
-    return { jobId: existingJob.id };
+  if (activeJobCount >= MAX_CONCURRENT_JOBS) {
+    throw AppError.badRequest(`Maximum ${MAX_CONCURRENT_JOBS} concurrent integrity checks allowed per tenant`);
   }
 
-  const job = await prisma.integrityCheckJob.create({
-    data: {
-      tenantId,
-      documentId,
-      status: 'QUEUED',
-      checkTypes: selectedTypes,
-      progress: 0,
-      totalChecks: selectedTypes.length,
-    },
+  // Atomically check-then-create to prevent duplicate concurrent jobs
+  const job = await prisma.$transaction(async (tx) => {
+    const existingJob = await tx.integrityCheckJob.findFirst({
+      where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
+      select: { id: true },
+    });
+    if (existingJob) return existingJob;
+
+    return tx.integrityCheckJob.create({
+      data: {
+        tenantId,
+        documentId,
+        status: 'QUEUED',
+        checkTypes: selectedTypes,
+        progress: 0,
+        totalChecks: selectedTypes.length,
+      },
+    });
   });
 
   // Execute asynchronously
@@ -145,17 +134,17 @@ async function executeCheck(
       onProgress: async (pct) => {
         await prisma.integrityCheckJob.update({
           where: { id: jobId },
-          data: { progress: pct, issuesFound: 0 },
+          data: { progress: pct },
         });
       },
     });
 
     // Map issues for batch insert
-    const allIssueData = allIssues.map(issue => ({
+    const allIssueData: Prisma.IntegrityIssueCreateManyInput[] = allIssues.map(issue => ({
       documentId,
       jobId,
-      checkType: issue.checkType as string,
-      severity: issue.severity,
+      checkType: issue.checkType as Prisma.IntegrityIssueCreateManyInput['checkType'],
+      severity: issue.severity as Prisma.IntegrityIssueCreateManyInput['severity'],
       title: issue.title,
       description: issue.description,
       startOffset: issue.startOffset ?? null,
@@ -165,14 +154,13 @@ async function executeCheck(
       actualValue: issue.actualValue ?? null,
       suggestedFix: issue.suggestedFix ?? null,
       context: issue.context ?? null,
-      status: 'PENDING' as const,
+      status: 'PENDING',
     }));
 
     // Batch insert issues
     if (allIssueData.length > 0) {
       await prisma.integrityIssue.createMany({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        data: allIssueData as any,
+        data: allIssueData,
       });
     }
 
@@ -258,24 +246,27 @@ async function getIssues(
   const latestJobId = await getLatestJobId(documentId);
   if (!latestJobId) return { issues: [], total: 0, page, limit, totalPages: 0 };
 
-  const where: Record<string, unknown> = { documentId, jobId: latestJobId };
-  if (options?.checkType) where.checkType = options.checkType;
-  if (options?.severity) where.severity = options.severity;
-  if (options?.status) where.status = options.status;
+  const where: Prisma.IntegrityIssueWhereInput = { documentId, jobId: latestJobId };
+  if (options?.checkType) where.checkType = options.checkType as Prisma.EnumIntegrityCheckTypeFilter;
+  if (options?.severity) where.severity = options.severity as Prisma.EnumStyleSeverityFilter;
+  if (options?.status) where.status = options.status as Prisma.EnumViolationStatusFilter;
+
+  const SEVERITY_ORDER: Record<string, number> = { ERROR: 0, WARNING: 1, SUGGESTION: 2 };
 
   const [issues, total] = await Promise.all([
     prisma.integrityIssue.findMany({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      where: where as any,
-      orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }],
+      where,
+      orderBy: [{ createdAt: 'desc' }],
       skip,
       take: limit,
     }),
     prisma.integrityIssue.count({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      where: where as any,
+      where,
     }),
   ]);
+
+  // Sort by severity priority (ERROR > WARNING > SUGGESTION) instead of alphabetically
+  issues.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
 
   return { issues, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
@@ -384,6 +375,28 @@ async function bulkAction(
   return { updated: result.count };
 }
 
+/**
+ * Mark stale PROCESSING/QUEUED jobs as FAILED.
+ * Call on server startup to recover from crashes.
+ */
+async function cleanupStaleJobs(maxAgeMs = 30 * 60 * 1000): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const result = await prisma.integrityCheckJob.updateMany({
+    where: {
+      status: { in: ['QUEUED', 'PROCESSING'] },
+      createdAt: { lt: cutoff },
+    },
+    data: {
+      status: 'FAILED',
+      metadata: { error: 'Job timed out (stale cleanup)' },
+    },
+  });
+  if (result.count > 0) {
+    logger.info(`[IntegrityCheck] Cleaned up ${result.count} stale job(s)`);
+  }
+  return result.count;
+}
+
 export const integrityCheckService = {
   startCheck,
   getJobStatus,
@@ -392,4 +405,5 @@ export const integrityCheckService = {
   applyFix,
   ignoreIssue,
   bulkAction,
+  cleanupStaleJobs,
 };

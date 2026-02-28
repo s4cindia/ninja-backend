@@ -767,7 +767,10 @@ export async function applyRevisionMarksToDocx(
       const escapedOld = escapeXmlForDocx(change.oldText);
 
       // Resolve author from source label, falling back to default
-      const changeAuthor = (change.source && sourceAuthorMap[change.source]) || author;
+      // XML-escape the author to prevent injection from special characters in attribute values
+      const changeAuthor = escapeXmlAttribute(
+        (change.source && sourceAuthorMap[change.source]) || author
+      );
 
       // Find the placeholder within a <w:t> element
       const phRegex = new RegExp(
@@ -803,9 +806,10 @@ export async function applyRevisionMarksToDocx(
         }
 
         // Rebuild: keep text before/after the placeholder in their own runs, splice in revision marks
+        // Include lastRPr in the after-segment run so the trailing text retains original formatting
         const replacement = `${openTag}${before}${closeTag}</w:r>` +
           delXml + insXml +
-          `<w:r>${openTag}${after}${closeTag}`;
+          `<w:r>${lastRPr}${openTag}${after}${closeTag}`;
 
         documentXml = documentXml.replace(fullMatch, replacement);
       }
@@ -847,6 +851,19 @@ function escapeXmlForDocx(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/**
+ * Escape a string for safe inclusion in an XML attribute value.
+ * Prevents XML injection from special characters in user-supplied strings.
+ */
+function escapeXmlAttribute(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 /**
@@ -907,8 +924,6 @@ function replaceTextAcrossRuns(
 
   while ((sm = searchPattern.exec(combinedText)) !== null) {
     matches.push({ start: sm.index, end: sm.index + sm[0].length });
-    // Only replace first occurrence
-    break;
   }
 
   if (matches.length === 0) return { xml, count: 0 };

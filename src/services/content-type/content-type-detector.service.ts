@@ -25,14 +25,13 @@ export function detectContentType(text: string, html: string): DetectionResult {
   const journalScore = { total: 0, signals: [] as string[] };
   const bookScore = { total: 0, signals: [] as string[] };
 
-  const $ = html ? cheerio.load(html) : null;
   const earlyText = text.slice(0, 3000);
   const earlyHtml = html.slice(0, 4000);
 
   // === Journal Article Signals ===
 
   // 1. Superscript numbers in early HTML (author affiliations)
-  if ($) {
+  if (html) {
     const earlyHtmlFragment = cheerio.load(earlyHtml);
     let supCount = 0;
     earlyHtmlFragment('sup').each((_i, el) => {
@@ -89,8 +88,9 @@ export function detectContentType(text: string, html: string): DetectionResult {
     bookScore.total += 4;
     bookScore.signals.push('table-of-contents');
   }
-  if ($) {
-    const tocEl = $('[class*="toc"], [id*="toc"], [class*="table-of-contents"], [id*="table-of-contents"]');
+  if (html) {
+    const $doc = cheerio.load(html);
+    const tocEl = $doc('[class*="toc"], [id*="toc"], [class*="table-of-contents"], [id*="table-of-contents"]');
     if (tocEl.length > 0) {
       bookScore.total += 2;
       bookScore.signals.push('toc-html-element');
@@ -133,7 +133,7 @@ export function detectContentType(text: string, html: string): DetectionResult {
     ...bookScore.signals.map(s => `book:${s}`),
   ];
 
-  logger.info(
+  logger.debug(
     `[ContentType] Scores — journal=${journalScore.total}, book=${bookScore.total}, signals=[${allSignals.join(', ')}]`
   );
 

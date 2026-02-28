@@ -58,7 +58,7 @@ interface DocumentStructure {
 // Constants
 // ---------------------------------------------------------------------------
 
-const VALID_CHECK_TYPES = new Set([
+export const VALID_CHECK_TYPES = new Set([
   'FIGURE_REF',
   'TABLE_REF',
   'EQUATION_REF',
@@ -82,7 +82,10 @@ const VALID_CHECK_TYPES = new Set([
   'TERMINOLOGY',
 ]);
 
-const CHUNK_DELAY_MS = 500;
+/** Strip delimiter sequences to prevent prompt injection from document content. */
+function sanitizeForPrompt(text: string): string {
+  return text.replace(/<<<CONTENT_START>>>/g, '<<CONTENT_START>>').replace(/<<<CONTENT_END>>>/g, '<<CONTENT_END>>');
+}
 
 // ---------------------------------------------------------------------------
 // 1a. Structural pre-pass (no AI, just context for the prompt)
@@ -181,7 +184,7 @@ TABLE_STRUCTURE, FOOTNOTE_REF, TOC_CONSISTENCY, ISBN_FORMAT, DOI_FORMAT, TERMINO
 
 DOCUMENT TEXT (chunk ${chunkIndex + 1} of ${totalChunks}):
 <<<CONTENT_START>>>
-${chunkText}
+${sanitizeForPrompt(chunkText)}
 <<<CONTENT_END>>>
 
 Return a JSON array. For each issue found:
@@ -206,7 +209,8 @@ Return [] if no issues are found in this chunk.`;
 
 function validateAndMapIssues(
   rawIssues: AIIssue[],
-  chunkOffset: number
+  chunkOffset: number,
+  chunkText: string
 ): CheckIssue[] {
   const issues: CheckIssue[] = [];
 
@@ -230,6 +234,17 @@ function validateAndMapIssues(
       continue;
     }
 
+    // Compute actual offset by searching for originalText within the chunk
+    let startOffset = chunkOffset;
+    let endOffset: number | undefined;
+    if (raw.originalText) {
+      const idx = chunkText.indexOf(raw.originalText);
+      if (idx >= 0) {
+        startOffset = chunkOffset + idx;
+        endOffset = startOffset + raw.originalText.length;
+      }
+    }
+
     issues.push({
       checkType: raw.checkType,
       severity,
@@ -240,8 +255,8 @@ function validateAndMapIssues(
       actualValue: raw.actualValue ?? undefined,
       suggestedFix: raw.suggestedFix ?? undefined,
       context: raw.context ?? undefined,
-      startOffset: chunkOffset,
-      endOffset: undefined,
+      startOffset,
+      endOffset,
     });
   }
 
@@ -262,15 +277,15 @@ export async function aiIntegrityCheck(
   }
 ): Promise<CheckIssue[]> {
   try {
-    logger.info('[AI Integrity] Starting AI-based integrity check');
+    logger.debug('[AI Integrity] Starting AI-based integrity check');
 
     // Structural pre-pass
     const structure = extractDocumentStructure(text, html);
-    logger.info(`[AI Integrity] Document structure: ${JSON.stringify(structure)}`);
+    logger.debug(`[AI Integrity] Document structure: ${JSON.stringify(structure)}`);
 
     // Chunk the text
     const chunks = splitTextIntoChunks(text);
-    logger.info(`[AI Integrity] Document split into ${chunks.length} chunk(s)`);
+    logger.debug(`[AI Integrity] Document split into ${chunks.length} chunk(s)`);
 
     const allIssues: CheckIssue[] = [];
 
@@ -295,7 +310,7 @@ export async function aiIntegrityCheck(
 
         // Validate that response is an array
         if (Array.isArray(rawIssues)) {
-          const mapped = validateAndMapIssues(rawIssues, chunk.offset);
+          const mapped = validateAndMapIssues(rawIssues, chunk.offset, chunk.text);
           allIssues.push(...mapped);
           logger.info(
             `[AI Integrity] Chunk ${i + 1}/${chunks.length}: ${mapped.length} issue(s)`
@@ -305,7 +320,12 @@ export async function aiIntegrityCheck(
             `[AI Integrity] Chunk ${i + 1}/${chunks.length}: response was not an array, skipping`
           );
         }
-      } catch (chunkError) {
+      } catch (chunkError: unknown) {
+        const isRateLimit = chunkError instanceof Error && chunkError.message?.includes('429');
+        if (isRateLimit && i < chunks.length - 1) {
+          logger.warn(`[AI Integrity] Rate limited on chunk ${i + 1}, backing off 2s`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
         logger.error(
           `[AI Integrity] Chunk ${i + 1}/${chunks.length} failed:`,
           chunkError
@@ -319,9 +339,9 @@ export async function aiIntegrityCheck(
         await options.onProgress(pct);
       }
 
-      // Rate-limit delay between chunks
+      // Minimal delay between chunks (only when multiple); back off more on errors
       if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY_MS));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 

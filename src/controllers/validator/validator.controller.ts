@@ -288,11 +288,12 @@ export class ValidatorController {
         const detection = contentTypeDetector.detectContentType(plainText, document.documentContent.fullHtml);
         if (detection.contentType !== 'UNKNOWN') {
           detectedContentType = detection.contentType;
-          await prisma.editorialDocument.update({
-            where: { id: documentId },
+          // Conditional update: only write if still UNKNOWN (prevents race between concurrent requests)
+          await prisma.editorialDocument.updateMany({
+            where: { id: documentId, contentType: 'UNKNOWN' },
             data: { contentType: detection.contentType },
           });
-          logger.info(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
+          logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
         }
       }
 
@@ -429,16 +430,17 @@ export class ValidatorController {
         logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
       }
 
-      // Detect content type for freshly converted documents
+      // Lazy backfill: detect content type for documents converted before this feature.
+      // Uses updateMany with conditional WHERE (idempotent, safe in GET handler).
       if (detectedContentType === 'UNKNOWN') {
         const detection = contentTypeDetector.detectContentType(fullText, htmlContent);
         if (detection.contentType !== 'UNKNOWN') {
           detectedContentType = detection.contentType;
-          await prisma.editorialDocument.update({
-            where: { id: documentId },
+          await prisma.editorialDocument.updateMany({
+            where: { id: documentId, contentType: 'UNKNOWN' },
             data: { contentType: detection.contentType },
           });
-          logger.info(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
+          logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
         }
       }
 
@@ -507,7 +509,8 @@ export class ValidatorController {
       // Set appropriate headers
       res.setHeader('Content-Type', document.mimeType);
       res.setHeader('Content-Length', fileBuffer.length);
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
+      const safeName = document.originalName.replace(/[^\x20-\x7E]/g, '_');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(document.originalName)}`);
 
       // Send the file
       res.send(fileBuffer);
@@ -976,7 +979,8 @@ export class ValidatorController {
 
       // Send the DOCX file
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(exportName)}"`);
+      const safeName = exportName.replace(/[^\x20-\x7E]/g, '_');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);
 
