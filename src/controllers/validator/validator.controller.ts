@@ -9,6 +9,8 @@ import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { docxConversionService } from '../../services/document/docx-conversion.service';
+import { contentTypeDetector } from '../../services/content-type/content-type-detector.service';
+import { htmlToPlainText } from '../../utils/html-to-text';
 
 const SUPPORTED_MIME_TYPES = {
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -255,9 +257,11 @@ export class ValidatorController {
           originalName: true,
           fileSize: true,
           wordCount: true,
+          contentType: true,
           documentContent: {
             select: {
               fullHtml: true,
+              fullText: true,
             },
           },
           job: {
@@ -275,6 +279,21 @@ export class ValidatorController {
           error: { code: 'NOT_FOUND', message: 'Document not found' },
         });
         return;
+      }
+
+      // Auto-detect content type if unknown
+      let detectedContentType = document.contentType;
+      if (detectedContentType === 'UNKNOWN' && document.documentContent?.fullHtml) {
+        const plainText = document.documentContent.fullText || '';
+        const detection = contentTypeDetector.detectContentType(plainText, document.documentContent.fullHtml);
+        if (detection.contentType !== 'UNKNOWN') {
+          detectedContentType = detection.contentType;
+          await prisma.editorialDocument.update({
+            where: { id: documentId },
+            data: { contentType: detection.contentType },
+          });
+          logger.info(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
+        }
       }
 
       // If we have cached HTML content, return it
@@ -336,6 +355,7 @@ export class ValidatorController {
             fileSize: document.fileSize,
             wordCount: responseWordCount,
             processingTime: responseProcessingTime,
+            contentType: detectedContentType,
           },
         });
         return;
@@ -365,19 +385,7 @@ export class ValidatorController {
         `footnotes=${result.metadata.footnoteCount}, usedPandoc=${result.usedPandoc}`);
 
       // Extract plain text from HTML for style validation
-      // First remove style and script blocks entirely, then strip remaining tags
-      const fullText = htmlContent
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')  // Remove style blocks
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script blocks
-        .replace(/<[^>]*>/g, ' ')      // Remove remaining HTML tags
-        .replace(/&nbsp;/g, ' ')       // Decode &nbsp;
-        .replace(/&amp;/g, '&')        // Decode &amp;
-        .replace(/&lt;/g, '<')         // Decode &lt;
-        .replace(/&gt;/g, '>')         // Decode &gt;
-        .replace(/&quot;/g, '"')       // Decode &quot;
-        .replace(/&#39;/g, "'")        // Decode &#39;
-        .replace(/\s+/g, ' ')          // Normalize whitespace
-        .trim();
+      const fullText = htmlToPlainText(htmlContent);
 
       // Cache the HTML content in EditorialDocumentContent table
       await prisma.editorialDocumentContent.upsert({
@@ -421,6 +429,19 @@ export class ValidatorController {
         logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
       }
 
+      // Detect content type for freshly converted documents
+      if (detectedContentType === 'UNKNOWN') {
+        const detection = contentTypeDetector.detectContentType(fullText, htmlContent);
+        if (detection.contentType !== 'UNKNOWN') {
+          detectedContentType = detection.contentType;
+          await prisma.editorialDocument.update({
+            where: { id: documentId },
+            data: { contentType: detection.contentType },
+          });
+          logger.info(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
+        }
+      }
+
       const effectiveCompletedAt = conversionCompletedAt ?? document.job?.completedAt;
       res.json({
         success: true,
@@ -435,6 +456,7 @@ export class ValidatorController {
             : null,
           conversionWarnings: result.warnings,
           metadata: result.metadata,
+          contentType: detectedContentType,
         },
       });
     } catch (error) {
@@ -485,7 +507,7 @@ export class ValidatorController {
       // Set appropriate headers
       res.setHeader('Content-Type', document.mimeType);
       res.setHeader('Content-Length', fileBuffer.length);
-      res.setHeader('Content-Disposition', `inline; filename="${document.originalName}"`);
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(document.originalName)}"`);
 
       // Send the file
       res.send(fileBuffer);
@@ -538,19 +560,7 @@ export class ValidatorController {
       const previousContent = document.documentContent?.fullHtml || '';
 
       // Extract plain text from HTML for style validation
-      // First remove style and script blocks entirely, then strip remaining tags
-      const fullText = content
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')  // Remove style blocks
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // Remove script blocks
-        .replace(/<[^>]*>/g, ' ')      // Remove remaining HTML tags
-        .replace(/&nbsp;/g, ' ')       // Decode &nbsp;
-        .replace(/&amp;/g, '&')        // Decode &amp;
-        .replace(/&lt;/g, '<')         // Decode &lt;
-        .replace(/&gt;/g, '>')         // Decode &gt;
-        .replace(/&quot;/g, '"')       // Decode &quot;
-        .replace(/&#39;/g, "'")        // Decode &#39;
-        .replace(/\s+/g, ' ')          // Normalize whitespace
-        .trim();
+      const fullText = htmlToPlainText(content);
 
       const wordCount = fullText.split(/\s+/).filter(Boolean).length;
 
@@ -583,7 +593,7 @@ export class ValidatorController {
         const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
         versionNumber = await prisma.$transaction(async (tx) => {
           // Acquire advisory lock scoped to this document
-          await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
           // Get the latest version number
           const latestVersion = await tx.documentVersion.findFirst({
@@ -806,7 +816,7 @@ export class ValidatorController {
       const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
       const newVersionNumber = await prisma.$transaction(async (tx) => {
         // Acquire advisory lock scoped to this document
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
         // Update current content
         await tx.editorialDocumentContent.upsert({
@@ -925,18 +935,44 @@ export class ValidatorController {
         return;
       }
 
-      logger.info(`[Validator] Exporting document ${documentId} to DOCX`);
+      const rawMode = (req.query.mode as string) || 'clean';
+      const exportMode: 'clean' | 'tracked' = rawMode === 'tracked' ? 'tracked' : 'clean';
+      logger.info(`[Validator] Exporting document ${documentId} to DOCX (mode: ${exportMode})`);
 
-      // Convert HTML back to DOCX using Pandoc
-      const docxBuffer = await docxConversionService.convertHtmlToDocx(
-        document.documentContent.fullHtml,
-        {
-          title: document.originalName.replace(/\.docx$/i, ''),
+      let docxBuffer: Buffer;
+      const titleBase = document.originalName.replace(/\.docx$/i, '');
+      const currentHtml = document.documentContent.fullHtml;
+
+      // Both modes use the original DOCX to preserve formatting.
+      // 'clean'   — plain text replacement (accept all changes)
+      // 'tracked' — Word revision marks (<w:del>/<w:ins>) that can be accepted/rejected in Word
+      if (document.storagePath && document.storageType) {
+        try {
+          const originalBuffer = await citationStorageService.getFileBuffer(
+            document.storagePath,
+            document.storageType as 'S3' | 'LOCAL'
+          );
+          if (originalBuffer) {
+            docxBuffer = await docxConversionService.exportWithTrackChanges(
+              originalBuffer,
+              currentHtml,
+              { title: titleBase, mode: exportMode }
+            );
+            logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+          } else {
+            docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
+          }
+        } catch (err) {
+          logger.warn(`[Validator] Original DOCX export failed, falling back to Pandoc:`, err);
+          docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
         }
-      );
+      } else {
+        docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
+      }
 
       // Generate filename
-      const exportName = document.originalName.replace(/\.docx$/i, '') + '_edited.docx';
+      const suffix = exportMode === 'tracked' ? '_tracked' : '_edited';
+      const exportName = document.originalName.replace(/\.docx$/i, '') + suffix + '.docx';
 
       // Send the DOCX file
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');

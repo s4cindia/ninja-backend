@@ -407,7 +407,7 @@ export const saveExtractedRulesSchema = {
     sourceDocumentName: z.string().max(255).optional(),
     ruleSetName: z.string().min(1).max(200).optional(),
     ruleSetDescription: z.string().max(1000).optional(),
-    baseStyleGuide: styleGuideTypeEnum.optional(),
+    baseStyleGuide: z.union([styleGuideTypeEnum, z.literal('')]).optional(),
   }),
 };
 

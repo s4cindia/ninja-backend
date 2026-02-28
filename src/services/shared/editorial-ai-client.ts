@@ -613,7 +613,7 @@ Return ONLY the JSON array, no other text:`;
   /**
    * Get comprehensive style guide rules for AI validation
    */
-  private getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom'): {
+  getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom'): {
     name: string;
     referencePrefix: string;
     rules: string;

@@ -52,7 +52,7 @@ class ClaudeService {
     // Claude models - verified against Anthropic API (2026-02-17)
     // Model IDs must match Anthropic API exactly to avoid 400/404 errors
     const models: Record<string, string> = {
-      haiku: 'claude-3-haiku-20240307',        // Fast, cost-effective (Claude 3 Haiku)
+      haiku: 'claude-haiku-4-5-20251001',       // Fast, cost-effective (Claude Haiku 4.5)
       sonnet: 'claude-sonnet-4-20250514',      // Balanced performance (Claude Sonnet 4)
       opus: 'claude-opus-4-5-20251101'         // Most capable (Claude Opus 4.5)
     };
