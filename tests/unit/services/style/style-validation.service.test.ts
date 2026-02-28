@@ -47,6 +47,31 @@ vi.mock('../../../../src/lib/prisma', () => ({
 vi.mock('../../../../src/services/shared/editorial-ai-client', () => ({
   editorialAi: {
     validateStyle: vi.fn(),
+    getStyleGuideRules: vi.fn().mockReturnValue({
+      name: 'Test Style Guide',
+      referencePrefix: 'TEST',
+      rules: 'Test rules',
+    }),
+  },
+}));
+
+// Mock claude service
+vi.mock('../../../../src/services/ai/claude.service', () => ({
+  claudeService: {
+    generateJSON: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+// Mock text chunker
+vi.mock('../../../../src/utils/text-chunker', () => ({
+  splitTextIntoChunks: vi.fn().mockReturnValue([{ text: 'This is sample text for validation.', offset: 0 }]),
+}));
+
+// Mock house style engine
+vi.mock('../../../../src/services/style/house-style-engine.service', () => ({
+  houseStyleEngine: {
+    getRulesFromSets: vi.fn().mockResolvedValue([]),
+    getActiveRules: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -68,6 +93,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import prisma from '../../../../src/lib/prisma';
 import { editorialAi } from '../../../../src/services/shared/editorial-ai-client';
+import { claudeService } from '../../../../src/services/ai/claude.service';
 import { styleValidation as styleValidationService } from '../../../../src/services/style/style-validation.service';
 
 describe('StyleValidationService', () => {
@@ -76,7 +102,7 @@ describe('StyleValidationService', () => {
   });
 
   afterEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('executeValidation', () => {
@@ -206,11 +232,10 @@ describe('StyleValidationService', () => {
         };
         return callback(txMock);
       });
-      vi.mocked(editorialAi.validateStyle).mockResolvedValue([
+      vi.mocked(claudeService.generateJSON).mockResolvedValue([
         {
           rule: 'Test Rule',
           ruleReference: 'CHICAGO 1.1',
-          location: { start: 0, end: 6, lineNumber: 1 },
           originalText: 'sample',
           suggestedFix: 'example',
           explanation: 'Use example instead of sample',
@@ -225,7 +250,7 @@ describe('StyleValidationService', () => {
 
       expect(result).toBe(1);
       expect(prisma.styleValidationJob.update).toHaveBeenCalled();
-      expect(editorialAi.validateStyle).toHaveBeenCalled();
+      expect(claudeService.generateJSON).toHaveBeenCalled();
     });
 
     it('should call progress callback during execution', async () => {
@@ -280,7 +305,7 @@ describe('StyleValidationService', () => {
         };
         return callback(txMock);
       });
-      vi.mocked(editorialAi.validateStyle).mockResolvedValue([]);
+      vi.mocked(claudeService.generateJSON).mockResolvedValue([]);
       vi.mocked(prisma.styleViolation.count).mockResolvedValue(0);
 
       const progressCallback = vi.fn();
