@@ -45,8 +45,33 @@ vi.mock('../../../../src/lib/prisma', () => ({
 
 // Mock the editorial AI client
 vi.mock('../../../../src/services/shared/editorial-ai-client', () => ({
+  getStyleGuideRulesText: vi.fn().mockReturnValue({
+    name: 'Test Style Guide',
+    referencePrefix: 'TEST',
+    rules: 'Test rules',
+  }),
   editorialAi: {
     validateStyle: vi.fn(),
+  },
+}));
+
+// Mock claude service
+vi.mock('../../../../src/services/ai/claude.service', () => ({
+  claudeService: {
+    generateJSON: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+// Mock text chunker
+vi.mock('../../../../src/utils/text-chunker', () => ({
+  splitTextIntoChunks: vi.fn().mockReturnValue([{ text: 'This is sample text for validation.', offset: 0 }]),
+}));
+
+// Mock house style engine
+vi.mock('../../../../src/services/style/house-style-engine.service', () => ({
+  houseStyleEngine: {
+    getRulesFromSets: vi.fn().mockResolvedValue([]),
+    getActiveRules: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -67,12 +92,15 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { editorialAi } from '../../../../src/services/shared/editorial-ai-client';
+import { claudeService } from '../../../../src/services/ai/claude.service';
+import { splitTextIntoChunks } from '../../../../src/utils/text-chunker';
+import { getStyleGuideRulesText } from '../../../../src/services/shared/editorial-ai-client';
+import { houseStyleEngine } from '../../../../src/services/style/house-style-engine.service';
 import { styleValidation as styleValidationService } from '../../../../src/services/style/style-validation.service';
 
 describe('StyleValidationService', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   afterEach(() => {
@@ -192,6 +220,9 @@ describe('StyleValidationService', () => {
         },
       };
 
+      vi.mocked(splitTextIntoChunks).mockReturnValue([{ text: 'This is sample text for validation.', offset: 0 }]);
+      vi.mocked(getStyleGuideRulesText).mockReturnValue({ name: 'Test Style Guide', referencePrefix: 'TEST', rules: 'Test rules' });
+      vi.mocked(houseStyleEngine.getRulesFromSets).mockResolvedValue([]);
       vi.mocked(prisma.styleValidationJob.findUnique).mockResolvedValue(mockJob);
       vi.mocked(prisma.editorialDocument.findUnique).mockResolvedValue(mockDocument as any);
       vi.mocked(prisma.styleValidationJob.update).mockResolvedValue(mockJob);
@@ -206,11 +237,10 @@ describe('StyleValidationService', () => {
         };
         return callback(txMock);
       });
-      vi.mocked(editorialAi.validateStyle).mockResolvedValue([
+      vi.mocked(claudeService.generateJSON).mockResolvedValue([
         {
           rule: 'Test Rule',
           ruleReference: 'CHICAGO 1.1',
-          location: { start: 0, end: 6, lineNumber: 1 },
           originalText: 'sample',
           suggestedFix: 'example',
           explanation: 'Use example instead of sample',
@@ -225,7 +255,7 @@ describe('StyleValidationService', () => {
 
       expect(result).toBe(1);
       expect(prisma.styleValidationJob.update).toHaveBeenCalled();
-      expect(editorialAi.validateStyle).toHaveBeenCalled();
+      expect(claudeService.generateJSON).toHaveBeenCalled();
     });
 
     it('should call progress callback during execution', async () => {
@@ -266,6 +296,9 @@ describe('StyleValidationService', () => {
         },
       };
 
+      vi.mocked(splitTextIntoChunks).mockReturnValue([{ text: 'Short text.', offset: 0 }]);
+      vi.mocked(getStyleGuideRulesText).mockReturnValue({ name: 'Test Style Guide', referencePrefix: 'TEST', rules: 'Test rules' });
+      vi.mocked(houseStyleEngine.getRulesFromSets).mockResolvedValue([]);
       vi.mocked(prisma.styleValidationJob.findUnique).mockResolvedValue(mockJob);
       vi.mocked(prisma.editorialDocument.findUnique).mockResolvedValue(mockDocument as any);
       vi.mocked(prisma.styleValidationJob.update).mockResolvedValue(mockJob);
@@ -280,7 +313,7 @@ describe('StyleValidationService', () => {
         };
         return callback(txMock);
       });
-      vi.mocked(editorialAi.validateStyle).mockResolvedValue([]);
+      vi.mocked(claudeService.generateJSON).mockResolvedValue([]);
       vi.mocked(prisma.styleViolation.count).mockResolvedValue(0);
 
       const progressCallback = vi.fn();

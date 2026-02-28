@@ -265,7 +265,7 @@ class DocumentVersioningService {
 
     const result = await prisma.$transaction(async (tx) => {
       // Acquire transaction-level advisory lock (automatically released at commit/rollback)
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
       // Get latest version (now safe from race conditions)
       const latestVersions = await tx.documentVersion.findMany({

@@ -265,6 +265,9 @@ export class StyleGuideUploadController {
       // Use provided name or generate from source document
       const finalRuleSetName = ruleSetName || sourceDocumentName || `Imported Rules ${new Date().toISOString().split('T')[0]}`;
 
+      // Normalize baseStyleGuide: strip empty strings
+      const validBaseStyleGuide = baseStyleGuide && baseStyleGuide.trim() !== '' ? baseStyleGuide : undefined;
+
       logger.info(`[Style Upload] Creating rule set "${finalRuleSetName}" with ${rules.length} rules`);
 
       // Create a new rule set for the extracted rules
@@ -273,7 +276,7 @@ export class StyleGuideUploadController {
         ruleSet = await houseStyleEngine.createRuleSet(tenantId, userId, {
           name: finalRuleSetName,
           description: ruleSetDescription || `Rules extracted from ${sourceDocumentName || 'uploaded document'}`,
-          baseStyleGuide: baseStyleGuide || undefined,
+          baseStyleGuide: validBaseStyleGuide,
           isDefault: false,
           source: 'uploaded',
           sourceFile: sourceDocumentName,

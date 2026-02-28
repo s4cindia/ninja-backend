@@ -647,27 +647,40 @@ export async function applyChangesToDocx(
       throw new Error('Invalid DOCX: missing document.xml');
     }
 
-    // Apply text replacements (preserving XML structure)
+    // Apply text replacements using cross-run matching
+    // Text in DOCX is split across multiple <w:t> elements within <w:r> runs,
+    // so we use replaceTextAcrossRuns to handle this properly
+    let applied = 0;
     for (const change of changes) {
-      // Escape special XML characters
-      const escapedOld = change.oldText
+      // XML-encode old text to match content within <w:t> tags
+      const xmlOldText = change.oldText
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-      const escapedNew = change.newText
+        .replace(/>/g, '&gt;');
+      const xmlNewText = change.newText
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/>/g, '&gt;');
 
-      // Simple text replacement within <w:t> tags
-      // This is a simplified approach - for complex changes, would need proper XML parsing
-      documentXml = documentXml.replace(
-        new RegExp(escapedOld.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
-        escapedNew
-      );
+      const result = replaceTextAcrossRuns(documentXml, xmlOldText, xmlNewText);
+      if (result.count > 0) {
+        documentXml = result.xml;
+        applied += result.count;
+      } else {
+        // Try with original (non-XML-encoded) text
+        const result2 = replaceTextAcrossRuns(documentXml, change.oldText, change.newText);
+        if (result2.count > 0) {
+          documentXml = result2.xml;
+          applied += result2.count;
+        }
+      }
     }
+
+    logger.info(`[DocxConversion] Clean mode: applied ${applied}/${changes.length} text replacements`);
+
+    // Clean up empty elements
+    documentXml = documentXml.replace(/<w:r><w:t[^>]*><\/w:t><\/w:r>/g, '');
+    documentXml = documentXml.replace(/<w:t[^>]*><\/w:t>/g, '');
 
     // Update the document.xml in the ZIP
     zip.file('word/document.xml', documentXml);
@@ -684,6 +697,287 @@ export async function applyChangesToDocx(
     logger.error('[DocxConversion] Failed to apply changes to DOCX:', error);
     throw error;
   }
+}
+
+/**
+ * Apply changes to a DOCX file using proper Word Track Changes (revision marks).
+ * Creates <w:del> and <w:ins> elements that appear as tracked changes in Word,
+ * preserving the original DOCX formatting and allowing accept/reject in Word.
+ */
+export async function applyRevisionMarksToDocx(
+  originalBuffer: Buffer,
+  changes: Array<{ oldText: string; newText: string; source?: string }>,
+  author = 'Ninja Editorial'
+): Promise<Buffer> {
+  try {
+    const zip = await JSZip.loadAsync(originalBuffer);
+    let documentXml = await zip.file('word/document.xml')?.async('string');
+
+    if (!documentXml) {
+      throw new Error('Invalid DOCX: missing document.xml');
+    }
+
+    // Source-to-author mapping for track change attribution
+    const sourceAuthorMap: Record<string, string> = {
+      'style': 'Style Validation',
+      'integrity': 'Integrity Check',
+      'plagiarism': 'Plagiarism Check',
+      'manual': 'Manual Edit',
+    };
+
+    // --- PHASE 1: Replace target text with placeholders (handles cross-run matching) ---
+    const placeholders = new Map<string, { oldText: string; newText: string; source?: string }>();
+    let phIndex = 0;
+    let applied = 0;
+
+    for (const change of changes) {
+      const placeholder = `__REVMARK_PH_${phIndex}__`;
+      placeholders.set(placeholder, change);
+      phIndex++;
+
+      // XML-encode the old text for matching within <w:t> content
+      const xmlOldText = change.oldText
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      const result = replaceTextAcrossRuns(documentXml, xmlOldText, placeholder);
+      if (result.count > 0) {
+        documentXml = result.xml;
+        applied += result.count;
+        logger.debug(`[DocxConversion] Phase 1: Placed placeholder for change (${result.count} match)`);
+      } else {
+        // Try with original (non-XML-encoded) text
+        const result2 = replaceTextAcrossRuns(documentXml, change.oldText, placeholder);
+        if (result2.count > 0) {
+          documentXml = result2.xml;
+          applied += result2.count;
+          logger.debug(`[DocxConversion] Phase 1: Placed placeholder (alt) for change (${result2.count} match)`);
+        } else {
+          logger.debug(`[DocxConversion] Phase 1: No match found for change`);
+        }
+      }
+    }
+
+    // --- PHASE 2: Replace placeholders with <w:del>/<w:ins> revision marks ---
+    const revisionDate = new Date().toISOString();
+    let revisionId = 100;
+
+    for (const [placeholder, change] of placeholders) {
+      const escapedOld = escapeXmlForDocx(change.oldText);
+
+      // Resolve author from source label, falling back to default
+      // XML-escape the author to prevent injection from special characters in attribute values
+      const changeAuthor = escapeXmlAttribute(
+        (change.source && sourceAuthorMap[change.source]) || author
+      );
+
+      // Find the placeholder within a <w:t> element
+      const phRegex = new RegExp(
+        `(<w:t[^>]{0,200}>)([^<]{0,10000}?)${escapeRegexStr(placeholder)}([^<]{0,10000}?)(</w:t>)`
+      );
+      const phMatch = phRegex.exec(documentXml);
+
+      if (phMatch) {
+        const [fullMatch, openTag, before, after, closeTag] = phMatch;
+
+        // Extract <w:rPr> from the enclosing <w:r> that contains this <w:t>
+        // Look backwards from the match position to find the nearest <w:rPr>...</w:rPr> within the same <w:r>
+        const lookbackStart: number = Math.max(0, phMatch.index - 2000);
+        const lookbackStr: string = documentXml.substring(lookbackStart, phMatch.index);
+        // Find the last <w:rPr>...</w:rPr> block before this <w:t> (within the same run)
+        const rPrMatches: RegExpMatchArray[] = [...lookbackStr.matchAll(/<w:rPr>[\s\S]*?<\/w:rPr>/g)];
+        const lastRPr: string = rPrMatches.length > 0 ? rPrMatches[rPrMatches.length - 1][0] : '';
+
+        // Build deletion revision mark with formatting preserved
+        const delXml = `<w:del w:id="${revisionId}" w:author="${changeAuthor}" w:date="${revisionDate}">` +
+          `<w:r>${lastRPr}<w:delText xml:space="preserve">${escapedOld}</w:delText></w:r>` +
+          `</w:del>`;
+        revisionId++;
+
+        // Build insertion revision mark (if replacement, not pure deletion)
+        let insXml = '';
+        if (change.newText) {
+          const escapedNew = escapeXmlForDocx(change.newText);
+          insXml = `<w:ins w:id="${revisionId}" w:author="${changeAuthor}" w:date="${revisionDate}">` +
+            `<w:r>${lastRPr}<w:t xml:space="preserve">${escapedNew}</w:t></w:r>` +
+            `</w:ins>`;
+          revisionId++;
+        }
+
+        // Rebuild: keep text before/after the placeholder in their own runs, splice in revision marks
+        // Include lastRPr in the after-segment run so the trailing text retains original formatting
+        const replacement = `${openTag}${before}${closeTag}</w:r>` +
+          delXml + insXml +
+          `<w:r>${lastRPr}${openTag}${after}${closeTag}`;
+
+        documentXml = documentXml.replace(fullMatch, replacement);
+      }
+    }
+
+    // Clean up empty elements
+    documentXml = documentXml.replace(/<w:r><w:t[^>]*><\/w:t><\/w:r>/g, '');
+    documentXml = documentXml.replace(/<w:t[^>]*><\/w:t>/g, '');
+
+    // Update the document.xml
+    zip.file('word/document.xml', documentXml);
+
+    logger.info(`[DocxConversion] Phase 2 complete: ${applied} revision marks applied`);
+
+    return await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 },
+    });
+  } catch (error) {
+    logger.error('[DocxConversion] Failed to apply revision marks to DOCX:', error);
+    throw error;
+  }
+}
+
+/**
+ * Escape a string for use as regex pattern
+ */
+function escapeRegexStr(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Escape text for safe inclusion in DOCX XML
+ */
+function escapeXmlForDocx(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Escape a string for safe inclusion in an XML attribute value.
+ * Prevents XML injection from special characters in user-supplied strings.
+ */
+function escapeXmlAttribute(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Replace text that may span across multiple <w:t> elements within <w:r> runs.
+ * Uses the same approach as the citation module's replaceCitationUniversal:
+ * 1. Extract all <w:t> segments with positions
+ * 2. Build combined text with character-to-segment mapping
+ * 3. Find matches in combined text
+ * 4. Replace across segments (putting replacement in first, clearing middle, adjusting last)
+ */
+function replaceTextAcrossRuns(
+  xml: string,
+  searchText: string,
+  replacement: string
+): { xml: string; count: number } {
+  let count = 0;
+
+  interface TextSegment {
+    start: number;
+    end: number;
+    text: string;
+    fullMatch: string;
+  }
+
+  // Step 1: Extract all <w:t> content with positions
+  let segments: TextSegment[] = [];
+  const textTagRegex = /<w:t(?:\s[^>]{0,500})?>([\s\S]{0,50000}?)<\/w:t>/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = textTagRegex.exec(xml)) !== null) {
+    segments.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      text: m[1],
+      fullMatch: m[0],
+    });
+  }
+
+  if (segments.length === 0) return { xml, count: 0 };
+
+  // Step 2: Build combined text and character-to-segment mapping
+  let charToSegment: Array<{ segmentIndex: number; charIndex: number }> = [];
+  const textParts: string[] = [];
+
+  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+    const seg = segments[segIdx];
+    textParts.push(seg.text);
+    for (let charIdx = 0; charIdx < seg.text.length; charIdx++) {
+      charToSegment.push({ segmentIndex: segIdx, charIndex: charIdx });
+    }
+  }
+  const combinedText = textParts.join('');
+
+  // Step 3: Find occurrences in combined text
+  const searchPattern = new RegExp(escapeRegexStr(searchText), 'g');
+  const matches: Array<{ start: number; end: number }> = [];
+  let sm: RegExpExecArray | null;
+
+  while ((sm = searchPattern.exec(combinedText)) !== null) {
+    matches.push({ start: sm.index, end: sm.index + sm[0].length });
+  }
+
+  if (matches.length === 0) return { xml, count: 0 };
+
+  // Step 4: Replace (process in reverse to preserve positions)
+  let modifiedXml = xml;
+
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i];
+    const startInfo = charToSegment[match.start];
+    const endInfo = charToSegment[match.end - 1];
+
+    if (!startInfo || !endInfo) continue;
+
+    const startSegIdx = startInfo.segmentIndex;
+    const endSegIdx = endInfo.segmentIndex;
+
+    if (startSegIdx === endSegIdx) {
+      // Text within a single segment
+      const seg = segments[startSegIdx];
+      const beforeText = seg.text.substring(0, startInfo.charIndex);
+      const afterText = seg.text.substring(endInfo.charIndex + 1);
+      const newText = beforeText + replacement + afterText;
+      const newTag = seg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${newText}</w:t>`);
+      modifiedXml = modifiedXml.substring(0, seg.start) + newTag + modifiedXml.substring(seg.end);
+      count++;
+    } else {
+      // Text spans multiple segments
+      const firstSeg = segments[startSegIdx];
+      const lastSeg = segments[endSegIdx];
+
+      const beforeText = firstSeg.text.substring(0, startInfo.charIndex);
+      const afterText = lastSeg.text.substring(endInfo.charIndex + 1);
+
+      // Work backwards to preserve positions
+      // 1. Modify last segment
+      const newLastTag = lastSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${afterText}</w:t>`);
+      modifiedXml = modifiedXml.substring(0, lastSeg.start) + newLastTag + modifiedXml.substring(lastSeg.end);
+
+      // 2. Clear middle segments
+      for (let segIdx = endSegIdx - 1; segIdx > startSegIdx; segIdx--) {
+        const midSeg = segments[segIdx];
+        const newMidTag = midSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `></w:t>`);
+        modifiedXml = modifiedXml.substring(0, midSeg.start) + newMidTag + modifiedXml.substring(midSeg.end);
+      }
+
+      // 3. Modify first segment (put placeholder here)
+      const newFirstTag = firstSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${beforeText}${replacement}</w:t>`);
+      modifiedXml = modifiedXml.substring(0, firstSeg.start) + newFirstTag + modifiedXml.substring(firstSeg.end);
+      count++;
+    }
+  }
+
+  return { xml: modifiedXml, count };
 }
 
 /**
@@ -782,12 +1076,170 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
   }
 }
 
+/**
+ * Decode HTML entities in text extracted from HTML spans.
+ */
+function decodeHtmlEntities(text: string): string {
+  // Decode &amp; last to prevent double-decoding (e.g., &amp;lt; → &lt; → <)
+  return text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Strip all HTML tags from a string.
+ */
+function stripHtmlTags(html: string): string {
+  return html.replace(/<[^>]*>/g, '');
+}
+
+/**
+ * Parse track-change spans from the editor HTML and return replacement pairs.
+ * Track changes appear as adjacent deletion + insertion spans:
+ *   <span class="track-deletion" ...>old</span><span class="track-insertion" ...>new</span>
+ */
+function parseTrackChangePairs(html: string): Array<{ oldText: string; newText: string; source: string }> {
+  const changes: Array<{ oldText: string; newText: string; source: string }> = [];
+  const matched = new Set<number>();
+
+  // Helper to extract data-source from a span's attributes
+  const extractSource = (spanTag: string): string => {
+    const srcMatch = spanTag.match(/data-source="([^"]*)"/);
+    return srcMatch ? srcMatch[1] : '';
+  };
+
+  // Pattern 1: Deletion immediately followed by insertion (replacement pair)
+  // Capture the full opening deletion span tag to extract data-source from it
+  const pairRe = /(<span[^>]*class="track-deletion"[^>]*>)([\s\S]*?)<\/span>\s*<span[^>]*class="track-insertion"[^>]*>([\s\S]*?)<\/span>/g;
+  let m;
+  while ((m = pairRe.exec(html)) !== null) {
+    const source = extractSource(m[1]);
+    const oldText = decodeHtmlEntities(stripHtmlTags(m[2]));
+    const newText = decodeHtmlEntities(stripHtmlTags(m[3]));
+    if (oldText.trim()) {
+      changes.push({ oldText, newText, source });
+      matched.add(m.index);
+    }
+  }
+
+  // Pattern 2: Standalone deletions (not part of a pair)
+  const delRe = /(<span[^>]*class="track-deletion"[^>]*>)([\s\S]*?)<\/span>/g;
+  while ((m = delRe.exec(html)) !== null) {
+    if (matched.has(m.index)) continue;
+    const source = extractSource(m[1]);
+    const oldText = decodeHtmlEntities(stripHtmlTags(m[2]));
+    if (oldText.trim()) {
+      changes.push({ oldText, newText: '', source });
+    }
+  }
+
+  return changes;
+}
+
+/**
+ * Build a "clean" HTML string from the editor content:
+ *  - deletion spans are removed entirely
+ *  - insertion spans are unwrapped (text kept, mark removed)
+ */
+function buildCleanHtml(html: string): string {
+  let clean = html;
+  // Remove deletion-marked text
+  clean = clean.replace(/<span[^>]*class="track-deletion"[^>]*>[\s\S]*?<\/span>/g, '');
+  // Unwrap insertion-marked text (keep content)
+  clean = clean.replace(/<span[^>]*class="track-insertion"[^>]*>([\s\S]*?)<\/span>/g, '$1');
+  return clean;
+}
+
+/**
+ * Export with track changes applied to original DOCX.
+ *
+ * @param mode 'clean'   — accept all changes: deletions removed, insertions kept (plain text replacement)
+ *             'tracked' — produce Word Track Changes: <w:del>/<w:ins> revision marks
+ *
+ * Strategy:
+ *  1. Parse track-change spans directly from the HTML to extract {old, new} pairs
+ *  2. 'clean'   → apply plain text replacements (old→new) to original DOCX XML
+ *     'tracked' → apply Word revision marks (<w:del>/<w:ins>) to original DOCX XML
+ *  3. Falls back to Pandoc HTML→DOCX if the XML approach fails
+ */
+export async function exportWithTrackChanges(
+  originalBuffer: Buffer,
+  currentHtml: string,
+  options?: { title?: string; mode?: 'clean' | 'tracked' }
+): Promise<Buffer> {
+  const cleanHtml = buildCleanHtml(currentHtml);
+  const mode = options?.mode || 'clean';
+
+  try {
+    // Extract replacement pairs directly from track change HTML spans
+    const trackChanges = parseTrackChangePairs(currentHtml);
+
+    if (trackChanges.length > 0) {
+      logger.info(`[DocxConversion] Found ${trackChanges.length} track change pairs from HTML (mode: ${mode})`);
+
+      try {
+        let result: Buffer;
+        if (mode === 'tracked') {
+          // Word Track Changes — revision marks that can be accepted/rejected in Word
+          result = await applyRevisionMarksToDocx(originalBuffer, trackChanges);
+          logger.info(`[DocxConversion] Applied ${trackChanges.length} revision marks to original DOCX`);
+        } else {
+          // Clean — plain text replacement, no revision marks
+          result = await applyChangesToDocx(originalBuffer, trackChanges);
+          logger.info(`[DocxConversion] Applied ${trackChanges.length} clean replacements to original DOCX`);
+        }
+        return result;
+      } catch (applyErr) {
+        logger.warn('[DocxConversion] XML replacement failed, falling back to Pandoc:', applyErr);
+        return convertHtmlToDocx(cleanHtml, options);
+      }
+    }
+
+    // No track change spans found — check if text was manually edited
+    const zip = await JSZip.loadAsync(originalBuffer);
+    const documentXml = await zip.file('word/document.xml')?.async('string');
+
+    if (!documentXml) {
+      logger.warn('[DocxConversion] No document.xml found, falling back to Pandoc');
+      return convertHtmlToDocx(cleanHtml, options);
+    }
+
+    const xmlTextRuns: string[] = [];
+    const textRunPattern = /<w:t[^>]*>([^<]+)<\/w:t>/g;
+    let match;
+    while ((match = textRunPattern.exec(documentXml)) !== null) {
+      xmlTextRuns.push(match[1]);
+    }
+    const originalPlainText = xmlTextRuns.join('');
+    const cleanPlainText = decodeHtmlEntities(stripHtmlTags(cleanHtml));
+
+    if (originalPlainText !== cleanPlainText) {
+      // Text was manually changed without track changes — use Pandoc
+      logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
+      return convertHtmlToDocx(cleanHtml, options);
+    }
+
+    // Texts are identical — return original to preserve exact formatting
+    logger.info('[DocxConversion] No changes detected, returning original DOCX');
+    return originalBuffer;
+  } catch (error) {
+    logger.warn('[DocxConversion] Track change export failed, falling back to Pandoc:', error);
+    return convertHtmlToDocx(cleanHtml, options);
+  }
+}
+
 export const docxConversionService = {
   convertDocxToHtml,
   convertPdfToHtml,
   convertDocumentToHtml,
   convertHtmlToDocx,
   applyChangesToDocx,
+  applyRevisionMarksToDocx,
+  exportWithTrackChanges,
   isPandocAvailable,
   detectFileType,
 };

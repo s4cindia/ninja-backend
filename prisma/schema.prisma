@@ -24,7 +24,9 @@ model Tenant {
   houseRuleSets       HouseRuleSet[]
   houseStyleRules     HouseStyleRule[]
   editorialReports    EditorialReport[]
-  styleValidationJobs StyleValidationJob[]
+  styleValidationJobs  StyleValidationJob[]
+  integrityCheckJobs   IntegrityCheckJob[]
+  plagiarismCheckJobs  PlagiarismCheckJob[]
 }
 
 model User {
@@ -686,7 +688,8 @@ model EditorialDocument {
 
   title    String?
   authors  String[]
-  language String?
+  language    String?
+  contentType ContentType @default(UNKNOWN)
 
   status   EditorialDocStatus @default(UPLOADED)
   parsedAt DateTime?
@@ -715,6 +718,9 @@ model EditorialDocument {
   documentChanges      DocumentChange[]
   editorSessions       EditorSession[]
   complianceChecks     ComplianceCheck[]
+  integrityCheckJobs   IntegrityCheckJob[]
+  integrityIssues      IntegrityIssue[]
+  plagiarismCheckJobs  PlagiarismCheckJob[]
 
   @@index([tenantId])
   @@index([jobId])
@@ -730,6 +736,12 @@ enum EditorialDocStatus {
   ANALYZING
   COMPLETED
   FAILED
+}
+
+enum ContentType {
+  JOURNAL_ARTICLE
+  BOOK
+  UNKNOWN
 }
 
 // Separate table for large text content to avoid updating EditorialDocument on content changes
@@ -1144,6 +1156,28 @@ enum MatchReviewStatus {
   FALSE_POSITIVE
   PROPERLY_ATTRIBUTED
   DISMISSED
+}
+
+model PlagiarismCheckJob {
+  id            String    @id @default(uuid())
+  tenantId      String
+  documentId    String
+  status        JobStatus @default(QUEUED)
+  progress      Int       @default(0)
+  totalChunks   Int       @default(0)
+  matchesFound  Int       @default(0)
+  metadata      Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  document EditorialDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([documentId])
+  @@index([status])
 }
 
 model StyleValidationJob {
@@ -1612,4 +1646,87 @@ enum EditorSessionStatus {
   CLOSED
   EXPIRED
   ERROR
+}
+
+// ============================================
+// INTEGRITY CHECK SYSTEM
+// ============================================
+
+enum IntegrityCheckType {
+  FIGURE_REF
+  TABLE_REF
+  EQUATION_REF
+  BOX_REF
+  CITATION_REF
+  SECTION_NUMBERING
+  FIGURE_NUMBERING
+  TABLE_NUMBERING
+  EQUATION_NUMBERING
+  UNIT_CONSISTENCY
+  ABBREVIATION
+  CROSS_REF
+  DUPLICATE_CONTENT
+  HEADING_HIERARCHY
+  ALT_TEXT
+  TABLE_STRUCTURE
+  FOOTNOTE_REF
+  TOC_CONSISTENCY
+  ISBN_FORMAT
+  DOI_FORMAT
+  TERMINOLOGY
+}
+
+model IntegrityCheckJob {
+  id          String   @id @default(uuid())
+  tenantId    String
+  documentId  String
+  status      JobStatus @default(QUEUED)
+  checkTypes  IntegrityCheckType[]
+  progress    Int       @default(0)
+  totalChecks Int       @default(0)
+  issuesFound Int       @default(0)
+  metadata    Json?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  document EditorialDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  issues   IntegrityIssue[]
+
+  @@index([tenantId])
+  @@index([documentId])
+  @@index([status])
+}
+
+model IntegrityIssue {
+  id            String             @id @default(uuid())
+  documentId    String
+  jobId         String
+  checkType     IntegrityCheckType
+  severity      StyleSeverity      @default(WARNING)
+  title         String
+  description   String             @db.Text
+  startOffset   Int?
+  endOffset     Int?
+  originalText  String?            @db.Text
+  expectedValue String?
+  actualValue   String?
+  suggestedFix  String?            @db.Text
+  context       String?            @db.Text
+  status        ViolationStatus    @default(PENDING)
+  resolvedAt    DateTime?
+  resolvedBy    String?
+  resolution    String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  document EditorialDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  job      IntegrityCheckJob  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([jobId])
+  @@index([checkType])
+  @@index([status])
 }

@@ -611,373 +611,14 @@ Return ONLY the JSON array, no other text:`;
   }
 
   /**
-   * Get comprehensive style guide rules for AI validation
+   * Get comprehensive style guide rules for AI validation (class-internal use)
    */
   private getStyleGuideRules(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom'): {
     name: string;
     referencePrefix: string;
     rules: string;
   } {
-    switch (styleGuide) {
-      case 'apa':
-        return {
-          name: 'APA Publication Manual 7th Edition',
-          referencePrefix: 'APA 7',
-          rules: `KEY APA 7TH EDITION RULES:
-
-NUMBERS:
-- Use words for numbers zero through nine
-- Use numerals for 10 and above
-- Never use apostrophe in number plurals (1970s, not 1970's)
-- Use % symbol with numerals (50%), spell out with words (fifty percent)
-- Use numerals for exact measurements, statistics, and mathematical expressions
-
-CAPITALIZATION:
-- Article/chapter titles: Sentence case (capitalize only first word and proper nouns)
-- Journal titles: Title case (capitalize major words)
-- Capitalize first word after colon in titles if it begins a complete sentence
-
-PUNCTUATION:
-- Use the serial (Oxford) comma before "and" in a series
-- Use double quotation marks for direct quotes
-- Place periods and commas inside quotation marks
-- Use en dash (–) for number ranges
-
-CITATIONS:
-- Use ampersand (&) in parenthetical citations, "and" in narrative citations
-- List up to 20 authors; for 21+, use first 19, ellipsis, then final author
-- Use "et al." after first citation for 3+ authors
-- DOI format: https://doi.org/xxxxx
-
-LANGUAGE:
-- Avoid contractions in formal writing
-- Use gender-neutral language (they/them for singular)
-- Avoid anthropomorphism (studies don't "argue" or "believe")
-- Prefer active voice over passive voice
-- Use "e.g.," and "i.e.," with comma following`,
-        };
-
-      case 'chicago':
-        return {
-          name: 'Chicago Manual of Style 17th Edition',
-          referencePrefix: 'CMOS',
-          rules: `KEY CHICAGO MANUAL OF STYLE RULES:
-
-NUMBERS:
-- Spell out numbers one through one hundred
-- Spell out round numbers (two hundred, three thousand)
-- Use numerals for exact figures in technical contexts
-- Use en dash (–) for ranges, not hyphen
-
-PUNCTUATION:
-- Use the serial (Oxford) comma before "and" in a series
-- Em dashes (—) without spaces around them
-- En dashes (–) for number ranges
-- Ellipsis: three spaced periods (. . .) in quoted material
-- Ibid. is discouraged; use shortened citations
-
-CAPITALIZATION:
-- Headline style for titles: Capitalize first, last, and all major words
-- Lowercase prepositions, conjunctions, articles unless first/last word
-- Capitalize first word after colon if it begins a complete sentence
-
-POSSESSIVES:
-- Add 's to singular nouns ending in s (James's, not James')
-- Exception: classical and biblical names (Moses', Jesus')
-
-GRAMMAR:
-- "That" for restrictive clauses (no comma)
-- "Which" for nonrestrictive clauses (with comma)
-- American English: "toward" not "towards", "among" not "amongst"
-
-CITATIONS:
-- Write out publishers' names in full
-- Invert author's name (Last, First)
-- Italicize book and journal titles
-- Quotation marks for article/chapter titles`,
-        };
-
-      case 'mla':
-        return {
-          name: 'MLA Handbook 9th Edition',
-          referencePrefix: 'MLA',
-          rules: `KEY MLA 9TH EDITION RULES:
-
-NUMBERS:
-- Spell out numbers that can be written in one or two words
-- Use numerals for numbers requiring more than two words
-- Use numerals for dates, page numbers, addresses
-
-FORMATTING:
-- Double-space throughout
-- 1-inch margins
-- 12-point standard font (Times New Roman or similar)
-- Include last name and page number in upper right
-
-CAPITALIZATION:
-- Title case for all titles: capitalize all major words
-- Lowercase prepositions, conjunctions, articles (unless first word)
-
-DATES:
-- Day Month Year format (15 Jan. 2024)
-- Abbreviate months longer than four letters: Jan., Feb., Mar., Apr., Aug., Sept., Oct., Nov., Dec.
-
-IN-TEXT CITATIONS:
-- Author's last name and page number (Smith 42)
-- No comma between author and page
-- Block quotes (4+ lines): indent 1/2 inch, no quotation marks
-
-WORKS CITED:
-- Alphabetical order by authors' last names
-- Hanging indent (first line flush, subsequent indented)
-- Only first author's name inverted (Last, First. Second Third.)
-- For 3+ authors: First author et al.
-
-TITLES:
-- Italicize titles of independently published works (books, journals)
-- Quotation marks for shorter works (articles, chapters)`,
-        };
-
-      case 'vancouver':
-        return {
-          name: 'Vancouver Style (ICMJE Recommendations)',
-          referencePrefix: 'Vancouver',
-          rules: `KEY VANCOUVER STYLE RULES:
-
-CITATIONS:
-- Number citations consecutively in order of first mention
-- Use Arabic numerals in parentheses (1) or superscript
-- Same number for repeated citations
-- References numbered in order of appearance (not alphabetical)
-
-AUTHOR NAMES:
-- Surname first, then initials (no periods between initials)
-- List first 6 authors, then "et al." for 7 or more
-- Example: Smith AB, Jones CD, Wilson EF, et al.
-
-JOURNAL TITLES:
-- Abbreviate according to NLM/MEDLINE standards
-- No periods in abbreviations
-- Example: N Engl J Med, JAMA, BMJ
-
-DATES:
-- Year Month Day format: 2024 Jan 15
-- Three-letter month abbreviations (no period)
-
-PAGE RANGES:
-- Use abbreviated form: 123-8 (not 123-128)
-- Drop common leading digits
-
-MEASUREMENTS:
-- Use SI units (metric)
-- kg, m, cm, L (not pounds, feet, gallons)
-
-DOI:
-- Include DOI at end when available
-- Format: doi:10.xxxx/xxxxx
-
-MEDICAL TERMINOLOGY:
-- Use standard medical terms in scientific context
-- Drug names: Use generic names, capitalize brand names
-- Abbreviate standard medical abbreviations without periods`,
-        };
-
-      case 'nature':
-        return {
-          name: 'Nature Publishing Guidelines',
-          referencePrefix: 'Nature',
-          rules: `KEY NATURE PUBLISHING RULES:
-
-NUMBERS:
-- Use numerals for all numbers except at start of sentence
-- Use SI units with proper abbreviations
-- Use × (not x) for multiplication
-- Use en dash for ranges (10–20)
-
-CITATIONS:
-- Numbered superscript citations in order of appearance
-- References numbered consecutively
-- Up to 5 authors listed, then et al.
-
-FORMATTING:
-- Concise titles (no abbreviations)
-- Structured abstract for research articles
-- No footnotes in main text
-- Gene names italicized, proteins not
-- Species names italicized
-
-STYLE:
-- Active voice preferred
-- Third person unless describing author actions
-- Avoid jargon and undefined abbreviations
-- Define abbreviations at first use`,
-        };
-
-      case 'ieee':
-        return {
-          name: 'IEEE Editorial Style',
-          referencePrefix: 'IEEE',
-          rules: `KEY IEEE STYLE RULES:
-
-CITATIONS:
-- Numbered references in square brackets [1]
-- Citations numbered in order of first appearance
-- Multiple citations: [1], [2] or [1]–[3]
-
-NUMBERS:
-- Spell out numbers zero through nine
-- Use numerals for 10 and above
-- Always use numerals with units (5 MHz, 3 dB)
-- Use × for multiplication in equations
-
-ABBREVIATIONS:
-- Define at first use, then use abbreviation
-- Common ones need no definition: CPU, RAM, IEEE
-- Use "Fig." in running text, "Figure" at sentence start
-
-EQUATIONS:
-- Number equations consecutively (1), (2)
-- Variables in italics
-- Functions and operators in roman (sin, log, max)
-
-UNITS:
-- SI units preferred
-- Space between number and unit (10 MHz)
-- No period after unit abbreviations`,
-        };
-
-      case 'ap':
-        return {
-          name: 'Associated Press Stylebook',
-          referencePrefix: 'AP',
-          rules: `KEY AP STYLE RULES:
-
-NUMBERS:
-- Spell out one through nine
-- Use numerals for 10 and above
-- Always numerals for ages, percentages, money
-- Spell out numbers at start of sentence (or recast)
-
-PUNCTUATION:
-- NO serial (Oxford) comma (red, white and blue)
-- Single space after periods
-- Use quotation marks for composition titles
-
-CAPITALIZATION:
-- Lowercase job titles after names
-- Capitalize formal titles before names
-- Lowercase seasons (spring, summer)
-- Capitalize specific regions (the West, the South)
-
-ABBREVIATIONS:
-- U.S. (with periods) as adjective
-- Spell out United States as noun
-- State abbreviations: Use postal codes in datelines only
-- Months: Abbreviate Jan., Feb., Aug., Sept., Oct., Nov., Dec.
-
-DATES:
-- Month Day, Year (Jan. 15, 2024)
-- No "th" or "nd" (Jan. 15, not Jan. 15th)
-- Use numerals for years`,
-        };
-
-      case 'general':
-        return {
-          name: 'General Quality Rules',
-          referencePrefix: 'Quality',
-          rules: `GENERAL QUALITY RULES:
-
-GRAMMAR:
-- Subject-verb agreement
-- Correct pronoun usage
-- Proper tense consistency
-- Avoid sentence fragments and run-ons
-- Correct use of articles (a, an, the)
-
-PUNCTUATION:
-- Serial comma consistency
-- Proper comma placement
-- Correct apostrophe usage
-- Proper quotation mark usage
-- Hyphenation of compound modifiers
-
-SPELLING:
-- Check common misspellings
-- Consistent British/American spelling
-- Proper capitalization
-
-CLARITY:
-- Avoid redundancy
-- Clear pronoun references
-- Parallel structure in lists
-- Avoid ambiguity`,
-        };
-
-      case 'academic':
-        return {
-          name: 'Academic Writing Standards',
-          referencePrefix: 'Academic',
-          rules: `ACADEMIC WRITING RULES:
-
-VOICE AND TONE:
-- Prefer active voice when possible
-- Formal tone, avoid contractions
-- Avoid first person unless field-appropriate
-- Objective language
-
-STRUCTURE:
-- Clear topic sentences
-- Logical paragraph flow
-- Appropriate transitions
-- Proper citation of sources
-
-TERMINOLOGY:
-- Define technical terms
-- Consistent terminology throughout
-- Avoid jargon unless necessary
-- Spell out abbreviations on first use
-
-STYLE:
-- Avoid hedging language overuse
-- Be precise and specific
-- Avoid generalizations without support
-- Use evidence-based claims`,
-        };
-
-      default:
-        return {
-          name: 'General Academic Style',
-          referencePrefix: 'Style',
-          rules: `GENERAL ACADEMIC WRITING RULES:
-
-GRAMMAR:
-- Ensure subject-verb agreement
-- Avoid dangling modifiers
-- Use parallel structure in lists
-- Prefer active voice over passive voice
-
-PUNCTUATION:
-- Use serial comma in lists
-- Single space after periods
-- Proper use of semicolons and colons
-- Hyphenate compound adjectives before nouns
-
-NUMBERS:
-- Spell out numbers at start of sentences
-- Be consistent with number style throughout
-
-TERMINOLOGY:
-- Avoid redundant phrases (advance planning → planning)
-- Replace wordy phrases (in order to → to)
-- Avoid clichés and jargon
-- Define abbreviations on first use
-
-FORMATTING:
-- Consistent heading hierarchy
-- Proper quotation formatting
-- Appropriate use of italics and bold`,
-        };
-    }
+    return getStyleGuideRulesText(styleGuide);
   }
 
   /**
@@ -1128,6 +769,381 @@ Respond with JSON only:`;
       numericCount: 0,
       authorDateCount: 0,
     };
+  }
+}
+
+/**
+ * Standalone utility to retrieve style guide rules text.
+ * Extracted from EditorialAiClient so callers outside the class
+ * can obtain rule definitions without exposing a class method.
+ *
+ * @param styleGuide - The style guide identifier
+ * @returns Object with name, referencePrefix, and rules text
+ */
+export function getStyleGuideRulesText(styleGuide: 'chicago' | 'apa' | 'mla' | 'vancouver' | 'nature' | 'ieee' | 'ap' | 'general' | 'academic' | 'custom'): {
+  name: string;
+  referencePrefix: string;
+  rules: string;
+} {
+  switch (styleGuide) {
+    case 'apa':
+      return {
+        name: 'APA Publication Manual 7th Edition',
+        referencePrefix: 'APA 7',
+        rules: `KEY APA 7TH EDITION RULES:
+
+NUMBERS:
+- Use words for numbers zero through nine
+- Use numerals for 10 and above
+- Never use apostrophe in number plurals (1970s, not 1970's)
+- Use % symbol with numerals (50%), spell out with words (fifty percent)
+- Use numerals for exact measurements, statistics, and mathematical expressions
+
+CAPITALIZATION:
+- Article/chapter titles: Sentence case (capitalize only first word and proper nouns)
+- Journal titles: Title case (capitalize major words)
+- Capitalize first word after colon in titles if it begins a complete sentence
+
+PUNCTUATION:
+- Use the serial (Oxford) comma before "and" in a series
+- Use double quotation marks for direct quotes
+- Place periods and commas inside quotation marks
+- Use en dash (–) for number ranges
+
+CITATIONS:
+- Use ampersand (&) in parenthetical citations, "and" in narrative citations
+- List up to 20 authors; for 21+, use first 19, ellipsis, then final author
+- Use "et al." after first citation for 3+ authors
+- DOI format: https://doi.org/xxxxx
+
+LANGUAGE:
+- Avoid contractions in formal writing
+- Use gender-neutral language (they/them for singular)
+- Avoid anthropomorphism (studies don't "argue" or "believe")
+- Prefer active voice over passive voice
+- Use "e.g.," and "i.e.," with comma following`,
+      };
+
+    case 'chicago':
+      return {
+        name: 'Chicago Manual of Style 17th Edition',
+        referencePrefix: 'CMOS',
+        rules: `KEY CHICAGO MANUAL OF STYLE RULES:
+
+NUMBERS:
+- Spell out numbers one through one hundred
+- Spell out round numbers (two hundred, three thousand)
+- Use numerals for exact figures in technical contexts
+- Use en dash (–) for ranges, not hyphen
+
+PUNCTUATION:
+- Use the serial (Oxford) comma before "and" in a series
+- Em dashes (—) without spaces around them
+- En dashes (–) for number ranges
+- Ellipsis: three spaced periods (. . .) in quoted material
+- Ibid. is discouraged; use shortened citations
+
+CAPITALIZATION:
+- Headline style for titles: Capitalize first, last, and all major words
+- Lowercase prepositions, conjunctions, articles unless first/last word
+- Capitalize first word after colon if it begins a complete sentence
+
+POSSESSIVES:
+- Add 's to singular nouns ending in s (James's, not James')
+- Exception: classical and biblical names (Moses', Jesus')
+
+GRAMMAR:
+- "That" for restrictive clauses (no comma)
+- "Which" for nonrestrictive clauses (with comma)
+- American English: "toward" not "towards", "among" not "amongst"
+
+CITATIONS:
+- Write out publishers' names in full
+- Invert author's name (Last, First)
+- Italicize book and journal titles
+- Quotation marks for article/chapter titles`,
+      };
+
+    case 'mla':
+      return {
+        name: 'MLA Handbook 9th Edition',
+        referencePrefix: 'MLA',
+        rules: `KEY MLA 9TH EDITION RULES:
+
+NUMBERS:
+- Spell out numbers that can be written in one or two words
+- Use numerals for numbers requiring more than two words
+- Use numerals for dates, page numbers, addresses
+
+FORMATTING:
+- Double-space throughout
+- 1-inch margins
+- 12-point standard font (Times New Roman or similar)
+- Include last name and page number in upper right
+
+CAPITALIZATION:
+- Title case for all titles: capitalize all major words
+- Lowercase prepositions, conjunctions, articles (unless first word)
+
+DATES:
+- Day Month Year format (15 Jan. 2024)
+- Abbreviate months longer than four letters: Jan., Feb., Mar., Apr., Aug., Sept., Oct., Nov., Dec.
+
+IN-TEXT CITATIONS:
+- Author's last name and page number (Smith 42)
+- No comma between author and page
+- Block quotes (4+ lines): indent 1/2 inch, no quotation marks
+
+WORKS CITED:
+- Alphabetical order by authors' last names
+- Hanging indent (first line flush, subsequent indented)
+- Only first author's name inverted (Last, First. Second Third.)
+- For 3+ authors: First author et al.
+
+TITLES:
+- Italicize titles of independently published works (books, journals)
+- Quotation marks for shorter works (articles, chapters)`,
+      };
+
+    case 'vancouver':
+      return {
+        name: 'Vancouver Style (ICMJE Recommendations)',
+        referencePrefix: 'Vancouver',
+        rules: `KEY VANCOUVER STYLE RULES:
+
+CITATIONS:
+- Number citations consecutively in order of first mention
+- Use Arabic numerals in parentheses (1) or superscript
+- Same number for repeated citations
+- References numbered in order of appearance (not alphabetical)
+
+AUTHOR NAMES:
+- Surname first, then initials (no periods between initials)
+- List first 6 authors, then "et al." for 7 or more
+- Example: Smith AB, Jones CD, Wilson EF, et al.
+
+JOURNAL TITLES:
+- Abbreviate according to NLM/MEDLINE standards
+- No periods in abbreviations
+- Example: N Engl J Med, JAMA, BMJ
+
+DATES:
+- Year Month Day format: 2024 Jan 15
+- Three-letter month abbreviations (no period)
+
+PAGE RANGES:
+- Use abbreviated form: 123-8 (not 123-128)
+- Drop common leading digits
+
+MEASUREMENTS:
+- Use SI units (metric)
+- kg, m, cm, L (not pounds, feet, gallons)
+
+DOI:
+- Include DOI at end when available
+- Format: doi:10.xxxx/xxxxx
+
+MEDICAL TERMINOLOGY:
+- Use standard medical terms in scientific context
+- Drug names: Use generic names, capitalize brand names
+- Abbreviate standard medical abbreviations without periods`,
+      };
+
+    case 'nature':
+      return {
+        name: 'Nature Publishing Guidelines',
+        referencePrefix: 'Nature',
+        rules: `KEY NATURE PUBLISHING RULES:
+
+NUMBERS:
+- Use numerals for all numbers except at start of sentence
+- Use SI units with proper abbreviations
+- Use × (not x) for multiplication
+- Use en dash for ranges (10–20)
+
+CITATIONS:
+- Numbered superscript citations in order of appearance
+- References numbered consecutively
+- Up to 5 authors listed, then et al.
+
+FORMATTING:
+- Concise titles (no abbreviations)
+- Structured abstract for research articles
+- No footnotes in main text
+- Gene names italicized, proteins not
+- Species names italicized
+
+STYLE:
+- Active voice preferred
+- Third person unless describing author actions
+- Avoid jargon and undefined abbreviations
+- Define abbreviations at first use`,
+      };
+
+    case 'ieee':
+      return {
+        name: 'IEEE Editorial Style',
+        referencePrefix: 'IEEE',
+        rules: `KEY IEEE STYLE RULES:
+
+CITATIONS:
+- Numbered references in square brackets [1]
+- Citations numbered in order of first appearance
+- Multiple citations: [1], [2] or [1]–[3]
+
+NUMBERS:
+- Spell out numbers zero through nine
+- Use numerals for 10 and above
+- Always use numerals with units (5 MHz, 3 dB)
+- Use × for multiplication in equations
+
+ABBREVIATIONS:
+- Define at first use, then use abbreviation
+- Common ones need no definition: CPU, RAM, IEEE
+- Use "Fig." in running text, "Figure" at sentence start
+
+EQUATIONS:
+- Number equations consecutively (1), (2)
+- Variables in italics
+- Functions and operators in roman (sin, log, max)
+
+UNITS:
+- SI units preferred
+- Space between number and unit (10 MHz)
+- No period after unit abbreviations`,
+      };
+
+    case 'ap':
+      return {
+        name: 'Associated Press Stylebook',
+        referencePrefix: 'AP',
+        rules: `KEY AP STYLE RULES:
+
+NUMBERS:
+- Spell out one through nine
+- Use numerals for 10 and above
+- Always numerals for ages, percentages, money
+- Spell out numbers at start of sentence (or recast)
+
+PUNCTUATION:
+- NO serial (Oxford) comma (red, white and blue)
+- Single space after periods
+- Use quotation marks for composition titles
+
+CAPITALIZATION:
+- Lowercase job titles after names
+- Capitalize formal titles before names
+- Lowercase seasons (spring, summer)
+- Capitalize specific regions (the West, the South)
+
+ABBREVIATIONS:
+- U.S. (with periods) as adjective
+- Spell out United States as noun
+- State abbreviations: Use postal codes in datelines only
+- Months: Abbreviate Jan., Feb., Aug., Sept., Oct., Nov., Dec.
+
+DATES:
+- Month Day, Year (Jan. 15, 2024)
+- No "th" or "nd" (Jan. 15, not Jan. 15th)
+- Use numerals for years`,
+      };
+
+    case 'general':
+      return {
+        name: 'General Quality Rules',
+        referencePrefix: 'Quality',
+        rules: `GENERAL QUALITY RULES:
+
+GRAMMAR:
+- Subject-verb agreement
+- Correct pronoun usage
+- Proper tense consistency
+- Avoid sentence fragments and run-ons
+- Correct use of articles (a, an, the)
+
+PUNCTUATION:
+- Serial comma consistency
+- Proper comma placement
+- Correct apostrophe usage
+- Proper quotation mark usage
+- Hyphenation of compound modifiers
+
+SPELLING:
+- Check common misspellings
+- Consistent British/American spelling
+- Proper capitalization
+
+CLARITY:
+- Avoid redundancy
+- Clear pronoun references
+- Parallel structure in lists
+- Avoid ambiguity`,
+      };
+
+    case 'academic':
+      return {
+        name: 'Academic Writing Standards',
+        referencePrefix: 'Academic',
+        rules: `ACADEMIC WRITING RULES:
+
+VOICE AND TONE:
+- Prefer active voice when possible
+- Formal tone, avoid contractions
+- Avoid first person unless field-appropriate
+- Objective language
+
+STRUCTURE:
+- Clear topic sentences
+- Logical paragraph flow
+- Appropriate transitions
+- Proper citation of sources
+
+TERMINOLOGY:
+- Define technical terms
+- Consistent terminology throughout
+- Avoid jargon unless necessary
+- Spell out abbreviations on first use
+
+STYLE:
+- Avoid hedging language overuse
+- Be precise and specific
+- Avoid generalizations without support
+- Use evidence-based claims`,
+      };
+
+    default:
+      return {
+        name: 'General Academic Style',
+        referencePrefix: 'Style',
+        rules: `GENERAL ACADEMIC WRITING RULES:
+
+GRAMMAR:
+- Ensure subject-verb agreement
+- Avoid dangling modifiers
+- Use parallel structure in lists
+- Prefer active voice over passive voice
+
+PUNCTUATION:
+- Use serial comma in lists
+- Single space after periods
+- Proper use of semicolons and colons
+- Hyphenate compound adjectives before nouns
+
+NUMBERS:
+- Spell out numbers at start of sentences
+- Be consistent with number style throughout
+
+TERMINOLOGY:
+- Avoid redundant phrases (advance planning → planning)
+- Replace wordy phrases (in order to → to)
+- Avoid clichés and jargon
+- Define abbreviations on first use
+
+FORMATTING:
+- Consistent heading hierarchy
+- Proper quotation formatting
+- Appropriate use of italics and bold`,
+      };
   }
 }
 
