@@ -45,13 +45,13 @@ vi.mock('../../../../src/lib/prisma', () => ({
 
 // Mock the editorial AI client
 vi.mock('../../../../src/services/shared/editorial-ai-client', () => ({
+  getStyleGuideRulesText: vi.fn().mockReturnValue({
+    name: 'Test Style Guide',
+    referencePrefix: 'TEST',
+    rules: 'Test rules',
+  }),
   editorialAi: {
     validateStyle: vi.fn(),
-    getStyleGuideRules: vi.fn().mockReturnValue({
-      name: 'Test Style Guide',
-      referencePrefix: 'TEST',
-      rules: 'Test rules',
-    }),
   },
 }));
 
@@ -93,6 +93,9 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import prisma from '../../../../src/lib/prisma';
 import { claudeService } from '../../../../src/services/ai/claude.service';
+import { splitTextIntoChunks } from '../../../../src/utils/text-chunker';
+import { getStyleGuideRulesText } from '../../../../src/services/shared/editorial-ai-client';
+import { houseStyleEngine } from '../../../../src/services/style/house-style-engine.service';
 import { styleValidation as styleValidationService } from '../../../../src/services/style/style-validation.service';
 
 describe('StyleValidationService', () => {
@@ -217,6 +220,9 @@ describe('StyleValidationService', () => {
         },
       };
 
+      vi.mocked(splitTextIntoChunks).mockReturnValue([{ text: 'This is sample text for validation.', offset: 0 }]);
+      vi.mocked(getStyleGuideRulesText).mockReturnValue({ name: 'Test Style Guide', referencePrefix: 'TEST', rules: 'Test rules' });
+      vi.mocked(houseStyleEngine.getRulesFromSets).mockResolvedValue([]);
       vi.mocked(prisma.styleValidationJob.findUnique).mockResolvedValue(mockJob);
       vi.mocked(prisma.editorialDocument.findUnique).mockResolvedValue(mockDocument as any);
       vi.mocked(prisma.styleValidationJob.update).mockResolvedValue(mockJob);
@@ -290,6 +296,9 @@ describe('StyleValidationService', () => {
         },
       };
 
+      vi.mocked(splitTextIntoChunks).mockReturnValue([{ text: 'Short text.', offset: 0 }]);
+      vi.mocked(getStyleGuideRulesText).mockReturnValue({ name: 'Test Style Guide', referencePrefix: 'TEST', rules: 'Test rules' });
+      vi.mocked(houseStyleEngine.getRulesFromSets).mockResolvedValue([]);
       vi.mocked(prisma.styleValidationJob.findUnique).mockResolvedValue(mockJob);
       vi.mocked(prisma.editorialDocument.findUnique).mockResolvedValue(mockDocument as any);
       vi.mocked(prisma.styleValidationJob.update).mockResolvedValue(mockJob);

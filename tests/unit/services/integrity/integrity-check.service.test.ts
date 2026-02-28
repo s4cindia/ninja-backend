@@ -105,6 +105,7 @@ describe('integrityCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           integrityCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue({ id: 'existing-job' }),
             create: vi.fn(),
           },
@@ -122,6 +123,7 @@ describe('integrityCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           integrityCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: JOB_ID }),
           },
@@ -144,6 +146,7 @@ describe('integrityCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           integrityCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockImplementation((args: unknown) => {
               capturedCreate = args;
@@ -302,8 +305,8 @@ describe('integrityCheckService', () => {
       const result = await integrityCheckService.getSummary(DOCUMENT_ID, TENANT_ID);
 
       expect(result).toEqual({
-        FIGURE_REF: { total: 6, errors: 3, warnings: 2, suggestions: 1, pending: 5, fixed: 1 },
-        TABLE_REF: { total: 6, errors: 5, warnings: 1, suggestions: 0, pending: 5, fixed: 1 },
+        FIGURE_REF: { total: 6, errors: 3, warnings: 2, suggestions: 1, pending: 5, fixed: 1, ignored: 0 },
+        TABLE_REF: { total: 6, errors: 5, warnings: 1, suggestions: 0, pending: 5, fixed: 1, ignored: 0 },
       });
     });
   });

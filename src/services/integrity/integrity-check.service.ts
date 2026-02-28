@@ -6,7 +6,7 @@
  * it identify real issues, reducing false positives from rule-based checks.
  */
 
-import { Prisma } from '@prisma/client';
+import { Prisma, IntegrityCheckType } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
@@ -48,28 +48,28 @@ async function startCheck(
   });
   if (!doc) throw AppError.notFound('Document not found');
 
-  const selectedTypes = checkTypes && checkTypes.length > 0
+  const selectedTypes = (checkTypes && checkTypes.length > 0
     ? checkTypes.filter(t => ALL_CHECK_TYPES.includes(t))
-    : ALL_CHECK_TYPES;
+    : ALL_CHECK_TYPES) as IntegrityCheckType[];
 
-  // Per-tenant concurrency cap: max 2 active integrity jobs at a time
+  // Atomically check concurrency + duplicate jobs inside a transaction
   const MAX_CONCURRENT_JOBS = 2;
-  const activeJobCount = await prisma.integrityCheckJob.count({
-    where: { tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
-  });
-  if (activeJobCount >= MAX_CONCURRENT_JOBS) {
-    throw AppError.badRequest(`Maximum ${MAX_CONCURRENT_JOBS} concurrent integrity checks allowed per tenant`);
-  }
+  const { job, isNew } = await prisma.$transaction(async (tx) => {
+    // Per-tenant concurrency cap
+    const activeJobCount = await tx.integrityCheckJob.count({
+      where: { tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
+    });
+    if (activeJobCount >= MAX_CONCURRENT_JOBS) {
+      throw AppError.badRequest(`Maximum ${MAX_CONCURRENT_JOBS} concurrent integrity checks allowed per tenant`);
+    }
 
-  // Atomically check-then-create to prevent duplicate concurrent jobs
-  const job = await prisma.$transaction(async (tx) => {
     const existingJob = await tx.integrityCheckJob.findFirst({
       where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
       select: { id: true },
     });
-    if (existingJob) return existingJob;
+    if (existingJob) return { job: existingJob, isNew: false };
 
-    return tx.integrityCheckJob.create({
+    const created = await tx.integrityCheckJob.create({
       data: {
         tenantId,
         documentId,
@@ -79,12 +79,15 @@ async function startCheck(
         totalChecks: selectedTypes.length,
       },
     });
+    return { job: created, isNew: true };
   });
 
-  // Execute asynchronously
-  executeCheck(job.id, tenantId, documentId, selectedTypes).catch(err => {
-    logger.error(`[IntegrityCheck] Job ${job.id} failed:`, err);
-  });
+  // Only execute if this is a newly created job (not a duplicate)
+  if (isNew) {
+    executeCheck(job.id, tenantId, documentId, selectedTypes).catch(err => {
+      logger.error(`[IntegrityCheck] Job ${job.id} failed:`, err);
+    });
+  }
 
   return { jobId: job.id };
 }
@@ -295,12 +298,12 @@ async function getSummary(documentId: string, tenantId: string) {
     _count: true,
   });
 
-  const summary: Record<string, { total: number; errors: number; warnings: number; suggestions: number; pending: number; fixed: number }> = {};
+  const summary: Record<string, { total: number; errors: number; warnings: number; suggestions: number; pending: number; fixed: number; ignored: number }> = {};
 
   for (const g of groups) {
     const key = g.checkType;
     if (!summary[key]) {
-      summary[key] = { total: 0, errors: 0, warnings: 0, suggestions: 0, pending: 0, fixed: 0 };
+      summary[key] = { total: 0, errors: 0, warnings: 0, suggestions: 0, pending: 0, fixed: 0, ignored: 0 };
     }
     summary[key].total += g._count;
     if (g.severity === 'ERROR') summary[key].errors += g._count;
@@ -308,6 +311,7 @@ async function getSummary(documentId: string, tenantId: string) {
     else summary[key].suggestions += g._count;
     if (g.status === 'PENDING') summary[key].pending += g._count;
     else if (g.status === 'FIXED' || g.status === 'AUTO_FIXED') summary[key].fixed += g._count;
+    else if (g.status === 'IGNORED') summary[key].ignored += g._count;
   }
 
   return summary;

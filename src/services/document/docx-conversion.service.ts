@@ -745,16 +745,16 @@ export async function applyRevisionMarksToDocx(
       if (result.count > 0) {
         documentXml = result.xml;
         applied += result.count;
-        logger.info(`[DocxConversion] Phase 1: Placed placeholder for "${change.oldText.substring(0, 50)}..." (${result.count} match)`);
+        logger.debug(`[DocxConversion] Phase 1: Placed placeholder for change (${result.count} match)`);
       } else {
         // Try with original (non-XML-encoded) text
         const result2 = replaceTextAcrossRuns(documentXml, change.oldText, placeholder);
         if (result2.count > 0) {
           documentXml = result2.xml;
           applied += result2.count;
-          logger.info(`[DocxConversion] Phase 1: Placed placeholder (alt) for "${change.oldText.substring(0, 50)}..." (${result2.count} match)`);
+          logger.debug(`[DocxConversion] Phase 1: Placed placeholder (alt) for change (${result2.count} match)`);
         } else {
-          logger.warn(`[DocxConversion] Phase 1: No match for "${change.oldText.substring(0, 60)}..."`);
+          logger.debug(`[DocxConversion] Phase 1: No match found for change`);
         }
       }
     }
@@ -1080,13 +1080,14 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
  * Decode HTML entities in text extracted from HTML spans.
  */
 function decodeHtmlEntities(text: string): string {
+  // Decode &amp; last to prevent double-decoding (e.g., &amp;lt; → &lt; → <)
   return text
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
 }
 
 /**

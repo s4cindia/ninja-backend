@@ -327,7 +327,7 @@ CONTENT TYPE: ${contentType}
 
 DOCUMENT TEXT (chunk ${i + 1} of ${chunks.length}):
 <<<CONTENT_START>>>
-${chunk.text}
+${chunk.text.replace(/<<<CONTENT_START>>>/g, '<<CONTENT_START>>').replace(/<<<CONTENT_END>>>/g, '<<CONTENT_END>>')}
 <<<CONTENT_END>>>
 
 Analyze this text thoroughly against the style guide rules above. For EACH violation found, return:

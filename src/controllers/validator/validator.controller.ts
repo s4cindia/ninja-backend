@@ -284,7 +284,7 @@ export class ValidatorController {
       // Auto-detect content type if unknown
       let detectedContentType = document.contentType;
       if (detectedContentType === 'UNKNOWN' && document.documentContent?.fullHtml) {
-        const plainText = document.documentContent.fullText || '';
+        const plainText = document.documentContent.fullText || htmlToPlainText(document.documentContent.fullHtml);
         const detection = contentTypeDetector.detectContentType(plainText, document.documentContent.fullHtml);
         if (detection.contentType !== 'UNKNOWN') {
           detectedContentType = detection.contentType;
@@ -509,7 +509,7 @@ export class ValidatorController {
       // Set appropriate headers
       res.setHeader('Content-Type', document.mimeType);
       res.setHeader('Content-Length', fileBuffer.length);
-      const safeName = document.originalName.replace(/[^\x20-\x7E]/g, '_');
+      const safeName = document.originalName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
       res.setHeader('Content-Disposition', `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(document.originalName)}`);
 
       // Send the file
@@ -979,7 +979,7 @@ export class ValidatorController {
 
       // Send the DOCX file
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-      const safeName = exportName.replace(/[^\x20-\x7E]/g, '_');
+      const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);

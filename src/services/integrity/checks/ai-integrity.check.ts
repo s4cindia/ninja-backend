@@ -300,37 +300,41 @@ export async function aiIntegrityCheck(
         structure
       );
 
-      try {
-        const rawIssues = await claudeService.generateJSON<AIIssue[]>(prompt, {
-          model: 'sonnet',
-          temperature: 0.1,
-          maxTokens: 8000,
-          systemPrompt: SYSTEM_PROMPT,
-        });
+      let rawIssues: AIIssue[] | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          rawIssues = await claudeService.generateJSON<AIIssue[]>(prompt, {
+            model: 'sonnet',
+            temperature: 0.1,
+            maxTokens: 8000,
+            systemPrompt: SYSTEM_PROMPT,
+          });
+          break; // success
+        } catch (chunkError: unknown) {
+          const isRateLimit = chunkError instanceof Error && chunkError.message?.includes('429');
+          if (isRateLimit && attempt === 0) {
+            logger.warn(`[AI Integrity] Rate limited on chunk ${i + 1}, retrying after 3s`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            continue; // retry once
+          }
+          logger.error(
+            `[AI Integrity] Chunk ${i + 1}/${chunks.length} failed:`,
+            chunkError
+          );
+          break; // non-retryable error, skip chunk
+        }
+      }
 
-        // Validate that response is an array
-        if (Array.isArray(rawIssues)) {
-          const mapped = validateAndMapIssues(rawIssues, chunk.offset, chunk.text);
-          allIssues.push(...mapped);
-          logger.info(
-            `[AI Integrity] Chunk ${i + 1}/${chunks.length}: ${mapped.length} issue(s)`
-          );
-        } else {
-          logger.warn(
-            `[AI Integrity] Chunk ${i + 1}/${chunks.length}: response was not an array, skipping`
-          );
-        }
-      } catch (chunkError: unknown) {
-        const isRateLimit = chunkError instanceof Error && chunkError.message?.includes('429');
-        if (isRateLimit && i < chunks.length - 1) {
-          logger.warn(`[AI Integrity] Rate limited on chunk ${i + 1}, backing off 2s`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-        logger.error(
-          `[AI Integrity] Chunk ${i + 1}/${chunks.length} failed:`,
-          chunkError
+      if (Array.isArray(rawIssues)) {
+        const mapped = validateAndMapIssues(rawIssues, chunk.offset, chunk.text);
+        allIssues.push(...mapped);
+        logger.info(
+          `[AI Integrity] Chunk ${i + 1}/${chunks.length}: ${mapped.length} issue(s)`
         );
-        // Continue with remaining chunks
+      } else if (rawIssues !== null) {
+        logger.warn(
+          `[AI Integrity] Chunk ${i + 1}/${chunks.length}: response was not an array, skipping`
+        );
       }
 
       // Report progress
@@ -357,6 +361,6 @@ export async function aiIntegrityCheck(
     return filtered;
   } catch (error) {
     logger.error('[AI Integrity] AI integrity check failed:', error);
-    return [];
+    throw error instanceof Error ? error : new Error('AI integrity check failed');
   }
 }

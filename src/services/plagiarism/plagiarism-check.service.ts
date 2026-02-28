@@ -125,14 +125,14 @@ async function startCheck(
   }
 
   // Atomically check-then-create to prevent duplicate concurrent jobs
-  const job = await prisma.$transaction(async (tx) => {
+  const { job, isNew } = await prisma.$transaction(async (tx) => {
     const existingJob = await tx.plagiarismCheckJob.findFirst({
       where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
       select: { id: true },
     });
-    if (existingJob) return existingJob;
+    if (existingJob) return { job: existingJob, isNew: false };
 
-    return tx.plagiarismCheckJob.create({
+    const created = await tx.plagiarismCheckJob.create({
       data: {
         tenantId,
         documentId,
@@ -140,12 +140,15 @@ async function startCheck(
         progress: 0,
       },
     });
+    return { job: created, isNew: true };
   });
 
-  // Execute asynchronously
-  executeCheck(job.id, tenantId, documentId).catch(err => {
-    logger.error(`[PlagiarismCheck] Job ${job.id} failed:`, err);
-  });
+  // Only execute if this is a newly created job (not a duplicate)
+  if (isNew) {
+    executeCheck(job.id, tenantId, documentId).catch(err => {
+      logger.error(`[PlagiarismCheck] Job ${job.id} failed:`, err);
+    });
+  }
 
   return { jobId: job.id };
 }

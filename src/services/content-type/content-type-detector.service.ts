@@ -82,9 +82,9 @@ export function detectContentType(text: string, html: string): DetectionResult {
 
   // === Book Signals ===
 
-  // 1. Table of Contents
-  const tocPatterns = /\b(table\s+of\s+contents|contents)\b/i;
-  if (tocPatterns.test(text)) {
+  // 1. Table of Contents (anchor to line boundaries to avoid matching "contents" in prose)
+  const tocPatterns = /(?:^|\n)\s*(?:table\s+of\s+contents|contents)\s*(?:\n|$)/im;
+  if (tocPatterns.test(earlyText)) {
     bookScore.total += 4;
     bookScore.signals.push('table-of-contents');
   }
