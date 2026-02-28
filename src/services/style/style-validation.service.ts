@@ -9,7 +9,7 @@
  * - Generate validation summaries
  */
 
-import prisma from '../../lib/prisma';
+import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
 import { styleRulesRegistry, type RuleMatch } from './style-rules-registry.service';
@@ -536,17 +536,17 @@ IMPORTANT:
       ];
     }
 
+    const typedWhere = where as Prisma.StyleViolationWhereInput;
+
     const [violations, total] = await Promise.all([
       prisma.styleViolation.findMany({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        where: where as any,
+        where: typedWhere,
         orderBy: [{ severity: 'asc' }, { startOffset: 'asc' }],
         skip: pagination?.skip ?? 0,
         take: Math.min(pagination?.take ?? 100, 200), // Max 200 per request (matches schema)
       }),
       prisma.styleViolation.count({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        where: where as any,
+        where: typedWhere,
       }),
     ]);
 

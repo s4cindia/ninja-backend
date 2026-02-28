@@ -207,19 +207,23 @@ async function executeCheck(
         endOffset: number;
       }> = [];
 
-      let offset = 0;
+      let searchFrom = 0;
       for (let i = 0; i < words.length; i += chunkSize) {
         const chunkWords = words.slice(i, i + chunkSize);
         const chunkText = chunkWords.join(' ');
+        // Find actual position in fullText to avoid offset drift from variable whitespace
+        const actualStart = fullText.indexOf(chunkWords[0], searchFrom);
+        const startOffset = actualStart >= 0 ? actualStart : searchFrom;
+        const endOffset = startOffset + chunkText.length;
         chunkData.push({
           documentId,
           chunkIndex: Math.floor(i / chunkSize),
           text: chunkText,
           wordCount: chunkWords.length,
-          startOffset: offset,
-          endOffset: offset + chunkText.length,
+          startOffset,
+          endOffset,
         });
-        offset += chunkText.length + 1;
+        searchFrom = endOffset;
       }
 
       await prisma.editorialTextChunk.createMany({ data: chunkData });
@@ -242,6 +246,7 @@ async function executeCheck(
     // Analyze each AI chunk for external plagiarism using Claude
     const allMatchData: Prisma.PlagiarismMatchCreateManyInput[] = [];
     const progressPerChunk = 80 / Math.max(aiChunks.length, 1);
+    let chunkFailures = 0;
 
     for (let i = 0; i < aiChunks.length; i++) {
       const aiChunk = aiChunks[i];
@@ -249,6 +254,9 @@ async function executeCheck(
       logger.info(`[PlagiarismCheck] Analyzing chunk ${i + 1}/${aiChunks.length} (${aiChunk.text.length} chars)`);
 
       const detectedMatches = await detectExternalPlagiarism(aiChunk.text, contentType);
+      if (detectedMatches.length === 0) {
+        chunkFailures++;
+      }
 
       for (const match of detectedMatches) {
         try {
@@ -302,6 +310,16 @@ async function executeCheck(
       }
     }
 
+    // If all AI chunks failed, mark the job as failed
+    if (chunkFailures === aiChunks.length && aiChunks.length > 0 && allMatchData.length === 0) {
+      logger.error(`[PlagiarismCheck] All ${aiChunks.length} AI chunks returned empty results — possible AI service failure`);
+      await prisma.plagiarismCheckJob.update({
+        where: { id: jobId },
+        data: { status: 'FAILED', metadata: { error: 'All AI analysis chunks failed' } },
+      });
+      return;
+    }
+
     // Replace only unreviewed (PENDING) matches; preserve human-reviewed decisions
     await prisma.$transaction(async (tx) => {
       // Only delete matches that haven't been reviewed by a human
@@ -347,7 +365,9 @@ async function executeCheck(
         status: 'FAILED',
         metadata: { error: error instanceof Error ? error.message : 'Unknown error' },
       },
-    }).catch(() => {});
+    }).catch((updateErr) => {
+      logger.error(`[PlagiarismCheck] Failed to update job ${jobId} status to FAILED:`, updateErr);
+    });
   }
 }
 

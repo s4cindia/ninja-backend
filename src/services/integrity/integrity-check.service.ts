@@ -183,7 +183,9 @@ async function executeCheck(
         status: 'FAILED',
         metadata: { error: error instanceof Error ? error.message : 'Unknown error' },
       },
-    }).catch(() => {});
+    }).catch((updateErr) => {
+      logger.error(`[IntegrityCheck] Failed to update job ${jobId} status to FAILED:`, updateErr);
+    });
   }
 }
 

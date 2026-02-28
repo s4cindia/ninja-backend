@@ -78,3 +78,42 @@ ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_documentId_fkey" FOR
 
 -- AddForeignKey
 ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "IntegrityCheckJob"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- CreateEnum
+DO $$ BEGIN
+  CREATE TYPE "ContentType" AS ENUM ('JOURNAL_ARTICLE', 'BOOK', 'UNKNOWN');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS "PlagiarismCheckJob" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "documentId" TEXT NOT NULL,
+    "status" "JobStatus" NOT NULL DEFAULT 'QUEUED',
+    "progress" INTEGER NOT NULL DEFAULT 0,
+    "totalChunks" INTEGER NOT NULL DEFAULT 0,
+    "matchesFound" INTEGER NOT NULL DEFAULT 0,
+    "metadata" JSONB,
+    "startedAt" TIMESTAMP(3),
+    "completedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "PlagiarismCheckJob_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_tenantId_idx" ON "PlagiarismCheckJob"("tenantId");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_documentId_idx" ON "PlagiarismCheckJob"("documentId");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_status_idx" ON "PlagiarismCheckJob"("status");
+
+-- AddForeignKey
+ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
