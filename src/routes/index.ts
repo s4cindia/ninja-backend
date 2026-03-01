@@ -32,6 +32,8 @@ import workflowRoutes from "./workflow.routes";
 import documentRoutes from "./document.routes";
 import validatorRoutes from "./validator.routes";
 import styleRoutes from "./style.routes";
+import integrityRoutes from "./integrity.routes";
+import plagiarismRoutes from "./plagiarism.routes";
 
 const router = Router();
 
@@ -117,5 +119,7 @@ router.use("/workflow/hitl", hitlRoutes);
 router.use("/document", documentRoutes);
 router.use("/validator", validatorRoutes);
 router.use("/style", styleRoutes);
+router.use("/integrity", integrityRoutes);
+router.use("/plagiarism", plagiarismRoutes);
 
 export default router;

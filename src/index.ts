@@ -10,11 +10,13 @@ import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
-import { startWorkflowRecovery, stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
+import { stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
 import { websocketService } from './services/workflow/websocket.service';
 import { logger } from './lib/logger';
+import { integrityCheckService } from './services/integrity/integrity-check.service';
+import { plagiarismCheckService } from './services/plagiarism/plagiarism-check.service';
 
 const app: Express = express();
 
@@ -123,10 +125,13 @@ const server = app.listen(config.port, '0.0.0.0', () => {
 
   startWorkers();
 
-  if (isRedisConfigured()) {
-    startWorkflowRecovery();
-    logger.info('✅ Workflow recovery scanner started');
-  }
+  // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
+  integrityCheckService.cleanupStaleJobs().catch(err => {
+    logger.error('Failed to clean up stale integrity check jobs', err as Error);
+  });
+  plagiarismCheckService.cleanupStaleJobs().catch(err => {
+    logger.error('Failed to clean up stale plagiarism check jobs', err as Error);
+  });
 });
 
 const gracefulShutdown = async () => {

@@ -202,6 +202,20 @@ export const rateLimiters = {
     message: 'Style guide upload rate limit exceeded. Maximum 5 uploads per minute.',
   }),
 
+  // Integrity check with AI: 5 requests per minute per tenant
+  integrityCheck: rateLimit({
+    windowMs: 60 * 1000,
+    maxRequests: 5,
+    message: 'Integrity check rate limit exceeded. Maximum 5 checks per minute.',
+  }),
+
+  // Plagiarism check with AI: 5 requests per minute per tenant
+  plagiarismCheck: rateLimit({
+    windowMs: 60 * 1000,
+    maxRequests: 5,
+    message: 'Plagiarism check rate limit exceeded. Maximum 5 checks per minute.',
+  }),
+
   // General API: 100 requests per minute per tenant
   general: rateLimit({
     windowMs: 60 * 1000,

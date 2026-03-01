@@ -13,7 +13,6 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '../../lib/logger';
 import { styleValidation, type ViolationFilters } from '../../services/style/style-validation.service';
 import { styleRulesRegistry } from '../../services/style/style-rules-registry.service';
-import { getStyleQueue, JOB_TYPES } from '../../queues';
 import type { AuthenticatedRequest } from '../../types/authenticated-request';
 import type {
   StartValidationBody,
@@ -40,12 +39,11 @@ export class StyleController {
         });
       }
 
-      // Queue the validation job (uses sync mode if Redis/BullMQ is not available)
-      const styleQueue = getStyleQueue();
-      const useSyncMode = !styleQueue;
-
-      if (useSyncMode) {
-        logger.info('[Style Controller] Using sync mode (Redis not configured)');
+      // Fire-and-forget pattern: create the job record, start async execution,
+      // and return 202 immediately. The client polls GET /job/:jobId for progress.
+      // No BullMQ queue needed — execution runs in-process with progress DB updates.
+      {
+        logger.info('[Style Controller] Starting async style validation');
         // If no queue, run synchronously
         const job = await styleValidation.startValidation(tenantId, userId, {
           documentId: body.documentId,
@@ -85,48 +83,6 @@ export class StyleController {
         });
       }
 
-      // Create the job record first
-      const validationJob = await styleValidation.startValidation(
-        tenantId,
-        userId,
-        {
-          documentId: body.documentId,
-          ruleSetIds: body.ruleSetIds,
-          styleGuide: body.styleGuide,
-          includeHouseRules: body.includeHouseRules,
-          useAiValidation: body.useAiValidation,
-        }
-      );
-
-      // Queue for background processing
-      await styleQueue.add(
-        'style-validation',
-        {
-          type: JOB_TYPES.STYLE_VALIDATION,
-          tenantId,
-          userId,
-          options: {
-            documentId: body.documentId,
-            ruleSetIds: body.ruleSetIds,
-            includeHouseRules: body.includeHouseRules ?? true,
-            validationJobId: validationJob.id,
-          },
-        },
-        {
-          jobId: validationJob.id,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-        }
-      );
-
-      return res.status(202).json({
-        success: true,
-        data: {
-          jobId: validationJob.id,
-          status: 'QUEUED',
-          message: 'Validation job queued successfully',
-        },
-      });
     } catch (error) {
       next(error);
     }
