@@ -1276,12 +1276,16 @@ enum StyleCategory {
   OTHER
 }
 
+// Shared across StyleViolation and IntegrityIssue — values are generic enough for both.
+// If integrity checks need severity levels that diverge from style (e.g. CRITICAL),
+// create a separate IntegritySeverity enum at that point.
 enum StyleSeverity {
   ERROR
   WARNING
   SUGGESTION
 }
 
+// Shared across StyleViolation and IntegrityIssue.
 enum ViolationStatus {
   PENDING
   FIXED
@@ -1722,6 +1726,7 @@ model IntegrityCheckJob {
   @@index([tenantId])
   @@index([documentId])
   @@index([status])
+  @@index([documentId, tenantId, status])
 }
 
 model IntegrityIssue {

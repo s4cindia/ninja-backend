@@ -1,19 +1,24 @@
 /**
- * Plagiarism Check Service
+ * Similarity Detection Service (AI-Assisted)
  *
- * Detects content copied from external published sources using Claude AI.
- * Claude analyzes each text chunk against its knowledge of published literature,
- * academic papers, websites, and books to identify potential plagiarism.
+ * Uses Claude AI to identify passages that may resemble known published sources.
+ *
+ * IMPORTANT LIMITATIONS:
+ * - Results are AI-estimated similarity hints, NOT verified plagiarism detections.
+ * - Claude may hallucinate sources that do not exist — all matches require human verification.
+ * - Knowledge cutoff means sources published after the model's training date are invisible.
+ * - No access to institutional databases (CrossRef, PubMed, publisher repositories).
+ * - For authoritative plagiarism screening, supplement with a dedicated service (e.g., iThenticate, Turnitin).
  *
  * Pipeline:
  * 1. Parse document into chunks
- * 2. Send each chunk to Claude for external source analysis
- * 3. Claude identifies passages that match known published works
- * 4. Store results as PlagiarismMatch records
+ * 2. Send each chunk to Claude for similarity analysis
+ * 3. Claude identifies passages resembling known published works
+ * 4. Store results as PlagiarismMatch records with disclaimer metadata
  */
 
 import { randomUUID } from 'crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma, type EditorialTextChunk } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../utils/app-error';
@@ -79,7 +84,7 @@ IMPORTANT RULES:
 - DO report paraphrased ideas without citation as PARAPHRASED.
 - DO report passages that cite sources correctly as PROPERLY_CITED (with lower priority).
 - Focus on substantial matches (at least a full sentence), not individual words or common phrases.
-- Be thorough but avoid false positives. Aim for at least 3-5 matches per chunk of text if sources can be identified.
+- Be thorough but conservative. Only report matches where you have genuine confidence in the source identification. It is better to miss a match than to fabricate one.
 
 Return a JSON array. Return [] ONLY if you genuinely cannot identify any passages matching known published sources.`;
 
@@ -220,17 +225,21 @@ async function executeCheck(
 
     const fullText = docContent.fullText;
 
-    // Ensure text chunks exist in DB (needed for storing match references)
-    let dbChunks = await prisma.editorialTextChunk.findMany({
-      where: { documentId },
-      orderBy: { chunkIndex: 'asc' },
-    });
+    // Ensure text chunks exist in DB (needed for storing match references).
+    // Use a transaction to prevent concurrent checks from inserting duplicate chunks.
+    let dbChunks = await prisma.$transaction(async (tx) => {
+      const existing = await tx.editorialTextChunk.findMany({
+        where: { documentId },
+        orderBy: { chunkIndex: 'asc' },
+      });
+      if (existing.length > 0) return existing;
 
-    if (dbChunks.length === 0) {
       // Create DB chunks (~500 words each, as expected by the schema)
+      // Pre-generate UUIDs so we can skip a second findMany round-trip
       const words = fullText.split(/\s+/);
       const chunkSize = 500;
       const chunkData: Array<{
+        id: string;
         documentId: string;
         chunkIndex: number;
         text: string;
@@ -243,11 +252,14 @@ async function executeCheck(
       for (let i = 0; i < words.length; i += chunkSize) {
         const chunkWords = words.slice(i, i + chunkSize);
         const chunkText = chunkWords.join(' ');
-        // Find actual position in fullText to avoid offset drift from variable whitespace
-        const actualStart = fullText.indexOf(chunkWords[0], searchFrom);
+        // Search for first several words joined to avoid matching a common single word
+        // (e.g. "The") at the wrong position in the document
+        const needle = chunkWords.slice(0, Math.min(5, chunkWords.length)).join(' ');
+        const actualStart = fullText.indexOf(needle, searchFrom);
         const startOffset = actualStart >= 0 ? actualStart : searchFrom;
         const endOffset = startOffset + chunkText.length;
         chunkData.push({
+          id: randomUUID(),
           documentId,
           chunkIndex: Math.floor(i / chunkSize),
           text: chunkText,
@@ -258,14 +270,14 @@ async function executeCheck(
         searchFrom = endOffset;
       }
 
-      await prisma.editorialTextChunk.createMany({ data: chunkData });
-      // TODO: Prisma 5.14+ supports createManyAndReturn which would avoid this extra query.
-      // For now, we need findMany to get the auto-generated IDs.
-      dbChunks = await prisma.editorialTextChunk.findMany({
-        where: { documentId },
-        orderBy: { chunkIndex: 'asc' },
-      });
-    }
+      await tx.editorialTextChunk.createMany({ data: chunkData });
+      // Build local chunk objects with the pre-generated IDs (avoids second DB query)
+      return chunkData.map(c => ({
+        ...c,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })) as unknown as EditorialTextChunk[];
+    });
 
     // Split full text into larger AI chunks (20K paragraph boundaries)
     const aiChunks = splitTextIntoChunks(fullText);
@@ -418,7 +430,7 @@ async function executeCheck(
  * Get job status (tenant-scoped).
  */
 async function getJobStatus(jobId: string, tenantId: string) {
-  return prisma.plagiarismCheckJob.findFirst({
+  const job = await prisma.plagiarismCheckJob.findFirst({
     where: { id: jobId, tenantId },
     select: {
       id: true,
@@ -432,6 +444,11 @@ async function getJobStatus(jobId: string, tenantId: string) {
       metadata: true,
     },
   });
+  if (!job) return null;
+  return {
+    ...job,
+    disclaimer: 'AI-estimated similarity hints — not verified plagiarism. All matches require human review.',
+  };
 }
 
 /**
@@ -476,7 +493,14 @@ async function getMatches(
     }),
   ]);
 
-  return { matches, total, page, limit, totalPages: Math.ceil(total / limit) };
+  return {
+    matches,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+    disclaimer: 'AI-estimated similarity hints based on the model\'s training data. Sources may be hallucinated. All matches require human verification.',
+  };
 }
 
 /**
@@ -527,6 +551,7 @@ async function getSummary(documentId: string, tenantId: string) {
     byType,
     byClassification,
     byStatus,
+    disclaimer: 'AI-estimated similarity hints based on the model\'s training data. Sources may be hallucinated. All matches require human verification.',
   };
 }
 
@@ -584,7 +609,8 @@ async function bulkReview(
  * Mark stale PROCESSING/QUEUED jobs as FAILED.
  * Call on server startup to recover from crashes.
  */
-async function cleanupStaleJobs(maxAgeMs = 30 * 60 * 1000): Promise<number> {
+const DEFAULT_PLAGIARISM_JOB_TIMEOUT_MS = parseInt(process.env.PLAGIARISM_JOB_TIMEOUT_MS || '', 10) || 30 * 60 * 1000;
+async function cleanupStaleJobs(maxAgeMs = DEFAULT_PLAGIARISM_JOB_TIMEOUT_MS): Promise<number> {
   const cutoff = new Date(Date.now() - maxAgeMs);
   const result = await prisma.plagiarismCheckJob.updateMany({
     where: {

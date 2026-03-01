@@ -44,14 +44,17 @@ export class IntegrityController {
         body.checkTypes
       );
 
-      logger.info(`[IntegrityController] Check started: jobId=${result.jobId}, user=${userId}`);
+      logger.info(`[IntegrityController] Check ${result.created ? 'started' : 'reused'}: jobId=${result.jobId}, user=${userId}`);
 
-      return res.status(202).json({
+      // Return 202 for new jobs, 200 for reused existing jobs
+      const httpStatus = result.created ? 202 : 200;
+      return res.status(httpStatus).json({
         success: true,
         data: {
           jobId: result.jobId,
-          status: 'QUEUED',
-          message: 'Integrity check started',
+          status: result.status,
+          created: result.created,
+          message: result.created ? 'Integrity check started' : 'Existing check in progress',
         },
       });
     } catch (error) {

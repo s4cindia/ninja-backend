@@ -50,11 +50,13 @@ class ClaudeService {
     const modelType = options.model || 'sonnet';
 
     // Claude models - verified against Anthropic API (2026-02-17)
-    // Model IDs must match Anthropic API exactly to avoid 400/404 errors
+    // Model IDs must match Anthropic API exactly to avoid 400/404 errors.
+    // Note: Sonnet is version 4 (not 4.5) — Anthropic released it separately.
+    // Haiku and Opus are version 4.5. This naming difference is upstream, not a bug.
     const models: Record<string, string> = {
       haiku: 'claude-haiku-4-5-20251001',       // Fast, cost-effective (Claude Haiku 4.5)
-      sonnet: 'claude-sonnet-4-20250514',      // Balanced performance (Claude Sonnet 4)
-      opus: 'claude-opus-4-5-20251101'         // Most capable (Claude Opus 4.5)
+      sonnet: 'claude-sonnet-4-20250514',        // Balanced performance (Claude Sonnet 4)
+      opus: 'claude-opus-4-5-20251101',          // Most capable (Claude Opus 4.5)
     };
 
     return models[modelType] || models.sonnet;

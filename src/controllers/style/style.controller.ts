@@ -39,13 +39,11 @@ export class StyleController {
         });
       }
 
-      // Always use sync mode for style validation.
-      // Style checks are fast (5-15s for a single AI call on typical documents)
-      // and BullMQ workers on Upstash Redis are unreliable with blocking commands.
-      const useSyncMode = true;
-
-      if (useSyncMode) {
-        logger.info('[Style Controller] Using sync mode (Redis not configured)');
+      // Fire-and-forget pattern: create the job record, start async execution,
+      // and return 202 immediately. The client polls GET /job/:jobId for progress.
+      // No BullMQ queue needed — execution runs in-process with progress DB updates.
+      {
+        logger.info('[Style Controller] Starting async style validation');
         // If no queue, run synchronously
         const job = await styleValidation.startValidation(tenantId, userId, {
           documentId: body.documentId,

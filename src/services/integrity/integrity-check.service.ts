@@ -40,7 +40,7 @@ async function startCheck(
   tenantId: string,
   documentId: string,
   checkTypes?: string[]
-): Promise<{ jobId: string }> {
+): Promise<{ jobId: string; created: boolean; status: string }> {
   // Verify document belongs to tenant
   const doc = await prisma.editorialDocument.findFirst({
     where: { id: documentId, tenantId },
@@ -65,7 +65,7 @@ async function startCheck(
 
     const existingJob = await tx.integrityCheckJob.findFirst({
       where: { documentId, tenantId, status: { in: ['QUEUED', 'PROCESSING'] } },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (existingJob) return { job: existingJob, isNew: false };
 
@@ -89,15 +89,23 @@ async function startCheck(
     });
   }
 
-  return { jobId: job.id };
+  return {
+    jobId: job.id,
+    created: isNew,
+    status: isNew ? 'QUEUED' : (job as { status?: string }).status || 'PROCESSING',
+  };
 }
 
 /**
  * Execute the integrity check (called asynchronously).
+ *
+ * Tenant scoping: documentId was already verified against tenantId in startCheck()
+ * before this function is called. Since documentId is a UUID (unguessable), we scope
+ * the document fetch by tenantId as defense-in-depth rather than strictly for authz.
  */
 async function executeCheck(
   jobId: string,
-  _tenantId: string,
+  tenantId: string,
   documentId: string,
   checkTypes: string[]
 ): Promise<void> {
@@ -107,14 +115,14 @@ async function executeCheck(
       data: { status: 'PROCESSING', startedAt: new Date() },
     });
 
-    // Get document content and content type
+    // Get document content and content type (tenant-scoped for defense-in-depth)
     const [docContent, editorialDoc] = await Promise.all([
-      prisma.editorialDocumentContent.findUnique({
-        where: { documentId },
+      prisma.editorialDocumentContent.findFirst({
+        where: { documentId, document: { tenantId } },
         select: { fullText: true, fullHtml: true },
       }),
-      prisma.editorialDocument.findUnique({
-        where: { id: documentId },
+      prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
         select: { contentType: true },
       }),
     ]);
@@ -132,13 +140,18 @@ async function executeCheck(
     const contentType = editorialDoc?.contentType || 'UNKNOWN';
 
     // Run AI-based integrity check with progress tracking
+    // Throttle DB writes: only persist when progress changes by >=5% to avoid excessive updates
+    let lastPersistedProgress = 0;
     const allIssues = await aiIntegrityCheck(text, html, contentType, {
       checkTypes,
       onProgress: async (pct) => {
-        await prisma.integrityCheckJob.update({
-          where: { id: jobId },
-          data: { progress: pct },
-        });
+        if (pct - lastPersistedProgress >= 5 || pct >= 100) {
+          lastPersistedProgress = pct;
+          await prisma.integrityCheckJob.update({
+            where: { id: jobId },
+            data: { progress: pct },
+          });
+        }
       },
     });
 
@@ -314,48 +327,75 @@ async function getSummary(documentId: string, tenantId: string) {
 
 /**
  * Apply a suggested fix to an issue (tenant-scoped).
+ * Uses a transaction to atomically verify ownership and update.
  */
 async function applyFix(issueId: string, tenantId: string, resolvedBy: string) {
-  const issue = await prisma.integrityIssue.findFirst({
-    where: { id: issueId, document: { tenantId } },
-    select: { id: true },
-  });
-  if (!issue) throw AppError.notFound('Integrity issue not found');
+  return prisma.$transaction(async (tx) => {
+    const issue = await tx.integrityIssue.findFirst({
+      where: { id: issueId, document: { tenantId } },
+      select: { id: true },
+    });
+    if (!issue) throw AppError.notFound('Integrity issue not found');
 
-  return prisma.integrityIssue.update({
-    where: { id: issueId },
-    data: {
-      status: 'FIXED',
-      resolvedAt: new Date(),
-      resolvedBy,
-      resolution: 'Applied suggested fix',
-    },
+    return tx.integrityIssue.update({
+      where: { id: issueId },
+      data: {
+        status: 'FIXED',
+        resolvedAt: new Date(),
+        resolvedBy,
+        resolution: 'Applied suggested fix',
+      },
+      select: {
+        id: true,
+        checkType: true,
+        severity: true,
+        title: true,
+        status: true,
+        resolvedAt: true,
+        resolvedBy: true,
+        resolution: true,
+      },
+    });
   });
 }
 
 /**
  * Ignore an issue (tenant-scoped).
+ * Uses a transaction to atomically verify ownership and update.
  */
 async function ignoreIssue(issueId: string, tenantId: string, resolvedBy: string, reason?: string) {
-  const issue = await prisma.integrityIssue.findFirst({
-    where: { id: issueId, document: { tenantId } },
-    select: { id: true },
-  });
-  if (!issue) throw AppError.notFound('Integrity issue not found');
+  return prisma.$transaction(async (tx) => {
+    const issue = await tx.integrityIssue.findFirst({
+      where: { id: issueId, document: { tenantId } },
+      select: { id: true },
+    });
+    if (!issue) throw AppError.notFound('Integrity issue not found');
 
-  return prisma.integrityIssue.update({
-    where: { id: issueId },
-    data: {
-      status: 'IGNORED',
-      resolvedAt: new Date(),
-      resolvedBy,
-      resolution: reason || 'Ignored by user',
-    },
+    return tx.integrityIssue.update({
+      where: { id: issueId },
+      data: {
+        status: 'IGNORED',
+        resolvedAt: new Date(),
+        resolvedBy,
+        resolution: reason || 'Ignored by user',
+      },
+      select: {
+        id: true,
+        checkType: true,
+        severity: true,
+        title: true,
+        status: true,
+        resolvedAt: true,
+        resolvedBy: true,
+        resolution: true,
+      },
+    });
   });
 }
 
 /**
  * Bulk action on multiple issues (tenant-scoped).
+ * Logs a security warning if some IDs were skipped (potential cross-tenant IDOR probe).
  */
 async function bulkAction(
   issueIds: string[],
@@ -373,14 +413,21 @@ async function bulkAction(
       resolution: action === 'fix' ? 'Bulk fix applied' : 'Bulk ignored',
     },
   });
-  return { updated: result.count };
+  const skipped = issueIds.length - result.count;
+  if (skipped > 0) {
+    logger.warn(
+      `[IntegrityCheck] bulkAction: ${skipped}/${issueIds.length} IDs skipped for tenant ${tenantId} — possible cross-tenant or stale IDs`
+    );
+  }
+  return { updated: result.count, requested: issueIds.length, skipped };
 }
 
 /**
  * Mark stale PROCESSING/QUEUED jobs as FAILED.
  * Call on server startup to recover from crashes.
  */
-async function cleanupStaleJobs(maxAgeMs = 30 * 60 * 1000): Promise<number> {
+const DEFAULT_JOB_TIMEOUT_MS = parseInt(process.env.INTEGRITY_JOB_TIMEOUT_MS || '', 10) || 30 * 60 * 1000;
+async function cleanupStaleJobs(maxAgeMs = DEFAULT_JOB_TIMEOUT_MS): Promise<number> {
   const cutoff = new Date(Date.now() - maxAgeMs);
   const result = await prisma.integrityCheckJob.updateMany({
     where: {

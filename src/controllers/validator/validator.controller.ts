@@ -25,6 +25,11 @@ type ContentTypeValue = 'JOURNAL_ARTICLE' | 'BOOK' | 'UNKNOWN';
  * and safe against concurrent requests. This runs in the GET handler as a migration
  * convenience; once all existing documents have been backfilled, this becomes a no-op.
  */
+// In-memory set of document IDs where content type detection already ran and returned UNKNOWN.
+// Detection is deterministic (same text → same result), so re-running is wasted CPU + I/O.
+// This set resets on server restart, which is acceptable — it's just an optimization.
+const contentTypeCheckedIds = new Set<string>();
+
 async function detectAndBackfillContentType(
   documentId: string,
   currentType: ContentTypeValue | null,
@@ -32,6 +37,8 @@ async function detectAndBackfillContentType(
   html: string
 ): Promise<ContentTypeValue> {
   if (currentType !== 'UNKNOWN') return currentType || 'UNKNOWN';
+  if (contentTypeCheckedIds.has(documentId)) return 'UNKNOWN';
+
   const detection = contentTypeDetector.detectContentType(plainText, html);
   if (detection.contentType !== 'UNKNOWN') {
     await prisma.editorialDocument.updateMany({
@@ -41,6 +48,8 @@ async function detectAndBackfillContentType(
     logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
     return detection.contentType;
   }
+  // Mark as checked so we don't re-run on every GET
+  contentTypeCheckedIds.add(documentId);
   return 'UNKNOWN';
 }
 
@@ -308,7 +317,8 @@ export class ValidatorController {
         return;
       }
 
-      // Auto-detect content type if unknown (lazy backfill for pre-existing documents)
+      // Auto-detect content type if unknown (lazy backfill for pre-existing documents).
+      // detectAndBackfillContentType skips re-detection for already-checked docs via in-memory cache.
       let detectedContentType = document.contentType;
       if (detectedContentType === 'UNKNOWN' && document.documentContent?.fullHtml) {
         const plainText = document.documentContent.fullText || htmlToPlainText(document.documentContent.fullHtml);
@@ -335,12 +345,15 @@ export class ValidatorController {
           }
           const styles = docxConversionService.generateStyles(docxStyles);
           cachedHtml = styles + cachedHtml;
-          // Persist the backfill so subsequent requests are fast
-          await prisma.editorialDocumentContent.update({
+          // Persist the backfill in the background so the response isn't delayed by the DB write
+          prisma.editorialDocumentContent.update({
             where: { documentId },
             data: { fullHtml: cachedHtml },
+          }).then(() => {
+            logger.info(`[Validator] Backfilled <style> block for document: ${documentId}`);
+          }).catch((persistErr) => {
+            logger.warn(`[Validator] Failed to persist style backfill for ${documentId}:`, persistErr);
           });
-          logger.info(`[Validator] Backfilled <style> block for document: ${documentId}`);
         }
 
         // Mark document as PARSED if still UPLOADED (backfill for docs cached before this code)
@@ -1034,7 +1047,14 @@ export class ValidatorController {
     next: NextFunction
   ): Promise<void> {
     try {
-      const { tenantId } = req.user!;
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+        return;
+      }
 
       // Base filter: validator-uploaded documents for this tenant
       const baseWhere = {
@@ -1047,6 +1067,14 @@ export class ValidatorController {
         },
       };
 
+      // First get document IDs, then use direct documentId IN (...) for issue/match/violation
+      // counts. This avoids nested relation filters that bypass @@index([documentId]).
+      const docIds = await prisma.editorialDocument.findMany({
+        where: baseWhere,
+        select: { id: true },
+      });
+      const documentIds = docIds.map(d => d.id);
+
       const [
         totalDocuments,
         totalWords,
@@ -1055,20 +1083,26 @@ export class ValidatorController {
         styleViolations,
         recentDocuments,
       ] = await Promise.all([
-        prisma.editorialDocument.count({ where: baseWhere }),
+        Promise.resolve(documentIds.length),
         prisma.editorialDocument.aggregate({
           where: baseWhere,
           _sum: { wordCount: true },
         }),
-        prisma.integrityIssue.count({
-          where: { document: { is: baseWhere } },
-        }),
-        prisma.plagiarismMatch.count({
-          where: { document: { is: baseWhere } },
-        }),
-        prisma.styleViolation.count({
-          where: { document: { is: baseWhere } },
-        }),
+        documentIds.length > 0
+          ? prisma.integrityIssue.count({
+              where: { documentId: { in: documentIds } },
+            })
+          : Promise.resolve(0),
+        documentIds.length > 0
+          ? prisma.plagiarismMatch.count({
+              where: { documentId: { in: documentIds } },
+            })
+          : Promise.resolve(0),
+        documentIds.length > 0
+          ? prisma.styleViolation.count({
+              where: { documentId: { in: documentIds } },
+            })
+          : Promise.resolve(0),
         prisma.editorialDocument.findMany({
           where: baseWhere,
           orderBy: { createdAt: 'desc' },
@@ -1110,7 +1144,14 @@ export class ValidatorController {
     next: NextFunction
   ): Promise<void> {
     try {
-      const { tenantId } = req.user!;
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+        });
+        return;
+      }
       const { documentId } = req.params;
 
       // Verify document exists and belongs to tenant

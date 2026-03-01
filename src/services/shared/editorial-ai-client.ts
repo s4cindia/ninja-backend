@@ -738,7 +738,8 @@ Respond with JSON only:`;
       formattedEntry?: string;
     }>;
   }> {
-    throw new Error('generateReferenceEntriesChunked is not implemented');
+    logger.warn('[EditorialAiClient] generateReferenceEntriesChunked not yet implemented — returning empty');
+    return { entries: [] };
   }
 
   /**
@@ -757,7 +758,8 @@ Respond with JSON only:`;
     numericCount?: number;
     authorDateCount?: number;
   }> {
-    throw new Error('detectCitationStyleFromText is not implemented');
+    logger.warn('[EditorialAiClient] detectCitationStyleFromText not yet implemented — returning unknown');
+    return { style: 'unknown', confidence: 0, evidence: [] };
   }
 }
 

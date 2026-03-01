@@ -612,6 +612,7 @@ describe('StyleValidationService', () => {
         tenantId: 'tenant-1',
         status: 'COMPLETED',
         progress: 100,
+        ruleSetIds: ['chicago'],
         startedAt: new Date(),
         completedAt: new Date(),
       };

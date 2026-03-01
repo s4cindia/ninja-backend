@@ -115,7 +115,7 @@ describe('integrityCheckService', () => {
 
       const result = await integrityCheckService.startCheck(TENANT_ID, DOCUMENT_ID);
 
-      expect(result).toEqual({ jobId: 'existing-job' });
+      expect(result).toEqual({ jobId: 'existing-job', created: false, status: 'PROCESSING' });
     });
 
     it('creates a new job when no active job exists', async () => {
@@ -136,7 +136,7 @@ describe('integrityCheckService', () => {
 
       const result = await integrityCheckService.startCheck(TENANT_ID, DOCUMENT_ID);
 
-      expect(result).toEqual({ jobId: JOB_ID });
+      expect(result).toEqual({ jobId: JOB_ID, created: true, status: 'QUEUED' });
     });
 
     it('filters invalid check types from the provided list', async () => {
