@@ -738,9 +738,7 @@ Respond with JSON only:`;
       formattedEntry?: string;
     }>;
   }> {
-    // TODO: Implement AI-powered reference entry generation
-    logger.warn('[Editorial AI] generateReferenceEntriesChunked not fully implemented - returning empty entries');
-    return { entries: [] };
+    throw new Error('generateReferenceEntriesChunked is not implemented');
   }
 
   /**
@@ -759,16 +757,7 @@ Respond with JSON only:`;
     numericCount?: number;
     authorDateCount?: number;
   }> {
-    // TODO: Implement AI-powered style detection
-    logger.warn('[Editorial AI] detectCitationStyleFromText not fully implemented');
-    return {
-      style: 'unknown',
-      confidence: 0,
-      evidence: [],
-      hasReferenceSection: false,
-      numericCount: 0,
-      authorDateCount: 0,
-    };
+    throw new Error('detectCitationStyleFromText is not implemented');
   }
 }
 
@@ -810,10 +799,16 @@ PUNCTUATION:
 - Place periods and commas inside quotation marks
 - Use en dash (–) for number ranges
 
-CITATIONS:
+CITATIONS (APA uses author-date format):
+- In-text citations MUST include author surname and year
+- Parenthetical format: (Author, Year) — e.g., (Smith, 2020) or (Smith & Jones, 2020)
+- Narrative format: Author (Year) — e.g., Smith (2020) reported that...
+- With page numbers: (Author, Year, p. X) or (Author, Year, pp. X-Y)
+- Multiple citations: separated by semicolons in alphabetical order — (Jones, 2019; Smith, 2020)
+- Numbered citations like [1], [2], or superscript numbers are NOT APA format — flag them
 - Use ampersand (&) in parenthetical citations, "and" in narrative citations
-- List up to 20 authors; for 21+, use first 19, ellipsis, then final author
-- Use "et al." after first citation for 3+ authors
+- For 3+ authors: use "et al." after first citation
+- For 21+ authors: list first 19, ellipsis, then final author
 - DOI format: https://doi.org/xxxxx
 
 LANGUAGE:
@@ -857,9 +852,22 @@ GRAMMAR:
 - "Which" for nonrestrictive clauses (with comma)
 - American English: "toward" not "towards", "among" not "amongst"
 
-CITATIONS:
+CITATIONS (Chicago has two systems — notes-bibliography AND author-date):
+Notes-Bibliography System (humanities):
+- Superscript number in text after punctuation → footnote/endnote
+- First footnote: full citation; subsequent: shortened form (Last name, Short Title, page)
+- "ibid." is discouraged in 17th edition — use shortened citations instead
+- Author name in footnotes: First Last (not inverted)
+- Page numbers in footnotes do NOT use "p." or "pp." prefix — just the number
+Author-Date System (sciences/social sciences):
+- Format: (Author Year) — NO comma between author and year (differs from APA)
+- With page: (Author Year, 45) — NO "p." prefix (differs from APA)
+- Always use "and" between authors — NEVER "&" (differs from APA)
+- Four or more authors: first author + et al.
+- Multiple citations: semicolons, alphabetical: (Apple 2019; Zebra 2020)
+General:
 - Write out publishers' names in full
-- Invert author's name (Last, First)
+- Invert author's name in bibliography (Last, First)
 - Italicize book and journal titles
 - Quotation marks for article/chapter titles`,
       };
@@ -889,10 +897,16 @@ DATES:
 - Day Month Year format (15 Jan. 2024)
 - Abbreviate months longer than four letters: Jan., Feb., Mar., Apr., Aug., Sept., Oct., Nov., Dec.
 
-IN-TEXT CITATIONS:
-- Author's last name and page number (Smith 42)
-- No comma between author and page
-- Block quotes (4+ lines): indent 1/2 inch, no quotation marks
+IN-TEXT CITATIONS (MLA uses author-page format — NO year in text):
+- Parenthetical format: (Author Page) — e.g., (Smith 42)
+- NO comma between author and page: (Smith 42) — NOT (Smith, 42)
+- NO "p." or "pp." before page numbers: (Smith 42) — NOT (Smith p. 42)
+- Two authors: (Smith and Jones 45) — always "and", NEVER "&"
+- Three or more authors: first author + et al.: (Smith et al. 45)
+- NO year in in-text citation — year goes in Works Cited only
+- If author named in sentence, only page in parentheses: Smith argues (45)
+- Numbered citations like [1] or (1) are NOT MLA format — flag them
+- Block quotes (4+ lines): indent 1/2 inch, no quotation marks, citation after period
 
 WORKS CITED:
 - Alphabetical order by authors' last names
@@ -911,11 +925,15 @@ TITLES:
         referencePrefix: 'Vancouver',
         rules: `KEY VANCOUVER STYLE RULES:
 
-CITATIONS:
-- Number citations consecutively in order of first mention
-- Use Arabic numerals in parentheses (1) or superscript
-- Same number for repeated citations
-- References numbered in order of appearance (not alphabetical)
+CITATIONS (Vancouver uses numbered sequential format):
+- Number citations consecutively in order of first mention in the text
+- Use Arabic numerals in parentheses (1) or superscript — must be consistent throughout
+- Same source always reuses its original number (e.g., source #3 stays [3] everywhere)
+- Consecutive citations: use hyphen range [1-3]; non-consecutive: comma separated [1,3,5]
+- Citation numbers placed OUTSIDE commas and periods: "...shown.¹" or "...shown (1)."
+- References list ordered numerically, NOT alphabetically
+- Author-date citations like (Smith, 2020) are NOT Vancouver format — flag them
+- Author names should NOT appear in in-text citations (numbers only)
 
 AUTHOR NAMES:
 - Surname first, then initials (no periods between initials)
@@ -961,10 +979,15 @@ NUMBERS:
 - Use × (not x) for multiplication
 - Use en dash for ranges (10–20)
 
-CITATIONS:
-- Numbered superscript citations in order of appearance
-- References numbered consecutively
-- Up to 5 authors listed, then et al.
+CITATIONS (Nature uses numbered superscript format):
+- Superscript Arabic numerals ONLY — NOT square brackets [1] (that is IEEE format)
+- Superscript placed AFTER punctuation: "...end of sentence.¹" — NOT "...sentence¹."
+- Numbers assigned strictly in order of first appearance in text
+- Same source always reuses its original number
+- Multiple: comma-separated for non-consecutive ¹,²,⁵; hyphen for consecutive ranges ⁴⁻⁶
+- Reference list ordered numerically, NOT alphabetically
+- Up to 5 authors listed; 6+ = first author + et al.
+- Author-date citations like (Smith, 2020) are NOT Nature format — flag them
 
 FORMATTING:
 - Concise titles (no abbreviations)
@@ -986,10 +1009,16 @@ STYLE:
         referencePrefix: 'IEEE',
         rules: `KEY IEEE STYLE RULES:
 
-CITATIONS:
-- Numbered references in square brackets [1]
-- Citations numbered in order of first appearance
-- Multiple citations: [1], [2] or [1]–[3]
+CITATIONS (IEEE uses numbered square bracket format):
+- Square brackets: [1] — NOT superscript (superscript is Nature format)
+- Brackets placed BEFORE punctuation: "...as shown [1]." — NOT "...shown. [1]"
+- Space before opening bracket: "shown [1]" — NOT "shown[1]"
+- Numbers assigned in order of first appearance; same source reuses its original number
+- Multiple non-consecutive: [1], [3], [5]; consecutive range: [1]–[5]
+- Reference list ordered numerically, NOT alphabetically
+- Author format in references: initials first, then last name: A. Smith — NOT Smith, A.
+- Article titles in "quotation marks", journal titles italicized
+- Author-date citations like (Smith, 2020) are NOT IEEE format — flag them
 
 NUMBERS:
 - Spell out numbers zero through nine
@@ -1041,6 +1070,14 @@ ABBREVIATIONS:
 - Spell out United States as noun
 - State abbreviations: Use postal codes in datelines only
 - Months: Abbreviate Jan., Feb., Aug., Sept., Oct., Nov., Dec.
+
+ATTRIBUTION (AP uses inline prose attribution — NO footnotes, NO parenthetical citations):
+- Sources attributed directly in prose: "according to..." or "...Source said"
+- Preferred attribution verb: "said" (neutral) — avoid "claimed", "admitted", "revealed"
+- Full name + title on first reference; last name only on subsequent references
+- Parenthetical citations like (Smith, 2024) are NOT AP format — flag them
+- Footnotes, endnotes, or numbered references are NOT AP format — flag them
+- Academic terms like "ibid.", "op. cit.", "et al." are inappropriate in AP — flag them
 
 DATES:
 - Month Day, Year (Jan. 15, 2024)

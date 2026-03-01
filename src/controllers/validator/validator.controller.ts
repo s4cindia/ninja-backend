@@ -17,6 +17,33 @@ const SUPPORTED_MIME_TYPES = {
   pdf: 'application/pdf',
 };
 
+type ContentTypeValue = 'JOURNAL_ARTICLE' | 'BOOK' | 'UNKNOWN';
+
+/**
+ * Lazy-backfill content type for documents created before content-type detection was added.
+ * Uses updateMany with a conditional WHERE (contentType = 'UNKNOWN') to be idempotent
+ * and safe against concurrent requests. This runs in the GET handler as a migration
+ * convenience; once all existing documents have been backfilled, this becomes a no-op.
+ */
+async function detectAndBackfillContentType(
+  documentId: string,
+  currentType: ContentTypeValue | null,
+  plainText: string,
+  html: string
+): Promise<ContentTypeValue> {
+  if (currentType !== 'UNKNOWN') return currentType || 'UNKNOWN';
+  const detection = contentTypeDetector.detectContentType(plainText, html);
+  if (detection.contentType !== 'UNKNOWN') {
+    await prisma.editorialDocument.updateMany({
+      where: { id: documentId, contentType: 'UNKNOWN' },
+      data: { contentType: detection.contentType },
+    });
+    logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
+    return detection.contentType;
+  }
+  return 'UNKNOWN';
+}
+
 export class ValidatorController {
   /**
    * POST /api/v1/validator/upload
@@ -281,25 +308,40 @@ export class ValidatorController {
         return;
       }
 
-      // Auto-detect content type if unknown
+      // Auto-detect content type if unknown (lazy backfill for pre-existing documents)
       let detectedContentType = document.contentType;
       if (detectedContentType === 'UNKNOWN' && document.documentContent?.fullHtml) {
         const plainText = document.documentContent.fullText || htmlToPlainText(document.documentContent.fullHtml);
-        const detection = contentTypeDetector.detectContentType(plainText, document.documentContent.fullHtml);
-        if (detection.contentType !== 'UNKNOWN') {
-          detectedContentType = detection.contentType;
-          // Conditional update: only write if still UNKNOWN (prevents race between concurrent requests)
-          await prisma.editorialDocument.updateMany({
-            where: { id: documentId, contentType: 'UNKNOWN' },
-            data: { contentType: detection.contentType },
-          });
-          logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
-        }
+        detectedContentType = await detectAndBackfillContentType(documentId, detectedContentType, plainText, document.documentContent.fullHtml);
       }
 
       // If we have cached HTML content, return it
       if (document.documentContent?.fullHtml) {
         logger.info(`[Validator] Returning cached HTML for document: ${documentId}`);
+
+        // Backfill missing <style> block for documents cached before styles were added
+        let cachedHtml = document.documentContent.fullHtml;
+        if (!/<style[\s>]/i.test(cachedHtml)) {
+          // Extract styles from the original DOCX for accurate formatting
+          let docxStyles;
+          try {
+            const fileBuffer = await citationStorageService.getFileBuffer(
+              document.storagePath,
+              document.storageType as 'S3' | 'LOCAL'
+            );
+            docxStyles = await docxConversionService.extractDocxStyles(fileBuffer);
+          } catch (e) {
+            logger.warn(`[Validator] Could not load original DOCX for style extraction: ${documentId}`, e);
+          }
+          const styles = docxConversionService.generateStyles(docxStyles);
+          cachedHtml = styles + cachedHtml;
+          // Persist the backfill so subsequent requests are fast
+          await prisma.editorialDocumentContent.update({
+            where: { documentId },
+            data: { fullHtml: cachedHtml },
+          });
+          logger.info(`[Validator] Backfilled <style> block for document: ${documentId}`);
+        }
 
         // Mark document as PARSED if still UPLOADED (backfill for docs cached before this code)
         // Hoist updated values so the response can use them instead of the stale snapshot
@@ -351,7 +393,7 @@ export class ValidatorController {
           success: true,
           data: {
             documentId: document.id,
-            content: document.documentContent.fullHtml,
+            content: cachedHtml,
             fileName: document.originalName,
             fileSize: document.fileSize,
             wordCount: responseWordCount,
@@ -430,18 +472,9 @@ export class ValidatorController {
         logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
       }
 
-      // Lazy backfill: detect content type for documents converted before this feature.
-      // Uses updateMany with conditional WHERE (idempotent, safe in GET handler).
+      // Lazy backfill: detect content type for documents converted before this feature
       if (detectedContentType === 'UNKNOWN') {
-        const detection = contentTypeDetector.detectContentType(fullText, htmlContent);
-        if (detection.contentType !== 'UNKNOWN') {
-          detectedContentType = detection.contentType;
-          await prisma.editorialDocument.updateMany({
-            where: { id: documentId, contentType: 'UNKNOWN' },
-            data: { contentType: detection.contentType },
-          });
-          logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
-        }
+        detectedContentType = await detectAndBackfillContentType(documentId, detectedContentType, fullText, htmlContent);
       }
 
       const effectiveCompletedAt = conversionCompletedAt ?? document.job?.completedAt;
@@ -987,6 +1020,82 @@ export class ValidatorController {
       logger.info(`[Validator] Exported document ${documentId} as ${exportName}`);
     } catch (error) {
       logger.error('[Validator] Failed to export document:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/validator/stats
+   * Get aggregate statistics for the validator dashboard
+   */
+  async getStats(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { tenantId } = req.user!;
+
+      // Base filter: validator-uploaded documents for this tenant
+      const baseWhere = {
+        tenantId,
+        job: {
+          is: {
+            type: 'EDITORIAL_FULL' as const,
+            input: { path: ['source'], equals: 'validator' },
+          },
+        },
+      };
+
+      const [
+        totalDocuments,
+        totalWords,
+        integrityIssues,
+        plagiarismMatches,
+        styleViolations,
+        recentDocuments,
+      ] = await Promise.all([
+        prisma.editorialDocument.count({ where: baseWhere }),
+        prisma.editorialDocument.aggregate({
+          where: baseWhere,
+          _sum: { wordCount: true },
+        }),
+        prisma.integrityIssue.count({
+          where: { document: { is: baseWhere } },
+        }),
+        prisma.plagiarismMatch.count({
+          where: { document: { is: baseWhere } },
+        }),
+        prisma.styleViolation.count({
+          where: { document: { is: baseWhere } },
+        }),
+        prisma.editorialDocument.findMany({
+          where: baseWhere,
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            originalName: true,
+            wordCount: true,
+            contentType: true,
+            createdAt: true,
+          },
+        }),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          totalDocuments,
+          totalWords: totalWords._sum.wordCount || 0,
+          integrityIssues,
+          plagiarismMatches,
+          styleViolations,
+          recentDocuments,
+        },
+      });
+    } catch (error) {
+      logger.error('[Validator] Failed to get stats:', error);
       next(error);
     }
   }

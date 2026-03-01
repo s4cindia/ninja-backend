@@ -58,6 +58,15 @@ router.post(
 );
 
 /**
+ * GET /api/v1/validator/stats
+ * Get aggregate statistics for the validator dashboard
+ */
+router.get(
+  '/stats',
+  validatorController.getStats.bind(validatorController)
+);
+
+/**
  * GET /api/v1/validator/documents
  * List all documents for the current user
  */

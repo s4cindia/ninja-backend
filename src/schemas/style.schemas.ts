@@ -392,14 +392,18 @@ export const saveExtractedRulesSchema = {
     rules: z
       .array(
         z.object({
-          name: z.string().min(1).max(200),
-          description: z.string().max(1000).optional(),
+          name: z.string().min(1).max(500),
+          description: z.string().max(2000).optional(),
           category: z.string(),
           ruleType: z.string(),
-          pattern: z.string().max(500).optional(),
-          preferredTerm: z.string().max(200).optional(),
+          pattern: z.string().max(1000).optional(),
+          preferredTerm: z.string().max(500).optional(),
           avoidTerms: z.array(z.string()).optional(),
           severity: z.string().optional(),
+          examples: z.array(z.object({
+            incorrect: z.string(),
+            correct: z.string(),
+          })).optional(),
         })
       )
       .min(1, 'At least one rule is required')

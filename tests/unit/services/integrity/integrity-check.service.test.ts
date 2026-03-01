@@ -197,9 +197,10 @@ describe('integrityCheckService', () => {
       mockDocFindFirst.mockResolvedValue({ id: DOCUMENT_ID });
       mockJobFindFirst.mockResolvedValue({ id: JOB_ID });
 
+      // Mock returns issues already sorted by severity asc (DB-level ordering)
       const mockIssues = [
-        { id: 'i1', checkType: 'FIGURE_REF', severity: 'WARNING', createdAt: new Date() },
         { id: 'i2', checkType: 'TABLE_REF', severity: 'ERROR', createdAt: new Date() },
+        { id: 'i1', checkType: 'FIGURE_REF', severity: 'WARNING', createdAt: new Date() },
       ];
       mockIssueFindMany.mockResolvedValue(mockIssues);
       mockIssueCount.mockResolvedValue(25);
@@ -213,7 +214,7 @@ describe('integrityCheckService', () => {
       expect(result.limit).toBe(10);
       expect(result.total).toBe(25);
       expect(result.totalPages).toBe(3);
-      // Issues should be sorted by severity (ERROR before WARNING)
+      // Issues are sorted by severity at DB level (ERROR before WARNING)
       expect(result.issues[0].severity).toBe('ERROR');
       expect(result.issues[1].severity).toBe('WARNING');
     });

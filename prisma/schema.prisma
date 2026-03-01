@@ -1178,6 +1178,7 @@ model PlagiarismCheckJob {
   @@index([tenantId])
   @@index([documentId])
   @@index([status])
+  @@index([documentId, tenantId, status])
 }
 
 model StyleValidationJob {

@@ -30,8 +30,8 @@ export interface CheckResult {
   metadata: Record<string, unknown>;
 }
 
-// Reuse the single source of truth from ai-integrity.check.ts
-const ALL_CHECK_TYPES = [...VALID_CHECK_TYPES];
+// Export check types array for request validation in controllers
+export const ALL_CHECK_TYPES = Array.from(VALID_CHECK_TYPES);
 
 /**
  * Start an integrity check job.
@@ -49,7 +49,7 @@ async function startCheck(
   if (!doc) throw AppError.notFound('Document not found');
 
   const selectedTypes = (checkTypes && checkTypes.length > 0
-    ? checkTypes.filter(t => ALL_CHECK_TYPES.includes(t))
+    ? checkTypes.filter(t => VALID_CHECK_TYPES.has(t))
     : ALL_CHECK_TYPES) as IntegrityCheckType[];
 
   // Atomically check concurrency + duplicate jobs inside a transaction
@@ -256,12 +256,10 @@ async function getIssues(
   if (options?.severity) where.severity = options.severity as Prisma.EnumStyleSeverityFilter;
   if (options?.status) where.status = options.status as Prisma.EnumViolationStatusFilter;
 
-  const SEVERITY_ORDER: Record<string, number> = { ERROR: 0, WARNING: 1, SUGGESTION: 2 };
-
   const [issues, total] = await Promise.all([
     prisma.integrityIssue.findMany({
       where,
-      orderBy: [{ createdAt: 'desc' }],
+      orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }],
       skip,
       take: limit,
     }),
@@ -269,9 +267,6 @@ async function getIssues(
       where,
     }),
   ]);
-
-  // Sort by severity priority (ERROR > WARNING > SUGGESTION) instead of alphabetically
-  issues.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
 
   return { issues, total, page, limit, totalPages: Math.ceil(total / limit) };
 }

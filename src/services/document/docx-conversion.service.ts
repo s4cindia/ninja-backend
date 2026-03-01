@@ -48,6 +48,7 @@ export interface ConversionResult {
 }
 
 let pandocPath: string | null = null;
+let libreOfficePath: string | null = null;
 
 /**
  * Check if Pandoc is available
@@ -79,6 +80,214 @@ async function isPandocAvailable(): Promise<boolean> {
  */
 function getPandocPath(): string {
   return pandocPath || 'pandoc';
+}
+
+/**
+ * Check if LibreOffice is available (for high-fidelity DOCX conversion)
+ */
+async function isLibreOfficeAvailable(): Promise<boolean> {
+  if (libreOfficePath) return true;
+
+  const commands = [
+    'soffice',
+    'libreoffice',
+    '/usr/bin/soffice',
+    '/usr/bin/libreoffice',
+  ].filter(Boolean);
+
+  for (const cmd of commands) {
+    try {
+      await execAsync(`${cmd} --version`, { timeout: 5000 });
+      libreOfficePath = cmd;
+      logger.info(`[DocxConversion] Found LibreOffice at: ${cmd}`);
+      return true;
+    } catch {
+      // Try next
+    }
+  }
+  return false;
+}
+
+/**
+ * Get the working LibreOffice path
+ */
+function getLibreOfficePath(): string {
+  return libreOfficePath || 'soffice';
+}
+
+/**
+ * Convert DOCX to HTML using LibreOffice headless.
+ * LibreOffice renders equations as images, preserves tables, and maintains formatting.
+ */
+async function convertWithLibreOffice(docxPath: string, docxBuffer: Buffer): Promise<string> {
+  const outDir = path.dirname(docxPath);
+  const soffice = getLibreOfficePath();
+
+  await execAsync(
+    `${soffice} --headless --convert-to html:"HTML (StarWriter)" --outdir "${outDir}" "${docxPath}"`,
+    { timeout: 60000, maxBuffer: 50 * 1024 * 1024 }
+  );
+
+  const htmlPath = docxPath.replace(/\.docx$/i, '.html');
+  let html = await fs.readFile(htmlPath, 'utf-8');
+  await fs.unlink(htmlPath).catch(() => {});
+
+  // LibreOffice may produce companion image files alongside the HTML.
+  // Embed them as base64 and also check DOCX media for any referenced images.
+  const mediaMap = await extractAndEmbedMedia(docxBuffer);
+
+  // Embed external image references from the output directory
+  const imgRefPattern = /src="([^"]+)"/g;
+  let imgMatch: RegExpExecArray | null;
+  while ((imgMatch = imgRefPattern.exec(html)) !== null) {
+    const imgSrc = imgMatch[1];
+    // Skip already-embedded base64 images
+    if (imgSrc.startsWith('data:')) continue;
+
+    const imgPath = path.resolve(outDir, imgSrc);
+    try {
+      const imgBuffer = await fs.readFile(imgPath);
+      const ext = path.extname(imgSrc).toLowerCase();
+      let mime = 'image/png';
+      if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+      else if (ext === '.gif') mime = 'image/gif';
+      else if (ext === '.svg') mime = 'image/svg+xml';
+      const dataUrl = `data:${mime};base64,${imgBuffer.toString('base64')}`;
+      html = html.replace(new RegExp(imgSrc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), dataUrl);
+      // Clean up the image file
+      await fs.unlink(imgPath).catch(() => {});
+    } catch {
+      // Image file not found — check DOCX media map
+      const fileName = path.basename(imgSrc);
+      const docxDataUrl = mediaMap.get(fileName);
+      if (docxDataUrl) {
+        html = html.replace(new RegExp(imgSrc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), docxDataUrl);
+      }
+    }
+  }
+
+  // Extract just the body content
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  if (bodyMatch) {
+    html = bodyMatch[1].trim();
+  }
+
+  // Convert deprecated <font> tags to <span> with inline styles so TipTap can parse them.
+  // LibreOffice uses <font face="..." size="..." style="font-size: ..."> extensively.
+  html = html.replace(/<font([^>]*)>/gi, (_match, attrs: string) => {
+    const styles: string[] = [];
+    const faceMatch = attrs.match(/face="([^"]+)"/i);
+    if (faceMatch) styles.push(`font-family: ${faceMatch[1]}`);
+    const styleMatch = attrs.match(/style="([^"]+)"/i);
+    if (styleMatch) styles.push(styleMatch[1].trim().replace(/;$/, ''));
+    const colorMatch = attrs.match(/color="([^"]+)"/i);
+    if (colorMatch) styles.push(`color: ${colorMatch[1]}`);
+    return styles.length > 0 ? `<span style="${styles.join('; ')}">` : '<span>';
+  });
+  html = html.replace(/<\/font>/gi, '</span>');
+
+  // LibreOffice wraps whitespace between text runs in separate <span> elements,
+  // e.g. </b></span></span><span...><span...>\n</span></span><span...>.
+  // TipTap strips these whitespace-only spans, joining adjacent text.
+  // Collapse them into a single space to preserve word boundaries.
+  html = html.replace(/<\/span>\s*<span[^>]*>\s*<span[^>]*>\s*\n\s*<\/span>\s*<\/span>\s*<span/gi,
+    '</span> <span');
+
+  // Also ensure space after closing inline formatting tags when next char is a letter
+  html = html.replace(/<\/(b|i|strong|em)>(<\/span>)*\s*(<span[^>]*>)*(<span[^>]*>)*([A-Za-z])/gi,
+    '</$1>$2 $3$4$5');
+
+  // Remove diagram/figure annotation elements that produce garbage text in the editor.
+  // These are small positioned textboxes and frames that label figure components.
+  // Collect all removal ranges first, then rebuild the string once (avoids O(k*n) from
+  // repeated string slicing inside a loop).
+  const removalRanges: Array<[number, number]> = [];
+
+  const findSpanRange = (id: string): void => {
+    const openTag = `id="${id}"`;
+    let idx = html.indexOf(openTag);
+    while (idx >= 0) {
+      const start = html.lastIndexOf('<span', idx);
+      if (start < 0) { idx = html.indexOf(openTag, idx + 1); continue; }
+      let depth = 0;
+      let pos = start;
+      while (pos < html.length) {
+        const nextOpen = html.indexOf('<span', pos + 1);
+        const nextClose = html.indexOf('</span>', pos + 1);
+        if (nextClose < 0) break;
+        if (nextOpen >= 0 && nextOpen < nextClose) { depth++; pos = nextOpen; }
+        else if (depth > 0) { depth--; pos = nextClose; }
+        else { removalRanges.push([start, nextClose + 7]); break; }
+      }
+      idx = html.indexOf(openTag, idx + 1);
+    }
+  };
+
+  // Collect textbox spans (figure/diagram annotations like "Scale factor", "O₂", "Controller 2")
+  const textboxIds = html.match(/id="(textbox\d+)"/gi) || [];
+  for (const m of textboxIds) {
+    const id = m.match(/id="([^"]+)"/)?.[1];
+    if (id) findSpanRange(id);
+  }
+
+  // Collect small Frame spans (< 1.5 inch wide — also diagram annotations)
+  const framePattern = /id="(Frame\d+)"[^>]*width:\s*([\d.]+)\s*(in|pt|px)/gi;
+  let frameMatch: RegExpExecArray | null;
+  while ((frameMatch = framePattern.exec(html)) !== null) {
+    const width = parseFloat(frameMatch[2]);
+    const unit = frameMatch[3];
+    const widthInInches = unit === 'in' ? width : unit === 'pt' ? width / 72 : width / 96;
+    if (widthInInches < 1.5) findSpanRange(frameMatch[1]);
+  }
+
+  // Apply all removals in a single pass (sort by start, merge overlaps, rebuild once)
+  if (removalRanges.length > 0) {
+    removalRanges.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [removalRanges[0]];
+    for (let i = 1; i < removalRanges.length; i++) {
+      const prev = merged[merged.length - 1];
+      if (removalRanges[i][0] <= prev[1]) {
+        prev[1] = Math.max(prev[1], removalRanges[i][1]);
+      } else {
+        merged.push(removalRanges[i]);
+      }
+    }
+    const parts: string[] = [];
+    let cursor = 0;
+    for (const [start, end] of merged) {
+      if (start > cursor) parts.push(html.slice(cursor, start));
+      cursor = end;
+    }
+    if (cursor < html.length) parts.push(html.slice(cursor));
+    html = parts.join('');
+  }
+
+  // Strip absolute positioning CSS from remaining elements so text flows normally
+  html = html.replace(/position:\s*absolute\s*;?\s*/gi, '');
+  html = html.replace(/\s*top:\s*-?[\d.]+\s*(in|pt|px|cm|mm|em|%)\s*;?\s*/gi, ' ');
+  html = html.replace(/\s*left:\s*-?[\d.]+\s*(in|pt|px|cm|mm|em|%)\s*;?\s*/gi, ' ');
+
+  // Remove VML shape wrappers (decorative images only)
+  html = html.replace(/<span[^>]*class="sd-abs-pos"[^>]*><img[^>]*\/?><\/span>/gi, '');
+
+  // Remove the <div title="header"> block (journal running header — not part of content)
+  html = html.replace(/<div\s+title="header"[^>]*>[\s\S]*?<\/div>/gi, '');
+
+  // Clean up empty style attributes
+  html = html.replace(/\s*style="\s*"/gi, '');
+
+  // Remove blank paragraphs: <p> containing only whitespace, &nbsp;, <br>, or empty spans.
+  // TipTap strips CSS classes so we can't style blank lines — just remove them.
+  const emptyParagraph = /<p[^>]*>(?:\s|&nbsp;|<br\s*\/?>|<span[^>]*>\s*<\/span>)*<\/p>/gi;
+  html = html.replace(emptyParagraph, '<!-- empty -->')
+    // Keep max 1 blank paragraph between content sections
+    .replace(/(<!-- empty -->\s*){2,}/gi, '')
+    .replace(/<!-- empty -->/gi, '');
+
+  // Add cellpadding to tables for readability
+  html = html.replace(/<table([^>]*)cellpadding="0"/gi, '<table$1cellpadding="4"');
+
+  return html;
 }
 
 /**
@@ -296,41 +505,126 @@ function improveListFormatting(html: string): string {
 }
 
 /**
- * Generate CSS styles for the document
+ * Parsed style info from a DOCX word/styles.xml
  */
-function generateStyles(): string {
+interface DocxStyleInfo {
+  defaultFont?: string;
+  defaultSize?: number; // in pt
+  normal?: { font?: string; size?: number; bold?: boolean; italic?: boolean };
+  headings: Record<number, { font?: string; size?: number; bold?: boolean; italic?: boolean; color?: string }>;
+  title?: { font?: string; size?: number; bold?: boolean; italic?: boolean };
+}
+
+/**
+ * Extract actual styles from a DOCX buffer by reading word/styles.xml
+ */
+export async function extractDocxStyles(buffer: Buffer): Promise<DocxStyleInfo> {
+  const info: DocxStyleInfo = { headings: {} };
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const stylesXml = await zip.file('word/styles.xml')?.async('string');
+    if (!stylesXml) return info;
+
+    // Document defaults
+    const defaultsBlock = stylesXml.match(/<w:docDefaults>[\s\S]*?<\/w:docDefaults>/)?.[0] || '';
+    const defFont = defaultsBlock.match(/<w:rFonts[^>]*w:ascii="([^"]+)"/)?.[1];
+    const defSize = defaultsBlock.match(/<w:sz w:val="(\d+)"/)?.[1];
+    if (defFont) info.defaultFont = defFont;
+    if (defSize) info.defaultSize = parseInt(defSize) / 2;
+
+    // Parse individual styles
+    const styleBlocks = stylesXml.match(/<w:style[\s\S]*?<\/w:style>/g) || [];
+    for (const block of styleBlocks) {
+      const id = block.match(/w:styleId="([^"]+)"/)?.[1];
+      if (!id) continue;
+
+      const font = block.match(/<w:rFonts[^>]*w:ascii="([^"]+)"/)?.[1];
+      const sz = block.match(/<w:sz w:val="(\d+)"/)?.[1];
+      const bold = block.includes('<w:b/>') || block.includes('<w:b ');
+      const italic = block.includes('<w:i/>') || block.includes('<w:i ');
+      const color = block.match(/<w:color w:val="([^"]+)"/)?.[1];
+      const parsed = {
+        font: font || undefined,
+        size: sz ? parseInt(sz) / 2 : undefined,
+        bold,
+        italic,
+        color: color || undefined,
+      };
+
+      if (id === 'Normal') info.normal = parsed;
+      else if (id === 'Title') info.title = parsed;
+      else if (id.startsWith('Heading')) {
+        const level = parseInt(id.replace('Heading', ''));
+        if (level >= 1 && level <= 6) info.headings[level] = parsed;
+      }
+    }
+  } catch (e) {
+    logger.warn('[DocxConversion] Could not extract DOCX styles, using defaults', e);
+  }
+  return info;
+}
+
+/**
+ * Generate CSS styles for the document, using extracted DOCX styles when available
+ */
+export function generateStyles(docxStyles?: DocxStyleInfo): string {
+  // Resolve fonts and sizes from extracted styles, with sensible fallbacks
+  const bodyFont = docxStyles?.normal?.font || docxStyles?.defaultFont || 'Calibri';
+  const bodySize = docxStyles?.normal?.size || docxStyles?.defaultSize || 11;
+
+  const h = (level: number) => {
+    const extracted = docxStyles?.headings[level];
+    const fallbackSizes: Record<number, number> = { 1: 24, 2: 18, 3: 14, 4: 12, 5: 11, 6: 10 };
+    const font = extracted?.font || bodyFont;
+    const extractedSize = extracted?.size || fallbackSizes[level] || 12;
+    // Enforce minimum heading sizes relative to body text so headings are visually distinct.
+    // E.g., if body is 11pt and h1 extracted as 15pt, bump h1 to at least bodySize * 1.8 = ~20pt
+    const minSizeRatios: Record<number, number> = { 1: 1.8, 2: 1.4, 3: 1.2, 4: 1.1, 5: 1.0, 6: 0.9 };
+    const minSize = Math.round(bodySize * (minSizeRatios[level] || 1.0));
+    const size = Math.max(extractedSize, minSize);
+    // Always enforce bold for headings — even if the DOCX style says normal weight,
+    // headings must be visually distinct from body text in the editor.
+    const weight = 'bold';
+    const style = extracted?.italic ? 'italic' : 'normal';
+    const color = extracted?.color ? `color: #${extracted.color};` : '';
+    const margin = Math.round(size * 0.75);
+    return `.docx-content h${level} { font-family: '${font}', sans-serif; font-size: ${size}pt; font-weight: ${weight}; font-style: ${style}; ${color} margin: ${margin}pt 0 ${Math.round(margin / 2)}pt 0; }`;
+  };
+
   return `
 <style>
-  /* Document container */
+  /* Document container — styles extracted from original DOCX */
   .docx-content {
-    font-family: 'Calibri', 'Arial', sans-serif;
-    font-size: 11pt;
+    font-family: '${bodyFont}', 'Arial', sans-serif;
+    font-size: ${bodySize}pt;
     line-height: 1.5;
     color: #000;
     max-width: 100%;
   }
 
   /* Headings */
-  .docx-content h1 { font-size: 24pt; font-weight: bold; margin: 24pt 0 12pt 0; }
-  .docx-content h2 { font-size: 18pt; font-weight: bold; margin: 18pt 0 9pt 0; }
-  .docx-content h3 { font-size: 14pt; font-weight: bold; margin: 14pt 0 7pt 0; }
-  .docx-content h4 { font-size: 12pt; font-weight: bold; margin: 12pt 0 6pt 0; }
-  .docx-content h5 { font-size: 11pt; font-weight: bold; margin: 11pt 0 5pt 0; }
-  .docx-content h6 { font-size: 10pt; font-weight: bold; margin: 10pt 0 5pt 0; }
+  ${h(1)}
+  ${h(2)}
+  ${h(3)}
+  ${h(4)}
+  ${h(5)}
+  ${h(6)}
 
   /* Paragraphs */
-  .docx-content p { margin: 0 0 10pt 0; }
+  .docx-content p { margin: 0 0 ${Math.round(bodySize * 0.5)}pt 0; line-height: 1.4; }
 
   /* Tables - preserve borders and structure */
   .docx-content table {
     border-collapse: collapse;
     width: 100%;
     margin: 12pt 0;
+    font-size: ${bodySize}pt;
   }
   .docx-content th, .docx-content td {
-    border: 1px solid #000;
+    border: 1px solid #333;
     padding: 6pt 8pt;
     vertical-align: top;
+    line-height: 1.3;
   }
   .docx-content th {
     background-color: #f0f0f0;
@@ -338,6 +632,12 @@ function generateStyles(): string {
   }
   .docx-content thead th {
     background-color: #e0e0e0;
+  }
+  /* Style first row as header when no <th> elements are used */
+  .docx-content table tr:first-child td {
+    font-weight: bold;
+    background-color: #f5f5f5;
+    border-bottom: 2px solid #333;
   }
 
   /* Lists */
@@ -427,21 +727,35 @@ function generateStyles(): string {
     padding-top: 12pt;
   }
 
-  /* Block quotes */
+  /* Block quotes - Pandoc wraps indented academic text in blockquotes,
+     so keep normal styling (not italic/gray) */
   .docx-content blockquote {
-    margin: 12pt 0 12pt 24pt;
-    padding: 6pt 12pt;
-    border-left: 3px solid #ccc;
-    font-style: italic;
-    color: #555;
+    margin: 0 0 0 0;
+    padding: 0 0 0 0;
+    border-left: none;
+    font-style: normal;
+    color: inherit;
+  }
+  .docx-content blockquote p {
+    margin: 0 0 ${Math.round(bodySize * 0.9)}pt 0;
   }
 
-  /* Images */
+  /* Images - inline equation images stay inline, large figures are block-centered */
   .docx-content img {
     max-width: 100%;
     height: auto;
+  }
+  /* Small images (equations, symbols) display inline */
+  .docx-content p > img {
+    display: inline;
+    vertical-align: middle;
+    margin: 0 2pt;
+  }
+  /* Large standalone images (figures) display as block centered */
+  .docx-content p > img:only-child {
     display: block;
     margin: 12pt auto;
+    max-width: 80%;
   }
   .docx-content figure {
     margin: 12pt 0;
@@ -498,12 +812,14 @@ function generateStyles(): string {
 }
 
 /**
- * Convert DOCX buffer to HTML with formatting preservation
+ * Convert DOCX buffer to HTML with formatting preservation.
+ * Priority: LibreOffice (best for complex DOCX) → Pandoc → mammoth
  */
 export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResult> {
   const warnings: string[] = [];
   let html = '';
   let usedPandoc = false;
+  let usedConverter: 'libreoffice' | 'pandoc' | 'mammoth' = 'mammoth';
   let docxPath: string | null = null;
 
   try {
@@ -511,31 +827,58 @@ export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResul
     const mediaMap = await extractAndEmbedMedia(buffer);
     const imageCount = mediaMap.size;
 
-    // Check if Pandoc is available
-    const pandocAvailable = await isPandocAvailable();
+    // Priority 1: Try LibreOffice (best fidelity for complex DOCX with equations/tables)
+    const libreOfficeAvailable = await isLibreOfficeAvailable();
+    if (libreOfficeAvailable) {
+      try {
+        docxPath = await createTempFile(buffer, '.docx');
+        html = await convertWithLibreOffice(docxPath, buffer);
+        usedConverter = 'libreoffice';
+        logger.info('[DocxConversion] Converted using LibreOffice');
+      } catch (loErr) {
+        logger.warn('[DocxConversion] LibreOffice conversion failed, trying Pandoc:', loErr);
+        html = '';
+      }
+    }
 
-    if (pandocAvailable) {
-      // Use Pandoc for high-fidelity conversion
-      docxPath = await createTempFile(buffer, '.docx');
-      html = await convertWithPandoc(docxPath, mediaMap);
-      usedPandoc = true;
-      logger.info('[DocxConversion] Converted using Pandoc');
-    } else {
-      // Fall back to mammoth
+    // Priority 2: Try Pandoc
+    if (!html) {
+      const pandocAvailable = await isPandocAvailable();
+      if (pandocAvailable) {
+        if (!docxPath) docxPath = await createTempFile(buffer, '.docx');
+        html = await convertWithPandoc(docxPath, mediaMap);
+        usedPandoc = true;
+        usedConverter = 'pandoc';
+        logger.info('[DocxConversion] Converted using Pandoc');
+      }
+    }
+
+    // Priority 3: Fall back to mammoth
+    if (!html) {
       const result = await convertWithMammoth(buffer);
       html = result.html;
       warnings.push(...result.warnings);
-      warnings.push('Pandoc not available - using mammoth.js (some formatting may be lost)');
-      logger.info('[DocxConversion] Converted using mammoth (Pandoc not available)');
+      warnings.push('Pandoc/LibreOffice not available - using mammoth.js (some formatting may be lost)');
+      usedConverter = 'mammoth';
+      logger.info('[DocxConversion] Converted using mammoth (Pandoc/LibreOffice not available)');
     }
 
     // Extract just the body content if Pandoc generated full HTML
-    if (usedPandoc && html.includes('<body')) {
+    if (usedConverter === 'pandoc' && html.includes('<body')) {
       const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
       if (bodyMatch) {
         html = bodyMatch[1].trim();
       }
     }
+
+    // Fix missing spaces at formatting boundaries.
+    // Both Pandoc and LibreOffice can produce HTML where closing inline tags
+    // (<b>, <i>, <em>, <strong>) run directly into the next word with no space.
+    // TipTap strips whitespace-only nodes, so we must inject spaces explicitly.
+    html = html.replace(/<\/(b|i|strong|em)>([A-Z])/g, '</$1> $2');
+    html = html.replace(/<\/(b|i|strong|em)>(<\/span>)+\s*(<span[^>]*>)+([A-Z])/g,
+      (match, tag, closeSpans, openSpans, letter) =>
+        `</${tag}>${closeSpans} ${openSpans}${letter}`);
 
     // Post-process to infer headings from bold-only paragraphs
     html = inferHeadingsFromFormatting(html);
@@ -546,8 +889,9 @@ export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResul
     // Wrap in container
     html = `<div class="docx-content">${html}</div>`;
 
-    // Generate styles
-    const styles = generateStyles();
+    // Extract actual styles from the DOCX and generate matching CSS
+    const docxStyles = await extractDocxStyles(buffer);
+    const styles = generateStyles(docxStyles);
 
     // Calculate metadata
     const textContent = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -567,7 +911,7 @@ export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResul
         imageCount,
         footnoteCount,
       },
-      usedPandoc,
+      usedPandoc: usedPandoc || usedConverter === 'pandoc',
     };
   } finally {
     // Cleanup temp file
@@ -1241,5 +1585,8 @@ export const docxConversionService = {
   applyRevisionMarksToDocx,
   exportWithTrackChanges,
   isPandocAvailable,
+  isLibreOfficeAvailable,
   detectFileType,
+  generateStyles,
+  extractDocxStyles,
 };

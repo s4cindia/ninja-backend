@@ -5,7 +5,7 @@
  * Categorizes and structures rules for storage.
  */
 
-import { geminiService } from '../ai/gemini.service';
+import { claudeService } from '../ai/claude.service';
 import { documentExtractor } from '../document/document-extractor.service';
 import { logger } from '../../lib/logger';
 import pLimit from 'p-limit';
@@ -54,8 +54,13 @@ const EXTRACTION_PROMPT = `You are an expert editorial style guide analyst. Extr
 For each rule found, provide:
 1. name: A short, descriptive name for the rule
 2. description: Clear explanation of what the rule requires
-3. category: One of: PUNCTUATION, CAPITALIZATION, NUMBERS, ABBREVIATIONS, HYPHENATION, SPELLING, GRAMMAR, TERMINOLOGY, FORMATTING, CITATIONS, OTHER
-4. ruleType: One of: TERMINOLOGY (for word/phrase preferences), PATTERN (for regex-detectable patterns), CAPITALIZATION, PUNCTUATION
+3. category: The subject area. One of: PUNCTUATION, CAPITALIZATION, NUMBERS, ABBREVIATIONS, HYPHENATION, SPELLING, GRAMMAR, TERMINOLOGY, FORMATTING, CITATIONS, OTHER
+4. ruleType: The enforcement mechanism (NOT the same as category). One of:
+   - TERMINOLOGY: Use when the rule is about preferred/avoided words or phrases (has preferredTerm or avoidTerms)
+   - PATTERN: Use when violations can be detected by a regex pattern
+   - CAPITALIZATION: Use ONLY for rules that specifically enforce letter casing conventions
+   - PUNCTUATION: Use ONLY for rules that specifically enforce punctuation mark placement
+   IMPORTANT: ruleType must differ from category when possible. For example, a CAPITALIZATION category rule about capitalizing journal titles should use ruleType=TERMINOLOGY, not CAPITALIZATION.
 5. preferredTerm: The preferred word/phrase (if applicable)
 6. avoidTerms: Array of terms to avoid (if applicable)
 7. severity: ERROR (must fix), WARNING (should fix), or SUGGESTION (consider fixing)
@@ -117,11 +122,15 @@ class StyleGuideExtractorService {
         };
       }
 
-      // Step 2: Split into sections for processing
-      const sections = this.splitIntoSections(extractedContent.text, extractedContent.pageCount);
+      // Step 2: Split into sections for processing (cap at 15 to limit API calls)
+      const allSections = this.splitIntoSections(extractedContent.text, extractedContent.pageCount);
+      const sections = allSections.slice(0, 15);
+      if (allSections.length > 15) {
+        warnings.push(`Document has ${allSections.length} sections; processing first 15 for efficiency`);
+      }
 
       // Step 3: Extract rules from each section using AI (parallel with concurrency limit)
-      const limit = pLimit(3); // Limit to 3 concurrent AI calls to avoid rate limiting
+      const limit = pLimit(2); // Limit to 2 concurrent AI calls to avoid rate limiting
       const sectionPromises = sections.map(section =>
         limit(async () => {
           try {
@@ -276,20 +285,17 @@ class StyleGuideExtractorService {
     const prompt = EXTRACTION_PROMPT.replace('{content}', section.content.slice(0, 8000));
 
     try {
-      const aiResponse = await geminiService.generateText(prompt, {
-        maxOutputTokens: 4000,
+      const rules = await claudeService.generateJSON<Partial<ExtractedRule>[]>(prompt, {
+        model: 'sonnet',
+        maxTokens: 4000,
         temperature: 0.1,
+        systemPrompt: 'You are an expert editorial style guide analyst. Return ONLY a valid JSON array of extracted rules.',
       });
-      const response = aiResponse.text;
 
-      // Parse JSON response
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        logger.warn('[StyleGuideExtractor] No JSON array found in response');
+      if (!Array.isArray(rules)) {
+        logger.warn('[StyleGuideExtractor] Claude did not return an array');
         return [];
       }
-
-      const rules = JSON.parse(jsonMatch[0]) as Partial<ExtractedRule>[];
 
       // Validate and normalize rules
       return rules
@@ -343,7 +349,7 @@ class StyleGuideExtractorService {
   private async enhanceRules(rules: ExtractedRule[]): Promise<ExtractedRule[]> {
     if (rules.length === 0) return rules;
 
-    const BATCH_SIZE = 50;
+    const BATCH_SIZE = 25;
 
     // Process in batches if more than BATCH_SIZE rules
     if (rules.length > BATCH_SIZE) {
@@ -355,9 +361,9 @@ class StyleGuideExtractorService {
         try {
           const enhancedBatch = await this.enhanceBatch(batch);
           enhancedRules.push(...enhancedBatch);
-          // Small delay between batches to avoid rate limits
+          // Delay between batches to avoid rate limits
           if (i + BATCH_SIZE < rules.length) {
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 2000));
           }
         } catch (error) {
           logger.error(`[StyleGuideExtractor] Batch ${Math.floor(i / BATCH_SIZE) + 1} enhancement failed, using original rules`, error);
@@ -378,18 +384,16 @@ class StyleGuideExtractorService {
     try {
       const prompt = CATEGORIZATION_PROMPT.replace('{rules}', JSON.stringify(rules, null, 2));
 
-      const aiResponse = await geminiService.generateText(prompt, {
-        maxOutputTokens: 8000,
+      const enhancedRules = await claudeService.generateJSON<ExtractedRule[]>(prompt, {
+        model: 'sonnet',
+        maxTokens: 16000,
         temperature: 0.1,
+        systemPrompt: 'You are an expert editorial style guide analyst. Improve the categorization and descriptions of these rules. Return ONLY a valid JSON array with the same number of rules.',
       });
-      const response = aiResponse.text;
 
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
+      if (!Array.isArray(enhancedRules)) {
         return rules;
       }
-
-      const enhancedRules = JSON.parse(jsonMatch[0]) as ExtractedRule[];
 
       // Validate array length matches before merging
       if (enhancedRules.length !== rules.length) {

@@ -116,6 +116,7 @@ describe('plagiarismCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           plagiarismCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue({ id: 'existing-job' }),
             create: vi.fn(),
           },
@@ -133,6 +134,7 @@ describe('plagiarismCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           plagiarismCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue(null),
             create: vi.fn().mockResolvedValue({ id: JOB_ID }),
           },
@@ -156,6 +158,7 @@ describe('plagiarismCheckService', () => {
       mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         const tx = {
           plagiarismCheckJob: {
+            count: vi.fn().mockResolvedValue(0),
             findFirst: vi.fn().mockResolvedValue({ id: 'existing-job' }),
             create: mockTxCreate,
           },

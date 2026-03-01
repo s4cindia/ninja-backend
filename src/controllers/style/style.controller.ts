@@ -13,7 +13,6 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '../../lib/logger';
 import { styleValidation, type ViolationFilters } from '../../services/style/style-validation.service';
 import { styleRulesRegistry } from '../../services/style/style-rules-registry.service';
-import { getStyleQueue, JOB_TYPES } from '../../queues';
 import type { AuthenticatedRequest } from '../../types/authenticated-request';
 import type {
   StartValidationBody,
@@ -40,9 +39,10 @@ export class StyleController {
         });
       }
 
-      // Queue the validation job (uses sync mode if Redis/BullMQ is not available)
-      const styleQueue = getStyleQueue();
-      const useSyncMode = !styleQueue;
+      // Always use sync mode for style validation.
+      // Style checks are fast (5-15s for a single AI call on typical documents)
+      // and BullMQ workers on Upstash Redis are unreliable with blocking commands.
+      const useSyncMode = true;
 
       if (useSyncMode) {
         logger.info('[Style Controller] Using sync mode (Redis not configured)');
@@ -85,48 +85,6 @@ export class StyleController {
         });
       }
 
-      // Create the job record first
-      const validationJob = await styleValidation.startValidation(
-        tenantId,
-        userId,
-        {
-          documentId: body.documentId,
-          ruleSetIds: body.ruleSetIds,
-          styleGuide: body.styleGuide,
-          includeHouseRules: body.includeHouseRules,
-          useAiValidation: body.useAiValidation,
-        }
-      );
-
-      // Queue for background processing
-      await styleQueue.add(
-        'style-validation',
-        {
-          type: JOB_TYPES.STYLE_VALIDATION,
-          tenantId,
-          userId,
-          options: {
-            documentId: body.documentId,
-            ruleSetIds: body.ruleSetIds,
-            includeHouseRules: body.includeHouseRules ?? true,
-            validationJobId: validationJob.id,
-          },
-        },
-        {
-          jobId: validationJob.id,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-        }
-      );
-
-      return res.status(202).json({
-        success: true,
-        data: {
-          jobId: validationJob.id,
-          status: 'QUEUED',
-          message: 'Validation job queued successfully',
-        },
-      });
     } catch (error) {
       next(error);
     }
