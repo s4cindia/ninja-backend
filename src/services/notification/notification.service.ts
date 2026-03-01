@@ -1,4 +1,4 @@
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
@@ -28,7 +28,7 @@ class NotificationService {
         type: data.type,
         title: data.title,
         message: data.message,
-        data: data.data ?? {},
+        data: (data.data ?? {}) as Prisma.InputJsonValue,
         link: data.link,
         read: false,
       },

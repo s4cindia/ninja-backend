@@ -51,7 +51,7 @@ class EmailService {
       });
       this.transporter = nodemailer.createTransport({
         SES: { ses, aws: { SendRawEmailCommand } },
-      });
+      } as Parameters<typeof nodemailer.createTransport>[0]);
       logger.info('[Email] Using AWS SES transport');
     } else {
       this.transporter = nodemailer.createTransport({
@@ -101,11 +101,16 @@ class EmailService {
   }
 
   private buildCompletionHtml(data: BatchCompletionEmailData): string {
+    const TD_LABEL = 'style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;"';
+    const TD_VALUE = 'style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;"';
+    const TD_SUCCESS = 'style="padding: 10px 0; font-weight: 700; color: #10b981; text-align: right; border-bottom: 1px solid #e5e7eb;"';
+    const TD_WARNING = 'style="padding: 10px 0; font-weight: 700; color: #f59e0b; text-align: right; border-bottom: 1px solid #e5e7eb;"';
+    const TD_ERROR = 'style="padding: 10px 0; font-weight: 700; color: #ef4444; text-align: right; border-bottom: 1px solid #e5e7eb;"';
+    const TD_LABEL_LAST = 'style="padding: 10px 0; font-weight: 600; color: #6b7280;"';
+    const TD_VALUE_LAST = 'style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right;"';
+
     const failedRow = data.filesFailed > 0
-      ? `<div class="stat-row">
-          <span class="stat-label">Failed</span>
-          <span class="stat-value error">${data.filesFailed}</span>
-        </div>`
+      ? `<tr><td ${TD_LABEL}>Failed</td><td ${TD_ERROR}>${data.filesFailed}</td></tr>`
       : '';
 
     return `<!DOCTYPE html>
@@ -113,69 +118,35 @@ class EmailService {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .stats { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .stat-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e5e7eb; }
-    .stat-row:last-child { border-bottom: none; }
-    .stat-label { font-weight: 600; color: #6b7280; }
-    .stat-value { font-weight: 700; color: #111827; }
-    .stat-value.success { color: #10b981; }
-    .stat-value.warning { color: #f59e0b; }
-    .stat-value.error { color: #ef4444; }
-    .cta-button { display: inline-block; background: #667eea; color: white !important; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 20px 0; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
 </head>
-<body>
-  <div class="header">
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
     <h1 style="margin: 0;">Batch Processing Complete</h1>
   </div>
-  <div class="content">
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
     <p>Hi ${data.userName},</p>
     <p>Your batch <strong>"${data.batchName}"</strong> has completed processing successfully!</p>
-    <div class="stats">
-      <h3 style="margin-top: 0;">Processing Summary</h3>
-      <div class="stat-row">
-        <span class="stat-label">Total Files</span>
-        <span class="stat-value">${data.totalFiles}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Successfully Processed</span>
-        <span class="stat-value success">${data.filesSuccessful}</span>
-      </div>
-      ${failedRow}
-      <div class="stat-row">
-        <span class="stat-label">Issues Found</span>
-        <span class="stat-value">${data.totalIssues}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Auto-Fixed</span>
-        <span class="stat-value success">${data.autoFixed}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Quick-Fixes Needed</span>
-        <span class="stat-value warning">${data.quickFixes}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Manual Fixes Needed</span>
-        <span class="stat-value">${data.manualFixes}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Processing Time</span>
-        <span class="stat-value">${data.processingTime}</span>
-      </div>
+    <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+      <h3 style="margin-top: 0; color: #111827;">Processing Summary</h3>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr><td ${TD_LABEL}>Total Files</td><td ${TD_VALUE}>${data.totalFiles}</td></tr>
+        <tr><td ${TD_LABEL}>Successfully Processed</td><td ${TD_SUCCESS}>${data.filesSuccessful}</td></tr>
+        ${failedRow}
+        <tr><td ${TD_LABEL}>Issues Found</td><td ${TD_VALUE}>${data.totalIssues}</td></tr>
+        <tr><td ${TD_LABEL}>Auto-Fixed</td><td ${TD_SUCCESS}>${data.autoFixed}</td></tr>
+        <tr><td ${TD_LABEL}>Quick-Fixes Needed</td><td ${TD_WARNING}>${data.quickFixes}</td></tr>
+        <tr><td ${TD_LABEL}>Manual Fixes Needed</td><td ${TD_VALUE}>${data.manualFixes}</td></tr>
+        <tr><td ${TD_LABEL_LAST}>Processing Time</td><td ${TD_VALUE_LAST}>${data.processingTime}</td></tr>
+      </table>
     </div>
     <p style="text-align: center;">
-      <a href="${data.resultsUrl}" class="cta-button">View Results &amp; Download Files</a>
+      <a href="${data.resultsUrl}" style="display: inline-block; background: #667eea; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">View Results &amp; Download Files</a>
     </p>
     <p style="color: #6b7280; font-size: 14px;">
       You can now generate ACR/VPAT reports, export your files, or apply quick-fixes.
     </p>
   </div>
-  <div class="footer">
+  <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 14px;">
     <p>This is an automated notification from Ninja Platform.</p>
   </div>
 </body>
@@ -211,37 +182,29 @@ This is an automated notification from Ninja Platform.`;
 <html>
 <head>
   <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .info-box { background: #fffbeb; border: 1px solid #fde68a; padding: 15px; border-radius: 6px; margin: 20px 0; color: #92400e; }
-    .stat { font-size: 2em; font-weight: 700; color: #d97706; }
-    .cta-button { display: inline-block; background: #f59e0b; color: white !important; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body>
-  <div class="header">
-    <h1 style="margin: 0;">⚠️ Action Required</h1>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+    <h1 style="margin: 0;">Action Required</h1>
     <p style="margin: 8px 0 0;">${data.gateName}</p>
   </div>
-  <div class="content">
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
     <p>Hi ${data.userName},</p>
     <p>Your batch <strong>"${data.batchName}"</strong> has paused and is waiting for your review at the <strong>${data.gateName}</strong> gate.</p>
-    <div class="info-box" style="text-align: center;">
-      <div class="stat">${data.waitingCount}</div>
+    <div style="background: #fffbeb; border: 1px solid #fde68a; padding: 15px; border-radius: 6px; margin: 20px 0; color: #92400e; text-align: center;">
+      <div style="font-size: 2em; font-weight: 700; color: #d97706;">${data.waitingCount}</div>
       <div>file(s) waiting for ${data.gateName}</div>
     </div>
     <p>Please log in to review and approve to continue processing.</p>
     <p style="text-align: center;">
-      <a href="${data.reviewUrl}" class="cta-button">Review Now</a>
+      <a href="${data.reviewUrl}" style="display: inline-block; background: #f59e0b; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">Review Now</a>
     </p>
     <p style="color: #6b7280; font-size: 14px;">
       Processing will remain paused until you complete this review step.
     </p>
   </div>
-  <div class="footer">
+  <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 14px;">
     <p>This is an automated notification from Ninja Platform.</p>
   </div>
 </body>
@@ -272,31 +235,24 @@ This is an automated notification from Ninja Platform.`;
 <html>
 <head>
   <meta charset="UTF-8">
-  <style>
-    body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #ef4444; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .error-box { background: #fef2f2; border: 1px solid #fecaca; padding: 15px; border-radius: 6px; margin: 20px 0; color: #991b1b; }
-    .cta-button { display: inline-block; background: #667eea; color: white !important; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body>
-  <div class="header">
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #ef4444; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
     <h1 style="margin: 0;">Batch Processing Failed</h1>
   </div>
-  <div class="content">
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
     <p>Hi ${data.userName},</p>
     <p>Unfortunately, your batch <strong>"${data.batchName}"</strong> encountered an error during processing.</p>
-    <div class="error-box">
+    <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 15px; border-radius: 6px; margin: 20px 0; color: #991b1b;">
       <strong>Error:</strong> ${data.errorMessage}
     </div>
     <p>Please review the batch details and try again. If the problem persists, contact support.</p>
     <p style="text-align: center;">
-      <a href="${data.resultsUrl}" class="cta-button">View Batch Details</a>
+      <a href="${data.resultsUrl}" style="display: inline-block; background: #667eea; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">View Batch Details</a>
     </p>
   </div>
-  <div class="footer">
+  <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 14px;">
     <p>This is an automated notification from Ninja Platform.</p>
   </div>
 </body>

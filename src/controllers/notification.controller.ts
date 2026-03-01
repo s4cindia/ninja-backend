@@ -5,7 +5,8 @@ import { logger } from '../lib/logger';
 class NotificationController {
   async getUnread(req: Request, res: Response): Promise<void> {
     try {
-      const { userId, tenantId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const { id: userId, tenantId } = req.user;
       const notifications = await notificationService.getUnreadNotifications(userId, tenantId);
       res.json({ success: true, data: notifications });
     } catch (error) {
@@ -16,7 +17,8 @@ class NotificationController {
 
   async getAll(req: Request, res: Response): Promise<void> {
     try {
-      const { userId, tenantId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const { id: userId, tenantId } = req.user;
       const page = parseInt(req.query.page as string) || 1;
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
       const result = await notificationService.getNotifications(userId, tenantId, page, limit);
@@ -29,7 +31,8 @@ class NotificationController {
 
   async getUnreadCount(req: Request, res: Response): Promise<void> {
     try {
-      const { userId, tenantId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const { id: userId, tenantId } = req.user;
       const count = await notificationService.getUnreadCount(userId, tenantId);
       res.json({ success: true, data: { count } });
     } catch (error) {
@@ -40,7 +43,8 @@ class NotificationController {
 
   async markAsRead(req: Request, res: Response): Promise<void> {
     try {
-      const { userId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const userId = req.user.id;
       const { notificationId } = req.params;
       await notificationService.markAsRead(notificationId, userId);
       res.json({ success: true });
@@ -52,7 +56,8 @@ class NotificationController {
 
   async markAllAsRead(req: Request, res: Response): Promise<void> {
     try {
-      const { userId, tenantId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const { id: userId, tenantId } = req.user;
       await notificationService.markAllAsRead(userId, tenantId);
       res.json({ success: true });
     } catch (error) {
@@ -63,7 +68,8 @@ class NotificationController {
 
   async deleteNotification(req: Request, res: Response): Promise<void> {
     try {
-      const { userId } = req.user;
+      if (!req.user) { res.status(401).json({ success: false, error: { message: 'Unauthorized' } }); return; }
+      const userId = req.user.id;
       const { notificationId } = req.params;
       await notificationService.deleteNotification(notificationId, userId);
       res.json({ success: true });
