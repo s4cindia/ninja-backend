@@ -5,7 +5,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import prisma from '../../lib/prisma';
+import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
 import { docxConversionService } from '../../services/document/docx-conversion.service';
@@ -153,9 +153,17 @@ export class ValidatorController {
             fileName: true,
             originalName: true,
             fileSize: true,
+            wordCount: true,
+            pageCount: true,
             status: true,
             createdAt: true,
             updatedAt: true,
+            job: {
+              select: {
+                createdAt: true,
+                completedAt: true,
+              },
+            },
           },
         }),
         prisma.editorialDocument.count({ where: whereClause }),
@@ -240,12 +248,22 @@ export class ValidatorController {
         where: { id: documentId, tenantId },
         select: {
           id: true,
+          status: true,
+          jobId: true,
           storagePath: true,
           storageType: true,
           originalName: true,
+          fileSize: true,
+          wordCount: true,
           documentContent: {
             select: {
               fullHtml: true,
+            },
+          },
+          job: {
+            select: {
+              createdAt: true,
+              completedAt: true,
             },
           },
         },
@@ -262,12 +280,62 @@ export class ValidatorController {
       // If we have cached HTML content, return it
       if (document.documentContent?.fullHtml) {
         logger.info(`[Validator] Returning cached HTML for document: ${documentId}`);
+
+        // Mark document as PARSED if still UPLOADED (backfill for docs cached before this code)
+        // Hoist updated values so the response can use them instead of the stale snapshot
+        let backfilledWordCount: number | null = null;
+        let backfilledCompletedAt: Date | null = null;
+        if (document.status === 'UPLOADED') {
+          const now = new Date();
+          backfilledWordCount = document.documentContent.fullHtml
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean).length;
+          backfilledCompletedAt = now;
+          const txOps: Prisma.PrismaPromise<unknown>[] = [
+            prisma.editorialDocument.update({
+              where: { id: documentId },
+              data: { status: 'PARSED', wordCount: backfilledWordCount, updatedAt: now },
+            }),
+          ];
+          if (document.jobId) {
+            txOps.push(
+              prisma.job.update({
+                where: { id: document.jobId },
+                data: { status: 'COMPLETED', completedAt: now },
+              })
+            );
+          }
+          await prisma.$transaction(txOps);
+          logger.info(`[Validator] Backfilled document ${documentId} as PARSED, wordCount=${backfilledWordCount}`);
+        }
+
+        // Use backfilled values when available, otherwise fall back to the original snapshot
+        const responseWordCount = backfilledWordCount ?? document.wordCount;
+        const completedAt = backfilledCompletedAt ?? document.job?.completedAt;
+        const responseProcessingTime = document.job?.createdAt && completedAt
+          ? new Date(completedAt).getTime() - new Date(document.job.createdAt).getTime()
+          : null;
+
         res.json({
           success: true,
           data: {
             documentId: document.id,
             content: document.documentContent.fullHtml,
             fileName: document.originalName,
+            fileSize: document.fileSize,
+            wordCount: responseWordCount,
+            processingTime: responseProcessingTime,
           },
         });
         return;
@@ -327,12 +395,44 @@ export class ValidatorController {
         },
       });
 
+      // Update document stats and mark as PARSED on first conversion
+      let conversionCompletedAt: Date | null = null;
+      if (document.status === 'UPLOADED') {
+        conversionCompletedAt = new Date();
+        const txOps: Prisma.PrismaPromise<unknown>[] = [
+          prisma.editorialDocument.update({
+            where: { id: documentId },
+            data: {
+              status: 'PARSED',
+              wordCount: result.metadata.wordCount,
+              updatedAt: conversionCompletedAt,
+            },
+          }),
+        ];
+        if (document.jobId) {
+          txOps.push(
+            prisma.job.update({
+              where: { id: document.jobId },
+              data: { status: 'COMPLETED', completedAt: conversionCompletedAt },
+            }),
+          );
+        }
+        await prisma.$transaction(txOps);
+        logger.info(`[Validator] Document ${documentId} marked PARSED, job ${document.jobId} marked COMPLETED`);
+      }
+
+      const effectiveCompletedAt = conversionCompletedAt ?? document.job?.completedAt;
       res.json({
         success: true,
         data: {
           documentId: document.id,
           content: htmlContent,
           fileName: document.originalName,
+          fileSize: document.fileSize,
+          wordCount: result.metadata.wordCount,
+          processingTime: document.job?.createdAt && effectiveCompletedAt
+            ? new Date(effectiveCompletedAt).getTime() - new Date(document.job.createdAt).getTime()
+            : null,
           conversionWarnings: result.warnings,
           metadata: result.metadata,
         },

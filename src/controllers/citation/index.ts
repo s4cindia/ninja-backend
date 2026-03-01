@@ -35,6 +35,7 @@ export const citationManagementController = {
   getJobStatus: citationUploadController.getJobStatus.bind(citationUploadController),
   getRecentJobs: citationUploadController.getRecentJobs.bind(citationUploadController),
   deleteJob: citationUploadController.deleteJob.bind(citationUploadController),
+  deleteDocument: citationUploadController.deleteDocument.bind(citationUploadController),
   getAnalysis: citationUploadController.getAnalysis.bind(citationUploadController),
   reanalyze: citationUploadController.reanalyze.bind(citationUploadController),
   analyzeDocument: citationUploadController.analyzeDocument.bind(citationUploadController),
@@ -51,6 +52,7 @@ export const citationManagementController = {
   dismissChanges: citationReferenceController.dismissChanges.bind(citationReferenceController),
   createCitationLinks: citationReferenceController.createCitationLinks.bind(citationReferenceController),
   resequenceByAppearance: citationReferenceController.resequenceByAppearance.bind(citationReferenceController),
+  validateReference: citationReferenceController.validateReference.bind(citationReferenceController),
 
   // Style & DOI (citation-style.controller)
   convertStyle: citationStyleController.convertStyle.bind(citationStyleController),

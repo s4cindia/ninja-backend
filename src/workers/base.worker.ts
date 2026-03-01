@@ -1,6 +1,6 @@
 import { Job, Worker } from 'bullmq';
 import { isRedisConfigured } from '../lib/redis';
-import { getBullMQConnection, JobData, JobResult } from '../queues';
+import { getBullMQConnection, JobData, JobResult, QUEUE_PREFIX } from '../queues';
 import { queueService } from '../services/queue.service';
 import { logger } from '../lib/logger';
 
@@ -60,6 +60,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
         connection,
         concurrency,
         autorun: true,
+        prefix: QUEUE_PREFIX,
       }
     );
 

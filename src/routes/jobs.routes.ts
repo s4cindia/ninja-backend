@@ -37,8 +37,12 @@ router.get('/:id/confidence-summary', (req, res, next) =>
   confidenceController.getConfidenceSummary(req, res, next)
 );
 
-router.delete('/:id', (req, res, next) => 
+router.delete('/:id', (req, res, next) =>
   jobController.cancel(req, res, next)
+);
+
+router.delete('/:id/permanent', (req, res, next) =>
+  jobController.permanentDelete(req, res, next)
 );
 
 export default router;

@@ -52,7 +52,10 @@ class ReferenceStyleUpdaterService {
   } {
     const details = dbReferences.map(ref => {
       const authors = Array.isArray(ref.authors) ? ref.authors as string[] : [];
-      const firstAuthor = authors[0] ? String(authors[0]).split(/[,\s]/)[0] : 'Unknown';
+      const a0 = authors[0] ? String(authors[0]).trim() : '';
+      const firstAuthor = a0
+        ? (a0.includes(',') ? a0.substring(0, a0.indexOf(',')).trim() : (a0.split(/\s+/).pop() || 'Unknown'))
+        : 'Unknown';
 
       return {
         id: ref.id,
@@ -212,7 +215,10 @@ class ReferenceStyleUpdaterService {
 
     for (const ref of dbReferences) {
       const authors = Array.isArray(ref.authors) ? ref.authors as string[] : [];
-      const authorLastName = authors[0] ? String(authors[0]).split(/[,\s]/)[0] : '';
+      const a0 = authors[0] ? String(authors[0]).trim() : '';
+      const authorLastName = a0
+        ? (a0.includes(',') ? a0.substring(0, a0.indexOf(',')).trim() : (a0.split(/\s+/).pop() || ''))
+        : '';
 
       if (!authorLastName) {
         logger.warn(`[Reference Style Updater] Reference ${ref.id} has no author - skipping`);

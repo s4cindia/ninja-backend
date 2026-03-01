@@ -1,5 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
-import { getBullMQConnection } from './index';
+import { getBullMQConnection, QUEUE_PREFIX } from './index';
 import { logger } from '../lib/logger';
 import { websocketService } from '../services/workflow/websocket.service';
 import prisma from '../lib/prisma';
@@ -27,6 +27,7 @@ export function getWorkflowQueue(): Queue<WorkflowJobData> {
   if (!_workflowQueue) {
     _workflowQueue = new Queue<WorkflowJobData>(QUEUE_NAME, {
       connection: getConnection(),
+      prefix: QUEUE_PREFIX,
     });
   }
   return _workflowQueue;
@@ -115,6 +116,7 @@ export function startWorkflowWorker(): Worker {
       concurrency: 3,
       // Kill jobs that run longer than 10 minutes — audit services can hang on large files
       lockDuration: 600_000,
+      prefix: QUEUE_PREFIX,
     }
   );
 
