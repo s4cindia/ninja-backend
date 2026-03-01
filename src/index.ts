@@ -85,6 +85,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: config.nodeEnv,
     version: config.version,
+    commitSha: process.env.COMMIT_SHA || 'unknown',
     redis: redisAvailable ? 'connected' : 'not_configured',
     workers: redisAvailable ? 'enabled' : 'disabled',
     websocket: {
