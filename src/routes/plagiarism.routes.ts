@@ -13,6 +13,7 @@ import { Router } from 'express';
 import { plagiarismController } from '../controllers/plagiarism/plagiarism.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
+import { rateLimiters } from '../middleware/rate-limit.middleware';
 import {
   startPlagiarismCheckSchema,
   plagiarismJobIdParamSchema,
@@ -35,6 +36,7 @@ router.use(authenticate);
  */
 router.post(
   '/check',
+  rateLimiters.plagiarismCheck,
   validate(startPlagiarismCheckSchema),
   (req, res, next) => plagiarismController.startCheck(req, res, next)
 );

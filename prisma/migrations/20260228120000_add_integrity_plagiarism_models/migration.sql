@@ -1,8 +1,11 @@
 -- CreateEnum
-CREATE TYPE "IntegrityCheckType" AS ENUM ('FIGURE_REF', 'TABLE_REF', 'EQUATION_REF', 'BOX_REF', 'CITATION_REF', 'SECTION_NUMBERING', 'FIGURE_NUMBERING', 'TABLE_NUMBERING', 'EQUATION_NUMBERING', 'UNIT_CONSISTENCY', 'ABBREVIATION', 'CROSS_REF', 'DUPLICATE_CONTENT', 'HEADING_HIERARCHY', 'ALT_TEXT', 'TABLE_STRUCTURE', 'FOOTNOTE_REF', 'TOC_CONSISTENCY', 'ISBN_FORMAT', 'DOI_FORMAT', 'TERMINOLOGY');
+DO $$ BEGIN
+  CREATE TYPE "IntegrityCheckType" AS ENUM ('FIGURE_REF', 'TABLE_REF', 'EQUATION_REF', 'BOX_REF', 'CITATION_REF', 'SECTION_NUMBERING', 'FIGURE_NUMBERING', 'TABLE_NUMBERING', 'EQUATION_NUMBERING', 'UNIT_CONSISTENCY', 'ABBREVIATION', 'CROSS_REF', 'DUPLICATE_CONTENT', 'HEADING_HIERARCHY', 'ALT_TEXT', 'TABLE_STRUCTURE', 'FOOTNOTE_REF', 'TOC_CONSISTENCY', 'ISBN_FORMAT', 'DOI_FORMAT', 'TERMINOLOGY');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateTable
-CREATE TABLE "IntegrityCheckJob" (
+CREATE TABLE IF NOT EXISTS "IntegrityCheckJob" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
@@ -21,7 +24,7 @@ CREATE TABLE "IntegrityCheckJob" (
 );
 
 -- CreateTable
-CREATE TABLE "IntegrityIssue" (
+CREATE TABLE IF NOT EXISTS "IntegrityIssue" (
     "id" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
     "jobId" TEXT NOT NULL,
@@ -47,42 +50,63 @@ CREATE TABLE "IntegrityIssue" (
 );
 
 -- CreateIndex
-CREATE INDEX "IntegrityCheckJob_tenantId_idx" ON "IntegrityCheckJob"("tenantId");
+CREATE INDEX IF NOT EXISTS "IntegrityCheckJob_tenantId_idx" ON "IntegrityCheckJob"("tenantId");
 
 -- CreateIndex
-CREATE INDEX "IntegrityCheckJob_documentId_idx" ON "IntegrityCheckJob"("documentId");
+CREATE INDEX IF NOT EXISTS "IntegrityCheckJob_documentId_idx" ON "IntegrityCheckJob"("documentId");
 
 -- CreateIndex
-CREATE INDEX "IntegrityCheckJob_status_idx" ON "IntegrityCheckJob"("status");
+CREATE INDEX IF NOT EXISTS "IntegrityCheckJob_status_idx" ON "IntegrityCheckJob"("status");
+
+-- CreateIndex (composite)
+CREATE INDEX IF NOT EXISTS "IntegrityCheckJob_documentId_tenantId_status_idx" ON "IntegrityCheckJob"("documentId", "tenantId", "status");
 
 -- CreateIndex
-CREATE INDEX "IntegrityIssue_documentId_idx" ON "IntegrityIssue"("documentId");
+CREATE INDEX IF NOT EXISTS "IntegrityIssue_documentId_idx" ON "IntegrityIssue"("documentId");
 
 -- CreateIndex
-CREATE INDEX "IntegrityIssue_jobId_idx" ON "IntegrityIssue"("jobId");
+CREATE INDEX IF NOT EXISTS "IntegrityIssue_jobId_idx" ON "IntegrityIssue"("jobId");
 
 -- CreateIndex
-CREATE INDEX "IntegrityIssue_checkType_idx" ON "IntegrityIssue"("checkType");
+CREATE INDEX IF NOT EXISTS "IntegrityIssue_checkType_idx" ON "IntegrityIssue"("checkType");
 
 -- CreateIndex
-CREATE INDEX "IntegrityIssue_status_idx" ON "IntegrityIssue"("status");
+CREATE INDEX IF NOT EXISTS "IntegrityIssue_status_idx" ON "IntegrityIssue"("status");
 
 -- AddForeignKey
-ALTER TABLE "IntegrityCheckJob" ADD CONSTRAINT "IntegrityCheckJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "IntegrityCheckJob" ADD CONSTRAINT "IntegrityCheckJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "IntegrityCheckJob" ADD CONSTRAINT "IntegrityCheckJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "IntegrityCheckJob" ADD CONSTRAINT "IntegrityCheckJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "IntegrityCheckJob"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "IntegrityIssue" ADD CONSTRAINT "IntegrityIssue_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "IntegrityCheckJob"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateEnum
 DO $$ BEGIN
   CREATE TYPE "ContentType" AS ENUM ('JOURNAL_ARTICLE', 'BOOK', 'UNKNOWN');
 EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- AlterTable: Add contentType column to EditorialDocument
+DO $$ BEGIN
+  ALTER TABLE "EditorialDocument" ADD COLUMN "contentType" "ContentType" NOT NULL DEFAULT 'UNKNOWN';
+EXCEPTION WHEN duplicate_column THEN null;
 END $$;
 
 -- CreateTable
@@ -112,8 +136,17 @@ CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_documentId_idx" ON "PlagiarismChe
 -- CreateIndex
 CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_status_idx" ON "PlagiarismCheckJob"("status");
 
--- AddForeignKey
-ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- CreateIndex (composite)
+CREATE INDEX IF NOT EXISTS "PlagiarismCheckJob_documentId_tenantId_status_idx" ON "PlagiarismCheckJob"("documentId", "tenantId", "status");
 
 -- AddForeignKey
-ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- AddForeignKey
+DO $$ BEGIN
+  ALTER TABLE "PlagiarismCheckJob" ADD CONSTRAINT "PlagiarismCheckJob_documentId_fkey" FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;

@@ -13,6 +13,7 @@ import { Router } from 'express';
 import { integrityController } from '../controllers/integrity/integrity.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
+import { rateLimiters } from '../middleware/rate-limit.middleware';
 import {
   startCheckSchema,
   jobIdParamSchema,
@@ -36,6 +37,7 @@ router.use(authenticate);
  */
 router.post(
   '/check',
+  rateLimiters.integrityCheck,
   validate(startCheckSchema),
   (req, res, next) => integrityController.startCheck(req, res, next)
 );

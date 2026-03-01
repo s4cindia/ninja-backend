@@ -32,6 +32,7 @@ const contentTypeCheckedIds = new Set<string>();
 
 async function detectAndBackfillContentType(
   documentId: string,
+  tenantId: string,
   currentType: ContentTypeValue | null,
   plainText: string,
   html: string
@@ -42,7 +43,7 @@ async function detectAndBackfillContentType(
   const detection = contentTypeDetector.detectContentType(plainText, html);
   if (detection.contentType !== 'UNKNOWN') {
     await prisma.editorialDocument.updateMany({
-      where: { id: documentId, contentType: 'UNKNOWN' },
+      where: { id: documentId, tenantId, contentType: 'UNKNOWN' },
       data: { contentType: detection.contentType },
     });
     logger.debug(`[ContentType] Detected ${detection.contentType} for ${documentId} (signals: ${detection.signals.join(', ')})`);
@@ -322,7 +323,7 @@ export class ValidatorController {
       let detectedContentType = document.contentType;
       if (detectedContentType === 'UNKNOWN' && document.documentContent?.fullHtml) {
         const plainText = document.documentContent.fullText || htmlToPlainText(document.documentContent.fullHtml);
-        detectedContentType = await detectAndBackfillContentType(documentId, detectedContentType, plainText, document.documentContent.fullHtml);
+        detectedContentType = await detectAndBackfillContentType(documentId, tenantId, detectedContentType, plainText, document.documentContent.fullHtml);
       }
 
       // If we have cached HTML content, return it
@@ -487,7 +488,7 @@ export class ValidatorController {
 
       // Lazy backfill: detect content type for documents converted before this feature
       if (detectedContentType === 'UNKNOWN') {
-        detectedContentType = await detectAndBackfillContentType(documentId, detectedContentType, fullText, htmlContent);
+        detectedContentType = await detectAndBackfillContentType(documentId, tenantId, detectedContentType, fullText, htmlContent);
       }
 
       const effectiveCompletedAt = conversionCompletedAt ?? document.job?.completedAt;
@@ -555,7 +556,7 @@ export class ValidatorController {
       // Set appropriate headers
       res.setHeader('Content-Type', document.mimeType);
       res.setHeader('Content-Length', fileBuffer.length);
-      const safeName = document.originalName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+      const safeName = document.originalName.replace(/[^\x20-\x7E]/g, '_').replace(/[;"\\]/g, '_');
       res.setHeader('Content-Disposition', `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(document.originalName)}`);
 
       // Send the file
@@ -1025,7 +1026,7 @@ export class ValidatorController {
 
       // Send the DOCX file
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-      const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+      const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/[;"\\]/g, '_');
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);
@@ -1067,13 +1068,8 @@ export class ValidatorController {
         },
       };
 
-      // First get document IDs, then use direct documentId IN (...) for issue/match/violation
-      // counts. This avoids nested relation filters that bypass @@index([documentId]).
-      const docIds = await prisma.editorialDocument.findMany({
-        where: baseWhere,
-        select: { id: true },
-      });
-      const documentIds = docIds.map(d => d.id);
+      // Use relation-based filters to avoid materializing document ID arrays in memory
+      const documentRelFilter = { document: { is: baseWhere } };
 
       const [
         totalDocuments,
@@ -1083,26 +1079,14 @@ export class ValidatorController {
         styleViolations,
         recentDocuments,
       ] = await Promise.all([
-        Promise.resolve(documentIds.length),
+        prisma.editorialDocument.count({ where: baseWhere }),
         prisma.editorialDocument.aggregate({
           where: baseWhere,
           _sum: { wordCount: true },
         }),
-        documentIds.length > 0
-          ? prisma.integrityIssue.count({
-              where: { documentId: { in: documentIds } },
-            })
-          : Promise.resolve(0),
-        documentIds.length > 0
-          ? prisma.plagiarismMatch.count({
-              where: { documentId: { in: documentIds } },
-            })
-          : Promise.resolve(0),
-        documentIds.length > 0
-          ? prisma.styleViolation.count({
-              where: { documentId: { in: documentIds } },
-            })
-          : Promise.resolve(0),
+        prisma.integrityIssue.count({ where: documentRelFilter }),
+        prisma.plagiarismMatch.count({ where: documentRelFilter }),
+        prisma.styleViolation.count({ where: documentRelFilter }),
         prisma.editorialDocument.findMany({
           where: baseWhere,
           orderBy: { createdAt: 'desc' },

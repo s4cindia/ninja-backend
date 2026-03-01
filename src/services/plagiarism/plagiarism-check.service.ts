@@ -192,7 +192,7 @@ async function startCheck(
  */
 async function executeCheck(
   jobId: string,
-  _tenantId: string,
+  tenantId: string,
   documentId: string
 ): Promise<void> {
   try {
@@ -201,10 +201,10 @@ async function executeCheck(
       data: { status: 'PROCESSING', startedAt: new Date() },
     });
 
-    // Fetch document content and content type
+    // Fetch document content and content type (scoped by tenantId)
     const [editorialDoc, docContent] = await Promise.all([
-      prisma.editorialDocument.findUnique({
-        where: { id: documentId },
+      prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
         select: { contentType: true },
       }),
       prisma.editorialDocumentContent.findUnique({
@@ -565,23 +565,25 @@ async function reviewMatch(
   reviewedBy: string,
   reviewNotes?: string
 ) {
-  // Verify match belongs to a document owned by tenant
-  const match = await prisma.plagiarismMatch.findFirst({
-    where: { id: matchId, document: { tenantId } },
-    select: { id: true },
-  });
-  if (!match) {
-    throw AppError.notFound('Plagiarism match not found');
-  }
+  return prisma.$transaction(async (tx) => {
+    // Verify match belongs to a document owned by tenant
+    const match = await tx.plagiarismMatch.findFirst({
+      where: { id: matchId, document: { tenantId } },
+      select: { id: true },
+    });
+    if (!match) {
+      throw AppError.notFound('Plagiarism match not found');
+    }
 
-  return prisma.plagiarismMatch.update({
-    where: { id: matchId },
-    data: {
-      status,
-      reviewedBy,
-      reviewedAt: new Date(),
-      reviewNotes: reviewNotes || null,
-    },
+    return tx.plagiarismMatch.update({
+      where: { id: matchId },
+      data: {
+        status,
+        reviewedBy,
+        reviewedAt: new Date(),
+        reviewNotes: reviewNotes || null,
+      },
+    });
   });
 }
 

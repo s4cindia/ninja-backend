@@ -155,21 +155,25 @@ async function executeCheck(
       },
     });
 
+    // Truncate AI-generated strings to prevent oversized DB writes
+    const truncate = (s: string | undefined | null, max = 4096): string | null =>
+      s == null ? null : s.length > max ? s.slice(0, max) + '...' : s;
+
     // Map issues for batch insert
     const allIssueData: Prisma.IntegrityIssueCreateManyInput[] = allIssues.map(issue => ({
       documentId,
       jobId,
       checkType: issue.checkType as Prisma.IntegrityIssueCreateManyInput['checkType'],
       severity: issue.severity as Prisma.IntegrityIssueCreateManyInput['severity'],
-      title: issue.title,
-      description: issue.description,
+      title: truncate(issue.title, 512) || 'Untitled issue',
+      description: truncate(issue.description) || '',
       startOffset: issue.startOffset ?? null,
       endOffset: issue.endOffset ?? null,
-      originalText: issue.originalText ?? null,
-      expectedValue: issue.expectedValue ?? null,
-      actualValue: issue.actualValue ?? null,
-      suggestedFix: issue.suggestedFix ?? null,
-      context: issue.context ?? null,
+      originalText: truncate(issue.originalText),
+      expectedValue: truncate(issue.expectedValue, 1024),
+      actualValue: truncate(issue.actualValue, 1024),
+      suggestedFix: truncate(issue.suggestedFix),
+      context: truncate(issue.context),
       status: 'PENDING',
     }));
 
@@ -333,9 +337,10 @@ async function applyFix(issueId: string, tenantId: string, resolvedBy: string) {
   return prisma.$transaction(async (tx) => {
     const issue = await tx.integrityIssue.findFirst({
       where: { id: issueId, document: { tenantId } },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (!issue) throw AppError.notFound('Integrity issue not found');
+    if (issue.status !== 'PENDING') throw AppError.badRequest(`Issue is already ${issue.status}`);
 
     return tx.integrityIssue.update({
       where: { id: issueId },
@@ -367,9 +372,10 @@ async function ignoreIssue(issueId: string, tenantId: string, resolvedBy: string
   return prisma.$transaction(async (tx) => {
     const issue = await tx.integrityIssue.findFirst({
       where: { id: issueId, document: { tenantId } },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (!issue) throw AppError.notFound('Integrity issue not found');
+    if (issue.status !== 'PENDING') throw AppError.badRequest(`Issue is already ${issue.status}`);
 
     return tx.integrityIssue.update({
       where: { id: issueId },
