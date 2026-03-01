@@ -40,6 +40,7 @@ class NotificationService {
     return prisma.notification.findMany({
       where: { userId, tenantId, read: false },
       orderBy: { createdAt: 'desc' },
+      take: 50,
     });
   }
 
