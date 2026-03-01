@@ -10,7 +10,7 @@ import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
 import { startWorkers, stopWorkers } from './workers';
-import { startWorkflowRecovery, stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
+import { stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
 import { websocketService } from './services/workflow/websocket.service';
