@@ -7,6 +7,7 @@ import { remediationService } from '../epub/remediation.service';
 import { autoRemediationService } from '../epub/auto-remediation.service';
 import { sseService } from '../../sse/sse.service';
 import { emailService } from '../email/email.service';
+import { notificationService } from '../notification/notification.service';
 
 class BatchOrchestratorService {
   async createBatch(
@@ -103,12 +104,14 @@ class BatchOrchestratorService {
         data: { status: 'FAILED', completedAt: new Date() },
       }).catch(() => {});
 
-      // Send failure email (non-blocking)
+      // Send failure email + in-app notification (non-blocking)
       prisma.batch.findUnique({
         where: { id: batchId },
         include: { user: { select: { email: true, firstName: true, lastName: true } } },
       }).then((failedBatch) => {
-        if (failedBatch?.user) {
+        if (!failedBatch) return;
+
+        if (failedBatch.user) {
           emailService.sendBatchFailureEmail({
             userName: `${failedBatch.user.firstName} ${failedBatch.user.lastName}`.trim(),
             userEmail: failedBatch.user.email,
@@ -118,6 +121,13 @@ class BatchOrchestratorService {
             resultsUrl: `${process.env.APP_URL || ''}/batch/${batchId}`,
           }).catch((emailErr: Error) => logger.error(`[Batch ${batchId}] Failed to send failure email: ${emailErr.message}`));
         }
+
+        notificationService.createBatchFailureNotification(
+          { id: batchId, name: failedBatch.name },
+          failedBatch.userId,
+          failedBatch.tenantId,
+          errMsg
+        ).catch((notifErr: Error) => logger.error(`[Batch ${batchId}] Failed to create failure notification: ${notifErr.message}`));
       }).catch(() => {});
     });
 
@@ -352,6 +362,18 @@ class BatchOrchestratorService {
         }).catch((err: Error) => logger.error(`[Batch ${batchId}] Failed to send completion email: ${err.message}`));
       }
     }).catch((err: Error) => logger.error(`[Batch ${batchId}] Failed to fetch user for completion email: ${err.message}`));
+
+    // Save in-app notification (non-blocking)
+    notificationService.createBatchCompletionNotification(
+      {
+        id: batchId,
+        name: updatedBatch.name,
+        filesRemediated: updatedBatch.filesRemediated,
+        totalIssuesFound: updatedBatch.totalIssuesFound,
+      },
+      batch.userId,
+      batch.tenantId
+    ).catch((err: Error) => logger.error(`[Batch ${batchId}] Failed to create completion notification: ${err.message}`));
   }
 
   private async auditFile(batchId: string, file: BatchFile): Promise<string> {
