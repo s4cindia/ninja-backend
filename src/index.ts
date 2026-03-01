@@ -15,6 +15,8 @@ import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
 import { websocketService } from './services/workflow/websocket.service';
 import { logger } from './lib/logger';
+import { integrityCheckService } from './services/integrity/integrity-check.service';
+import { plagiarismCheckService } from './services/plagiarism/plagiarism-check.service';
 
 const app: Express = express();
 
@@ -83,6 +85,7 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: config.nodeEnv,
     version: config.version,
+    commitSha: process.env.COMMIT_SHA || 'unknown',
     redis: redisAvailable ? 'connected' : 'not_configured',
     workers: redisAvailable ? 'enabled' : 'disabled',
     websocket: {
@@ -127,6 +130,14 @@ const server = app.listen(config.port, '0.0.0.0', () => {
     startWorkflowRecovery();
     logger.info('✅ Workflow recovery scanner started');
   }
+
+  // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
+  integrityCheckService.cleanupStaleJobs().catch(err => {
+    logger.error('Failed to clean up stale integrity check jobs', err as Error);
+  });
+  plagiarismCheckService.cleanupStaleJobs().catch(err => {
+    logger.error('Failed to clean up stale plagiarism check jobs', err as Error);
+  });
 });
 
 const gracefulShutdown = async () => {

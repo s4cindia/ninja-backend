@@ -4,7 +4,7 @@
  */
 
 // Services
-export { EditorialAiClient, editorialAi } from './editorial-ai-client';
+export { EditorialAiClient, editorialAi, getStyleGuideRulesText } from './editorial-ai-client';
 export { DocumentParser, documentParser } from './document-parser';
 export { ReportGenerator, reportGenerator } from './report-generator';
 

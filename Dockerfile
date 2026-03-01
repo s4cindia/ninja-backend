@@ -59,15 +59,17 @@ RUN npm rebuild sharp --platform=linux --arch=x64 \
     && npx prisma generate \
     && chown -R nodejs:nodejs /app/lib /app/node_modules/.prisma
 
+ARG COMMIT_SHA=unknown
 ENV EPUBCHECK_PATH=/app/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV COMMIT_SHA=$COMMIT_SHA
 
 USER nodejs
 EXPOSE 3000
 
-# Faster health checks: 10s interval, 2 retries, 10s start period
-HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=2 \
+# Health checks with generous start period to avoid premature unhealthy status
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
 CMD ["node", "dist/index.js"]
