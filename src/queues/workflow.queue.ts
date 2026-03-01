@@ -4,6 +4,8 @@ import { logger } from '../lib/logger';
 import { websocketService } from '../services/workflow/websocket.service';
 import prisma from '../lib/prisma';
 import { config } from '../config';
+import { emailService } from '../services/email/email.service';
+import { notificationService } from '../services/notification/notification.service';
 
 interface WorkflowJobData {
   workflowId: string;
@@ -76,38 +78,127 @@ export function startWorkflowWorker(): Worker {
 
       logger.info(`[Queue Worker] Completed ${event} for workflow ${workflowId}`);
 
-      // Emit batch progress if this workflow is part of a batch
-      if (config.features.enableWebSocket && config.features.emitBatchProgress) {
-        const workflow = await prisma.workflowInstance.findUnique({
-          where: { id: workflowId },
-          select: { batchId: true },
+      // Check if this workflow is part of a batch
+      const workflow = await prisma.workflowInstance.findUnique({
+        where: { id: workflowId },
+        select: { batchId: true },
+      });
+
+      if (workflow?.batchId) {
+        const batchId = workflow.batchId;
+
+        const batchStats = await prisma.workflowInstance.groupBy({
+          by: ['currentState'],
+          where: { batchId },
+          _count: true,
         });
 
-        if (workflow?.batchId) {
-          const batchStats = await prisma.workflowInstance.groupBy({
-            by: ['currentState'],
-            where: { batchId: workflow.batchId },
-            _count: true,
-          });
+        const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+        const total = batchStats.reduce((sum, s) => sum + s._count, 0);
+        const completed = batchStats.find(s => s.currentState === 'COMPLETED')?._count ?? 0;
+        const failed = batchStats.find(s => s.currentState === 'FAILED')?._count ?? 0;
+        const terminalCount = batchStats
+          .filter(s => TERMINAL_STATES.has(s.currentState))
+          .reduce((sum, s) => sum + s._count, 0);
 
-          const total = batchStats.reduce((sum, s) => sum + s._count, 0);
-          const completed = batchStats.find(s => s.currentState === 'COMPLETED')?._count || 0;
-          const failed = batchStats.find(s => s.currentState === 'FAILED')?._count || 0;
-
+        // Emit batch progress via WebSocket if enabled
+        if (config.features.enableWebSocket && config.features.emitBatchProgress) {
           const currentStages: Record<string, number> = {};
           batchStats.forEach(s => {
-            if (s.currentState !== 'COMPLETED' && s.currentState !== 'FAILED') {
+            if (!TERMINAL_STATES.has(s.currentState)) {
               currentStages[s.currentState] = s._count;
             }
           });
 
           websocketService.emitBatchProgress({
-            batchId: workflow.batchId,
+            batchId,
             completed,
             total,
             currentStages,
             failedCount: failed,
           });
+        }
+
+        // Detect batch completion and send email + in-app notifications (idempotent — concurrency 3)
+        if (total > 0 && terminalCount === total) {
+          const isFailed = completed === 0;
+          const { count } = await prisma.batchWorkflow.updateMany({
+            where: { id: batchId, status: { notIn: ['COMPLETED', 'CANCELLED', 'FAILED'] } },
+            data: { status: isFailed ? 'FAILED' : 'COMPLETED', completedAt: new Date() },
+          });
+
+          if (count > 0) {
+            // First worker to detect completion — send notifications
+            const batchRecord = await prisma.batchWorkflow.findUnique({
+              where: { id: batchId },
+              include: {
+                user: { select: { email: true, firstName: true, lastName: true, tenantId: true } },
+              },
+            });
+
+            if (batchRecord?.user) {
+              const { email, firstName, lastName, tenantId } = batchRecord.user;
+              const userName = `${firstName ?? ''} ${lastName ?? ''}`.trim() || email;
+              const resultsUrl = `${process.env.APP_URL ?? ''}/workflow/batch/${batchId}`;
+
+              if (isFailed) {
+                const errorMsg = `${failed} of ${total} workflow(s) failed or were cancelled.`;
+
+                emailService.sendBatchFailureEmail({
+                  userName,
+                  userEmail: email,
+                  batchName: batchRecord.name,
+                  batchId,
+                  errorMessage: errorMsg,
+                  resultsUrl,
+                }).catch((err: Error) =>
+                  logger.error(`[Queue Worker] Failed to send failure email for batch ${batchId}: ${err.message}`)
+                );
+
+                notificationService.createNotification({
+                  userId: batchRecord.createdBy,
+                  tenantId,
+                  type: 'BATCH_FAILED',
+                  title: 'Batch Processing Failed',
+                  message: `Your batch "${batchRecord.name}" encountered errors: ${errorMsg}`,
+                  data: { batchId, batchName: batchRecord.name, error: errorMsg },
+                  link: `/workflow/batch/${batchId}`,
+                }).catch((err: Error) =>
+                  logger.error(`[Queue Worker] Failed to create failure notification for batch ${batchId}: ${err.message}`)
+                );
+              } else {
+                emailService.sendBatchCompletionEmail({
+                  userName,
+                  userEmail: email,
+                  batchName: batchRecord.name,
+                  batchId,
+                  totalFiles: total,
+                  filesSuccessful: completed,
+                  filesFailed: failed,
+                  totalIssues: 0,
+                  autoFixed: 0,
+                  quickFixes: 0,
+                  manualFixes: 0,
+                  processingTime: 'N/A',
+                  resultsUrl,
+                }).catch((err: Error) =>
+                  logger.error(`[Queue Worker] Failed to send completion email for batch ${batchId}: ${err.message}`)
+                );
+
+                notificationService.createNotification({
+                  userId: batchRecord.createdBy,
+                  tenantId,
+                  type: 'BATCH_COMPLETED',
+                  title: 'Batch Processing Complete',
+                  message: `Your batch "${batchRecord.name}" completed. ${completed} of ${total} workflow(s) succeeded.`,
+                  data: { batchId, batchName: batchRecord.name, completed, total, failed },
+                  link: `/workflow/batch/${batchId}`,
+                }).catch((err: Error) =>
+                  logger.error(`[Queue Worker] Failed to create completion notification for batch ${batchId}: ${err.message}`)
+                );
+              }
+            }
+          }
         }
       }
     },
