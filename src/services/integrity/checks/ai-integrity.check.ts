@@ -206,8 +206,8 @@ function buildUserPrompt(
 ): string {
   return `DOCUMENT TYPE: ${contentType}
 
-DOCUMENT STRUCTURE:
-- ${structure.figureCount} figures, ${structure.tableCount} tables, ${structure.equationCount} equations, ${structure.sectionCount} sections
+DOCUMENT METADATA:
+- You MUST determine figure, table, and equation counts yourself by reading the document text. Do NOT rely on any pre-computed counts.
 - Reference list: ${structure.hasReferenceList ? 'yes' : 'no'}${structure.referenceEntryCount > 0 ? ` (${structure.referenceEntryCount} entries)` : ''}
 - Table of contents: ${structure.hasTOC ? 'yes' : 'no'}
 - Footnotes: ${structure.hasFootnotes ? 'yes' : 'no'}
@@ -237,9 +237,9 @@ ${structure.inTextCitations.length > 0 && structure.referenceEntryCount > 0 ? `-
 - Non-sequential citation order is normal and must NEVER be flagged.
 
 WHAT TO CHECK:
-- References to non-existent items (e.g., "See Table 5" but Table 5 doesn't exist in the document)
-- Items that exist but are never referenced (orphaned figures/tables/equations)
-- Gaps or duplicates in numbering sequences (e.g., Table 1, Table 3 — Table 2 missing)
+- References to non-existent items: If the body text mentions "Table 2" or "(Figure 2)", check that a caption like "Table 2." or "Figure 2." actually exists elsewhere in the document. A reference in running text like "(Table 2)" does NOT count as a definition — there must be a separate caption/label.
+- Items that exist (have captions) but are never referenced in the body text (orphaned figures/tables/equations)
+- Gaps or duplicates in numbering sequences (e.g., Table 1 caption exists, Table 3 caption exists, but no Table 2 caption)
 - Broken cross-references ("See Section X" but Section X doesn't exist)
 - Heading hierarchy issues (skipped levels like H1 → H3, missing top-level heading)
 - Inconsistent abbreviation usage (abbreviation used before it is defined, or never defined)
