@@ -1,8 +1,11 @@
--- CreateEnum
-CREATE TYPE "NotificationType" AS ENUM ('BATCH_COMPLETED', 'BATCH_FAILED', 'JOB_COMPLETED', 'JOB_FAILED', 'SYSTEM_ALERT');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "NotificationType" AS ENUM ('BATCH_COMPLETED', 'BATCH_FAILED', 'JOB_COMPLETED', 'JOB_FAILED', 'SYSTEM_ALERT');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateTable
-CREATE TABLE "notifications" (
+CREATE TABLE IF NOT EXISTS "notifications" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
@@ -20,10 +23,13 @@ CREATE TABLE "notifications" (
 );
 
 -- CreateIndex
-CREATE INDEX "notifications_userId_read_idx" ON "notifications"("userId", "read");
+CREATE INDEX IF NOT EXISTS "notifications_userId_read_idx" ON "notifications"("userId", "read");
 
 -- CreateIndex
-CREATE INDEX "notifications_tenantId_idx" ON "notifications"("tenantId");
+CREATE INDEX IF NOT EXISTS "notifications_tenantId_idx" ON "notifications"("tenantId");
 
--- AddForeignKey
-ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey (idempotent)
+DO $$ BEGIN
+  ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
