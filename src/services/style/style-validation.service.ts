@@ -350,7 +350,8 @@ Analyze this text thoroughly against the style guide rules above. For EACH viola
   "originalText": "the exact problematic text from the document",
   "suggestedFix": "the corrected version",
   "explanation": "brief explanation of why this is a violation",
-  "severity": "error | warning | suggestion"
+  "severity": "error | warning | suggestion",
+  "confidence": "0-100 integer, how confident you are this is a real violation"
 }
 
 CRITICAL RULES TO AVOID FALSE POSITIVES — READ CAREFULLY:
@@ -396,6 +397,7 @@ Return a JSON array. Return [] if no issues found.`;
               suggestedFix: string;
               explanation: string;
               severity: string;
+              confidence?: number;
             }>>(prompt, {
               model: 'sonnet',
               temperature: 0.1,
@@ -462,10 +464,15 @@ MANDATORY OVERRIDES (these override ANY conflicting style guide rules):
                 }
 
                 // Find offset of originalText in the full document text
+                // Skip violations that can't be located — unfindable issues frustrate users
                 const searchStart = chunk.offset;
                 const searchRegion = text.slice(searchStart, searchStart + chunk.text.length + 200);
                 const foundIdx = searchRegion.indexOf(v.originalText);
-                const startOffset = foundIdx >= 0 ? searchStart + foundIdx : searchStart;
+                if (foundIdx < 0) {
+                  logger.debug(`[Style Validation] Skipping unlocatable violation — ${v.rule}: "${v.originalText.slice(0, 60)}"`);
+                  continue;
+                }
+                const startOffset = searchStart + foundIdx;
                 const endOffset = startOffset + (v.originalText?.length || 0);
 
                 allMatches.push({
@@ -480,6 +487,7 @@ MANDATORY OVERRIDES (these override ANY conflicting style guide rules):
                   explanation: v.explanation,
                   source: 'AI',
                   aiSeverity: v.severity,
+                  confidence: typeof v.confidence === 'number' ? Math.max(0, Math.min(100, v.confidence)) : undefined,
                 });
               }
               logger.info(`[Style Validation] Chunk ${i + 1}/${chunks.length}: ${chunkViolations.length} raw, ${allMatches.length} after filtering`);
@@ -535,6 +543,7 @@ MANDATORY OVERRIDES (these override ANY conflicting style guide rules):
           paragraphIndex: match.lineNumber ?? 0,
           originalText: match.matchedText,
           suggestedText: match.suggestedFix || null,
+          confidence: match.confidence ?? null,
           status: 'PENDING' as const,
           source: (match.source || 'BUILT_IN') as 'AI' | 'BUILT_IN' | 'HOUSE',
         }))

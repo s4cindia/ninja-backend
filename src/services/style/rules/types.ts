@@ -37,6 +37,7 @@ export interface RuleMatch {
   explanation?: string;
   source?: ViolationSourceType;  // Where the violation was detected from
   aiSeverity?: string;  // Raw severity from AI response (error|warning|suggestion)
+  confidence?: number;  // 0-100 confidence score from AI
 }
 
 export interface RuleContext {

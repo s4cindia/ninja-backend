@@ -311,8 +311,13 @@ async function executeCheck(
       for (const match of detectedMatches) {
         try {
           // Find the DB chunk that contains this match (for sourceChunkId)
+          // Skip matches that can't be located in the document — unfindable matches frustrate users
           const passageOffset = fullText.indexOf(match.passageFromDocument, aiChunk.offset);
-          const matchOffset = passageOffset >= 0 ? passageOffset : aiChunk.offset;
+          if (passageOffset < 0) {
+            logger.debug(`[PlagiarismCheck] Skipping unlocatable match — "${match.passageFromDocument.slice(0, 60)}"`);
+            continue;
+          }
+          const matchOffset = passageOffset;
           const dbChunk = dbChunks.find(c => c.startOffset <= matchOffset && c.endOffset >= matchOffset) || dbChunks[0];
 
           const sourceDescription = [

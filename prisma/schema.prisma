@@ -1229,6 +1229,7 @@ model StyleViolation {
 
   originalText  String
   suggestedText String?
+  confidence    Float?
 
   status        ViolationStatus @default(PENDING)
   source        ViolationSource @default(BUILT_IN)  // Where the violation was detected from
@@ -1744,6 +1745,7 @@ model IntegrityIssue {
   actualValue   String?
   suggestedFix  String?            @db.Text
   context       String?            @db.Text
+  confidence    Float?
   status        ViolationStatus    @default(PENDING)
   resolvedAt    DateTime?
   resolvedBy    String?

@@ -26,6 +26,7 @@ export interface CheckResult {
     actualValue?: string;
     suggestedFix?: string;
     context?: string;
+    confidence?: number;
   }>;
   metadata: Record<string, unknown>;
 }
@@ -174,6 +175,7 @@ async function executeCheck(
       actualValue: truncate(issue.actualValue, 1024),
       suggestedFix: truncate(issue.suggestedFix),
       context: truncate(issue.context),
+      confidence: issue.confidence ?? null,
       status: 'PENDING',
     }));
 

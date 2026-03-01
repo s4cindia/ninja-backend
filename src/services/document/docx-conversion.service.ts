@@ -1151,9 +1151,14 @@ export async function applyRevisionMarksToDocx(
 
         // Rebuild: keep text before/after the placeholder in their own runs, splice in revision marks
         // Include lastRPr in the after-segment run so the trailing text retains original formatting
-        const replacement = `${openTag}${before}${closeTag}</w:r>` +
+        // Always use xml:space="preserve" on before/after <w:t> tags so Word doesn't trim
+        // leading/trailing spaces that result from splitting the original text around revision marks
+        const preserveTag = openTag.includes('xml:space="preserve"')
+          ? openTag
+          : openTag.replace('<w:t', '<w:t xml:space="preserve"');
+        const replacement = `${preserveTag}${before}${closeTag}</w:r>` +
           delXml + insXml +
-          `<w:r>${lastRPr}${openTag}${after}${closeTag}`;
+          `<w:r>${lastRPr}${preserveTag}${after}${closeTag}`;
 
         documentXml = documentXml.replace(fullMatch, replacement);
       }
@@ -1291,7 +1296,11 @@ function replaceTextAcrossRuns(
       const beforeText = seg.text.substring(0, startInfo.charIndex);
       const afterText = seg.text.substring(endInfo.charIndex + 1);
       const newText = beforeText + replacement + afterText;
-      const newTag = seg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${newText}</w:t>`);
+      // Ensure xml:space="preserve" when text has leading/trailing spaces
+      let newTag = seg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${newText}</w:t>`);
+      if ((newText.startsWith(' ') || newText.endsWith(' ')) && !newTag.includes('xml:space="preserve"')) {
+        newTag = newTag.replace('<w:t>', '<w:t xml:space="preserve">');
+      }
       modifiedXml = modifiedXml.substring(0, seg.start) + newTag + modifiedXml.substring(seg.end);
       count++;
     } else {
@@ -1303,8 +1312,11 @@ function replaceTextAcrossRuns(
       const afterText = lastSeg.text.substring(endInfo.charIndex + 1);
 
       // Work backwards to preserve positions
-      // 1. Modify last segment
-      const newLastTag = lastSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${afterText}</w:t>`);
+      // 1. Modify last segment — ensure xml:space="preserve" for leading spaces
+      let newLastTag = lastSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${afterText}</w:t>`);
+      if (afterText.startsWith(' ') && !newLastTag.includes('xml:space="preserve"')) {
+        newLastTag = newLastTag.replace('<w:t>', '<w:t xml:space="preserve">');
+      }
       modifiedXml = modifiedXml.substring(0, lastSeg.start) + newLastTag + modifiedXml.substring(lastSeg.end);
 
       // 2. Clear middle segments
@@ -1314,8 +1326,12 @@ function replaceTextAcrossRuns(
         modifiedXml = modifiedXml.substring(0, midSeg.start) + newMidTag + modifiedXml.substring(midSeg.end);
       }
 
-      // 3. Modify first segment (put placeholder here)
-      const newFirstTag = firstSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${beforeText}${replacement}</w:t>`);
+      // 3. Modify first segment (put replacement here) — ensure xml:space="preserve" for trailing spaces
+      const firstText = beforeText + replacement;
+      let newFirstTag = firstSeg.fullMatch.replace(/>([\s\S]*?)<\/w:t>/, `>${firstText}</w:t>`);
+      if (firstText.endsWith(' ') && !newFirstTag.includes('xml:space="preserve"')) {
+        newFirstTag = newFirstTag.replace('<w:t>', '<w:t xml:space="preserve">');
+      }
       modifiedXml = modifiedXml.substring(0, firstSeg.start) + newFirstTag + modifiedXml.substring(firstSeg.end);
       count++;
     }
