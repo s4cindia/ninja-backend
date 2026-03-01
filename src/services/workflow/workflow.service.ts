@@ -56,7 +56,13 @@ class WorkflowService {
     event: string,
     payload?: Record<string, unknown>,
   ): Promise<WorkflowInstance> {
-    const instance = await prisma.workflowInstance.findUnique({ where: { id: workflowId } });
+    let instance = await prisma.workflowInstance.findUnique({ where: { id: workflowId } });
+    if (!instance) {
+      // Retry once after a brief delay — transient pool issue under concurrency can cause
+      // a valid row to appear missing on the first query attempt.
+      await new Promise(r => setTimeout(r, 200));
+      instance = await prisma.workflowInstance.findUnique({ where: { id: workflowId } });
+    }
     if (!instance) {
       const err = new Error(`Workflow ${workflowId} not found`);
       (err as NodeJS.ErrnoException & { statusCode: number }).statusCode = 404;
