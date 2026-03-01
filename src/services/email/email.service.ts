@@ -27,6 +27,16 @@ interface BatchFailureEmailData {
   resultsUrl: string;
 }
 
+interface BatchHITLEmailData {
+  userName: string;
+  userEmail: string;
+  batchName: string;
+  batchId: string;
+  gateName: string;
+  waitingCount: number;
+  reviewUrl: string;
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
   private from: string;
@@ -66,6 +76,17 @@ class EmailService {
       html: this.buildCompletionHtml(data),
     });
     logger.info(`[Email] Batch completion email sent to ${data.userEmail} for batch ${data.batchId}`);
+  }
+
+  async sendBatchHITLEmail(data: BatchHITLEmailData): Promise<void> {
+    await this.transporter.sendMail({
+      from: `"Ninja Platform" <${this.from}>`,
+      to: data.userEmail,
+      subject: `Action Required: ${data.gateName} - ${data.batchName}`,
+      text: this.buildHITLText(data),
+      html: this.buildHITLHtml(data),
+    });
+    logger.info(`[Email] HITL gate email sent to ${data.userEmail} for batch ${data.batchId} (${data.gateName})`);
   }
 
   async sendBatchFailureEmail(data: BatchFailureEmailData): Promise<void> {
@@ -180,6 +201,67 @@ Processing Summary:
 View Results: ${data.resultsUrl}
 
 You can now generate ACR/VPAT reports, export your files, or apply quick-fixes.
+
+---
+This is an automated notification from Ninja Platform.`;
+  }
+
+  private buildHITLHtml(data: BatchHITLEmailData): string {
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
+    .info-box { background: #fffbeb; border: 1px solid #fde68a; padding: 15px; border-radius: 6px; margin: 20px 0; color: #92400e; }
+    .stat { font-size: 2em; font-weight: 700; color: #d97706; }
+    .cta-button { display: inline-block; background: #f59e0b; color: white !important; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; }
+    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 style="margin: 0;">⚠️ Action Required</h1>
+    <p style="margin: 8px 0 0;">${data.gateName}</p>
+  </div>
+  <div class="content">
+    <p>Hi ${data.userName},</p>
+    <p>Your batch <strong>"${data.batchName}"</strong> has paused and is waiting for your review at the <strong>${data.gateName}</strong> gate.</p>
+    <div class="info-box" style="text-align: center;">
+      <div class="stat">${data.waitingCount}</div>
+      <div>file(s) waiting for ${data.gateName}</div>
+    </div>
+    <p>Please log in to review and approve to continue processing.</p>
+    <p style="text-align: center;">
+      <a href="${data.reviewUrl}" class="cta-button">Review Now</a>
+    </p>
+    <p style="color: #6b7280; font-size: 14px;">
+      Processing will remain paused until you complete this review step.
+    </p>
+  </div>
+  <div class="footer">
+    <p>This is an automated notification from Ninja Platform.</p>
+  </div>
+</body>
+</html>`;
+  }
+
+  private buildHITLText(data: BatchHITLEmailData): string {
+    return `Action Required: ${data.gateName}
+
+Hi ${data.userName},
+
+Your batch "${data.batchName}" has paused at the ${data.gateName} gate.
+
+${data.waitingCount} file(s) are waiting for your review.
+
+Please log in to review and approve to continue processing.
+
+Review Now: ${data.reviewUrl}
+
+Processing will remain paused until you complete this review step.
 
 ---
 This is an automated notification from Ninja Platform.`;
