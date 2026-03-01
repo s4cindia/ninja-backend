@@ -30,6 +30,7 @@ import { remediationService } from '../services/epub/remediation.service';
 
 // Batch HITL clustering
 import { issueClusterService } from '../services/batch/issue-cluster.service';
+import { getFixType } from '../constants/fix-classification';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -581,7 +582,7 @@ class WorkflowController {
           name,
           totalFiles: fileIds.length,
           concurrency,
-          status: 'PENDING',
+          status: 'PROCESSING',
           createdBy: userId,
           ...(policyJson !== undefined ? { autoApprovalPolicy: policyJson } : {}),
         },
@@ -733,6 +734,54 @@ class WorkflowController {
     }
   }
 
+  /** POST /workflows/batch/:batchId/restart-stuck */
+  async restartStuckWorkflows(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { batchId } = req.params;
+      const staleMinutes = Number(req.query['staleMinutes'] ?? 5);
+
+      // Processing states that can hang — excludes HITL waiting states and terminal states
+      const STUCK_STATES = [
+        'UPLOAD_RECEIVED', 'PREPROCESSING',
+        'RUNNING_EPUBCHECK', 'RUNNING_ACE', 'RUNNING_AI_ANALYSIS',
+        'AUTO_REMEDIATION', 'VERIFICATION_AUDIT',
+        'CONFORMANCE_MAPPING', 'ACR_GENERATION',
+      ];
+
+      const staleThreshold = new Date(Date.now() - staleMinutes * 60 * 1000);
+
+      const stuck = await prisma.workflowInstance.findMany({
+        where: {
+          batchId,
+          currentState: { in: STUCK_STATES },
+          startedAt: { lt: staleThreshold },
+        },
+        select: { id: true, currentState: true },
+      });
+
+      if (stuck.length === 0) {
+        res.status(200).json({ success: true, restartedCount: 0, message: 'No stuck workflows found' });
+        return;
+      }
+
+      const { enqueueWorkflowEvent } = await import('../queues/workflow.queue');
+      await Promise.all(stuck.map(w => enqueueWorkflowEvent(w.id, 'REPROCESS_STATE')));
+
+      logger.info(`[Batch] Requeued ${stuck.length} stuck workflows for batch ${batchId}`, {
+        batchId,
+        workflows: stuck.map(w => ({ id: w.id, state: w.currentState })),
+      });
+
+      res.status(200).json({
+        success: true,
+        restartedCount: stuck.length,
+        message: `Requeued ${stuck.length} stuck workflow${stuck.length !== 1 ? 's' : ''}`,
+      });
+    } catch (err) {
+      serverError(res, err, 'RESTART_STUCK_FAILED');
+    }
+  }
+
   /** GET /workflows/batch/:batchId */
   async getBatchDashboard(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
@@ -805,6 +854,21 @@ class WorkflowController {
           };
         });
 
+      const allWorkflows = batch.workflows.map(wf => {
+        const sd = (wf.stateData as Record<string, unknown>) ?? {};
+        const mimeType = wf.file?.mimeType ?? '';
+        return {
+          workflowId: wf.id,
+          filename: wf.file?.originalName ?? wf.file?.filename ?? 'Unknown file',
+          currentState: wf.currentState,
+          fileType: mimeType.includes('pdf') ? 'pdf' : 'epub',
+          jobId:              (sd['jobId']              as string | undefined) ?? null,
+          remediatedFileName: (sd['remediatedFileName'] as string | undefined) ?? null,
+          acrJobId:           (sd['acrJobId']           as string | undefined) ?? null,
+          errorMessage: wf.errorMessage ?? null,
+        };
+      });
+
       // Map each HITL gate state to its URL slug
       const GATE_STATE_TO_SLUG: Record<string, string> = {
         [WorkflowState.AWAITING_AI_REVIEW]: 'ai-review',
@@ -841,6 +905,7 @@ class WorkflowController {
         failedWorkflows,
         completedWorkflows,
         hitlWaiting,
+        allWorkflows,
       });
     } catch (err) {
       serverError(res, err, 'GET_BATCH_DASHBOARD_FAILED');
@@ -881,10 +946,16 @@ class WorkflowController {
 
       const reviewedCount = clusters.filter(c => c.decision !== null).length;
 
+      // Annotate each cluster with its fix type so the frontend can show appropriate buttons
+      const enrichedClusters = clusters.map(c => ({
+        ...c,
+        fixType: getFixType(c.issueCode),
+      }));
+
       res.json({
         batchId,
         gate,
-        clusters,
+        clusters: enrichedClusters,
         reviewedCount,
         totalCount: clusters.length,
         allReviewed: reviewedCount === clusters.length && clusters.length > 0,
@@ -901,10 +972,10 @@ class WorkflowController {
   async updateClusterDecision(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { clusterId } = req.params;
-      const { decision } = req.body as { decision: 'ACCEPT' | 'REJECT' };
+      const { decision } = req.body as { decision: 'ACCEPT' | 'REJECT' | 'AUTO_FIX' };
 
-      if (!['ACCEPT', 'REJECT'].includes(decision)) {
-        res.status(400).json({ success: false, error: { message: "decision must be 'ACCEPT' or 'REJECT'" } });
+      if (!['ACCEPT', 'REJECT', 'AUTO_FIX'].includes(decision)) {
+        res.status(400).json({ success: false, error: { message: "decision must be 'ACCEPT', 'REJECT', or 'AUTO_FIX'" } });
         return;
       }
 
@@ -923,7 +994,8 @@ class WorkflowController {
         },
       });
 
-      res.json({ success: true, cluster: updated });
+      // Include fixType so the frontend cache stays consistent
+      res.json({ success: true, cluster: { ...updated, fixType: getFixType(updated.issueCode) } });
     } catch (err) {
       serverError(res, err, 'UPDATE_CLUSTER_DECISION_FAILED');
     }

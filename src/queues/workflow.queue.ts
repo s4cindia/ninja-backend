@@ -47,14 +47,31 @@ export function startWorkflowWorker(): Worker {
 
       logger.info(`[Queue Worker] Processing ${event} for workflow ${workflowId}`);
 
-      const { workflowService } = await import('../services/workflow/workflow.service');
-      await workflowService.transition(workflowId, event, payload as never);
-
-      logger.info(`[Queue Worker] State transition completed for workflow ${workflowId}`);
-
-      // Trigger workflow agent to process new state
       const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
-      await workflowAgentService.processWorkflowState(workflowId);
+
+      if (event === 'REPROCESS_STATE') {
+        // Re-run the handler for the current state without a state transition.
+        // Used to unstick workflows that were in-flight when the worker crashed.
+        logger.info(`[Queue Worker] Reprocessing current state for workflow ${workflowId}`);
+        await workflowAgentService.processWorkflowState(workflowId);
+      } else {
+        const { workflowService } = await import('../services/workflow/workflow.service');
+        try {
+          await workflowService.transition(workflowId, event, payload as never);
+          logger.info(`[Queue Worker] State transition completed for workflow ${workflowId}`);
+        } catch (transitionErr) {
+          const msg = transitionErr instanceof Error ? transitionErr.message : String(transitionErr);
+          if (msg.startsWith('Invalid transition:')) {
+            // The workflow is already past this state — a previous attempt of this job ran
+            // the transition successfully before the worker was killed/stalled.
+            // Re-run processWorkflowState so the workflow can continue from its current state.
+            logger.warn(`[Queue Worker] Transition already applied (${msg}), re-running processWorkflowState to advance`);
+          } else {
+            throw transitionErr;
+          }
+        }
+        await workflowAgentService.processWorkflowState(workflowId);
+      }
 
       logger.info(`[Queue Worker] Completed ${event} for workflow ${workflowId}`);
 
@@ -96,6 +113,8 @@ export function startWorkflowWorker(): Worker {
     {
       connection: getConnection(),
       concurrency: 3,
+      // Kill jobs that run longer than 10 minutes — audit services can hang on large files
+      lockDuration: 600_000,
     }
   );
 

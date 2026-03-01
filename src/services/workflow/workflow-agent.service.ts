@@ -16,8 +16,6 @@ import { autoRemediationService } from '../epub/auto-remediation.service';
 import { remediationService } from '../epub/remediation.service';
 import { pdfAutoRemediationService } from '../pdf/pdf-auto-remediation.service';
 import { pdfRemediationService } from '../pdf/pdf-remediation.service';
-import { acrGeneratorService } from '../acr/acr-generator.service';
-import type { AuditIssueInput } from '../acr/wcag-issue-mapper.service';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
 import type {
@@ -777,7 +775,9 @@ class WorkflowAgentService {
 
   /**
    * Handle CONFORMANCE_MAPPING state.
-   * Maps accessibility audit issues to WCAG 2.1 criteria for human review.
+   * Uses the same rich analysis engine as the single-file ACR workflow:
+   * getAnalysisForJob → analyzeWcagCriteria + contentDetectionService (N/A suggestions).
+   * This produces per-criterion status values that match the aiConformance enum directly.
    */
   private async handleConformanceMapping(workflow: WorkflowInstance): Promise<void> {
     logger.info(`[WorkflowAgent] Running conformance mapping for workflow ${workflow.id}`);
@@ -787,62 +787,28 @@ class WorkflowAgentService {
       throw new Error('Job ID not found in workflow state');
     }
 
-    // Load the audit job output to get the issues
-    const job = await prisma.job.findUnique({
-      where: { id: stateData.jobId },
-      select: { output: true },
-    });
+    // Use the same analysis engine as the single-file ACR workflow.
+    // forceRefresh=true ensures we re-analyse using the post-remediation job output
+    // (verification audit overwrites job.output with the remediated file's results).
+    const { getAnalysisForJob } = await import('../acr/acr-analysis.service');
+    const analysis = await getAnalysisForJob(stateData.jobId, undefined, true);
 
-    if (!job?.output) {
-      throw new Error('Audit results not found for conformance mapping');
-    }
-
-    const auditData = job.output as Record<string, unknown>;
-
-    // EPUB audits use combinedIssues; PDF audits use issues
-    const rawIssues = (
-      (auditData.combinedIssues as unknown[]) ??
-      (auditData.issues as unknown[]) ??
-      []
-    ) as Array<Record<string, unknown>>;
-
-    // Normalise to AuditIssueInput
-    const auditIssues: AuditIssueInput[] = rawIssues.map((issue, idx) => ({
-      id: (issue.id as string) ?? `issue-${idx}`,
-      ruleId: (issue.ruleId as string) ?? (issue.code as string) ?? 'unknown',
-      impact: (issue.impact as string) ?? (issue.severity as string) ?? 'moderate',
-      message: (issue.message as string) ?? (issue.description as string) ?? '',
-      filePath: (issue.filePath as string) ?? (issue.location as string) ?? '',
-      htmlSnippet: (issue.htmlSnippet as string) ?? null,
-      xpath: (issue.xpath as string) ?? null,
-    }));
-
-    logger.info(`[WorkflowAgent] Mapping ${auditIssues.length} issues to WCAG criteria`);
-
-    // Generate per-criterion conformance using the ACR confidence engine
-    const criteriaResults = await acrGeneratorService.generateConfidenceAnalysis(
-      'VPAT2.5-INT',
-      auditIssues
+    logger.info(
+      `[WorkflowAgent] Conformance analysis: ${analysis.criteria.length} criteria, ` +
+      `supports=${analysis.summary.supports}, partial=${analysis.summary.partiallySupports}, ` +
+      `fail=${analysis.summary.doesNotSupport}, n/a=${analysis.summary.notApplicable}`
     );
 
-    // Map to the shape the ConformanceReviewPage expects
-    const statusToAiConformance = (
-      status: string
-    ): 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable' => {
-      if (status === 'pass') return 'supports';
-      if (status === 'fail') return 'does_not_support';
-      if (status === 'needs_review') return 'partially_supports';
-      return 'not_applicable';
-    };
-
-    const conformanceMappings = criteriaResults.map(c => ({
-      criterionId: c.criterionId,
+    // CriterionAnalysis.status values already match the ConformanceMapping.aiConformance enum —
+    // no conversion needed.
+    const conformanceMappings = analysis.criteria.map(c => ({
+      criterionId: c.id,
       title: c.name,
       level: c.level,
-      aiConformance: statusToAiConformance(c.status),
-      confidence: c.confidenceScore / 100, // store as 0-1
-      reasoning: c.remarks,
-      issueCount: c.issueCount ?? 0,
+      aiConformance: c.status as 'supports' | 'partially_supports' | 'does_not_support' | 'not_applicable',
+      confidence: c.confidence / 100, // convert 0-100 → 0-1 to match existing stateData convention
+      reasoning: [c.recommendation, ...(c.findings ?? [])].filter(Boolean).join(' '),
+      issueCount: c.issueCount ?? c.relatedIssues?.length ?? 0,
     }));
 
     // Persist mappings in workflow state
