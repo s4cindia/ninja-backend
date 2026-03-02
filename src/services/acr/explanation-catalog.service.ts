@@ -426,7 +426,7 @@ class ExplanationCatalogService {
         try {
           const aiEnrichment = await geminiGenerateFn(issueCode, fixType);
           return { ...explanation, ...aiEnrichment };
-        } catch (err) {
+        } catch {
           logger.warn(`[ExplanationCatalog] Gemini enrichment failed for ${issueCode}, using catalog fallback`);
           return explanation;
         }
@@ -447,7 +447,7 @@ class ExplanationCatalogService {
           wcagGuidance: aiExplanation.wcagGuidance ?? 'Refer to WCAG 2.1',
           estimatedTime: aiExplanation.estimatedTime ?? null,
         };
-      } catch (err) {
+      } catch {
         logger.warn(`[ExplanationCatalog] Gemini generation failed for ${issueCode}, using category fallback`);
       }
     }
