@@ -131,6 +131,16 @@ const server = app.listen(config.port, '0.0.0.0', () => {
     logger.info('✅ Workflow recovery scanner started');
   }
 
+  // DEBUG: Log API key details on startup (remove after debugging)
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) {
+    logger.info(`[DEBUG] ANTHROPIC_API_KEY: first20="${anthropicKey.substring(0, 20)}" last5="${anthropicKey.substring(anthropicKey.length - 5)}" length=${anthropicKey.length}`);
+  } else {
+    logger.error('[DEBUG] ANTHROPIC_API_KEY is NOT SET');
+  }
+  const geminiKey = process.env.GEMINI_API_KEY;
+  logger.info(`[DEBUG] GEMINI_API_KEY present: ${!!geminiKey}, length: ${geminiKey?.length || 0}`);
+
   // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
   integrityCheckService.cleanupStaleJobs().catch(err => {
     logger.error('Failed to clean up stale integrity check jobs', err as Error);
