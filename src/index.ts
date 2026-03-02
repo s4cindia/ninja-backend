@@ -131,15 +131,47 @@ const server = app.listen(config.port, '0.0.0.0', () => {
     logger.info('✅ Workflow recovery scanner started');
   }
 
-  // DEBUG: Log API key details on startup (remove after debugging)
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
-  if (anthropicKey) {
-    logger.info(`[DEBUG] ANTHROPIC_API_KEY: first20="${anthropicKey.substring(0, 20)}" last5="${anthropicKey.substring(anthropicKey.length - 5)}" length=${anthropicKey.length}`);
-  } else {
-    logger.error('[DEBUG] ANTHROPIC_API_KEY is NOT SET');
-  }
-  const geminiKey = process.env.GEMINI_API_KEY;
-  logger.info(`[DEBUG] GEMINI_API_KEY present: ${!!geminiKey}, length: ${geminiKey?.length || 0}`);
+  // DEBUG: Network connectivity test (remove after debugging)
+  (async () => {
+    try {
+      const dns = await import('dns');
+      dns.resolve4('api.anthropic.com', (err, addresses) => {
+        if (err) {
+          logger.error(`[DEBUG] DNS resolve api.anthropic.com FAILED: ${err.message}`);
+        } else {
+          logger.info(`[DEBUG] DNS resolve api.anthropic.com OK: ${addresses.join(', ')}`);
+        }
+      });
+
+      const https = await import('https');
+      const testReq = https.request('https://api.anthropic.com/v1/messages', { method: 'HEAD', timeout: 10000 }, (res) => {
+        logger.info(`[DEBUG] HTTPS to api.anthropic.com OK: status=${res.statusCode}`);
+      });
+      testReq.on('error', (err) => {
+        logger.error(`[DEBUG] HTTPS to api.anthropic.com FAILED: ${err.message}`);
+      });
+      testReq.on('timeout', () => {
+        logger.error('[DEBUG] HTTPS to api.anthropic.com TIMEOUT after 10s');
+        testReq.destroy();
+      });
+      testReq.end();
+
+      // Also test google.com to see if ANY external HTTPS works
+      const testReq2 = https.request('https://www.google.com', { method: 'HEAD', timeout: 10000 }, (res) => {
+        logger.info(`[DEBUG] HTTPS to google.com OK: status=${res.statusCode}`);
+      });
+      testReq2.on('error', (err) => {
+        logger.error(`[DEBUG] HTTPS to google.com FAILED: ${err.message}`);
+      });
+      testReq2.on('timeout', () => {
+        logger.error('[DEBUG] HTTPS to google.com TIMEOUT after 10s');
+        testReq2.destroy();
+      });
+      testReq2.end();
+    } catch (err) {
+      logger.error(`[DEBUG] Network test error: ${err}`);
+    }
+  })();
 
   // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
   integrityCheckService.cleanupStaleJobs().catch(err => {
