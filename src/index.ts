@@ -131,45 +131,18 @@ const server = app.listen(config.port, '0.0.0.0', () => {
     logger.info('✅ Workflow recovery scanner started');
   }
 
-  // DEBUG: Network connectivity test (remove after debugging)
+  // Startup health check: make a real Claude API call to verify connectivity
   (async () => {
     try {
-      const dns = await import('dns');
-      dns.resolve4('api.anthropic.com', (err, addresses) => {
-        if (err) {
-          logger.error(`[DEBUG] DNS resolve api.anthropic.com FAILED: ${err.message}`);
-        } else {
-          logger.info(`[DEBUG] DNS resolve api.anthropic.com OK: ${addresses.join(', ')}`);
-        }
-      });
-
-      const https = await import('https');
-      const testReq = https.request('https://api.anthropic.com/v1/messages', { method: 'HEAD', timeout: 10000 }, (res) => {
-        logger.info(`[DEBUG] HTTPS to api.anthropic.com OK: status=${res.statusCode}`);
-      });
-      testReq.on('error', (err) => {
-        logger.error(`[DEBUG] HTTPS to api.anthropic.com FAILED: ${err.message}`);
-      });
-      testReq.on('timeout', () => {
-        logger.error('[DEBUG] HTTPS to api.anthropic.com TIMEOUT after 10s');
-        testReq.destroy();
-      });
-      testReq.end();
-
-      // Also test google.com to see if ANY external HTTPS works
-      const testReq2 = https.request('https://www.google.com', { method: 'HEAD', timeout: 10000 }, (res) => {
-        logger.info(`[DEBUG] HTTPS to google.com OK: status=${res.statusCode}`);
-      });
-      testReq2.on('error', (err) => {
-        logger.error(`[DEBUG] HTTPS to google.com FAILED: ${err.message}`);
-      });
-      testReq2.on('timeout', () => {
-        logger.error('[DEBUG] HTTPS to google.com TIMEOUT after 10s');
-        testReq2.destroy();
-      });
-      testReq2.end();
+      const { claudeService } = await import('./services/ai/claude.service');
+      const result = await claudeService.healthCheck();
+      if (result.healthy) {
+        logger.info(`✅ Claude API health check passed: ${JSON.stringify(result.details)}`);
+      } else {
+        logger.error(`❌ Claude API health check FAILED: ${JSON.stringify(result.details)}`);
+      }
     } catch (err) {
-      logger.error(`[DEBUG] Network test error: ${err}`);
+      logger.error(`❌ Claude API health check error: ${err}`);
     }
   })();
 

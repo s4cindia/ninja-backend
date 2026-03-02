@@ -9,6 +9,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import https from 'https';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
 import { claudeRateLimiter } from '../../utils/rate-limiter';
@@ -41,7 +42,22 @@ class ClaudeService {
         logger.error('[Claude Service] AI service configuration missing');
         throw AppError.internal('AI service unavailable');
       }
-      this.client = new Anthropic({ apiKey });
+
+      // Configure httpAgent to avoid stale connection reuse in ECS/Fargate.
+      // keepAlive=false forces a fresh TCP connection per request, preventing
+      // ETIMEDOUT errors caused by idle connections being closed by NAT/ALB.
+      const agent = new https.Agent({
+        keepAlive: false,
+        timeout: 120_000,
+      });
+
+      this.client = new Anthropic({
+        apiKey,
+        timeout: 120_000,   // 2 minutes per request (default is 10 min)
+        maxRetries: 3,       // Retry transient failures
+        httpAgent: agent,
+      } as ConstructorParameters<typeof Anthropic>[0]);
+      logger.info('[Claude Service] Anthropic client initialized (timeout=120s, maxRetries=3, keepAlive=false)');
     }
     return this.client;
   }
