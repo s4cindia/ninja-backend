@@ -71,12 +71,27 @@ CREATE INDEX "PlagiarismMatch_matchType_idx" ON "PlagiarismMatch"("matchType");
 CREATE INDEX "PlagiarismMatch_classification_idx" ON "PlagiarismMatch"("classification");
 CREATE INDEX "PlagiarismMatch_status_idx" ON "PlagiarismMatch"("status");
 
--- Step 5: Add foreign keys
-ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_documentId_fkey"
-    FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Step 5: Add foreign keys (idempotent via DO blocks)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PlagiarismMatch_documentId_fkey') THEN
+    ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_documentId_fkey"
+      FOREIGN KEY ("documentId") REFERENCES "EditorialDocument"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
-ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_sourceChunkId_fkey"
-    FOREIGN KEY ("sourceChunkId") REFERENCES "EditorialTextChunk"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PlagiarismMatch_sourceChunkId_fkey') THEN
+    ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_sourceChunkId_fkey"
+      FOREIGN KEY ("sourceChunkId") REFERENCES "EditorialTextChunk"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
-ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_matchedChunkId_fkey"
-    FOREIGN KEY ("matchedChunkId") REFERENCES "EditorialTextChunk"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PlagiarismMatch_matchedChunkId_fkey') THEN
+    ALTER TABLE "PlagiarismMatch" ADD CONSTRAINT "PlagiarismMatch_matchedChunkId_fkey"
+      FOREIGN KEY ("matchedChunkId") REFERENCES "EditorialTextChunk"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;

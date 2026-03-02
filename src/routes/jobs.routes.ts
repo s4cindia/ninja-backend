@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { jobController } from '../controllers/job.controller';
 import { confidenceController } from '../controllers/confidence.controller';
+import { explanationController } from '../controllers/explanation.controller';
 import { createJobSchema, listJobsSchema } from '../schemas/job.schemas';
 
 const router = Router();
@@ -43,6 +44,16 @@ router.delete('/:id', (req, res, next) =>
 
 router.delete('/:id/permanent', (req, res, next) =>
   jobController.permanentDelete(req, res, next)
+);
+
+/**
+ * GET /api/v1/jobs/:jobId/issues/:issueCode/explanation
+ * Returns a human-readable explanation for why an issue has its fix type
+ * and what the platform did or what the user must do to address it.
+ * Respects tenant explanationSource setting (hardcoded | gemini | hybrid).
+ */
+router.get('/:jobId/issues/:issueCode/explanation', (req, res, next) =>
+  explanationController.getIssueExplanation(req, res, next)
 );
 
 export default router;
