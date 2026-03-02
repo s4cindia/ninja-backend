@@ -23,29 +23,33 @@ router.get(
 /**
  * PATCH /api/v1/tenant/config/workflow
  * Update workflow configuration for the authenticated tenant.
- * Validates input, merges with existing settings, and clears cache.
- *
- * Request body:
- * {
- *   enabled?: boolean,
- *   hitlGates?: {
- *     AWAITING_AI_REVIEW?: number | null,
- *     AWAITING_REMEDIATION_REVIEW?: number | null,
- *     AWAITING_CONFORMANCE_REVIEW?: number | null,
- *     AWAITING_ACR_SIGNOFF?: number | null
- *   },
- *   autoRetry?: {
- *     enabled?: boolean,
- *     maxRetries?: number,
- *     backoffMs?: number,
- *     retryableStates?: string[]
- *   }
- * }
  */
 router.patch(
   '/workflow',
   authenticate,
   tenantConfigController.updateWorkflowConfig.bind(tenantConfigController)
+);
+
+/**
+ * GET /api/v1/tenant/config/reports
+ * Get current reports configuration for the authenticated tenant.
+ * Returns: { explanationSource: 'hardcoded' | 'gemini' | 'hybrid' }
+ */
+router.get(
+  '/reports',
+  authenticate,
+  tenantConfigController.getReportsConfig.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/reports
+ * Update reports configuration for the authenticated tenant.
+ * Request body: { explanationSource?: 'hardcoded' | 'gemini' | 'hybrid' }
+ */
+router.patch(
+  '/reports',
+  authenticate,
+  tenantConfigController.updateReportsConfig.bind(tenantConfigController)
 );
 
 export default router;

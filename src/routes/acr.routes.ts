@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.middleware';
 import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
 import { acrReportReviewController } from '../controllers/acr-report-review.controller';
+import { acrAnalysisReportController } from '../controllers/acr-analysis-report.controller';
 import { batchAcrGenerateSchema, batchAcrExportSchema } from '../schemas/acr.schemas';
 
 const router = Router();
@@ -112,6 +113,47 @@ router.post(
 router.get(
   '/batch/:batchId/history',
   acrController.getBatchAcrHistory.bind(acrController)
+);
+
+// ===== AI Analysis Report =====
+
+/**
+ * GET /api/v1/acr/reports/shared/:token
+ * Public — no auth required. Validates a share token and returns the report.
+ * Registered before parameterised /:jobId routes to avoid route shadowing.
+ */
+router.get(
+  '/reports/shared/:token',
+  acrAnalysisReportController.getSharedReport.bind(acrAnalysisReportController)
+);
+
+/**
+ * GET /api/v1/acr/reports/:jobId/analysis
+ * Generate and return the comprehensive AI Analysis Report for a job.
+ * Includes explainability data, statistics, and optional AI insights.
+ * Results are cached in Redis for 1 hour.
+ */
+router.get(
+  '/reports/:jobId/analysis',
+  acrAnalysisReportController.getAnalysisReport.bind(acrAnalysisReportController)
+);
+
+/**
+ * POST /api/v1/acr/reports/:jobId/invalidate
+ * Invalidate the cached analysis report for a job.
+ */
+router.post(
+  '/reports/:jobId/invalidate',
+  acrAnalysisReportController.invalidateReport.bind(acrAnalysisReportController)
+);
+
+/**
+ * POST /api/v1/acr/reports/:jobId/share
+ * Create a 7-day shareable token for the report (requires auth).
+ */
+router.post(
+  '/reports/:jobId/share',
+  acrAnalysisReportController.createShareToken.bind(acrAnalysisReportController)
 );
 
 export default router;

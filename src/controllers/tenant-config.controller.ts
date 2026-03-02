@@ -5,11 +5,16 @@ import { workflowConfigService } from '../services/workflow/workflow-config.serv
 import { AppError } from '../utils/app-error';
 import { logger } from '../lib/logger';
 import { z } from 'zod';
+import type { ExplanationSource } from '../services/acr/explanation-catalog.service';
 
 /**
  * Zod schema for workflow configuration updates.
  * Validates structure and types for tenant workflow settings.
  */
+const reportsConfigUpdateSchema = z.object({
+  explanationSource: z.enum(['hardcoded', 'gemini', 'hybrid']).optional(),
+}).strict();
+
 const workflowConfigUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   hitlGates: z.object({
@@ -170,6 +175,99 @@ export class TenantConfigController {
         success: true,
         data: effectiveConfig,
         message: 'Workflow configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get current reports configuration for the authenticated tenant.
+   * Returns merged configuration (tenant settings + defaults).
+   */
+  async getReportsConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const settings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const reports = (settings.reports && typeof settings.reports === 'object')
+        ? (settings.reports as Record<string, unknown>)
+        : {};
+
+      const config = {
+        explanationSource: (reports.explanationSource as ExplanationSource) ?? 'hardcoded',
+      };
+
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update reports configuration for the authenticated tenant.
+   */
+  async updateReportsConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const validationResult = reportsConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid reports configuration: ' + validationResult.error.message);
+      }
+
+      const updates = validationResult.data;
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const currentSettings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const currentReports = (currentSettings.reports && typeof currentSettings.reports === 'object')
+        ? (currentSettings.reports as Record<string, unknown>)
+        : {};
+
+      const updatedReports: Record<string, unknown> = { ...currentReports };
+      if (updates.explanationSource !== undefined) {
+        updatedReports.explanationSource = updates.explanationSource;
+      }
+
+      await prisma.tenant.update({
+        where: { id: req.user.tenantId },
+        data: {
+          settings: {
+            ...currentSettings,
+            reports: updatedReports,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      logger.info(`[Tenant Config] Reports config updated for tenant ${req.user.tenantId}`, { updates });
+
+      const config = {
+        explanationSource: (updatedReports.explanationSource as ExplanationSource) ?? 'hardcoded',
+      };
+
+      res.json({
+        success: true,
+        data: config,
+        message: 'Reports configuration updated successfully',
       });
     } catch (error) {
       next(error);
