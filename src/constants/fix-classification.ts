@@ -11,7 +11,8 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   'EPUB-SEM-001',
   'EPUB-SEM-002',
   'EPUB-STRUCT-003',
-  'EPUB-STRUCT-004',
+  // EPUB-STRUCT-004 excluded: landmark is unreliably placed on cover/front-matter pages
+  // and does not consistently satisfy ACE re-audit — classify as manual
   'EPUB-FIG-001',
   // ACE metadata codes - now auto-fixable
   'METADATA-ACCESSMODE',

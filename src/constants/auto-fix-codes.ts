@@ -8,7 +8,8 @@ export const AUTO_FIXABLE_ISSUE_CODES = new Set([
   'EPUB-IMG-001',
   'EPUB-STRUCT-002',
   'EPUB-STRUCT-003',
-  'EPUB-STRUCT-004',
+  // EPUB-STRUCT-004 excluded: auto-fix targets alphabetically-first file (often cover page)
+  // which does not satisfy ACE validation — must be treated as manual
   'EPUB-NAV-001',
   'EPUB-FIG-001',
 ]);
