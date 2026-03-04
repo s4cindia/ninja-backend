@@ -52,4 +52,25 @@ router.patch(
   tenantConfigController.updateReportsConfig.bind(tenantConfigController)
 );
 
+/**
+ * GET /api/v1/tenant/config/time-metrics
+ * Get time metrics configuration (idleThresholdMinutes, gateBaselines).
+ */
+router.get(
+  '/time-metrics',
+  authenticate,
+  tenantConfigController.getTimeMetricsConfig.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/time-metrics
+ * Update time metrics configuration.
+ * Request body: { idleThresholdMinutes?: number, gateBaselines?: { AI_REVIEW?: number, ... } }
+ */
+router.patch(
+  '/time-metrics',
+  authenticate,
+  tenantConfigController.updateTimeMetricsConfig.bind(tenantConfigController)
+);
+
 export default router;

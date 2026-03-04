@@ -15,6 +15,26 @@ const reportsConfigUpdateSchema = z.object({
   explanationSource: z.enum(['hardcoded', 'gemini', 'hybrid']).optional(),
 }).strict();
 
+const timeMetricsConfigUpdateSchema = z.object({
+  idleThresholdMinutes: z.number().int().min(1).max(60).optional(),
+  gateBaselines: z.object({
+    AI_REVIEW: z.number().int().positive().optional(),
+    REMEDIATION_REVIEW: z.number().int().positive().optional(),
+    CONFORMANCE_REVIEW: z.number().int().positive().optional(),
+    ACR_SIGNOFF: z.number().int().positive().optional(),
+  }).optional(),
+}).strict();
+
+const DEFAULT_TIME_METRICS_CONFIG = {
+  idleThresholdMinutes: 2,
+  gateBaselines: {
+    AI_REVIEW: 15,
+    REMEDIATION_REVIEW: 20,
+    CONFORMANCE_REVIEW: 25,
+    ACR_SIGNOFF: 10,
+  },
+};
+
 const workflowConfigUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   hitlGates: z.object({
@@ -268,6 +288,124 @@ export class TenantConfigController {
         success: true,
         data: config,
         message: 'Reports configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get current time metrics configuration for the authenticated tenant.
+   * Returns tenant settings merged with defaults.
+   */
+  async getTimeMetricsConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const settings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const stored = (settings.timeMetrics && typeof settings.timeMetrics === 'object')
+        ? (settings.timeMetrics as Record<string, unknown>)
+        : {};
+
+      const storedBaselines = (stored.gateBaselines && typeof stored.gateBaselines === 'object')
+        ? (stored.gateBaselines as Record<string, number>)
+        : {};
+
+      const config = {
+        idleThresholdMinutes: (stored.idleThresholdMinutes as number | undefined) ?? DEFAULT_TIME_METRICS_CONFIG.idleThresholdMinutes,
+        gateBaselines: {
+          ...DEFAULT_TIME_METRICS_CONFIG.gateBaselines,
+          ...storedBaselines,
+        },
+      };
+
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update time metrics configuration for the authenticated tenant.
+   */
+  async updateTimeMetricsConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const validationResult = timeMetricsConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid time metrics configuration: ' + validationResult.error.message);
+      }
+
+      const updates = validationResult.data;
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const currentSettings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const currentTimeMetrics = (currentSettings.timeMetrics && typeof currentSettings.timeMetrics === 'object')
+        ? (currentSettings.timeMetrics as Record<string, unknown>)
+        : {};
+
+      const updatedTimeMetrics: Record<string, unknown> = { ...currentTimeMetrics };
+
+      if (updates.idleThresholdMinutes !== undefined) {
+        updatedTimeMetrics.idleThresholdMinutes = updates.idleThresholdMinutes;
+      }
+
+      if (updates.gateBaselines) {
+        const currentBaselines = (currentTimeMetrics.gateBaselines && typeof currentTimeMetrics.gateBaselines === 'object')
+          ? (currentTimeMetrics.gateBaselines as Record<string, number>)
+          : {};
+        updatedTimeMetrics.gateBaselines = { ...currentBaselines, ...updates.gateBaselines };
+      }
+
+      await prisma.tenant.update({
+        where: { id: req.user.tenantId },
+        data: {
+          settings: {
+            ...currentSettings,
+            timeMetrics: updatedTimeMetrics,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      logger.info(`[Tenant Config] Time metrics config updated for tenant ${req.user.tenantId}`, { updates });
+
+      // Return the effective (merged) config
+      const storedBaselines = (updatedTimeMetrics.gateBaselines && typeof updatedTimeMetrics.gateBaselines === 'object')
+        ? (updatedTimeMetrics.gateBaselines as Record<string, number>)
+        : {};
+
+      const effectiveConfig = {
+        idleThresholdMinutes: (updatedTimeMetrics.idleThresholdMinutes as number | undefined) ?? DEFAULT_TIME_METRICS_CONFIG.idleThresholdMinutes,
+        gateBaselines: {
+          ...DEFAULT_TIME_METRICS_CONFIG.gateBaselines,
+          ...storedBaselines,
+        },
+      };
+
+      res.json({
+        success: true,
+        data: effectiveConfig,
+        message: 'Time metrics configuration updated successfully',
       });
     } catch (error) {
       next(error);

@@ -8,6 +8,7 @@ import { enqueueWorkflowEvent } from '../../queues/workflow.queue';
 import { logger } from '../../lib/logger';
 import { websocketService } from './websocket.service';
 import { config } from '../../config';
+import { workflowMetricsService } from '../metrics/workflow-metrics.service';
 
 class WorkflowService {
   async createWorkflow(
@@ -156,6 +157,10 @@ class WorkflowService {
         logger.warn(`[Workflow] WebSocket emit failed for ${workflowId}`, err);
       }
     }
+
+    // Record time metric — fire-and-forget, must never block the transition
+    workflowMetricsService.recordStateTransition(workflowId, fromState, newState, new Date())
+      .catch(err => logger.warn(`[Metrics] recordStateTransition failed for ${workflowId}: ${err.message}`));
 
     return updated;
   }
