@@ -186,10 +186,10 @@ class TimeReportService {
       }
 
       const enteredAt = new Date(ev.timestamp);
-      const exitedAt = nextEv ? new Date(nextEv.createdAt) : null;
+      const exitedAt = nextEv ? new Date(nextEv.timestamp) : null;
       stateTimeline.push({
-        state: ev.toState,
-        type: classifyState(ev.toState),
+        state: ev.toState ?? '',
+        type: classifyState(ev.toState ?? ''),
         enteredAt: enteredAt.toISOString(),
         exitedAt: exitedAt ? exitedAt.toISOString() : null,
         durationMs: exitedAt ? exitedAt.getTime() - enteredAt.getTime() : null,
