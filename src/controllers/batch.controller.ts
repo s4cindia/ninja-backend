@@ -506,12 +506,15 @@ class BatchController {
       const displayQuickFix = quickFixIssues.length;
       const displayManual = manualIssues.length;
       const displayEscalated = escalatedToManual;
-      
+
+      const freshRemainingQuickFix = Math.max(0, displayQuickFix - (file.quickFixesApplied || 0));
+
       // Update database if values don't match (fixes legacy data with old counting logic)
-      const needsUpdate = 
+      const needsUpdate =
         file.issuesAutoFixed !== displayAutoFixed ||
         file.issuesQuickFix !== displayQuickFix ||
-        file.issuesManual !== displayManual;
+        file.issuesManual !== displayManual ||
+        (file.remainingQuickFix ?? -1) !== freshRemainingQuickFix;
       
       if (needsUpdate && file.status === 'REMEDIATED') {
         logger.info(`[getBatchFile] Updating file ${fileId} counts: AutoFixed ${file.issuesAutoFixed}->${displayAutoFixed}, QuickFix ${file.issuesQuickFix}->${displayQuickFix}, Manual ${file.issuesManual}->${displayManual}`);
@@ -543,7 +546,7 @@ class BatchController {
         issuesManual: displayManual,
         escalatedToManual: displayEscalated,
         quickFixesApplied: file.quickFixesApplied || (quickFixIssues as Array<Record<string, unknown>>).filter(i => i.status === 'completed').length,
-        remainingQuickFix: file.remainingQuickFix ?? (quickFixIssues as Array<Record<string, unknown>>).filter(i => i.status !== 'completed').length,
+        remainingQuickFix: freshRemainingQuickFix,
         remainingManual: file.remainingManual ?? (manualIssues as Array<Record<string, unknown>>).filter(i => i.status !== 'completed').length,
         quickFixCount: displayQuickFix,
         manualCount: displayManual,

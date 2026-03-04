@@ -1069,15 +1069,58 @@ export const epubController = {
         });
       }
 
-      const input = job.input as { fileName?: string };
-      const originalFileName = input?.fileName || 'upload.epub';
-      const remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+      const input = job.input as { fileName?: string; filename?: string; fileId?: string; workflowId?: string };
+      let originalFileName = input?.fileName || input?.filename || 'upload.epub';
+      let remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
 
       // Try to load from remediated file first (to preserve previous fixes)
       // Fall back to original if no remediated file exists yet
       let epubBuffer = await fileStorageService.getRemediatedFile(jobId, remediatedFileName);
       if (!epubBuffer) {
         epubBuffer = await fileStorageService.getFile(jobId, originalFileName);
+      }
+
+      // Agentic workflow fallback: file is stored via the File model (S3 in staging, local path in dev)
+      if (!epubBuffer && input?.fileId) {
+        const agenticFile = await prisma.file.findUnique({
+          where: { id: input.fileId },
+          select: { storageType: true, storagePath: true, path: true, tenantId: true, filename: true, originalName: true },
+        });
+        if (agenticFile) {
+          originalFileName = agenticFile.originalName || agenticFile.filename;
+          remediatedFileName = originalFileName.replace(/\.epub$/i, '_remediated.epub');
+
+          // Prefer already-remediated version from workflow stateData if it exists
+          if (input.workflowId) {
+            const wf = await prisma.workflowInstance.findUnique({
+              where: { id: input.workflowId },
+              select: { stateData: true },
+            });
+            const sd = (wf?.stateData as { remediatedFilePath?: string }) ?? {};
+            if (sd.remediatedFilePath) {
+              try {
+                if (agenticFile.storageType === 'S3') {
+                  epubBuffer = await s3Service.getFileBuffer(sd.remediatedFilePath);
+                } else {
+                  const fsModule = await import('fs/promises');
+                  epubBuffer = await fsModule.readFile(sd.remediatedFilePath);
+                }
+              } catch { /* fall through to original */ }
+            }
+          }
+
+          // Fall back to original file
+          if (!epubBuffer) {
+            if (agenticFile.storageType === 'S3' && agenticFile.storagePath) {
+              epubBuffer = await s3Service.getFileBuffer(agenticFile.storagePath);
+            } else if (agenticFile.path) {
+              try {
+                const fsModule = await import('fs/promises');
+                epubBuffer = Buffer.from(await fsModule.readFile(agenticFile.path));
+              } catch { /* not found */ }
+            }
+          }
+        }
       }
 
       if (!epubBuffer) {
