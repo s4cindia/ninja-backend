@@ -1437,6 +1437,41 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
 }
 
 /**
+ * Compute word-level Jaccard similarity between two texts.
+ * Uses multiset word counts so repeated words are handled correctly.
+ * Returns a value between 0 (completely different) and 1 (identical).
+ */
+function computeWordSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+
+  const wordsA = a.split(/\s+/).filter(Boolean);
+  const wordsB = b.split(/\s+/).filter(Boolean);
+  if (!wordsA.length || !wordsB.length) return 0;
+
+  const countA = new Map<string, number>();
+  for (const w of wordsA) countA.set(w, (countA.get(w) || 0) + 1);
+
+  const countB = new Map<string, number>();
+  for (const w of wordsB) countB.set(w, (countB.get(w) || 0) + 1);
+
+  // Intersection: sum of min counts
+  let intersection = 0;
+  for (const [w, count] of countA) {
+    intersection += Math.min(count, countB.get(w) || 0);
+  }
+
+  // Union: sum of max counts
+  const allWords = new Set([...countA.keys(), ...countB.keys()]);
+  let union = 0;
+  for (const w of allWords) {
+    union += Math.max(countA.get(w) || 0, countB.get(w) || 0);
+  }
+
+  return union > 0 ? intersection / union : 0;
+}
+
+/**
  * Decode HTML entities in text extracted from HTML spans.
  */
 function decodeHtmlEntities(text: string): string {
@@ -1560,6 +1595,9 @@ export async function exportWithTrackChanges(
     }
 
     // No track change spans found — check if text was manually edited
+    // by comparing original DOCX text with the current HTML text using
+    // word-level similarity (exact comparison always fails due to
+    // conversion artifacts from the DOCX→HTML roundtrip).
     const zip = await JSZip.loadAsync(originalBuffer);
     const documentXml = await zip.file('word/document.xml')?.async('string');
 
@@ -1574,18 +1612,26 @@ export async function exportWithTrackChanges(
     while ((match = textRunPattern.exec(documentXml)) !== null) {
       xmlTextRuns.push(match[1]);
     }
-    const originalPlainText = xmlTextRuns.join('');
-    const cleanPlainText = decodeHtmlEntities(stripHtmlTags(cleanHtml));
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+    const originalPlainText = normalize(xmlTextRuns.join(''));
+    const cleanPlainText = normalize(decodeHtmlEntities(stripHtmlTags(cleanHtml)));
 
-    if (originalPlainText !== cleanPlainText) {
-      // Text was manually changed without track changes — use Pandoc
-      logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
-      return convertHtmlToDocx(cleanHtml, options);
+    // Use word-level similarity instead of exact match.
+    // The DOCX→HTML→strip-tags roundtrip introduces minor differences
+    // (entities, whitespace, special chars) that make exact comparison
+    // always fail, even when the user hasn't changed anything.
+    const similarity = computeWordSimilarity(originalPlainText, cleanPlainText);
+    logger.info(`[DocxConversion] Text similarity: ${(similarity * 100).toFixed(1)}% (original: ${originalPlainText.length} chars, html: ${cleanPlainText.length} chars)`);
+
+    if (similarity >= 0.95) {
+      // Texts are substantially identical — return original to preserve exact formatting
+      logger.info('[DocxConversion] No significant changes detected, returning original DOCX');
+      return originalBuffer;
     }
 
-    // Texts are identical — return original to preserve exact formatting
-    logger.info('[DocxConversion] No changes detected, returning original DOCX');
-    return originalBuffer;
+    // Text was manually changed without track changes — use Pandoc
+    logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
+    return convertHtmlToDocx(cleanHtml, options);
   } catch (error) {
     logger.warn('[DocxConversion] Track change export failed, falling back to Pandoc:', error);
     return convertHtmlToDocx(cleanHtml, options);
