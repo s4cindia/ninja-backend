@@ -368,7 +368,7 @@ class TimeReportService {
 
     const totalGates = filtered.reduce((s, m) => s + m.gateCount, 0);
     const totalAutoApproved = filtered.reduce((s, m) => s + m.autoApprovedCount, 0);
-    const totalHumanSaved = filtered.reduce((s, m) => s + 0, 0); // populated via batch metrics; placeholder here
+    const totalHumanSaved = filtered.reduce((s, _m) => s + 0, 0); // populated via batch metrics; placeholder here
 
     const completedCount = filtered.filter(m => m.lastState === 'COMPLETED').length;
     const failedCount = filtered.filter(m => m.lastState === 'FAILED').length;
