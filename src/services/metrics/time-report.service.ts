@@ -1,4 +1,5 @@
 import prisma from '../../lib/prisma';
+import type { Prisma } from '@prisma/client';
 
 // State type classification for display
 const MACHINE_STATES = new Set([
@@ -157,8 +158,8 @@ class TimeReportService {
           orderBy: { gateEnteredAt: 'asc' },
         },
         events: {
-          orderBy: { createdAt: 'asc' },
-          select: { fromState: true, toState: true, createdAt: true },
+          orderBy: { timestamp: 'asc' },
+          select: { fromState: true, toState: true, timestamp: true },
         },
       },
     });
@@ -179,12 +180,12 @@ class TimeReportService {
           state: ev.fromState,
           type: classifyState(ev.fromState),
           enteredAt: new Date(workflow.startedAt).toISOString(),
-          exitedAt: new Date(ev.createdAt).toISOString(),
-          durationMs: new Date(ev.createdAt).getTime() - new Date(workflow.startedAt).getTime(),
+          exitedAt: new Date(ev.timestamp).toISOString(),
+          durationMs: new Date(ev.timestamp).getTime() - new Date(workflow.startedAt).getTime(),
         });
       }
 
-      const enteredAt = new Date(ev.createdAt);
+      const enteredAt = new Date(ev.timestamp);
       const exitedAt = nextEv ? new Date(nextEv.createdAt) : null;
       stateTimeline.push({
         state: ev.toState,
@@ -322,7 +323,7 @@ class TimeReportService {
    * Returns aggregate KPIs and per-workflow summary rows.
    */
   async getAggregateReport(filters: AggregateFilters): Promise<AggregateReport> {
-    const where: Parameters<typeof prisma.workflowTimeMetric.findMany>[0]['where'] = {};
+    const where: Prisma.WorkflowTimeMetricWhereInput = {};
 
     if (filters.tenantId) where.tenantId = filters.tenantId;
     if (filters.workflowType) where.workflowType = filters.workflowType;
