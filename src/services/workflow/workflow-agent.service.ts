@@ -24,6 +24,7 @@ import type {
   PolicyConditions,
 } from '../../types/workflow-contracts';
 import { categorizeIssue } from './issue-categorizer.service';
+import { workflowMetricsService } from '../metrics/workflow-metrics.service';
 
 /**
  * Workflow automation agent service.
@@ -493,6 +494,8 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'AI_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving AI review for batch workflow ${workflow.id}`);
+      workflowMetricsService.recordAutoApproval(workflow.id, 'AI_REVIEW', new Date())
+        .catch(err => logger.warn(`[Metrics] recordAutoApproval failed: ${err.message}`));
       await enqueueWorkflowEvent(workflow.id, 'AI_ACCEPTED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
@@ -660,6 +663,8 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'REMEDIATION_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving remediation review for batch workflow ${workflow.id}`);
+      workflowMetricsService.recordAutoApproval(workflow.id, 'REMEDIATION_REVIEW', new Date())
+        .catch(err => logger.warn(`[Metrics] recordAutoApproval failed: ${err.message}`));
       await enqueueWorkflowEvent(workflow.id, 'REMEDIATION_APPROVED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
@@ -836,6 +841,8 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'CONFORMANCE_REVIEW')) {
       logger.info(`[WorkflowAgent] Auto-approving conformance review for batch workflow ${workflow.id}`);
+      workflowMetricsService.recordAutoApproval(workflow.id, 'CONFORMANCE_REVIEW', new Date())
+        .catch(err => logger.warn(`[Metrics] recordAutoApproval failed: ${err.message}`));
       await enqueueWorkflowEvent(workflow.id, 'CONFORMANCE_APPROVED', { autoApproved: true, batchAutoApproval: true });
       return;
     }
@@ -903,7 +910,8 @@ class WorkflowAgentService {
 
     logger.info(`[WorkflowAgent] Creating ACR with AI analysis results: edition=${edition}, jobId=${jobId}`);
 
-    // Get job with validation results to analyze confidence
+    // Get job with output (agentic workflow stores audit results in job.output JSON)
+    // and validationResults (standard workflow stores them as related records)
     const jobWithValidation = await prisma.job.findUnique({
       where: { id: jobId },
       include: {
@@ -925,6 +933,31 @@ class WorkflowAgentService {
     // Build validation results for confidence analysis (same logic as confidence.controller.ts)
     const criteriaMap = new Map<string, { criterionId: string; wcagCriterion: string; status: string }>();
 
+    // Source 1: job.output JSON (agentic workflow stores audit results here as combinedIssues/issues array)
+    const jobOutput = jobWithValidation.output as Record<string, unknown> | null;
+    if (jobOutput) {
+      type RawIssue = { wcagCriteria?: string | string[]; code?: string };
+      const outputIssues = (
+        (jobOutput.combinedIssues ?? jobOutput.issues ?? []) as RawIssue[]
+      );
+      for (const issue of outputIssues) {
+        const wcag = issue.wcagCriteria;
+        if (Array.isArray(wcag)) {
+          for (const criterion of wcag) {
+            if (criterion && !criteriaMap.has(criterion)) {
+              criteriaMap.set(criterion, { criterionId: criterion, wcagCriterion: criterion, status: 'fail' });
+            }
+          }
+        } else if (typeof wcag === 'string' && wcag) {
+          if (!criteriaMap.has(wcag)) {
+            criteriaMap.set(wcag, { criterionId: wcag, wcagCriterion: wcag, status: 'fail' });
+          }
+        }
+      }
+      logger.info(`[WorkflowAgent] Built criteriaMap from job.output: ${criteriaMap.size} criteria from ${outputIssues.length} issues`);
+    }
+
+    // Source 2: validationResults relation (standard/non-agentic jobs store results here)
     for (const result of jobWithValidation.validationResults || []) {
       const details = result.details as Record<string, unknown> | null;
 
@@ -1095,6 +1128,8 @@ class WorkflowAgentService {
     // Check if batch policy auto-approves this gate
     if (await this.shouldAutoApprove(workflow, 'ACR_SIGNOFF')) {
       logger.info(`[WorkflowAgent] Auto-approving ACR signoff for batch workflow ${workflow.id}`);
+      workflowMetricsService.recordAutoApproval(workflow.id, 'ACR_SIGNOFF', new Date())
+        .catch(err => logger.warn(`[Metrics] recordAutoApproval failed: ${err.message}`));
       await enqueueWorkflowEvent(workflow.id, 'ACR_SIGNED', { autoApproved: true, batchAutoApproval: true });
       return;
     }

@@ -1466,6 +1466,8 @@ model WorkflowInstance {
   hitlDecisions    HITLDecision[]
   remediationItems RemediationItem[]
   events           WorkflowEvent[]
+  timeMetric       WorkflowTimeMetric?
+  gateMetrics      HITLGateMetric[]
 
   @@index([currentState])
   @@index([batchId])
@@ -1485,8 +1487,9 @@ model BatchWorkflow {
   completedAt        DateTime?
   autoApprovalPolicy Json?
 
-  workflows WorkflowInstance[]
-  hitlItems BatchHITLItem[]
+  workflows       WorkflowInstance[]
+  hitlItems       BatchHITLItem[]
+  batchTimeMetric BatchTimeMetric?
 
   @@index([status])
   @@index([createdBy])
@@ -1564,6 +1567,95 @@ model WorkflowEvent {
   timestamp  DateTime         @default(now())
 
   @@index([workflowId, timestamp])
+}
+
+// ============================================================
+// WORKFLOW TIME METRICS (Sprint 10 — Time Metrics)
+// ============================================================
+
+model WorkflowTimeMetric {
+  id                 String            @id @default(uuid())
+  workflowId         String            @unique
+  workflow           WorkflowInstance  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  tenantId           String
+  batchId            String?
+  workflowType       String            // 'MANUAL' | 'AGENTIC'
+
+  startedAt          DateTime
+  completedAt        DateTime?
+  totalElapsedMs     Int?
+
+  machineTimeMs      Int               @default(0)
+  humanWaitMs        Int               @default(0)
+  humanActiveMs      Int               @default(0)
+  idleTimeMs         Int?
+
+  gateCount          Int               @default(0)
+  autoApprovedCount  Int               @default(0)
+  manualReviewCount  Int               @default(0)
+
+  stateBreakdown     Json              @default("{}")
+  lastState          String?
+  lastStateEnteredAt DateTime?
+  createdAt          DateTime          @default(now())
+
+  gateMetrics        HITLGateMetric[]
+
+  @@index([tenantId])
+  @@index([batchId])
+}
+
+model HITLGateMetric {
+  id                 String             @id @default(uuid())
+  workflowId         String
+  workflow           WorkflowInstance   @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  timeMetricId       String
+  timeMetric         WorkflowTimeMetric @relation(fields: [timeMetricId], references: [id], onDelete: Cascade)
+  tenantId           String
+
+  gate               String             // 'AI_REVIEW' | 'REMEDIATION_REVIEW' | 'CONFORMANCE_REVIEW' | 'ACR_SIGNOFF'
+  gateEnteredAt      DateTime
+  reviewStartedAt    DateTime?
+  reviewSubmittedAt  DateTime?
+
+  waitMs             Int?
+  activeMs           Int?
+
+  autoApproved       Boolean            @default(false)
+  reviewerId         String?
+  sessionCount       Int                @default(0)
+  sessionLog         Json               @default("[]")
+  createdAt          DateTime           @default(now())
+
+  @@index([workflowId])
+  @@index([tenantId, gate])
+}
+
+model BatchTimeMetric {
+  id                 String        @id @default(uuid())
+  batchId            String        @unique
+  batch              BatchWorkflow @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  tenantId           String
+
+  batchStartedAt     DateTime
+  batchCompletedAt   DateTime?
+  totalElapsedMs     Int?
+
+  totalFiles         Int
+  completedFiles     Int           @default(0)
+  failedFiles        Int           @default(0)
+
+  totalMachineMs     Int           @default(0)
+  totalHumanWaitMs   Int           @default(0)
+  totalHumanActiveMs Int           @default(0)
+  avgWorkflowTimeMs  Int?
+
+  autoApprovalRate   Float?
+  humanTimeSavedMs   Int?
+
+  createdAt          DateTime      @default(now())
+
+  @@index([tenantId])
 }
 
 // ============================================================

@@ -260,7 +260,12 @@ class ACRReportGeneratorService {
 
     // 2. Fetch ACR job and criteria
     const acrJob = await prisma.acrJob.findFirst({
-      where: { jobId, tenantId },
+      where: {
+        OR: [
+          { id: jobId, tenantId },
+          { jobId, tenantId },
+        ],
+      },
       include: { criteria: true },
       orderBy: { createdAt: 'desc' },
     });

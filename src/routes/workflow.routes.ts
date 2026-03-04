@@ -19,6 +19,9 @@ router.get('/batch/:batchId/hitl/:gate/clusters', workflowController.getBatchHIT
 router.put('/batch/:batchId/hitl/cluster/:clusterId/decision', workflowController.updateClusterDecision.bind(workflowController));
 router.post('/batch/:batchId/hitl/:gate/apply-decisions', workflowController.applyBatchDecisions.bind(workflowController));
 
+// Metrics — must come before /:id to avoid Express treating 'metrics' as a workflow ID
+router.post('/:id/metrics/review-started', workflowController.recordReviewStarted.bind(workflowController));
+
 // Workflow CRUD & lifecycle
 router.post('/', workflowController.startWorkflow.bind(workflowController));
 router.get('/:id', workflowController.getWorkflowStatus.bind(workflowController));

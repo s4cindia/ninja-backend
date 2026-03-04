@@ -32,6 +32,9 @@ import { remediationService } from '../services/epub/remediation.service';
 import { issueClusterService } from '../services/batch/issue-cluster.service';
 import { getFixType } from '../constants/fix-classification';
 
+// Time metrics
+import { workflowMetricsService } from '../services/metrics/workflow-metrics.service';
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getPhase(state: string): WorkflowStatusResponse['phase'] {
@@ -304,6 +307,12 @@ class WorkflowController {
         logger.error(`[WorkflowController] Failed to process AUTO_REMEDIATION state for ${id}`, err);
       });
 
+      if (typeof req.body.activeTimeMs === 'number') {
+        workflowMetricsService.recordReviewSubmitted(
+          id, 'AI_REVIEW', req.body.activeTimeMs, req.body.sessionLog ?? [], new Date()
+        ).catch(err => logger.warn(`[Metrics] recordReviewSubmitted failed: ${(err as Error).message}`));
+      }
+
       res.status(200).json({
         success: true,
         gateComplete: true,
@@ -404,6 +413,12 @@ class WorkflowController {
         logger.error(`[WorkflowController] Failed to process VERIFICATION_AUDIT state for ${id}`, err);
       });
 
+      if (typeof req.body.activeTimeMs === 'number') {
+        workflowMetricsService.recordReviewSubmitted(
+          id, 'REMEDIATION_REVIEW', req.body.activeTimeMs, req.body.sessionLog ?? [], new Date()
+        ).catch(err => logger.warn(`[Metrics] recordReviewSubmitted failed: ${(err as Error).message}`));
+      }
+
       res.status(200).json({
         success: true,
         gateComplete: true,
@@ -464,6 +479,12 @@ class WorkflowController {
       // Trigger workflow agent to process the new ACR_GENERATION state
       const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
       await workflowAgentService.processWorkflowState(id);
+
+      if (typeof req.body.activeTimeMs === 'number') {
+        workflowMetricsService.recordReviewSubmitted(
+          id, 'CONFORMANCE_REVIEW', req.body.activeTimeMs, req.body.sessionLog ?? [], new Date()
+        ).catch(err => logger.warn(`[Metrics] recordReviewSubmitted failed: ${(err as Error).message}`));
+      }
 
       res.status(200).json({ success: true, gateComplete: true });
     } catch (err) {
@@ -526,6 +547,12 @@ class WorkflowController {
       // Trigger workflow agent to process the COMPLETED state
       const { workflowAgentService } = await import('../services/workflow/workflow-agent.service');
       await workflowAgentService.processWorkflowState(id);
+
+      if (typeof req.body.activeTimeMs === 'number') {
+        workflowMetricsService.recordReviewSubmitted(
+          id, 'ACR_SIGNOFF', req.body.activeTimeMs, req.body.sessionLog ?? [], new Date()
+        ).catch(err => logger.warn(`[Metrics] recordReviewSubmitted failed: ${(err as Error).message}`));
+      }
 
       res.status(200).json({ message: 'ACR signed off successfully', success: true });
     } catch (err) {
@@ -1063,6 +1090,29 @@ class WorkflowController {
       res.sendFile(filePath, { root: '/' });
     } catch (err) {
       serverError(res, err, 'DOWNLOAD_REMEDIATED_FILE_FAILED');
+    }
+  }
+
+  /** POST /workflows/:id/metrics/review-started */
+  async recordReviewStarted(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) {
+        res.status(401).json({ success: false, error: { message: 'Unauthorized' } });
+        return;
+      }
+      const { id: workflowId } = req.params;
+      const { gate } = req.body as { gate: string };
+
+      const validGates = ['AI_REVIEW', 'REMEDIATION_REVIEW', 'CONFORMANCE_REVIEW', 'ACR_SIGNOFF'];
+      if (!gate || !validGates.includes(gate)) {
+        badRequest(res, `gate must be one of: ${validGates.join(', ')}`);
+        return;
+      }
+
+      await workflowMetricsService.recordReviewStarted(workflowId, gate, req.user.id, new Date());
+      res.json({ success: true });
+    } catch (err) {
+      serverError(res, err, 'RECORD_REVIEW_STARTED_FAILED');
     }
   }
 }
