@@ -1198,6 +1198,18 @@ class EPUBModifierService {
       files = [...targetFiles, ...otherFiles];
     }
 
+    // Within the ordered list, push front-matter/cover pages to the end so the
+    // landmark lands on a real content page rather than the cover or title page.
+    // ACE validates that role="main" is in reading content, not front matter.
+    const isFrontMatter = (f: string): boolean => {
+      const name = (f.split('/').pop() ?? '').toLowerCase();
+      return /cover|title|front|copyright|dedication|colophon|halftitle|half[_-]title/.test(name)
+        || /^0+[_-]/.test(name); // e.g. 00_cover.xhtml, 000_title.xhtml
+    };
+    const contentFiles = files.filter(f => !isFrontMatter(f));
+    const frontMatterFiles = files.filter(f => isFrontMatter(f));
+    files = [...contentFiles, ...frontMatterFiles];
+
     // Track if we've added a main landmark anywhere
     let mainLandmarkExists = false;
 
