@@ -16,7 +16,7 @@ export const uploadConfig = {
    * Maximum file size for uploads (50MB - reduced from 100MB for memory safety)
    * This aligns with memoryConfig.maxUploadFileSize
    */
-  maxFileSize: parseInt(process.env.MAX_UPLOAD_FILE_SIZE || '52428800', 10),
+  maxFileSize: parseInt(process.env.MAX_UPLOAD_FILE_SIZE || '524288000', 10),
 
   /**
    * Allowed MIME types for upload

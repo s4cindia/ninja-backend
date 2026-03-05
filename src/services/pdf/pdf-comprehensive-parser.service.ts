@@ -8,6 +8,7 @@
  */
 
 import { logger } from '../../lib/logger';
+import { pdfConfig } from '../../config/pdf.config';
 import { pdfParserService, ParsedPDF, PDFMetadata as BasePDFMetadata } from './pdf-parser.service';
 import { textExtractorService, PageText } from './text-extractor.service';
 import { imageExtractorService, ImageInfo } from './image-extractor.service';
@@ -227,6 +228,15 @@ class PdfComprehensiveParserService {
    */
   private async extractComprehensiveContent(parsedPdf: ParsedPDF): Promise<PdfParseResult> {
     const { structure, pdfLibDoc } = parsedPdf;
+
+    // Apply dev page cap if set (MAX_AUDIT_PAGES env var)
+    const totalPages = structure.pageCount;
+    const cap = pdfConfig.maxAuditPages;
+    if (cap > 0 && totalPages > cap) {
+      logger.warn(`[PdfComprehensiveParser] MAX_AUDIT_PAGES=${cap} — auditing first ${cap} of ${totalPages} pages`);
+      structure.pageCount = cap;
+      structure.pages = structure.pages.slice(0, cap);
+    }
 
     // Extract metadata
     const metadata: PdfMetadata = {
