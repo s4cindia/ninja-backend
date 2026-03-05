@@ -16,8 +16,8 @@ import { PdfParseResult, PdfPage } from '../pdf-comprehensive-parser.service';
 import { PDFOutlineItem } from '../pdf-parser.service';
 
 // Heuristic thresholds
-const HIGH_CONFIDENCE = 0.85;   // auto-accept as TOC
-const LOW_CONFIDENCE  = 0.50;   // below this → not a TOC
+const HIGH_CONFIDENCE = 0.70;   // auto-accept as TOC (dot-leaders + page-refs is enough)
+const LOW_CONFIDENCE  = 0.30;   // below this → not a TOC
 // Between LOW and HIGH → ask Haiku
 
 // Scoring weights (must sum to ≤1.0)
@@ -28,7 +28,8 @@ const W_POSITION     = 0.10;
 
 // Regex patterns
 const DOT_LEADER_RE = /[.·•]{3,}|…{2,}|\s{2,}\d+\s*$/;
-const TRAILING_NUM_RE = /\s+\d{1,4}\s*$/;
+// PDFs often emit page numbers as standalone items ("31") or with leading whitespace ("  31")
+const TRAILING_NUM_RE = /(?:^|\s)\d{1,4}\s*$/;
 
 export class TocDetector {
   /**
@@ -71,23 +72,24 @@ export class TocDetector {
   ): number {
     let score = 0;
 
-    // Signal 1: Dot-leader patterns in page text content
-    if (this.checkDotLeaders(page)) score += W_DOT_LEADERS;
+    const dotLeaders = this.checkDotLeaders(page);
+    const pageRefs   = this.checkPageRefRatio(page);
+    const outline    = outlineTitles.size > 0 && this.checkOutlineMatch(page, outlineTitles);
+    const position   = firstOutlineDest > 0 && page.pageNumber < firstOutlineDest;
 
-    // Signal 2: Most text items end with a page number
-    if (this.checkPageRefRatio(page)) score += W_PAGE_REFS;
+    if (dotLeaders) score += W_DOT_LEADERS;
+    if (pageRefs)   score += W_PAGE_REFS;
+    if (outline)    score += W_OUTLINE_MATCH;
+    if (position)   score += W_POSITION;
 
-    // Signal 3: Cell text matches PDF outline titles
-    if (outlineTitles.size > 0 && this.checkOutlineMatch(page, outlineTitles)) {
-      score += W_OUTLINE_MATCH;
-    }
+    score = Math.min(1.0, score);
 
-    // Signal 4: This page comes before the first chapter in the outline
-    if (firstOutlineDest > 0 && page.pageNumber < firstOutlineDest) {
-      score += W_POSITION;
-    }
+    logger.info(
+      `[TocDetector] Page ${page.pageNumber} score=${score.toFixed(2)} ` +
+      `(dotLeaders=${dotLeaders}, pageRefs=${pageRefs}, outlineMatch=${outline}, position=${position})`
+    );
 
-    return Math.min(1.0, score);
+    return score;
   }
 
   private checkDotLeaders(page: PdfPage): boolean {
