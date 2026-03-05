@@ -120,15 +120,24 @@ class TextExtractorService {
     }
 
     const allFontSizes: number[] = [];
+    const PAGE_BATCH_SIZE = 10;
 
-    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-      const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
-      const textContent = await page.getTextContent();
-
-      for (const item of textContent.items) {
-        if ('transform' in item && item.transform) {
-          const fontSize = Math.abs(item.transform[0]);
-          if (fontSize > 0) allFontSizes.push(fontSize);
+    // Pass 1: collect font sizes across all pages in parallel batches
+    for (let i = startPage; i <= endPage; i += PAGE_BATCH_SIZE) {
+      const batchEnd = Math.min(i + PAGE_BATCH_SIZE - 1, endPage);
+      const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
+      const batchContents = await Promise.all(
+        batchNums.map(async (pageNum) => {
+          const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
+          return page.getTextContent();
+        })
+      );
+      for (const textContent of batchContents) {
+        for (const item of textContent.items) {
+          if ('transform' in item && item.transform) {
+            const fontSize = Math.abs(item.transform[0]);
+            if (fontSize > 0) allFontSizes.push(fontSize);
+          }
         }
       }
     }
@@ -138,25 +147,29 @@ class TextExtractorService {
       : 12;
     const headingThreshold = avgFontSize * this.HEADING_SIZE_MULTIPLIER;
 
-    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-      const pageText = await this.extractPageText(
-        parsedPdf.pdfjsDoc,
-        pageNum,
-        {
-          includePositions,
-          includeFontInfo,
-          groupIntoLines,
-          groupIntoBlocks,
-          normalizeWhitespace,
-          headingThreshold,
-          avgFontSize,
-        }
+    // Pass 2: extract text from all pages in parallel batches
+    for (let i = startPage; i <= endPage; i += PAGE_BATCH_SIZE) {
+      const batchEnd = Math.min(i + PAGE_BATCH_SIZE - 1, endPage);
+      const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
+      const batchPages = await Promise.all(
+        batchNums.map((pageNum) =>
+          this.extractPageText(parsedPdf.pdfjsDoc, pageNum, {
+            includePositions,
+            includeFontInfo,
+            groupIntoLines,
+            groupIntoBlocks,
+            normalizeWhitespace,
+            headingThreshold,
+            avgFontSize,
+          })
+        )
       );
-
-      pages.push(pageText);
-      fullText += pageText.text + '\n\n';
-      totalWords += pageText.wordCount;
-      totalCharacters += pageText.characterCount;
+      for (const pageText of batchPages) {
+        pages.push(pageText);
+        fullText += pageText.text + '\n\n';
+        totalWords += pageText.wordCount;
+        totalCharacters += pageText.characterCount;
+      }
     }
 
     const readingOrder = this.detectReadingOrder(pages.slice(0, 3));

@@ -93,31 +93,37 @@ class ImageExtractorService {
     const startPage = pageRange?.start || 1;
     const endPage = pageRange?.end || parsedPdf.structure.pageCount;
 
-    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-      const pageImages = await this.extractPageImages(
-        parsedPdf,
-        pageNum,
-        {
-          includeBase64,
-          maxImageSize,
-          formats,
-          minWidth,
-          minHeight,
-        }
+    // Process pages in parallel batches (smaller batch — images are memory-intensive)
+    const IMAGE_BATCH_SIZE = 5;
+    for (let i = startPage; i <= endPage; i += IMAGE_BATCH_SIZE) {
+      const batchEnd = Math.min(i + IMAGE_BATCH_SIZE - 1, endPage);
+      const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
+      const batchPages = await Promise.all(
+        batchNums.map((pageNum) =>
+          this.extractPageImages(parsedPdf, pageNum, {
+            includeBase64,
+            maxImageSize,
+            formats,
+            minWidth,
+            minHeight,
+          })
+        )
       );
 
-      pages.push(pageImages);
-      totalImages += pageImages.totalImages;
+      for (const pageImages of batchPages) {
+        pages.push(pageImages);
+        totalImages += pageImages.totalImages;
 
-      for (const img of pageImages.images) {
-        imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
-        
-        if (img.isDecorative) {
-          decorativeImages++;
-        } else if (img.altText) {
-          imagesWithAltText++;
-        } else {
-          imagesWithoutAltText++;
+        for (const img of pageImages.images) {
+          imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
+
+          if (img.isDecorative) {
+            decorativeImages++;
+          } else if (img.altText) {
+            imagesWithAltText++;
+          } else {
+            imagesWithoutAltText++;
+          }
         }
       }
     }

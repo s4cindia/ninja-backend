@@ -256,15 +256,14 @@ class PdfComprehensiveParserService {
       }
     }
 
-    // Extract text content for all pages
-    logger.info(`[PdfComprehensiveParser] Extracting text content...`);
-    const documentText = await textExtractorService.extractText(parsedPdf);
+    // Extract text and images in parallel (independent operations)
+    logger.info(`[PdfComprehensiveParser] Extracting text and images in parallel...`);
+    const [documentText, documentImages] = await Promise.all([
+      textExtractorService.extractText(parsedPdf),
+      imageExtractorService.extractImages(parsedPdf),
+    ]);
 
-    // Extract images for all pages
-    logger.info(`[PdfComprehensiveParser] Extracting images...`);
-    const documentImages = await imageExtractorService.extractImages(parsedPdf);
-
-    // Extract structure elements
+    // Structure analysis runs after (internally re-extracts text for heading analysis)
     logger.info(`[PdfComprehensiveParser] Analyzing structure...`);
     const documentStructure = await structureAnalyzerService.analyzeStructure(parsedPdf);
 
