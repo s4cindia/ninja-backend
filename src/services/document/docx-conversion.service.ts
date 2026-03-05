@@ -619,7 +619,8 @@ function inlineDocxStyles(html: string, docxStyles?: DocxStyleInfo): string {
   html = html.replace(/<p([^>]*)>/gi, (_match, attrs) => {
     const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
     if (existingStyle) return _match; // don't override existing inline styles
-    return `<p style="${pStyle}">`;
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<p ${cleanAttrs} style="${pStyle}">`.replace(/\s+/g, ' ');
   });
 
   // Inline table cell styles
@@ -1731,11 +1732,17 @@ function buildCleanHtml(html: string): string {
  *     'tracked' → apply Word revision marks (<w:del>/<w:ins>) to original DOCX XML
  *  3. Falls back to Pandoc HTML→DOCX if the XML approach fails
  */
+export interface ExportResult {
+  buffer: Buffer;
+  /** true when the original DOCX was returned unchanged (edits below similarity threshold) */
+  originalPreserved: boolean;
+}
+
 export async function exportWithTrackChanges(
   originalBuffer: Buffer,
   currentHtml: string,
   options?: { title?: string; mode?: 'clean' | 'tracked' }
-): Promise<Buffer> {
+): Promise<ExportResult> {
   const cleanHtml = buildCleanHtml(currentHtml);
   const mode = options?.mode || 'clean';
 
@@ -1757,10 +1764,10 @@ export async function exportWithTrackChanges(
           result = await applyChangesToDocx(originalBuffer, trackChanges);
           logger.info(`[DocxConversion] Applied ${trackChanges.length} clean replacements to original DOCX`);
         }
-        return result;
+        return { buffer: result, originalPreserved: false };
       } catch (applyErr) {
         logger.warn('[DocxConversion] XML replacement failed, falling back to Pandoc:', applyErr);
-        return convertHtmlToDocx(cleanHtml, options);
+        return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
       }
     }
 
@@ -1773,7 +1780,7 @@ export async function exportWithTrackChanges(
 
     if (!documentXml) {
       logger.warn('[DocxConversion] No document.xml found, falling back to Pandoc');
-      return convertHtmlToDocx(cleanHtml, options);
+      return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
     }
 
     const xmlTextRuns: string[] = [];
@@ -1803,15 +1810,15 @@ export async function exportWithTrackChanges(
     // edits, and (b) real edits should use track changes which take a separate code path.
     if (wordSim >= 0.95 && seqSim >= 0.90) {
       logger.info('[DocxConversion] No significant changes detected, returning original DOCX');
-      return originalBuffer;
+      return { buffer: originalBuffer, originalPreserved: true };
     }
 
     // Text was manually changed without track changes — use Pandoc
     logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
-    return convertHtmlToDocx(cleanHtml, options);
+    return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
   } catch (error) {
     logger.warn('[DocxConversion] Track change export failed, falling back to Pandoc:', error);
-    return convertHtmlToDocx(cleanHtml, options);
+    return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
   }
 }
 

@@ -336,6 +336,12 @@ async function executeCheck(
             ? (match.sourceType as ValidSourceType)
             : 'EXTERNAL_ACADEMIC';
 
+          // Validate DOI format before trusting AI-provided value
+          const doiPattern = /^10\.\d{4,}\/\S+$/;
+          const validDoi = match.sourceDoi && doiPattern.test(match.sourceDoi)
+            ? match.sourceDoi
+            : null;
+
           // Build a full citation string for externalTitle:
           // "Authors. Title. Publication, Year. DOI"
           const titleParts = [
@@ -344,11 +350,11 @@ async function executeCheck(
             match.sourcePublication || '',
             match.sourceYear && match.sourceYear !== 'unknown' ? match.sourceYear : '',
           ].filter(Boolean);
-          const externalTitle = titleParts.join('. ') + (match.sourceDoi ? `. DOI: ${match.sourceDoi}` : '');
+          const externalTitle = titleParts.join('. ') + (validDoi ? `. DOI: ${validDoi}` : '') + ' [AI-suggested — verify before citing]';
 
-          // Prefer DOI link, then provided URL
-          const externalUrl = match.sourceDoi
-            ? `https://doi.org/${match.sourceDoi}`
+          // Prefer validated DOI link, then provided URL
+          const externalUrl = validDoi
+            ? `https://doi.org/${validDoi}`
             : (match.sourceUrl || null);
 
           allMatchData.push({

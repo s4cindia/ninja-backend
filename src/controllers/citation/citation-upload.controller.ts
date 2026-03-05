@@ -31,6 +31,22 @@ const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordproces
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 /**
+ * Try Pandoc HTML conversion, fall back to mammoth HTML on failure.
+ */
+async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<string> {
+  try {
+    const pandocResult = await convertDocxToHtml(fileBuffer);
+    if (pandocResult.html) {
+      logger.info(`[Citation Upload] Using Pandoc HTML (${pandocResult.html.length} chars) for fullHtml`);
+      return pandocResult.html;
+    }
+  } catch (pandocError) {
+    logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
+  }
+  return fallbackHtml;
+}
+
+/**
  * Match author-year citation text to reference entries
  * Handles: "(Smith, 2020)", "(Brown et al., 2021)", "(Smith & Jones, 2020)"
  * Also handles multiple citations: "(Brown et al., 2020; Bommasani et al., 2021)"
@@ -354,16 +370,7 @@ export class CitationUploadController {
       const stats = await docxProcessorService.getStatistics(fileBuffer);
 
       // Convert DOCX to styled HTML using Pandoc for better formatting preservation
-      let styledHtml = content.html;
-      try {
-        const pandocResult = await convertDocxToHtml(fileBuffer);
-        if (pandocResult.html) {
-          styledHtml = pandocResult.html;
-          logger.info(`[Citation Upload] Using Pandoc HTML (${styledHtml.length} chars) for fullHtml`);
-        }
-      } catch (pandocError) {
-        logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
-      }
+      const styledHtml = await tryPandocHtml(fileBuffer, content.html);
 
       // Create job
       const job = await prisma.job.create({
@@ -583,16 +590,7 @@ export class CitationUploadController {
       const stats = await docxProcessorService.getStatistics(file.buffer);
 
       // Convert DOCX to styled HTML using Pandoc for better formatting preservation
-      let styledHtml = content.html;
-      try {
-        const pandocResult = await convertDocxToHtml(file.buffer);
-        if (pandocResult.html) {
-          styledHtml = pandocResult.html;
-          logger.info(`[Citation Upload] Using Pandoc HTML (${styledHtml.length} chars) for fullHtml`);
-        }
-      } catch (pandocError) {
-        logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
-      }
+      const styledHtml = await tryPandocHtml(file.buffer, content.html);
 
       // Create job
       const job = await prisma.job.create({

@@ -1003,12 +1003,17 @@ export class ValidatorController {
             document.storageType as 'S3' | 'LOCAL'
           );
           if (originalBuffer) {
-            docxBuffer = await docxConversionService.exportWithTrackChanges(
+            const exportResult = await docxConversionService.exportWithTrackChanges(
               originalBuffer,
               currentHtml,
               { title: titleBase, mode: exportMode }
             );
-            logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+            docxBuffer = exportResult.buffer;
+            if (exportResult.originalPreserved) {
+              logger.info(`[Validator] No significant edits detected for ${documentId}, returning original DOCX`);
+            } else {
+              logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+            }
           } else {
             docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
           }
