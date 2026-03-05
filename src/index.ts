@@ -102,6 +102,9 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const server = app.listen(config.port, '0.0.0.0', () => {
+  // Extend timeout for large PDF processing (default 120s is too short)
+  server.timeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
+  server.keepAliveTimeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
   logger.info(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
   logger.info(`📍 Environment: ${config.nodeEnv}`);
   logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
