@@ -81,9 +81,9 @@ async function processPdfAccessibility(
   };
 
   // Validator progress callback: updates job.input.validatorProgress and advances 88–95%
-  const validatorProgress: Array<{ label: string; issuesFound: number }> = [];
-  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number) => {
-    validatorProgress.push({ label, issuesFound });
+  const validatorProgress: Array<{ label: string; issuesFound: number; startedAt: string; completedAt: string }> = [];
+  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
+    validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
     logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
     // Advance progress 88–95% across validators
     const pct = 88 + Math.round((completed / total) * 7); // 88–95%
