@@ -42,8 +42,9 @@ export class TocDetector {
     const tocPages = new Set<number>();
 
     for (const page of parsed.pages) {
-      if (page.tables.length === 0) continue; // No tables → can't be a TOC-as-Table page
-
+      // Score every page — we can't rely on page.tables (from the structure analyzer)
+      // because the table validator detects TOC-as-Table via PDF structure tags, which
+      // may not be reflected in the content-based page.tables array.
       const score = this.scorePage(page, outlineTitles, firstOutlineDestination);
 
       if (score >= HIGH_CONFIDENCE) {
@@ -68,31 +69,25 @@ export class TocDetector {
     outlineTitles: Set<string>,
     firstOutlineDest: number
   ): number {
-    let maxScore = 0;
+    let score = 0;
 
-    for (const _table of page.tables) {
-      let score = 0;
+    // Signal 1: Dot-leader patterns in page text content
+    if (this.checkDotLeaders(page)) score += W_DOT_LEADERS;
 
-      // Signal 1: Dot-leader patterns in page text content
-      if (this.checkDotLeaders(page)) score += W_DOT_LEADERS;
+    // Signal 2: Most text items end with a page number
+    if (this.checkPageRefRatio(page)) score += W_PAGE_REFS;
 
-      // Signal 2: Most text items end with a page number
-      if (this.checkPageRefRatio(page)) score += W_PAGE_REFS;
-
-      // Signal 3: Cell text matches PDF outline titles
-      if (outlineTitles.size > 0 && this.checkOutlineMatch(page, outlineTitles)) {
-        score += W_OUTLINE_MATCH;
-      }
-
-      // Signal 4: This page comes before the first chapter in the outline
-      if (firstOutlineDest > 0 && page.pageNumber < firstOutlineDest) {
-        score += W_POSITION;
-      }
-
-      maxScore = Math.max(maxScore, Math.min(1.0, score));
+    // Signal 3: Cell text matches PDF outline titles
+    if (outlineTitles.size > 0 && this.checkOutlineMatch(page, outlineTitles)) {
+      score += W_OUTLINE_MATCH;
     }
 
-    return maxScore;
+    // Signal 4: This page comes before the first chapter in the outline
+    if (firstOutlineDest > 0 && page.pageNumber < firstOutlineDest) {
+      score += W_POSITION;
+    }
+
+    return Math.min(1.0, score);
   }
 
   private checkDotLeaders(page: PdfPage): boolean {
