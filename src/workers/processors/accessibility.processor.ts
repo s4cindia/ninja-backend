@@ -56,13 +56,34 @@ async function processPdfAccessibility(
   await job.updateProgress(20);
   await queueService.updateJobProgress(dbJobId, 20);
 
+  // Progress callback: maps page progress to the 20–88% range.
+  // First call (currentPage=0) stores totalPages in job.input for the frontend.
+  let totalPagesStored = false;
+  const onProgress = async (currentPage: number, totalPages: number) => {
+    if (!totalPagesStored && totalPages > 0) {
+      totalPagesStored = true;
+      // Merge totalPages into job.input so the polling endpoint exposes it
+      const existingJob = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+      const existingInput = (existingJob?.input && typeof existingJob.input === 'object' && !Array.isArray(existingJob.input))
+        ? existingJob.input as Record<string, unknown>
+        : {};
+      await prisma.job.update({
+        where: { id: dbJobId },
+        data: { input: { ...existingInput, totalPages } as Prisma.InputJsonObject },
+      });
+      logger.info(`[PDF Worker] Job ${dbJobId}: ${totalPages} pages to audit`);
+    }
+    if (totalPages > 0) {
+      const pct = 20 + Math.round((currentPage / totalPages) * 68); // 20–88%
+      await job.updateProgress(pct);
+      await queueService.updateJobProgress(dbJobId, pct);
+    }
+  };
+
   // Run the accessibility audit
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
-  const result = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName);
+  const result = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName, 'basic', undefined, onProgress);
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
-
-  await job.updateProgress(90);
-  await queueService.updateJobProgress(dbJobId, 90);
 
   // Update job to COMPLETED with full audit report
   await prisma.job.update({

@@ -668,9 +668,13 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
    * @param fileName - File name
    * @returns Parsed PDF result
    */
-  async parseBuffer(buffer: Buffer, fileName: string): Promise<PdfParseResult> {
+  async parseBuffer(
+    buffer: Buffer,
+    fileName: string,
+    onProgress?: (currentPage: number, totalPages: number) => void
+  ): Promise<PdfParseResult> {
     logger.info(`[PdfAudit] Parsing PDF buffer: ${fileName}`);
-    return await pdfComprehensiveParserService.parseBuffer(buffer, fileName);
+    return await pdfComprehensiveParserService.parseBuffer(buffer, fileName, onProgress);
   }
 
   /**
@@ -688,7 +692,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     jobId: string,
     fileName: string,
     scanLevel: ScanLevel = 'basic',
-    customValidators?: ValidatorType[]
+    customValidators?: ValidatorType[],
+    onProgress?: (currentPage: number, totalPages: number) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
 
@@ -700,7 +705,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
       // Parse the buffer
       logger.info(`[PdfAudit] Parsing buffer...`);
-      parsed = await this.parseBuffer(buffer, fileName);
+      parsed = await this.parseBuffer(buffer, fileName, onProgress);
       logger.info(`[PdfAudit] Buffer parsed successfully`);
 
       // Validate

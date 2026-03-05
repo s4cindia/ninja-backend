@@ -90,7 +90,8 @@ class TextExtractorService {
 
   async extractText(
     parsedPdf: ParsedPDF,
-    options: ExtractionOptions = {}
+    options: ExtractionOptions = {},
+    onPageBatch?: (processedPages: number, totalPages: number) => void
   ): Promise<DocumentText> {
     const {
       includePositions = true,
@@ -148,6 +149,8 @@ class TextExtractorService {
     const headingThreshold = avgFontSize * this.HEADING_SIZE_MULTIPLIER;
 
     // Pass 2: extract text from all pages in parallel batches
+    let processedPages = 0;
+    const totalPageCount = endPage - startPage + 1;
     for (let i = startPage; i <= endPage; i += PAGE_BATCH_SIZE) {
       const batchEnd = Math.min(i + PAGE_BATCH_SIZE - 1, endPage);
       const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
@@ -170,6 +173,8 @@ class TextExtractorService {
         totalWords += pageText.wordCount;
         totalCharacters += pageText.characterCount;
       }
+      processedPages += batchNums.length;
+      onPageBatch?.(processedPages, totalPageCount);
     }
 
     const readingOrder = this.detectReadingOrder(pages.slice(0, 3));
