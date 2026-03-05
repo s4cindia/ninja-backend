@@ -179,7 +179,8 @@ export function startWorkers(): void {
   const accessibilityWorker = createWorker({
     queueName: QUEUE_NAMES.ACCESSIBILITY,
     processor: processAccessibilityJob,
-    concurrency: 2,
+    concurrency: 5,
+    lockDuration: 10 * 60 * 1000, // 10 min — PDF audits can be slow for large files
   });
   if (accessibilityWorker) workers.push(accessibilityWorker);
 

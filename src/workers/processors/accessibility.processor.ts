@@ -36,15 +36,13 @@ export async function processAccessibilityJob(
 async function processPdfAccessibility(
   job: Job<JobData, JobResult>
 ): Promise<JobResult> {
-  const { options } = job.data;
+  const { options, tenantId, userId } = job.data;
   // dbJobId and BullMQ job.id are the same (we pass jobId when enqueueing)
   const dbJobId = (options?.dbJobId as string) || (job.id || job.name);
   const fileName = (options?.fileName as string) || 'document.pdf';
 
-  // Mark job as PROCESSING
-  await queueService.updateJobStatus(dbJobId, 'PROCESSING');
-  await job.updateProgress(10);
-  await queueService.updateJobProgress(dbJobId, 10);
+  // Note: base.worker already called queueService.updateJobStatus(PROCESSING) and
+  // job.updateProgress(10) before invoking this processor. No need to repeat here.
 
   // Load file from permanent storage (retry-safe — no temp file dependency)
   logger.info(`[PDF Worker] Loading file for job ${dbJobId}`);
@@ -102,39 +100,23 @@ async function processPdfAccessibility(
 
   // Run the accessibility audit
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
-  const result = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName, 'basic', undefined, onProgress, onValidatorComplete);
+  const auditReport = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName, 'basic', undefined, onProgress, onValidatorComplete);
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 
-  // Update job to COMPLETED with full audit report
-  await prisma.job.update({
-    where: { id: dbJobId },
-    data: {
-      status: 'COMPLETED',
-      completedAt: new Date(),
-      output: JSON.parse(JSON.stringify({
-        fileName,
-        auditReport: result,
-        scanLevel: 'basic',
-      })) as Prisma.InputJsonObject,
-    },
-  });
-
-  // Create AcrJob record so this audit appears in the ACR workflow (non-fatal)
+  // Create AcrJob record so this audit appears in the ACR workflow (non-fatal).
+  // Use tenantId/userId from BullMQ job data — avoids an extra DB query.
   try {
-    const jobRecord = await prisma.job.findUnique({ where: { id: dbJobId } });
-    if (jobRecord) {
-      await prisma.acrJob.create({
-        data: {
-          jobId: dbJobId,
-          tenantId: jobRecord.tenantId,
-          userId: jobRecord.userId,
-          edition: 'WCAG21-AA',
-          documentTitle: fileName,
-          documentType: 'PDF',
-          status: 'draft',
-        },
-      });
-    }
+    await prisma.acrJob.create({
+      data: {
+        jobId: dbJobId,
+        tenantId,
+        userId,
+        edition: 'WCAG21-AA',
+        documentTitle: fileName,
+        documentType: 'PDF',
+        status: 'draft',
+      },
+    });
   } catch (acrErr) {
     logger.warn(`[PDF Worker] Failed to create AcrJob (non-fatal): ${acrErr instanceof Error ? acrErr.message : String(acrErr)}`);
   }
@@ -142,9 +124,15 @@ async function processPdfAccessibility(
   await job.updateProgress(100);
   await queueService.updateJobProgress(dbJobId, 100);
 
+  // Return the full audit report in result.data so the base.worker wrapper
+  // can persist it as job.output. Do NOT call prisma.job.update here —
+  // base.worker handles the COMPLETED status + output write to avoid overwriting.
   return {
     success: true,
     data: {
+      fileName,
+      auditReport: auditReport as unknown as Record<string, unknown>,
+      scanLevel: 'basic',
       type: 'PDF_ACCESSIBILITY',
       dbJobId,
       timestamp: new Date().toISOString(),
