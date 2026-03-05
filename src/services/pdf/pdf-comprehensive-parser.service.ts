@@ -23,6 +23,7 @@ import fs from 'fs/promises';
 export interface PdfMetadata extends BasePDFMetadata {
   pageCount: number;
   hasStructureTree: boolean;
+  pageLabels?: string[];
 }
 
 /**
@@ -253,6 +254,7 @@ class PdfComprehensiveParserService {
       ...structure.metadata,
       pageCount: structure.pageCount,
       hasStructureTree: structure.metadata.isTagged,
+      pageLabels: structure.pageLabels,
     };
 
     // Extract structure tree if tagged

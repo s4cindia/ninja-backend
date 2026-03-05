@@ -18,6 +18,7 @@ import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator } from './validators/pdf-table.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
+import { smartTriageService } from './smart-triage/triage.service';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
 /**
@@ -409,28 +410,40 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
   ): Promise<AuditReport> {
     logger.info(`[PdfAudit] Generating report for ${fileName}...`);
 
-    const scoreBreakdown = this.calculateScore(validation.issues);
-    const wcagMappings = this.mapToWcag(validation.issues);
-    const summary = this.calculateSummary(validation.issues);
-    const matterhornSummary = this.generateMatterhornSummary(validation.matterhornResults);
+    // Smart triage: reduce false positives before scoring
+    // contrast is always suppressed (IS_IMPLEMENTED=false), so list it in suppressedCategories
+    const suppressedCategories = ['contrast'];
+    let finalIssues = validation.issues;
+    let triageSummary = undefined;
 
-    // Debug: Check if pageNumber is present in issues
-    const sampleAltTextIssue = validation.issues.find(i => i.source === 'pdf-alttext');
-    if (sampleAltTextIssue) {
-      logger.debug(`[DEBUG] Sample alt-text issue BEFORE report creation: ${JSON.stringify(sampleAltTextIssue, null, 2)}`);
+    if (parsed) {
+      try {
+        const triageResult = await smartTriageService.process(parsed, validation.issues, suppressedCategories);
+        finalIssues = triageResult.issues;
+        triageSummary = triageResult.summary;
+      } catch (triageErr) {
+        logger.warn('[PdfAudit] Smart triage failed (non-fatal), using raw issues:', triageErr);
+      }
     }
+
+    const scoreBreakdown = this.calculateScore(finalIssues);
+    const wcagMappings = this.mapToWcag(finalIssues);
+    const summary = this.calculateSummary(finalIssues);
+    const matterhornSummary = this.generateMatterhornSummary(validation.matterhornResults);
 
     const report: AuditReport = {
       jobId,
       fileName,
       score: scoreBreakdown.score,
       scoreBreakdown,
-      issues: validation.issues,
+      issues: finalIssues,
       summary,
       wcagMappings,
+      triageSummary,
       metadata: {
         validator: 'PDF Accessibility Audit',
         pageCount: parsed?.metadata.pageCount || 1,
+        pageLabels: parsed?.metadata.pageLabels,
         categorizedIssues: {
           structure: validation.structureIssues.length,
           altText: validation.altTextIssues.length,

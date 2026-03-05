@@ -7,7 +7,7 @@
  * Maps issues to WCAG 1.1.1 and Matterhorn Protocol checkpoints.
  */
 
-import { AuditIssue } from '../../audit/base-audit.service';
+import { AuditIssue, IssueTriage } from '../../audit/base-audit.service';
 import { imageExtractorService, ImageInfo } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
@@ -168,6 +168,30 @@ class PDFAltTextValidator {
 
     // Check if image has alt text
     if (!image.altText) {
+      let suggestion: string;
+      let triage: IssueTriage | undefined;
+
+      if (useAI && image.base64) {
+        const classified = await this.classifyAndGenerateAltText(image);
+        triage = {
+          disposition: classified.isDecorative ? 'auto-resolved' : 'ai-drafted',
+          method: 'vision',
+          confidence: classified.confidence,
+          autoFix: {
+            description: classified.isDecorative
+              ? 'Image appears decorative — mark alt="" to suppress screen reader announcement'
+              : 'AI-generated alt text — review and approve before applying',
+            value: classified.isDecorative ? '' : classified.altText,
+            requiresApproval: !classified.isDecorative,
+          },
+        };
+        suggestion = classified.isDecorative
+          ? 'Image appears decorative — set alt="" in the authoring tool'
+          : `AI-generated alt text: "${classified.altText}"`;
+      } else {
+        suggestion = 'Add descriptive alternative text to the image. Alt text should convey the same information as the image.';
+      }
+
       const issue = this.createIssue({
         source: 'pdf-alttext',
         severity: 'critical',
@@ -175,12 +199,11 @@ class PDFAltTextValidator {
         message: `Image on page ${image.pageNumber} has no alternative text`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
-        suggestion: useAI && image.base64
-          ? await this.generateAltTextSuggestion(image)
-          : 'Add descriptive alternative text to the image. Alt text should convey the same information as the image.',
+        suggestion,
         category: 'alt-text',
         element: image.id,
         pageNumber: image.pageNumber,
+        triage,
       });
       logger.debug(`[DEBUG] Created issue with pageNumber: ${issue.pageNumber} for image on page ${image.pageNumber}`);
       issues.push(issue);
@@ -379,6 +402,58 @@ Respond ONLY with valid JSON in this exact format:
     } catch (error) {
       logger.error('[PDFAltTextValidator] Failed to parse AI assessment response:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Classify image as decorative or content, and generate alt text if content.
+   * Used for MATTERHORN-13-002 (missing alt text) triage annotation.
+   */
+  private async classifyAndGenerateAltText(image: ImageInfo): Promise<{
+    isDecorative: boolean;
+    altText: string;
+    confidence: number;
+  }> {
+    const prompt = `Analyze this image from a PDF document.
+
+Tasks:
+1. Is this image decorative? (logos, ornamental borders, horizontal rules, background textures, and page decorations with no information content are decorative)
+2. If not decorative, write concise alt text in 1-2 sentences (max 125 characters).
+
+Respond with JSON only:
+{
+  "isDecorative": true|false,
+  "altText": "description here, or empty string if decorative",
+  "confidence": 0.0-1.0
+}`;
+
+    try {
+      const response = await geminiService.analyzeImage(
+        image.base64!,
+        image.mimeType,
+        prompt,
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 128 }
+      );
+
+      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON in response');
+
+      const result = JSON.parse(jsonMatch[0]) as {
+        isDecorative?: unknown;
+        altText?: unknown;
+        confidence?: unknown;
+      };
+
+      return {
+        isDecorative: result.isDecorative === true,
+        altText: typeof result.altText === 'string' ? result.altText.trim().substring(0, 125) : '',
+        confidence: typeof result.confidence === 'number'
+          ? Math.min(1, Math.max(0, result.confidence))
+          : 0.7,
+      };
+    } catch (err) {
+      logger.warn(`[PDFAltTextValidator] AI classification failed for image ${image.id}: ${err instanceof Error ? err.message : String(err)}`);
+      return { isDecorative: false, altText: '', confidence: 0.5 };
     }
   }
 

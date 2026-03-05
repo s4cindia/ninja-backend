@@ -13,6 +13,35 @@ import { logger } from '../../lib/logger';
 export type IssueSeverity = 'critical' | 'serious' | 'moderate' | 'minor';
 
 /**
+ * Smart triage annotation — added by SmartTriageService after validation
+ */
+export interface IssueTriage {
+  disposition: 'auto-resolved' | 'ai-drafted' | 'smart-guided' | 'manual';
+  method: 'heuristic' | 'pattern' | 'llm' | 'vision';
+  confidence: number;        // 0.0–1.0
+  suppressedCount?: number;  // N issues this one replaces
+  reclassifiedAs?: string;   // New code if reclassified (e.g., 'TOC-TAGGING')
+  autoFix?: {
+    description: string;
+    value?: string;          // Generated alt text, language code, etc.
+    requiresApproval: boolean;
+  };
+}
+
+/**
+ * Summary produced by SmartTriageService for the audit report
+ */
+export interface TriageSummary {
+  version: '1.0';
+  totalRaw: number;
+  autoResolved: number;
+  aiDrafted: number;
+  smartGuided: number;
+  manual: number;
+  suppressedCategories: string[];
+}
+
+/**
  * Common structure for accessibility issues across all audit types
  */
 export interface AuditIssue {
@@ -28,6 +57,7 @@ export interface AuditIssue {
   element?: string;
   context?: string;
   pageNumber?: number;
+  triage?: IssueTriage;
 }
 
 /**
@@ -80,6 +110,7 @@ export interface AuditReport {
   };
   wcagMappings: WcagMapping[];
   metadata: Record<string, unknown>;
+  triageSummary?: TriageSummary;
   auditedAt: Date;
 }
 

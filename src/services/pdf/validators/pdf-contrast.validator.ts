@@ -36,6 +36,11 @@ interface ContrastCheckResult {
  */
 export class PdfContrastValidator {
   name = 'PdfContrastValidator';
+  // Color extraction from PDF content streams is not yet implemented.
+  // All current output uses hardcoded placeholder colors (black on white = always passes).
+  // Set to true once real color extraction is in place.
+  static readonly IS_IMPLEMENTED = false;
+
   private issueCounter = 0;
   private hasLoggedColorWarning = false;
 
@@ -46,6 +51,11 @@ export class PdfContrastValidator {
    * @returns Array of contrast issues
    */
   async validate(parsed: PdfParseResult): Promise<AuditIssue[]> {
+    if (!PdfContrastValidator.IS_IMPLEMENTED) {
+      logger.info('[PdfContrastValidator] Skipping — color extraction not yet implemented (placeholder data suppressed)');
+      return [];
+    }
+
     logger.info('[PdfContrastValidator] Starting contrast validation...');
     this.issueCounter = 0;
     this.hasLoggedColorWarning = false;
