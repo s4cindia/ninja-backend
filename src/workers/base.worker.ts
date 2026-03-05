@@ -12,10 +12,15 @@ export interface WorkerOptions {
   concurrency?: number;
   /** BullMQ lock duration in ms. Increase for long-running jobs (default: 30000). */
   lockDuration?: number;
+  /**
+   * How often BullMQ checks for stalled jobs in ms (default: 30000).
+   * Lower values detect orphaned active jobs from crashed/restarted workers faster.
+   */
+  stalledInterval?: number;
 }
 
 export function createWorker(options: WorkerOptions): Worker<JobData, JobResult> | null {
-  const { queueName, processor, concurrency = 1, lockDuration = 30000 } = options;
+  const { queueName, processor, concurrency = 1, lockDuration = 30000, stalledInterval = 30000 } = options;
 
   if (!isRedisConfigured()) {
     logger.warn(`Cannot create worker for ${queueName} - Redis not configured`);
@@ -64,6 +69,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
         autorun: true,
         prefix: QUEUE_PREFIX,
         lockDuration,
+        stalledInterval,
       }
     );
 

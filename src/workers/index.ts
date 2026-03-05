@@ -173,6 +173,46 @@ async function recoverStaleJobs(): Promise<void> {
   }
 }
 
+/**
+ * On server startup, clean up any BullMQ jobs that were left in "active" state
+ * by a previous (now dead) worker process, and fix the corresponding DB records.
+ * This prevents new jobs from waiting behind orphaned active slots.
+ */
+async function cleanupStaleActiveJobs(): Promise<void> {
+  if (!areQueuesAvailable()) return;
+  try {
+    const queue = getAccessibilityQueue();
+    if (!queue) return;
+
+    // Collect active jobs before cleaning so we can update DB records
+    const activeJobs = await queue.getActive();
+    if (activeJobs.length === 0) return;
+
+    logger.info(`[Startup] Found ${activeJobs.length} stale active job(s) from previous process — cleaning up`);
+
+    // Update DB records first (before removing from Redis)
+    for (const bullJob of activeJobs) {
+      const dbJobId = (bullJob.data?.options?.dbJobId as string | undefined) || bullJob.id;
+      if (dbJobId) {
+        await prisma.job.updateMany({
+          where: { id: dbJobId, status: 'PROCESSING' },
+          data: {
+            status: 'FAILED',
+            completedAt: new Date(),
+            error: 'Server restarted while job was processing — please re-submit the file',
+          },
+        }).catch(err => logger.warn(`[Startup] Failed to update DB for stale job ${dbJobId}: ${err.message}`));
+      }
+    }
+
+    // Remove stale active jobs from Redis using queue.clean() — no lock token required
+    const removed = await queue.clean(0, activeJobs.length + 10, 'active');
+    logger.info(`[Startup] Stale active job cleanup complete — removed ${removed.length} BullMQ job(s)`);
+  } catch (err) {
+    logger.warn(`[Startup] Stale active job cleanup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export function startWorkers(): void {
   logger.info('🚀 Starting job workers...');
 
@@ -181,6 +221,7 @@ export function startWorkers(): void {
     processor: processAccessibilityJob,
     concurrency: 5,
     lockDuration: 10 * 60 * 1000, // 10 min — PDF audits can be slow for large files
+    stalledInterval: 5000, // 5 s — quickly reclaim orphaned active jobs from old server instances
   });
   if (accessibilityWorker) workers.push(accessibilityWorker);
 
@@ -270,6 +311,12 @@ export function startWorkers(): void {
 
   if (workers.length > 0) {
     logger.info(`✅ ${workers.length} workers started`);
+
+    // Clean up any stale active BullMQ jobs left by a previous server process.
+    // Must run BEFORE recoverStaleJobs so freed slots are visible to the stale-job recovery.
+    cleanupStaleActiveJobs().catch(err => {
+      logger.error('[Startup] Stale active job cleanup failed:', err);
+    });
 
     // Recover stale jobs after workers are ready to process them
     recoverStaleJobs().catch(err => {
