@@ -80,9 +80,29 @@ async function processPdfAccessibility(
     }
   };
 
+  // Validator progress callback: updates job.input.validatorProgress and advances 88–95%
+  const validatorProgress: Array<{ label: string; issuesFound: number }> = [];
+  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number) => {
+    validatorProgress.push({ label, issuesFound });
+    logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
+    // Advance progress 88–95% across validators
+    const pct = 88 + Math.round((completed / total) * 7); // 88–95%
+    await job.updateProgress(pct);
+    await queueService.updateJobProgress(dbJobId, pct);
+    // Persist validator stats into job.input for the polling endpoint
+    const existingJob2 = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+    const existingInput2 = (existingJob2?.input && typeof existingJob2.input === 'object' && !Array.isArray(existingJob2.input))
+      ? existingJob2.input as Record<string, unknown>
+      : {};
+    await prisma.job.update({
+      where: { id: dbJobId },
+      data: { input: { ...existingInput2, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
+    });
+  };
+
   // Run the accessibility audit
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
-  const result = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName, 'basic', undefined, onProgress);
+  const result = await pdfAuditService.runAuditFromBuffer(fileBuffer, dbJobId, fileName, 'basic', undefined, onProgress, onValidatorComplete);
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 
   // Update job to COMPLETED with full audit report

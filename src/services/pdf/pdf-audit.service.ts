@@ -231,7 +231,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
   protected async validate(
     parsed: PdfParseResult,
     scanLevel: ScanLevel = 'basic',
-    customValidators?: ValidatorType[]
+    customValidators?: ValidatorType[],
+    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number) => void
   ): Promise<PdfValidationResult> {
     logger.info(`[PdfAudit] Running validators...`);
 
@@ -253,47 +254,56 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
     logger.info(`[PdfAudit] Scan level: ${scanLevel}, validators: ${validatorsToRun.join(', ')}`);
 
+    // Pre-compute which of the 4 real validators will actually run (for progress total)
+    const willRunStructure = validatorsToRun.includes('structure') || validatorsToRun.includes('headings') ||
+      validatorsToRun.includes('reading-order') || validatorsToRun.includes('lists') ||
+      validatorsToRun.includes('language') || validatorsToRun.includes('metadata');
+    const willRunAltText  = validatorsToRun.includes('alt-text');
+    const willRunContrast = validatorsToRun.includes('contrast');
+    const willRunTables   = validatorsToRun.includes('tables');
+    const totalValidators = [willRunStructure, willRunAltText, willRunContrast, willRunTables].filter(Boolean).length;
+    let completedValidators = 0;
+
     // Use real validators if parsedPdf is available, otherwise use stubs
     if (parsed.parsedPdf) {
       logger.info('[PdfAudit] Using real validators with ParsedPDF');
 
       // 1. Structure Validator (includes headings, reading-order, lists, language, metadata)
-      if (validatorsToRun.includes('structure') ||
-          validatorsToRun.includes('headings') ||
-          validatorsToRun.includes('reading-order') ||
-          validatorsToRun.includes('lists') ||
-          validatorsToRun.includes('language') ||
-          validatorsToRun.includes('metadata')) {
+      if (willRunStructure) {
         try {
           logger.info(`[PdfAudit] Running PdfStructureValidator...`);
           const structureResult = await pdfStructureValidator.validate(parsed.parsedPdf);
           result.structureIssues.push(...structureResult.issues);
           result.issues.push(...structureResult.issues);
           logger.info(`[PdfAudit] PdfStructureValidator found ${structureResult.issues.length} issues`);
+          onValidatorComplete?.('Structure & Tags', structureResult.issues.length, ++completedValidators, totalValidators);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfStructureValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfStructureValidator', error: errorMessage });
+          onValidatorComplete?.('Structure & Tags', 0, ++completedValidators, totalValidators);
         }
       }
 
       // 2. Alt Text Validator
-      if (validatorsToRun.includes('alt-text')) {
+      if (willRunAltText) {
         try {
           logger.info(`[PdfAudit] Running PdfAltTextValidator...`);
           const altTextResult = await pdfAltTextValidator.validate(parsed.parsedPdf, true);
           result.altTextIssues.push(...altTextResult.issues);
           result.issues.push(...altTextResult.issues);
           logger.info(`[PdfAudit] PdfAltTextValidator found ${altTextResult.issues.length} issues`);
+          onValidatorComplete?.('Alt Text', altTextResult.issues.length, ++completedValidators, totalValidators);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfAltTextValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfAltTextValidator', error: errorMessage });
+          onValidatorComplete?.('Alt Text', 0, ++completedValidators, totalValidators);
         }
       }
 
       // 3. Contrast Validator
-      if (validatorsToRun.includes('contrast')) {
+      if (willRunContrast) {
         try {
           logger.info(`[PdfAudit] Running PdfContrastValidator...`);
           const contrastValidator = new PdfContrastValidator();
@@ -301,25 +311,29 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           result.contrastIssues.push(...contrastIssues);
           result.issues.push(...contrastIssues);
           logger.info(`[PdfAudit] PdfContrastValidator found ${contrastIssues.length} issues`);
+          onValidatorComplete?.('Color Contrast', contrastIssues.length, ++completedValidators, totalValidators);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfContrastValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfContrastValidator', error: errorMessage });
+          onValidatorComplete?.('Color Contrast', 0, ++completedValidators, totalValidators);
         }
       }
 
       // 4. Table Validator
-      if (validatorsToRun.includes('tables')) {
+      if (willRunTables) {
         try {
           logger.info(`[PdfAudit] Running PdfTableValidator...`);
           const tableResult = await pdfTableValidator.validate(parsed.parsedPdf);
           result.tableIssues.push(...tableResult.issues);
           result.issues.push(...tableResult.issues);
           logger.info(`[PdfAudit] PdfTableValidator found ${tableResult.issues.length} issues`);
+          onValidatorComplete?.('Tables', tableResult.issues.length, ++completedValidators, totalValidators);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfTableValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfTableValidator', error: errorMessage });
+          onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators);
         }
       }
     } else {
@@ -693,7 +707,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     fileName: string,
     scanLevel: ScanLevel = 'basic',
     customValidators?: ValidatorType[],
-    onProgress?: (currentPage: number, totalPages: number) => void
+    onProgress?: (currentPage: number, totalPages: number) => void,
+    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
 
@@ -710,7 +725,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
       // Validate
       logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
-      const validation = await this.validate(parsed, scanLevel, customValidators);
+      const validation = await this.validate(parsed, scanLevel, customValidators, onValidatorComplete);
       logger.info(`[PdfAudit] Validation complete`);
 
       // Generate report
