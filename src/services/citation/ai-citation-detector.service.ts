@@ -401,20 +401,25 @@ class AICitationDetectorService {
 
 INSTRUCTIONS:
 - IGNORE superscript numbers immediately after author names (these are affiliations, NOT citations)
-- Find NUMERIC citations: [1], [2], [3-5], (1), (2)
-- Find FOOTNOTE citations: superscript numbers ¹ ² ³ at end of sentences
+- Find NUMERIC citations in brackets/parentheses: [1], [2], [3-5], (1), (2), [1,2,3], (3-5)
+- Find SUPERSCRIPT/FOOTNOTE citations: bare numbers that appear at end of sentences or clauses, right after punctuation (period, comma) or at the end of a word. These are Vancouver-style superscript citations. Examples:
+  * Single: "...was reported.1 The next..." or "...reported.1"
+  * Comma-separated: "...reported.2,17 The..." or "...shown.1,3,5"
+  * Ranges with dash/en-dash: "...observed.3-5 In..." or "...results.6-14"
+  * Mixed: "...therapy.1,3-5,8 However..."
+  IMPORTANT: These bare numbers are NOT page numbers, figure numbers, or list items. They appear immediately after sentence-ending punctuation or words, without spaces before the number. Capture the full group (e.g., "3-5" not just "3" and "5" separately).
 - Find AUTHOR-YEAR citations: (Smith, 2020), (Smith & Jones, 2020), (Smith et al., 2020)
 
 OUTPUT FORMAT (JSON array only):
 [{"text":"[1,2]","paragraph":1,"startChar":50,"type":"numeric","format":"bracket","numbers":[1,2],"context":"ability [1,2]. However"}]
 
 Fields:
-- text: exact citation text
+- text: exact citation text as it appears (e.g., "3-5" for superscript range, "[1,2]" for bracket)
 - paragraph: paragraph number (1-based)
 - startChar: character position
 - type: "numeric" | "author-year" | "footnote"
 - format: "bracket" | "parenthesis" | "superscript"
-- numbers: array of reference numbers (empty for author-year)
+- numbers: array of ALL reference numbers including expanded ranges (e.g., [3,4,5] for "3-5")
 - context: brief surrounding text (max 30 chars)
 
 ---BEGIN DOCUMENT---
@@ -983,6 +988,132 @@ Return ONLY the style name (one word): APA, MLA, Chicago, Vancouver, IEEE, or Ha
 
     if (addedCount > 0) {
       logger.info(`[AI Citation Detector] Gap-fill added ${addedCount} missed numeric citations`);
+    }
+
+    // NOTE: Superscript gap-fill disabled — bare number detection is too error-prone
+    // (matches page numbers, DOI suffixes, etc. from the reference list).
+    // The AI prompt already handles superscript/Vancouver citations adequately.
+  }
+
+  /**
+   * Gap-fill for superscript (Vancouver-style) citations that appear as bare numbers
+   * after HTML tag stripping. Detects patterns like:
+   *   "reported.3-5 The"  "shown.2,17"  "therapy.1,3-5,8 However"  "results.4 In"
+   * These are numbers (possibly with commas/ranges) that appear right after punctuation
+   * or at end of a word, without being enclosed in brackets or parentheses.
+   */
+  private fillMissedSuperscriptCitations(
+    text: string,
+    citations: InTextCitation[],
+    coveredNumbers: Set<number>
+  ): void {
+    // Match bare numbers (with optional commas, ranges) that appear after:
+    //   - sentence-ending punctuation (. , ; :) with no space before the number
+    //   - or at end of a word (letter immediately before digit)
+    // Pattern: (punctuation or letter)(digits with optional commas/ranges)(space or end or punctuation)
+    // Negative lookbehind: not preceded by another digit (to avoid matching mid-number)
+    // Negative lookbehind: not preceded by [ or ( (already handled by bracket gap-fill)
+    const supPattern = /(?<![(\[])(?<=[.,:;)\]a-zA-Z])(\d+(?:\s*[-–—,]\s*\d+)*)(?=[\s.,:;)\]!?]|$)/g;
+    let match;
+    let addedCount = 0;
+
+    while ((match = supPattern.exec(text)) !== null) {
+      const fullMatch = match[0]; // e.g., "3-5" or "2,17" or "4"
+      const startPos = match.index;
+
+      // Parse numbers from the match
+      const nums: number[] = [];
+      for (const part of fullMatch.split(',')) {
+        const trimmed = part.trim();
+        const rangeMatch = trimmed.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+        if (rangeMatch) {
+          const s = parseInt(rangeMatch[1], 10);
+          const e = parseInt(rangeMatch[2], 10);
+          if (e > s && e - s < 50) {
+            for (let i = s; i <= e; i++) nums.push(i);
+          }
+        } else {
+          const n = parseInt(trimmed, 10);
+          if (!isNaN(n)) nums.push(n);
+        }
+      }
+
+      // Skip if no valid numbers or zero
+      if (nums.length === 0) continue;
+      if (nums.some(n => n === 0)) continue;
+
+      // Skip numbers that look like years (1900-2100)
+      if (nums.every(n => n >= 1900 && n <= 2100)) continue;
+
+      // Skip if ANY number is > 50 — superscript citations rarely exceed 50 refs
+      // This filters out page numbers (90-102, 429-441, etc.) from reference list
+      if (nums.some(n => n > 50)) continue;
+
+      // Skip if all numbers already covered
+      const hasNewNumber = nums.some(n => !coveredNumbers.has(n));
+      if (!hasNewNumber) continue;
+
+      // Skip leading-zero numbers like "000", "051" — these are identifiers, not citations
+      if (/^0/.test(fullMatch)) continue;
+
+      // Heuristic: skip if preceded by common non-citation contexts
+      const before = text.substring(Math.max(0, startPos - 40), startPos);
+      // Skip "Figure 3", "Table 4", "Chapter 5", "page 3", "vol. 3", "no. 4", "Part 2", "pp. 3"
+      if (/(?:figure|fig|table|tab|chapter|ch|pages?|pp|p|vol|no|part|step|item|section|sec|version|v|grade|stage|phase|group|level|type|class|model|case|patient|sample|dose|day|week|month|year|hour|mg|kg|cm|mm|ml|trial|doi|isbn|issn|pmid|ed)\s*\.?\s*$/i.test(before)) continue;
+      // Skip if preceded by "=" or "n=" (sample size)
+      if (/[=n]\s*$/.test(before)) continue;
+      // Skip if preceded by "%" (percentages like "45.3")
+      if (/%\s*$/.test(before)) continue;
+      // Skip decimal numbers — check if the char before is a digit followed by dot
+      if (/\d\.\s*$/.test(before)) continue;
+      // Skip if preceded by a digit (we're in a longer number, e.g. "2009;6")
+      if (/\d$/.test(before)) continue;
+      // Skip list numbering like "1. First item" — check what follows
+      const after = text.substring(startPos + fullMatch.length, startPos + fullMatch.length + 10);
+      if (/^\.\s+[A-Z]/.test(fullMatch + after.substring(0, 10)) && nums.length === 1) continue;
+      // Skip if in reference list section (look for nearby reference patterns)
+      if (/\d+\.\s*$/.test(before) && /^[-–]/.test(after)) continue;
+
+      // Get context
+      const contextStart = Math.max(0, startPos - 30);
+      const contextEnd = Math.min(text.length, startPos + fullMatch.length + 30);
+      const context = text.substring(contextStart, contextEnd);
+
+      // Calculate paragraph index
+      let paraIdx = 0;
+      let offset = 0;
+      const parts = text.split(/(\n\n+)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const para = parts[i];
+        if (startPos >= offset && startPos < offset + para.length) {
+          paraIdx = i / 2;
+          break;
+        }
+        offset += para.length + (parts[i + 1]?.length || 0);
+      }
+
+      citations.push({
+        id: `citation-supfill-${addedCount + 1}`,
+        text: fullMatch,
+        position: {
+          paragraph: paraIdx,
+          sentence: 0,
+          startChar: startPos,
+          endChar: startPos + fullMatch.length,
+        },
+        type: 'footnote',
+        format: 'superscript',
+        numbers: nums,
+        context: context.trim(),
+      });
+
+      for (const n of nums) coveredNumbers.add(n);
+      addedCount++;
+      logger.info(`[AI Citation Detector] Superscript gap-fill: added "${fullMatch}" with numbers [${nums.join(', ')}]`);
+    }
+
+    if (addedCount > 0) {
+      logger.info(`[AI Citation Detector] Superscript gap-fill added ${addedCount} missed citations`);
     }
   }
 }

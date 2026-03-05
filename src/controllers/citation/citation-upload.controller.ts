@@ -25,6 +25,7 @@ import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/
 import { normalizeSuperscripts } from '../../utils/unicode';
 import { claudeService } from '../../services/ai/claude.service';
 import { isAuthenticated } from '../../utils/auth';
+import { convertDocxToHtml } from '../../services/document/docx-conversion.service';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -352,6 +353,18 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(fileBuffer);
       const stats = await docxProcessorService.getStatistics(fileBuffer);
 
+      // Convert DOCX to styled HTML using Pandoc for better formatting preservation
+      let styledHtml = content.html;
+      try {
+        const pandocResult = await convertDocxToHtml(fileBuffer);
+        if (pandocResult.html) {
+          styledHtml = pandocResult.html;
+          logger.info(`[Citation Upload] Using Pandoc HTML (${styledHtml.length} chars) for fullHtml`);
+        }
+      } catch (pandocError) {
+        logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
+      }
+
       // Create job
       const job = await prisma.job.create({
         data: {
@@ -390,7 +403,7 @@ export class CitationUploadController {
           documentContent: {
             create: {
               fullText: content.text,
-              fullHtml: content.html,
+              fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
             }
@@ -569,6 +582,18 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(file.buffer);
       const stats = await docxProcessorService.getStatistics(file.buffer);
 
+      // Convert DOCX to styled HTML using Pandoc for better formatting preservation
+      let styledHtml = content.html;
+      try {
+        const pandocResult = await convertDocxToHtml(file.buffer);
+        if (pandocResult.html) {
+          styledHtml = pandocResult.html;
+          logger.info(`[Citation Upload] Using Pandoc HTML (${styledHtml.length} chars) for fullHtml`);
+        }
+      } catch (pandocError) {
+        logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
+      }
+
       // Create job
       const job = await prisma.job.create({
         data: {
@@ -617,7 +642,7 @@ export class CitationUploadController {
           documentContent: {
             create: {
               fullText: content.text,
-              fullHtml: content.html,
+              fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
             }

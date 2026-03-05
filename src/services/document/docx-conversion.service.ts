@@ -565,6 +565,84 @@ export async function extractDocxStyles(buffer: Buffer): Promise<DocxStyleInfo> 
 }
 
 /**
+ * Inline critical DOCX styles directly onto HTML elements.
+ * TipTap strips <style> blocks and custom CSS classes, so Pandoc's class-based
+ * output loses all formatting. This function adds inline style="" attributes
+ * to headings, paragraphs, and table cells so TipTap preserves them.
+ */
+function inlineDocxStyles(html: string, docxStyles?: DocxStyleInfo): string {
+  const bodyFont = docxStyles?.normal?.font || docxStyles?.defaultFont || 'Calibri';
+  const bodySize = docxStyles?.normal?.size || docxStyles?.defaultSize || 11;
+
+  // Build inline style strings for each heading level
+  const fallbackSizes: Record<number, number> = { 1: 24, 2: 18, 3: 14, 4: 12, 5: 11, 6: 10 };
+  const minRatios: Record<number, number> = { 1: 1.8, 2: 1.4, 3: 1.2, 4: 1.1, 5: 1.0, 6: 0.9 };
+
+  const headingStyles: Record<number, string> = {};
+  const headingColors: Record<number, string> = {};
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    const ext = docxStyles?.headings[lvl];
+    const font = ext?.font || bodyFont;
+    const rawSize = ext?.size || fallbackSizes[lvl] || 12;
+    const minSize = Math.round(bodySize * (minRatios[lvl] || 1.0));
+    const size = Math.max(rawSize, minSize);
+    // Keep color on the element style for non-TipTap renderers, but also track it
+    // separately so we can inject a <span> for TipTap's Color extension (span-level only).
+    const color = ext?.color ? `color: #${ext.color}; ` : '';
+    if (ext?.color) headingColors[lvl] = `#${ext.color}`;
+    const style = ext?.italic ? 'font-style: italic; ' : '';
+    headingStyles[lvl] = `font-family: '${font}', sans-serif; font-size: ${size}pt; font-weight: bold; ${style}${color}margin: ${Math.round(size * 0.75)}pt 0 ${Math.round(size * 0.375)}pt 0;`;
+  }
+
+  // Inline styles onto heading tags
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    const re = new RegExp(`<h${lvl}([^>]*)>`, 'gi');
+    html = html.replace(re, (_match, attrs) => {
+      const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+      const merged = existingStyle ? `${existingStyle}; ${headingStyles[lvl]}` : headingStyles[lvl];
+      const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+      return `<h${lvl} ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+    });
+  }
+
+  // TipTap only preserves color via TextStyle marks (span-level), not on block elements.
+  // Wrap heading content in <span style="color:..."> so the Color extension keeps it.
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    if (!headingColors[lvl]) continue;
+    const re = new RegExp(`(<h${lvl}[^>]*>)([\\s\\S]*?)(<\\/h${lvl}>)`, 'gi');
+    html = html.replace(re, `$1<span style="color: ${headingColors[lvl]}">$2</span>$3`);
+  }
+
+  // Inline base font on the container div (TipTap strips the div but ProseMirror inherits)
+  // Instead, apply to each <p> so TipTap's TextStyle extension preserves it
+  const pStyle = `font-family: '${bodyFont}', sans-serif; font-size: ${bodySize}pt; line-height: 1.5;`;
+  html = html.replace(/<p([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    if (existingStyle) return _match; // don't override existing inline styles
+    return `<p style="${pStyle}">`;
+  });
+
+  // Inline table cell styles
+  html = html.replace(/<td([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    const base = `border: 1px solid #333; padding: 6pt 8pt; vertical-align: top; font-size: ${bodySize}pt;`;
+    const merged = existingStyle ? `${existingStyle}; ${base}` : base;
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<td ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+  });
+
+  html = html.replace(/<th([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    const base = `border: 1px solid #333; padding: 6pt 8pt; vertical-align: top; font-weight: bold; background-color: #f0f0f0; font-size: ${bodySize}pt;`;
+    const merged = existingStyle ? `${existingStyle}; ${base}` : base;
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<th ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+  });
+
+  return html;
+}
+
+/**
  * Generate CSS styles for the document, using extracted DOCX styles when available
  */
 export function generateStyles(docxStyles?: DocxStyleInfo): string {
@@ -892,6 +970,14 @@ export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResul
     // Extract actual styles from the DOCX and generate matching CSS
     const docxStyles = await extractDocxStyles(buffer);
     const styles = generateStyles(docxStyles);
+
+    // Inline critical styles onto HTML elements so TipTap preserves them.
+    // TipTap strips <style> blocks and custom classes, so Pandoc's class-based
+    // CSS never reaches the rendered editor. Mammoth doesn't have this problem
+    // because it produces inline styles natively.
+    if (usedConverter === 'pandoc') {
+      html = inlineDocxStyles(html, docxStyles);
+    }
 
     // Calculate metadata
     const textContent = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1437,7 +1523,16 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
 }
 
 /**
- * Compute word-level Jaccard similarity between two texts.
+ * Tokenize text into lowercase words with punctuation stripped for similarity comparison.
+ * Lowercasing prevents 'Introduction' vs 'introduction' from counting as different tokens.
+ * Stripping punctuation prevents 'word,' vs 'word' from counting as different tokens.
+ */
+function tokenize(text: string): string[] {
+  return text.toLowerCase().split(/\s+/).filter(Boolean).map(w => w.replace(/[^\w]/g, '')).filter(Boolean);
+}
+
+/**
+ * Compute word-level Jaccard similarity between two texts (order-insensitive).
  * Uses multiset word counts so repeated words are handled correctly.
  * Returns a value between 0 (completely different) and 1 (identical).
  */
@@ -1445,8 +1540,8 @@ function computeWordSimilarity(a: string, b: string): number {
   if (a === b) return 1;
   if (!a.length || !b.length) return 0;
 
-  const wordsA = a.split(/\s+/).filter(Boolean);
-  const wordsB = b.split(/\s+/).filter(Boolean);
+  const wordsA = tokenize(a);
+  const wordsB = tokenize(b);
   if (!wordsA.length || !wordsB.length) return 0;
 
   const countA = new Map<string, number>();
@@ -1455,13 +1550,11 @@ function computeWordSimilarity(a: string, b: string): number {
   const countB = new Map<string, number>();
   for (const w of wordsB) countB.set(w, (countB.get(w) || 0) + 1);
 
-  // Intersection: sum of min counts
   let intersection = 0;
   for (const [w, count] of countA) {
     intersection += Math.min(count, countB.get(w) || 0);
   }
 
-  // Union: sum of max counts
   const allWords = new Set([...countA.keys(), ...countB.keys()]);
   let union = 0;
   for (const w of allWords) {
@@ -1469,6 +1562,83 @@ function computeWordSimilarity(a: string, b: string): number {
   }
 
   return union > 0 ? intersection / union : 0;
+}
+
+/**
+ * Compute order-sensitive sequence similarity using longest common subsequence (LCS)
+ * on token lists. Returns ratio of LCS length to the longer token list length.
+ * Catches reordering that bag-of-words Jaccard misses.
+ */
+function computeSequenceSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+
+  const tokensA = tokenize(a);
+  const tokensB = tokenize(b);
+  if (!tokensA.length || !tokensB.length) return 0;
+
+  const m = tokensA.length;
+  const n = tokensB.length;
+
+  // For very large documents, use a windowed approach to avoid O(m*n) memory.
+  // LCS on 50k+ tokens would be expensive; fall back to bigram overlap.
+  if (m * n > 4_000_000) {
+    return computeBigramSequenceOverlap(tokensA, tokensB);
+  }
+
+  // Standard LCS with two-row DP (O(min(m,n)) space)
+  const shorter = m <= n ? tokensA : tokensB;
+  const longer = m <= n ? tokensB : tokensA;
+  const sLen = shorter.length;
+  const lLen = longer.length;
+
+  let prev = new Array<number>(sLen + 1).fill(0);
+  let curr = new Array<number>(sLen + 1).fill(0);
+
+  for (let i = 1; i <= lLen; i++) {
+    for (let j = 1; j <= sLen; j++) {
+      if (longer[i - 1] === shorter[j - 1]) {
+        curr[j] = prev[j - 1] + 1;
+      } else {
+        curr[j] = Math.max(prev[j], curr[j - 1]);
+      }
+    }
+    [prev, curr] = [curr, prev];
+    curr.fill(0);
+  }
+
+  const lcsLength = prev[sLen];
+  return lcsLength / Math.max(m, n);
+}
+
+/**
+ * Bigram sequence overlap for large documents where full LCS is too expensive.
+ * Compares ordered bigram sequences — reordering breaks bigram continuity.
+ */
+function computeBigramSequenceOverlap(tokensA: string[], tokensB: string[]): number {
+  if (tokensA.length < 2 || tokensB.length < 2) {
+    return tokensA.length === tokensB.length && tokensA.every((t, i) => t === tokensB[i]) ? 1 : 0;
+  }
+
+  const bigramsA = new Map<string, number>();
+  for (let i = 0; i < tokensA.length - 1; i++) {
+    const bg = tokensA[i] + '\0' + tokensA[i + 1];
+    bigramsA.set(bg, (bigramsA.get(bg) || 0) + 1);
+  }
+
+  const bigramsB = new Map<string, number>();
+  for (let i = 0; i < tokensB.length - 1; i++) {
+    const bg = tokensB[i] + '\0' + tokensB[i + 1];
+    bigramsB.set(bg, (bigramsB.get(bg) || 0) + 1);
+  }
+
+  let intersection = 0;
+  for (const [bg, count] of bigramsA) {
+    intersection += Math.min(count, bigramsB.get(bg) || 0);
+  }
+
+  const totalBigrams = Math.max(tokensA.length - 1, tokensB.length - 1);
+  return totalBigrams > 0 ? intersection / totalBigrams : 0;
 }
 
 /**
@@ -1614,17 +1784,24 @@ export async function exportWithTrackChanges(
     }
     const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
     const originalPlainText = normalize(xmlTextRuns.join(''));
-    const cleanPlainText = normalize(decodeHtmlEntities(stripHtmlTags(cleanHtml)));
+    // Insert spaces between adjacent tags before stripping so </p><p> doesn't merge words.
+    // normalize() then collapses any resulting multiple spaces.
+    const spacedHtml = cleanHtml.replace(/>\s*</g, '> <');
+    const cleanPlainText = normalize(decodeHtmlEntities(stripHtmlTags(spacedHtml)));
 
-    // Use word-level similarity instead of exact match.
-    // The DOCX→HTML→strip-tags roundtrip introduces minor differences
-    // (entities, whitespace, special chars) that make exact comparison
-    // always fail, even when the user hasn't changed anything.
-    const similarity = computeWordSimilarity(originalPlainText, cleanPlainText);
-    logger.info(`[DocxConversion] Text similarity: ${(similarity * 100).toFixed(1)}% (original: ${originalPlainText.length} chars, html: ${cleanPlainText.length} chars)`);
+    // Dual similarity check: bag-of-words Jaccard (content) + sequence LCS (order).
+    // Jaccard alone misses reordering; sequence alone is noisy with minor token diffs.
+    // Both must pass to treat the document as unchanged.
+    const wordSim = computeWordSimilarity(originalPlainText, cleanPlainText);
+    const seqSim = computeSequenceSimilarity(originalPlainText, cleanPlainText);
+    logger.info(`[DocxConversion] Similarity — word: ${(wordSim * 100).toFixed(1)}%, sequence: ${(seqSim * 100).toFixed(1)}% (original: ${originalPlainText.length} chars, html: ${cleanPlainText.length} chars)`);
 
-    if (similarity >= 0.95) {
-      // Texts are substantially identical — return original to preserve exact formatting
+    // Thresholds: 0.95 word / 0.90 sequence.
+    // Trade-off: very small edits (a few words in a long doc) may still exceed these
+    // thresholds and return the original DOCX, silently discarding the edit. This is
+    // acceptable because (a) such tiny diffs are usually roundtrip artifacts not real
+    // edits, and (b) real edits should use track changes which take a separate code path.
+    if (wordSim >= 0.95 && seqSim >= 0.90) {
       logger.info('[DocxConversion] No significant changes detected, returning original DOCX');
       return originalBuffer;
     }
@@ -1652,3 +1829,6 @@ export const docxConversionService = {
   generateStyles,
   extractDocxStyles,
 };
+
+// Exported for unit testing only
+export const _testing = { computeWordSimilarity, computeSequenceSimilarity, tokenize };

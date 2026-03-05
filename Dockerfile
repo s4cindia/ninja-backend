@@ -44,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     wget \
     && wget -qO /tmp/pandoc.deb https://github.com/jgm/pandoc/releases/download/3.1.3/pandoc-3.1.3-1-amd64.deb \
+    && echo "caa7e0410f9e2cb1da2eb8db13cc97b5548fe455985e2c944e3929d22f99bcdc  /tmp/pandoc.deb" | sha256sum -c - \
     && dpkg -i /tmp/pandoc.deb \
     && rm /tmp/pandoc.deb \
     && apt-get purge -y wget && apt-get autoremove -y \
