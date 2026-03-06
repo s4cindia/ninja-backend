@@ -350,7 +350,7 @@ async function executeCheck(
             match.sourcePublication || '',
             match.sourceYear && match.sourceYear !== 'unknown' ? match.sourceYear : '',
           ].filter(Boolean);
-          const externalTitle = titleParts.join('. ') + (validDoi ? `. DOI: ${validDoi}` : '') + ' [AI-suggested — verify before citing]';
+          const externalTitle = titleParts.join('. ') + (validDoi ? `. DOI: ${validDoi}` : '') || null;
 
           // Prefer validated DOI link, then provided URL
           const externalUrl = validDoi
@@ -358,8 +358,8 @@ async function executeCheck(
             : (match.sourceUrl || null);
 
           // Only persist matches with minimum verifiability — a URL or a named source
-          if (!externalUrl && !match.sourceName && !externalTitle) {
-            logger.debug(`[PlagiarismCheck] Skipping unverifiable match — no URL, source name, or title`);
+          if (!externalUrl && !match.sourceName) {
+            logger.debug(`[PlagiarismCheck] Skipping unverifiable match — no URL or source name`);
             continue;
           }
 

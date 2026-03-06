@@ -1010,7 +1010,9 @@ export class ValidatorController {
             );
             docxBuffer = exportResult.buffer;
             if (exportResult.originalPreserved) {
-              logger.info(`[Validator] No significant edits detected for ${documentId}, returning original DOCX`);
+              const wSim = exportResult.wordSimilarity != null ? `${(exportResult.wordSimilarity * 100).toFixed(1)}%` : 'n/a';
+              const sSim = exportResult.sequenceSimilarity != null ? `${(exportResult.sequenceSimilarity * 100).toFixed(1)}%` : 'n/a';
+              logger.info(`[Validator] Original DOCX preserved for ${documentId} (word: ${wSim}, seq: ${sSim})`);
             } else {
               logger.info(`[Validator] Export completed (${exportMode}) for ${documentId} — used original DOCX or fallback conversion`);
             }

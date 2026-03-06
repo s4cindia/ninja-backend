@@ -22,6 +22,7 @@ import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import pdfParse from 'pdf-parse';
 import { logger } from '../../lib/logger';
+import { computeWordSimilarity, computeSequenceSimilarity } from '../../utils/text-similarity';
 
 type PdfParseResult = {
   numpages: number;
@@ -569,6 +570,11 @@ export async function extractDocxStyles(buffer: Buffer): Promise<DocxStyleInfo> 
  * TipTap strips <style> blocks and custom CSS classes, so Pandoc's class-based
  * output loses all formatting. This function adds inline style="" attributes
  * to headings, paragraphs, and table cells so TipTap preserves them.
+ *
+ * NOTE: The regex patterns (e.g. /<h${lvl}([^>]*)>/gi) assume Pandoc's predictable
+ * single-line HTML output. They would fail on attributes spanning multiple lines,
+ * attributes containing '>' in quoted values, or escaped quotes. This is acceptable
+ * because our only HTML source is Pandoc, which produces well-structured single-line tags.
  */
 function inlineDocxStyles(html: string, docxStyles?: DocxStyleInfo): string {
   const bodyFont = docxStyles?.normal?.font || docxStyles?.defaultFont || 'Calibri';
@@ -1523,124 +1529,6 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
   }
 }
 
-/**
- * Tokenize text into lowercase words with punctuation stripped for similarity comparison.
- * Lowercasing prevents 'Introduction' vs 'introduction' from counting as different tokens.
- * Stripping punctuation prevents 'word,' vs 'word' from counting as different tokens.
- */
-function tokenize(text: string): string[] {
-  return text.toLowerCase().split(/\s+/).filter(Boolean).map(w => w.replace(/[^\w]/g, '')).filter(Boolean);
-}
-
-/**
- * Compute word-level Jaccard similarity between two texts (order-insensitive).
- * Uses multiset word counts so repeated words are handled correctly.
- * Returns a value between 0 (completely different) and 1 (identical).
- */
-function computeWordSimilarity(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-
-  const wordsA = tokenize(a);
-  const wordsB = tokenize(b);
-  if (!wordsA.length || !wordsB.length) return 0;
-
-  const countA = new Map<string, number>();
-  for (const w of wordsA) countA.set(w, (countA.get(w) || 0) + 1);
-
-  const countB = new Map<string, number>();
-  for (const w of wordsB) countB.set(w, (countB.get(w) || 0) + 1);
-
-  let intersection = 0;
-  for (const [w, count] of countA) {
-    intersection += Math.min(count, countB.get(w) || 0);
-  }
-
-  const allWords = new Set([...countA.keys(), ...countB.keys()]);
-  let union = 0;
-  for (const w of allWords) {
-    union += Math.max(countA.get(w) || 0, countB.get(w) || 0);
-  }
-
-  return union > 0 ? intersection / union : 0;
-}
-
-/**
- * Compute order-sensitive sequence similarity using longest common subsequence (LCS)
- * on token lists. Returns ratio of LCS length to the longer token list length.
- * Catches reordering that bag-of-words Jaccard misses.
- */
-function computeSequenceSimilarity(a: string, b: string): number {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-
-  const tokensA = tokenize(a);
-  const tokensB = tokenize(b);
-  if (!tokensA.length || !tokensB.length) return 0;
-
-  const m = tokensA.length;
-  const n = tokensB.length;
-
-  // For very large documents, use a windowed approach to avoid O(m*n) memory.
-  // LCS on 50k+ tokens would be expensive; fall back to bigram overlap.
-  if (m * n > 4_000_000) {
-    return computeBigramSequenceOverlap(tokensA, tokensB);
-  }
-
-  // Standard LCS with two-row DP (O(min(m,n)) space)
-  const shorter = m <= n ? tokensA : tokensB;
-  const longer = m <= n ? tokensB : tokensA;
-  const sLen = shorter.length;
-  const lLen = longer.length;
-
-  let prev = new Array<number>(sLen + 1).fill(0);
-  let curr = new Array<number>(sLen + 1).fill(0);
-
-  for (let i = 1; i <= lLen; i++) {
-    for (let j = 1; j <= sLen; j++) {
-      if (longer[i - 1] === shorter[j - 1]) {
-        curr[j] = prev[j - 1] + 1;
-      } else {
-        curr[j] = Math.max(prev[j], curr[j - 1]);
-      }
-    }
-    [prev, curr] = [curr, prev];
-    curr.fill(0);
-  }
-
-  const lcsLength = prev[sLen];
-  return lcsLength / Math.max(m, n);
-}
-
-/**
- * Bigram sequence overlap for large documents where full LCS is too expensive.
- * Compares ordered bigram sequences — reordering breaks bigram continuity.
- */
-function computeBigramSequenceOverlap(tokensA: string[], tokensB: string[]): number {
-  if (tokensA.length < 2 || tokensB.length < 2) {
-    return tokensA.length === tokensB.length && tokensA.every((t, i) => t === tokensB[i]) ? 1 : 0;
-  }
-
-  const bigramsA = new Map<string, number>();
-  for (let i = 0; i < tokensA.length - 1; i++) {
-    const bg = tokensA[i] + '\0' + tokensA[i + 1];
-    bigramsA.set(bg, (bigramsA.get(bg) || 0) + 1);
-  }
-
-  const bigramsB = new Map<string, number>();
-  for (let i = 0; i < tokensB.length - 1; i++) {
-    const bg = tokensB[i] + '\0' + tokensB[i + 1];
-    bigramsB.set(bg, (bigramsB.get(bg) || 0) + 1);
-  }
-
-  let intersection = 0;
-  for (const [bg, count] of bigramsA) {
-    intersection += Math.min(count, bigramsB.get(bg) || 0);
-  }
-
-  const totalBigrams = Math.max(tokensA.length - 1, tokensB.length - 1);
-  return totalBigrams > 0 ? intersection / totalBigrams : 0;
-}
 
 /**
  * Decode HTML entities in text extracted from HTML spans.
@@ -1736,6 +1624,10 @@ export interface ExportResult {
   buffer: Buffer;
   /** true when the original DOCX was returned unchanged (edits below similarity threshold) */
   originalPreserved: boolean;
+  /** Word-level similarity (0–1) between original DOCX text and current HTML text. Present when originalPreserved is true. */
+  wordSimilarity?: number;
+  /** Sequence-level similarity (0–1). Present when originalPreserved is true. */
+  sequenceSimilarity?: number;
 }
 
 export async function exportWithTrackChanges(
@@ -1809,8 +1701,12 @@ export async function exportWithTrackChanges(
     // acceptable because (a) such tiny diffs are usually roundtrip artifacts not real
     // edits, and (b) real edits should use track changes which take a separate code path.
     if (wordSim >= 0.95 && seqSim >= 0.90) {
-      logger.info('[DocxConversion] No significant changes detected, returning original DOCX');
-      return { buffer: originalBuffer, originalPreserved: true };
+      if (wordSim < 1 || seqSim < 1) {
+        logger.warn(`[DocxConversion] Minor edits detected but below threshold — returning original DOCX (word: ${(wordSim * 100).toFixed(1)}%, seq: ${(seqSim * 100).toFixed(1)}%). Edits will NOT appear in the exported file.`);
+      } else {
+        logger.info('[DocxConversion] No changes detected, returning original DOCX');
+      }
+      return { buffer: originalBuffer, originalPreserved: true, wordSimilarity: wordSim, sequenceSimilarity: seqSim };
     }
 
     // Text was manually changed without track changes — use Pandoc
@@ -1836,6 +1732,3 @@ export const docxConversionService = {
   generateStyles,
   extractDocxStyles,
 };
-
-// Exported for unit testing only
-export const _testing = { computeWordSimilarity, computeSequenceSimilarity, tokenize };

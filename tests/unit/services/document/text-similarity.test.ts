@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { _testing } from '../../../../src/services/document/docx-conversion.service';
-
-const { computeWordSimilarity, computeSequenceSimilarity, tokenize } = _testing;
+import { computeWordSimilarity, computeSequenceSimilarity, tokenize } from '../../../../src/utils/text-similarity';
 
 describe('tokenize', () => {
   it('lowercases and strips punctuation', () => {

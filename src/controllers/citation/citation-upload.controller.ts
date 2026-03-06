@@ -45,7 +45,7 @@ function htmlToPlainText(html: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&#\d+;/g, '')            // remaining numeric entities
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))  // decode numeric entities
     .replace(/[ \t]+/g, ' ')           // collapse horizontal whitespace
     .replace(/\n{3,}/g, '\n\n')        // collapse excessive newlines
     .trim();
@@ -447,12 +447,14 @@ export class CitationUploadController {
         data: { status: 'UPLOADED' }
       });
 
-      // Check if async processing is available (Redis configured)
-      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
+      // In development, default to sync processing — async queue is unreliable
+      // with remote Redis. Set CITATION_FORCE_ASYNC=true to test queue mode locally.
+      const isDev = process.env.NODE_ENV !== 'production';
       const forceSync = process.env.CITATION_FORCE_SYNC === 'true';
-      const useAsyncProcessing = !forceSync && areQueuesAvailable();
+      const forceAsync = process.env.CITATION_FORCE_ASYNC === 'true';
+      const useAsyncProcessing = forceAsync || (!forceSync && !isDev && areQueuesAvailable());
 
-      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSync}`);
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 
       if (useAsyncProcessing) {
         const citationQueue = getCitationQueue();
@@ -674,11 +676,14 @@ export class CitationUploadController {
       });
 
       // Check if async processing is available (Redis configured)
-      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
+      // In development, default to sync processing — async queue is unreliable
+      // with remote Redis. Set CITATION_FORCE_ASYNC=true to test queue mode locally.
+      const isDevUpload = process.env.NODE_ENV !== 'production';
       const forceSyncUpload = process.env.CITATION_FORCE_SYNC === 'true';
-      const useAsyncProcessingUpload = !forceSyncUpload && areQueuesAvailable();
+      const forceAsyncUpload = process.env.CITATION_FORCE_ASYNC === 'true';
+      const useAsyncProcessingUpload = forceAsyncUpload || (!forceSyncUpload && !isDevUpload && areQueuesAvailable());
 
-      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSyncUpload}`);
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 
       if (useAsyncProcessingUpload) {
         const citationQueue = getCitationQueue();
