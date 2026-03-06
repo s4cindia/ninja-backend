@@ -55,6 +55,20 @@ async function detectAndBackfillContentType(
   return 'UNKNOWN';
 }
 
+/**
+ * FNV-1a hash for advisory lock keys. Produces well-distributed 32-bit integers
+ * from UUID strings, avoiding the collision-prone byte-sum approach.
+ */
+function fnv1aHash(str: string): number {
+  let hash = 0x811c9dc5; // FNV offset basis
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0; // FNV prime, keep as uint32
+  }
+  // Convert to signed 32-bit for Postgres advisory lock compatibility
+  return hash | 0;
+}
+
 export class ValidatorController {
   /**
    * Persist HTML content to DB and optionally create a version snapshot.
@@ -68,31 +82,40 @@ export class ValidatorController {
     createVersion: boolean,
     via?: string
   ): Promise<{ updatedAt: Date; wordCount: number; versionNumber: number | null }> {
-    const fullText = htmlToPlainText(content);
+    // Defense-in-depth: strip <script> blocks before persisting.
+    // Keep <style> tags — they contain document formatting CSS from the TipTap editor.
+    const sanitized = content
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+    const fullText = htmlToPlainText(sanitized);
     const wordCount = fullText.split(/\s+/).filter(Boolean).length;
 
-    const updated = await prisma.editorialDocumentContent.upsert({
-      where: { documentId },
-      create: { documentId, fullHtml: content, fullText, wordCount },
-      update: { fullHtml: content, fullText, wordCount, updatedAt: new Date() },
-    });
+    // Wrap all writes in a single transaction for atomicity:
+    // content upsert, document timestamp, and version snapshot must all succeed or all fail.
+    const lockKey = BigInt(fnv1aHash(documentId));
+    const shouldVersion = createVersion && sanitized !== previousContent;
 
-    await prisma.editorialDocument.update({
-      where: { id: documentId },
-      data: { updatedAt: new Date() },
-    });
+    const result = await prisma.$transaction(async (tx) => {
+      const upserted = await tx.editorialDocumentContent.upsert({
+        where: { documentId },
+        create: { documentId, fullHtml: sanitized, fullText, wordCount },
+        update: { fullHtml: sanitized, fullText, wordCount, updatedAt: new Date() },
+      });
 
-    let versionNumber: number | null = null;
-    if (createVersion && content !== previousContent) {
-      const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
-      versionNumber = await prisma.$transaction(async (tx) => {
+      await tx.editorialDocument.update({
+        where: { id: documentId },
+        data: { updatedAt: new Date() },
+      });
+
+      let newVersion: number | null = null;
+      if (shouldVersion) {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
         const latestVersion = await tx.documentVersion.findFirst({
           where: { documentId },
           orderBy: { version: 'desc' },
           select: { version: true },
         });
-        const newVersion = (latestVersion?.version || 0) + 1;
+        newVersion = (latestVersion?.version || 0) + 1;
         await tx.documentVersion.create({
           data: {
             documentId,
@@ -104,16 +127,20 @@ export class ValidatorController {
               wordCount,
               ...(via ? { via } : {}),
             }],
-            snapshot: { content, wordCount, savedAt: new Date().toISOString() },
+            snapshot: { content: sanitized, wordCount, savedAt: new Date().toISOString() },
             snapshotType: 'full',
           },
         });
-        return newVersion;
-      });
-      logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId}${via ? ` (via ${via})` : ''}`);
+      }
+
+      return { updatedAt: upserted.updatedAt, versionNumber: newVersion };
+    });
+
+    if (result.versionNumber) {
+      logger.info(`[Validator] Created version ${result.versionNumber} for document: ${documentId}${via ? ` (via ${via})` : ''}`);
     }
 
-    return { updatedAt: updated.updatedAt, wordCount, versionNumber };
+    return { updatedAt: result.updatedAt, wordCount, versionNumber: result.versionNumber };
   }
 
   /**
@@ -972,10 +999,13 @@ export class ValidatorController {
         return;
       }
 
+      // Note: if the client calls presign-save but never calls confirm-save (crash,
+      // network failure, timeout), the temp S3 object is orphaned. An S3 lifecycle rule
+      // on the uploads/ prefix (e.g., 1-day expiry) should be configured to clean these up.
       const result = await s3Service.getPresignedUploadUrl(
         tenantId,
         `${documentId}-content.html`,
-        'text/html',
+        'text/html; charset=utf-8',
         900 // 15 minutes
       );
 
@@ -1014,9 +1044,10 @@ export class ValidatorController {
       const { documentId } = req.params;
       const { contentKey, createVersion = true } = req.body;
 
-      // Validate contentKey belongs to this tenant and document (prevents cross-tenant S3 access)
-      const expectedPrefix = `uploads/${tenantId}/`;
-      if (!contentKey.startsWith(expectedPrefix) || !contentKey.includes(documentId)) {
+      // Validate contentKey matches the canonical format from getPresignedUploadUrl:
+      // uploads/{tenantId}/{timestamp}-{documentId}-content.html
+      const validKeyPattern = new RegExp(`^uploads/${tenantId}/\\d+-${documentId}-content\\.html$`);
+      if (!validKeyPattern.test(contentKey)) {
         res.status(403).json({
           success: false,
           error: { code: 'FORBIDDEN', message: 'contentKey does not belong to this tenant/document' },
