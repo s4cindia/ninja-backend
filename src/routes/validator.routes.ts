@@ -108,12 +108,35 @@ router.get(
 
 /**
  * PUT /api/v1/validator/documents/:documentId/content
- * Save document content (HTML)
+ * Save document content (HTML) — used by local dev (direct body)
  */
 router.put(
   '/documents/:documentId/content',
   validate({ params: getDocumentParamsSchema }),
   validatorController.saveDocumentContent.bind(validatorController)
+);
+
+/**
+ * POST /api/v1/validator/documents/:documentId/presign-save
+ * Get presigned S3 URL for content upload (cloud/production).
+ * Bypasses CloudFront WAF body-size limits that block large PUT /content requests.
+ * Returns 501 when S3 is not configured (local dev) — frontend should fall back to PUT /content.
+ */
+router.post(
+  '/documents/:documentId/presign-save',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.presignContentSave.bind(validatorController)
+);
+
+/**
+ * POST /api/v1/validator/documents/:documentId/confirm-save
+ * Confirm presigned S3 content upload and persist to DB (cloud/production).
+ * Body: { contentKey: string, createVersion?: boolean }
+ */
+router.post(
+  '/documents/:documentId/confirm-save',
+  validate({ params: getDocumentParamsSchema }),
+  validatorController.confirmContentSave.bind(validatorController)
 );
 
 /**

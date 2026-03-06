@@ -8,6 +8,7 @@ import path from 'path';
 import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
+import { s3Service } from '../../services/s3.service';
 import { docxConversionService } from '../../services/document/docx-conversion.service';
 import { contentTypeDetector } from '../../services/content-type/content-type-detector.service';
 import { htmlToPlainText } from '../../utils/html-to-text';
@@ -936,6 +937,209 @@ export class ValidatorController {
       });
     } catch (error) {
       logger.error('[Validator] Failed to restore document version:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/validator/documents/:documentId/presign-save
+   * Get a presigned S3 URL for uploading document content.
+   *
+   * Bypasses CloudFront WAF body-size inspection limits that block large
+   * PUT /content requests. The frontend uploads HTML directly to S3 via
+   * the presigned URL, then calls confirm-save with the S3 key.
+   *
+   * Returns: { uploadUrl, contentKey, expiresIn }
+   */
+  async presignContentSave(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { tenantId } = req.user!;
+      const { documentId } = req.params;
+
+      // Verify document exists and belongs to tenant
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        select: { id: true },
+      });
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' },
+        });
+        return;
+      }
+
+      if (!s3Service.isConfigured()) {
+        // S3 not available — tell frontend to fall back to direct PUT
+        res.status(501).json({
+          success: false,
+          error: { code: 'S3_NOT_CONFIGURED', message: 'Presigned save not available, use PUT /content instead' },
+        });
+        return;
+      }
+
+      const result = await s3Service.getPresignedUploadUrl(
+        tenantId,
+        `${documentId}-content.html`,
+        'text/html',
+        900 // 15 minutes
+      );
+
+      logger.info(`[Validator] Generated presigned save URL for document: ${documentId}`);
+
+      res.json({
+        success: true,
+        data: {
+          uploadUrl: result.uploadUrl,
+          contentKey: result.fileKey,
+          expiresIn: result.expiresIn,
+        },
+      });
+    } catch (error) {
+      logger.error('[Validator] Failed to generate presigned save URL:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/validator/documents/:documentId/confirm-save
+   * Confirm a presigned S3 content upload and persist to the database.
+   *
+   * Body: { contentKey: string, createVersion?: boolean }
+   *
+   * Reads the uploaded HTML from S3, stores it in EditorialDocumentContent,
+   * optionally creates a version snapshot, then deletes the temp S3 object.
+   */
+  async confirmContentSave(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { tenantId, id: userId } = req.user!;
+      const { documentId } = req.params;
+      const { contentKey, createVersion = true } = req.body;
+
+      if (!contentKey || typeof contentKey !== 'string') {
+        res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_KEY', message: 'contentKey is required' },
+        });
+        return;
+      }
+
+      // Verify document exists and belongs to tenant
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        include: {
+          documentContent: { select: { fullHtml: true } },
+        },
+      });
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' },
+        });
+        return;
+      }
+
+      // Read HTML content from S3
+      let content: string;
+      try {
+        const buffer = await s3Service.getFileBuffer(contentKey);
+        content = buffer.toString('utf-8');
+      } catch (readError) {
+        logger.error(`[Validator] Failed to read content from S3 key ${contentKey}:`, readError);
+        res.status(400).json({
+          success: false,
+          error: { code: 'CONTENT_NOT_FOUND', message: 'Uploaded content not found in S3. The presigned URL may have expired.' },
+        });
+        return;
+      }
+
+      if (!content) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'EMPTY_CONTENT', message: 'Uploaded content is empty' },
+        });
+        return;
+      }
+
+      // Get previous content for change detection
+      const previousContent = document.documentContent?.fullHtml || '';
+
+      // Extract plain text and count words
+      const fullText = htmlToPlainText(content);
+      const wordCount = fullText.split(/\s+/).filter(Boolean).length;
+
+      // Persist content to DB (same logic as PUT /content)
+      const updated = await prisma.editorialDocumentContent.upsert({
+        where: { documentId },
+        create: { documentId, fullHtml: content, fullText, wordCount },
+        update: { fullHtml: content, fullText, wordCount, updatedAt: new Date() },
+      });
+
+      await prisma.editorialDocument.update({
+        where: { id: documentId },
+        data: { updatedAt: new Date() },
+      });
+
+      // Create version snapshot if content changed
+      let versionNumber: number | null = null;
+      if (createVersion && content !== previousContent) {
+        const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
+        versionNumber = await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+          const latestVersion = await tx.documentVersion.findFirst({
+            where: { documentId },
+            orderBy: { version: 'desc' },
+            select: { version: true },
+          });
+          const newVersion = (latestVersion?.version || 0) + 1;
+          await tx.documentVersion.create({
+            data: {
+              documentId,
+              version: newVersion,
+              createdBy: userId,
+              changeLog: [{
+                timestamp: new Date().toISOString(),
+                action: 'content_save',
+                wordCount,
+                via: 'presigned_s3',
+              }],
+              snapshot: { content, wordCount, savedAt: new Date().toISOString() },
+              snapshotType: 'full',
+            },
+          });
+          return newVersion;
+        });
+        logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId} (via presigned S3)`);
+      }
+
+      // Delete the temp S3 object in the background
+      s3Service.deleteFile(contentKey).catch((delErr) => {
+        logger.warn(`[Validator] Failed to delete temp S3 content key ${contentKey}:`, delErr);
+      });
+
+      logger.info(`[Validator] Confirmed presigned save for document: ${documentId}, wordCount: ${wordCount}`);
+
+      res.json({
+        success: true,
+        data: {
+          documentId,
+          savedAt: updated.updatedAt,
+          wordCount,
+          version: versionNumber,
+        },
+      });
+    } catch (error) {
+      logger.error('[Validator] Failed to confirm presigned save:', error);
       next(error);
     }
   }
