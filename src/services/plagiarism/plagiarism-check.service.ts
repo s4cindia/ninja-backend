@@ -357,6 +357,12 @@ async function executeCheck(
             ? `https://doi.org/${validDoi}`
             : (match.sourceUrl || null);
 
+          // Only persist matches with minimum verifiability — a URL or a named source
+          if (!externalUrl && !match.sourceName && !externalTitle) {
+            logger.debug(`[PlagiarismCheck] Skipping unverifiable match — no URL, source name, or title`);
+            continue;
+          }
+
           allMatchData.push({
             documentId,
             sourceChunkId: dbChunk.id,

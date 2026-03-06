@@ -31,6 +31,27 @@ const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordproces
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 /**
+ * Extract plain text from HTML — used to keep fullText aligned with fullHtml.
+ */
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/>\s*</g, '> <')          // space between adjacent tags so words don't merge
+    .replace(/<br\s*\/?>/gi, '\n')      // preserve line breaks
+    .replace(/<\/p>/gi, '\n')           // paragraph breaks
+    .replace(/<[^>]+>/g, '')            // strip remaining tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#\d+;/g, '')            // remaining numeric entities
+    .replace(/[ \t]+/g, ' ')           // collapse horizontal whitespace
+    .replace(/\n{3,}/g, '\n\n')        // collapse excessive newlines
+    .trim();
+}
+
+/**
  * Try Pandoc HTML conversion, fall back to mammoth HTML on failure.
  */
 async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<string> {
@@ -371,6 +392,8 @@ export class CitationUploadController {
 
       // Convert DOCX to styled HTML using Pandoc for better formatting preservation
       const styledHtml = await tryPandocHtml(fileBuffer, content.html);
+      // Derive plain text from the same HTML source so offsets stay aligned
+      const fullText = styledHtml !== content.html ? htmlToPlainText(styledHtml) : content.text;
 
       // Create job
       const job = await prisma.job.create({
@@ -409,7 +432,7 @@ export class CitationUploadController {
           status: 'QUEUED',
           documentContent: {
             create: {
-              fullText: content.text,
+              fullText,
               fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
@@ -475,7 +498,7 @@ export class CitationUploadController {
         data: { status: 'ANALYZING' },
       });
 
-      await this.analyzeDocument(document.id, content.text);
+      await this.analyzeDocument(document.id, fullText);
 
       // Get final results
       const finalDoc = await prisma.editorialDocument.findUnique({
@@ -591,6 +614,8 @@ export class CitationUploadController {
 
       // Convert DOCX to styled HTML using Pandoc for better formatting preservation
       const styledHtml = await tryPandocHtml(file.buffer, content.html);
+      // Derive plain text from the same HTML source so offsets stay aligned
+      const fullText = styledHtml !== content.html ? htmlToPlainText(styledHtml) : content.text;
 
       // Create job
       const job = await prisma.job.create({
@@ -639,7 +664,7 @@ export class CitationUploadController {
           // Create content in separate table
           documentContent: {
             create: {
-              fullText: content.text,
+              fullText,
               fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
@@ -699,7 +724,7 @@ export class CitationUploadController {
         data: { status: 'ANALYZING' },
       });
 
-      await this.analyzeDocument(document.id, content.text);
+      await this.analyzeDocument(document.id, fullText);
 
       // Get final results
       const finalDoc = await prisma.editorialDocument.findUnique({

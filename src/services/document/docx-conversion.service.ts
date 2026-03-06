@@ -1790,7 +1790,7 @@ export async function exportWithTrackChanges(
       xmlTextRuns.push(match[1]);
     }
     const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
-    const originalPlainText = normalize(xmlTextRuns.join(''));
+    const originalPlainText = normalize(decodeHtmlEntities(xmlTextRuns.join('')));
     // Insert spaces between adjacent tags before stripping so </p><p> doesn't merge words.
     // normalize() then collapses any resulting multiple spaces.
     const spacedHtml = cleanHtml.replace(/>\s*</g, '> <');

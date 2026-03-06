@@ -1012,7 +1012,7 @@ export class ValidatorController {
             if (exportResult.originalPreserved) {
               logger.info(`[Validator] No significant edits detected for ${documentId}, returning original DOCX`);
             } else {
-              logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+              logger.info(`[Validator] Export completed (${exportMode}) for ${documentId} — used original DOCX or fallback conversion`);
             }
           } else {
             docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
