@@ -26,52 +26,26 @@ import { normalizeSuperscripts } from '../../utils/unicode';
 import { claudeService } from '../../services/ai/claude.service';
 import { isAuthenticated } from '../../utils/auth';
 import { convertDocxToHtml } from '../../services/document/docx-conversion.service';
+import { htmlToPlainText } from '../../utils/html-to-text';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 /**
- * Extract plain text from HTML — used to keep fullText aligned with fullHtml.
- */
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/>\s*</g, '> <')          // space between adjacent tags so words don't merge
-    .replace(/<br\s*\/?>/gi, '\n')      // preserve line breaks
-    .replace(/<\/p>/gi, '\n')           // paragraph breaks
-    .replace(/<[^>]+>/g, '')            // strip remaining tags
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&ndash;/g, '\u2013')
-    .replace(/&mdash;/g, '\u2014')
-    .replace(/&hellip;/g, '\u2026')
-    .replace(/&lsquo;/g, '\u2018')
-    .replace(/&rsquo;/g, '\u2019')
-    .replace(/&ldquo;/g, '\u201C')
-    .replace(/&rdquo;/g, '\u201D')
-    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))  // decode numeric entities
-    .replace(/[ \t]+/g, ' ')           // collapse horizontal whitespace
-    .replace(/\n{3,}/g, '\n\n')        // collapse excessive newlines
-    .trim();
-}
-
-/**
  * Try Pandoc HTML conversion, fall back to mammoth HTML on failure.
+ * Returns the HTML and whether Pandoc was used.
  */
-async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<string> {
+async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<{ html: string; usedPandoc: boolean }> {
   try {
     const pandocResult = await convertDocxToHtml(fileBuffer);
     if (pandocResult.html) {
       logger.info(`[Citation Upload] Using Pandoc HTML (${pandocResult.html.length} chars) for fullHtml`);
-      return pandocResult.html;
+      return { html: pandocResult.html, usedPandoc: true };
     }
   } catch (pandocError) {
     logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
   }
-  return fallbackHtml;
+  return { html: fallbackHtml, usedPandoc: false };
 }
 
 /**
@@ -79,9 +53,9 @@ async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<
  * Shared by both upload handlers to avoid logic duplication.
  */
 async function prepareDocumentContent(fileBuffer: Buffer, mammothContent: { html: string; text: string }) {
-  const styledHtml = await tryPandocHtml(fileBuffer, mammothContent.html);
-  const fullText = styledHtml !== mammothContent.html ? htmlToPlainText(styledHtml) : mammothContent.text;
-  return { styledHtml, fullText };
+  const result = await tryPandocHtml(fileBuffer, mammothContent.html);
+  const fullText = result.usedPandoc ? htmlToPlainText(result.html) : mammothContent.text;
+  return { styledHtml: result.html, fullText };
 }
 
 /** True when citation processing should use sync (inline) mode instead of async queue. */
