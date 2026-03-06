@@ -990,6 +990,7 @@ export class ValidatorController {
       logger.info(`[Validator] Exporting document ${documentId} to DOCX (mode: ${exportMode})`);
 
       let docxBuffer: Buffer;
+      let exportResult: import('../../services/document/docx-conversion.service').ExportResult | null = null;
       const titleBase = document.originalName.replace(/\.docx$/i, '');
       const currentHtml = document.documentContent.fullHtml;
 
@@ -1003,12 +1004,19 @@ export class ValidatorController {
             document.storageType as 'S3' | 'LOCAL'
           );
           if (originalBuffer) {
-            docxBuffer = await docxConversionService.exportWithTrackChanges(
+            exportResult = await docxConversionService.exportWithTrackChanges(
               originalBuffer,
               currentHtml,
               { title: titleBase, mode: exportMode }
             );
-            logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+            docxBuffer = exportResult.buffer;
+            if (exportResult.originalPreserved) {
+              const wSim = exportResult.wordSimilarity != null ? `${(exportResult.wordSimilarity * 100).toFixed(1)}%` : 'n/a';
+              const sSim = exportResult.sequenceSimilarity != null ? `${(exportResult.sequenceSimilarity * 100).toFixed(1)}%` : 'n/a';
+              logger.info(`[Validator] Original DOCX preserved for ${documentId} (word: ${wSim}, seq: ${sSim})`);
+            } else {
+              logger.info(`[Validator] Export completed (${exportMode}) for ${documentId} — used original DOCX or fallback conversion`);
+            }
           } else {
             docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
           }
@@ -1028,6 +1036,11 @@ export class ValidatorController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/[;"\\]/g, '_');
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
+      // Let the frontend know if edits were discarded so it can warn the user
+      if (exportResult?.originalPreserved && exportResult.wordSimilarity != null && exportResult.wordSimilarity < 1) {
+        res.setHeader('X-Original-Preserved', 'true');
+        res.setHeader('X-Word-Similarity', exportResult.wordSimilarity.toFixed(4));
+      }
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);
 

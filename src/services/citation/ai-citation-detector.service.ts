@@ -401,20 +401,25 @@ class AICitationDetectorService {
 
 INSTRUCTIONS:
 - IGNORE superscript numbers immediately after author names (these are affiliations, NOT citations)
-- Find NUMERIC citations: [1], [2], [3-5], (1), (2)
-- Find FOOTNOTE citations: superscript numbers ¹ ² ³ at end of sentences
+- Find NUMERIC citations in brackets/parentheses: [1], [2], [3-5], (1), (2), [1,2,3], (3-5)
+- Find SUPERSCRIPT/FOOTNOTE citations: bare numbers that appear at end of sentences or clauses, right after punctuation (period, comma) or at the end of a word. These are Vancouver-style superscript citations. Examples:
+  * Single: "...was reported.1 The next..." or "...reported.1"
+  * Comma-separated: "...reported.2,17 The..." or "...shown.1,3,5"
+  * Ranges with dash/en-dash: "...observed.3-5 In..." or "...results.6-14"
+  * Mixed: "...therapy.1,3-5,8 However..."
+  IMPORTANT: These bare numbers are NOT page numbers, figure numbers, or list items. They appear immediately after sentence-ending punctuation or words, without spaces before the number. Capture the full group (e.g., "3-5" not just "3" and "5" separately).
 - Find AUTHOR-YEAR citations: (Smith, 2020), (Smith & Jones, 2020), (Smith et al., 2020)
 
 OUTPUT FORMAT (JSON array only):
 [{"text":"[1,2]","paragraph":1,"startChar":50,"type":"numeric","format":"bracket","numbers":[1,2],"context":"ability [1,2]. However"}]
 
 Fields:
-- text: exact citation text
+- text: exact citation text as it appears (e.g., "3-5" for superscript range, "[1,2]" for bracket)
 - paragraph: paragraph number (1-based)
 - startChar: character position
 - type: "numeric" | "author-year" | "footnote"
 - format: "bracket" | "parenthesis" | "superscript"
-- numbers: array of reference numbers (empty for author-year)
+- numbers: array of ALL reference numbers including expanded ranges (e.g., [3,4,5] for "3-5")
 - context: brief surrounding text (max 30 chars)
 
 ---BEGIN DOCUMENT---
@@ -984,7 +989,9 @@ Return ONLY the style name (one word): APA, MLA, Chicago, Vancouver, IEEE, or Ha
     if (addedCount > 0) {
       logger.info(`[AI Citation Detector] Gap-fill added ${addedCount} missed numeric citations`);
     }
+
   }
+
 }
 
 export const aiCitationDetectorService = new AICitationDetectorService();

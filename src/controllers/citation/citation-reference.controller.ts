@@ -3267,6 +3267,38 @@ export class CitationReferenceController {
     }
     result += textAfterBrackets.slice(lastIndex);
 
+    // Process superscript citations <sup>N</sup> (Vancouver/medical style)
+    // Only remap <sup> tags whose numbers are known citations to avoid
+    // altering non-citation superscripts (footnotes, math exponents, etc.).
+    const isCitationSuperscript = (numStr: string): boolean => {
+      const parts = numStr.split(/[-–—,]/).map(p => parseInt(p.trim(), 10)).filter(n => !isNaN(n));
+      return parts.length > 0 && parts.some(n => oldToNewMap.has(n));
+    };
+
+    const textAfterParens = result;
+    result = '';
+    lastIndex = 0;
+    const supPattern = /<sup>(\d+(?:\s*[-–—,]\s*\d+)*)<\/sup>/g;
+    let supMatch: RegExpExecArray | null;
+    while ((supMatch = supPattern.exec(textAfterParens)) !== null) {
+      if (!isCitationSuperscript(supMatch[1])) continue; // leave non-citation sups untouched
+      const remapped = remapAndFormat(supMatch[1]);
+      if (remapped === null) {
+        const { start, end } = cleanDeletion(textAfterParens, supMatch.index, supMatch.index + supMatch[0].length);
+        result += textAfterParens.slice(lastIndex, start);
+        lastIndex = end;
+        replacements.push({ original: supMatch[0], replacement: '' });
+      } else {
+        const newCitation = `<sup>${remapped}</sup>`;
+        result += textAfterParens.slice(lastIndex, supMatch.index) + newCitation;
+        lastIndex = supMatch.index + supMatch[0].length;
+        if (newCitation !== supMatch[0]) {
+          replacements.push({ original: supMatch[0], replacement: newCitation });
+        }
+      }
+    }
+    result += textAfterParens.slice(lastIndex);
+
     if (replacements.length > 0) {
       logger.info(`[CitationReference] Updated ${replacements.length} citations in HTML content`);
     }

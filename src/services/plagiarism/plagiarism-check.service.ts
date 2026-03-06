@@ -31,6 +31,9 @@ interface DetectedMatch {
   sourceName: string;
   sourceAuthors: string;
   sourceYear: string;
+  sourcePublication: string;
+  sourceDoi: string;
+  sourceUrl: string;
   sourceType: 'EXTERNAL_WEB' | 'EXTERNAL_ACADEMIC' | 'EXTERNAL_PUBLISHER';
   matchType: 'VERBATIM_COPY' | 'PARAPHRASED' | 'COMMON_PHRASE' | 'PROPERLY_CITED';
   similarityScore: number;
@@ -65,19 +68,25 @@ For EVERY passage that closely matches a known published source, return an entry
 For each matching passage found, return:
 {
   "passageFromDocument": "exact text from the document that matches a known source",
-  "matchedSourceText": "the original text from the known published source",
-  "sourceName": "title of the source publication/paper/book/website",
-  "sourceAuthors": "author(s) of the source",
-  "sourceYear": "year of publication or unknown",
+  "matchedSourceText": "the EXACT original text from the known published source that was copied or paraphrased",
+  "sourceName": "title of the paper, book, or article",
+  "sourceAuthors": "full author names (e.g. 'Smith J, Jones A, Lee B')",
+  "sourceYear": "year of publication (e.g. '2019') or 'unknown'",
+  "sourcePublication": "journal name, book publisher, or website name (e.g. 'The Lancet', 'Nature Medicine', 'Elsevier')",
+  "sourceDoi": "DOI if known (e.g. '10.1016/j.cell.2019.03.001') or empty string",
+  "sourceUrl": "full URL to the source — prefer DOI link (https://doi.org/10.xxx), PubMed (https://pubmed.ncbi.nlm.nih.gov/xxx), or direct web URL. Use empty string ONLY if truly unknown.",
   "sourceType": "EXTERNAL_ACADEMIC | EXTERNAL_PUBLISHER | EXTERNAL_WEB",
   "matchType": "VERBATIM_COPY | PARAPHRASED | COMMON_PHRASE | PROPERLY_CITED",
   "similarityScore": 0.0-1.0,
   "confidence": 0-100,
-  "reasoning": "brief explanation"
+  "reasoning": "explain WHY this is a match — describe how the document text corresponds to the source text"
 }
 
 IMPORTANT RULES:
-- Only report passages where you can identify a SPECIFIC likely source.
+- Only report passages where you can identify a SPECIFIC, REAL published source. You must provide the source name, authors, and publication details as proof.
+- For sourceUrl: ALWAYS try to provide a verifiable link. Use DOI links (https://doi.org/...) for academic papers, PubMed links for medical literature, or direct URLs for web content. The editor needs this to verify the match.
+- matchedSourceText must be the ACTUAL text from the original source — not a summary or description. This is the proof that content was copied.
+- reasoning must explain the specific similarity — e.g. "This sentence is copied verbatim from the abstract of [source]" or "This paragraph closely paraphrases Section 3 of [source]".
 - Do NOT flag original analysis, opinions, or standard methodology descriptions.
 - Do NOT flag common academic phrases, standard section headers, author affiliations, reference list entries, or DOIs.
 - DO report direct quotes without attribution as VERBATIM_COPY.
@@ -93,12 +102,13 @@ Return a JSON array. Return [] ONLY if you genuinely cannot identify any passage
       model: 'sonnet',
       temperature: 0.1,
       maxTokens: 8000,
-      systemPrompt: `ROLE: You are a similarity detection specialist at an academic publishing house. Your job is to identify passages in manuscripts that closely match known published sources.
+      systemPrompt: `ROLE: You are a similarity detection specialist at an academic publishing house. Your job is to identify passages in manuscripts that closely match known published sources and provide verifiable proof.
 
-GOAL: Find ALL passages that appear to be copied or closely paraphrased from previously published works — both properly cited AND improperly attributed. This helps editors verify attribution completeness and detect potential copyright issues.
+GOAL: Find ALL passages that appear to be copied or closely paraphrased from previously published works — both properly cited AND improperly attributed. For EACH match, provide complete source details (title, authors, journal/publisher, year, DOI/URL) so editors can verify the match against the original source.
 
 CONSTRAINTS:
 - You identify similarity to known published sources — both attributed and unattributed.
+- You MUST provide verifiable source details for every match: full author names, publication title, journal/publisher name, year, and a DOI or URL when possible. The editor needs these to verify against the actual source.
 - You do NOT check writing style, grammar, structural integrity, or citation formatting (those are separate tools).
 - You must identify a SPECIFIC likely source for every match. Do not flag text unless you can name the probable source.
 - Properly cited quotations should be marked PROPERLY_CITED (not copyright infringement, but useful for editors).
@@ -320,17 +330,40 @@ async function executeCheck(
           const matchOffset = passageOffset;
           const dbChunk = dbChunks.find(c => c.startOffset <= matchOffset && c.endOffset >= matchOffset) || dbChunks[0];
 
-          const sourceDescription = [
-            match.sourceName,
-            match.sourceAuthors ? `by ${match.sourceAuthors}` : '',
-            match.sourceYear && match.sourceYear !== 'unknown' ? `(${match.sourceYear})` : '',
-          ].filter(Boolean).join(' ');
-
           const validSourceTypes = ['EXTERNAL_WEB', 'EXTERNAL_ACADEMIC', 'EXTERNAL_PUBLISHER'] as const;
           type ValidSourceType = typeof validSourceTypes[number];
           const sourceType: ValidSourceType = validSourceTypes.includes(match.sourceType as ValidSourceType)
             ? (match.sourceType as ValidSourceType)
             : 'EXTERNAL_ACADEMIC';
+
+          // Validate DOI format before trusting AI-provided value
+          const doiPattern = /^10\.\d{4,}\/\S+$/;
+          const validDoi = match.sourceDoi && doiPattern.test(match.sourceDoi)
+            ? match.sourceDoi
+            : null;
+
+          // Build a full citation string for externalTitle:
+          // "Authors. Title. Publication, Year. DOI"
+          const titleParts = [
+            match.sourceAuthors || '',
+            match.sourceName ? `"${match.sourceName}"` : '',
+            match.sourcePublication || '',
+            match.sourceYear && match.sourceYear !== 'unknown' ? match.sourceYear : '',
+          ].filter(Boolean);
+          const externalTitle = titleParts.join('. ') + (validDoi ? `. DOI: ${validDoi}` : '') || null;
+
+          // Prefer validated DOI link, then provided URL (must be http/https to prevent XSS)
+          const rawUrl = match.sourceUrl;
+          const isValidUrl = rawUrl && /^https?:\/\//i.test(rawUrl);
+          const externalUrl = validDoi
+            ? `https://doi.org/${validDoi}`
+            : (isValidUrl ? rawUrl : null);
+
+          // Only persist matches with minimum verifiability — a URL or a named source
+          if (!externalUrl && !match.sourceName) {
+            logger.debug(`[PlagiarismCheck] Skipping unverifiable match — no URL or source name`);
+            continue;
+          }
 
           allMatchData.push({
             documentId,
@@ -342,12 +375,10 @@ async function executeCheck(
             confidence: match.confidence,
             aiReasoning: match.reasoning,
             sourceText: match.passageFromDocument.slice(0, 2000),
-            matchedText: `[${sourceDescription}]\n${match.matchedSourceText.slice(0, 1800)}`,
+            matchedText: match.matchedSourceText.slice(0, 2000),
             externalSource: match.sourceName || null,
-            externalUrl: null,
-            externalTitle: match.sourceAuthors
-              ? `${match.sourceName}${match.sourceYear && match.sourceYear !== 'unknown' ? ` (${match.sourceYear})` : ''}`
-              : null,
+            externalUrl,
+            externalTitle: externalTitle || null,
             status: 'PENDING',
           });
         } catch (err) {

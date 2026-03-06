@@ -25,9 +25,72 @@ import { normalizeStyleCode, getFormattedColumn } from '../../services/citation/
 import { normalizeSuperscripts } from '../../utils/unicode';
 import { claudeService } from '../../services/ai/claude.service';
 import { isAuthenticated } from '../../utils/auth';
+import { convertDocxToHtml } from '../../services/document/docx-conversion.service';
 
 const ALLOWED_MIMES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+/**
+ * Extract plain text from HTML — used to keep fullText aligned with fullHtml.
+ */
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/>\s*</g, '> <')          // space between adjacent tags so words don't merge
+    .replace(/<br\s*\/?>/gi, '\n')      // preserve line breaks
+    .replace(/<\/p>/gi, '\n')           // paragraph breaks
+    .replace(/<[^>]+>/g, '')            // strip remaining tags
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&ndash;/g, '\u2013')
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&hellip;/g, '\u2026')
+    .replace(/&lsquo;/g, '\u2018')
+    .replace(/&rsquo;/g, '\u2019')
+    .replace(/&ldquo;/g, '\u201C')
+    .replace(/&rdquo;/g, '\u201D')
+    .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))  // decode numeric entities
+    .replace(/[ \t]+/g, ' ')           // collapse horizontal whitespace
+    .replace(/\n{3,}/g, '\n\n')        // collapse excessive newlines
+    .trim();
+}
+
+/**
+ * Try Pandoc HTML conversion, fall back to mammoth HTML on failure.
+ */
+async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<string> {
+  try {
+    const pandocResult = await convertDocxToHtml(fileBuffer);
+    if (pandocResult.html) {
+      logger.info(`[Citation Upload] Using Pandoc HTML (${pandocResult.html.length} chars) for fullHtml`);
+      return pandocResult.html;
+    }
+  } catch (pandocError) {
+    logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
+  }
+  return fallbackHtml;
+}
+
+/**
+ * Prepare document content: Pandoc HTML + aligned plain text.
+ * Shared by both upload handlers to avoid logic duplication.
+ */
+async function prepareDocumentContent(fileBuffer: Buffer, mammothContent: { html: string; text: string }) {
+  const styledHtml = await tryPandocHtml(fileBuffer, mammothContent.html);
+  const fullText = styledHtml !== mammothContent.html ? htmlToPlainText(styledHtml) : mammothContent.text;
+  return { styledHtml, fullText };
+}
+
+/** True when citation processing should use sync (inline) mode instead of async queue. */
+function shouldUseSyncProcessing(): boolean {
+  if (process.env.CITATION_FORCE_ASYNC === 'true') return false;
+  if (process.env.CITATION_FORCE_SYNC === 'true') return true;
+  // In non-production (dev/test), default to sync — async queue is unreliable with remote Redis
+  return process.env.NODE_ENV !== 'production';
+}
 
 /**
  * Match author-year citation text to reference entries
@@ -352,6 +415,9 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(fileBuffer);
       const stats = await docxProcessorService.getStatistics(fileBuffer);
 
+      // Convert DOCX to styled HTML using Pandoc + derive aligned plain text
+      const { styledHtml, fullText } = await prepareDocumentContent(fileBuffer, content);
+
       // Create job
       const job = await prisma.job.create({
         data: {
@@ -389,8 +455,8 @@ export class CitationUploadController {
           status: 'QUEUED',
           documentContent: {
             create: {
-              fullText: content.text,
-              fullHtml: content.html,
+              fullText,
+              fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
             }
@@ -404,12 +470,9 @@ export class CitationUploadController {
         data: { status: 'UPLOADED' }
       });
 
-      // Check if async processing is available (Redis configured)
-      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
-      const forceSync = process.env.CITATION_FORCE_SYNC === 'true';
-      const useAsyncProcessing = !forceSync && areQueuesAvailable();
+      const useAsyncProcessing = !shouldUseSyncProcessing() && areQueuesAvailable();
 
-      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSync}`);
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 
       if (useAsyncProcessing) {
         const citationQueue = getCitationQueue();
@@ -455,7 +518,7 @@ export class CitationUploadController {
         data: { status: 'ANALYZING' },
       });
 
-      await this.analyzeDocument(document.id, content.text);
+      await this.analyzeDocument(document.id, fullText);
 
       // Get final results
       const finalDoc = await prisma.editorialDocument.findUnique({
@@ -569,6 +632,9 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(file.buffer);
       const stats = await docxProcessorService.getStatistics(file.buffer);
 
+      // Convert DOCX to styled HTML using Pandoc + derive aligned plain text
+      const { styledHtml, fullText } = await prepareDocumentContent(file.buffer, content);
+
       // Create job
       const job = await prisma.job.create({
         data: {
@@ -616,8 +682,8 @@ export class CitationUploadController {
           // Create content in separate table
           documentContent: {
             create: {
-              fullText: content.text,
-              fullHtml: content.html,
+              fullText,
+              fullHtml: styledHtml,
               wordCount: stats.wordCount,
               pageCount: stats.pageCount,
             }
@@ -625,12 +691,9 @@ export class CitationUploadController {
         }
       });
 
-      // Check if async processing is available (Redis configured)
-      // Can be disabled via CITATION_FORCE_SYNC=true for debugging
-      const forceSyncUpload = process.env.CITATION_FORCE_SYNC === 'true';
-      const useAsyncProcessingUpload = !forceSyncUpload && areQueuesAvailable();
+      const useAsyncProcessingUpload = !shouldUseSyncProcessing() && areQueuesAvailable();
 
-      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, forceSync=${forceSyncUpload}`);
+      logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 
       if (useAsyncProcessingUpload) {
         const citationQueue = getCitationQueue();
@@ -676,7 +739,7 @@ export class CitationUploadController {
         data: { status: 'ANALYZING' },
       });
 
-      await this.analyzeDocument(document.id, content.text);
+      await this.analyzeDocument(document.id, fullText);
 
       // Get final results
       const finalDoc = await prisma.editorialDocument.findUnique({
