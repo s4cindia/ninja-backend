@@ -755,58 +755,72 @@ class StructureAnalyzerService {
   }
 
   private async analyzeLinks(parsedPdf: ParsedPDF): Promise<LinkInfo[]> {
-    const links: LinkInfo[] = [];
+    const LINK_BATCH_SIZE = 10;
+    const nonDescriptivePattern = /^(click|here|link|more|read|download|learn|info)$/i;
+    const nonDescriptivePhrases = /^(click here|read more|learn more|more info|download here)$/i;
+    const shortAcronymPattern = /^[A-Z0-9]{2,5}$/;
+    const whitelist = ['FAQ', 'PDF', 'API', 'URL', 'RSS', 'XML', 'CSV', 'HOME', 'HELP'];
 
-    for (let pageNum = 1; pageNum <= parsedPdf.structure.pageCount; pageNum++) {
-      try {
-        const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
-        const annotations = await page.getAnnotations();
-        const viewport = page.getViewport({ scale: 1 });
+    const allPageLinks: LinkInfo[][] = [];
 
-        for (const annot of annotations) {
-          if (annot.subtype === 'Link') {
-            const rect = annot.rect || [0, 0, 0, 0];
-            const link: LinkInfo = {
-              id: `link_p${pageNum}_${links.length}`,
-              pageNumber: pageNum,
-              text: annot.contents || '',
-              url: annot.url || undefined,
-              destination: typeof annot.dest === 'number' ? annot.dest : undefined,
-              position: {
-                x: rect[0],
-                y: viewport.height - rect[3],
-                width: rect[2] - rect[0],
-                height: rect[3] - rect[1],
-              },
-              hasDescriptiveText: false,
-              issues: [],
-            };
+    for (let i = 1; i <= parsedPdf.structure.pageCount; i += LINK_BATCH_SIZE) {
+      const batchEnd = Math.min(i + LINK_BATCH_SIZE - 1, parsedPdf.structure.pageCount);
+      const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
 
-            const text = (link.text || '').trim();
-            const nonDescriptivePattern = /^(click|here|link|more|read|download|learn|info)$/i;
-            const nonDescriptivePhrases = /^(click here|read more|learn more|more info|download here)$/i;
-            const shortAcronymPattern = /^[A-Z0-9]{2,5}$/;
-            const whitelist = ['FAQ', 'PDF', 'API', 'URL', 'RSS', 'XML', 'CSV', 'HOME', 'HELP'];
+      const batchResults = await Promise.all(
+        batchNums.map(async (pageNum) => {
+          const pageLinks: LinkInfo[] = [];
+          try {
+            const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
+            const annotations = await page.getAnnotations();
+            const viewport = page.getViewport({ scale: 1 });
 
-            const isNonDescriptive = nonDescriptivePattern.test(text) || nonDescriptivePhrases.test(text);
-            const isWhitelisted = whitelist.includes(text.toUpperCase());
-            const isValidAcronym = shortAcronymPattern.test(text) && text === text.toUpperCase();
+            let annotIndex = 0;
+            for (const annot of annotations) {
+              if (annot.subtype === 'Link') {
+                const rect = annot.rect || [0, 0, 0, 0];
+                const link: LinkInfo = {
+                  id: `link_p${pageNum}_${annotIndex}`,
+                  pageNumber: pageNum,
+                  text: annot.contents || '',
+                  url: annot.url || undefined,
+                  destination: typeof annot.dest === 'number' ? annot.dest : undefined,
+                  position: {
+                    x: rect[0],
+                    y: viewport.height - rect[3],
+                    width: rect[2] - rect[0],
+                    height: rect[3] - rect[1],
+                  },
+                  hasDescriptiveText: false,
+                  issues: [],
+                };
 
-            if (text && !isNonDescriptive && (text.length > 3 || isWhitelisted || isValidAcronym)) {
-              link.hasDescriptiveText = true;
-            } else {
-              link.issues.push('Link text is not descriptive (WCAG 2.4.4)');
+                const text = (link.text || '').trim();
+                const isNonDescriptive = nonDescriptivePattern.test(text) || nonDescriptivePhrases.test(text);
+                const isWhitelisted = whitelist.includes(text.toUpperCase());
+                const isValidAcronym = shortAcronymPattern.test(text) && text === text.toUpperCase();
+
+                if (text && !isNonDescriptive && (text.length > 3 || isWhitelisted || isValidAcronym)) {
+                  link.hasDescriptiveText = true;
+                } else {
+                  link.issues.push('Link text is not descriptive (WCAG 2.4.4)');
+                }
+
+                pageLinks.push(link);
+                annotIndex++;
+              }
             }
-
-            links.push(link);
+          } catch (err) {
+            console.warn(`Failed to extract links from page ${pageNum}:`, err instanceof Error ? err.message : 'Unknown error');
           }
-        }
-      } catch (err) {
-        console.warn(`Failed to extract links from page ${pageNum}:`, err instanceof Error ? err.message : 'Unknown error');
-      }
+          return pageLinks;
+        })
+      );
+
+      allPageLinks.push(...batchResults);
     }
 
-    return links;
+    return allPageLinks.flat();
   }
 
   private async analyzeReadingOrder(

@@ -25,7 +25,7 @@ const router = Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB max file size
+    fileSize: 500 * 1024 * 1024, // 500MB max file size
   },
   fileFilter: (_req, file, cb) => {
     // Accept PDF files based on MIME type or filename
@@ -194,23 +194,21 @@ router.get(
   '/job/:jobId/status',
   authenticate,
   authorizeJob,
-  async (req, res, next) => {
-    try{
-      // TODO: Implement job status retrieval
-      res.status(501).json({
-        success: false,
-        error: {
-          message: 'Job status endpoint not yet implemented',
-          code: 'NOT_IMPLEMENTED',
-        },
-      });
-
-      // Future implementation:
-      // const status = await pdfAuditController.getJobStatus(req.params.jobId);
-      // res.json({ success: true, data: status });
-    } catch (error) {
-      next(error);
-    }
+  (req, res) => {
+    const job = req.job!;
+    return res.json({
+      success: true,
+      data: {
+        jobId: job.id,
+        status: job.status,
+        progress: job.progress ?? 0,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt ?? null,
+        completedAt: job.completedAt ?? null,
+        error: job.error ?? null,
+      },
+    });
   }
 );
 

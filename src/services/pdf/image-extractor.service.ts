@@ -93,31 +93,37 @@ class ImageExtractorService {
     const startPage = pageRange?.start || 1;
     const endPage = pageRange?.end || parsedPdf.structure.pageCount;
 
-    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-      const pageImages = await this.extractPageImages(
-        parsedPdf,
-        pageNum,
-        {
-          includeBase64,
-          maxImageSize,
-          formats,
-          minWidth,
-          minHeight,
-        }
+    // Process pages in parallel batches (smaller batch — images are memory-intensive)
+    const IMAGE_BATCH_SIZE = 5;
+    for (let i = startPage; i <= endPage; i += IMAGE_BATCH_SIZE) {
+      const batchEnd = Math.min(i + IMAGE_BATCH_SIZE - 1, endPage);
+      const batchNums = Array.from({ length: batchEnd - i + 1 }, (_, k) => i + k);
+      const batchPages = await Promise.all(
+        batchNums.map((pageNum) =>
+          this.extractPageImages(parsedPdf, pageNum, {
+            includeBase64,
+            maxImageSize,
+            formats,
+            minWidth,
+            minHeight,
+          })
+        )
       );
 
-      pages.push(pageImages);
-      totalImages += pageImages.totalImages;
+      for (const pageImages of batchPages) {
+        pages.push(pageImages);
+        totalImages += pageImages.totalImages;
 
-      for (const img of pageImages.images) {
-        imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
-        
-        if (img.isDecorative) {
-          decorativeImages++;
-        } else if (img.altText) {
-          imagesWithAltText++;
-        } else {
-          imagesWithoutAltText++;
+        for (const img of pageImages.images) {
+          imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
+
+          if (img.isDecorative) {
+            decorativeImages++;
+          } else if (img.altText) {
+            imagesWithAltText++;
+          } else {
+            imagesWithoutAltText++;
+          }
         }
       }
     }
@@ -172,14 +178,22 @@ class ImageExtractorService {
                 const subtype = xObject.dict.get(PDFName.of('Subtype'));
                 
                 if (subtype?.toString() === '/Image') {
+                  // Early size filter using dict metadata — avoids decompressing tiny images
+                  const dictWidth = parseInt(xObject.dict.get(PDFName.of('Width'))?.toString() || '0', 10);
+                  const dictHeight = parseInt(xObject.dict.get(PDFName.of('Height'))?.toString() || '0', 10);
+                  if (dictWidth < options.minWidth || dictHeight < options.minHeight) {
+                    index++;
+                    continue;
+                  }
+
                   const xObjectName = name.toString().replace('/', '');
-                  
+
                   const placement = imagePlacements.find(p => p.xObjectName === xObjectName)
                     || imagePlacements[index]
                     || { xObjectName, x: 0, y: 0, width: 100, height: 100 };
-                  
+
                   const structInfo = structureTreeInfo.find(s => s.xObjectName === xObjectName);
-                  
+
                   const imageInfo = await this.processImage(
                     xObject,
                     xObjectName,
@@ -191,8 +205,8 @@ class ImageExtractorService {
                     structInfo?.altText,
                     structInfo?.isDecorative
                   );
-                  
-                  if (imageInfo && 
+
+                  if (imageInfo &&
                       imageInfo.dimensions.width >= options.minWidth &&
                       imageInfo.dimensions.height >= options.minHeight) {
                     
@@ -577,14 +591,24 @@ class ImageExtractorService {
         mimeType = 'image/jp2';
       }
       
-      let imageData: Uint8Array;
-      if (xObject instanceof PDFRawStream) {
-        imageData = xObject.contents;
+      // Only decompress image data when base64 output is needed.
+      // For metadata-only audits, read the compressed length from the dict to avoid
+      // decompressing potentially thousands of image streams (e.g. equation images).
+      let imageData: Uint8Array | null = null;
+      let fileSizeBytes = 0;
+
+      if (options.includeBase64) {
+        if (xObject instanceof PDFRawStream) {
+          imageData = xObject.contents;
+        } else {
+          imageData = xObject.getContents();
+        }
+        fileSizeBytes = imageData.length;
       } else {
-        imageData = xObject.getContents();
+        // Use the compressed stream length from the dict (no decompression required)
+        const lengthObj = dict.get(PDFName.of('Length'));
+        fileSizeBytes = lengthObj ? parseInt(lengthObj.toString(), 10) || 0 : 0;
       }
-      
-      const fileSizeBytes = imageData.length;
       
       const sMask = dict.get(PDFName.of('SMask'));
       const hasAlpha = sMask !== undefined;
@@ -613,10 +637,10 @@ class ImageExtractorService {
         isDecorative,
       };
       
-      if (options.includeBase64 && (format === 'jpeg' || format === 'png')) {
+      if (options.includeBase64 && imageData && (format === 'jpeg' || format === 'png')) {
         try {
           const base64 = await this.convertToBase64(
-            imageData,
+            imageData as Uint8Array,
             format,
             imageInfo.dimensions.width,
             imageInfo.dimensions.height,

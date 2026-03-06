@@ -10,10 +10,12 @@ export interface WorkerOptions {
   queueName: string;
   processor: JobProcessor;
   concurrency?: number;
+  /** BullMQ lock duration in ms. Increase for long-running jobs (default: 30000). */
+  lockDuration?: number;
 }
 
 export function createWorker(options: WorkerOptions): Worker<JobData, JobResult> | null {
-  const { queueName, processor, concurrency = 1 } = options;
+  const { queueName, processor, concurrency = 1, lockDuration = 30000 } = options;
 
   if (!isRedisConfigured()) {
     logger.warn(`Cannot create worker for ${queueName} - Redis not configured`);
@@ -61,6 +63,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
         concurrency,
         autorun: true,
         prefix: QUEUE_PREFIX,
+        lockDuration,
       }
     );
 

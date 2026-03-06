@@ -8,6 +8,7 @@
  */
 
 import { logger } from '../../lib/logger';
+import { pdfConfig } from '../../config/pdf.config';
 import { pdfParserService, ParsedPDF, PDFMetadata as BasePDFMetadata } from './pdf-parser.service';
 import { textExtractorService, PageText } from './text-extractor.service';
 import { imageExtractorService, ImageInfo } from './image-extractor.service';
@@ -186,7 +187,11 @@ class PdfComprehensiveParserService {
    * @param fileName - Original filename
    * @returns Complete parse result
    */
-  async parseBuffer(buffer: Buffer, fileName = 'document.pdf'): Promise<PdfParseResult> {
+  async parseBuffer(
+    buffer: Buffer,
+    fileName = 'document.pdf',
+    onProgress?: (currentPage: number, totalPages: number) => void
+  ): Promise<PdfParseResult> {
     let parsedPdf: ParsedPDF | null = null;
 
     try {
@@ -196,7 +201,7 @@ class PdfComprehensiveParserService {
       parsedPdf = await pdfParserService.parseBuffer(buffer, fileName);
 
       // Extract comprehensive content
-      const result = await this.extractComprehensiveContent(parsedPdf);
+      const result = await this.extractComprehensiveContent(parsedPdf, onProgress);
 
       // Include parsedPdf for validators to use
       // NOTE: Caller is responsible for closing parsedPdf after validation
@@ -225,8 +230,23 @@ class PdfComprehensiveParserService {
    * @param parsedPdf - Base parsed PDF
    * @returns Complete parse result
    */
-  private async extractComprehensiveContent(parsedPdf: ParsedPDF): Promise<PdfParseResult> {
+  private async extractComprehensiveContent(
+    parsedPdf: ParsedPDF,
+    onProgress?: (currentPage: number, totalPages: number) => void
+  ): Promise<PdfParseResult> {
     const { structure, pdfLibDoc } = parsedPdf;
+
+    // Apply dev page cap if set (MAX_AUDIT_PAGES env var)
+    const cap = pdfConfig.maxAuditPages;
+    if (cap > 0 && structure.pageCount > cap) {
+      logger.warn(`[PdfComprehensiveParser] MAX_AUDIT_PAGES=${cap} — auditing first ${cap} of ${structure.pageCount} pages`);
+      structure.pageCount = cap;
+      structure.pages = structure.pages.slice(0, cap);
+    }
+    const totalPages = structure.pageCount;
+
+    // Signal total page count immediately so the frontend can display it
+    onProgress?.(0, totalPages);
 
     // Extract metadata
     const metadata: PdfMetadata = {
@@ -246,17 +266,23 @@ class PdfComprehensiveParserService {
       }
     }
 
-    // Extract text content for all pages
-    logger.info(`[PdfComprehensiveParser] Extracting text content...`);
-    const documentText = await textExtractorService.extractText(parsedPdf);
+    // Extract text and images in parallel (independent operations)
+    // Text extraction emits per-batch page progress covering pages 1→totalPages.
+    // Image extraction runs alongside but doesn't emit its own progress.
+    logger.info(`[PdfComprehensiveParser] Extracting text and images in parallel...`);
+    const [documentText, documentImages] = await Promise.all([
+      textExtractorService.extractText(parsedPdf, {}, onProgress
+        ? (processed, total) => onProgress(Math.min(processed, total), total)
+        : undefined),
+      imageExtractorService.extractImages(parsedPdf),
+    ]);
 
-    // Extract images for all pages
-    logger.info(`[PdfComprehensiveParser] Extracting images...`);
-    const documentImages = await imageExtractorService.extractImages(parsedPdf);
-
-    // Extract structure elements
+    // Structure analysis runs after (internally re-extracts text for heading analysis)
     logger.info(`[PdfComprehensiveParser] Analyzing structure...`);
     const documentStructure = await structureAnalyzerService.analyzeStructure(parsedPdf);
+
+    // Signal completion of all extraction phases
+    onProgress?.(totalPages, totalPages);
 
     // Build pages
     const pages: PdfPage[] = [];

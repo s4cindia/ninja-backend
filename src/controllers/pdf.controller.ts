@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { Prisma, FileStatus } from '@prisma/client';
 import fs from 'fs/promises';
 import { validateFilePath } from '../utils/path-validator';
+import { areQueuesAvailable, getAccessibilityQueue, JOB_TYPES } from '../queues';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
 import { imageExtractorService } from '../services/pdf/image-extractor.service';
@@ -14,8 +15,6 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { reScanJobSchema } from '../schemas/pdf.schemas';
-import { workflowService } from '../services/workflow/workflow.service';
-import { workflowConfigService } from '../services/workflow/workflow-config.service';
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -532,108 +531,60 @@ export class PdfController {
         });
       }
 
+      // Create job as QUEUED — audit runs asynchronously
       const job = await prisma.job.create({
         data: {
           id: nanoid(),
           tenantId,
           userId,
           type: 'PDF_ACCESSIBILITY',
-          status: 'PROCESSING',
+          status: 'QUEUED',
           input: {
             fileName: req.file.originalname,
             mimeType: req.file.mimetype,
             size: req.file.size,
           },
-          startedAt: new Date(),
           updatedAt: new Date(),
         },
       });
       jobId = job.id;
 
-      await fileStorageService.saveFile(job.id, req.file.originalname, req.file.buffer);
+      // Save to permanent storage immediately so the worker can load it on any retry
+      await fileStorageService.saveFile(jobId, req.file.originalname, req.file.buffer);
 
-      const result = await pdfAuditService.runAuditFromBuffer(
-        req.file.buffer,
-        job.id,
-        req.file.originalname
-      );
-
-      await prisma.job.update({
-        where: { id: job.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-          output: JSON.parse(JSON.stringify({
-            fileName: req.file.originalname,
-            auditReport: result,
-            scanLevel: 'basic', // Default to basic scan
-          })) as Prisma.InputJsonObject,
-        },
-      });
-
-      // Create an initial AcrJob record so this PDF audit appears in the ACR workflow.
-      // Multiple AcrJob records per jobId are intentional: finalized reports are preserved
-      // as version history and subsequent edits produce new draft records.
-      try {
-        await prisma.acrJob.create({
-          data: {
-            jobId: job.id,
+      if (areQueuesAvailable()) {
+        // Enqueue to BullMQ — worker will pick up and process
+        const queue = getAccessibilityQueue();
+        await queue.add(
+          'pdf-audit',
+          {
+            type: JOB_TYPES.PDF_ACCESSIBILITY,
             tenantId,
             userId,
-            edition: 'WCAG21-AA',
-            documentTitle: req.file.originalname,
-            documentType: 'PDF',
-            status: 'draft',
+            options: {
+              dbJobId: jobId,
+              fileName: req.file.originalname,
+            },
           },
-        });
-      } catch (acrErr) {
-        logger.warn('[PDF Audit] Failed to create AcrJob record (non-fatal)', acrErr instanceof Error ? acrErr.message : String(acrErr));
+          { jobId } // Use Prisma job ID as BullMQ job ID for unified tracking
+        );
+        logger.info(`[PDF] Job ${jobId} enqueued for async audit`);
+      } else {
+        // Fallback: process in-process when Redis is not configured
+        logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
+        const buffer = req.file.buffer;
+        const fileName = req.file.originalname;
+        processAuditFromBufferBackground(jobId, buffer, fileName, tenantId, userId).catch(
+          (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+        );
       }
 
-      // ═══════════════════════════════════════════════════════════════
-      // 🔄 Sprint 9: Create File record and Workflow for this PDF
-      // ═══════════════════════════════════════════════════════════════
-      let workflowId: string | undefined;
-      try {
-        // Create a File record for this PDF (needed for workflow)
-        const storagePath = process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage';
-        const fileRecord = await prisma.file.create({
-          data: {
-            id: nanoid(),
-            tenantId,
-            filename: `${nanoid()}_${req.file.originalname}`,
-            originalName: req.file.originalname,
-            mimeType: req.file.mimetype || 'application/pdf',
-            size: req.file.size,
-            path: `${storagePath}/${job.id}/${req.file.originalname}`,
-            status: 'UPLOADED',
-          },
-        });
-        logger.info(`[PDF Controller] Created File record ${fileRecord.id} for job ${job.id}`);
-
-        // Check if workflow is enabled for this tenant
-        const shouldCreate = await workflowConfigService.shouldCreateWorkflow(tenantId);
-
-        if (shouldCreate) {
-          // Create workflow for this file
-          const workflow = await workflowService.createWorkflow(fileRecord.id, userId);
-          workflowId = workflow.id;
-          logger.info(`[PDF Controller] Workflow created: ${workflowId}, state: ${workflow.currentState}`);
-        } else {
-          logger.info(`[PDF Controller] Workflow disabled for tenant ${tenantId}, skipping creation`);
-        }
-      } catch (workflowError) {
-        // Don't fail the PDF audit if workflow creation fails
-        logger.error(`[PDF Controller] Failed to create workflow for job ${job.id}`, workflowError);
-      }
-
-      return res.status(200).json({
+      return res.status(202).json({
         success: true,
         data: {
           jobId: job.id,
-          fileName: req.file.originalname,
-          auditReport: result,
-          workflowId, // Include workflow ID in response
+          status: 'QUEUED',
+          message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
         },
       });
     } catch (error) {
@@ -1144,3 +1095,65 @@ async function processPdfAuditInBackground(
 }
 
 export const pdfController = new PdfController();
+
+/**
+ * In-process fallback for when Redis/BullMQ is not available.
+ * Processes a PDF audit from a buffer already saved to permanent storage.
+ */
+async function processAuditFromBufferBackground(
+  jobId: string,
+  buffer: Buffer,
+  fileName: string,
+  tenantId: string,
+  userId: string
+): Promise<void> {
+  try {
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: 'PROCESSING', startedAt: new Date() },
+    });
+
+    const result = await pdfAuditService.runAuditFromBuffer(buffer, jobId, fileName);
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+        output: JSON.parse(JSON.stringify({
+          fileName,
+          auditReport: result,
+          scanLevel: 'basic',
+        })) as Prisma.InputJsonObject,
+      },
+    });
+
+    try {
+      await prisma.acrJob.create({
+        data: {
+          jobId,
+          tenantId,
+          userId,
+          edition: 'WCAG21-AA',
+          documentTitle: fileName,
+          documentType: 'PDF',
+          status: 'draft',
+        },
+      });
+    } catch (acrErr) {
+      logger.warn(`[PDF] Failed to create AcrJob (non-fatal): ${acrErr instanceof Error ? acrErr.message : String(acrErr)}`);
+    }
+
+    logger.info(`[PDF] In-process background audit completed for job ${jobId}`);
+  } catch (error) {
+    logger.error(`[PDF] In-process background audit failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown'}`);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'FAILED',
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }).catch(() => {});
+  }
+}
