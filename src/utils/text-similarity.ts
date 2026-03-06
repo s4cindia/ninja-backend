@@ -71,6 +71,10 @@ function computeBigramSequenceOverlap(tokensA: string[], tokensB: string[]): num
     intersection += Math.min(count, bigramsB.get(bg) || 0);
   }
 
+  // Use max (not avg) as denominator — conservative for DOCX change detection.
+  // A short text fully contained in a long text still scores low, which is correct
+  // for detecting edits (length change = significant edit). If reused for plagiarism
+  // scoring where containment matters, consider avg or Jaccard union instead.
   const totalBigrams = Math.max(tokensA.length - 1, tokensB.length - 1);
   return totalBigrams > 0 ? intersection / totalBigrams : 0;
 }

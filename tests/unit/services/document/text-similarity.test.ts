@@ -26,7 +26,7 @@ describe('computeWordSimilarity', () => {
     expect(computeWordSimilarity('Hello, World!', 'hello world')).toBe(1);
   });
 
-  it('returns 0 for empty strings', () => {
+  it('returns 1 for two empty strings, 0 when one is empty', () => {
     expect(computeWordSimilarity('', '')).toBe(1); // both empty → exact match shortcut
     expect(computeWordSimilarity('hello', '')).toBe(0);
     expect(computeWordSimilarity('', 'hello')).toBe(0);

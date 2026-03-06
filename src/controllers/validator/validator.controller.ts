@@ -990,6 +990,7 @@ export class ValidatorController {
       logger.info(`[Validator] Exporting document ${documentId} to DOCX (mode: ${exportMode})`);
 
       let docxBuffer: Buffer;
+      let exportResult: import('../../services/document/docx-conversion.service').ExportResult | null = null;
       const titleBase = document.originalName.replace(/\.docx$/i, '');
       const currentHtml = document.documentContent.fullHtml;
 
@@ -1003,7 +1004,7 @@ export class ValidatorController {
             document.storageType as 'S3' | 'LOCAL'
           );
           if (originalBuffer) {
-            const exportResult = await docxConversionService.exportWithTrackChanges(
+            exportResult = await docxConversionService.exportWithTrackChanges(
               originalBuffer,
               currentHtml,
               { title: titleBase, mode: exportMode }
@@ -1035,6 +1036,11 @@ export class ValidatorController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/[;"\\]/g, '_');
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
+      // Let the frontend know if edits were discarded so it can warn the user
+      if (exportResult?.originalPreserved && exportResult.wordSimilarity != null && exportResult.wordSimilarity < 1) {
+        res.setHeader('X-Original-Preserved', 'true');
+        res.setHeader('X-Word-Similarity', exportResult.wordSimilarity.toFixed(4));
+      }
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);
 

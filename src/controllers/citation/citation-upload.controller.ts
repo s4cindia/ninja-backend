@@ -45,6 +45,13 @@ function htmlToPlainText(html: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&ndash;/g, '\u2013')
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&hellip;/g, '\u2026')
+    .replace(/&lsquo;/g, '\u2018')
+    .replace(/&rsquo;/g, '\u2019')
+    .replace(/&ldquo;/g, '\u201C')
+    .replace(/&rdquo;/g, '\u201D')
     .replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)))  // decode numeric entities
     .replace(/[ \t]+/g, ' ')           // collapse horizontal whitespace
     .replace(/\n{3,}/g, '\n\n')        // collapse excessive newlines
@@ -65,6 +72,24 @@ async function tryPandocHtml(fileBuffer: Buffer, fallbackHtml: string): Promise<
     logger.warn(`[Citation Upload] Pandoc conversion failed, falling back to mammoth HTML:`, pandocError);
   }
   return fallbackHtml;
+}
+
+/**
+ * Prepare document content: Pandoc HTML + aligned plain text.
+ * Shared by both upload handlers to avoid logic duplication.
+ */
+async function prepareDocumentContent(fileBuffer: Buffer, mammothContent: { html: string; text: string }) {
+  const styledHtml = await tryPandocHtml(fileBuffer, mammothContent.html);
+  const fullText = styledHtml !== mammothContent.html ? htmlToPlainText(styledHtml) : mammothContent.text;
+  return { styledHtml, fullText };
+}
+
+/** True when citation processing should use sync (inline) mode instead of async queue. */
+function shouldUseSyncProcessing(): boolean {
+  if (process.env.CITATION_FORCE_ASYNC === 'true') return false;
+  if (process.env.CITATION_FORCE_SYNC === 'true') return true;
+  // In non-production (dev/test), default to sync — async queue is unreliable with remote Redis
+  return process.env.NODE_ENV !== 'production';
 }
 
 /**
@@ -390,10 +415,8 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(fileBuffer);
       const stats = await docxProcessorService.getStatistics(fileBuffer);
 
-      // Convert DOCX to styled HTML using Pandoc for better formatting preservation
-      const styledHtml = await tryPandocHtml(fileBuffer, content.html);
-      // Derive plain text from the same HTML source so offsets stay aligned
-      const fullText = styledHtml !== content.html ? htmlToPlainText(styledHtml) : content.text;
+      // Convert DOCX to styled HTML using Pandoc + derive aligned plain text
+      const { styledHtml, fullText } = await prepareDocumentContent(fileBuffer, content);
 
       // Create job
       const job = await prisma.job.create({
@@ -447,12 +470,7 @@ export class CitationUploadController {
         data: { status: 'UPLOADED' }
       });
 
-      // In development, default to sync processing — async queue is unreliable
-      // with remote Redis. Set CITATION_FORCE_ASYNC=true to test queue mode locally.
-      const isDev = process.env.NODE_ENV !== 'production';
-      const forceSync = process.env.CITATION_FORCE_SYNC === 'true';
-      const forceAsync = process.env.CITATION_FORCE_ASYNC === 'true';
-      const useAsyncProcessing = forceAsync || (!forceSync && !isDev && areQueuesAvailable());
+      const useAsyncProcessing = !shouldUseSyncProcessing() && areQueuesAvailable();
 
       logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessing ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 
@@ -614,10 +632,8 @@ export class CitationUploadController {
       const content = await docxProcessorService.extractText(file.buffer);
       const stats = await docxProcessorService.getStatistics(file.buffer);
 
-      // Convert DOCX to styled HTML using Pandoc for better formatting preservation
-      const styledHtml = await tryPandocHtml(file.buffer, content.html);
-      // Derive plain text from the same HTML source so offsets stay aligned
-      const fullText = styledHtml !== content.html ? htmlToPlainText(styledHtml) : content.text;
+      // Convert DOCX to styled HTML using Pandoc + derive aligned plain text
+      const { styledHtml, fullText } = await prepareDocumentContent(file.buffer, content);
 
       // Create job
       const job = await prisma.job.create({
@@ -675,13 +691,7 @@ export class CitationUploadController {
         }
       });
 
-      // Check if async processing is available (Redis configured)
-      // In development, default to sync processing — async queue is unreliable
-      // with remote Redis. Set CITATION_FORCE_ASYNC=true to test queue mode locally.
-      const isDevUpload = process.env.NODE_ENV !== 'production';
-      const forceSyncUpload = process.env.CITATION_FORCE_SYNC === 'true';
-      const forceAsyncUpload = process.env.CITATION_FORCE_ASYNC === 'true';
-      const useAsyncProcessingUpload = forceAsyncUpload || (!forceSyncUpload && !isDevUpload && areQueuesAvailable());
+      const useAsyncProcessingUpload = !shouldUseSyncProcessing() && areQueuesAvailable();
 
       logger.info(`[Citation Upload] Processing mode: ${useAsyncProcessingUpload ? 'ASYNC (queue)' : 'SYNC (inline)'}, env=${process.env.NODE_ENV}`);
 

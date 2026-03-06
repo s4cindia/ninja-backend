@@ -3280,7 +3280,6 @@ export class CitationReferenceController {
     lastIndex = 0;
     const supPattern = /<sup>(\d+(?:\s*[-–—,]\s*\d+)*)<\/sup>/g;
     let supMatch: RegExpExecArray | null;
-    supPattern.lastIndex = 0;
     while ((supMatch = supPattern.exec(textAfterParens)) !== null) {
       if (!isCitationSuperscript(supMatch[1])) continue; // leave non-citation sups untouched
       const remapped = remapAndFormat(supMatch[1]);

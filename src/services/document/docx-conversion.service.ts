@@ -613,6 +613,8 @@ function inlineDocxStyles(html: string, docxStyles?: DocxStyleInfo): string {
 
   // TipTap only preserves color via TextStyle marks (span-level), not on block elements.
   // Wrap heading content in <span style="color:..."> so the Color extension keeps it.
+  // NOTE: Same Pandoc single-line assumption as the heading inline styles above — the
+  // [\s\S]*? regex would misbehave with unclosed tags or nested headings from other sources.
   for (let lvl = 1; lvl <= 6; lvl++) {
     if (!headingColors[lvl]) continue;
     const re = new RegExp(`(<h${lvl}[^>]*>)([\\s\\S]*?)(<\\/h${lvl}>)`, 'gi');

@@ -352,10 +352,12 @@ async function executeCheck(
           ].filter(Boolean);
           const externalTitle = titleParts.join('. ') + (validDoi ? `. DOI: ${validDoi}` : '') || null;
 
-          // Prefer validated DOI link, then provided URL
+          // Prefer validated DOI link, then provided URL (must be http/https to prevent XSS)
+          const rawUrl = match.sourceUrl;
+          const isValidUrl = rawUrl && /^https?:\/\//i.test(rawUrl);
           const externalUrl = validDoi
             ? `https://doi.org/${validDoi}`
-            : (match.sourceUrl || null);
+            : (isValidUrl ? rawUrl : null);
 
           // Only persist matches with minimum verifiability — a URL or a named source
           if (!externalUrl && !match.sourceName) {
