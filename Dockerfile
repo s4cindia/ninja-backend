@@ -43,8 +43,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     unzip \
     wget \
-    && wget -qO /tmp/pandoc.deb https://github.com/jgm/pandoc/releases/download/3.1.3/pandoc-3.1.3-1-amd64.deb \
-    && echo "caa7e0410f9e2cb1da2eb8db13cc97b5548fe455985e2c944e3929d22f99bcdc  /tmp/pandoc.deb" | sha256sum -c - \
+    && PANDOC_ARCH="$(dpkg --print-architecture)" \
+    && wget -qO /tmp/pandoc.deb "https://github.com/jgm/pandoc/releases/download/3.1.3/pandoc-3.1.3-1-${PANDOC_ARCH}.deb" \
+    && if [ "$PANDOC_ARCH" = "amd64" ]; then \
+         echo "caa7e0410f9e2cb1da2eb8db13cc97b5548fe455985e2c944e3929d22f99bcdc  /tmp/pandoc.deb" | sha256sum -c -; \
+       elif [ "$PANDOC_ARCH" = "arm64" ]; then \
+         echo "b93cc370f2bf5e360aa2aa72019eda8aaf374dfff125bebf950470b22f7ac7e4  /tmp/pandoc.deb" | sha256sum -c -; \
+       else echo "Unsupported architecture: $PANDOC_ARCH" && exit 1; fi \
     && dpkg -i /tmp/pandoc.deb \
     && rm /tmp/pandoc.deb \
     && apt-get purge -y wget && apt-get autoremove -y \

@@ -18,6 +18,7 @@ import {
   listDocumentsQuerySchema,
   getDocumentParamsSchema,
   getVersionParamsSchema,
+  confirmSaveBodySchema,
 } from '../schemas/validator.schemas';
 
 const router = Router();
@@ -135,7 +136,7 @@ router.post(
  */
 router.post(
   '/documents/:documentId/confirm-save',
-  validate({ params: getDocumentParamsSchema }),
+  validate({ params: getDocumentParamsSchema, body: confirmSaveBodySchema }),
   validatorController.confirmContentSave.bind(validatorController)
 );
 

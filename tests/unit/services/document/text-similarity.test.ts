@@ -86,6 +86,30 @@ describe('computeSequenceSimilarity', () => {
     expect(computeSequenceSimilarity('hello', 'hello')).toBe(1);
     expect(computeSequenceSimilarity('hello', 'world')).toBe(0);
   });
+
+  it('falls back to bigram overlap for large inputs without throwing', () => {
+    // Build inputs large enough to trigger the bigram fallback (m*n > 4_000_000)
+    const n = 2100;
+    const a = Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+    const b = Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+    const sim = computeSequenceSimilarity(a, b);
+    expect(Number.isFinite(sim)).toBe(true);
+    expect(sim).toBeGreaterThanOrEqual(0);
+    expect(sim).toBeLessThanOrEqual(1);
+    // Identical inputs should score 1.0 even via bigram path
+    expect(sim).toBe(1);
+  });
+
+  it('bigram fallback returns < 1 for different large inputs', () => {
+    const n = 2100;
+    const a = Array.from({ length: n }, (_, i) => `w${i}`).join(' ');
+    const b = Array.from({ length: n }, (_, i) => `x${i}`).join(' ');
+    const sim = computeSequenceSimilarity(a, b);
+    expect(Number.isFinite(sim)).toBe(true);
+    expect(sim).toBeGreaterThanOrEqual(0);
+    expect(sim).toBeLessThanOrEqual(1);
+    expect(sim).toBe(0);
+  });
 });
 
 describe('dual-check behavior', () => {

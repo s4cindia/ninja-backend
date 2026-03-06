@@ -57,6 +57,66 @@ async function detectAndBackfillContentType(
 
 export class ValidatorController {
   /**
+   * Persist HTML content to DB and optionally create a version snapshot.
+   * Shared by PUT /content and POST /confirm-save.
+   */
+  private async persistContentAndSnapshot(
+    documentId: string,
+    content: string,
+    previousContent: string,
+    userId: string,
+    createVersion: boolean,
+    via?: string
+  ): Promise<{ updatedAt: Date; wordCount: number; versionNumber: number | null }> {
+    const fullText = htmlToPlainText(content);
+    const wordCount = fullText.split(/\s+/).filter(Boolean).length;
+
+    const updated = await prisma.editorialDocumentContent.upsert({
+      where: { documentId },
+      create: { documentId, fullHtml: content, fullText, wordCount },
+      update: { fullHtml: content, fullText, wordCount, updatedAt: new Date() },
+    });
+
+    await prisma.editorialDocument.update({
+      where: { id: documentId },
+      data: { updatedAt: new Date() },
+    });
+
+    let versionNumber: number | null = null;
+    if (createVersion && content !== previousContent) {
+      const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
+      versionNumber = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+        const latestVersion = await tx.documentVersion.findFirst({
+          where: { documentId },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+        const newVersion = (latestVersion?.version || 0) + 1;
+        await tx.documentVersion.create({
+          data: {
+            documentId,
+            version: newVersion,
+            createdBy: userId,
+            changeLog: [{
+              timestamp: new Date().toISOString(),
+              action: 'content_save',
+              wordCount,
+              ...(via ? { via } : {}),
+            }],
+            snapshot: { content, wordCount, savedAt: new Date().toISOString() },
+            snapshotType: 'full',
+          },
+        });
+        return newVersion;
+      });
+      logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId}${via ? ` (via ${via})` : ''}`);
+    }
+
+    return { updatedAt: updated.updatedAt, wordCount, versionNumber };
+  }
+
+  /**
    * POST /api/v1/validator/upload
    * Upload a DOCX file for editing
    */
@@ -607,89 +667,18 @@ export class ValidatorController {
         return;
       }
 
-      // Get previous content for change detection
       const previousContent = document.documentContent?.fullHtml || '';
+      const result = await this.persistContentAndSnapshot(documentId, content, previousContent, userId, createVersion);
 
-      // Extract plain text from HTML for style validation
-      const fullText = htmlToPlainText(content);
-
-      const wordCount = fullText.split(/\s+/).filter(Boolean).length;
-
-      const updated = await prisma.editorialDocumentContent.upsert({
-        where: { documentId },
-        create: {
-          documentId,
-          fullHtml: content,
-          fullText,
-          wordCount,
-        },
-        update: {
-          fullHtml: content,
-          fullText,
-          wordCount,
-          updatedAt: new Date(),
-        },
-      });
-
-      // Also update the parent document's updatedAt timestamp
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { updatedAt: new Date() },
-      });
-
-      // Create a version snapshot if content changed and createVersion is true
-      let versionNumber: number | null = null;
-      if (createVersion && content !== previousContent) {
-        // Use transaction with advisory lock to prevent race conditions
-        const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
-        versionNumber = await prisma.$transaction(async (tx) => {
-          // Acquire advisory lock scoped to this document
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
-
-          // Get the latest version number
-          const latestVersion = await tx.documentVersion.findFirst({
-            where: { documentId },
-            orderBy: { version: 'desc' },
-            select: { version: true },
-          });
-
-          const newVersion = (latestVersion?.version || 0) + 1;
-
-          // Create the version snapshot
-          await tx.documentVersion.create({
-            data: {
-              documentId,
-              version: newVersion,
-              createdBy: userId,
-              changeLog: [{
-                timestamp: new Date().toISOString(),
-                action: 'content_save',
-                wordCount,
-              }],
-              snapshot: {
-                content,
-                wordCount,
-                savedAt: new Date().toISOString(),
-              },
-              snapshotType: 'full',
-            },
-          });
-
-          return newVersion;
-        });
-
-        logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId}`);
-      }
-
-      logger.info(`[Validator] Saved document content: ${documentId}, wordCount: ${wordCount}`);
+      logger.info(`[Validator] Saved document content: ${documentId}, wordCount: ${result.wordCount}`);
 
       res.json({
         success: true,
         data: {
           documentId,
-          savedAt: updated.updatedAt,
-          wordCount,
-          version: versionNumber,
+          savedAt: result.updatedAt,
+          wordCount: result.wordCount,
+          version: result.versionNumber,
         },
       });
     } catch (error) {
@@ -1025,10 +1014,12 @@ export class ValidatorController {
       const { documentId } = req.params;
       const { contentKey, createVersion = true } = req.body;
 
-      if (!contentKey || typeof contentKey !== 'string') {
-        res.status(400).json({
+      // Validate contentKey belongs to this tenant and document (prevents cross-tenant S3 access)
+      const expectedPrefix = `uploads/${tenantId}/`;
+      if (!contentKey.startsWith(expectedPrefix) || !contentKey.includes(documentId)) {
+        res.status(403).json({
           success: false,
-          error: { code: 'INVALID_KEY', message: 'contentKey is required' },
+          error: { code: 'FORBIDDEN', message: 'contentKey does not belong to this tenant/document' },
         });
         return;
       }
@@ -1071,71 +1062,23 @@ export class ValidatorController {
         return;
       }
 
-      // Get previous content for change detection
       const previousContent = document.documentContent?.fullHtml || '';
-
-      // Extract plain text and count words
-      const fullText = htmlToPlainText(content);
-      const wordCount = fullText.split(/\s+/).filter(Boolean).length;
-
-      // Persist content to DB (same logic as PUT /content)
-      const updated = await prisma.editorialDocumentContent.upsert({
-        where: { documentId },
-        create: { documentId, fullHtml: content, fullText, wordCount },
-        update: { fullHtml: content, fullText, wordCount, updatedAt: new Date() },
-      });
-
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { updatedAt: new Date() },
-      });
-
-      // Create version snapshot if content changed
-      let versionNumber: number | null = null;
-      if (createVersion && content !== previousContent) {
-        const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
-        versionNumber = await prisma.$transaction(async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
-          const latestVersion = await tx.documentVersion.findFirst({
-            where: { documentId },
-            orderBy: { version: 'desc' },
-            select: { version: true },
-          });
-          const newVersion = (latestVersion?.version || 0) + 1;
-          await tx.documentVersion.create({
-            data: {
-              documentId,
-              version: newVersion,
-              createdBy: userId,
-              changeLog: [{
-                timestamp: new Date().toISOString(),
-                action: 'content_save',
-                wordCount,
-                via: 'presigned_s3',
-              }],
-              snapshot: { content, wordCount, savedAt: new Date().toISOString() },
-              snapshotType: 'full',
-            },
-          });
-          return newVersion;
-        });
-        logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId} (via presigned S3)`);
-      }
+      const result = await this.persistContentAndSnapshot(documentId, content, previousContent, userId, createVersion, 'presigned_s3');
 
       // Delete the temp S3 object in the background
       s3Service.deleteFile(contentKey).catch((delErr) => {
         logger.warn(`[Validator] Failed to delete temp S3 content key ${contentKey}:`, delErr);
       });
 
-      logger.info(`[Validator] Confirmed presigned save for document: ${documentId}, wordCount: ${wordCount}`);
+      logger.info(`[Validator] Confirmed presigned save for document: ${documentId}, wordCount: ${result.wordCount}`);
 
       res.json({
         success: true,
         data: {
           documentId,
-          savedAt: updated.updatedAt,
-          wordCount,
-          version: versionNumber,
+          savedAt: result.updatedAt,
+          wordCount: result.wordCount,
+          version: result.versionNumber,
         },
       });
     } catch (error) {
