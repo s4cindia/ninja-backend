@@ -57,7 +57,13 @@ export interface AuditIssue {
   element?: string;
   context?: string;
   pageNumber?: number;
+  /** Matterhorn Protocol 1.1 condition ID (e.g. "13-001") */
+  matterhornCheckpoint?: string;
+  /** Testability designation from Matterhorn Protocol 1.1 */
+  matterhornHow?: 'M' | 'H' | '--';
   triage?: IssueTriage;
+  /** Bounding box of the flagged element in PDF page coordinates (bottom-left origin). */
+  boundingBox?: { x: number; y: number; width: number; height: number; pageWidth: number; pageHeight: number };
 }
 
 /**

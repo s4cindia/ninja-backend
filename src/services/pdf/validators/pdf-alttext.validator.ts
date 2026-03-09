@@ -120,10 +120,16 @@ class PDFAltTextValidator {
 
     logger.info(`[PDFAltTextValidator] Found ${documentImages.totalImages} images`);
 
+    // Build page-dimension lookup (width/height at scale=1 in PDF points)
+    const pageDims = new Map(
+      parsedPdf.structure.pages.map(p => [p.pageNumber, { width: p.width, height: p.height }])
+    );
+
     // Validate each image
     for (const pageImages of documentImages.pages) {
       for (const image of pageImages.images) {
-        const imageIssues = await this.validateImage(image, useAI);
+        const pageSize = pageDims.get(image.pageNumber) ?? { width: 0, height: 0 };
+        const imageIssues = await this.validateImage(image, useAI, pageSize);
         issues.push(...imageIssues);
       }
     }
@@ -137,7 +143,7 @@ class PDFAltTextValidator {
       imagesWithoutAltText: documentImages.imagesWithoutAltText,
       decorativeImages: documentImages.decorativeImages,
       imagesWithQualityIssues: issues.filter(i =>
-        i.code === 'MATTERHORN-13-003' ||
+        i.code === 'MATTERHORN-13-004' ||
         i.code === 'ALT-TEXT-QUALITY'
       ).length,
     };
@@ -158,7 +164,11 @@ class PDFAltTextValidator {
    * @param useAI - Whether to use AI for quality assessment
    * @returns Array of issues for this image
    */
-  private async validateImage(image: ImageInfo, useAI: boolean): Promise<AuditIssue[]> {
+  private async validateImage(
+    image: ImageInfo,
+    useAI: boolean,
+    pageSize: { width: number; height: number }
+  ): Promise<AuditIssue[]> {
     const issues: AuditIssue[] = [];
 
     // Skip decorative images marked as artifacts
@@ -195,7 +205,7 @@ class PDFAltTextValidator {
       const issue = this.createIssue({
         source: 'pdf-alttext',
         severity: 'critical',
-        code: 'MATTERHORN-13-002',
+        code: 'MATTERHORN-13-001',
         message: `Image on page ${image.pageNumber} has no alternative text`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
@@ -203,7 +213,17 @@ class PDFAltTextValidator {
         category: 'alt-text',
         element: image.id,
         pageNumber: image.pageNumber,
+        matterhornCheckpoint: '13-001',
+        matterhornHow: 'M',
         triage,
+        boundingBox: {
+          x: image.position.x,
+          y: image.position.y,
+          width: image.position.width,
+          height: image.position.height,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+        },
       });
       logger.debug(`[DEBUG] Created issue with pageNumber: ${issue.pageNumber} for image on page ${image.pageNumber}`);
       issues.push(issue);
@@ -218,7 +238,7 @@ class PDFAltTextValidator {
       issues.push(this.createIssue({
         source: 'pdf-alttext',
         severity: 'serious',
-        code: 'MATTERHORN-13-003',
+        code: 'MATTERHORN-13-004',
         message: `Image on page ${image.pageNumber} has generic alt text: "${image.altText}"`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
@@ -227,6 +247,16 @@ class PDFAltTextValidator {
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
         pageNumber: image.pageNumber,
+        matterhornCheckpoint: '13-004',
+        matterhornHow: 'M',
+        boundingBox: {
+          x: image.position.x,
+          y: image.position.y,
+          width: image.position.width,
+          height: image.position.height,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+        },
       }));
     }
 
@@ -246,6 +276,14 @@ class PDFAltTextValidator {
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
         pageNumber: image.pageNumber,
+        boundingBox: {
+          x: image.position.x,
+          y: image.position.y,
+          width: image.position.width,
+          height: image.position.height,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+        },
       }));
     }
 
@@ -263,6 +301,14 @@ class PDFAltTextValidator {
         element: image.id,
         context: `Current alt text: "${image.altText}"`,
         pageNumber: image.pageNumber,
+        boundingBox: {
+          x: image.position.x,
+          y: image.position.y,
+          width: image.position.width,
+          height: image.position.height,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+        },
       }));
     }
 
@@ -407,7 +453,7 @@ Respond ONLY with valid JSON in this exact format:
 
   /**
    * Classify image as decorative or content, and generate alt text if content.
-   * Used for MATTERHORN-13-002 (missing alt text) triage annotation.
+   * Used for MATTERHORN-13-001 (missing alt text) triage annotation.
    */
   private async classifyAndGenerateAltText(image: ImageInfo): Promise<{
     isDecorative: boolean;

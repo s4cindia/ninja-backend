@@ -9,6 +9,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { PDFName } from 'pdf-lib';
 import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
@@ -169,13 +170,32 @@ class PDFStructureValidator {
         suggestion: 'Review and fix the tag structure. The Suspects flag indicates potential tagging problems.',
         category: 'structure',
         pageNumber: 1,
+        matterhornCheckpoint: '01-004',
+        matterhornHow: 'M',
       }));
     }
 
-    // Validate heading hierarchy (Matterhorn 06-001, WCAG 2.4.6)
+    // Check for missing PDF/UA identifier in XMP (Matterhorn 06-002) — tagged PDFs only
+    if (structure.isTaggedPDF && !this.hasPdfUaIdentifier(parsedPdf)) {
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: 'PDFUA-IDENTIFIER-MISSING',
+        message: 'PDF/UA identifier (pdfuaid:part) is missing from document XMP metadata',
+        wcagCriteria: ['1.3.1'],
+        location: 'Document metadata',
+        suggestion: 'Add the PDF/UA identifier (pdfuaid:part=1) to the document XMP metadata to declare PDF/UA-1 conformance.',
+        category: 'metadata',
+        pageNumber: 1,
+        matterhornCheckpoint: '06-002',
+        matterhornHow: 'M',
+      }));
+    }
+
+    // Validate heading hierarchy (Matterhorn 14-003, WCAG 2.4.6)
     issues.push(...this.validateHeadingHierarchy(structure.headings));
 
-    // Validate reading order (Matterhorn 09-004, WCAG 1.3.2)
+    // Validate reading order (Matterhorn 12-001, WCAG 1.3.2)
     issues.push(...this.validateReadingOrder(structure.readingOrder));
 
     // Check document language (Matterhorn 11-001, WCAG 3.1.1)
@@ -190,6 +210,8 @@ class PDFStructureValidator {
         suggestion: 'Set the document language in the PDF metadata (e.g., "en" for English, "es" for Spanish).',
         category: 'language',
         pageNumber: 1,
+        matterhornCheckpoint: '11-001',
+        matterhornHow: 'M',
       }));
     }
 
@@ -224,11 +246,15 @@ class PDFStructureValidator {
     for (const issue of headings.issues) {
       let severity: IssueSeverity;
       let code: string;
+      let matterhornCheckpoint: string | undefined;
+      let matterhornHow: 'M' | 'H' | '--' | undefined;
 
       switch (issue.type) {
         case 'missing-h1':
           severity = 'serious';
-          code = 'MATTERHORN-06-001';
+          code = 'MATTERHORN-14-003';
+          matterhornCheckpoint = '14-003';
+          matterhornHow = 'M';
           break;
         case 'skipped-level':
           severity = 'serious';
@@ -257,6 +283,8 @@ class PDFStructureValidator {
         suggestion: this.getHeadingSuggestion(issue.type),
         category: 'headings',
         pageNumber: issue.pageNumber || 1,
+        matterhornCheckpoint,
+        matterhornHow,
       }));
     }
 
@@ -297,13 +325,15 @@ class PDFStructureValidator {
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'serious',
-        code: 'MATTERHORN-09-004',
+        code: 'MATTERHORN-12-001',
         message: 'Document reading order may not be logical',
         wcagCriteria: ['1.3.2'],
         location: 'Document',
         suggestion: 'Ensure the document has a logical reading order. Use tagged PDF structure to define the correct reading sequence.',
         category: 'reading-order',
         pageNumber: 1,
+        matterhornCheckpoint: '12-001',
+        matterhornHow: 'H',
       }));
     }
 
@@ -469,6 +499,24 @@ class PDFStructureValidator {
     }
 
     return issues;
+  }
+
+  /**
+   * Check whether the PDF's XMP metadata stream contains a pdfuaid:part entry.
+   * Returns false (not present) on any read error — never throws.
+   */
+  private hasPdfUaIdentifier(parsedPdf: ParsedPDF): boolean {
+    try {
+      const metadataRef = parsedPdf.pdfLibDoc.catalog.get(PDFName.of('Metadata'));
+      if (!metadataRef) return false;
+      const stream = parsedPdf.pdfLibDoc.context.lookup(metadataRef) as { contents?: Uint8Array };
+      if (!stream?.contents) return false;
+      const xmp = Buffer.from(stream.contents).toString('utf8');
+      return xmp.includes('pdfuaid:part');
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read XMP for PDF/UA identifier check: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   /**
