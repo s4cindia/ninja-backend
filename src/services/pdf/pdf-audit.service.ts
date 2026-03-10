@@ -18,6 +18,9 @@ import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator } from './validators/pdf-table.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
+import { pdfLinkValidator } from './validators/pdf-link.validator';
+import { pdfFormValidator } from './validators/pdf-form.validator';
+import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
 import { smartTriageService } from './smart-triage/triage.service';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
@@ -41,6 +44,9 @@ export interface PdfValidationResult {
   altTextIssues: AuditIssue[];
   contrastIssues: AuditIssue[];
   tableIssues: AuditIssue[];
+  linkIssues: AuditIssue[];
+  formIssues: AuditIssue[];
+  bookmarkIssues: AuditIssue[];
   matterhornResults: MatterhornCheckResult[];
   validatorErrors: Array<{
     validator: string;
@@ -231,7 +237,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
    */
   protected async validate(
     parsed: PdfParseResult,
-    scanLevel: ScanLevel = 'basic',
+    scanLevel: ScanLevel = 'comprehensive',
     customValidators?: ValidatorType[],
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
   ): Promise<PdfValidationResult> {
@@ -243,6 +249,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       altTextIssues: [],
       contrastIssues: [],
       tableIssues: [],
+      linkIssues: [],
+      formIssues: [],
+      bookmarkIssues: [],
       matterhornResults: [],
       validatorErrors: [],
     };
@@ -255,14 +264,20 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
     logger.info(`[PdfAudit] Scan level: ${scanLevel}, validators: ${validatorsToRun.join(', ')}`);
 
-    // Pre-compute which of the 4 real validators will actually run (for progress total)
+    // Pre-compute which validators will run (for progress total)
     const willRunStructure = validatorsToRun.includes('structure') || validatorsToRun.includes('headings') ||
       validatorsToRun.includes('reading-order') || validatorsToRun.includes('lists') ||
       validatorsToRun.includes('language') || validatorsToRun.includes('metadata');
-    const willRunAltText  = validatorsToRun.includes('alt-text');
-    const willRunContrast = validatorsToRun.includes('contrast');
-    const willRunTables   = validatorsToRun.includes('tables');
-    const totalValidators = [willRunStructure, willRunAltText, willRunContrast, willRunTables].filter(Boolean).length;
+    const willRunAltText   = validatorsToRun.includes('alt-text');
+    const willRunContrast  = validatorsToRun.includes('contrast');
+    const willRunTables    = validatorsToRun.includes('tables');
+    const willRunLinks     = validatorsToRun.includes('links');
+    const willRunForms     = validatorsToRun.includes('forms');
+    const willRunBookmarks = validatorsToRun.includes('bookmarks');
+    const totalValidators = [
+      willRunStructure, willRunAltText, willRunContrast, willRunTables,
+      willRunLinks, willRunForms, willRunBookmarks,
+    ].filter(Boolean).length;
     let completedValidators = 0;
 
     // Use real validators if parsedPdf is available, otherwise use stubs
@@ -341,6 +356,60 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators, tablesStart);
         }
       }
+
+      // 5. Link Text Validator
+      if (willRunLinks) {
+        const linksStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfLinkValidator...`);
+          const linkIssues = await pdfLinkValidator.validate(parsed);
+          result.linkIssues.push(...linkIssues);
+          result.issues.push(...linkIssues);
+          logger.info(`[PdfAudit] PdfLinkValidator found ${linkIssues.length} issues`);
+          onValidatorComplete?.('Link Text', linkIssues.length, ++completedValidators, totalValidators, linksStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfLinkValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfLinkValidator', error: errorMessage });
+          onValidatorComplete?.('Link Text', 0, ++completedValidators, totalValidators, linksStart);
+        }
+      }
+
+      // 6. Form Field Validator
+      if (willRunForms) {
+        const formsStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfFormValidator...`);
+          const formIssues = await pdfFormValidator.validate(parsed);
+          result.formIssues.push(...formIssues);
+          result.issues.push(...formIssues);
+          logger.info(`[PdfAudit] PdfFormValidator found ${formIssues.length} issues`);
+          onValidatorComplete?.('Form Fields', formIssues.length, ++completedValidators, totalValidators, formsStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFormValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFormValidator', error: errorMessage });
+          onValidatorComplete?.('Form Fields', 0, ++completedValidators, totalValidators, formsStart);
+        }
+      }
+
+      // 7. Bookmark Validator
+      if (willRunBookmarks) {
+        const bookmarksStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfBookmarkValidator...`);
+          const bookmarkIssues = await pdfBookmarkValidator.validate(parsed);
+          result.bookmarkIssues.push(...bookmarkIssues);
+          result.issues.push(...bookmarkIssues);
+          logger.info(`[PdfAudit] PdfBookmarkValidator found ${bookmarkIssues.length} issues`);
+          onValidatorComplete?.('Bookmarks', bookmarkIssues.length, ++completedValidators, totalValidators, bookmarksStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfBookmarkValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfBookmarkValidator', error: errorMessage });
+          onValidatorComplete?.('Bookmarks', 0, ++completedValidators, totalValidators, bookmarksStart);
+        }
+      }
     } else {
       // Fallback to stub validators
       logger.info('[PdfAudit] Using stub validators with PdfParseResult');
@@ -387,7 +456,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     logger.info(
       `[PdfAudit] Validation complete: ${result.issues.length} total issues ` +
       `(structure: ${result.structureIssues.length}, alt-text: ${result.altTextIssues.length}, ` +
-      `contrast: ${result.contrastIssues.length}, table: ${result.tableIssues.length})`
+      `contrast: ${result.contrastIssues.length}, table: ${result.tableIssues.length}, ` +
+      `links: ${result.linkIssues.length}, forms: ${result.formIssues.length}, bookmarks: ${result.bookmarkIssues.length})`
     );
 
     return result;
@@ -411,8 +481,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     logger.info(`[PdfAudit] Generating report for ${fileName}...`);
 
     // Smart triage: reduce false positives before scoring
-    // contrast is always suppressed (IS_IMPLEMENTED=false), so list it in suppressedCategories
-    const suppressedCategories = ['contrast'];
+    const suppressedCategories: string[] = [];
     let finalIssues = validation.issues;
     let triageSummary = undefined;
 
@@ -429,7 +498,18 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     const scoreBreakdown = this.calculateScore(finalIssues);
     const wcagMappings = this.mapToWcag(finalIssues);
     const summary = this.calculateSummary(finalIssues);
-    const matterhornSummary = this.generateMatterhornSummary(validation.matterhornResults);
+
+    // Recompute table issue count from triaged issues so Matterhorn checkpoint 11
+    // reflects the suppressed TOC-as-Table issues, not the raw pre-triage count.
+    // Use ID-based matching so structure issues with TABLE-* codes aren't miscounted.
+    const tableIssueIds = new Set(validation.tableIssues.map(i => i.id));
+    const triagedTableCount = finalIssues.filter(i => tableIssueIds.has(i.id)).length;
+    const adjustedMatterhornResults = validation.matterhornResults.map(r =>
+      r.checkpointId === '11'
+        ? { ...r, failureCount: triagedTableCount, passed: triagedTableCount === 0 }
+        : r
+    );
+    const matterhornSummary = this.generateMatterhornSummary(adjustedMatterhornResults);
 
     const report: AuditReport = {
       jobId,
@@ -448,11 +528,14 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           structure: validation.structureIssues.length,
           altText: validation.altTextIssues.length,
           contrast: validation.contrastIssues.length,
-          table: validation.tableIssues.length,
+          table: triagedTableCount,
+          links: validation.linkIssues.length,
+          forms: validation.formIssues.length,
+          bookmarks: validation.bookmarkIssues.length,
         },
-        matterhornCheckpoints: validation.matterhornResults.length,
-        matterhornPassed: validation.matterhornResults.filter(r => r.passed).length,
-        matterhornFailed: validation.matterhornResults.filter(r => !r.passed).length,
+        matterhornCheckpoints: adjustedMatterhornResults.length,
+        matterhornPassed: adjustedMatterhornResults.filter(r => r.passed).length,
+        matterhornFailed: adjustedMatterhornResults.filter(r => !r.passed).length,
         matterhornSummary,
         validatorErrors: validation.validatorErrors,
       },
