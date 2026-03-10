@@ -28,8 +28,8 @@ const W_POSITION     = 0.10;
 
 // Regex patterns
 const DOT_LEADER_RE = /[.·•]{3,}|…{2,}|\s{2,}\d+\s*$/;
-// PDFs often emit page numbers as standalone items ("31") or with leading whitespace ("  31")
-const TRAILING_NUM_RE = /(?:^|\s)\d{1,4}\s*$/;
+// PDFs emit page numbers as standalone items ("31"), with whitespace ("  31"), or after dots ("....31")
+const TRAILING_NUM_RE = /\d{1,4}\s*$/;
 
 export class TocDetector {
   /**
@@ -52,7 +52,7 @@ export class TocDetector {
         logger.debug(`[TocDetector] Page ${page.pageNumber} → TOC (score=${score.toFixed(2)}, heuristic)`);
         tocPages.add(page.pageNumber);
       } else if (score >= LOW_CONFIDENCE) {
-        const confirmed = await this.confirmWithLLM(page);
+        const confirmed = await this.confirmWithLLM(page, score);
         if (confirmed) {
           logger.debug(`[TocDetector] Page ${page.pageNumber} → TOC (score=${score.toFixed(2)}, llm-confirmed)`);
           tocPages.add(page.pageNumber);
@@ -101,7 +101,7 @@ export class TocDetector {
     const lines = page.content.map(c => c.text.trim()).filter(t => t.length > 0);
     if (lines.length === 0) return false;
     const withTrailingNum = lines.filter(t => TRAILING_NUM_RE.test(t));
-    return withTrailingNum.length / lines.length > 0.5;
+    return withTrailingNum.length / lines.length >= 0.35;
   }
 
   private checkOutlineMatch(page: PdfPage, outlineTitles: Set<string>): boolean {
@@ -112,10 +112,12 @@ export class TocDetector {
         matches++;
       }
     }
-    return matches / Math.max(1, outlineTitles.size) > 0.3;
+    // Normalize by page text count: a TOC page shows a subset of all bookmarks,
+    // so comparing matched bookmarks against total-bookmarks gives a tiny ratio for large books.
+    return matches / Math.max(1, pageTexts.length) > 0.3;
   }
 
-  private async confirmWithLLM(page: PdfPage): Promise<boolean> {
+  private async confirmWithLLM(page: PdfPage, heuristicScore: number): Promise<boolean> {
     try {
       const text = page.content
         .map(c => c.text)
@@ -140,7 +142,10 @@ Respond with JSON only: { "isToc": true|false, "confidence": "HIGH"|"MEDIUM"|"LO
       return result.isToc === true && result.confidence !== 'LOW';
     } catch (err) {
       logger.warn(`[TocDetector] LLM fallback failed for page ${page.pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
+      // When AI is unavailable, trust the heuristic score: ≥0.55 is strong enough evidence
+      const heuristicAccept = heuristicScore >= 0.55;
+      logger.debug(`[TocDetector] Page ${page.pageNumber} → LLM unavailable, heuristic fallback: ${heuristicAccept} (score=${heuristicScore.toFixed(2)})`);
+      return heuristicAccept;
     }
   }
 

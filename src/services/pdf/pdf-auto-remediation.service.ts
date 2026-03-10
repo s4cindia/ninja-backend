@@ -99,7 +99,12 @@ class PdfAutoRemediationService {
     this.registerHandler('MATTERHORN-01-002', this.handleSetDisplayDocTitle.bind(this)); // DisplayDocTitle not set
     this.registerHandler('MATTERHORN-01-005', this.handleSetSuspectsFlag.bind(this)); // Suspects flag not set
 
-    logger.info('[Auto-Remediation] Registered 9 handlers (6 unique + 3 aliases)');
+    // AI-assisted handlers (value supplied via options from the apply endpoint)
+    this.registerHandler('AI-ALT-TEXT', this.handleAiAltText.bind(this));
+    this.registerHandler('AI-TABLE-SUMMARY', this.handleAiTableSummary.bind(this));
+    this.registerHandler('AI-LANGUAGE', this.handleAddLanguage.bind(this)); // reuses existing handler
+
+    logger.info('[Auto-Remediation] Registered 12 handlers (9 unique + 3 aliases + 3 AI handlers)');
   }
 
   /**
@@ -557,6 +562,70 @@ class PdfAutoRemediationService {
   ): Promise<ModificationResult> {
     const suspects = (options?.suspects as boolean) ?? false;
     return await pdfModifierService.setSuspectsFlag(doc, suspects);
+  }
+
+  // ============================================================================
+  // AI-Assisted Handlers
+  // ============================================================================
+
+  /**
+   * Handler: Apply AI-generated alt text to a Figure element.
+   * Requires options.value (alt text) and options.imageId (from issue.element).
+   */
+  private async handleAiAltText(
+    doc: PDFDocument,
+    task: RemediationTask,
+    options?: Record<string, unknown>
+  ): Promise<ModificationResult> {
+    const value = options?.value as string | undefined;
+    const imageId = (options?.imageId ?? options?.element) as string | undefined;
+
+    if (!value) {
+      return {
+        success: false,
+        description: 'AI alt text handler: missing value',
+        error: 'No alt text value provided in options',
+      };
+    }
+    if (!imageId) {
+      return {
+        success: false,
+        description: 'AI alt text handler: missing imageId',
+        error: 'No imageId provided in options — cannot locate Figure element',
+      };
+    }
+
+    return pdfModifierService.setAltText(doc, imageId, value);
+  }
+
+  /**
+   * Handler: Apply AI-generated summary to a Table element.
+   * Requires options.value (summary) and options.tableId (from issue.element).
+   */
+  private async handleAiTableSummary(
+    doc: PDFDocument,
+    task: RemediationTask,
+    options?: Record<string, unknown>
+  ): Promise<ModificationResult> {
+    const value = options?.value as string | undefined;
+    const tableId = (options?.tableId ?? options?.element) as string | undefined;
+
+    if (!value) {
+      return {
+        success: false,
+        description: 'AI table summary handler: missing value',
+        error: 'No summary value provided in options',
+      };
+    }
+    if (!tableId) {
+      return {
+        success: false,
+        description: 'AI table summary handler: missing tableId',
+        error: 'No tableId provided in options — cannot locate Table element',
+      };
+    }
+
+    return pdfModifierService.setTableSummary(doc, tableId, value);
   }
 
   // ============================================================================

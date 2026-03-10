@@ -91,6 +91,11 @@ class PDFTableValidator {
 
     logger.info(`[PDFTableValidator] Found ${structure.tables.length} tables`);
 
+    // Build page-dimension lookup (width/height at scale=1 in PDF points)
+    const pageDims = new Map(
+      parsedPdf.structure.pages.map(p => [p.pageNumber, { width: p.width, height: p.height }])
+    );
+
     // Validate each table
     let layoutTableCount = 0;
     let dataTableCount = 0;
@@ -98,13 +103,14 @@ class PDFTableValidator {
     for (const table of structure.tables) {
       // Detect if this is a layout table
       const layoutDetection = this.detectLayoutTable(table);
+      const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
 
       if (layoutDetection.isLayoutTable) {
         layoutTableCount++;
-        issues.push(...this.validateLayoutTable(table, parsedPdf.structure.metadata.isTagged, layoutDetection));
+        issues.push(...this.validateLayoutTable(table, parsedPdf.structure.metadata.isTagged, layoutDetection, pageSize));
       } else {
         dataTableCount++;
-        issues.push(...this.validateDataTable(table, parsedPdf.structure.metadata.isTagged));
+        issues.push(...this.validateDataTable(table, parsedPdf.structure.metadata.isTagged, pageSize));
       }
     }
 
@@ -193,10 +199,22 @@ class PDFTableValidator {
    * @param isTaggedPDF - Whether the PDF is tagged
    * @returns Array of issues for this table
    */
-  private validateDataTable(table: TableInfo, isTaggedPDF: boolean): AuditIssue[] {
+  private validateDataTable(
+    table: TableInfo,
+    isTaggedPDF: boolean,
+    pageSize: { width: number; height: number }
+  ): AuditIssue[] {
     const issues: AuditIssue[] = [];
     const tableDimensions = `${table.rowCount}×${table.columnCount}`;
     const location = `Page ${table.pageNumber}, Table ${table.id}`;
+    const boundingBox = {
+      x: table.position.x,
+      y: table.position.y,
+      width: table.position.width,
+      height: table.position.height,
+      pageWidth: pageSize.width,
+      pageHeight: pageSize.height,
+    };
 
     // Check if table is tagged (critical issue if not in tagged PDF)
     if (isTaggedPDF && table.issues.some(i => i.includes('not tagged'))) {
@@ -212,6 +230,7 @@ class PDFTableValidator {
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
         pageNumber: table.pageNumber,
+        boundingBox,
       }));
     }
 
@@ -229,6 +248,7 @@ class PDFTableValidator {
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
         pageNumber: table.pageNumber,
+        boundingBox,
       }));
     }
 
@@ -247,6 +267,7 @@ class PDFTableValidator {
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       } else if (!table.hasHeaderRow && table.hasHeaderColumn) {
         issues.push(this.createIssue({
@@ -261,6 +282,7 @@ class PDFTableValidator {
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       }
     }
@@ -286,6 +308,7 @@ class PDFTableValidator {
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       }
     }
@@ -304,6 +327,7 @@ class PDFTableValidator {
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
         pageNumber: table.pageNumber,
+        boundingBox,
       }));
     }
 
@@ -322,6 +346,7 @@ class PDFTableValidator {
           element: table.id,
           context: `Table dimensions: ${tableDimensions}`,
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       }
     }
@@ -349,6 +374,7 @@ class PDFTableValidator {
         element: table.id,
         context: `Table dimensions: ${tableDimensions}`,
         pageNumber: table.pageNumber,
+        boundingBox,
       }));
     }
 
@@ -366,7 +392,8 @@ class PDFTableValidator {
   private validateLayoutTable(
     table: TableInfo,
     isTaggedPDF: boolean,
-    layoutDetection: LayoutTableDetection
+    layoutDetection: LayoutTableDetection,
+    pageSize: { width: number; height: number }
   ): AuditIssue[] {
     const issues: AuditIssue[] = [];
     const tableDimensions = `${table.rowCount}×${table.columnCount}`;
@@ -389,6 +416,14 @@ class PDFTableValidator {
         element: table.id,
         context: `Table dimensions: ${tableDimensions}, Detection confidence: ${Math.round(layoutDetection.confidence * 100)}%`,
         pageNumber: table.pageNumber,
+        boundingBox: {
+          x: table.position.x,
+          y: table.position.y,
+          width: table.position.width,
+          height: table.position.height,
+          pageWidth: pageSize.width,
+          pageHeight: pageSize.height,
+        },
       }));
     }
 

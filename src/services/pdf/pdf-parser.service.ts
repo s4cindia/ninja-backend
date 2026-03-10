@@ -210,8 +210,9 @@ class PDFParserService {
           if (rangeStart <= pageIdx) {
             startIndex = rangeStart;
             const dictRef = nums[i + 1];
-            const resolved = pdfLibDoc.context.lookup(dictRef);
-            labelDict = resolved instanceof PDFDict ? resolved : null;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const resolved = pdfLibDoc.context.lookup(dictRef as any);
+            labelDict = (resolved instanceof PDFDict) ? resolved : null;
           } else {
             break;
           }
@@ -415,11 +416,21 @@ class PDFParserService {
     try {
       const catalog = pdfLibDoc.context.lookup(pdfLibDoc.context.trailerInfo.Root);
       if (catalog instanceof PDFDict) {
-        const markInfo = catalog.get(PDFName.of('MarkInfo'));
+        // Resolve MarkInfo — may be an indirect reference in Adobe-tagged PDFs
+        const markInfoRaw = catalog.get(PDFName.of('MarkInfo'));
+        const markInfo = markInfoRaw instanceof PDFDict
+          ? markInfoRaw
+          : (markInfoRaw ? pdfLibDoc.context.lookup(markInfoRaw) : null);
+
         if (markInfo instanceof PDFDict) {
           const marked = markInfo.get(PDFName.of('Marked'));
-          return { Marked: marked?.toString() === 'true' };
+          if (marked?.toString() === 'true') return { Marked: true };
         }
+
+        // Fallback: StructTreeRoot presence is sufficient to consider a PDF tagged
+        // (Adobe AutoTag adds StructTreeRoot even when MarkInfo is absent or indirect)
+        const structTreeRoot = catalog.get(PDFName.of('StructTreeRoot'));
+        if (structTreeRoot) return { Marked: true };
       }
     } catch {
       // Ignore errors

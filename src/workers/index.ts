@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, getBullMQConnection, getCitationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
@@ -183,6 +183,18 @@ async function cleanupStaleActiveJobs(): Promise<void> {
   try {
     const queue = getAccessibilityQueue();
     if (!queue) return;
+
+    // Log queue counts for diagnostics
+    const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'paused', 'failed');
+    logger.info(`[Startup] Accessibility queue counts: waiting=${counts.waiting} active=${counts.active} delayed=${counts.delayed} paused=${counts.paused} failed=${counts.failed}`);
+
+    // Ensure queue is not paused (paused state persists in Redis across restarts)
+    const isPaused = await queue.isPaused();
+    if (isPaused) {
+      logger.warn('[Startup] Accessibility queue is PAUSED — resuming it now');
+      await queue.resume();
+      logger.info('[Startup] Accessibility queue resumed');
+    }
 
     // Collect active jobs before cleaning so we can update DB records
     const activeJobs = await queue.getActive();

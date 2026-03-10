@@ -569,6 +569,33 @@ export class PdfController {
           { jobId } // Use Prisma job ID as BullMQ job ID for unified tracking
         );
         logger.info(`[PDF] Job ${jobId} enqueued for async audit`);
+
+        // Fallback: if BullMQ's blocking connection silently hangs (Upstash TCP drop),
+        // jobs can sit in QUEUED forever. After 60s, process in-process as a safety net.
+        const fallbackJobId = jobId;
+        const fallbackFileName = req.file.originalname;
+        const fallbackTenantId = tenantId;
+        const fallbackUserId = userId;
+        setTimeout(async () => {
+          try {
+            const dbJob = await prisma.job.findUnique({
+              where: { id: fallbackJobId },
+              select: { status: true },
+            });
+            if (!dbJob || dbJob.status !== 'QUEUED') return; // BullMQ picked it up
+            logger.warn(`[PDF] Job ${fallbackJobId} still QUEUED after 60s — BullMQ worker may be stuck, falling back to in-process`);
+            const fileBuffer = await fileStorageService.getFile(fallbackJobId, fallbackFileName);
+            if (!fileBuffer) {
+              logger.error(`[PDF] Fallback failed: file not found in storage for job ${fallbackJobId}`);
+              return;
+            }
+            processAuditFromBufferBackground(fallbackJobId, fileBuffer, fallbackFileName, fallbackTenantId, fallbackUserId).catch(
+              (err: unknown) => logger.error(`[PDF] Fallback audit failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+            );
+          } catch (err) {
+            logger.error(`[PDF] Fallback check failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
+          }
+        }, 60_000);
       } else {
         // Fallback: process in-process when Redis is not configured
         logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
@@ -1107,11 +1134,18 @@ async function processAuditFromBufferBackground(
   tenantId: string,
   userId: string
 ): Promise<void> {
+  // Atomically claim the job — only proceeds if status is still QUEUED.
+  // Prevents double-processing if BullMQ worker also picks up the job.
+  const claimed = await prisma.job.updateMany({
+    where: { id: jobId, status: 'QUEUED' },
+    data: { status: 'PROCESSING', startedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    logger.info(`[PDF] Job ${jobId} already claimed by BullMQ worker — skipping in-process fallback`);
+    return;
+  }
+
   try {
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { status: 'PROCESSING', startedAt: new Date() },
-    });
 
     const result = await pdfAuditService.runAuditFromBuffer(buffer, jobId, fileName);
 

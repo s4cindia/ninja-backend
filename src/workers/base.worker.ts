@@ -73,6 +73,18 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
       }
     );
 
+    worker.on('ready', () => {
+      logger.info(`Worker for ${queueName} is ready and connected to Redis`);
+    });
+
+    worker.on('drained', () => {
+      logger.debug(`Worker for ${queueName} queue is empty — waiting for jobs`);
+    });
+
+    worker.on('active', (job) => {
+      logger.info(`Worker [${queueName}] picked up job ${job.id} — BullMQ is processing`);
+    });
+
     worker.on('completed', (job) => {
       logger.info(`Job ${job.id} completed`);
     });
@@ -86,7 +98,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
     });
 
     worker.on('error', (err) => {
-      logger.error(`Worker error: ${err.message}`);
+      logger.error(`Worker [${queueName}] error: ${err.message}`, { stack: err.stack });
     });
 
     return worker;

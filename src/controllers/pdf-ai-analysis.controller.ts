@@ -257,9 +257,14 @@ export class PdfAiAnalysisController {
         throw AppError.unprocessable(modification.error ?? 'Failed to apply modification');
       }
 
-      // Save modified PDF
+      // Save modified PDF and record path so download endpoint can find it
       const modifiedBuffer = await pdfModifierService.savePDF(doc);
-      await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
+      const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
+      const currentOutput = (job.output ?? {}) as Record<string, unknown>;
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { output: { ...currentOutput, remediatedFileUrl: savedPath } as Prisma.InputJsonObject },
+      });
 
       // Update status to applied
       await prisma.aiAnalysis.update({
@@ -393,13 +398,13 @@ export class PdfAiAnalysisController {
       // Save modified PDF once regardless of partial failures
       if (applied > 0) {
         const modifiedBuffer = await pdfModifierService.savePDF(doc);
-        await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
+        const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
 
-        // Set postRemediationStatus = 'pending' immediately so ACR button can gate on it
+        // Record remediatedFileUrl + set postRemediationStatus = 'pending' so download endpoint and ACR button can gate on it
         const currentOutput = (job.output ?? {}) as Record<string, unknown>;
         await prisma.job.update({
           where: { id: jobId },
-          data: { output: { ...currentOutput, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },
+          data: { output: { ...currentOutput, remediatedFileUrl: savedPath, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },
         });
 
         // Fire-and-forget: re-audit after saves complete
