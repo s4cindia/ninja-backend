@@ -44,6 +44,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nodejs
 
+# Install veraPDF CLI (PDF/UA validator — Matterhorn coverage Step 4)
+# Note: default-jre-headless is already installed in the apt-get layer above.
+# veraPDF adds ~50-70 MB to the image.
+COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
+RUN bash /tmp/install-verapdf.sh && rm /tmp/install-verapdf.sh
+
 # Copy EPUBCheck from download stage (cached)
 COPY --from=epubcheck /epubcheck/epubcheck-5.1.0 /app/lib/epubcheck/epubcheck-5.1.0
 
@@ -61,6 +67,7 @@ RUN npm rebuild sharp --platform=linux --arch=x64 \
 
 ARG COMMIT_SHA=unknown
 ENV EPUBCHECK_PATH=/app/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar
+ENV VERAPDF_PATH=/opt/verapdf/verapdf
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV COMMIT_SHA=$COMMIT_SHA

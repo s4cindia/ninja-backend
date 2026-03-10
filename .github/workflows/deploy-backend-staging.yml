@@ -157,11 +157,12 @@ jobs:
              --argjson secrets "$SECRETS_ARRAY" '
             # Update environment variables (remove API keys - they will be added as secrets)
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "VERAPDF_PATH")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
-                {"name": "S3_REGION", "value": "ap-south-1"}
+                {"name": "S3_REGION", "value": "ap-south-1"},
+                {"name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf"}
               ]
             ) |
             # Add secrets section
