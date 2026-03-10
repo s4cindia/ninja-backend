@@ -7,6 +7,9 @@
  * Implements US-PDF-1.2 requirements
  */
 
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { logger } from '../../lib/logger';
 import { BaseAuditService, AuditIssue, AuditReport } from '../audit/base-audit.service';
 import {
@@ -23,6 +26,8 @@ import { pdfFormValidator } from './validators/pdf-form.validator';
 import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
 import { pdfSupplementalValidator } from './validators/pdf-supplemental.validator';
 import { smartTriageService } from './smart-triage/triage.service';
+import { veraPdfService } from './verapdf.service';
+import { mapVeraPdfFailures } from '../../data/verapdf-matterhorn.map';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
 /**
@@ -466,6 +471,48 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       }
     }
 
+    // 9. veraPDF — PDF/UA-1 MRR validator (Matterhorn Coverage Step 4)
+    // Runs only when VERAPDF_PATH is set and points to an existing binary,
+    // AND a real file path is available (populated by runAuditFromBuffer or parse()).
+    // Results are deduplicated: Ninja-sourced issues take precedence when both
+    // cover the same Matterhorn condition.
+    if (veraPdfService.isAvailable() && parsed.filePath) {
+      try {
+        logger.info(`[PdfAudit] Running veraPDF on: ${parsed.filePath}`);
+        const veraPdfFailures = await veraPdfService.validate(parsed.filePath);
+        logger.info(`[PdfAudit] veraPDF found ${veraPdfFailures.length} failures`);
+
+        // Build set of Matterhorn conditions already covered by Ninja validators
+        const alreadyFound = new Set(
+          result.issues
+            .map((i) => i.matterhornCheckpoint)
+            .filter((c): c is string => c !== undefined),
+        );
+
+        const mapped = mapVeraPdfFailures(veraPdfFailures, alreadyFound);
+        logger.info(`[PdfAudit] veraPDF mapped ${mapped.size} new conditions (${veraPdfFailures.length - mapped.size} skipped — already found by Ninja)`);
+
+        for (const [conditionId, failure] of mapped) {
+          result.issues.push({
+            id: `verapdf-${conditionId}`,
+            source: 'verapdf',
+            severity: 'serious',
+            code: `MATTERHORN-${conditionId}`,
+            message: failure.description,
+            matterhornCheckpoint: conditionId,
+            matterhornHow: 'M',
+            pageNumber: failure.pageNumber,
+            context: failure.context,
+            category: 'pdf-ua',
+          });
+        }
+      } catch (err) {
+        logger.error({ err }, '[PdfAudit] veraPDF validation failed (non-fatal)');
+      }
+    } else if (!veraPdfService.isAvailable()) {
+      logger.info('[PdfAudit] veraPDF not available (VERAPDF_PATH unset or binary missing) — skipping');
+    }
+
     // Generate Matterhorn results from structure issues
     result.matterhornResults = this.generateMatterhornResults(result);
 
@@ -830,6 +877,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
+    let veraPdfTempDir: string | null = null;
 
     try {
       logger.info(`[PdfAudit] Starting audit from buffer: ${fileName} (job: ${jobId}, scan: ${scanLevel})`);
@@ -841,6 +889,16 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       logger.info(`[PdfAudit] Parsing buffer...`);
       parsed = await this.parseBuffer(buffer, fileName, onProgress);
       logger.info(`[PdfAudit] Buffer parsed successfully`);
+
+      // Write temp file for veraPDF if the binary is available.
+      // veraPDF is a CLI tool that requires a real file path on disk.
+      if (veraPdfService.isAvailable()) {
+        veraPdfTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-verapdf-'));
+        const tempFilePath = path.join(veraPdfTempDir, `${jobId}.pdf`);
+        await fs.writeFile(tempFilePath, buffer);
+        parsed.filePath = tempFilePath;
+        logger.info(`[PdfAudit] Wrote temp file for veraPDF: ${tempFilePath}`);
+      }
 
       // Validate
       logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
@@ -865,6 +923,12 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         } catch (closeError) {
           logger.warn('[PdfAudit] Failed to close parsedPdf handle:', closeError);
         }
+      }
+      // Cleanup veraPDF temp directory
+      if (veraPdfTempDir) {
+        await fs.rm(veraPdfTempDir, { recursive: true, force: true }).catch((e) => {
+          logger.warn({ err: e }, '[PdfAudit] Failed to remove veraPDF temp dir');
+        });
       }
     }
   }
