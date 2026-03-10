@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install veraPDF CLI (PDF/UA validator — Matterhorn coverage Step 4)
 # Note: default-jre-headless is already installed in the apt-get layer above.
-# veraPDF adds ~50-70 MB to the image.
+# Installs GUI + *nix Scripts + Validation model packs (~18 MB of JARs and scripts).
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
 RUN bash /tmp/install-verapdf.sh && rm /tmp/install-verapdf.sh
 
