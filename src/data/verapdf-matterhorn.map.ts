@@ -22,7 +22,6 @@
  * Matterhorn Coverage Plan — Step 4c
  */
 
-import { logger } from '../lib/logger';
 import type { VeraPdfFailure } from '../services/pdf/verapdf.service';
 
 /**
@@ -76,8 +75,9 @@ export const VERAPDF_COVERED_CONDITIONS: ReadonlySet<string> = new Set(
 );
 
 /**
- * Map a list of veraPDF MRR failures to their Matterhorn condition IDs,
- * logging a warning for any ruleId absent from the mapping table.
+ * Map a list of veraPDF MRR failures to their Matterhorn condition IDs.
+ * Unmapped ruleId warnings are logged by VeraPdfService.validate() before
+ * this function is called — no duplicate logging here.
  *
  * Returns a Map of matterhornConditionId → VeraPdfFailure for the first
  * matching failure per condition (subsequent duplicates are discarded —
@@ -97,9 +97,7 @@ export function mapVeraPdfFailures(
     const conditionId = VERAPDF_MATTERHORN_MAP.get(failure.ruleId);
 
     if (conditionId === undefined) {
-      logger.warn(
-        `[veraPDF] Unmapped ruleId: ${failure.ruleId} — description: ${failure.description}`,
-      );
+      // Warning already logged by VeraPdfService.validate() — skip silently here.
       continue;
     }
 

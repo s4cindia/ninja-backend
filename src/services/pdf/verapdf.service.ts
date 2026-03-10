@@ -6,16 +6,14 @@
  *
  * Matterhorn Coverage Plan — Step 4b
  *
- * Availability contract:
- *   isAvailable() → false when VERAPDF_PATH is unset or the binary does not
- *   exist on disk. Callers gate on isAvailable() before calling validate().
- *
- * Graceful degradation:
- *   - VERAPDF_PATH unset or binary missing → isAvailable() false; one logger.info
- *   - Timeout (120 s)                      → logger.warn; return []
- *   - Non-zero exit but XML in stdout      → parse what we can; return failures
- *   - Non-zero exit without XML            → logger.error; return []
- *   - Unknown ruleId (not in mapping map)  → logger.warn per ruleId; still included
+ * Graceful degradation (never throws):
+ *   - VERAPDF_PATH unset or binary missing → isAvailable() false;
+ *                                             validate() logs one logger.info, returns []
+ *   - Java not found / exec fails           → logger.info('[veraPDF] not available'), returns []
+ *   - Timeout (120 s)                       → logger.warn, returns []
+ *   - Non-zero exit but XML in stdout       → parse what we can, return failures
+ *   - Non-zero exit without XML             → logger.warn, returns []
+ *   - ruleId absent from mapping table      → logger.warn per ruleId; failure still returned
  */
 
 import { execFile } from 'child_process';
@@ -23,6 +21,7 @@ import { promisify } from 'util';
 import { existsSync } from 'fs';
 import { XMLParser } from 'fast-xml-parser';
 import { logger } from '../../lib/logger';
+import { VERAPDF_MATTERHORN_MAP } from '../../data/verapdf-matterhorn.map';
 
 const execFileAsync = promisify(execFile);
 
@@ -49,7 +48,7 @@ class VeraPdfService {
 
   /**
    * Returns true only when VERAPDF_PATH is set and the binary exists on disk.
-   * When false, validate() must not be called.
+   * Does not verify Java availability (that is handled gracefully in validate()).
    */
   isAvailable(): boolean {
     if (!this.binaryPath) return false;
@@ -58,16 +57,13 @@ class VeraPdfService {
 
   /**
    * Run veraPDF against filePath in PDF/UA-1 MRR mode.
-   * Returns [] on timeout, exec error without XML, or XML parse failure.
-   * Unknown ruleIds are included in the result but logged as warnings.
-   *
-   * @throws if isAvailable() is false — callers must check first.
+   * Never throws — always returns VeraPdfFailure[] (possibly empty).
+   * Logs one logger.info when not available; logger.warn on timeout or exec error.
    */
   async validate(filePath: string): Promise<VeraPdfFailure[]> {
     if (!this.isAvailable()) {
-      throw new Error(
-        'veraPDF binary not available. Set VERAPDF_PATH environment variable.',
-      );
+      logger.info('[veraPDF] Not available (VERAPDF_PATH unset or binary missing) — skipping');
+      return [];
     }
 
     let stdout: string;
@@ -80,14 +76,21 @@ class VeraPdfService {
       );
       stdout = result.stdout;
     } catch (err: unknown) {
-      const error = err as NodeJS.ErrnoError & {
+      const error = err as Error & {
         killed?: boolean;
+        code?: string;
         stdout?: string;
         stderr?: string;
       };
 
       if (error.killed) {
-        logger.warn({ filePath, timeoutMs: TIMEOUT_MS }, '[veraPDF] Validation timed out — skipping');
+        logger.warn(`[veraPDF] Validation timed out after ${TIMEOUT_MS}ms — skipping: ${filePath}`);
+        return [];
+      }
+
+      // Java not found or binary not executable — treat as unavailable.
+      if (error.code === 'ENOENT' || error.code === 'EACCES') {
+        logger.info(`[veraPDF] Not available (binary not executable or Java missing, code=${error.code}) — skipping`);
         return [];
       }
 
@@ -96,15 +99,27 @@ class VeraPdfService {
       if (captured.includes('<report')) {
         stdout = captured;
       } else {
-        logger.error(
-          { filePath, code: error.code, stderr: (error.stderr ?? '').slice(0, 500) },
-          '[veraPDF] Execution error — skipping',
+        logger.warn(
+          `[veraPDF] Execution error (code=${error.code}) — skipping: ${filePath}`,
+          error,
         );
         return [];
       }
     }
 
-    return this.parseMrrXml(stdout, filePath);
+    const failures = this.parseMrrXml(stdout, filePath);
+
+    // Log a warning for each ruleId that has no Matterhorn mapping.
+    // These should be added to src/data/verapdf-matterhorn.map.ts.
+    for (const failure of failures) {
+      if (!VERAPDF_MATTERHORN_MAP.has(failure.ruleId)) {
+        logger.warn(
+          `[veraPDF] Unmapped ruleId: ${failure.ruleId} — description: ${failure.description}`,
+        );
+      }
+    }
+
+    return failures;
   }
 
   /**
@@ -148,7 +163,7 @@ class VeraPdfService {
     try {
       parsed = parser.parse(xml) as Record<string, unknown>;
     } catch (err) {
-      logger.warn({ filePath, err }, '[veraPDF] Failed to parse MRR XML');
+      logger.warn(`[veraPDF] Failed to parse MRR XML for ${filePath}`, err);
       return [];
     }
 
@@ -205,7 +220,7 @@ class VeraPdfService {
         }
       }
     } catch (err) {
-      logger.warn({ filePath, err }, '[veraPDF] Error traversing MRR XML');
+      logger.warn(`[veraPDF] Error traversing MRR XML for ${filePath}`, err);
     }
 
     return failures;
