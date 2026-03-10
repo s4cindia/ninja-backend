@@ -27,7 +27,11 @@ export type ValidatorType =
   | 'reading-order'
   | 'lists'
   | 'language'
-  | 'metadata';
+  | 'metadata'
+  | 'links'
+  | 'forms'
+  | 'bookmarks'
+  | 'supplemental';
 
 /**
  * Scan level configurations
@@ -62,6 +66,10 @@ export const SCAN_LEVEL_CONFIGS: Record<ScanLevel, ScanLevelConfig> = {
       'lists',
       'language',
       'metadata',
+      'links',
+      'forms',
+      'bookmarks',
+      'supplemental',
     ],
     checksIncluded: [
       'All Basic checks',
@@ -69,6 +77,9 @@ export const SCAN_LEVEL_CONFIGS: Record<ScanLevel, ScanLevelConfig> = {
       'Reading order validation',
       'List structure verification',
       'Color contrast analysis',
+      'Link text descriptiveness',
+      'Form field accessibility labels',
+      'Bookmark coverage and quality',
       'Complete Matterhorn Protocol',
       'WCAG 2.1 Level AA compliance',
     ],

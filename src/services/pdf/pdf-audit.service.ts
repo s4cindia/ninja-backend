@@ -21,6 +21,7 @@ import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
 import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
+import { pdfSupplementalValidator } from './validators/pdf-supplemental.validator';
 import { smartTriageService } from './smart-triage/triage.service';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
@@ -273,10 +274,11 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     const willRunTables    = validatorsToRun.includes('tables');
     const willRunLinks     = validatorsToRun.includes('links');
     const willRunForms     = validatorsToRun.includes('forms');
-    const willRunBookmarks = validatorsToRun.includes('bookmarks');
+    const willRunBookmarks    = validatorsToRun.includes('bookmarks');
+    const willRunSupplemental = validatorsToRun.includes('supplemental');
     const totalValidators = [
       willRunStructure, willRunAltText, willRunContrast, willRunTables,
-      willRunLinks, willRunForms, willRunBookmarks,
+      willRunLinks, willRunForms, willRunBookmarks, willRunSupplemental,
     ].filter(Boolean).length;
     let completedValidators = 0;
 
@@ -408,6 +410,23 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.error(`[PdfAudit] PdfBookmarkValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfBookmarkValidator', error: errorMessage });
           onValidatorComplete?.('Bookmarks', 0, ++completedValidators, totalValidators, bookmarksStart);
+        }
+      }
+
+      // 8. Supplemental Validator (CP10/20/21/25/30 — Matterhorn Step 3)
+      if (willRunSupplemental) {
+        const supplementalStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfSupplementalValidator...`);
+          const supplementalIssues = await pdfSupplementalValidator.validate(parsed);
+          result.issues.push(...supplementalIssues);
+          logger.info(`[PdfAudit] PdfSupplementalValidator found ${supplementalIssues.length} issues`);
+          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', supplementalIssues.length, ++completedValidators, totalValidators, supplementalStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfSupplementalValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfSupplementalValidator', error: errorMessage });
+          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', 0, ++completedValidators, totalValidators, supplementalStart);
         }
       }
     } else {
