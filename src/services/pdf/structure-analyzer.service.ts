@@ -51,6 +51,8 @@ export interface TableInfo {
   cells: TableCell[];
   issues: string[];
   isAccessible: boolean;
+  /** True when this table was matched to a /Table structure tree element */
+  structureMatched?: boolean;
 }
 
 export interface ListInfo {
@@ -449,6 +451,13 @@ class StructureAnalyzerService {
 
     if (isTaggedPDF) {
       await this.enhanceTablesFromTags(parsedPdf, tables);
+      // For tagged PDFs, discard text-layout "tables" that have no matching /Table
+      // structure element — they are false positives from the content detector.
+      const matched = tables.filter(t => t.structureMatched);
+      for (const table of matched) {
+        this.validateTableAccessibility(table);
+      }
+      return matched;
     }
 
     for (const table of tables) {
@@ -617,9 +626,10 @@ class StructureAnalyzerService {
       if (globalIndex !== -1) {
         globalQueue.splice(globalIndex, 1);
       }
+      table.structureMatched = true;
       return table;
     }
-    
+
     if (globalQueue.length > 0) {
       const table = globalQueue.shift()!;
       const tablePageQueue = unmatchedTableQueues.get(table.pageNumber);
@@ -629,6 +639,7 @@ class StructureAnalyzerService {
           tablePageQueue.splice(pageIndex, 1);
         }
       }
+      table.structureMatched = true;
       return table;
     }
     

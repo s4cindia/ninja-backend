@@ -157,26 +157,30 @@ class ImageExtractorService {
       const operatorList = await page.getOperatorList();
       
       const imagePlacements = this.extractImagePlacements(operatorList, viewport);
-      
+
       const structureTreeInfo = this.extractStructureTreeInfo(parsedPdf, pageNumber);
-      
+      // Figures that have alt/decorative info but no xObjectName (MCID-indirect reference):
+      // matched in page order as fallback when xObjectName lookup misses.
+      const unmatchedStructInfos = structureTreeInfo.filter(s => !s.xObjectName && (s.altText !== undefined || s.isDecorative !== undefined));
+      let unmatchedFallbackIndex = 0;
+
       const pdfLibPage = parsedPdf.pdfLibDoc.getPages()[pageNumber - 1];
       const resources = pdfLibPage?.node?.get(PDFName.of('Resources'));
-      
+
       if (resources instanceof PDFDict) {
         const xObjects = resources.get(PDFName.of('XObject'));
-        
+
         if (xObjects instanceof PDFDict) {
           const entries = xObjects.entries();
           let index = 0;
-          
+
           for (const [name, ref] of entries) {
             try {
               const xObject = parsedPdf.pdfLibDoc.context.lookup(ref);
-              
+
               if (xObject instanceof PDFRawStream || xObject instanceof PDFStream) {
                 const subtype = xObject.dict.get(PDFName.of('Subtype'));
-                
+
                 if (subtype?.toString() === '/Image') {
                   // Early size filter using dict metadata — avoids decompressing tiny images
                   const dictWidth = parseInt(xObject.dict.get(PDFName.of('Width'))?.toString() || '0', 10);
@@ -192,7 +196,10 @@ class ImageExtractorService {
                     || imagePlacements[index]
                     || { xObjectName, x: 0, y: 0, width: 100, height: 100 };
 
-                  const structInfo = structureTreeInfo.find(s => s.xObjectName === xObjectName);
+                  // Primary match by xObjectName; fallback to N-th unmatched structure Figure
+                  // (covers MCID-indirect references where Figure has /Alt but no direct xObjectName)
+                  const structInfo = structureTreeInfo.find(s => s.xObjectName === xObjectName)
+                    ?? unmatchedStructInfos[unmatchedFallbackIndex++];
 
                   const imageInfo = await this.processImage(
                     xObject,
