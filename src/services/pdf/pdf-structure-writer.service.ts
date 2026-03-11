@@ -576,7 +576,12 @@ export class PdfStructureWriterService {
           const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
           if (sTag !== 'Table') return;
 
-          const firstTR = this.findFirstChild(doc, node, 'TR');
+          // Find the first TR — may be a direct child OR nested inside THead/TBody
+          let firstTR = this.findFirstChild(doc, node, 'TR');
+          if (!firstTR) {
+            const tbody = this.findFirstChild(doc, node, 'TBody') ?? this.findFirstChild(doc, node, 'THead');
+            if (tbody) firstTR = this.findFirstChild(doc, tbody.dict, 'TR');
+          }
           if (!firstTR) return;
 
           // Count all cells (TD + TH) to determine complexity

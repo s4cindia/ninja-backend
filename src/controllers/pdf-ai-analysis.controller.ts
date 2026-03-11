@@ -299,10 +299,15 @@ export class PdfAiAnalysisController {
       const job = req.job!;
       const jobId = job.id;
 
+      const includePending = req.query.includePending === 'true';
+      const statusFilter = includePending
+        ? { in: ['approved', 'pending'] as const }
+        : ('approved' as const);
+
       const approved = await prisma.aiAnalysis.findMany({
         where: {
           jobId,
-          status: 'approved',
+          status: statusFilter,
           applyMode: 'apply-to-pdf',
         },
         orderBy: { createdAt: 'asc' },
@@ -311,7 +316,7 @@ export class PdfAiAnalysisController {
       if (approved.length === 0) {
         res.json({
           success: true,
-          data: { applied: 0, failed: 0, message: 'No approved suggestions to apply' },
+          data: { applied: 0, failed: 0, message: 'No approved or pending suggestions to apply' },
         });
         return;
       }
