@@ -301,7 +301,7 @@ export class PdfAiAnalysisController {
 
       const includePending = req.query.includePending === 'true';
       const statusFilter = includePending
-        ? { in: ['approved', 'pending'] as const }
+        ? { in: ['approved', 'pending'] as string[] }
         : ('approved' as const);
 
       const approved = await prisma.aiAnalysis.findMany({

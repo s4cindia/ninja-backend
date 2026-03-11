@@ -144,7 +144,8 @@ class PacReportService {
     const auditReport = output?.['auditReport'] as Record<string, unknown> | undefined;
     const rawIssues = (auditReport?.['issues'] as AuditIssue[] | undefined) ?? [];
     const isTagged = (auditReport?.['metadata'] as Record<string, unknown> | undefined)?.['isTagged'] as boolean ?? false;
-    const fileName = (auditReport?.['fileName'] as string | undefined) ?? job.fileName ?? 'unknown.pdf';
+    const jobInput = job.input as Record<string, unknown> | null;
+    const fileName = (auditReport?.['fileName'] as string | undefined) ?? (jobInput?.['fileName'] as string | undefined) ?? 'unknown.pdf';
 
     // Build a lookup: matterhornConditionId → [issue, ...]
     const failureMap = this.buildFailureMap(rawIssues);
@@ -152,7 +153,7 @@ class PacReportService {
     // Build checkpoint results across all 31 checkpoints
     const checkpointMap = new Map<string, PacCheckpointResult>();
 
-    for (const [conditionId, condition] of MATTERHORN_CONDITIONS) {
+    for (const [, condition] of MATTERHORN_CONDITIONS) {
       const conditionResult = this.classifyCondition(condition, failureMap);
 
       let checkpoint = checkpointMap.get(condition.checkpoint);

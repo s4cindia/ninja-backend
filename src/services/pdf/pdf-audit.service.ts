@@ -507,7 +507,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           });
         }
       } catch (err) {
-        logger.error({ err }, '[PdfAudit] veraPDF validation failed (non-fatal)');
+        logger.error(`[PdfAudit] veraPDF validation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
     } else if (!veraPdfService.isAvailable()) {
       logger.info('[PdfAudit] veraPDF not available (VERAPDF_PATH unset or binary missing) — skipping');
@@ -927,7 +927,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       // Cleanup veraPDF temp directory
       if (veraPdfTempDir) {
         await fs.rm(veraPdfTempDir, { recursive: true, force: true }).catch((e) => {
-          logger.warn({ err: e }, '[PdfAudit] Failed to remove veraPDF temp dir');
+          logger.warn(`[PdfAudit] Failed to remove veraPDF temp dir: ${e instanceof Error ? e.message : String(e)}`);
         });
       }
     }
