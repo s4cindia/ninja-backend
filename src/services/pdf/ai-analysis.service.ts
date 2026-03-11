@@ -83,7 +83,7 @@ const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
 const ALT_TEXT_MISSING_CODES = new Set(['MATTERHORN-13-001', 'MATTERHORN-13-002', 'ALT-TEXT-MISSING']);
 const ALT_TEXT_IMPROVE_CODES = new Set(['MATTERHORN-13-004', 'MATTERHORN-13-003', 'ALT-TEXT-QUALITY', 'ALT-TEXT-GENERIC']);
 const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY', 'MATTERHORN-15-003']);
-const TABLE_HEADERS_CODES = new Set(['MATTERHORN-15-002', 'TABLE-HEADERS-INCOMPLETE']);
+const TABLE_HEADERS_CODES = new Set(['MATTERHORN-15-002', 'TABLE-HEADERS-INCOMPLETE', 'TABLE-ACCESSIBILITY', 'TABLE-INACCESSIBLE']);
 const TABLE_SCOPE_CODES = new Set(['MATTERHORN-15-004', 'TABLE-SCOPE-MISSING']);
 const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED']);
 const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
@@ -375,7 +375,7 @@ class AiAnalysisService {
     }
 
     if (TABLE_SUMMARY_CODES.has(code)) {
-      const table = issue.element ? tableById.get(issue.element) : undefined;
+      const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
       const mode =
         config.tableFixMode === 'apply-to-pdf' ||
@@ -386,7 +386,7 @@ class AiAnalysisService {
     }
 
     if (TABLE_HEADERS_CODES.has(code) || TABLE_SCOPE_CODES.has(code)) {
-      const table = issue.element ? tableById.get(issue.element) : undefined;
+      const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
       // Simple tables (≤3 columns, no merges) in tagged PDFs can have first-row TDs promoted to TH
       if (parsed.isTagged && table.columnCount <= 3) {
