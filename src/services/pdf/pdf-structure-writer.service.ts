@@ -376,6 +376,79 @@ export class PdfStructureWriterService {
     }));
   }
 
+  /**
+   * Fix multiple H1s: keep the first H1, demote all subsequent H1 elements to H2,
+   * and cascade the shift to all headings within each demoted section so that the
+   * logical hierarchy is preserved (e.g. H2 under a demoted H1 becomes H3).
+   *
+   * Algorithm:
+   *   1. Collect all Hn elements in BFS document order.
+   *   2. For each H1 after the first:
+   *      a. Rename it to H2.
+   *      b. For every heading between it and the next H1 (exclusive), increment
+   *         the level by 1 (capped at H6).
+   *   3. Run fixHeadingHierarchy() as a cleanup pass to close any remaining gaps.
+   */
+  fixMultipleH1(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
+    }
+
+    // Collect all heading elements in BFS document order
+    const allHeadings: Array<{ ref: PDFRef; level: number }> = [];
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const sTag = node.get(PDFName.of('S'));
+      if (!sTag) return;
+      const m = /^H(\d)$/.exec(sTag.toString().replace(/^\//, ''));
+      if (m) allHeadings.push({ ref, level: parseInt(m[1], 10) });
+    });
+
+    const h1Indices = allHeadings
+      .map((h, i) => (h.level === 1 ? i : -1))
+      .filter(i => i >= 0);
+
+    if (h1Indices.length <= 1) {
+      return { issueId: issue.id, success: true, before: `${h1Indices.length} H1`, after: 'No change needed' };
+    }
+
+    let demoted = 0;
+    let cascaded = 0;
+
+    for (let k = 1; k < h1Indices.length; k++) {
+      const sectionStart = h1Indices[k];
+      const sectionEnd = k + 1 < h1Indices.length ? h1Indices[k + 1] : allHeadings.length;
+
+      // Demote this H1 → H2
+      this.renameElement(doc, allHeadings[sectionStart].ref, 'H2');
+      allHeadings[sectionStart].level = 2;
+      demoted++;
+
+      // Cascade: shift all headings within this section down by one level
+      for (let j = sectionStart + 1; j < sectionEnd; j++) {
+        const h = allHeadings[j];
+        const newLevel = Math.min(h.level + 1, 6);
+        if (newLevel !== h.level) {
+          this.renameElement(doc, h.ref, `H${newLevel}`);
+          allHeadings[j].level = newLevel;
+          cascaded++;
+        }
+      }
+    }
+
+    // Final cleanup pass: close any level-skip gaps left over from the cascade
+    this.fixHeadingHierarchy(doc, [issue]);
+
+    logger.info(`[StructureWriter] fixMultipleH1: demoted ${demoted} H1(s) to H2, cascaded ${cascaded} sub-heading(s)`);
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${h1Indices.length} H1 headings`,
+      after: `Demoted ${demoted} H1(s) to H2; shifted ${cascaded} sub-heading(s) down by one level`,
+    };
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 6 — Composite: List Rewrap
   // ══════════════════════════════════════════════════════════════════════════

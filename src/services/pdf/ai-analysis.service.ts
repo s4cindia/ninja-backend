@@ -94,6 +94,7 @@ const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
+const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -440,6 +441,16 @@ class AiAnalysisService {
           applyMode: 'apply-to-pdf',
         };
       }
+      if (code === 'HEADING-MULTIPLE-H1' && parsed.isTagged) {
+        return {
+          suggestionType: 'heading-multiple-h1-fix',
+          guidance: 'All H1 headings after the first will be demoted to H2 in the PDF structure tree.',
+          confidence: 0.95,
+          rationale: 'PDF is tagged — duplicate H1s can be demoted algorithmically (rename /S on structure elements)',
+          model: 'rule-based',
+          applyMode: 'apply-to-pdf',
+        };
+      }
       return this.analyzeHeading(issue, parsed);
     }
 
@@ -468,6 +479,17 @@ class AiAnalysisService {
     if (BOOKMARK_CODES.has(code)) {
       if (config.bookmarkMode === 'disabled') return null;
       return this.analyzeBookmark(issue, parsed);
+    }
+
+    if (PDFUA_IDENTIFIER_CODES.has(code)) {
+      return {
+        suggestionType: 'pdfua-identifier',
+        guidance: 'PDF/UA-1 identifier (pdfuaid:part=1) will be written to the XMP metadata stream.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — adds pdfuaid:part=1 to XMP metadata to declare PDF/UA-1 conformance',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     return null;
