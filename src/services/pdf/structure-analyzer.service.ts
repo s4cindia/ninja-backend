@@ -667,6 +667,9 @@ class StructureAnalyzerService {
               table.hasHeaderRow = true;
             } else if (type === '/TR') {
               await this.checkRowForHeaders(resolved, pdfDoc, table);
+            } else if (type === '/TBody') {
+              // Recurse into TBody to find TR children
+              await this.checkTableHeaders(resolved, pdfDoc, table);
             }
           }
         }
