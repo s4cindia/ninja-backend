@@ -344,6 +344,7 @@ export class PdfAiAnalysisController {
 
       let applied = 0;
       let failed = 0;
+      const errors: Array<{ issueId: string; suggestionType: string; reason: string }> = [];
 
       for (const analysis of approved) {
         const { suggestionType, value, issueId } = analysis;
@@ -351,6 +352,7 @@ export class PdfAiAnalysisController {
         // Skip value-less non-structure-writer suggestions
         if (!value && !STRUCTURE_WRITER_TYPES.has(suggestionType)) {
           failed++;
+          errors.push({ issueId, suggestionType, reason: 'No value and not a structure-writer type' });
           continue;
         }
 
@@ -391,6 +393,7 @@ export class PdfAiAnalysisController {
             modification = await pdfModifierService.addLanguage(doc, value!);
           } else {
             failed++;
+            errors.push({ issueId, suggestionType, reason: `Unhandled suggestion type: ${suggestionType}` });
             continue;
           }
 
@@ -402,11 +405,15 @@ export class PdfAiAnalysisController {
             });
           } else {
             failed++;
-            logger.warn(`[AI Analysis] apply-all: failed to apply ${suggestionType} for ${issueId}: ${modification.error}`);
+            const reason = modification.error ?? 'Unknown error';
+            errors.push({ issueId, suggestionType, reason });
+            logger.warn(`[AI Analysis] apply-all: failed to apply ${suggestionType} for ${issueId}: ${reason}`);
           }
         } catch (err) {
           failed++;
-          logger.warn(`[AI Analysis] apply-all: error for ${analysis.issueId}: ${err instanceof Error ? err.message : String(err)}`);
+          const reason = err instanceof Error ? err.message : String(err);
+          errors.push({ issueId: analysis.issueId, suggestionType, reason });
+          logger.warn(`[AI Analysis] apply-all: error for ${analysis.issueId}: ${reason}`);
         }
       }
 
@@ -463,7 +470,7 @@ export class PdfAiAnalysisController {
 
       res.json({
         success: true,
-        data: { applied, failed },
+        data: { applied, failed, errors: errors.length > 0 ? errors : undefined },
       });
     } catch (error) {
       next(error);

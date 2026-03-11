@@ -589,8 +589,8 @@ export class PdfStructureWriterService {
           const ths = this.findAllChildren(doc, firstTR.dict, 'TH');
           const totalCells = tds.length + ths.length;
 
-          if (totalCells === 0 || totalCells > 3) return; // Skip: empty or complex
-          if (tds.length === 0) return; // Already all TH
+          if (totalCells === 0) return; // Skip: empty first row
+          if (tds.length === 0) { fixed = true; return; } // Already all TH — idempotent success
 
           for (const td of tds) {
             this.renameElement(doc, td.ref, 'TH');
@@ -606,8 +606,10 @@ export class PdfStructureWriterService {
           success: fixed,
           before: 'First-row cells tagged as TD',
           after: fixed
-            ? `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`
-            : 'No simple table found matching this issue',
+            ? fixedCellCount > 0
+              ? `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`
+              : 'Table headers already present — no changes needed'
+            : 'No table found matching this issue',
         });
       } catch (err) {
         results.push({
