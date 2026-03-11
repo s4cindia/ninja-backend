@@ -361,14 +361,16 @@ class AiAnalysisService {
 
     if (ALT_TEXT_MISSING_CODES.has(code)) {
       const img = issue.element ? imageById.get(issue.element) : undefined;
-      if (!img?.base64) return null;
-      return this.analyzeAltText(issue, img, config.altTextMode);
+      const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
+      if (!imgWithBase64) return null;
+      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode);
     }
 
     if (ALT_TEXT_IMPROVE_CODES.has(code)) {
       const img = issue.element ? imageById.get(issue.element) : undefined;
-      if (!img?.base64) return null;
-      return this.analyzeAltTextImprovement(issue, img, config.altTextMode);
+      const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
+      if (!imgWithBase64) return null;
+      return this.analyzeAltTextImprovement(issue, imgWithBase64, config.altTextMode);
     }
 
     if (TABLE_SUMMARY_CODES.has(code)) {
@@ -1254,6 +1256,42 @@ class AiAnalysisService {
     }
 
     return grid.map(row => `| ${row.join(' | ')} |`).join('\n');
+  }
+
+  /**
+   * When an image can't be directly extracted (e.g. JPX/JBIG2 format), fall back to a
+   * full-page render and return a synthetic ImageInfo with the page PNG as base64.
+   */
+  private async fallbackToPageRender(
+    img: ImageInfo | undefined,
+    issue: AuditIssue,
+    parsed: PdfParseResult,
+    pageRenderCache: Map<number, Promise<string | null>>
+  ): Promise<ImageInfo | null> {
+    const pageNumber = issue.pageNumber ?? img?.pageNumber;
+    if (!pageNumber || !parsed.parsedPdf) return null;
+
+    if (!pageRenderCache.has(pageNumber)) {
+      pageRenderCache.set(pageNumber, this.renderPageToBase64(parsed.parsedPdf, pageNumber));
+    }
+    const pageBase64 = await pageRenderCache.get(pageNumber)!;
+    if (!pageBase64) return null;
+
+    logger.info(`[AiAnalysis] Using page render fallback for image on page ${pageNumber} (format: ${img?.format ?? 'unknown'})`);
+    return {
+      id: img?.id ?? `page_render_p${pageNumber}`,
+      pageNumber,
+      index: img?.index ?? 0,
+      position: img?.position ?? { x: 0, y: 0, width: 0, height: 0 },
+      dimensions: img?.dimensions ?? { width: 0, height: 0 },
+      format: 'png',
+      colorSpace: 'RGB',
+      bitsPerComponent: 8,
+      hasAlpha: false,
+      fileSizeBytes: 0,
+      mimeType: 'image/png',
+      base64: pageBase64,
+    };
   }
 
   private async renderPageToBase64(parsedPdf: ParsedPDF, pageNumber: number): Promise<string | null> {
