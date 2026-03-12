@@ -31,15 +31,22 @@ type LongDescriptionTrigger =
   | 'MANUAL_REQUEST';
 
 class LongDescriptionGeneratorService {
-  private genAI: GoogleGenerativeAI;
-  private model: GenerativeModel;
+  private genAI: GoogleGenerativeAI | null;
+  private model: GenerativeModel | null;
 
   constructor() {
     if (!process.env.GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY environment variable is required');
+      logger.warn('[LongDescriptionGenerator] GEMINI_API_KEY not set — service disabled');
+      this.genAI = null;
+      this.model = null;
+      return;
     }
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  }
+
+  isAvailable(): boolean {
+    return this.model !== null;
   }
 
   needsLongDescription(
@@ -82,6 +89,17 @@ class LongDescriptionGeneratorService {
     trigger: LongDescriptionTrigger,
     existingShortAlt?: string
   ): Promise<LongDescription> {
+    if (!this.model) {
+      return {
+        id: '',
+        imageId: '',
+        jobId: '',
+        content: { html: '<p>AI service unavailable. Manual review required.</p>', plainText: 'AI service unavailable.', markdown: 'AI service unavailable.' },
+        wordCount: 0,
+        generatedAt: new Date(),
+        aiModel: 'gemini-1.5-pro',
+      };
+    }
     const prompt = `
 Generate a comprehensive long description for this image to be used with aria-describedby for accessibility.
 
