@@ -32,7 +32,14 @@ export const getVersionParamsSchema = z.object({
   versionId: z.string().uuid('Invalid version ID'),
 });
 
+// Body schema for confirm-save
+export const confirmSaveBodySchema = z.object({
+  contentKey: z.string().min(1, 'contentKey is required'),
+  createVersion: z.boolean().optional().default(true),
+});
+
 // Type exports
 export type ListDocumentsQuery = z.infer<typeof listDocumentsQuerySchema>;
 export type GetDocumentParams = z.infer<typeof getDocumentParamsSchema>;
 export type GetVersionParams = z.infer<typeof getVersionParamsSchema>;
+export type ConfirmSaveBody = z.infer<typeof confirmSaveBodySchema>;

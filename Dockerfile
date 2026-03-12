@@ -30,6 +30,8 @@ FROM node:20-slim AS production
 WORKDIR /app
 
 # Install system dependencies (single layer, sorted for cache efficiency)
+# Pandoc is installed from GitHub releases to pin version 3.1.3 (matching local dev)
+# instead of the Debian apt package which ships an older 2.17.x version.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -37,10 +39,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     imagemagick \
     openssl \
-    pandoc \
     poppler-utils \
     postgresql-client \
     unzip \
+    wget \
+    && PANDOC_ARCH="$(dpkg --print-architecture)" \
+    && wget -qO /tmp/pandoc.deb "https://github.com/jgm/pandoc/releases/download/3.1.3/pandoc-3.1.3-1-${PANDOC_ARCH}.deb" \
+    && if [ "$PANDOC_ARCH" = "amd64" ]; then \
+         echo "caa7e0410f9e2cb1da2eb8db13cc97b5548fe455985e2c944e3929d22f99bcdc  /tmp/pandoc.deb" | sha256sum -c -; \
+       elif [ "$PANDOC_ARCH" = "arm64" ]; then \
+         echo "b93cc370f2bf5e360aa2aa72019eda8aaf374dfff125bebf950470b22f7ac7e4  /tmp/pandoc.deb" | sha256sum -c -; \
+       else echo "Unsupported architecture: $PANDOC_ARCH" && exit 1; fi \
+    && dpkg -i /tmp/pandoc.deb \
+    && rm /tmp/pandoc.deb \
+    && apt-get purge -y wget && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nodejs
 

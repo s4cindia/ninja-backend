@@ -8,6 +8,7 @@ import path from 'path';
 import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { citationStorageService } from '../../services/citation/citation-storage.service';
+import { s3Service } from '../../services/s3.service';
 import { docxConversionService } from '../../services/document/docx-conversion.service';
 import { contentTypeDetector } from '../../services/content-type/content-type-detector.service';
 import { htmlToPlainText } from '../../utils/html-to-text';
@@ -54,7 +55,94 @@ async function detectAndBackfillContentType(
   return 'UNKNOWN';
 }
 
+/**
+ * FNV-1a hash for advisory lock keys. Produces well-distributed 32-bit integers
+ * from UUID strings, avoiding the collision-prone byte-sum approach.
+ */
+function fnv1aHash(str: string): number {
+  let hash = 0x811c9dc5; // FNV offset basis
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0; // FNV prime, keep as uint32
+  }
+  // Convert to signed 32-bit for Postgres advisory lock compatibility
+  return hash | 0;
+}
+
 export class ValidatorController {
+  /**
+   * Persist HTML content to DB and optionally create a version snapshot.
+   * Shared by PUT /content and POST /confirm-save.
+   */
+  private async persistContentAndSnapshot(
+    documentId: string,
+    content: string,
+    previousContent: string,
+    userId: string,
+    createVersion: boolean,
+    via?: string
+  ): Promise<{ updatedAt: Date; wordCount: number; versionNumber: number | null }> {
+    // Defense-in-depth: strip <script> blocks before persisting.
+    // Keep <style> tags — they contain document formatting CSS from the TipTap editor.
+    const sanitized = content
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+    const fullText = htmlToPlainText(sanitized);
+    const wordCount = fullText.split(/\s+/).filter(Boolean).length;
+
+    // Wrap all writes in a single transaction for atomicity:
+    // content upsert, document timestamp, and version snapshot must all succeed or all fail.
+    const lockKey = BigInt(fnv1aHash(documentId));
+    const shouldVersion = createVersion && sanitized !== previousContent;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const upserted = await tx.editorialDocumentContent.upsert({
+        where: { documentId },
+        create: { documentId, fullHtml: sanitized, fullText, wordCount },
+        update: { fullHtml: sanitized, fullText, wordCount, updatedAt: new Date() },
+      });
+
+      await tx.editorialDocument.update({
+        where: { id: documentId },
+        data: { updatedAt: new Date() },
+      });
+
+      let newVersion: number | null = null;
+      if (shouldVersion) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
+        const latestVersion = await tx.documentVersion.findFirst({
+          where: { documentId },
+          orderBy: { version: 'desc' },
+          select: { version: true },
+        });
+        newVersion = (latestVersion?.version || 0) + 1;
+        await tx.documentVersion.create({
+          data: {
+            documentId,
+            version: newVersion,
+            createdBy: userId,
+            changeLog: [{
+              timestamp: new Date().toISOString(),
+              action: 'content_save',
+              wordCount,
+              ...(via ? { via } : {}),
+            }],
+            snapshot: { content: sanitized, wordCount, savedAt: new Date().toISOString() },
+            snapshotType: 'full',
+          },
+        });
+      }
+
+      return { updatedAt: upserted.updatedAt, versionNumber: newVersion };
+    });
+
+    if (result.versionNumber) {
+      logger.info(`[Validator] Created version ${result.versionNumber} for document: ${documentId}${via ? ` (via ${via})` : ''}`);
+    }
+
+    return { updatedAt: result.updatedAt, wordCount, versionNumber: result.versionNumber };
+  }
+
   /**
    * POST /api/v1/validator/upload
    * Upload a DOCX file for editing
@@ -606,89 +694,18 @@ export class ValidatorController {
         return;
       }
 
-      // Get previous content for change detection
       const previousContent = document.documentContent?.fullHtml || '';
+      const result = await this.persistContentAndSnapshot(documentId, content, previousContent, userId, createVersion);
 
-      // Extract plain text from HTML for style validation
-      const fullText = htmlToPlainText(content);
-
-      const wordCount = fullText.split(/\s+/).filter(Boolean).length;
-
-      const updated = await prisma.editorialDocumentContent.upsert({
-        where: { documentId },
-        create: {
-          documentId,
-          fullHtml: content,
-          fullText,
-          wordCount,
-        },
-        update: {
-          fullHtml: content,
-          fullText,
-          wordCount,
-          updatedAt: new Date(),
-        },
-      });
-
-      // Also update the parent document's updatedAt timestamp
-      await prisma.editorialDocument.update({
-        where: { id: documentId },
-        data: { updatedAt: new Date() },
-      });
-
-      // Create a version snapshot if content changed and createVersion is true
-      let versionNumber: number | null = null;
-      if (createVersion && content !== previousContent) {
-        // Use transaction with advisory lock to prevent race conditions
-        const lockKey = Buffer.from(documentId).reduce((a, b) => a + b, 0);
-        versionNumber = await prisma.$transaction(async (tx) => {
-          // Acquire advisory lock scoped to this document
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
-
-          // Get the latest version number
-          const latestVersion = await tx.documentVersion.findFirst({
-            where: { documentId },
-            orderBy: { version: 'desc' },
-            select: { version: true },
-          });
-
-          const newVersion = (latestVersion?.version || 0) + 1;
-
-          // Create the version snapshot
-          await tx.documentVersion.create({
-            data: {
-              documentId,
-              version: newVersion,
-              createdBy: userId,
-              changeLog: [{
-                timestamp: new Date().toISOString(),
-                action: 'content_save',
-                wordCount,
-              }],
-              snapshot: {
-                content,
-                wordCount,
-                savedAt: new Date().toISOString(),
-              },
-              snapshotType: 'full',
-            },
-          });
-
-          return newVersion;
-        });
-
-        logger.info(`[Validator] Created version ${versionNumber} for document: ${documentId}`);
-      }
-
-      logger.info(`[Validator] Saved document content: ${documentId}, wordCount: ${wordCount}`);
+      logger.info(`[Validator] Saved document content: ${documentId}, wordCount: ${result.wordCount}`);
 
       res.json({
         success: true,
         data: {
           documentId,
-          savedAt: updated.updatedAt,
-          wordCount,
-          version: versionNumber,
+          savedAt: result.updatedAt,
+          wordCount: result.wordCount,
+          version: result.versionNumber,
         },
       });
     } catch (error) {
@@ -941,6 +958,167 @@ export class ValidatorController {
   }
 
   /**
+   * POST /api/v1/validator/documents/:documentId/presign-save
+   * Get a presigned S3 URL for uploading document content.
+   *
+   * Bypasses CloudFront WAF body-size inspection limits that block large
+   * PUT /content requests. The frontend uploads HTML directly to S3 via
+   * the presigned URL, then calls confirm-save with the S3 key.
+   *
+   * Returns: { uploadUrl, contentKey, expiresIn }
+   */
+  async presignContentSave(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { tenantId } = req.user!;
+      const { documentId } = req.params;
+
+      // Verify document exists and belongs to tenant
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        select: { id: true },
+      });
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' },
+        });
+        return;
+      }
+
+      if (!s3Service.isConfigured()) {
+        // S3 not available — tell frontend to fall back to direct PUT
+        res.status(501).json({
+          success: false,
+          error: { code: 'S3_NOT_CONFIGURED', message: 'Presigned save not available, use PUT /content instead' },
+        });
+        return;
+      }
+
+      // Note: if the client calls presign-save but never calls confirm-save (crash,
+      // network failure, timeout), the temp S3 object is orphaned. An S3 lifecycle rule
+      // on the uploads/ prefix (e.g., 1-day expiry) should be configured to clean these up.
+      const result = await s3Service.getPresignedUploadUrl(
+        tenantId,
+        `${documentId}-content.html`,
+        'text/html; charset=utf-8',
+        900 // 15 minutes
+      );
+
+      logger.info(`[Validator] Generated presigned save URL for document: ${documentId}`);
+
+      res.json({
+        success: true,
+        data: {
+          uploadUrl: result.uploadUrl,
+          contentKey: result.fileKey,
+          expiresIn: result.expiresIn,
+        },
+      });
+    } catch (error) {
+      logger.error('[Validator] Failed to generate presigned save URL:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/validator/documents/:documentId/confirm-save
+   * Confirm a presigned S3 content upload and persist to the database.
+   *
+   * Body: { contentKey: string, createVersion?: boolean }
+   *
+   * Reads the uploaded HTML from S3, stores it in EditorialDocumentContent,
+   * optionally creates a version snapshot, then deletes the temp S3 object.
+   */
+  async confirmContentSave(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { tenantId, id: userId } = req.user!;
+      const { documentId } = req.params;
+      const { contentKey, createVersion = true } = req.body;
+
+      // Validate contentKey matches the canonical format from getPresignedUploadUrl:
+      // uploads/{tenantId}/{timestamp}-{documentId}-content.html
+      const validKeyPattern = new RegExp(`^uploads/${tenantId}/\\d+-${documentId}-content\\.html$`);
+      if (!validKeyPattern.test(contentKey)) {
+        res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'contentKey does not belong to this tenant/document' },
+        });
+        return;
+      }
+
+      // Verify document exists and belongs to tenant
+      const document = await prisma.editorialDocument.findFirst({
+        where: { id: documentId, tenantId },
+        include: {
+          documentContent: { select: { fullHtml: true } },
+        },
+      });
+
+      if (!document) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Document not found' },
+        });
+        return;
+      }
+
+      // Read HTML content from S3
+      let content: string;
+      try {
+        const buffer = await s3Service.getFileBuffer(contentKey);
+        content = buffer.toString('utf-8');
+      } catch (readError) {
+        logger.error(`[Validator] Failed to read content from S3 key ${contentKey}:`, readError);
+        res.status(400).json({
+          success: false,
+          error: { code: 'CONTENT_NOT_FOUND', message: 'Uploaded content not found in S3. The presigned URL may have expired.' },
+        });
+        return;
+      }
+
+      if (!content) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'EMPTY_CONTENT', message: 'Uploaded content is empty' },
+        });
+        return;
+      }
+
+      const previousContent = document.documentContent?.fullHtml || '';
+      const result = await this.persistContentAndSnapshot(documentId, content, previousContent, userId, createVersion, 'presigned_s3');
+
+      // Delete the temp S3 object in the background
+      s3Service.deleteFile(contentKey).catch((delErr) => {
+        logger.warn(`[Validator] Failed to delete temp S3 content key ${contentKey}:`, delErr);
+      });
+
+      logger.info(`[Validator] Confirmed presigned save for document: ${documentId}, wordCount: ${result.wordCount}`);
+
+      res.json({
+        success: true,
+        data: {
+          documentId,
+          savedAt: result.updatedAt,
+          wordCount: result.wordCount,
+          version: result.versionNumber,
+        },
+      });
+    } catch (error) {
+      logger.error('[Validator] Failed to confirm presigned save:', error);
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/v1/validator/documents/:documentId/export
    * Export document as DOCX with all formatting preserved
    */
@@ -990,6 +1168,7 @@ export class ValidatorController {
       logger.info(`[Validator] Exporting document ${documentId} to DOCX (mode: ${exportMode})`);
 
       let docxBuffer: Buffer;
+      let exportResult: import('../../services/document/docx-conversion.service').ExportResult | null = null;
       const titleBase = document.originalName.replace(/\.docx$/i, '');
       const currentHtml = document.documentContent.fullHtml;
 
@@ -1003,12 +1182,19 @@ export class ValidatorController {
             document.storageType as 'S3' | 'LOCAL'
           );
           if (originalBuffer) {
-            docxBuffer = await docxConversionService.exportWithTrackChanges(
+            exportResult = await docxConversionService.exportWithTrackChanges(
               originalBuffer,
               currentHtml,
               { title: titleBase, mode: exportMode }
             );
-            logger.info(`[Validator] Exported ${exportMode} using original DOCX for ${documentId}`);
+            docxBuffer = exportResult.buffer;
+            if (exportResult.originalPreserved) {
+              const wSim = exportResult.wordSimilarity != null ? `${(exportResult.wordSimilarity * 100).toFixed(1)}%` : 'n/a';
+              const sSim = exportResult.sequenceSimilarity != null ? `${(exportResult.sequenceSimilarity * 100).toFixed(1)}%` : 'n/a';
+              logger.info(`[Validator] Original DOCX preserved for ${documentId} (word: ${wSim}, seq: ${sSim})`);
+            } else {
+              logger.info(`[Validator] Export completed (${exportMode}) for ${documentId} — used original DOCX or fallback conversion`);
+            }
           } else {
             docxBuffer = await docxConversionService.convertHtmlToDocx(currentHtml, { title: titleBase });
           }
@@ -1028,6 +1214,11 @@ export class ValidatorController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       const safeName = exportName.replace(/[^\x20-\x7E]/g, '_').replace(/[;"\\]/g, '_');
       res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(exportName)}`);
+      // Let the frontend know if edits were discarded so it can warn the user
+      if (exportResult?.originalPreserved && exportResult.wordSimilarity != null && exportResult.wordSimilarity < 1) {
+        res.setHeader('X-Original-Preserved', 'true');
+        res.setHeader('X-Word-Similarity', exportResult.wordSimilarity.toFixed(4));
+      }
       res.setHeader('Content-Length', docxBuffer.length);
       res.send(docxBuffer);
 

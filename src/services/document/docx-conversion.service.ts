@@ -22,6 +22,7 @@ import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import pdfParse from 'pdf-parse';
 import { logger } from '../../lib/logger';
+import { computeWordSimilarity, computeSequenceSimilarity } from '../../utils/text-similarity';
 
 type PdfParseResult = {
   numpages: number;
@@ -565,6 +566,92 @@ export async function extractDocxStyles(buffer: Buffer): Promise<DocxStyleInfo> 
 }
 
 /**
+ * Inline critical DOCX styles directly onto HTML elements.
+ * TipTap strips <style> blocks and custom CSS classes, so Pandoc's class-based
+ * output loses all formatting. This function adds inline style="" attributes
+ * to headings, paragraphs, and table cells so TipTap preserves them.
+ *
+ * NOTE: The regex patterns (e.g. /<h${lvl}([^>]*)>/gi) assume Pandoc's predictable
+ * single-line HTML output. They would fail on attributes spanning multiple lines,
+ * attributes containing '>' in quoted values, or escaped quotes. This is acceptable
+ * because our only HTML source is Pandoc, which produces well-structured single-line tags.
+ */
+function inlineDocxStyles(html: string, docxStyles?: DocxStyleInfo): string {
+  const bodyFont = docxStyles?.normal?.font || docxStyles?.defaultFont || 'Calibri';
+  const bodySize = docxStyles?.normal?.size || docxStyles?.defaultSize || 11;
+
+  // Build inline style strings for each heading level
+  const fallbackSizes: Record<number, number> = { 1: 24, 2: 18, 3: 14, 4: 12, 5: 11, 6: 10 };
+  const minRatios: Record<number, number> = { 1: 1.8, 2: 1.4, 3: 1.2, 4: 1.1, 5: 1.0, 6: 0.9 };
+
+  const headingStyles: Record<number, string> = {};
+  const headingColors: Record<number, string> = {};
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    const ext = docxStyles?.headings[lvl];
+    const font = ext?.font || bodyFont;
+    const rawSize = ext?.size || fallbackSizes[lvl] || 12;
+    const minSize = Math.round(bodySize * (minRatios[lvl] || 1.0));
+    const size = Math.max(rawSize, minSize);
+    // Keep color on the element style for non-TipTap renderers, but also track it
+    // separately so we can inject a <span> for TipTap's Color extension (span-level only).
+    const color = ext?.color ? `color: #${ext.color}; ` : '';
+    if (ext?.color) headingColors[lvl] = `#${ext.color}`;
+    const style = ext?.italic ? 'font-style: italic; ' : '';
+    headingStyles[lvl] = `font-family: '${font}', sans-serif; font-size: ${size}pt; font-weight: bold; ${style}${color}margin: ${Math.round(size * 0.75)}pt 0 ${Math.round(size * 0.375)}pt 0;`;
+  }
+
+  // Inline styles onto heading tags
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    const re = new RegExp(`<h${lvl}([^>]*)>`, 'gi');
+    html = html.replace(re, (_match, attrs) => {
+      const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+      const merged = existingStyle ? `${existingStyle}; ${headingStyles[lvl]}` : headingStyles[lvl];
+      const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+      return `<h${lvl} ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+    });
+  }
+
+  // TipTap only preserves color via TextStyle marks (span-level), not on block elements.
+  // Wrap heading content in <span style="color:..."> so the Color extension keeps it.
+  // NOTE: Same Pandoc single-line assumption as the heading inline styles above — the
+  // [\s\S]*? regex would misbehave with unclosed tags or nested headings from other sources.
+  for (let lvl = 1; lvl <= 6; lvl++) {
+    if (!headingColors[lvl]) continue;
+    const re = new RegExp(`(<h${lvl}[^>]*>)([\\s\\S]*?)(<\\/h${lvl}>)`, 'gi');
+    html = html.replace(re, `$1<span style="color: ${headingColors[lvl]}">$2</span>$3`);
+  }
+
+  // Inline base font on the container div (TipTap strips the div but ProseMirror inherits)
+  // Instead, apply to each <p> so TipTap's TextStyle extension preserves it
+  const pStyle = `font-family: '${bodyFont}', sans-serif; font-size: ${bodySize}pt; line-height: 1.5;`;
+  html = html.replace(/<p([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    if (existingStyle) return _match; // don't override existing inline styles
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<p ${cleanAttrs} style="${pStyle}">`.replace(/\s+/g, ' ');
+  });
+
+  // Inline table cell styles
+  html = html.replace(/<td([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    const base = `border: 1px solid #333; padding: 6pt 8pt; vertical-align: top; font-size: ${bodySize}pt;`;
+    const merged = existingStyle ? `${existingStyle}; ${base}` : base;
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<td ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+  });
+
+  html = html.replace(/<th([^>]*)>/gi, (_match, attrs) => {
+    const existingStyle = attrs.match(/style="([^"]*)"/)?.[1] || '';
+    const base = `border: 1px solid #333; padding: 6pt 8pt; vertical-align: top; font-weight: bold; background-color: #f0f0f0; font-size: ${bodySize}pt;`;
+    const merged = existingStyle ? `${existingStyle}; ${base}` : base;
+    const cleanAttrs = attrs.replace(/style="[^"]*"/, '').trim();
+    return `<th ${cleanAttrs} style="${merged}">`.replace(/\s+/g, ' ');
+  });
+
+  return html;
+}
+
+/**
  * Generate CSS styles for the document, using extracted DOCX styles when available
  */
 export function generateStyles(docxStyles?: DocxStyleInfo): string {
@@ -892,6 +979,14 @@ export async function convertDocxToHtml(buffer: Buffer): Promise<ConversionResul
     // Extract actual styles from the DOCX and generate matching CSS
     const docxStyles = await extractDocxStyles(buffer);
     const styles = generateStyles(docxStyles);
+
+    // Inline critical styles onto HTML elements so TipTap preserves them.
+    // TipTap strips <style> blocks and custom classes, so Pandoc's class-based
+    // CSS never reaches the rendered editor. Mammoth doesn't have this problem
+    // because it produces inline styles natively.
+    if (usedConverter === 'pandoc') {
+      html = inlineDocxStyles(html, docxStyles);
+    }
 
     // Calculate metadata
     const textContent = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1436,6 +1531,7 @@ export async function convertDocumentToHtml(buffer: Buffer, fileName?: string): 
   }
 }
 
+
 /**
  * Decode HTML entities in text extracted from HTML spans.
  */
@@ -1526,11 +1622,21 @@ function buildCleanHtml(html: string): string {
  *     'tracked' → apply Word revision marks (<w:del>/<w:ins>) to original DOCX XML
  *  3. Falls back to Pandoc HTML→DOCX if the XML approach fails
  */
+export interface ExportResult {
+  buffer: Buffer;
+  /** true when the original DOCX was returned unchanged (edits below similarity threshold) */
+  originalPreserved: boolean;
+  /** Word-level similarity (0–1) between original DOCX text and current HTML text. Present when originalPreserved is true. */
+  wordSimilarity?: number;
+  /** Sequence-level similarity (0–1). Present when originalPreserved is true. */
+  sequenceSimilarity?: number;
+}
+
 export async function exportWithTrackChanges(
   originalBuffer: Buffer,
   currentHtml: string,
   options?: { title?: string; mode?: 'clean' | 'tracked' }
-): Promise<Buffer> {
+): Promise<ExportResult> {
   const cleanHtml = buildCleanHtml(currentHtml);
   const mode = options?.mode || 'clean';
 
@@ -1552,20 +1658,23 @@ export async function exportWithTrackChanges(
           result = await applyChangesToDocx(originalBuffer, trackChanges);
           logger.info(`[DocxConversion] Applied ${trackChanges.length} clean replacements to original DOCX`);
         }
-        return result;
+        return { buffer: result, originalPreserved: false };
       } catch (applyErr) {
         logger.warn('[DocxConversion] XML replacement failed, falling back to Pandoc:', applyErr);
-        return convertHtmlToDocx(cleanHtml, options);
+        return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
       }
     }
 
     // No track change spans found — check if text was manually edited
+    // by comparing original DOCX text with the current HTML text using
+    // word-level similarity (exact comparison always fails due to
+    // conversion artifacts from the DOCX→HTML roundtrip).
     const zip = await JSZip.loadAsync(originalBuffer);
     const documentXml = await zip.file('word/document.xml')?.async('string');
 
     if (!documentXml) {
       logger.warn('[DocxConversion] No document.xml found, falling back to Pandoc');
-      return convertHtmlToDocx(cleanHtml, options);
+      return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
     }
 
     const xmlTextRuns: string[] = [];
@@ -1574,21 +1683,40 @@ export async function exportWithTrackChanges(
     while ((match = textRunPattern.exec(documentXml)) !== null) {
       xmlTextRuns.push(match[1]);
     }
-    const originalPlainText = xmlTextRuns.join('');
-    const cleanPlainText = decodeHtmlEntities(stripHtmlTags(cleanHtml));
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+    const originalPlainText = normalize(decodeHtmlEntities(xmlTextRuns.join('')));
+    // Insert spaces between adjacent tags before stripping so </p><p> doesn't merge words.
+    // normalize() then collapses any resulting multiple spaces.
+    const spacedHtml = cleanHtml.replace(/>\s*</g, '> <');
+    const cleanPlainText = normalize(decodeHtmlEntities(stripHtmlTags(spacedHtml)));
 
-    if (originalPlainText !== cleanPlainText) {
-      // Text was manually changed without track changes — use Pandoc
-      logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
-      return convertHtmlToDocx(cleanHtml, options);
+    // Dual similarity check: bag-of-words Jaccard (content) + sequence LCS (order).
+    // Jaccard alone misses reordering; sequence alone is noisy with minor token diffs.
+    // Both must pass to treat the document as unchanged.
+    const wordSim = computeWordSimilarity(originalPlainText, cleanPlainText);
+    const seqSim = computeSequenceSimilarity(originalPlainText, cleanPlainText);
+    logger.info(`[DocxConversion] Similarity — word: ${(wordSim * 100).toFixed(1)}%, sequence: ${(seqSim * 100).toFixed(1)}% (original: ${originalPlainText.length} chars, html: ${cleanPlainText.length} chars)`);
+
+    // Thresholds: 0.95 word / 0.90 sequence.
+    // Trade-off: very small edits (a few words in a long doc) may still exceed these
+    // thresholds and return the original DOCX, silently discarding the edit. This is
+    // acceptable because (a) such tiny diffs are usually roundtrip artifacts not real
+    // edits, and (b) real edits should use track changes which take a separate code path.
+    if (wordSim >= 0.95 && seqSim >= 0.90) {
+      if (wordSim < 1 || seqSim < 1) {
+        logger.warn(`[DocxConversion] Minor edits detected but below threshold — returning original DOCX (word: ${(wordSim * 100).toFixed(1)}%, seq: ${(seqSim * 100).toFixed(1)}%). Edits will NOT appear in the exported file.`);
+      } else {
+        logger.info('[DocxConversion] No changes detected, returning original DOCX');
+      }
+      return { buffer: originalBuffer, originalPreserved: true, wordSimilarity: wordSim, sequenceSimilarity: seqSim };
     }
 
-    // Texts are identical — return original to preserve exact formatting
-    logger.info('[DocxConversion] No changes detected, returning original DOCX');
-    return originalBuffer;
+    // Text was manually changed without track changes — use Pandoc
+    logger.info('[DocxConversion] Manual edits detected (no track changes), using Pandoc');
+    return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
   } catch (error) {
     logger.warn('[DocxConversion] Track change export failed, falling back to Pandoc:', error);
-    return convertHtmlToDocx(cleanHtml, options);
+    return { buffer: await convertHtmlToDocx(cleanHtml, options), originalPreserved: false };
   }
 }
 

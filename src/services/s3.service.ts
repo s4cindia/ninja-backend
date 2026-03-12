@@ -43,7 +43,13 @@ class S3Service {
       ContentType: contentType,
     });
 
-    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn });
+    // Exclude Content-Type from the signature so the browser can send it
+    // without needing an exact byte-for-byte match (charset casing, spacing, etc.).
+    // S3 still stores the Content-Type the client sends in the PUT request.
+    const uploadUrl = await getSignedUrl(s3Client, command, {
+      expiresIn,
+      unsignableHeaders: new Set(['content-type']),
+    });
 
     logger.info(`Generated presigned upload URL for ${fileKey}`);
 
