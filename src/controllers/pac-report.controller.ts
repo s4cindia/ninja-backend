@@ -36,12 +36,13 @@ export class PacReportController {
       logger.error(`[PacReport] getReport failed`, error);
 
       const statusCode = error.statusCode ?? 500;
+      const isNotFound = statusCode === 404;
       return res.status(statusCode).json({
         success: false,
         data: {},
         error: {
-          code: statusCode === 404 ? 'JOB_NOT_FOUND' : 'INTERNAL_ERROR',
-          message: error.message ?? 'Failed to generate PAC report',
+          code: isNotFound ? 'JOB_NOT_FOUND' : 'INTERNAL_ERROR',
+          message: isNotFound ? error.message ?? 'Job not found' : 'Failed to generate PAC report',
           details: null,
         },
       });

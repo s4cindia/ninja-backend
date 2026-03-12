@@ -380,7 +380,12 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       const key = JSON.stringify([
         issue.source,
         issue.code,
+        issue.matterhornCheckpoint || '',
+        issue.pageNumber ?? '',
         issue.location || '',
+        issue.boundingBox
+          ? `${issue.boundingBox.x}:${issue.boundingBox.y}:${issue.boundingBox.width}:${issue.boundingBox.height}`
+          : '',
         issue.message
       ]);
 

@@ -35,14 +35,54 @@ export class ListClassifier {
       return this.markManual(issue);
     }
 
-    for (const list of page.lists) {
-      const decoration = this.checkDecorativeList(list);
+    // Try to match the issue to a specific list using bounding box proximity,
+    // so we don't suppress failures for a different list on the same page.
+    const implicated = this.findImplicatedList(issue, page.lists);
+    if (implicated) {
+      const decoration = this.checkDecorativeList(implicated);
+      if (decoration) {
+        return this.markAutoResolved(issue, decoration);
+      }
+      return this.markManual(issue);
+    }
+
+    // No match by position — fall back to per-page check only if there is exactly
+    // one list on the page (unambiguous).
+    if (page.lists.length === 1) {
+      const decoration = this.checkDecorativeList(page.lists[0]);
       if (decoration) {
         return this.markAutoResolved(issue, decoration);
       }
     }
 
     return this.markManual(issue);
+  }
+
+  /**
+   * Find the list on the page that is closest to the issue's reported position.
+   * Uses the issue bounding box (when available) or falls back to null.
+   */
+  private findImplicatedList(issue: AuditIssue, lists: import('../structure-analyzer.service').ListInfo[]): import('../structure-analyzer.service').ListInfo | null {
+    if (!issue.boundingBox) return null;
+
+    const issueY = issue.boundingBox.y;
+    const issueX = issue.boundingBox.x;
+
+    let best: import('../structure-analyzer.service').ListInfo | null = null;
+    let bestDist = Infinity;
+
+    for (const list of lists) {
+      const dx = list.position.x - issueX;
+      const dy = list.position.y - issueY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = list;
+      }
+    }
+
+    // Only consider it a match if the list is within 100 PDF points of the issue
+    return bestDist <= 100 ? best : null;
   }
 
   private checkDecorativeList(list: ListInfo): string | null {

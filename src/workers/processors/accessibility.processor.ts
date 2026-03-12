@@ -32,9 +32,10 @@ function normalizeLanguageCode(code: string): string {
 
 /**
  * Detect the document language from a tagged PDF.
- * Priority: (1) existing catalog /Lang → (2) most common Lang attribute on paragraph elements → (3) 'en'
+ * Priority: (1) existing catalog /Lang → (2) most common Lang attribute on paragraph elements → (3) undefined
+ * Returns undefined when no language can be detected — callers must not auto-apply 'en' in that case.
  */
-function detectDocumentLanguage(doc: PDFDocument): string {
+function detectDocumentLanguage(doc: PDFDocument): string | undefined {
   try {
     // 1. Existing /Lang on catalog
     const catalogLang = doc.catalog.get(PDFName.of('Lang'));
@@ -58,12 +59,12 @@ function detectDocumentLanguage(doc: PDFDocument): string {
       return normalizeLanguageCode(detected);
     }
   } catch (e) {
-    logger.debug(`[PDF Worker] detectDocumentLanguage failed, falling back to 'en': ${e}`);
+    logger.debug(`[PDF Worker] detectDocumentLanguage failed: ${e}`);
   }
 
-  // 3. Fallback: use 'en' silently (debug level only — common for English-language docs)
-  logger.debug(`[PDF Worker] No language detected, defaulting to 'en'`);
-  return 'en';
+  // 3. No language detected — return undefined so the caller skips the write
+  logger.debug('[PDF Worker] No language detected; skipping automatic language write');
+  return undefined;
 }
 
 function collectLangAttributes(
@@ -277,7 +278,16 @@ async function processPdfAccessibility(
   };
 
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
-  const auditReport = await pdfAuditService.runAuditFromBuffer(auditBuffer, dbJobId, fileName, 'basic', undefined, onProgress, onValidatorComplete);
+  const scanLevel = 'comprehensive';
+  const auditReport = await pdfAuditService.runAuditFromBuffer(
+    auditBuffer,
+    dbJobId,
+    fileName,
+    scanLevel,
+    undefined,
+    onProgress,
+    onValidatorComplete,
+  );
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 
   // ── 3b. Post-audit auto-applies [non-fatal] ──────────────────────────────────
@@ -290,10 +300,17 @@ async function processPdfAccessibility(
     const issues = (auditReport as unknown as { issues?: Array<{ code: string }> }).issues ?? [];
     const issueCodes = new Set(issues.map(i => i.code));
 
-    const hasMissingLang = issueCodes.has('PDF-NO-LANGUAGE') || issueCodes.has('PDF-LANGUAGE-MALFORMED');
+    const hasMissingLang =
+      issueCodes.has('PDF-NO-LANGUAGE') ||
+      issueCodes.has('PDF-LANGUAGE-MALFORMED') ||
+      issueCodes.has('MATTERHORN-11-001');
     const hasMissingPdfUa = issueCodes.has('PDFUA-IDENTIFIER-MISSING');
-    const hasMissingTitle = issueCodes.has('PDF-NO-TITLE') || issueCodes.has('PDF-TITLE-EMPTY') ||
-      issueCodes.has('PDF-DISPLAY-TITLE') || issueCodes.has('PDF-XMP-TITLE-MISSING');
+    const hasMissingTitle =
+      issueCodes.has('PDF-NO-TITLE') ||
+      issueCodes.has('PDF-TITLE-EMPTY') ||
+      issueCodes.has('PDF-DISPLAY-TITLE') ||
+      issueCodes.has('PDF-XMP-TITLE-MISSING') ||
+      issueCodes.has('WCAG-2.4.2');
     const hasMissingBookmarks = issueCodes.has('BOOKMARK-MISSING');
     const needsAutoFix = hasMissingLang || hasMissingPdfUa || hasMissingTitle || hasMissingBookmarks;
 
@@ -303,9 +320,13 @@ async function processPdfAccessibility(
 
       if (hasMissingLang) {
         const detectedLang = detectDocumentLanguage(autoFixDoc);
-        const result = await pdfModifierService.addLanguage(autoFixDoc, detectedLang);
-        logger.info(`[PDF Worker] Auto-applied language '${detectedLang}' for job ${dbJobId}: ${result.success}`);
-        if (result.success) autoFixApplied = true;
+        if (detectedLang) {
+          const result = await pdfModifierService.addLanguage(autoFixDoc, detectedLang);
+          logger.info(`[PDF Worker] Auto-applied language '${detectedLang}' for job ${dbJobId}: ${result.success}`);
+          if (result.success) autoFixApplied = true;
+        } else {
+          logger.info(`[PDF Worker] Skipping language auto-fix for job ${dbJobId}: could not detect document language`);
+        }
       }
 
       if (hasMissingPdfUa) {
@@ -394,7 +415,7 @@ async function processPdfAccessibility(
     data: {
       fileName,
       auditReport: auditReport as unknown as Record<string, unknown>,
-      scanLevel: 'comprehensive',
+      scanLevel,
       type: 'PDF_ACCESSIBILITY',
       dbJobId,
       timestamp: new Date().toISOString(),

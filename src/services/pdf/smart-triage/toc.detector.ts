@@ -18,7 +18,8 @@ import { PDFOutlineItem } from '../pdf-parser.service';
 // Heuristic thresholds
 const HIGH_CONFIDENCE = 0.70;   // auto-accept as TOC (dot-leaders + page-refs is enough)
 const LOW_CONFIDENCE  = 0.30;   // below this → not a TOC
-// Between LOW and HIGH → ask Haiku
+// Between LOW and HIGH → ask Haiku (capped to MAX_LLM_CANDIDATES pages per document)
+const MAX_LLM_CANDIDATES = 5;   // max pages that trigger LLM fallback per document
 
 // Scoring weights (must sum to ≤1.0)
 const W_DOT_LEADERS  = 0.35;
@@ -41,6 +42,7 @@ export class TocDetector {
     const firstOutlineDestination = this.firstDestination(outline);
 
     const tocPages = new Set<number>();
+    let llmCandidateCount = 0;
 
     for (const page of parsed.pages) {
       // Score every page — we can't rely on page.tables (from the structure analyzer)
@@ -52,12 +54,20 @@ export class TocDetector {
         logger.debug(`[TocDetector] Page ${page.pageNumber} → TOC (score=${score.toFixed(2)}, heuristic)`);
         tocPages.add(page.pageNumber);
       } else if (score >= LOW_CONFIDENCE) {
-        const confirmed = await this.confirmWithLLM(page, score);
-        if (confirmed) {
-          logger.debug(`[TocDetector] Page ${page.pageNumber} → TOC (score=${score.toFixed(2)}, llm-confirmed)`);
-          tocPages.add(page.pageNumber);
+        if (llmCandidateCount >= MAX_LLM_CANDIDATES) {
+          // Cap reached — fall back to heuristic threshold (0.55) to avoid unbounded LLM calls
+          const heuristicAccept = score >= 0.55;
+          logger.debug(`[TocDetector] Page ${page.pageNumber} → LLM cap reached, heuristic fallback: ${heuristicAccept} (score=${score.toFixed(2)})`);
+          if (heuristicAccept) tocPages.add(page.pageNumber);
         } else {
-          logger.debug(`[TocDetector] Page ${page.pageNumber} → not TOC (score=${score.toFixed(2)}, llm-rejected)`);
+          llmCandidateCount++;
+          const confirmed = await this.confirmWithLLM(page, score);
+          if (confirmed) {
+            logger.debug(`[TocDetector] Page ${page.pageNumber} → TOC (score=${score.toFixed(2)}, llm-confirmed)`);
+            tocPages.add(page.pageNumber);
+          } else {
+            logger.debug(`[TocDetector] Page ${page.pageNumber} → not TOC (score=${score.toFixed(2)}, llm-rejected)`);
+          }
         }
       }
     }

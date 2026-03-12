@@ -252,7 +252,17 @@ class PDFParserService {
     }
   }
 
-  private resolveNumberTreeNums(pdfLibDoc: PDFDocument, nodeRef: ReturnType<PDFDict['get']>): unknown[] | undefined {
+  private resolveNumberTreeNums(
+    pdfLibDoc: PDFDocument,
+    nodeRef: ReturnType<PDFDict['get']>,
+    visited: Set<unknown> = new Set(),
+    depth = 0
+  ): unknown[] | undefined {
+    const MAX_DEPTH = 32;
+    if (depth > MAX_DEPTH) return undefined;
+    if (visited.has(nodeRef)) return undefined;
+    visited.add(nodeRef);
+
     try {
       const node = pdfLibDoc.context.lookup(nodeRef);
       if (!(node instanceof PDFDict)) return undefined;
@@ -271,7 +281,7 @@ class PDFParserService {
         if (resolvedKids instanceof PDFArray) {
           const result: unknown[] = [];
           for (const kid of resolvedKids.asArray()) {
-            const kidNums = this.resolveNumberTreeNums(pdfLibDoc, kid);
+            const kidNums = this.resolveNumberTreeNums(pdfLibDoc, kid, visited, depth + 1);
             if (kidNums) result.push(...kidNums);
           }
           return result;

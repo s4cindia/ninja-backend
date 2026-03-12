@@ -36,8 +36,12 @@ const TABLE_ISSUE_CODES = new Set([
 
 // Reading-order issue codes
 const READING_ORDER_CODES = new Set([
+  'MATTERHORN-12-001',
   'MATTERHORN-09-004',
   'READING-ORDER',
+  'READING-ORDER-COLUMNS',
+  'READING-ORDER-VISUAL',
+  'READING-ORDER-TABLE',
 ]);
 
 // Regex to extract y-coordinate from issue context strings like "y:123" or "position: (x, y)"

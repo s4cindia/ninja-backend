@@ -463,7 +463,7 @@ Respond ONLY with valid JSON in this exact format:
     const prompt = `Analyze this image from a PDF document.
 
 Tasks:
-1. Is this image decorative? (logos, ornamental borders, horizontal rules, background textures, and page decorations with no information content are decorative)
+1. Is this image decorative? (ornamental borders, horizontal rules, background textures, and page decorations with no information content are decorative; treat logos and brand marks as informative unless surrounding text already conveys the same information)
 2. If not decorative, write concise alt text in 1-2 sentences (max 125 characters).
 
 Respond with JSON only:

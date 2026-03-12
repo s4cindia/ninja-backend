@@ -1147,7 +1147,8 @@ async function processAuditFromBufferBackground(
 
   try {
 
-    const result = await pdfAuditService.runAuditFromBuffer(buffer, jobId, fileName);
+    const scanLevel = 'comprehensive';
+    const result = await pdfAuditService.runAuditFromBuffer(buffer, jobId, fileName, scanLevel);
 
     await prisma.job.update({
       where: { id: jobId },
@@ -1157,7 +1158,7 @@ async function processAuditFromBufferBackground(
         output: JSON.parse(JSON.stringify({
           fileName,
           auditReport: result,
-          scanLevel: 'basic',
+          scanLevel,
         })) as Prisma.InputJsonObject,
       },
     });

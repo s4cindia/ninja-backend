@@ -15,26 +15,31 @@ export interface ArtifactRegion {
   yMax: number;
 }
 
-// Top 12% of page height is treated as header zone
-const HEADER_RATIO = 0.12;
-// Bottom 10% of page height is treated as footer zone
-const FOOTER_RATIO = 0.90;
+// Top 12% of page height is treated as header zone (PDF bottom-left origin: high y values)
+const HEADER_HEIGHT_RATIO = 0.12;
+// Bottom 10% of page height is treated as footer zone (PDF bottom-left origin: low y values)
+const FOOTER_HEIGHT_RATIO = 0.10;
 
 export class ArtifactMarker {
   /**
    * Build a map of pageNumber → artifact regions for every page in the document.
+   * Regions are stored in PDF coordinate space (origin at bottom-left):
+   *   header → y > (page.height - headerHeight)
+   *   footer → y < footerHeight
    * Synchronous — no I/O required.
    */
   detectArtifactRegions(parsed: PdfParseResult): Map<number, ArtifactRegion[]> {
     const regions = new Map<number, ArtifactRegion[]>();
 
     for (const page of parsed.pages) {
-      const headerCutoff = page.height * HEADER_RATIO;
-      const footerCutoff = page.height * FOOTER_RATIO;
+      const headerHeight = page.height * HEADER_HEIGHT_RATIO;
+      const footerHeight = page.height * FOOTER_HEIGHT_RATIO;
 
       regions.set(page.pageNumber, [
-        { type: 'header', yMin: 0,           yMax: headerCutoff },
-        { type: 'footer', yMin: footerCutoff, yMax: page.height  },
+        // Header: top 12% — high y values in PDF coordinates
+        { type: 'header', yMin: page.height - headerHeight, yMax: page.height },
+        // Footer: bottom 10% — low y values in PDF coordinates
+        { type: 'footer', yMin: 0, yMax: footerHeight },
       ]);
     }
 
@@ -42,15 +47,8 @@ export class ArtifactMarker {
   }
 
   /**
-   * Returns true if the given y coordinate (in PDF points, origin at bottom-left)
-   * falls inside a header or footer region for the specified page.
-   *
-   * PDF coordinate systems place y=0 at the bottom, so:
-   *   header → y > (height - headerCutoff)
-   *   footer → y < footerCutoff (from bottom)
-   *
-   * We store regions with y measured from top (viewer coordinates) to keep
-   * things simple. Callers that have raw PDF coordinates should convert first.
+   * Returns the artifact region if the given y coordinate (in PDF points, bottom-left origin)
+   * falls inside a header or footer region for the specified page, or null otherwise.
    */
   isInArtifactRegion(
     y: number,

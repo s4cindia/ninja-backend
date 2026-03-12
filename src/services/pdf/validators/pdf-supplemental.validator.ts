@@ -495,7 +495,7 @@ class PdfSupplementalValidator {
         if (!xObj) continue;
 
         const subtype = xObj.get(PDFName.of('Subtype'));
-        if (!(subtype instanceof PDFName) || subtype.asString() !== 'Reference') continue;
+        if (!(subtype instanceof PDFName) || subtype.asString() !== '/Reference') continue;
 
         const xObjName = keyRaw instanceof PDFName ? keyRaw.asString() : String(keyRaw);
         issues.push(
