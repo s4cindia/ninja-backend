@@ -35,6 +35,32 @@ const DEFAULT_TIME_METRICS_CONFIG = {
   },
 };
 
+const aiRemediationConfigUpdateSchema = z.object({
+  tableFixMode: z.enum(['apply-to-pdf', 'guidance-only', 'summaries-to-pdf-headers-as-guidance']).optional(),
+  altTextMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
+  listMode: z.enum(['auto-resolve-decorative', 'guidance-only']).optional(),
+  languageMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
+  colorContrastMode: z.enum(['guidance-only', 'disabled']).optional(),
+  linkTextMode: z.enum(['guidance-only', 'disabled']).optional(),
+  formFieldMode: z.enum(['guidance-only', 'disabled']).optional(),
+  bookmarkMode: z.enum(['guidance-only', 'disabled']).optional(),
+  confidenceThreshold: z.number().min(0.5).max(0.95).optional(),
+  autoApplyHighConfidence: z.boolean().optional(),
+}).strict();
+
+export const DEFAULT_AI_REMEDIATION_CONFIG = {
+  tableFixMode: 'summaries-to-pdf-headers-as-guidance' as const,
+  altTextMode: 'apply-to-pdf' as const,
+  listMode: 'auto-resolve-decorative' as const,
+  languageMode: 'apply-to-pdf' as const,
+  colorContrastMode: 'guidance-only' as const,
+  linkTextMode: 'guidance-only' as const,
+  formFieldMode: 'guidance-only' as const,
+  bookmarkMode: 'guidance-only' as const,
+  confidenceThreshold: 0.75,
+  autoApplyHighConfidence: false,
+};
+
 const workflowConfigUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   hitlGates: z.object({
@@ -406,6 +432,94 @@ export class TenantConfigController {
         success: true,
         data: effectiveConfig,
         message: 'Time metrics configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+  /**
+   * Get current AI remediation configuration for the authenticated tenant.
+   * Returns tenant settings merged with defaults.
+   */
+  async getAiRemediationConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const settings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const stored = (settings.aiRemediation && typeof settings.aiRemediation === 'object')
+        ? (settings.aiRemediation as Record<string, unknown>)
+        : {};
+
+      const config = {
+        ...DEFAULT_AI_REMEDIATION_CONFIG,
+        ...stored,
+      };
+
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update AI remediation configuration for the authenticated tenant.
+   */
+  async updateAiRemediationConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const validationResult = aiRemediationConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid AI remediation configuration: ' + validationResult.error.message);
+      }
+
+      const updates = validationResult.data;
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: req.user.tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant) throw AppError.notFound('Tenant not found');
+
+      const currentSettings = (tenant.settings && typeof tenant.settings === 'object')
+        ? (tenant.settings as Record<string, unknown>)
+        : {};
+
+      const currentAiRemediation = (currentSettings.aiRemediation && typeof currentSettings.aiRemediation === 'object')
+        ? (currentSettings.aiRemediation as Record<string, unknown>)
+        : {};
+
+      const updatedAiRemediation: Record<string, unknown> = { ...currentAiRemediation, ...updates };
+
+      await prisma.tenant.update({
+        where: { id: req.user.tenantId },
+        data: {
+          settings: {
+            ...currentSettings,
+            aiRemediation: updatedAiRemediation,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      logger.info(`[Tenant Config] AI remediation config updated for tenant ${req.user.tenantId}`, { updates });
+
+      const effectiveConfig = { ...DEFAULT_AI_REMEDIATION_CONFIG, ...updatedAiRemediation };
+
+      res.json({
+        success: true,
+        data: effectiveConfig,
+        message: 'AI remediation configuration updated successfully',
       });
     } catch (error) {
       next(error);

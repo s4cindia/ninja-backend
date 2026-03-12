@@ -73,4 +73,24 @@ router.patch(
   tenantConfigController.updateTimeMetricsConfig.bind(tenantConfigController)
 );
 
+/**
+ * GET /api/v1/tenant/config/ai-remediation
+ * Get AI remediation configuration (modes, confidence threshold, auto-apply).
+ */
+router.get(
+  '/ai-remediation',
+  authenticate,
+  tenantConfigController.getAiRemediationConfig.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/ai-remediation
+ * Update AI remediation configuration.
+ */
+router.patch(
+  '/ai-remediation',
+  authenticate,
+  tenantConfigController.updateAiRemediationConfig.bind(tenantConfigController)
+);
+
 export default router;

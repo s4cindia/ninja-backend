@@ -92,23 +92,26 @@ class FileStorageService {
   }
 
   async getRemediatedFile(jobId: string, fileName: string): Promise<Buffer | null> {
-    try {
-      const sanitizedFileName = path.basename(fileName);
-      const ext = path.extname(sanitizedFileName);
-      const baseName = sanitizedFileName.slice(0, -ext.length);
+    const sanitizedFileName = path.basename(fileName);
+    const ext = path.extname(sanitizedFileName);
+    const baseName = sanitizedFileName.slice(0, -ext.length);
 
-      const remediatedFileName = baseName.endsWith('_remediated')
-        ? sanitizedFileName
-        : `${baseName}_remediated${ext}`;
+    // Try plain filename first (how saveRemediatedFile stores it),
+    // then fall back to the _remediated suffix convention
+    const candidates = [
+      sanitizedFileName,
+      baseName.endsWith('_remediated') ? sanitizedFileName : `${baseName}_remediated${ext}`,
+    ];
 
-      const filePath = path.join(STORAGE_BASE, jobId, 'remediated', remediatedFileName);
-      return await fs.readFile(filePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
+    for (const candidate of candidates) {
+      try {
+        const filePath = path.join(STORAGE_BASE, jobId, 'remediated', candidate);
+        return await fs.readFile(filePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
-      throw error;
     }
+    return null;
   }
 
   /**

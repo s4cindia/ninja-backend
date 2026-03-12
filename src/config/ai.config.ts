@@ -1,4 +1,9 @@
 export const aiConfig = {
+  adobe: {
+    clientId: process.env.ADOBE_PDF_SERVICES_CLIENT_ID || '',
+    clientSecret: process.env.ADOBE_PDF_SERVICES_CLIENT_SECRET || '',
+    enabled: !!process.env.ADOBE_PDF_SERVICES_CLIENT_ID,
+  },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
     model: 'gemini-2.0-flash-lite',

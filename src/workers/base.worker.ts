@@ -12,10 +12,15 @@ export interface WorkerOptions {
   concurrency?: number;
   /** BullMQ lock duration in ms. Increase for long-running jobs (default: 30000). */
   lockDuration?: number;
+  /**
+   * How often BullMQ checks for stalled jobs in ms (default: 30000).
+   * Lower values detect orphaned active jobs from crashed/restarted workers faster.
+   */
+  stalledInterval?: number;
 }
 
 export function createWorker(options: WorkerOptions): Worker<JobData, JobResult> | null {
-  const { queueName, processor, concurrency = 1, lockDuration = 30000 } = options;
+  const { queueName, processor, concurrency = 1, lockDuration = 30000, stalledInterval = 30000 } = options;
 
   if (!isRedisConfigured()) {
     logger.warn(`Cannot create worker for ${queueName} - Redis not configured`);
@@ -64,8 +69,21 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
         autorun: true,
         prefix: QUEUE_PREFIX,
         lockDuration,
+        stalledInterval,
       }
     );
+
+    worker.on('ready', () => {
+      logger.info(`Worker for ${queueName} is ready and connected to Redis`);
+    });
+
+    worker.on('drained', () => {
+      logger.debug(`Worker for ${queueName} queue is empty — waiting for jobs`);
+    });
+
+    worker.on('active', (job) => {
+      logger.info(`Worker [${queueName}] picked up job ${job.id} — BullMQ is processing`);
+    });
 
     worker.on('completed', (job) => {
       logger.info(`Job ${job.id} completed`);
@@ -80,7 +98,7 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
     });
 
     worker.on('error', (err) => {
-      logger.error(`Worker error: ${err.message}`);
+      logger.error(`Worker [${queueName}] error: ${err.message}`, { stack: err.stack });
     });
 
     return worker;

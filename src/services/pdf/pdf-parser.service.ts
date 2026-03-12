@@ -1,4 +1,4 @@
-import { PDFDocument, PDFName, PDFDict, PDFString } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFString, PDFArray, PDFNumber } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import fs from 'fs/promises';
 import path from 'path';
@@ -52,6 +52,7 @@ export interface PDFStructure {
   pages: PDFPageInfo[];
   metadata: PDFMetadata;
   outline?: PDFOutlineItem[];
+  pageLabels?: string[];
   permissions?: PDFPermissions;
 }
 
@@ -175,13 +176,144 @@ class PDFParserService {
     const metadata = await this.extractMetadata(pdfLibDoc, pdfjsDoc);
     const pages = await this.extractPageInfo(pdfLibDoc, pdfjsDoc);
     const outline = await this.extractOutline(pdfjsDoc);
+    const pageLabels = this.extractPageLabels(pdfLibDoc, pdfjsDoc.numPages);
 
     return {
       pageCount: pdfjsDoc.numPages,
       pages,
       metadata,
       outline: outline.length > 0 ? outline : undefined,
+      pageLabels,
     };
+  }
+
+  private extractPageLabels(pdfLibDoc: PDFDocument, pageCount: number): string[] | undefined {
+    try {
+      const catalog = pdfLibDoc.context.lookup(pdfLibDoc.context.trailerInfo.Root);
+      if (!(catalog instanceof PDFDict)) return undefined;
+
+      const pageLabelsRef = catalog.get(PDFName.of('PageLabels'));
+      if (!pageLabelsRef) return undefined;
+
+      const nums = this.resolveNumberTreeNums(pdfLibDoc, pageLabelsRef);
+      if (!nums || nums.length < 2) return undefined;
+
+      const labels: string[] = [];
+
+      for (let pageIdx = 0; pageIdx < pageCount; pageIdx++) {
+        // Find the range entry for this page index
+        let startIndex = 0;
+        let labelDict: PDFDict | null = null;
+
+        for (let i = 0; i < nums.length - 1; i += 2) {
+          const rangeStart = (nums[i] as PDFNumber).asNumber();
+          if (rangeStart <= pageIdx) {
+            startIndex = rangeStart;
+            const dictRef = nums[i + 1];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const resolved = pdfLibDoc.context.lookup(dictRef as any);
+            labelDict = (resolved instanceof PDFDict) ? resolved : null;
+          } else {
+            break;
+          }
+        }
+
+        if (!labelDict) {
+          labels.push(String(pageIdx + 1));
+          continue;
+        }
+
+        const styleEntry = labelDict.get(PDFName.of('S'));
+        const prefixEntry = labelDict.get(PDFName.of('P'));
+        const startEntry = labelDict.get(PDFName.of('St'));
+
+        const style = styleEntry ? styleEntry.toString().replace(/^\//, '') : undefined;
+        const prefix = prefixEntry instanceof PDFString ? prefixEntry.decodeText() : '';
+        const startNum = startEntry instanceof PDFNumber ? startEntry.asNumber() : 1;
+        const seq = pageIdx - startIndex + startNum;
+
+        let label: string;
+        switch (style) {
+          case 'r': label = prefix + this.toRoman(seq).toLowerCase(); break;
+          case 'R': label = prefix + this.toRoman(seq).toUpperCase(); break;
+          case 'D': label = prefix + String(seq); break;
+          case 'A': label = prefix + this.toAlpha(seq).toUpperCase(); break;
+          case 'a': label = prefix + this.toAlpha(seq).toLowerCase(); break;
+          default:  label = prefix || String(pageIdx + 1); break;
+        }
+        labels.push(label);
+      }
+
+      // Only return if labels differ from default 1,2,3... numbering
+      const hasMeaningfulLabels = labels.some((l, i) => l !== String(i + 1));
+      return hasMeaningfulLabels ? labels : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resolveNumberTreeNums(
+    pdfLibDoc: PDFDocument,
+    nodeRef: ReturnType<PDFDict['get']>,
+    visited: Set<unknown> = new Set(),
+    depth = 0
+  ): unknown[] | undefined {
+    const MAX_DEPTH = 32;
+    if (depth > MAX_DEPTH) return undefined;
+    if (visited.has(nodeRef)) return undefined;
+    visited.add(nodeRef);
+
+    try {
+      const node = pdfLibDoc.context.lookup(nodeRef);
+      if (!(node instanceof PDFDict)) return undefined;
+
+      // Leaf node: has Nums array directly
+      const numsEntry = node.get(PDFName.of('Nums'));
+      if (numsEntry) {
+        const resolved = pdfLibDoc.context.lookup(numsEntry);
+        if (resolved instanceof PDFArray) return resolved.asArray();
+      }
+
+      // Internal node: has Kids
+      const kidsEntry = node.get(PDFName.of('Kids'));
+      if (kidsEntry) {
+        const resolvedKids = pdfLibDoc.context.lookup(kidsEntry);
+        if (resolvedKids instanceof PDFArray) {
+          const result: unknown[] = [];
+          for (const kid of resolvedKids.asArray()) {
+            const kidNums = this.resolveNumberTreeNums(pdfLibDoc, kid, visited, depth + 1);
+            if (kidNums) result.push(...kidNums);
+          }
+          return result;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return undefined;
+  }
+
+  private toRoman(num: number): string {
+    const vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+    const syms = ['m', 'cm', 'd', 'cd', 'c', 'xc', 'l', 'xl', 'x', 'ix', 'v', 'iv', 'i'];
+    let result = '';
+    for (let i = 0; i < vals.length; i++) {
+      while (num >= vals[i]) {
+        result += syms[i];
+        num -= vals[i];
+      }
+    }
+    return result;
+  }
+
+  private toAlpha(num: number): string {
+    let result = '';
+    while (num > 0) {
+      num--;
+      result = String.fromCharCode(97 + (num % 26)) + result;
+      num = Math.floor(num / 26);
+    }
+    return result;
   }
 
   private async extractMetadata(
@@ -294,11 +426,21 @@ class PDFParserService {
     try {
       const catalog = pdfLibDoc.context.lookup(pdfLibDoc.context.trailerInfo.Root);
       if (catalog instanceof PDFDict) {
-        const markInfo = catalog.get(PDFName.of('MarkInfo'));
+        // Resolve MarkInfo — may be an indirect reference in Adobe-tagged PDFs
+        const markInfoRaw = catalog.get(PDFName.of('MarkInfo'));
+        const markInfo = markInfoRaw instanceof PDFDict
+          ? markInfoRaw
+          : (markInfoRaw ? pdfLibDoc.context.lookup(markInfoRaw) : null);
+
         if (markInfo instanceof PDFDict) {
           const marked = markInfo.get(PDFName.of('Marked'));
-          return { Marked: marked?.toString() === 'true' };
+          if (marked?.toString() === 'true') return { Marked: true };
         }
+
+        // Fallback: StructTreeRoot presence is sufficient to consider a PDF tagged
+        // (Adobe AutoTag adds StructTreeRoot even when MarkInfo is absent or indirect)
+        const structTreeRoot = catalog.get(PDFName.of('StructTreeRoot'));
+        if (structTreeRoot) return { Marked: true };
       }
     } catch {
       // Ignore errors

@@ -7,6 +7,9 @@
  * Implements US-PDF-1.2 requirements
  */
 
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { logger } from '../../lib/logger';
 import { BaseAuditService, AuditIssue, AuditReport } from '../audit/base-audit.service';
 import {
@@ -18,6 +21,13 @@ import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator } from './validators/pdf-table.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
+import { pdfLinkValidator } from './validators/pdf-link.validator';
+import { pdfFormValidator } from './validators/pdf-form.validator';
+import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
+import { pdfSupplementalValidator } from './validators/pdf-supplemental.validator';
+import { smartTriageService } from './smart-triage/triage.service';
+import { veraPdfService } from './verapdf.service';
+import { mapVeraPdfFailures } from '../../data/verapdf-matterhorn.map';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
 /**
@@ -40,6 +50,9 @@ export interface PdfValidationResult {
   altTextIssues: AuditIssue[];
   contrastIssues: AuditIssue[];
   tableIssues: AuditIssue[];
+  linkIssues: AuditIssue[];
+  formIssues: AuditIssue[];
+  bookmarkIssues: AuditIssue[];
   matterhornResults: MatterhornCheckResult[];
   validatorErrors: Array<{
     validator: string;
@@ -230,7 +243,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
    */
   protected async validate(
     parsed: PdfParseResult,
-    scanLevel: ScanLevel = 'basic',
+    scanLevel: ScanLevel = 'comprehensive',
     customValidators?: ValidatorType[],
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
   ): Promise<PdfValidationResult> {
@@ -242,6 +255,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       altTextIssues: [],
       contrastIssues: [],
       tableIssues: [],
+      linkIssues: [],
+      formIssues: [],
+      bookmarkIssues: [],
       matterhornResults: [],
       validatorErrors: [],
     };
@@ -254,14 +270,21 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
     logger.info(`[PdfAudit] Scan level: ${scanLevel}, validators: ${validatorsToRun.join(', ')}`);
 
-    // Pre-compute which of the 4 real validators will actually run (for progress total)
+    // Pre-compute which validators will run (for progress total)
     const willRunStructure = validatorsToRun.includes('structure') || validatorsToRun.includes('headings') ||
       validatorsToRun.includes('reading-order') || validatorsToRun.includes('lists') ||
       validatorsToRun.includes('language') || validatorsToRun.includes('metadata');
-    const willRunAltText  = validatorsToRun.includes('alt-text');
-    const willRunContrast = validatorsToRun.includes('contrast');
-    const willRunTables   = validatorsToRun.includes('tables');
-    const totalValidators = [willRunStructure, willRunAltText, willRunContrast, willRunTables].filter(Boolean).length;
+    const willRunAltText   = validatorsToRun.includes('alt-text');
+    const willRunContrast  = validatorsToRun.includes('contrast');
+    const willRunTables    = validatorsToRun.includes('tables');
+    const willRunLinks     = validatorsToRun.includes('links');
+    const willRunForms     = validatorsToRun.includes('forms');
+    const willRunBookmarks    = validatorsToRun.includes('bookmarks');
+    const willRunSupplemental = validatorsToRun.includes('supplemental');
+    const totalValidators = [
+      willRunStructure, willRunAltText, willRunContrast, willRunTables,
+      willRunLinks, willRunForms, willRunBookmarks, willRunSupplemental,
+    ].filter(Boolean).length;
     let completedValidators = 0;
 
     // Use real validators if parsedPdf is available, otherwise use stubs
@@ -340,6 +363,77 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators, tablesStart);
         }
       }
+
+      // 5. Link Text Validator
+      if (willRunLinks) {
+        const linksStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfLinkValidator...`);
+          const linkIssues = await pdfLinkValidator.validate(parsed);
+          result.linkIssues.push(...linkIssues);
+          result.issues.push(...linkIssues);
+          logger.info(`[PdfAudit] PdfLinkValidator found ${linkIssues.length} issues`);
+          onValidatorComplete?.('Link Text', linkIssues.length, ++completedValidators, totalValidators, linksStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfLinkValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfLinkValidator', error: errorMessage });
+          onValidatorComplete?.('Link Text', 0, ++completedValidators, totalValidators, linksStart);
+        }
+      }
+
+      // 6. Form Field Validator
+      if (willRunForms) {
+        const formsStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfFormValidator...`);
+          const formIssues = await pdfFormValidator.validate(parsed);
+          result.formIssues.push(...formIssues);
+          result.issues.push(...formIssues);
+          logger.info(`[PdfAudit] PdfFormValidator found ${formIssues.length} issues`);
+          onValidatorComplete?.('Form Fields', formIssues.length, ++completedValidators, totalValidators, formsStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFormValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFormValidator', error: errorMessage });
+          onValidatorComplete?.('Form Fields', 0, ++completedValidators, totalValidators, formsStart);
+        }
+      }
+
+      // 7. Bookmark Validator
+      if (willRunBookmarks) {
+        const bookmarksStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfBookmarkValidator...`);
+          const bookmarkIssues = await pdfBookmarkValidator.validate(parsed);
+          result.bookmarkIssues.push(...bookmarkIssues);
+          result.issues.push(...bookmarkIssues);
+          logger.info(`[PdfAudit] PdfBookmarkValidator found ${bookmarkIssues.length} issues`);
+          onValidatorComplete?.('Bookmarks', bookmarkIssues.length, ++completedValidators, totalValidators, bookmarksStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfBookmarkValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfBookmarkValidator', error: errorMessage });
+          onValidatorComplete?.('Bookmarks', 0, ++completedValidators, totalValidators, bookmarksStart);
+        }
+      }
+
+      // 8. Supplemental Validator (CP10/20/21/25/30 — Matterhorn Step 3)
+      if (willRunSupplemental) {
+        const supplementalStart = new Date();
+        try {
+          logger.info(`[PdfAudit] Running PdfSupplementalValidator...`);
+          const supplementalIssues = await pdfSupplementalValidator.validate(parsed);
+          result.issues.push(...supplementalIssues);
+          logger.info(`[PdfAudit] PdfSupplementalValidator found ${supplementalIssues.length} issues`);
+          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', supplementalIssues.length, ++completedValidators, totalValidators, supplementalStart);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfSupplementalValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfSupplementalValidator', error: errorMessage });
+          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', 0, ++completedValidators, totalValidators, supplementalStart);
+        }
+      }
     } else {
       // Fallback to stub validators
       logger.info('[PdfAudit] Using stub validators with PdfParseResult');
@@ -377,6 +471,48 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       }
     }
 
+    // 9. veraPDF — PDF/UA-1 MRR validator (Matterhorn Coverage Step 4)
+    // Runs only when VERAPDF_PATH is set and points to an existing binary,
+    // AND a real file path is available (populated by runAuditFromBuffer or parse()).
+    // Results are deduplicated: Ninja-sourced issues take precedence when both
+    // cover the same Matterhorn condition.
+    if (veraPdfService.isAvailable() && parsed.filePath) {
+      try {
+        logger.info(`[PdfAudit] Running veraPDF on: ${parsed.filePath}`);
+        const veraPdfFailures = await veraPdfService.validate(parsed.filePath);
+        logger.info(`[PdfAudit] veraPDF found ${veraPdfFailures.length} failures`);
+
+        // Build set of Matterhorn conditions already covered by Ninja validators
+        const alreadyFound = new Set(
+          result.issues
+            .map((i) => i.matterhornCheckpoint)
+            .filter((c): c is string => c !== undefined),
+        );
+
+        const mapped = mapVeraPdfFailures(veraPdfFailures, alreadyFound);
+        logger.info(`[PdfAudit] veraPDF mapped ${mapped.size} new conditions (${veraPdfFailures.length - mapped.size} skipped — already found by Ninja)`);
+
+        for (const [conditionId, failure] of mapped) {
+          result.issues.push({
+            id: `verapdf-${conditionId}`,
+            source: 'verapdf',
+            severity: 'serious',
+            code: `MATTERHORN-${conditionId}`,
+            message: failure.description,
+            matterhornCheckpoint: conditionId,
+            matterhornHow: 'M',
+            pageNumber: failure.pageNumber,
+            context: failure.context,
+            category: 'pdf-ua',
+          });
+        }
+      } catch (err) {
+        logger.error(`[PdfAudit] veraPDF validation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (!veraPdfService.isAvailable()) {
+      logger.info('[PdfAudit] veraPDF not available (VERAPDF_PATH unset or binary missing) — skipping');
+    }
+
     // Generate Matterhorn results from structure issues
     result.matterhornResults = this.generateMatterhornResults(result);
 
@@ -386,7 +522,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     logger.info(
       `[PdfAudit] Validation complete: ${result.issues.length} total issues ` +
       `(structure: ${result.structureIssues.length}, alt-text: ${result.altTextIssues.length}, ` +
-      `contrast: ${result.contrastIssues.length}, table: ${result.tableIssues.length})`
+      `contrast: ${result.contrastIssues.length}, table: ${result.tableIssues.length}, ` +
+      `links: ${result.linkIssues.length}, forms: ${result.formIssues.length}, bookmarks: ${result.bookmarkIssues.length})`
     );
 
     return result;
@@ -409,37 +546,62 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
   ): Promise<AuditReport> {
     logger.info(`[PdfAudit] Generating report for ${fileName}...`);
 
-    const scoreBreakdown = this.calculateScore(validation.issues);
-    const wcagMappings = this.mapToWcag(validation.issues);
-    const summary = this.calculateSummary(validation.issues);
-    const matterhornSummary = this.generateMatterhornSummary(validation.matterhornResults);
+    // Smart triage: reduce false positives before scoring
+    const suppressedCategories: string[] = [];
+    let finalIssues = validation.issues;
+    let triageSummary = undefined;
 
-    // Debug: Check if pageNumber is present in issues
-    const sampleAltTextIssue = validation.issues.find(i => i.source === 'pdf-alttext');
-    if (sampleAltTextIssue) {
-      logger.debug(`[DEBUG] Sample alt-text issue BEFORE report creation: ${JSON.stringify(sampleAltTextIssue, null, 2)}`);
+    if (parsed) {
+      try {
+        const triageResult = await smartTriageService.process(parsed, validation.issues, suppressedCategories);
+        finalIssues = triageResult.issues;
+        triageSummary = triageResult.summary;
+      } catch (triageErr) {
+        logger.warn('[PdfAudit] Smart triage failed (non-fatal), using raw issues:', triageErr);
+      }
     }
+
+    const scoreBreakdown = this.calculateScore(finalIssues);
+    const wcagMappings = this.mapToWcag(finalIssues);
+    const summary = this.calculateSummary(finalIssues);
+
+    // Recompute table issue count from triaged issues so Matterhorn checkpoint 11
+    // reflects the suppressed TOC-as-Table issues, not the raw pre-triage count.
+    // Use ID-based matching so structure issues with TABLE-* codes aren't miscounted.
+    const tableIssueIds = new Set(validation.tableIssues.map(i => i.id));
+    const triagedTableCount = finalIssues.filter(i => tableIssueIds.has(i.id)).length;
+    const adjustedMatterhornResults = validation.matterhornResults.map(r =>
+      r.checkpointId === '11'
+        ? { ...r, failureCount: triagedTableCount, passed: triagedTableCount === 0 }
+        : r
+    );
+    const matterhornSummary = this.generateMatterhornSummary(adjustedMatterhornResults);
 
     const report: AuditReport = {
       jobId,
       fileName,
       score: scoreBreakdown.score,
       scoreBreakdown,
-      issues: validation.issues,
+      issues: finalIssues,
       summary,
       wcagMappings,
+      triageSummary,
       metadata: {
         validator: 'PDF Accessibility Audit',
         pageCount: parsed?.metadata.pageCount || 1,
+        pageLabels: parsed?.metadata.pageLabels,
         categorizedIssues: {
           structure: validation.structureIssues.length,
           altText: validation.altTextIssues.length,
           contrast: validation.contrastIssues.length,
-          table: validation.tableIssues.length,
+          table: triagedTableCount,
+          links: validation.linkIssues.length,
+          forms: validation.formIssues.length,
+          bookmarks: validation.bookmarkIssues.length,
         },
-        matterhornCheckpoints: validation.matterhornResults.length,
-        matterhornPassed: validation.matterhornResults.filter(r => r.passed).length,
-        matterhornFailed: validation.matterhornResults.filter(r => !r.passed).length,
+        matterhornCheckpoints: adjustedMatterhornResults.length,
+        matterhornPassed: adjustedMatterhornResults.filter(r => r.passed).length,
+        matterhornFailed: adjustedMatterhornResults.filter(r => !r.passed).length,
         matterhornSummary,
         validatorErrors: validation.validatorErrors,
       },
@@ -715,6 +877,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
+    let veraPdfTempDir: string | null = null;
 
     try {
       logger.info(`[PdfAudit] Starting audit from buffer: ${fileName} (job: ${jobId}, scan: ${scanLevel})`);
@@ -726,6 +889,16 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       logger.info(`[PdfAudit] Parsing buffer...`);
       parsed = await this.parseBuffer(buffer, fileName, onProgress);
       logger.info(`[PdfAudit] Buffer parsed successfully`);
+
+      // Write temp file for veraPDF if the binary is available.
+      // veraPDF is a CLI tool that requires a real file path on disk.
+      if (veraPdfService.isAvailable()) {
+        veraPdfTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-verapdf-'));
+        const tempFilePath = path.join(veraPdfTempDir, `${jobId}.pdf`);
+        await fs.writeFile(tempFilePath, buffer);
+        parsed.filePath = tempFilePath;
+        logger.info(`[PdfAudit] Wrote temp file for veraPDF: ${tempFilePath}`);
+      }
 
       // Validate
       logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
@@ -750,6 +923,12 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         } catch (closeError) {
           logger.warn('[PdfAudit] Failed to close parsedPdf handle:', closeError);
         }
+      }
+      // Cleanup veraPDF temp directory
+      if (veraPdfTempDir) {
+        await fs.rm(veraPdfTempDir, { recursive: true, force: true }).catch((e) => {
+          logger.warn(`[PdfAudit] Failed to remove veraPDF temp dir: ${e instanceof Error ? e.message : String(e)}`);
+        });
       }
     }
   }

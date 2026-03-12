@@ -1886,3 +1886,33 @@ model IntegrityIssue {
   @@index([checkType])
   @@index([status])
 }
+
+// ─── AI Analysis ──────────────────────────────────────────────────────────────
+
+model AiAnalysis {
+  id             String   @id @default(cuid())
+  jobId          String
+  issueId        String
+  /// 'alt-text' | 'alt-text-improve' | 'table-summary' | 'table-headers' | 'table-layout'
+  /// | 'list-classify' | 'reading-order' | 'heading' | 'language'
+  /// | 'color-contrast' | 'link-text' | 'form-field' | 'bookmark'
+  suggestionType String
+  /// The fix value to write into the PDF (alt text string, summary, lang code, etc.)
+  value          String?  @db.Text
+  /// Human-readable instruction shown when the fix cannot be applied automatically
+  guidance       String?  @db.Text
+  confidence     Float
+  rationale      String   @db.Text
+  /// 'gemini-flash' | 'claude-haiku'
+  model          String
+  /// 'apply-to-pdf' | 'guidance-only' | 'auto-resolve'
+  applyMode      String
+  /// 'pending' | 'approved' | 'rejected' | 'applied'
+  status               String   @default("pending")
+  requiresManualReview Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([jobId, issueId])
+  @@index([jobId])
+}

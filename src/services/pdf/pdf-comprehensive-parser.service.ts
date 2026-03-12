@@ -23,6 +23,7 @@ import fs from 'fs/promises';
 export interface PdfMetadata extends BasePDFMetadata {
   pageCount: number;
   hasStructureTree: boolean;
+  pageLabels?: string[];
 }
 
 /**
@@ -132,6 +133,13 @@ export interface PdfParseResult {
   isTagged: boolean;
   /** Low-level parsed PDF for validators - must be closed after use */
   parsedPdf?: ParsedPDF;
+  /**
+   * Absolute path to the PDF on disk.
+   * Set by parse() when given a real file path, or set by runAuditFromBuffer()
+   * after writing a temp file for veraPDF. Undefined when processing an
+   * in-memory buffer without a temp file.
+   */
+  filePath?: string;
 }
 
 /**
@@ -161,6 +169,10 @@ class PdfComprehensiveParserService {
 
       // Extract comprehensive content
       const result = await this.extractComprehensiveContent(parsedPdf);
+
+      // Expose parsedPdf and filePath for downstream validators (incl. veraPDF)
+      result.parsedPdf = parsedPdf;
+      result.filePath = filePath;
 
       logger.info(`[PdfComprehensiveParser] Parse complete: ${result.pages.length} pages, tagged=${result.isTagged}`);
 
@@ -253,6 +265,7 @@ class PdfComprehensiveParserService {
       ...structure.metadata,
       pageCount: structure.pageCount,
       hasStructureTree: structure.metadata.isTagged,
+      pageLabels: structure.pageLabels,
     };
 
     // Extract structure tree if tagged
@@ -281,6 +294,9 @@ class PdfComprehensiveParserService {
     logger.info(`[PdfComprehensiveParser] Analyzing structure...`);
     const documentStructure = await structureAnalyzerService.analyzeStructure(parsedPdf);
 
+    // Extract form fields using pdfjs annotation API (non-fatal if it fails)
+    const documentFormFields = await this.extractAllFormFields(parsedPdf.pdfjsDoc, structure.pageCount);
+
     // Signal completion of all extraction phases
     onProgress?.(totalPages, totalPages);
 
@@ -304,7 +320,7 @@ class PdfComprehensiveParserService {
         content: this.convertTextContent(pageText),
         images: this.convertImages(pageImages),
         links: this.convertLinks(pageLinks),
-        formFields: [], // TODO: Implement form field extraction
+        formFields: documentFormFields.get(pageNum) ?? [],
         headings: pageHeadings,
         tables: pageTables,
         lists: pageLists,
@@ -482,6 +498,64 @@ class PdfComprehensiveParserService {
       position: link.position,
       hasDescriptiveText: link.hasDescriptiveText,
     }));
+  }
+
+  /**
+   * Extract form fields from all pages using pdfjs Widget annotations.
+   * Returns a map of pageNumber → PdfFormField[].
+   * Non-fatal: returns empty map on any extraction error.
+   */
+  private async extractAllFormFields(
+    pdfjsDoc: import('pdfjs-dist/legacy/build/pdf.mjs').PDFDocumentProxy,
+    pageCount: number
+  ): Promise<Map<number, PdfFormField[]>> {
+    const result = new Map<number, PdfFormField[]>();
+    try {
+      for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+        const page = await pdfjsDoc.getPage(pageNum);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const annotations: any[] = await (page as any).getAnnotations({ intent: 'display' });
+        const formFields: PdfFormField[] = annotations
+          .filter(a => a.subtype === 'Widget')
+          .map(a => {
+            const rect: [number, number, number, number] = a.rect ?? [0, 0, 0, 0];
+            return {
+              name: String(a.fieldName ?? ''),
+              type: this.mapFormFieldType(a),
+              label: String(a.alternativeText ?? a.fieldName ?? ''),
+              value: Array.isArray(a.fieldValue)
+                ? String(a.fieldValue[0] ?? '')
+                : String(a.fieldValue ?? ''),
+              required: Boolean(a.required),
+              position: {
+                x: rect[0],
+                y: rect[1],
+                width: Math.abs(rect[2] - rect[0]),
+                height: Math.abs(rect[3] - rect[1]),
+              },
+            } satisfies PdfFormField;
+          });
+        if (formFields.length > 0) {
+          result.set(pageNum, formFields);
+        }
+      }
+    } catch (err) {
+      logger.warn('[PdfComprehensiveParser] Form field extraction failed (non-fatal):', err instanceof Error ? err.message : String(err));
+    }
+    return result;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private mapFormFieldType(annotation: any): PdfFormField['type'] {
+    switch (annotation.fieldType) {
+      case 'Tx': return 'text';
+      case 'Ch': return 'select';
+      case 'Btn':
+        if (annotation.checkBox) return 'checkbox';
+        if (annotation.radioButton) return 'radio';
+        return 'button';
+      default: return 'text';
+    }
   }
 }
 

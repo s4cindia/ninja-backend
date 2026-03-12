@@ -36,6 +36,8 @@ import styleRoutes from "./style.routes";
 import notificationRoutes from "./notification.routes";
 import integrityRoutes from "./integrity.routes";
 import plagiarismRoutes from "./plagiarism.routes";
+import pdfAiAnalysisRoutes from "./pdf-ai-analysis.routes";
+import pacReportRoutes from "./pac-report.routes";
 
 const router = Router();
 
@@ -125,5 +127,7 @@ router.use("/style", styleRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/integrity", integrityRoutes);
 router.use("/plagiarism", plagiarismRoutes);
+router.use("/pdf", pdfAiAnalysisRoutes);
+router.use("/pdf", pacReportRoutes);
 
 export default router;
