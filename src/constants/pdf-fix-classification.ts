@@ -34,6 +34,11 @@ export const QUICK_FIXABLE_CODES = new Set<string>([
   'MATTERHORN-11-001',      // Document language not specified - user can specify
   'MATTERHORN-01-003',      // Document title missing - user can specify
   'WCAG-2.4.2',             // Document title not present - user can specify
+
+  // AI-assisted remediation handler keys
+  'AI-ALT-TEXT',            // AI-generated alt text for figures
+  'AI-TABLE-SUMMARY',       // AI-generated table summary
+  'AI-LANGUAGE',            // AI-detected document language
 ]);
 
 /**

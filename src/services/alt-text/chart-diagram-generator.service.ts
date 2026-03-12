@@ -35,21 +35,29 @@ interface DataTableRow {
 }
 
 class ChartDiagramGeneratorService {
-  private genAI: GoogleGenerativeAI;
-  private model: GenerativeModel;
+  private genAI: GoogleGenerativeAI | null;
+  private model: GenerativeModel | null;
 
   constructor() {
     if (!process.env.GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY environment variable is required');
+      logger.warn('[ChartDiagramGenerator] GEMINI_API_KEY not set — service disabled');
+      this.genAI = null;
+      this.model = null;
+      return;
     }
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+  }
+
+  isAvailable(): boolean {
+    return this.model !== null;
   }
 
   async classifyImage(
     imageBuffer: Buffer,
     mimeType: string = 'image/jpeg'
   ): Promise<ImageType> {
+    if (!this.model) return 'UNKNOWN';
     const prompt = `
 Classify this image into ONE of these categories:
 - BAR_CHART (vertical or horizontal bars showing quantities)
@@ -98,6 +106,18 @@ Return ONLY the category name, nothing else.
     mimeType: string = 'image/jpeg'
   ): Promise<ChartDescription> {
     const imageType = await this.classifyImage(imageBuffer, mimeType);
+    if (!this.model) {
+      return {
+        imageId: '',
+        imageType,
+        shortAlt: 'Image requiring manual description',
+        longDescription: 'AI service unavailable. Manual review required.',
+        confidence: 0,
+        flags: ['SERVICE_UNAVAILABLE'],
+        aiModel: 'gemini-1.5-pro',
+        generatedAt: new Date(),
+      };
+    }
     const prompt = this.getPromptForType(imageType);
 
     const imagePart = {
