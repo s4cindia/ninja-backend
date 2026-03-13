@@ -290,6 +290,7 @@ model File {
 
   artifacts         Artifact[]
   workflowInstances WorkflowInstance[]
+  zones             Zone[]
 
   @@index([tenantId])
   @@index([status])
@@ -1915,4 +1916,37 @@ model AiAnalysis {
 
   @@unique([jobId, issueId])
   @@index([jobId])
+}
+
+// ============================================================
+// ZONE MODEL (PDF Content Regions)
+// ============================================================
+
+model Zone {
+  id             String   @id @default(uuid())
+  tenantId       String
+  fileId         String
+  file           File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  pageNumber     Int
+  type           String   // "TABLE" | "P" | "H1"-"H6" | "FIGURE" | "LIST" | "LI" | "ARTIFACT" etc
+  label          String?
+  readingOrder   Int?
+  bounds         Json?    // { x, y, width, height }
+  content        String?  @db.Text
+  altText        String?
+  longDesc       String?  @db.Text
+  tableStructure Json?    // { rows: [{ cells: [{ type, content, colspan, rowspan, align }] }] }
+  zoneSubtype    String?  // "THEAD" | "TBODY" | null
+  rowCount       Int?
+  parentZoneId   String?
+  parentZone     Zone?    @relation("ZoneChildren", fields: [parentZoneId], references: [id])
+  childZones     Zone[]   @relation("ZoneChildren")
+  reviewedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([parentZoneId, zoneSubtype])
+  @@index([fileId])
+  @@index([tenantId])
+  @@index([parentZoneId])
 }

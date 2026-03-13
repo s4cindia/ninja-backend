@@ -38,6 +38,7 @@ import integrityRoutes from "./integrity.routes";
 import plagiarismRoutes from "./plagiarism.routes";
 import pdfAiAnalysisRoutes from "./pdf-ai-analysis.routes";
 import pacReportRoutes from "./pac-report.routes";
+import zonesRoutes from "./zones.routes";
 
 const router = Router();
 
@@ -82,6 +83,12 @@ router.get("/", (req, res) => {
         get: "GET /api/v1/files/:id",
         download: "GET /api/v1/files/:id/download",
         delete: "DELETE /api/v1/files/:id",
+      },
+      zones: {
+        list: "GET /api/v1/zones?fileId=:fileId&pages=1,2,3",
+        create: "POST /api/v1/zones",
+        update: "PATCH /api/v1/zones/:id",
+        updateTableStructure: "POST /api/v1/zones/:id/table-structure",
       },
       ai: {
         health: "GET /api/v1/ai/health",
@@ -129,5 +136,6 @@ router.use("/integrity", integrityRoutes);
 router.use("/plagiarism", plagiarismRoutes);
 router.use("/pdf", pdfAiAnalysisRoutes);
 router.use("/pdf", pacReportRoutes);
+router.use("/zones", zonesRoutes);
 
 export default router;
