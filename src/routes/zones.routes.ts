@@ -8,6 +8,8 @@ const router = Router();
 router.get('/', authenticate, async (req: Request, res: Response) => {
   try {
     const { fileId, pages } = req.query;
+    const tenantId = req.user!.tenantId;
+
     if (!fileId || typeof fileId !== 'string') {
       return res.status(400).json({ success: false, error: { code: 'MISSING_FILE_ID', message: 'fileId query parameter is required' } });
     }
@@ -16,7 +18,7 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       ? pages.split(',').map(Number).filter((n) => !isNaN(n))
       : undefined;
 
-    const zones = await zoneService.getZones(fileId, pageNumbers);
+    const zones = await zoneService.getZones(fileId, tenantId, pageNumbers);
     return res.json({ success: true, data: zones });
   } catch (err) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: (err as Error).message } });
@@ -26,9 +28,11 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
 // POST /api/v1/zones
 router.post('/', authenticate, async (req: Request, res: Response) => {
   try {
-    const { fileId, tenantId, pageNumber, type, bounds, ...rest } = req.body;
-    if (!fileId || !tenantId || pageNumber == null || !type) {
-      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'fileId, tenantId, pageNumber, and type are required' } });
+    const { fileId, pageNumber, type, bounds, label, readingOrder, content, altText, longDesc } = req.body;
+    const tenantId = req.user!.tenantId;
+
+    if (!fileId || pageNumber == null || !type) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'fileId, pageNumber, and type are required' } });
     }
 
     if (type === 'TABLE') {
@@ -36,7 +40,18 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
       return res.status(201).json({ success: true, data: zone });
     }
 
-    const zone = await zoneService.createZone({ fileId, tenantId, pageNumber, type, bounds, ...rest });
+    const zone = await zoneService.createZone({
+      fileId,
+      tenantId,
+      pageNumber,
+      type,
+      bounds,
+      label,
+      readingOrder,
+      content,
+      altText,
+      longDesc,
+    });
     return res.status(201).json({ success: true, data: zone });
   } catch (err) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: (err as Error).message } });
@@ -47,6 +62,7 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
 router.patch('/:id', authenticate, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const tenantId = req.user!.tenantId;
     const allowedFields = ['type', 'label', 'readingOrder', 'content', 'altText', 'longDesc', 'tableStructure', 'bounds'];
     const data: Record<string, unknown> = {};
     for (const field of allowedFields) {
@@ -55,7 +71,7 @@ router.patch('/:id', authenticate, async (req: Request, res: Response) => {
       }
     }
 
-    const zone = await zoneService.updateZone(id, data);
+    const zone = await zoneService.updateZone(id, tenantId, data);
     return res.json({ success: true, data: zone });
   } catch (err) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: (err as Error).message } });
@@ -66,12 +82,13 @@ router.patch('/:id', authenticate, async (req: Request, res: Response) => {
 router.post('/:id/table-structure', authenticate, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const tenantId = req.user!.tenantId;
     const { thead, tbody } = req.body;
     if (!thead || !tbody) {
       return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'thead and tbody are required' } });
     }
 
-    const zone = await zoneService.updateTableStructure(id, thead, tbody);
+    const zone = await zoneService.updateTableStructure(id, tenantId, thead, tbody);
     return res.json({ success: true, data: zone });
   } catch (err) {
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: (err as Error).message } });

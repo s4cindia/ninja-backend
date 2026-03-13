@@ -1,26 +1,41 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const mockCreate = vi.fn();
+const mockFindMany = vi.fn();
+const mockFindUnique = vi.fn();
+const mockUpdate = vi.fn();
+
 vi.mock('../../../src/lib/prisma', () => ({
   default: {
     zone: {
-      create: vi.fn(),
-      findMany: vi.fn(),
-      findUnique: vi.fn(),
-      update: vi.fn(),
+      create: (...args: unknown[]) => mockCreate(...args),
+      findMany: (...args: unknown[]) => mockFindMany(...args),
+      findUnique: (...args: unknown[]) => mockFindUnique(...args),
+      update: (...args: unknown[]) => mockUpdate(...args),
     },
+    $transaction: vi.fn(async (fnOrArr: unknown) => {
+      if (typeof fnOrArr === 'function') {
+        // Interactive transaction — call with a proxy that delegates to the same mocks
+        const tx = {
+          zone: {
+            create: (...args: unknown[]) => mockCreate(...args),
+            findMany: (...args: unknown[]) => mockFindMany(...args),
+            findUnique: (...args: unknown[]) => mockFindUnique(...args),
+            update: (...args: unknown[]) => mockUpdate(...args),
+          },
+        };
+        return (fnOrArr as (tx: typeof tx) => Promise<unknown>)(tx);
+      }
+      // Batch transaction — execute all promises
+      return Promise.all(fnOrArr as Promise<unknown>[]);
+    }),
   },
   Prisma: {
     JsonNull: 'DbNull',
   },
 }));
 
-import prisma from '../../../src/lib/prisma';
 import { zoneService } from '../../../src/services/zone.service';
-
-const mockCreate = prisma.zone.create as ReturnType<typeof vi.fn>;
-const mockFindMany = prisma.zone.findMany as ReturnType<typeof vi.fn>;
-const mockFindUnique = prisma.zone.findUnique as ReturnType<typeof vi.fn>;
-const mockUpdate = prisma.zone.update as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -28,7 +43,7 @@ beforeEach(() => {
 
 describe('ZoneService', () => {
   describe('createTableZone', () => {
-    it('creates parent + THEAD + TBODY children', async () => {
+    it('creates parent + THEAD + TBODY children in a transaction', async () => {
       const parentZone = {
         id: 'parent-1',
         fileId: 'file-1',
@@ -52,17 +67,17 @@ describe('ZoneService', () => {
       };
 
       mockCreate
-        .mockResolvedValueOnce(parentZone)  // parent
-        .mockResolvedValueOnce(theadZone)   // thead
-        .mockResolvedValueOnce(tbodyZone);  // tbody
+        .mockResolvedValueOnce(parentZone)
+        .mockResolvedValueOnce(theadZone)
+        .mockResolvedValueOnce(tbodyZone);
 
       const result = await zoneService.createTableZone('file-1', 'tenant-1', 1);
 
       expect(mockCreate).toHaveBeenCalledTimes(3);
       expect(result.id).toBe('parent-1');
-      expect(result.childZones).toHaveLength(2);
-      expect(result.childZones[0].zoneSubtype).toBe('THEAD');
-      expect(result.childZones[1].zoneSubtype).toBe('TBODY');
+      expect(result.children).toHaveLength(2);
+      expect(result.children[0].zoneSubtype).toBe('THEAD');
+      expect(result.children[1].zoneSubtype).toBe('TBODY');
 
       // Verify parent was created with type TABLE
       expect(mockCreate.mock.calls[0][0].data.type).toBe('TABLE');
@@ -96,7 +111,7 @@ describe('ZoneService', () => {
 
       mockFindMany.mockResolvedValue(zones);
 
-      const result = await zoneService.getZones('file-1');
+      const result = await zoneService.getZones('file-1', 'tenant-1');
 
       expect(result).toHaveLength(2);
       // P zone should not have children or childZones
@@ -105,17 +120,19 @@ describe('ZoneService', () => {
       // TABLE zone should have children
       const tableZone = result[1] as Record<string, unknown>;
       expect(tableZone.children).toHaveLength(2);
+      expect(tableZone).not.toHaveProperty('childZones');
     });
 
     it('filters by page numbers', async () => {
       mockFindMany.mockResolvedValue([]);
 
-      await zoneService.getZones('file-1', [1, 3]);
+      await zoneService.getZones('file-1', 'tenant-1', [1, 3]);
 
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
             pageNumber: { in: [1, 3] },
+            tenantId: 'tenant-1',
           }),
         }),
       );
@@ -155,7 +172,7 @@ describe('ZoneService', () => {
         ],
       };
 
-      const result = await zoneService.updateTableStructure('parent-1', thead, tbody);
+      const result = await zoneService.updateTableStructure('parent-1', 'tenant-1', thead, tbody);
 
       // Should update both children
       expect(mockUpdate).toHaveBeenCalledTimes(2);
@@ -172,9 +189,9 @@ describe('ZoneService', () => {
         }),
       );
 
-      // Should return parent with children
+      // Should return parent with children (not childZones)
       expect(result).toBeDefined();
-      expect(result!.childZones).toHaveLength(2);
+      expect(result!.children).toHaveLength(2);
     });
 
     it('throws if children are missing', async () => {
@@ -184,7 +201,7 @@ describe('ZoneService', () => {
       const tbody = { rows: [] };
 
       await expect(
-        zoneService.updateTableStructure('parent-1', thead, tbody),
+        zoneService.updateTableStructure('parent-1', 'tenant-1', thead, tbody),
       ).rejects.toThrow('missing THEAD or TBODY children');
     });
   });

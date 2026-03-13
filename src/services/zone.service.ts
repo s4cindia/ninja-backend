@@ -12,10 +12,6 @@ interface CreateZoneInput {
   content?: string;
   altText?: string;
   longDesc?: string;
-  tableStructure?: Prisma.InputJsonValue;
-  zoneSubtype?: string;
-  rowCount?: number;
-  parentZoneId?: string;
 }
 
 interface UpdateZoneInput {
@@ -41,6 +37,13 @@ interface TableStructure {
   }>;
 }
 
+const CHILD_ZONE_SELECT = {
+  id: true,
+  zoneSubtype: true,
+  rowCount: true,
+  tableStructure: true,
+} as const;
+
 class ZoneService {
   async createZone(data: CreateZoneInput) {
     return prisma.zone.create({ data });
@@ -52,16 +55,6 @@ class ZoneService {
     pageNumber: number,
     bounds?: Prisma.InputJsonValue,
   ) {
-    const parent = await prisma.zone.create({
-      data: {
-        fileId,
-        tenantId,
-        pageNumber,
-        type: 'TABLE',
-        bounds: bounds ?? Prisma.JsonNull,
-      },
-    });
-
     const defaultTheadStructure = {
       rows: [
         {
@@ -82,42 +75,58 @@ class ZoneService {
       ],
     };
 
-    const [thead, tbody] = await Promise.all([
-      prisma.zone.create({
+    return prisma.$transaction(async (tx) => {
+      const parent = await tx.zone.create({
         data: {
           fileId,
           tenantId,
           pageNumber,
           type: 'TABLE',
-          zoneSubtype: 'THEAD',
-          parentZoneId: parent.id,
-          rowCount: 1,
-          tableStructure: defaultTheadStructure,
+          bounds: bounds ?? Prisma.JsonNull,
         },
-      }),
-      prisma.zone.create({
-        data: {
-          fileId,
-          tenantId,
-          pageNumber,
-          type: 'TABLE',
-          zoneSubtype: 'TBODY',
-          parentZoneId: parent.id,
-          rowCount: 1,
-          tableStructure: defaultTbodyStructure,
-        },
-      }),
-    ]);
+      });
 
-    return {
-      ...parent,
-      childZones: [thead, tbody],
-    };
+      const [thead, tbody] = await Promise.all([
+        tx.zone.create({
+          data: {
+            fileId,
+            tenantId,
+            pageNumber,
+            type: 'TABLE',
+            zoneSubtype: 'THEAD',
+            parentZoneId: parent.id,
+            rowCount: 1,
+            tableStructure: defaultTheadStructure,
+          },
+        }),
+        tx.zone.create({
+          data: {
+            fileId,
+            tenantId,
+            pageNumber,
+            type: 'TABLE',
+            zoneSubtype: 'TBODY',
+            parentZoneId: parent.id,
+            rowCount: 1,
+            tableStructure: defaultTbodyStructure,
+          },
+        }),
+      ]);
+
+      return {
+        ...parent,
+        children: [
+          { id: thead.id, zoneSubtype: thead.zoneSubtype, rowCount: thead.rowCount, tableStructure: thead.tableStructure },
+          { id: tbody.id, zoneSubtype: tbody.zoneSubtype, rowCount: tbody.rowCount, tableStructure: tbody.tableStructure },
+        ],
+      };
+    });
   }
 
-  async getZones(fileId: string, pages?: number[]) {
+  async getZones(fileId: string, tenantId: string, pages?: number[]) {
     const where: Prisma.ZoneWhereInput = {
       fileId,
+      tenantId,
       parentZoneId: null,
     };
     if (pages && pages.length > 0) {
@@ -128,41 +137,36 @@ class ZoneService {
       where,
       include: {
         childZones: {
-          select: {
-            id: true,
-            zoneSubtype: true,
-            rowCount: true,
-            tableStructure: true,
-          },
+          select: CHILD_ZONE_SELECT,
         },
       },
       orderBy: [{ pageNumber: 'asc' }, { readingOrder: 'asc' }],
     });
 
     return zones.map((zone) => {
-      if (zone.type === 'TABLE' && zone.childZones.length > 0) {
-        return { ...zone, children: zone.childZones };
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { childZones, ...rest } = zone;
+      if (zone.type === 'TABLE' && childZones.length > 0) {
+        return { ...rest, children: childZones };
+      }
       return rest;
     });
   }
 
-  async updateZone(id: string, data: UpdateZoneInput) {
+  async updateZone(id: string, tenantId: string, data: UpdateZoneInput) {
     return prisma.zone.update({
-      where: { id },
+      where: { id, tenantId },
       data,
     });
   }
 
   async updateTableStructure(
     zoneId: string,
+    tenantId: string,
     thead: TableStructure,
     tbody: TableStructure,
   ) {
     const children = await prisma.zone.findMany({
-      where: { parentZoneId: zoneId },
+      where: { parentZoneId: zoneId, tenantId },
     });
 
     const theadChild = children.find((c) => c.zoneSubtype === 'THEAD');
@@ -172,7 +176,7 @@ class ZoneService {
       throw new Error(`Table zone ${zoneId} is missing THEAD or TBODY children`);
     }
 
-    await Promise.all([
+    await prisma.$transaction([
       prisma.zone.update({
         where: { id: theadChild.id },
         data: {
@@ -189,19 +193,19 @@ class ZoneService {
       }),
     ]);
 
-    return prisma.zone.findUnique({
+    const parent = await prisma.zone.findUnique({
       where: { id: zoneId },
       include: {
         childZones: {
-          select: {
-            id: true,
-            zoneSubtype: true,
-            rowCount: true,
-            tableStructure: true,
-          },
+          select: CHILD_ZONE_SELECT,
         },
       },
     });
+
+    if (!parent) return null;
+
+    const { childZones, ...rest } = parent;
+    return { ...rest, children: childZones };
   }
 
   async migrateExistingTableZones() {
@@ -258,7 +262,7 @@ class ZoneService {
           };
         }
 
-        await Promise.all([
+        await prisma.$transaction([
           prisma.zone.create({
             data: {
               fileId: zone.fileId,
@@ -282,6 +286,10 @@ class ZoneService {
               rowCount: tbodyStructure.rows.length,
               tableStructure: tbodyStructure as unknown as Prisma.InputJsonValue,
             },
+          }),
+          prisma.zone.update({
+            where: { id: zone.id },
+            data: { tableStructure: Prisma.JsonNull },
           }),
         ]);
 

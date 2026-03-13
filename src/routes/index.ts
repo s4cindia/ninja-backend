@@ -84,6 +84,12 @@ router.get("/", (req, res) => {
         download: "GET /api/v1/files/:id/download",
         delete: "DELETE /api/v1/files/:id",
       },
+      zones: {
+        list: "GET /api/v1/zones?fileId=:fileId&pages=1,2,3",
+        create: "POST /api/v1/zones",
+        update: "PATCH /api/v1/zones/:id",
+        updateTableStructure: "POST /api/v1/zones/:id/table-structure",
+      },
       ai: {
         health: "GET /api/v1/ai/health",
         test: "POST /api/v1/ai/test",

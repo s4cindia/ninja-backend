@@ -31,8 +31,11 @@ CREATE INDEX "Zone_tenantId_idx" ON "Zone"("tenantId");
 -- CreateIndex
 CREATE INDEX "Zone_parentZoneId_idx" ON "Zone"("parentZoneId");
 
+-- CreateUniqueIndex (one THEAD/TBODY per parent table)
+CREATE UNIQUE INDEX "Zone_parentZoneId_zoneSubtype_key" ON "Zone"("parentZoneId", "zoneSubtype");
+
 -- AddForeignKey
-ALTER TABLE "Zone" ADD CONSTRAINT "Zone_fileId_fkey" FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Zone" ADD CONSTRAINT "Zone_fileId_fkey" FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey (self-referential)
 ALTER TABLE "Zone" ADD CONSTRAINT "Zone_parentZoneId_fkey" FOREIGN KEY ("parentZoneId") REFERENCES "Zone"("id") ON DELETE SET NULL ON UPDATE CASCADE;

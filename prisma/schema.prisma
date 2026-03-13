@@ -1926,7 +1926,7 @@ model Zone {
   id             String   @id @default(uuid())
   tenantId       String
   fileId         String
-  file           File     @relation(fields: [fileId], references: [id])
+  file           File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
   pageNumber     Int
   type           String   // "TABLE" | "P" | "H1"-"H6" | "FIGURE" | "LIST" | "LI" | "ARTIFACT" etc
   label          String?
@@ -1945,6 +1945,7 @@ model Zone {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  @@unique([parentZoneId, zoneSubtype])
   @@index([fileId])
   @@index([tenantId])
   @@index([parentZoneId])
