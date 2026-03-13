@@ -39,7 +39,9 @@ describe('PDFStructureValidator', () => {
 
       const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
 
-      expect(result.issues).toHaveLength(0);
+      // Only the PDFUA-IDENTIFIER-MISSING issue (mock pdfLibDoc has no XMP)
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].code).toBe('PDFUA-IDENTIFIER-MISSING');
       expect(result.metadata.isTaggedPDF).toBe(true);
       expect(result.metadata.hasDocumentLanguage).toBe(true);
       expect(result.metadata.hasDocumentTitle).toBe(true);
@@ -161,7 +163,7 @@ describe('PDFStructureValidator', () => {
 
       const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
 
-      const h1Issue = result.issues.find(i => i.code === 'MATTERHORN-06-001');
+      const h1Issue = result.issues.find(i => i.code === 'MATTERHORN-14-003');
       expect(h1Issue).toBeDefined();
       expect(h1Issue?.severity).toBe('serious');
       expect(h1Issue?.wcagCriteria).toContain('1.3.1');
@@ -266,7 +268,7 @@ describe('PDFStructureValidator', () => {
 
       const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
 
-      const readingOrderIssue = result.issues.find(i => i.code === 'MATTERHORN-09-004');
+      const readingOrderIssue = result.issues.find(i => i.code === 'MATTERHORN-12-001');
       expect(readingOrderIssue).toBeDefined();
       expect(readingOrderIssue?.severity).toBe('serious');
       expect(readingOrderIssue?.wcagCriteria).toContain('1.3.2');

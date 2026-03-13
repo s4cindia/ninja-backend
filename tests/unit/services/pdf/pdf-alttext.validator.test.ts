@@ -55,7 +55,7 @@ describe('PDFAltTextValidator', () => {
       expect(result.issues.length).toBeGreaterThan(0);
       expect(result.summary.critical).toBe(1);
 
-      const noAltTextIssue = result.issues.find(i => i.code === 'MATTERHORN-13-002');
+      const noAltTextIssue = result.issues.find(i => i.code === 'MATTERHORN-13-001');
       expect(noAltTextIssue).toBeDefined();
       expect(noAltTextIssue?.severity).toBe('critical');
       expect(noAltTextIssue?.message).toContain('no alternative text');
@@ -78,7 +78,7 @@ describe('PDFAltTextValidator', () => {
 
       expect(result.summary.serious).toBe(3);
 
-      const genericIssues = result.issues.filter(i => i.code === 'MATTERHORN-13-003');
+      const genericIssues = result.issues.filter(i => i.code === 'MATTERHORN-13-004');
       expect(genericIssues).toHaveLength(3);
       expect(genericIssues[0].message).toContain('generic alt text');
     });
@@ -173,14 +173,14 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
       vi.mocked(geminiService.analyzeImage).mockResolvedValue({
-        text: 'A colorful bar chart showing quarterly revenue growth',
+        text: '{"isDecorative": false, "altText": "A colorful bar chart showing quarterly revenue growth", "confidence": 0.9}',
         usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
       });
 
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
       expect(geminiService.analyzeImage).toHaveBeenCalled();
-      expect(result.issues[0].suggestion).toContain('AI suggestion');
+      expect(result.issues[0].suggestion).toContain('AI-generated alt text');
       expect(result.issues[0].suggestion).toContain('bar chart');
     });
 
@@ -323,8 +323,8 @@ describe('PDFAltTextValidator', () => {
     it('should use correct Matterhorn checkpoints', async () => {
       const mockParsedPdf = createMockParsedPdf();
       const mockDocImages = createMockDocumentImages([
-        createMockImage(1, 0, undefined, false), // MATTERHORN-13-002
-        createMockImage(2, 0, 'image', false), // MATTERHORN-13-003
+        createMockImage(1, 0, undefined, false), // MATTERHORN-13-001
+        createMockImage(2, 0, 'image', false), // MATTERHORN-13-004
       ]);
 
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
@@ -333,10 +333,10 @@ describe('PDFAltTextValidator', () => {
 
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', false);
 
-      const noAltIssue = result.issues.find(i => i.code === 'MATTERHORN-13-002');
+      const noAltIssue = result.issues.find(i => i.code === 'MATTERHORN-13-001');
       expect(noAltIssue).toBeDefined();
 
-      const genericIssue = result.issues.find(i => i.code === 'MATTERHORN-13-003');
+      const genericIssue = result.issues.find(i => i.code === 'MATTERHORN-13-004');
       expect(genericIssue).toBeDefined();
     });
   });
@@ -382,6 +382,15 @@ function createMockParsedPdf(): ParsedPDF {
         hasAcroForm: false,
       },
       outline: [],
+      pages: Array.from({ length: 10 }, (_, i) => ({
+        pageNumber: i + 1,
+        width: 612,
+        height: 792,
+        tags: [],
+        images: [],
+        links: [],
+        annotations: [],
+      })),
     },
     pdfLibDoc: {} as ParsedPDF['pdfLibDoc'],
     pdfjsDoc: {} as ParsedPDF['pdfjsDoc'],
