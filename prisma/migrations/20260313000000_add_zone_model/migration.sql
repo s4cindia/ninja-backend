@@ -1,5 +1,5 @@
 -- CreateTable
-CREATE TABLE "Zone" (
+CREATE TABLE IF NOT EXISTS "Zone" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "fileId" TEXT NOT NULL,
@@ -23,19 +23,27 @@ CREATE TABLE "Zone" (
 );
 
 -- CreateIndex
-CREATE INDEX "Zone_fileId_idx" ON "Zone"("fileId");
+CREATE INDEX IF NOT EXISTS "Zone_fileId_idx" ON "Zone"("fileId");
 
 -- CreateIndex
-CREATE INDEX "Zone_tenantId_idx" ON "Zone"("tenantId");
+CREATE INDEX IF NOT EXISTS "Zone_tenantId_idx" ON "Zone"("tenantId");
 
 -- CreateIndex
-CREATE INDEX "Zone_parentZoneId_idx" ON "Zone"("parentZoneId");
+CREATE INDEX IF NOT EXISTS "Zone_parentZoneId_idx" ON "Zone"("parentZoneId");
 
 -- CreateUniqueIndex (one THEAD/TBODY per parent table)
-CREATE UNIQUE INDEX "Zone_parentZoneId_zoneSubtype_key" ON "Zone"("parentZoneId", "zoneSubtype");
+CREATE UNIQUE INDEX IF NOT EXISTS "Zone_parentZoneId_zoneSubtype_key" ON "Zone"("parentZoneId", "zoneSubtype");
 
 -- AddForeignKey
-ALTER TABLE "Zone" ADD CONSTRAINT "Zone_fileId_fkey" FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Zone_fileId_fkey') THEN
+    ALTER TABLE "Zone" ADD CONSTRAINT "Zone_fileId_fkey" FOREIGN KEY ("fileId") REFERENCES "File"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 -- AddForeignKey (self-referential)
-ALTER TABLE "Zone" ADD CONSTRAINT "Zone_parentZoneId_fkey" FOREIGN KEY ("parentZoneId") REFERENCES "Zone"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Zone_parentZoneId_fkey') THEN
+    ALTER TABLE "Zone" ADD CONSTRAINT "Zone_parentZoneId_fkey" FOREIGN KEY ("parentZoneId") REFERENCES "Zone"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
