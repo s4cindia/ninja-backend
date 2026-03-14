@@ -40,6 +40,7 @@ import pdfAiAnalysisRoutes from "./pdf-ai-analysis.routes";
 import pacReportRoutes from "./pac-report.routes";
 import zonesRoutes from "./zones.routes";
 import zoneExtractorRoutes from "./zone-extractor.routes";
+import calibrationRoutes from "./calibration.routes";
 
 const router = Router();
 
@@ -139,5 +140,6 @@ router.use("/pdf", pdfAiAnalysisRoutes);
 router.use("/pdf", pacReportRoutes);
 router.use("/zones", zonesRoutes);
 router.use("/zone-extractor", zoneExtractorRoutes);
+router.use("/calibration", calibrationRoutes);
 
 export default router;

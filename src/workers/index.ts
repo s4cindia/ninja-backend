@@ -9,6 +9,7 @@ import { processBatchProcessingJob } from './processors/batch-processing.process
 import { processCitationJob } from './processors/citation.processor';
 import { startWorkflowWorker } from '../queues/workflow.queue';
 import { processStyleJob } from './processors/style.processor';
+import { startCalibrationWorker } from './calibration.worker';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
@@ -264,6 +265,9 @@ export function startWorkers(): void {
     concurrency: 2,
   });
   if (styleWorker) workers.push(styleWorker);
+
+  const calibrationWorker = startCalibrationWorker();
+  if (calibrationWorker) workers.push(calibrationWorker);
 
   if (isRedisConfigured()) {
     const connection = getBullMQConnection();

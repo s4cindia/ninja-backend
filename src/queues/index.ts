@@ -20,6 +20,7 @@ export const QUEUE_NAMES = {
   BATCH_PROCESSING: 'batch-processing',
   CITATION_PROCESSING: 'citation-processing',
   STYLE_PROCESSING: 'style-processing',
+  CALIBRATION: 'calibration',
 } as const;
 
 export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
@@ -170,11 +171,13 @@ let _batchQueue: Queue<BatchJobData, BatchJobResult> | null = null;
 let _batchProcessingQueue: Queue<BatchProcessingJobData, BatchProcessingJobResult> | null = null;
 let _citationQueue: Queue<JobData, JobResult> | null = null;
 let _styleQueue: Queue<JobData, JobResult> | null = null;
+let _calibrationQueue: Queue<JobData, JobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
 let _fileProcessingQueueEvents: QueueEvents | null = null;
 let _citationQueueEvents: QueueEvents | null = null;
 let _styleQueueEvents: QueueEvents | null = null;
+let _calibrationQueueEvents: QueueEvents | null = null;
 let _initialized = false;
 
 function ensureQueuesInitialized(): void {
@@ -261,6 +264,15 @@ function ensureQueuesInitialized(): void {
     connection, prefix,
   });
 
+  _calibrationQueue = new Queue<JobData, JobResult>(
+    QUEUE_NAMES.CALIBRATION,
+    { connection, defaultJobOptions, prefix }
+  );
+
+  _calibrationQueueEvents = new QueueEvents(QUEUE_NAMES.CALIBRATION, {
+    connection, prefix,
+  });
+
   _initialized = true;
   logger.info(`📦 BullMQ queues initialized (prefix: "${prefix}")`);
 }
@@ -309,6 +321,11 @@ export function getStyleQueue(): Queue<JobData, JobResult> | null {
   return _styleQueue;
 }
 
+export function getCalibrationQueue(): Queue<JobData, JobResult> | null {
+  ensureQueuesInitialized();
+  return _calibrationQueue;
+}
+
 export function getQueue(name: QueueName): Queue<JobData, JobResult> {
   switch (name) {
     case QUEUE_NAMES.ACCESSIBILITY:
@@ -350,11 +367,13 @@ export async function closeQueues(): Promise<void> {
   if (_batchProcessingQueue) closePromises.push(_batchProcessingQueue.close());
   if (_citationQueue) closePromises.push(_citationQueue.close());
   if (_styleQueue) closePromises.push(_styleQueue.close());
+  if (_calibrationQueue) closePromises.push(_calibrationQueue.close());
   if (_accessibilityQueueEvents) closePromises.push(_accessibilityQueueEvents.close());
   if (_vpatQueueEvents) closePromises.push(_vpatQueueEvents.close());
   if (_fileProcessingQueueEvents) closePromises.push(_fileProcessingQueueEvents.close());
   if (_citationQueueEvents) closePromises.push(_citationQueueEvents.close());
   if (_styleQueueEvents) closePromises.push(_styleQueueEvents.close());
+  if (_calibrationQueueEvents) closePromises.push(_calibrationQueueEvents.close());
 
   await Promise.all(closePromises);
 
@@ -365,10 +384,12 @@ export async function closeQueues(): Promise<void> {
   _batchProcessingQueue = null;
   _citationQueue = null;
   _styleQueue = null;
+  _calibrationQueue = null;
   _accessibilityQueueEvents = null;
   _vpatQueueEvents = null;
   _fileProcessingQueueEvents = null;
   _citationQueueEvents = null;
   _styleQueueEvents = null;
+  _calibrationQueueEvents = null;
   _initialized = false;
 }
