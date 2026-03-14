@@ -39,6 +39,7 @@ import plagiarismRoutes from "./plagiarism.routes";
 import pdfAiAnalysisRoutes from "./pdf-ai-analysis.routes";
 import pacReportRoutes from "./pac-report.routes";
 import zonesRoutes from "./zones.routes";
+import zoneExtractorRoutes from "./zone-extractor.routes";
 
 const router = Router();
 
@@ -137,5 +138,6 @@ router.use("/plagiarism", plagiarismRoutes);
 router.use("/pdf", pdfAiAnalysisRoutes);
 router.use("/pdf", pacReportRoutes);
 router.use("/zones", zonesRoutes);
+router.use("/zone-extractor", zoneExtractorRoutes);
 
 export default router;
