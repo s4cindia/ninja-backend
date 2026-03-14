@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
 import { getCalibrationQueue } from '../queues';
 import prisma from '../lib/prisma';
+import { getCorpusStats } from '../services/calibration/corpus-stats.service';
 
 const router = Router();
 
@@ -56,15 +57,40 @@ router.post('/run', authenticate, async (req: Request, res: Response) => {
   }
 });
 
+const runsQuerySchema = z.object({
+  documentId: z.string().optional(),
+  limit: z.coerce.number().optional(),
+  fromDate: z.string().datetime({ offset: true }).optional(),
+  toDate: z.string().datetime({ offset: true }).optional(),
+});
+
 // GET /api/v1/calibration/runs
 router.get('/runs', authenticate, async (req: Request, res: Response) => {
   try {
-    const { documentId, limit } = req.query;
-    const take = Math.min(Number(limit) || 20, 100);
+    const parsed = runsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Query validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { documentId, limit, fromDate, toDate } = parsed.data;
+    const take = Math.min(limit || 20, 100);
 
     const where: Record<string, unknown> = {};
-    if (documentId && typeof documentId === 'string') {
+    if (documentId) {
       where.documentId = documentId;
+    }
+    if (fromDate) {
+      where.runDate = { ...((where.runDate as Record<string, unknown>) || {}), gte: new Date(fromDate) };
+    }
+    if (toDate) {
+      where.runDate = { ...((where.runDate as Record<string, unknown>) || {}), lte: new Date(toDate) };
     }
 
     const runs = await prisma.calibrationRun.findMany({
@@ -110,6 +136,97 @@ router.get('/runs/:runId', authenticate, async (req: Request, res: Response) => 
     }
 
     return res.json({ success: true, data: run });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// DELETE /api/v1/calibration/runs/:runId (soft delete)
+router.delete('/runs/:runId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    await prisma.calibrationRun.update({
+      where: { id: runId },
+      data: { isArchived: true },
+    });
+
+    return res.json({ message: 'CalibrationRun archived' });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+const zonesQuerySchema = z.object({
+  bucket: z.enum(['GREEN', 'AMBER', 'RED']).optional(),
+  limit: z.coerce.number().default(50),
+  cursor: z.string().optional(),
+});
+
+// GET /api/v1/calibration/runs/:runId/zones
+router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+    const parsed = zonesQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Query validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { bucket, limit, cursor } = parsed.data;
+
+    const where: Record<string, unknown> = { calibrationRunId: runId };
+    if (bucket) {
+      where.reconciliationBucket = bucket;
+    }
+
+    const zones = await prisma.zone.findMany({
+      where,
+      take: limit + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+      orderBy: { id: 'asc' },
+    });
+
+    let nextCursor: string | undefined;
+    if (zones.length > limit) {
+      const extra = zones.pop()!;
+      nextCursor = extra.id;
+    }
+
+    return res.json({ success: true, data: zones, nextCursor });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/calibration/corpus-stats
+router.get('/corpus-stats', authenticate, async (_req: Request, res: Response) => {
+  try {
+    const stats = await getCorpusStats();
+    return res.json({ success: true, data: stats });
   } catch (err) {
     return res.status(500).json({
       success: false,
