@@ -1,0 +1,162 @@
+import { Router, Request, Response } from 'express';
+import { z } from 'zod';
+import { authenticate } from '../middleware/auth.middleware';
+import prisma, { Prisma } from '../lib/prisma';
+
+const router = Router();
+
+// POST /api/v1/calibration/zones/:zoneId/confirm
+router.post('/zones/:zoneId/confirm', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { zoneId } = req.params;
+    const operatorId = req.user!.id;
+
+    const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
+    if (!zone) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Zone not found' },
+      });
+    }
+
+    const updated = await prisma.zone.update({
+      where: { id: zoneId },
+      data: {
+        operatorVerified: true,
+        operatorLabel: zone.operatorLabel ?? zone.type,
+        verifiedAt: new Date(),
+        verifiedBy: operatorId,
+      },
+    });
+
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+const correctBodySchema = z.object({
+  newLabel: z.string().min(1),
+  bbox: z.object({
+    x: z.number(),
+    y: z.number(),
+    w: z.number(),
+    h: z.number(),
+  }).optional(),
+});
+
+// POST /api/v1/calibration/zones/:zoneId/correct
+router.post('/zones/:zoneId/correct', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { zoneId } = req.params;
+    const operatorId = req.user!.id;
+
+    const parsed = correctBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { newLabel, bbox } = parsed.data;
+
+    const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
+    if (!zone) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Zone not found' },
+      });
+    }
+
+    const updated = await prisma.zone.update({
+      where: { id: zoneId },
+      data: {
+        operatorVerified: true,
+        operatorLabel: newLabel,
+        operatorBbox: bbox ?? Prisma.DbNull,
+        verifiedAt: new Date(),
+        verifiedBy: operatorId,
+      },
+    });
+
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// POST /api/v1/calibration/zones/:zoneId/reject
+router.post('/zones/:zoneId/reject', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { zoneId } = req.params;
+    const operatorId = req.user!.id;
+
+    const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
+    if (!zone) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Zone not found' },
+      });
+    }
+
+    const updated = await prisma.zone.update({
+      where: { id: zoneId },
+      data: {
+        isArtefact: true,
+        verifiedAt: new Date(),
+        verifiedBy: operatorId,
+      },
+    });
+
+    return res.json({ success: true, data: updated });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// POST /api/v1/calibration/runs/:runId/confirm-all-green
+// Approach: updateMany for boolean/datetime fields.
+// operatorLabel is not set per-zone — at display time the frontend
+// falls back to zone.type when operatorLabel is null.
+router.post('/runs/:runId/confirm-all-green', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+    const operatorId = req.user!.id;
+
+    const result = await prisma.zone.updateMany({
+      where: {
+        calibrationRunId: runId,
+        reconciliationBucket: 'GREEN',
+        operatorVerified: false,
+      },
+      data: {
+        operatorVerified: true,
+        verifiedAt: new Date(),
+        verifiedBy: operatorId,
+      },
+    });
+
+    return res.json({ success: true, data: { confirmedCount: result.count } });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+export default router;

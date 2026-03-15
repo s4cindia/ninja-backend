@@ -41,6 +41,8 @@ import pacReportRoutes from "./pac-report.routes";
 import zonesRoutes from "./zones.routes";
 import zoneExtractorRoutes from "./zone-extractor.routes";
 import calibrationRoutes from "./calibration.routes";
+import zoneCorrectionRoutes from "./zone-correction.routes";
+import trainingRoutes from "./training.routes";
 import mlMetricsRoutes from "./ml-metrics.routes";
 
 const router = Router();
@@ -142,6 +144,8 @@ router.use("/pdf", pacReportRoutes);
 router.use("/zones", zonesRoutes);
 router.use("/zone-extractor", zoneExtractorRoutes);
 router.use("/calibration", calibrationRoutes);
+router.use("/calibration", zoneCorrectionRoutes);
+router.use("/training", trainingRoutes);
 router.use("/ml-metrics", mlMetricsRoutes);
 
 export default router;
