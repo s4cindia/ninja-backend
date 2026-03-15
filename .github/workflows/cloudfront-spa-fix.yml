@@ -1,0 +1,89 @@
+name: CloudFront SPA Error Responses
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Set to "true" to apply changes. Leave empty for preview only.'
+        required: false
+        default: ''
+
+jobs:
+  cloudfront-spa-fix:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      DIST_ID: E27G1PNUPX7M4D
+    steps:
+      - name: Get current distribution config
+        run: |
+          aws cloudfront get-distribution-config \
+            --id $DIST_ID \
+            --output json > /tmp/cf-config.json
+
+          ETAG=$(python3 -c "import json; print(json.load(open('/tmp/cf-config.json'))['ETag'])")
+          echo "ETAG=$ETAG" >> $GITHUB_ENV
+          echo "::notice::ETag: $ETAG"
+
+      - name: Add custom error responses
+        run: |
+          python3 -c "
+          import json
+
+          data = json.load(open('/tmp/cf-config.json'))
+          config = data['DistributionConfig']
+
+          config['CustomErrorResponses'] = {
+            'Quantity': 2,
+            'Items': [
+              {
+                'ErrorCode': 404,
+                'ResponsePagePath': '/index.html',
+                'ResponseCode': '200',
+                'ErrorCachingMinTTL': 10
+              },
+              {
+                'ErrorCode': 403,
+                'ResponsePagePath': '/index.html',
+                'ResponseCode': '200',
+                'ErrorCachingMinTTL': 10
+              }
+            ]
+          }
+
+          with open('/tmp/cf-update.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+          print('CustomErrorResponses added:')
+          print(json.dumps(config['CustomErrorResponses'], indent=2))
+          "
+
+      - name: Preview changes
+        run: |
+          echo "=== ETag: $ETAG ==="
+          echo ""
+          echo "=== CustomErrorResponses ==="
+          python3 -c "
+          import json
+          data = json.load(open('/tmp/cf-update.json'))
+          print(json.dumps(data.get('CustomErrorResponses', {}), indent=2))
+          "
+          echo ""
+          if [ "${{ github.event.inputs.apply }}" != "true" ]; then
+            echo "::warning::PREVIEW ONLY — re-run with apply=true to update CloudFront"
+          fi
+
+      - name: Apply update
+        if: ${{ github.event.inputs.apply == 'true' }}
+        run: |
+          aws cloudfront update-distribution \
+            --id $DIST_ID \
+            --if-match $ETAG \
+            --distribution-config file:///tmp/cf-update.json \
+            --output json > /tmp/cf-result.json
+
+          STATUS=$(python3 -c "import json; d=json.load(open('/tmp/cf-result.json')); print(d['Distribution']['Status'])")
+          echo "::notice::Distribution status: $STATUS"
+          echo "Update applied successfully. Distribution is deploying."
