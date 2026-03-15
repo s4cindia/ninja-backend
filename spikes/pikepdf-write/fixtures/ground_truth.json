@@ -1,0 +1,134 @@
+{
+  "documents": [
+    {
+      "documentId": "test-fixture-001",
+      "pdfPath": "C:\\Users\\avrve\\projects\\ninja-workspace\\ninja-backend\\spikes\\pikepdf-write\\fixtures\\test_fixture.pdf",
+      "contentType": "mixed",
+      "publisher": "TestPublisher",
+      "zones": [
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 750,
+            "w": 495,
+            "h": 40
+          },
+          "type": "section-header",
+          "operatorLabel": "section-header",
+          "headingLevel": 1,
+          "altText": null
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 680,
+            "w": 495,
+            "h": 60
+          },
+          "type": "paragraph",
+          "operatorLabel": "paragraph",
+          "altText": null
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 500,
+            "w": 495,
+            "h": 170
+          },
+          "type": "table",
+          "operatorLabel": "table",
+          "altText": null
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 450,
+            "w": 495,
+            "h": 40
+          },
+          "type": "figure",
+          "operatorLabel": "figure",
+          "altText": "A chart showing data distribution"
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 420,
+            "w": 495,
+            "h": 25
+          },
+          "type": "caption",
+          "operatorLabel": "caption",
+          "altText": null
+        },
+        {
+          "pageNumber": 2,
+          "bounds": {
+            "x": 50,
+            "y": 750,
+            "w": 495,
+            "h": 40
+          },
+          "type": "section-header",
+          "operatorLabel": "section-header",
+          "headingLevel": 2,
+          "altText": null
+        },
+        {
+          "pageNumber": 2,
+          "bounds": {
+            "x": 50,
+            "y": 680,
+            "w": 495,
+            "h": 60
+          },
+          "type": "paragraph",
+          "operatorLabel": "paragraph",
+          "altText": null
+        },
+        {
+          "pageNumber": 2,
+          "bounds": {
+            "x": 50,
+            "y": 50,
+            "w": 495,
+            "h": 20
+          },
+          "type": "footnote",
+          "operatorLabel": "footnote",
+          "altText": null
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 810,
+            "w": 495,
+            "h": 25
+          },
+          "type": "header",
+          "operatorLabel": "header",
+          "altText": null
+        },
+        {
+          "pageNumber": 1,
+          "bounds": {
+            "x": 50,
+            "y": 10,
+            "w": 495,
+            "h": 25
+          },
+          "type": "footer",
+          "operatorLabel": "footer",
+          "altText": null
+        }
+      ]
+    }
+  ]
+}

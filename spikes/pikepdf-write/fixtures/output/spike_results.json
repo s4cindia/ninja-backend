@@ -1,0 +1,13 @@
+{
+  "documents": [
+    {
+      "documentId": "test-fixture-001",
+      "contentType": "mixed",
+      "publisher": "TestPublisher",
+      "status": "NO_VALIDATOR",
+      "zoneCount": 8,
+      "writeMs": 6,
+      "failures": []
+    }
+  ]
+}
