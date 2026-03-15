@@ -8,6 +8,7 @@ import {
   getMapSnapshot,
   getMapHistory,
 } from '../services/metrics/map-persistence';
+import { getPhaseGateStatus } from '../services/metrics/phase-gate.service';
 import type { AnnotatedZone, PredictedZone } from '../services/metrics/ml-metrics.types';
 import type { BBox } from '../services/calibration/iou';
 import type { CanonicalZoneType } from '../services/zone-extractor/types';
@@ -133,55 +134,15 @@ router.get('/map-history', async (req: Request, res: Response) => {
 
 // GET /api/v1/ml-metrics/phase-gate
 router.get('/phase-gate', async (_req: Request, res: Response) => {
-  return res.json({
-    success: true,
-    data: {
-      criteria: [
-        {
-          id: 'C1',
-          label: 'Overall mAP ≥75%',
-          status: 'AMBER',
-          currentValue: 'pending',
-          threshold: '75%',
-          tooltip: 'Run POST /ml-metrics/map to compute',
-        },
-        {
-          id: 'C2',
-          label: 'All 8 zone types ≥30 instances',
-          status: 'AMBER',
-          currentValue: 'pending',
-          threshold: '30 per type',
-          tooltip: 'Requires 300+ annotated pages',
-        },
-        {
-          id: 'C3',
-          label: 'Publisher diversity ≥3',
-          status: 'AMBER',
-          currentValue: 'pending',
-          threshold: '3 publishers',
-          tooltip: 'Pending corpus',
-        },
-        {
-          id: 'C4',
-          label: 'Content type diversity ≥3',
-          status: 'AMBER',
-          currentValue: 'pending',
-          threshold: '3 content types',
-          tooltip: 'Pending corpus',
-        },
-        {
-          id: 'C5',
-          label: 'Write quality pass rate ≥95%',
-          status: 'AMBER',
-          currentValue: 'pending',
-          threshold: '95% PAC 2024',
-          tooltip: 'Pending pikepdf spike (ML-3.8)',
-        },
-      ],
-      overallStatus: 'AMBER',
-      readyForPhase2: false,
-    },
-  });
+  try {
+    const status = await getPhaseGateStatus();
+    return res.json({ success: true, data: status });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
 });
 
 export default router;
