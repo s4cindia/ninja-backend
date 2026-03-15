@@ -15,15 +15,16 @@ def run_verapdf(pdf_path: str) -> dict:
     """Run veraPDF PDF/UA-1 validation. Returns pass/fail + failures."""
     try:
         result = subprocess.run(
-            ['verapdf', '--flavour', 'ua1', pdf_path],
+            ['C:/verapdf/verapdf.bat', '--flavour', 'ua1', pdf_path],
             capture_output=True, text=True, timeout=60
         )
         output = result.stdout + result.stderr
-        passed = 'PASSED' in output or result.returncode == 0
-        # Extract failure rule IDs from veraPDF XML output
+        # Check isCompliant attribute in veraPDF XML output
+        passed = 'isCompliant="true"' in output
+        # Extract only actual failed rule descriptions
         failures = []
         for line in output.split('\n'):
-            if 'FAILED' in line or 'failedChecks' in line:
+            if 'status="failed"' in line:
                 failures.append(line.strip())
         return {
             'passed':   passed,

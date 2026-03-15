@@ -4,9 +4,9 @@
       "documentId": "test-fixture-001",
       "contentType": "mixed",
       "publisher": "TestPublisher",
-      "status": "NO_VALIDATOR",
+      "status": "PASS",
       "zoneCount": 8,
-      "writeMs": 6,
+      "writeMs": 16,
       "failures": []
     }
   ]

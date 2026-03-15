@@ -33,6 +33,32 @@ def write_tagged_pdf(
         # Set document language
         pdf.Root.Lang = pikepdf.String('en-US')
 
+        # Set ViewerPreferences with DisplayDocTitle (PDF/UA 7.1 test 10)
+        pdf.Root.ViewerPreferences = pikepdf.Dictionary(
+            DisplayDocTitle=True,
+        )
+
+        # Add XMP metadata stream (PDF/UA 7.1 test 8)
+        xmp = (
+            '<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+            '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about=""'
+            ' xmlns:dc="http://purl.org/dc/elements/1.1/"'
+            ' xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">'
+            '<pdfuaid:part>1</pdfuaid:part>'
+            '<dc:title><rdf:Alt><rdf:li xml:lang="x-default">'
+            'Tagged PDF</rdf:li></rdf:Alt></dc:title>'
+            '</rdf:Description>'
+            '</rdf:RDF>'
+            '</x:xmpmeta>'
+            '<?xpacket end="w"?>'
+        )
+        metadata_stream = pikepdf.Stream(pdf, xmp.encode('utf-8'))
+        metadata_stream[pikepdf.Name('/Type')] = pikepdf.Name('/Metadata')
+        metadata_stream[pikepdf.Name('/Subtype')] = pikepdf.Name('/XML')
+        pdf.Root.Metadata = pdf.make_indirect(metadata_stream)
+
         # Build structure tree
         struct_tree_root = pikepdf.Dictionary(
             Type=pikepdf.Name('/StructTreeRoot'),
@@ -90,6 +116,11 @@ def write_tagged_pdf(
                 # Add Alt attribute for figure zones
                 if zone_type == 'figure' and zone.get('altText'):
                     attrs['Alt'] = pikepdf.String(zone['altText'])
+
+                # Note tags require an ID entry (PDF/UA 7.9 test 1)
+                if tag_name == '/Note':
+                    note_id = f'note-p{zone.get("pageNumber", 0)}-{zone_count}'
+                    attrs['ID'] = pikepdf.String(note_id)
 
                 struct_elem = pikepdf.Dictionary(**attrs)
                 doc_elem.K.append(pdf.make_indirect(struct_elem))
