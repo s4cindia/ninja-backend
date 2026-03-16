@@ -222,6 +222,66 @@ router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Respons
   }
 });
 
+const corpusDocsQuerySchema = z.object({
+  limit: z.coerce.number().default(20),
+  cursor: z.string().optional(),
+  publisher: z.string().optional(),
+  contentType: z.string().optional(),
+});
+
+// GET /api/v1/calibration/corpus-docs
+router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = corpusDocsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Query validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { limit, cursor, publisher, contentType } = parsed.data;
+    const take = Math.min(limit, 100);
+
+    const where: Record<string, unknown> = {};
+    if (publisher) where.publisher = publisher;
+    if (contentType) where.contentType = contentType;
+
+    const documents = await prisma.corpusDocument.findMany({
+      where,
+      take: take + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+      orderBy: { uploadedAt: 'desc' },
+      include: {
+        bootstrapJobs: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    let nextCursor: string | null = null;
+    if (documents.length > take) {
+      const extra = documents.pop()!;
+      nextCursor = extra.id;
+    }
+
+    return res.json({
+      success: true,
+      data: { documents, nextCursor },
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
 // GET /api/v1/calibration/corpus-stats
 router.get('/corpus-stats', authenticate, async (_req: Request, res: Response) => {
   try {
