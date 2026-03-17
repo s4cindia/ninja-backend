@@ -1,0 +1,44 @@
+name: CloudFront Inspect
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Get distribution ID
+        run: |
+          DIST_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?DomainName=='d1ruc3qmc844x9.cloudfront.net'].Id" \
+            --output text)
+          echo "DIST_ID=$DIST_ID" >> $GITHUB_ENV
+          echo "Distribution ID: $DIST_ID"
+
+      - name: Show cache behaviors
+        run: |
+          echo "=== Cache Behaviors ==="
+          aws cloudfront get-distribution \
+            --id $DIST_ID \
+            --query "Distribution.DistributionConfig.CacheBehaviors" \
+            --output json
+
+      - name: Show default cache behavior
+        run: |
+          echo "=== Default Cache Behavior ==="
+          aws cloudfront get-distribution \
+            --id $DIST_ID \
+            --query "Distribution.DistributionConfig.DefaultCacheBehavior" \
+            --output json
+
+      - name: Show origins
+        run: |
+          echo "=== Origins ==="
+          aws cloudfront get-distribution \
+            --id $DIST_ID \
+            --query "Distribution.DistributionConfig.Origins" \
+            --output json
