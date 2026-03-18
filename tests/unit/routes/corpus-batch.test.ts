@@ -157,4 +157,24 @@ describe('POST /calibration/corpus-docs/batch', () => {
     expect(res.body.data.skipped).toBe(2);
     expect(res.body.data.errors).toEqual([]);
   });
+
+  it('skips duplicate s3Path within the same request', async () => {
+    mockFindMany.mockResolvedValue([]);
+    mockCreateMany.mockResolvedValue({ count: 1 });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/calibration/corpus-docs/batch')
+      .send({
+        documents: [
+          { filename: 'a.pdf', s3Path: 's3://bucket/a.pdf' },
+          { filename: 'a-dup.pdf', s3Path: 's3://bucket/a.pdf' },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.created).toBe(1);
+    expect(res.body.data.skipped).toBe(1);
+    expect(res.body.data.errors).toEqual([]);
+  });
 });
