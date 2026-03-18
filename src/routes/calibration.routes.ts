@@ -282,6 +282,88 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
   }
 });
 
+const batchBodySchema = z.object({
+  documents: z.array(z.object({
+    filename:      z.string().min(1),
+    s3Path:        z.string().min(1),
+    publisher:     z.string().optional(),
+    contentType:   z.string().optional(),
+    pageCount:     z.coerce.number().optional(),
+    language:      z.string().default('en'),
+    trainingSplit: z.enum(['train', 'val', 'test']).optional(),
+  })).min(1).max(500),
+});
+
+// POST /api/v1/calibration/corpus-docs/batch
+router.post('/corpus-docs/batch', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = batchBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { documents } = parsed.data;
+    const results = { created: 0, skipped: 0, errors: [] as string[] };
+    const CHUNK = 50;
+
+    // Deduplicate within the request payload
+    const seenInRequest = new Set<string>();
+    const dedupedDocuments: typeof documents = [];
+    for (const doc of documents) {
+      if (seenInRequest.has(doc.s3Path)) {
+        results.skipped++;
+        continue;
+      }
+      seenInRequest.add(doc.s3Path);
+      dedupedDocuments.push(doc);
+    }
+
+    for (let i = 0; i < dedupedDocuments.length; i += CHUNK) {
+      const chunk = dedupedDocuments.slice(i, i + CHUNK);
+
+      try {
+        const existing = await prisma.corpusDocument.findMany({
+          where: { s3Path: { in: chunk.map(d => d.s3Path) } },
+          select: { s3Path: true },
+        });
+        const existingPaths = new Set(existing.map(e => e.s3Path));
+
+        const toCreate = [];
+        for (const doc of chunk) {
+          if (existingPaths.has(doc.s3Path)) {
+            results.skipped++;
+          } else {
+            toCreate.push(doc);
+          }
+        }
+
+        if (toCreate.length > 0) {
+          const created = await prisma.corpusDocument.createMany({
+            data: toCreate,
+          });
+          results.created += created.count;
+        }
+      } catch (err) {
+        results.errors.push(`Chunk ${i}-${i + CHUNK}: ${(err as Error).message}`);
+      }
+    }
+
+    return res.json({ success: true, data: results });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
 // GET /api/v1/calibration/corpus-stats
 router.get('/corpus-stats', authenticate, async (_req: Request, res: Response) => {
   try {
