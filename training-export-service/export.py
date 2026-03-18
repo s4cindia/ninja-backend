@@ -1,4 +1,4 @@
-import os, json, zipfile, math, tempfile
+import os, json, re, zipfile, math, tempfile
 from pathlib import Path
 from typing import Optional
 from PIL import Image
@@ -53,6 +53,10 @@ def bbox_to_yolo(
     """Convert Ninja bbox {x,y,w,h} in points to YOLO
     normalised format (cx, cy, w, h) all in [0, 1].
     PDF origin is top-left."""
+    if page_w <= 0 or page_h <= 0:
+        raise ValueError(
+            f"Invalid page dimensions: width={page_w}, height={page_h}"
+        )
     cx = (bbox['x'] + bbox['w'] / 2) / page_w
     cy = (bbox['y'] + bbox['h'] / 2) / page_h
     w  = bbox['w'] / page_w
@@ -127,7 +131,7 @@ def export_corpus(
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
 
     for doc in documents:
-        doc_id   = doc['documentId']
+        doc_id   = re.sub(r'[^a-zA-Z0-9_\-]', '_', doc['documentId'])
         pdf_path = doc['pdfPath']
         split    = splits.get(doc_id, 'train')
         zones    = doc.get('zones', [])
@@ -173,8 +177,10 @@ def export_corpus(
                     mb = page.MediaBox
                     pdf_w = float(mb[2]) - float(mb[0])
                     pdf_h = float(mb[3]) - float(mb[1])
-            except Exception:
-                pdf_w, pdf_h = 595.0, 842.0
+            except Exception as e:
+                print(f"  Cannot read page dims for page {page_num}: {e}, skipping")
+                skipped_pages += 1
+                continue
 
             lines = []
             for z in content_zones:

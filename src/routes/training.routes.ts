@@ -1,9 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { startTraining, onTrainingComplete } from '../services/training/training.service';
+
+const s3Client = new S3Client({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
 const router = Router();
 
@@ -153,14 +156,18 @@ const completeBodySchema = z.object({
 // POST /api/v1/training/complete (ECS webhook)
 router.post('/complete', async (req: Request, res: Response) => {
   try {
-    if (process.env.TRAINING_WEBHOOK_SECRET) {
-      const secret = req.headers['x-training-secret'];
-      if (secret !== process.env.TRAINING_WEBHOOK_SECRET) {
-        return res.status(401).json({
-          success: false,
-          error: { code: 'UNAUTHORIZED', message: 'Invalid webhook secret' },
-        });
-      }
+    if (!process.env.TRAINING_WEBHOOK_SECRET) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'SERVICE_UNAVAILABLE', message: 'Webhook secret not configured' },
+      });
+    }
+    const secret = req.headers['x-training-secret'];
+    if (secret !== process.env.TRAINING_WEBHOOK_SECRET) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'UNAUTHORIZED', message: 'Invalid webhook secret' },
+      });
     }
 
     const parsed = completeBodySchema.safeParse(req.body);
@@ -308,8 +315,9 @@ router.post('/export', authenticate, async (req: Request, res: Response) => {
     });
 
     // Group zones by CorpusDocument
-    const byDocument = new Map<string, { doc: typeof zones[0]['calibrationRun']['corpusDocument']; zones: typeof zones }>();
+    const byDocument = new Map<string, { doc: NonNullable<typeof zones[0]['calibrationRun']>['corpusDocument']; zones: typeof zones }>();
     for (const zone of zones) {
+      if (!zone.calibrationRun) continue;
       const doc = zone.calibrationRun.corpusDocument;
       if (!byDocument.has(doc.id)) {
         byDocument.set(doc.id, { doc, zones: [] });
@@ -332,6 +340,15 @@ router.post('/export', authenticate, async (req: Request, res: Response) => {
     }));
 
     const groundTruthS3Path = `s3://ninja-training-exports/${exportId}/ground_truth.json`;
+
+    // Upload ground truth JSON to S3
+    const groundTruthPayload = JSON.stringify({ documents }, null, 2);
+    await s3Client.send(new PutObjectCommand({
+      Bucket: 'ninja-training-exports',
+      Key: `${exportId}/ground_truth.json`,
+      Body: groundTruthPayload,
+      ContentType: 'application/json',
+    }));
 
     return res.json({
       success: true,

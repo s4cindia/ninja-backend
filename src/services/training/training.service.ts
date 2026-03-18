@@ -1,6 +1,7 @@
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { SSMClient, PutParameterCommand } from '@aws-sdk/client-ssm';
 import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 
 const region = process.env.AWS_REGION ?? 'ap-south-1';
 const ecsClient = new ECSClient({ region });
@@ -15,14 +16,43 @@ async function setSSMParameter(name: string, value: string): Promise<void> {
   }));
 }
 
-async function launchECSTask(): Promise<string> {
+async function launchECSTask(
+  trainingRunId: string,
+  modelVariant: string,
+): Promise<string> {
   const cluster = process.env.TRAINING_CLUSTER ?? 'ninja-staging';
+  const subnets = (process.env.ECS_SUBNETS ?? '').split(',').filter(Boolean);
+  const securityGroups = (process.env.ECS_SECURITY_GROUPS ?? '').split(',').filter(Boolean);
+
   const res = await ecsClient.send(new RunTaskCommand({
     cluster,
     taskDefinition: 'ninja-training-service',
     launchType: 'EC2',
+    networkConfiguration: subnets.length > 0 ? {
+      awsvpcConfiguration: {
+        subnets,
+        securityGroups,
+        assignPublicIp: 'DISABLED',
+      },
+    } : undefined,
+    overrides: {
+      containerOverrides: [{
+        name: 'ninja-training-service',
+        environment: [
+          { name: 'MODEL_VARIANT', value: modelVariant },
+        ],
+      }],
+    },
   }));
-  return res.tasks?.[0]?.taskArn ?? 'unknown';
+
+  if (res.failures && res.failures.length > 0) {
+    throw new Error(`ECS launch failures: ${JSON.stringify(res.failures)}`);
+  }
+  if (!res.tasks || res.tasks.length === 0) {
+    throw new Error('ECS RunTask returned no tasks');
+  }
+
+  return res.tasks[0].taskArn ?? 'unknown';
 }
 
 export async function startTraining(config: {
@@ -41,16 +71,25 @@ export async function startTraining(config: {
   const trainingRunId = run.id;
   const outputS3 = `s3://ninja-ml-models/${trainingRunId}`;
 
-  await setSSMParameter('/ninja/training/corpus-s3-path', config.corpusExportS3Path);
-  await setSSMParameter('/ninja/training/run-id', trainingRunId);
-  await setSSMParameter('/ninja/training/output-s3-path', outputS3);
+  try {
+    await setSSMParameter(`/ninja/training/${trainingRunId}/corpus-s3-path`, config.corpusExportS3Path);
+    await setSSMParameter(`/ninja/training/${trainingRunId}/run-id`, trainingRunId);
+    await setSSMParameter(`/ninja/training/${trainingRunId}/output-s3-path`, outputS3);
 
-  await launchECSTask();
+    await launchECSTask(trainingRunId, modelVariant);
 
-  await prisma.trainingRun.update({
-    where: { id: trainingRunId },
-    data: { status: 'RUNNING', startedAt: new Date() },
-  });
+    await prisma.trainingRun.update({
+      where: { id: trainingRunId },
+      data: { status: 'RUNNING', startedAt: new Date() },
+    });
+  } catch (err) {
+    logger.error(`Failed to launch training ECS task for run ${trainingRunId}`, err);
+    await prisma.trainingRun.update({
+      where: { id: trainingRunId },
+      data: { status: 'FAILED', completedAt: new Date() },
+    });
+    throw err;
+  }
 
   return trainingRunId;
 }
