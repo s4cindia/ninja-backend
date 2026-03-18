@@ -2031,3 +2031,28 @@ model CalibrationRun {
   @@index([documentId])
   @@index([completedAt])
 }
+
+model TrainingRun {
+  id                      String    @id @default(cuid())
+  corpusExportS3Path      String
+  modelVariant            String    @default("yolov8m")
+  status                  String    @default("PENDING")
+  mapResult               Json?
+  evaluationResult        Json?
+  promotionRecommendation String?
+  weightsS3Path           String?
+  onnxS3Path              String?
+  corpusSnapshot          Json?
+  corpusSize              Int?
+  epochs                  Int?
+  durationMs              Int?
+  triggerType             String    @default("MANUAL")
+  publisherId             String?
+  promotedAt              DateTime?
+  promotedBy              String?
+  startedAt               DateTime  @default(now())
+  completedAt             DateTime?
+
+  @@index([status])
+  @@index([completedAt])
+}
