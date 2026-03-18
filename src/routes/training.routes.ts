@@ -1,8 +1,12 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { startTraining, onTrainingComplete } from '../services/training/training.service';
+
+const s3Client = new S3Client({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
 const router = Router();
 
@@ -143,23 +147,41 @@ router.post('/start', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-const completeBodySchema = z.object({
-  trainingRunId: z.string().min(1),
-  success: z.boolean(),
-  resultData: z.record(z.string(), z.unknown()).optional(),
-});
+const completeBodySchema = z.discriminatedUnion('success', [
+  z.object({
+    trainingRunId: z.string().min(1),
+    success: z.literal(true),
+    resultData: z.object({
+      weightsS3: z.string().min(1),
+      onnxS3: z.string().min(1),
+      epochs: z.number().int().nonnegative(),
+      durationMs: z.number().nonnegative(),
+      overallMAP: z.number().optional(),
+      perClassAP: z.record(z.string(), z.number()).optional(),
+    }),
+  }),
+  z.object({
+    trainingRunId: z.string().min(1),
+    success: z.literal(false),
+    resultData: z.record(z.string(), z.unknown()).optional(),
+  }),
+]);
 
 // POST /api/v1/training/complete (ECS webhook)
 router.post('/complete', async (req: Request, res: Response) => {
   try {
-    if (process.env.TRAINING_WEBHOOK_SECRET) {
-      const secret = req.headers['x-training-secret'];
-      if (secret !== process.env.TRAINING_WEBHOOK_SECRET) {
-        return res.status(401).json({
-          success: false,
-          error: { code: 'UNAUTHORIZED', message: 'Invalid webhook secret' },
-        });
-      }
+    if (!process.env.TRAINING_WEBHOOK_SECRET) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'SERVICE_UNAVAILABLE', message: 'Webhook secret not configured' },
+      });
+    }
+    const secret = req.headers['x-training-secret'];
+    if (secret !== process.env.TRAINING_WEBHOOK_SECRET) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'UNAUTHORIZED', message: 'Invalid webhook secret' },
+      });
     }
 
     const parsed = completeBodySchema.safeParse(req.body);
@@ -262,6 +284,95 @@ router.get('/learning-curve', authenticate, async (_req: Request, res: Response)
     }));
 
     return res.json({ success: true, data: curve });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+const exportBodySchema = z.object({
+  runIds: z.array(z.string().min(1)).min(1),
+  exportId: z.string().optional(),
+});
+
+// POST /api/v1/training/export
+router.post('/export', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = exportBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { runIds } = parsed.data;
+    const exportId = parsed.data.exportId ?? randomUUID();
+
+    const zones = await prisma.zone.findMany({
+      where: {
+        calibrationRunId: { in: runIds },
+        operatorVerified: true,
+        isArtefact: false,
+      },
+      include: {
+        calibrationRun: {
+          include: { corpusDocument: true },
+        },
+      },
+    });
+
+    // Group zones by CorpusDocument
+    const byDocument = new Map<string, { doc: NonNullable<typeof zones[0]['calibrationRun']>['corpusDocument']; zones: typeof zones }>();
+    for (const zone of zones) {
+      if (!zone.calibrationRun) continue;
+      const doc = zone.calibrationRun.corpusDocument;
+      if (!byDocument.has(doc.id)) {
+        byDocument.set(doc.id, { doc, zones: [] });
+      }
+      byDocument.get(doc.id)!.zones.push(zone);
+    }
+
+    // Build ground truth payload
+    const documents = Array.from(byDocument.values()).map(({ doc, zones: docZones }) => ({
+      documentId: doc.id,
+      pdfPath: doc.s3Path,
+      publisher: doc.publisher,
+      contentType: doc.contentType,
+      zones: docZones.map((z) => ({
+        pageNumber: z.pageNumber,
+        bounds: z.bounds,
+        type: z.type,
+        operatorLabel: z.operatorLabel,
+      })),
+    }));
+
+    const groundTruthS3Path = `s3://ninja-training-exports/${exportId}/ground_truth.json`;
+
+    // Upload ground truth JSON to S3
+    const groundTruthPayload = JSON.stringify({ documents }, null, 2);
+    await s3Client.send(new PutObjectCommand({
+      Bucket: 'ninja-training-exports',
+      Key: `${exportId}/ground_truth.json`,
+      Body: groundTruthPayload,
+      ContentType: 'application/json',
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        exportId,
+        groundTruthS3Path,
+        documentCount: byDocument.size,
+        zoneCount: zones.length,
+      },
+    });
   } catch (err) {
     return res.status(500).json({
       success: false,

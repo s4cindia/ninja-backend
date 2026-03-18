@@ -2,18 +2,31 @@ import os, json, time, zipfile
 from pathlib import Path
 
 
+def _validate_s3_path(s3_path: str) -> tuple[str, str]:
+    """Validate and parse an s3:// path. Returns (bucket, key)."""
+    if not s3_path.startswith('s3://'):
+        raise ValueError(f"S3 path must start with s3://: {s3_path}")
+    stripped = s3_path[len('s3://'):]
+    if '/' not in stripped or not stripped.split('/', 1)[1]:
+        raise ValueError(f"S3 path must contain bucket and key: {s3_path}")
+    bucket, key = stripped.split('/', 1)
+    if '..' in key:
+        raise ValueError(f"S3 key must not contain '..': {s3_path}")
+    return bucket, key
+
+
 def download_from_s3(s3_path: str, local_path: str):
     import boto3
+    bucket, key = _validate_s3_path(s3_path)
     s3 = boto3.client('s3')
-    parts = s3_path.replace('s3://', '').split('/', 1)
-    s3.download_file(parts[0], parts[1], local_path)
+    s3.download_file(bucket, key, local_path)
 
 
 def upload_to_s3(local_path: str, s3_path: str):
     import boto3
+    bucket, key = _validate_s3_path(s3_path)
     s3 = boto3.client('s3')
-    parts = s3_path.replace('s3://', '').split('/', 1)
-    s3.upload_file(local_path, parts[0], parts[1])
+    s3.upload_file(local_path, bucket, key)
 
 
 def main():
@@ -28,6 +41,16 @@ def main():
     download_from_s3(corpus_s3, corpus_local)
     extract_dir = f'/tmp/training_{run_id}'
     with zipfile.ZipFile(corpus_local, 'r') as z:
+        for member in z.namelist():
+            member_path = os.path.realpath(
+                os.path.join(extract_dir, member)
+            )
+            if not member_path.startswith(
+                os.path.realpath(extract_dir) + os.sep
+            ) and member_path != os.path.realpath(extract_dir):
+                raise ValueError(
+                    f"Zip path traversal detected: {member}"
+                )
         z.extractall(extract_dir)
 
     dataset_yaml = os.path.join(extract_dir, 'dataset.yaml')
