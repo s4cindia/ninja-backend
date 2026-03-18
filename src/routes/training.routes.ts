@@ -5,6 +5,8 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
 import { startTraining, onTrainingComplete } from '../services/training/training.service';
+import { evaluateTrainingRun, promoteTrainingRun, rollbackTrainingRun } from '../services/training/evaluation.service';
+import { AuthenticatedRequest } from '../types/authenticated-request';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
@@ -377,6 +379,122 @@ router.post('/export', authenticate, async (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+const evaluateBodySchema = z.object({
+  trainingRunId: z.string().min(1),
+});
+
+// POST /api/v1/training/evaluate
+router.post('/evaluate', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = evaluateBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const result = await evaluateTrainingRun(parsed.data.trainingRunId);
+    return res.json({ success: true, data: result });
+  } catch (err: unknown) {
+    const message = (err as Error).message;
+    if (message.includes('not found')) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message },
+      });
+    }
+    if (message.includes('not COMPLETED')) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'INVALID_STATE', message },
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message },
+    });
+  }
+});
+
+// POST /api/v1/training/runs/:id/promote
+router.post('/runs/:id/promote', authenticate, async (req: Request, res: Response) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    if (authReq.user?.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin role required to promote models' },
+      });
+    }
+
+    const result = await promoteTrainingRun(
+      req.params.id,
+      String(authReq.user?.id ?? 'unknown'),
+    );
+    return res.json({ success: true, data: result });
+  } catch (err: unknown) {
+    const message = (err as Error).message;
+    if (message.includes('not found') || message.includes('no ONNX')) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message },
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message },
+    });
+  }
+});
+
+const rollbackBodySchema = z.object({
+  confirm: z.literal('ROLLBACK'),
+});
+
+// POST /api/v1/training/runs/:id/rollback
+router.post('/runs/:id/rollback', authenticate, async (req: Request, res: Response) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    if (authReq.user?.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin role required to rollback models' },
+      });
+    }
+
+    const parsed = rollbackBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Body must contain { confirm: "ROLLBACK" }',
+        },
+      });
+    }
+
+    const result = await rollbackTrainingRun(req.params.id);
+    return res.json({ success: true, data: result });
+  } catch (err: unknown) {
+    const message = (err as Error).message;
+    if (message.includes('not found') || message.includes('no ONNX')) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message },
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message },
     });
   }
 });
