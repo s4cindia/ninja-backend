@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../lib/prisma';
@@ -262,6 +263,85 @@ router.get('/learning-curve', authenticate, async (_req: Request, res: Response)
     }));
 
     return res.json({ success: true, data: curve });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+const exportBodySchema = z.object({
+  runIds: z.array(z.string().min(1)).min(1),
+  exportId: z.string().optional(),
+});
+
+// POST /api/v1/training/export
+router.post('/export', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = exportBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { runIds } = parsed.data;
+    const exportId = parsed.data.exportId ?? randomUUID();
+
+    const zones = await prisma.zone.findMany({
+      where: {
+        calibrationRunId: { in: runIds },
+        operatorVerified: true,
+        isArtefact: false,
+      },
+      include: {
+        calibrationRun: {
+          include: { corpusDocument: true },
+        },
+      },
+    });
+
+    // Group zones by CorpusDocument
+    const byDocument = new Map<string, { doc: typeof zones[0]['calibrationRun']['corpusDocument']; zones: typeof zones }>();
+    for (const zone of zones) {
+      const doc = zone.calibrationRun.corpusDocument;
+      if (!byDocument.has(doc.id)) {
+        byDocument.set(doc.id, { doc, zones: [] });
+      }
+      byDocument.get(doc.id)!.zones.push(zone);
+    }
+
+    // Build ground truth payload
+    const documents = Array.from(byDocument.values()).map(({ doc, zones: docZones }) => ({
+      documentId: doc.id,
+      pdfPath: doc.s3Path,
+      publisher: doc.publisher,
+      contentType: doc.contentType,
+      zones: docZones.map((z) => ({
+        pageNumber: z.pageNumber,
+        bounds: z.bounds,
+        type: z.type,
+        operatorLabel: z.operatorLabel,
+      })),
+    }));
+
+    const groundTruthS3Path = `s3://ninja-training-exports/${exportId}/ground_truth.json`;
+
+    return res.json({
+      success: true,
+      data: {
+        exportId,
+        groundTruthS3Path,
+        documentCount: byDocument.size,
+        zoneCount: zones.length,
+      },
+    });
   } catch (err) {
     return res.status(500).json({
       success: false,
