@@ -44,6 +44,7 @@ import calibrationRoutes from "./calibration.routes";
 import zoneCorrectionRoutes from "./zone-correction.routes";
 import trainingRoutes from "./training.routes";
 import mlMetricsRoutes from "./ml-metrics.routes";
+import adminCorpusRoutes from "./admin/corpus.routes";
 
 const router = Router();
 
@@ -147,5 +148,6 @@ router.use("/calibration", calibrationRoutes);
 router.use("/calibration", zoneCorrectionRoutes);
 router.use("/training", trainingRoutes);
 router.use("/ml-metrics", mlMetricsRoutes);
+router.use("/admin", adminCorpusRoutes);
 
 export default router;
