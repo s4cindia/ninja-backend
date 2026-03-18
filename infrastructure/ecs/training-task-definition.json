@@ -1,0 +1,44 @@
+{
+  "family": "ninja-training-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "cpu": "8192",
+  "memory": "61440",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "ninja-training",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ninja-training:latest",
+      "essential": true,
+      "resourceRequirements": [
+        { "type": "GPU", "value": "1" }
+      ],
+      "environment": [
+        { "name": "MODEL_VARIANT", "value": "yolov8m" }
+      ],
+      "secrets": [
+        {
+          "name": "CORPUS_S3_PATH",
+          "valueFrom": "/ninja/training/corpus-s3-path"
+        },
+        {
+          "name": "TRAINING_RUN_ID",
+          "valueFrom": "/ninja/training/run-id"
+        },
+        {
+          "name": "MODEL_OUTPUT_S3_PATH",
+          "valueFrom": "/ninja/training/output-s3-path"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ninja/training",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
