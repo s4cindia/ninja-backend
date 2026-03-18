@@ -125,20 +125,20 @@ export async function promoteTrainingRun(
     Overwrite: true,
   }));
 
-  // Supersede previous promoted runs
-  await prisma.trainingRun.updateMany({
-    where: {
-      promotedAt: { not: null },
-      id: { not: trainingRunId },
-    },
-    data: { promotionRecommendation: 'SUPERSEDED' },
-  });
-
-  // Mark this run promoted
-  await prisma.trainingRun.update({
-    where: { id: trainingRunId },
-    data: { promotedAt: new Date(), promotedBy },
-  });
+  // Supersede previous promoted runs + mark this run promoted (transactional)
+  await prisma.$transaction([
+    prisma.trainingRun.updateMany({
+      where: {
+        promotedAt: { not: null },
+        id: { not: trainingRunId },
+      },
+      data: { promotionRecommendation: 'SUPERSEDED' },
+    }),
+    prisma.trainingRun.update({
+      where: { id: trainingRunId },
+      data: { promotedAt: new Date(), promotedBy },
+    }),
+  ]);
 
   return {
     promotedRunId: trainingRunId,

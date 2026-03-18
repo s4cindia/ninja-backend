@@ -5,6 +5,8 @@ const mockUpdate = vi.fn();
 const mockUpdateMany = vi.fn();
 const mockFindFirst = vi.fn();
 
+const mockTransaction = vi.fn();
+
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     trainingRun: {
@@ -15,6 +17,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
     calibrationRun: {
       findFirst: (...args: unknown[]) => mockFindFirst(...args),
     },
+    $transaction: (...args: unknown[]) => mockTransaction(...args),
   },
   Prisma: { DbNull: 'DbNull' },
 }));
@@ -72,6 +75,7 @@ describe('evaluation.service', () => {
     vi.clearAllMocks();
     mockUpdate.mockResolvedValue({});
     mockUpdateMany.mockResolvedValue({ count: 1 });
+    mockTransaction.mockResolvedValue([{ count: 1 }, {}]);
   });
 
   // Test 1 — PROCEED
