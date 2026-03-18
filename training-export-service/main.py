@@ -27,9 +27,12 @@ def export(req: ExportRequest):
     try:
         gt_local = os.path.join(tmp_dir, 'ground_truth.json')
         try:
-            parts = req.groundTruthS3Path.replace(
-                's3://', ''
-            ).split('/', 1)
+            s3_path = req.groundTruthS3Path.strip()
+            if not s3_path.startswith('s3://'):
+                raise ValueError(f"Invalid S3 path (must start with s3://): {s3_path}")
+            parts = s3_path[5:].split('/', 1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise ValueError(f"Invalid S3 path (missing bucket/key): {s3_path}")
             s3.download_file(parts[0], parts[1], gt_local)
         except Exception as e:
             raise HTTPException(422,

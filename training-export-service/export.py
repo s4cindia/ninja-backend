@@ -131,9 +131,10 @@ def export_corpus(
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
 
     for doc in documents:
-        doc_id   = re.sub(r'[^a-zA-Z0-9_\-]', '_', doc['documentId'])
+        raw_id   = doc['documentId']
+        doc_id   = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_id)
         pdf_path = doc['pdfPath']
-        split    = splits.get(doc_id, 'train')
+        split    = splits.get(raw_id, 'train')
         zones    = doc.get('zones', [])
 
         # Group zones by page
@@ -162,7 +163,7 @@ def export_corpus(
             )
 
             try:
-                img_w, img_h = render_page_to_jpg(
+                _img_w, _img_h = render_page_to_jpg(
                     pdf_path, page_num, img_path
                 )
             except Exception as e:

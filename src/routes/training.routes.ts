@@ -147,11 +147,25 @@ router.post('/start', authenticate, async (req: Request, res: Response) => {
   }
 });
 
-const completeBodySchema = z.object({
-  trainingRunId: z.string().min(1),
-  success: z.boolean(),
-  resultData: z.record(z.string(), z.unknown()).optional(),
-});
+const completeBodySchema = z.discriminatedUnion('success', [
+  z.object({
+    trainingRunId: z.string().min(1),
+    success: z.literal(true),
+    resultData: z.object({
+      weightsS3: z.string().min(1),
+      onnxS3: z.string().min(1),
+      epochs: z.number().int().nonnegative(),
+      durationMs: z.number().nonnegative(),
+      overallMAP: z.number().optional(),
+      perClassAP: z.record(z.string(), z.number()).optional(),
+    }),
+  }),
+  z.object({
+    trainingRunId: z.string().min(1),
+    success: z.literal(false),
+    resultData: z.record(z.string(), z.unknown()).optional(),
+  }),
+]);
 
 // POST /api/v1/training/complete (ECS webhook)
 router.post('/complete', async (req: Request, res: Response) => {
