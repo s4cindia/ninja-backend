@@ -40,7 +40,7 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 let mockUser: Record<string, unknown> = { id: 'user-1', role: 'admin', email: 'admin@test.com', tenantId: 't-1' };
 
 vi.mock('../../../../src/middleware/auth.middleware', () => ({
-  authenticate: (req: any, _res: any, next: any) => {
+  authenticate: (req: Record<string, unknown>, _res: unknown, next: () => void) => {
     req.user = mockUser;
     next();
   },

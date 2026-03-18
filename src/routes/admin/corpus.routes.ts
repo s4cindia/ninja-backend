@@ -11,7 +11,7 @@ import prisma from '../../lib/prisma';
 const router = Router();
 
 const isAdmin = (req: Request): boolean => {
-  const role = (req as any).user?.role;
+  const role = (req as Request & { user?: { role?: string } }).user?.role;
   return role === 'admin' || role === 'ADMIN';
 };
 
