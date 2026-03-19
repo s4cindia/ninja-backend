@@ -64,6 +64,7 @@ enum UserRole {
   ADMIN
   USER
   VIEWER
+  OPERATOR
 }
 
 model Product {
