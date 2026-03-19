@@ -2005,6 +2005,7 @@ model CorpusDocument {
   language        String    @default("en")
   isScanned       Boolean   @default(false)
   trainingSplit   String?   // "train" | "val" | "test" | null
+  taggedPdfPath   String?   // S3 path to operator-uploaded pdfxt-tagged PDF
   uploadedAt      DateTime  @default(now())
   bootstrapJobs   ZoneBootstrapJob[]
   calibrationRuns CalibrationRun[]
