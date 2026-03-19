@@ -1,20 +1,34 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import multer from 'multer';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { authenticate } from '../../middleware/auth.middleware';
 import {
   generateUploadUrl,
   registerCorpusDocument,
   listCorpusDocuments,
 } from '../../services/corpus/corpus-upload.service';
+import { s3Client } from '../../services/s3.service';
+import { config } from '../../config';
 import prisma from '../../lib/prisma';
 import { getCalibrationQueue, JOB_TYPES, areQueuesAvailable } from '../../queues';
 import { logger } from '../../lib/logger';
 
 const router = Router();
 
+const taggedPdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+}).single('file');
+
 const isAdmin = (req: Request): boolean => {
   const role = (req as Request & { user?: { role?: string } }).user?.role;
   return role === 'admin' || role === 'ADMIN';
+};
+
+const isAdminOrOperator = (req: Request): boolean => {
+  const role = (req as Request & { user?: { role?: string } }).user?.role;
+  return ['admin', 'ADMIN', 'OPERATOR'].includes(role ?? '');
 };
 
 const uploadUrlBodySchema = z.object({
@@ -174,18 +188,8 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
       });
     }
 
-    // Optional: operator-uploaded pdfxt-tagged PDF path (must be in corpus/ prefix)
-    let taggedPdfPath: string | undefined;
-    if (typeof req.body?.taggedPdfPath === 'string' && req.body.taggedPdfPath.length > 0) {
-      const path = req.body.taggedPdfPath;
-      if (!path.startsWith('s3://') || !path.includes('/corpus/')) {
-        return res.status(422).json({
-          success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'taggedPdfPath must be an S3 path under the corpus/ prefix' },
-        });
-      }
-      taggedPdfPath = path;
-    }
+    // Use stored taggedPdfPath from CorpusDocument (set via tagged-pdf upload endpoint)
+    const taggedPdfPath = doc.taggedPdfPath ?? undefined;
 
     // Validate tenant context
     const reqUser = (req as Request & { user?: { tenantId?: string; userId?: string; id?: string } }).user;
@@ -244,6 +248,90 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
       error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });
   }
+});
+
+// POST /api/v1/admin/corpus/documents/:id/tagged-pdf
+router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res: Response) => {
+  taggedPdfUpload(req, res, async (multerErr) => {
+    try {
+      if (multerErr) {
+        logger.error('[TaggedPdf] Multer error:', multerErr);
+        return res.status(400).json({
+          success: false,
+          error: { code: 'UPLOAD_ERROR', message: multerErr.message },
+        });
+      }
+
+      if (!isAdminOrOperator(req)) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'NO_FILE', message: 'No file uploaded' },
+        });
+      }
+
+      if (req.file.mimetype !== 'application/pdf') {
+        return res.status(422).json({
+          success: false,
+          error: { code: 'INVALID_FILE_TYPE', message: 'Only PDF files are accepted' },
+        });
+      }
+
+      const { id } = req.params;
+
+      const doc = await prisma.corpusDocument.findUnique({
+        where: { id },
+      });
+      if (!doc) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Corpus document not found' },
+        });
+      }
+
+      // Upload to S3 under tagged/ prefix
+      const bucket = config.s3Bucket;
+      const s3Key = `corpus/tagged/${id}.pdf`;
+
+      await s3Client.send(new PutObjectCommand({
+        Bucket: bucket,
+        Key: s3Key,
+        Body: req.file.buffer,
+        ContentType: 'application/pdf',
+      }));
+
+      const taggedPdfPath = `s3://${bucket}/${s3Key}`;
+
+      // Update CorpusDocument with tagged PDF path
+      await prisma.corpusDocument.update({
+        where: { id },
+        data: { taggedPdfPath },
+      });
+
+      logger.info(`[TaggedPdf] Uploaded tagged PDF for document ${id}: ${taggedPdfPath}`);
+
+      return res.json({
+        success: true,
+        data: {
+          documentId: id,
+          taggedPdfPath,
+          message: 'Tagged PDF uploaded successfully',
+        },
+      });
+    } catch (err) {
+      logger.error('POST /admin/corpus/documents/:id/tagged-pdf error:', err);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
+      });
+    }
+  });
 });
 
 export default router;
