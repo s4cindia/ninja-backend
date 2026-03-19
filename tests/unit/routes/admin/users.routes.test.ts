@@ -203,7 +203,7 @@ describe('admin/users.routes', () => {
 
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { tenantId: 't-1', role: 'OPERATOR' },
+        where: { tenantId: 't-1', deletedAt: null, role: 'OPERATOR' },
       }),
     );
   });

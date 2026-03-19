@@ -143,6 +143,7 @@ router.get('/users', authenticate, async (req: Request, res: Response) => {
     const users = await prisma.user.findMany({
       where: {
         tenantId,
+        deletedAt: null,
         ...(role ? { role: role as UserRole } : {}),
       },
       take: limit,
@@ -213,7 +214,7 @@ router.patch('/users/:id/role', authenticate, async (req: Request, res: Response
 
     // Verify target user exists and belongs to the same tenant
     const targetUser = await prisma.user.findFirst({
-      where: { id: req.params.id, tenantId },
+      where: { id: req.params.id, tenantId, deletedAt: null },
     });
     if (!targetUser) {
       return res.status(404).json({
