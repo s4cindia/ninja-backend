@@ -1,5 +1,5 @@
 -- Add taggedPdfPath column to CorpusDocument (idempotent)
-DO $
+DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -8,4 +8,4 @@ BEGIN
   ) THEN
     ALTER TABLE "CorpusDocument" ADD COLUMN "taggedPdfPath" TEXT;
   END IF;
-END $;
+END $$;
