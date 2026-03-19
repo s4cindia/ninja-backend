@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { UserRole } from '@prisma/client';
 import { authenticate } from '../../middleware/auth.middleware';
 import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 
 const router = Router();
 
@@ -11,7 +12,7 @@ const ROLE_VALUES = ['USER', 'OPERATOR', 'ADMIN', 'VIEWER'] as const;
 
 const isAdmin = (req: Request): boolean => {
   const role = (req as Request & { user?: { role?: string } }).user?.role;
-  return role === 'admin' || role === 'ADMIN';
+  return role === 'ADMIN';
 };
 
 const getUserFromReq = (req: Request) =>
@@ -22,7 +23,7 @@ const createUserBodySchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   role: z.enum(ROLE_VALUES).default('OPERATOR'),
-  password: z.string().min(8),
+  password: z.string().min(8).max(72),
 });
 
 // POST /api/v1/admin/users
@@ -49,7 +50,9 @@ router.post('/users', authenticate, async (req: Request, res: Response) => {
 
     const { email, firstName, lastName, role, password } = parsed.data;
 
-    const existing = await prisma.user.findUnique({ where: { email } });
+    const existing = await prisma.user.findFirst({
+      where: { email, deletedAt: null },
+    });
     if (existing) {
       return res.status(409).json({
         success: false,
@@ -91,16 +94,17 @@ router.post('/users', authenticate, async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
+    logger.error('POST /admin/users error:', err);
     return res.status(500).json({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });
   }
 });
 
 const listUsersQuerySchema = z.object({
   role: z.enum(ROLE_VALUES).optional(),
-  limit: z.coerce.number().default(50),
+  limit: z.coerce.number().max(200).default(50),
 });
 
 // GET /api/v1/admin/users
@@ -127,8 +131,20 @@ router.get('/users', authenticate, async (req: Request, res: Response) => {
 
     const { role, limit } = parsed.data;
 
+    const reqUser = getUserFromReq(req);
+    const tenantId = reqUser?.tenantId;
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_TENANT', message: 'Admin must belong to a tenant' },
+      });
+    }
+
     const users = await prisma.user.findMany({
-      where: role ? { role: role as UserRole } : undefined,
+      where: {
+        tenantId,
+        ...(role ? { role: role as UserRole } : {}),
+      },
       take: limit,
       orderBy: { createdAt: 'desc' },
       select: {
@@ -144,9 +160,10 @@ router.get('/users', authenticate, async (req: Request, res: Response) => {
 
     return res.json({ success: true, data: { users } });
   } catch (err) {
+    logger.error('GET /admin/users error:', err);
     return res.status(500).json({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });
   }
 });
@@ -186,28 +203,38 @@ router.patch('/users/:id/role', authenticate, async (req: Request, res: Response
       });
     }
 
-    try {
-      const updated = await prisma.user.update({
-        where: { id: req.params.id },
-        data: { role: parsed.data.role as UserRole },
+    const tenantId = reqUser?.tenantId;
+    if (!tenantId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_TENANT', message: 'Admin must belong to a tenant' },
       });
-      return res.json({
-        success: true,
-        data: { id: updated.id, role: updated.role },
-      });
-    } catch (updateErr: unknown) {
-      if ((updateErr as { code?: string }).code === 'P2025') {
-        return res.status(404).json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: 'User not found' },
-        });
-      }
-      throw updateErr;
     }
+
+    // Verify target user exists and belongs to the same tenant
+    const targetUser = await prisma.user.findFirst({
+      where: { id: req.params.id, tenantId },
+    });
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'User not found' },
+      });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { role: parsed.data.role as UserRole },
+    });
+    return res.json({
+      success: true,
+      data: { id: updated.id, role: updated.role },
+    });
   } catch (err) {
+    logger.error('PATCH /admin/users/:id/role error:', err);
     return res.status(500).json({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });
   }
 });

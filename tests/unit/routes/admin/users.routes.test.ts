@@ -4,6 +4,7 @@ import express from 'express';
 
 // --- Prisma mock ---
 const mockUserFindUnique = vi.fn();
+const mockUserFindFirst = vi.fn();
 const mockUserFindMany = vi.fn();
 const mockUserCreate = vi.fn();
 const mockUserUpdate = vi.fn();
@@ -12,6 +13,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     user: {
       findUnique: (...args: unknown[]) => mockUserFindUnique(...args),
+      findFirst: (...args: unknown[]) => mockUserFindFirst(...args),
       findMany: (...args: unknown[]) => mockUserFindMany(...args),
       create: (...args: unknown[]) => mockUserCreate(...args),
       update: (...args: unknown[]) => mockUserUpdate(...args),
@@ -23,6 +25,15 @@ vi.mock('../../../../src/lib/prisma', () => ({
 vi.mock('bcryptjs', () => ({
   default: {
     hash: vi.fn().mockResolvedValue('$2a$12$hashedpassword'),
+  },
+}));
+
+// --- Logger mock ---
+vi.mock('../../../../src/lib/logger', () => ({
+  logger: {
+    error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -59,7 +70,7 @@ describe('admin/users.routes', () => {
 
   // Test 1 — POST /admin/users: creates OPERATOR account
   it('POST /admin/users creates operator account', async () => {
-    mockUserFindUnique.mockResolvedValue(null);
+    mockUserFindFirst.mockResolvedValue(null);
     mockUserCreate.mockResolvedValue({
       id: 'user-new',
       email: 'operator@test.com',
@@ -97,7 +108,7 @@ describe('admin/users.routes', () => {
 
   // Test 2 — POST /admin/users: 409 for duplicate email
   it('POST /admin/users returns 409 for duplicate email', async () => {
-    mockUserFindUnique.mockResolvedValue({ id: 'existing', email: 'dup@test.com' });
+    mockUserFindFirst.mockResolvedValue({ id: 'existing', email: 'dup@test.com' });
 
     const app = buildApp();
     const res = await request(app)
@@ -163,7 +174,7 @@ describe('admin/users.routes', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  // Test 6 — GET /admin/users: returns list without passwords
+  // Test 6 — GET /admin/users: returns list scoped to tenant
   it('GET /admin/users returns user list', async () => {
     mockUserFindMany.mockResolvedValue([
       { id: 'u1', email: 'a@t.com', firstName: 'A', lastName: 'B', role: 'OPERATOR', createdAt: new Date(), tenantId: 't-1' },
@@ -177,12 +188,13 @@ describe('admin/users.routes', () => {
     expect(res.body.data.users).toHaveLength(2);
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-1' }),
         select: expect.not.objectContaining({ password: true }),
       }),
     );
   });
 
-  // Test 7 — GET /admin/users?role=OPERATOR: filtered
+  // Test 7 — GET /admin/users?role=OPERATOR: filtered by role + tenant
   it('GET /admin/users filters by role', async () => {
     mockUserFindMany.mockResolvedValue([]);
 
@@ -191,13 +203,14 @@ describe('admin/users.routes', () => {
 
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { role: 'OPERATOR' },
+        where: { tenantId: 't-1', role: 'OPERATOR' },
       }),
     );
   });
 
-  // Test 8 — PATCH /admin/users/:id/role: updates role
+  // Test 8 — PATCH /admin/users/:id/role: updates role (same tenant)
   it('PATCH /admin/users/:id/role updates role', async () => {
+    mockUserFindFirst.mockResolvedValue({ id: 'user-2', tenantId: 't-1' });
     mockUserUpdate.mockResolvedValue({ id: 'user-2', role: 'OPERATOR' });
 
     const app = buildApp();
@@ -221,11 +234,9 @@ describe('admin/users.routes', () => {
     expect(res.body.error.code).toBe('SELF_ROLE_CHANGE');
   });
 
-  // Test 10 — PATCH: unknown user returns 404
+  // Test 10 — PATCH: user not in tenant returns 404
   it('PATCH /admin/users/:id/role returns 404 for unknown user', async () => {
-    const prismaError = new Error('Record not found');
-    (prismaError as unknown as { code: string }).code = 'P2025';
-    mockUserUpdate.mockRejectedValue(prismaError);
+    mockUserFindFirst.mockResolvedValue(null);
 
     const app = buildApp();
     const res = await request(app)
@@ -234,5 +245,21 @@ describe('admin/users.routes', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  // Test 11 — POST /admin/users: password too long → 422
+  it('POST /admin/users returns 422 for password exceeding 72 bytes', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .post('/admin/users')
+      .send({
+        email: 'valid@test.com',
+        firstName: 'Jane',
+        lastName: 'Doe',
+        password: 'a'.repeat(73),
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 });
