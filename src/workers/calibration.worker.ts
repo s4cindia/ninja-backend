@@ -7,17 +7,25 @@ import { logger } from '../lib/logger';
 const processCalibrationJob = async (
   job: Job<JobData, JobResult>,
 ): Promise<JobResult> => {
-  const { documentId, tenantId, fileId } = job.data.options as {
+  const { documentId, tenantId, fileId, runId, taggedPdfPath } = job.data.options as {
     documentId: string;
     tenantId: string;
-    fileId: string;
+    fileId?: string;
+    runId?: string;
+    taggedPdfPath?: string;
   };
 
   logger.info(
-    `[CalibrationWorker] Starting job for document ${documentId}`,
+    `[CalibrationWorker] Starting job for document ${documentId}` +
+      (runId ? ` (existing run ${runId})` : '') +
+      (taggedPdfPath ? ` (tagged PDF: ${taggedPdfPath})` : ''),
   );
 
-  const result = await runCalibration(documentId, tenantId, fileId);
+  const result = await runCalibration(documentId, tenantId, {
+    fileId,
+    existingRunId: runId,
+    taggedPdfPath,
+  });
 
   logger.info(
     `[CalibrationWorker] Completed: ${result.calibrationRunId}` +

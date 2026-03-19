@@ -1,12 +1,13 @@
 import { Queue } from 'bullmq';
 import { Prisma, JobStatus } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { 
-  getAccessibilityQueue, 
-  getVpatQueue, 
+import {
+  getAccessibilityQueue,
+  getVpatQueue,
   getFileProcessingQueue,
+  getCalibrationQueue,
   areQueuesAvailable,
-  JobData, 
+  JobData,
   JobResult,
   JOB_TYPES,
   JobType,
@@ -51,6 +52,8 @@ function getQueueForJobType(type: JobType): Queue<JobData, JobResult> | null {
     case JOB_TYPES.STYLE_VALIDATION:
     case JOB_TYPES.EDITORIAL_FULL:
       return null;
+    case JOB_TYPES.CALIBRATION_RUN:
+      return getCalibrationQueue();
     default: {
       const exhaustiveCheck: never = type;
       throw new Error(`Unknown job type: ${exhaustiveCheck}`);
