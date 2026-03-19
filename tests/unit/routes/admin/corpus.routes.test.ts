@@ -36,8 +36,22 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
 }));
 
+// --- BullMQ queue mock ---
+const mockQueueAdd = vi.fn().mockResolvedValue({ id: 'job-1' });
+
+vi.mock('../../../../src/queues', () => ({
+  getCalibrationQueue: () => ({ add: mockQueueAdd }),
+  areQueuesAvailable: () => true,
+  JOB_TYPES: { CALIBRATION_RUN: 'CALIBRATION_RUN' },
+}));
+
+// --- Logger mock ---
+vi.mock('../../../../src/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 // --- Auth mock ---
-let mockUser: Record<string, unknown> = { id: 'user-1', role: 'admin', email: 'admin@test.com', tenantId: 't-1' };
+let mockUser: Record<string, unknown> = { id: 'user-1', userId: 'user-1', role: 'admin', email: 'admin@test.com', tenantId: 't-1' };
 
 vi.mock('../../../../src/middleware/auth.middleware', () => ({
   authenticate: (req: Record<string, unknown>, _res: unknown, next: () => void) => {
@@ -58,7 +72,7 @@ function buildApp() {
 describe('admin/corpus.routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUser = { id: 'user-1', role: 'admin', email: 'admin@test.com', tenantId: 't-1' };
+    mockUser = { id: 'user-1', userId: 'user-1', role: 'admin', email: 'admin@test.com', tenantId: 't-1' };
   });
 
   // Test 1 — POST /admin/corpus/upload-url (admin)
@@ -154,9 +168,9 @@ describe('admin/corpus.routes', () => {
     );
   });
 
-  // Test 7 — POST /admin/corpus/documents/:id/run (success)
-  it('POST /admin/corpus/documents/:id/run creates CalibrationRun', async () => {
-    mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/doc.pdf' });
+  // Test 7 — POST /admin/corpus/documents/:id/run (success + queue dispatch)
+  it('POST /admin/corpus/documents/:id/run creates CalibrationRun and dispatches job', async () => {
+    mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/corpus/doc.pdf' });
     mockCalibrationFindFirst.mockResolvedValue(null);
     mockCalibrationCreate.mockResolvedValue({ id: 'run-1' });
 
@@ -172,9 +186,29 @@ describe('admin/corpus.routes', () => {
         data: expect.objectContaining({ documentId: 'doc-1' }),
       }),
     );
+
+    // Verify BullMQ job dispatched
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      'CALIBRATION_RUN',
+      expect.objectContaining({
+        type: 'CALIBRATION_RUN',
+        tenantId: 't-1',
+        options: expect.objectContaining({
+          runId: 'run-1',
+          documentId: 'doc-1',
+          s3Path: 's3://bucket/corpus/doc.pdf',
+          tenantId: 't-1',
+        }),
+      }),
+      expect.objectContaining({
+        jobId: 'calibration-run-1',
+        attempts: 3,
+      }),
+    );
   });
 
-  // Test 8 — POST .../run: 409 when run in progress
+  // Test 8 — POST .../run: 409 when run in progress (no queue dispatch)
   it('POST /admin/corpus/documents/:id/run returns 409 when run in progress', async () => {
     mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/doc.pdf' });
     mockCalibrationFindFirst.mockResolvedValue({ id: 'existing-run' });
@@ -185,6 +219,7 @@ describe('admin/corpus.routes', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('RUN_IN_PROGRESS');
+    expect(mockQueueAdd).not.toHaveBeenCalled();
   });
 
   // Test 9 — POST .../run: 404 when document not found
@@ -197,5 +232,6 @@ describe('admin/corpus.routes', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(mockQueueAdd).not.toHaveBeenCalled();
   });
 });

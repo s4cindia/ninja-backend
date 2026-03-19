@@ -10,7 +10,7 @@ import { logger } from '../../lib/logger';
  * @param pdfPath       - S3 path or local path to the PDF
  * @param bootstrapJobId - ZoneBootstrapJob.id
  * @param tenantId      - Required: Zone.tenantId is NOT NULL
- * @param fileId        - Required: Zone.fileId is NOT NULL (FK → File)
+ * @param fileId        - Optional: Zone.fileId (FK → File, nullable for corpus calibration runs)
  */
 export async function detectZones(
   pdfPath: string,
