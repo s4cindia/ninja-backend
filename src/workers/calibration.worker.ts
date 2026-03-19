@@ -21,7 +21,11 @@ const processCalibrationJob = async (
       (taggedPdfPath ? ` (tagged PDF: ${taggedPdfPath})` : ''),
   );
 
-  const result = await runCalibration(documentId, tenantId, fileId, runId, taggedPdfPath);
+  const result = await runCalibration(documentId, tenantId, {
+    fileId,
+    existingRunId: runId,
+    taggedPdfPath,
+  });
 
   logger.info(
     `[CalibrationWorker] Completed: ${result.calibrationRunId}` +

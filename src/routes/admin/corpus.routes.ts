@@ -174,21 +174,35 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
       });
     }
 
-    // Optional: operator-uploaded pdfxt-tagged PDF path
-    const taggedPdfPath = typeof req.body?.taggedPdfPath === 'string' && req.body.taggedPdfPath.length > 0
-      ? req.body.taggedPdfPath
-      : undefined;
+    // Optional: operator-uploaded pdfxt-tagged PDF path (must be in corpus/ prefix)
+    let taggedPdfPath: string | undefined;
+    if (typeof req.body?.taggedPdfPath === 'string' && req.body.taggedPdfPath.length > 0) {
+      const path = req.body.taggedPdfPath;
+      if (!path.startsWith('s3://') || !path.includes('/corpus/')) {
+        return res.status(422).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'taggedPdfPath must be an S3 path under the corpus/ prefix' },
+        });
+      }
+      taggedPdfPath = path;
+    }
+
+    // Validate tenant context
+    const reqUser = (req as Request & { user?: { tenantId?: string; userId?: string; id?: string } }).user;
+    const tenantId = reqUser?.tenantId;
+    if (!tenantId) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'MISSING_TENANT', message: 'Tenant context required' },
+      });
+    }
+    const userId = reqUser?.userId ?? reqUser?.id ?? '';
 
     const run = await prisma.calibrationRun.create({
       data: {
         documentId: id,
       },
     });
-
-    // Dispatch BullMQ calibration job
-    const reqUser = (req as Request & { user?: { tenantId?: string; userId?: string; id?: string } }).user;
-    const tenantId = reqUser?.tenantId ?? '';
-    const userId = reqUser?.userId ?? reqUser?.id ?? '';
 
     if (areQueuesAvailable()) {
       const queue = getCalibrationQueue();

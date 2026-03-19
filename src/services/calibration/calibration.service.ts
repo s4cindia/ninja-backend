@@ -18,13 +18,18 @@ export interface CalibrationRunResult {
   durationMs: number;
 }
 
+export interface RunCalibrationOptions {
+  fileId?: string;
+  existingRunId?: string;
+  taggedPdfPath?: string;
+}
+
 export async function runCalibration(
   documentId: string,
   tenantId: string,
-  fileId?: string,
-  existingRunId?: string,
-  taggedPdfPath?: string,
+  opts: RunCalibrationOptions = {},
 ): Promise<CalibrationRunResult> {
+  const { fileId, existingRunId, taggedPdfPath } = opts;
   const startTime = Date.now();
 
   // 1. Fetch CorpusDocument
@@ -49,38 +54,41 @@ export async function runCalibration(
   let doclingZones: SourceZone[];
   let pdfxtZones: SourceZone[];
 
-  try {
-    // Docling: always call the AI/ML sidecar
-    const doclingResponse = await detectWithDocling(pdfPath, calibrationRunId);
-    doclingZones = doclingResponse.zones.map((z) => ({
+  // Map each detection to SourceZone[] before Promise.all to keep types clean
+  const doclingPromise = detectWithDocling(pdfPath, calibrationRunId).then(
+    (res) => res.zones.map((z): SourceZone => ({
       pageNumber: z.page,
       bbox: z.bbox,
       zoneType: mapDoclingLabel(z.label),
       confidence: z.confidence ?? 0.5,
       label: z.label,
-    }));
+    })),
+  );
 
-    // pdfxt: if operator uploaded a tagged PDF, extract zones from StructTreeRoot;
-    // otherwise fall back to the pdfxt HTTP API (backward-compatible)
-    if (taggedPdfPath) {
-      const taggedResult = await extractZonesFromTaggedPdf(taggedPdfPath, calibrationRunId);
-      pdfxtZones = taggedResult.zones.map((z) => ({
-        pageNumber: z.pageNumber,
-        bbox: z.bbox,
-        zoneType: z.zoneType,
-        confidence: z.confidence,
-        label: z.label,
-      }));
-    } else {
-      const pdfxtResponse = await detectWithPdfxt(pdfPath, calibrationRunId);
-      pdfxtZones = pdfxtResponse.zones.map((z) => ({
-        pageNumber: z.pageNumber,
-        bbox: z.bbox,
-        zoneType: mapPdfxtLabel(z.label),
-        confidence: z.confidence ?? 0.5,
-        label: z.label,
-      }));
-    }
+  // pdfxt source: if operator uploaded a tagged PDF, extract zones from StructTreeRoot;
+  // otherwise fall back to the pdfxt HTTP API (backward-compatible)
+  const pdfxtPromise = taggedPdfPath
+    ? extractZonesFromTaggedPdf(taggedPdfPath, calibrationRunId).then(
+        (res) => res.zones.map((z): SourceZone => ({
+          pageNumber: z.pageNumber,
+          bbox: z.bbox,
+          zoneType: z.zoneType,
+          confidence: z.confidence,
+          label: z.label,
+        })),
+      )
+    : detectWithPdfxt(pdfPath, calibrationRunId).then(
+        (res) => res.zones.map((z): SourceZone => ({
+          pageNumber: z.pageNumber,
+          bbox: z.bbox,
+          zoneType: mapPdfxtLabel(z.label),
+          confidence: z.confidence ?? 0.5,
+          label: z.label,
+        })),
+      );
+
+  try {
+    [doclingZones, pdfxtZones] = await Promise.all([doclingPromise, pdfxtPromise]);
   } catch (err) {
     await prisma.calibrationRun.update({
       where: { id: calibrationRunId },

@@ -150,7 +150,14 @@ function pdfArrayToBBox(arr: PDFArray): BBox {
     const item = arr.get(i);
     nums.push(item instanceof PDFNumber ? item.asNumber() : 0);
   }
-  return { x: nums[0], y: nums[1], w: nums[2], h: nums[3] };
+  // PDF /BBox is [x1, y1, x2, y2] (lower-left to upper-right)
+  // Convert to { x, y, w, h } format used by zone matcher
+  return {
+    x: Math.min(nums[0], nums[2]),
+    y: Math.min(nums[1], nums[3]),
+    w: Math.abs(nums[2] - nums[0]),
+    h: Math.abs(nums[3] - nums[1]),
+  };
 }
 
 /**
