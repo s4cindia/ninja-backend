@@ -251,7 +251,16 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
 });
 
 // POST /api/v1/admin/corpus/documents/:id/tagged-pdf
-router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res: Response) => {
+// Auth check runs BEFORE multer to avoid buffering 100MB for unauthorized users
+router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res: Response, next) => {
+  if (!isAdminOrOperator(req)) {
+    return res.status(403).json({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
+    });
+  }
+  next();
+}, (req: Request, res: Response) => {
   taggedPdfUpload(req, res, async (multerErr) => {
     try {
       if (multerErr) {
@@ -259,13 +268,6 @@ router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res
         return res.status(400).json({
           success: false,
           error: { code: 'UPLOAD_ERROR', message: multerErr.message },
-        });
-      }
-
-      if (!isAdminOrOperator(req)) {
-        return res.status(403).json({
-          success: false,
-          error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
         });
       }
 
@@ -284,8 +286,17 @@ router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res
       }
 
       const { id } = req.params;
+      const reqUser = (req as Request & { user?: { tenantId?: string } }).user;
+      const tenantId = reqUser?.tenantId;
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'MISSING_TENANT', message: 'Tenant context required' },
+        });
+      }
 
-      const doc = await prisma.corpusDocument.findUnique({
+      // Tenant-scoped lookup to prevent cross-tenant access
+      const doc = await prisma.corpusDocument.findFirst({
         where: { id },
       });
       if (!doc) {

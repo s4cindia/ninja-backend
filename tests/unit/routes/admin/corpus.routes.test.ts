@@ -6,6 +6,7 @@ import express from 'express';
 const mockCorpusCreate = vi.fn();
 const mockCorpusFindMany = vi.fn();
 const mockCorpusFindUnique = vi.fn();
+const mockCorpusFindFirst = vi.fn();
 const mockCorpusUpdate = vi.fn();
 const mockCalibrationFindFirst = vi.fn();
 const mockCalibrationCreate = vi.fn();
@@ -16,6 +17,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
       create: (...args: unknown[]) => mockCorpusCreate(...args),
       findMany: (...args: unknown[]) => mockCorpusFindMany(...args),
       findUnique: (...args: unknown[]) => mockCorpusFindUnique(...args),
+      findFirst: (...args: unknown[]) => mockCorpusFindFirst(...args),
       update: (...args: unknown[]) => mockCorpusUpdate(...args),
     },
     calibrationRun: {
@@ -296,7 +298,7 @@ describe('admin/corpus.routes', () => {
 
   // Test 10 — POST .../tagged-pdf success (admin)
   it('POST /admin/corpus/documents/:id/tagged-pdf uploads for admin', async () => {
-    mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/corpus/doc.pdf' });
+    mockCorpusFindFirst.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/corpus/doc.pdf' });
     mockCorpusUpdate.mockResolvedValue({ id: 'doc-1', taggedPdfPath: 's3://ninja-epub-staging/corpus/tagged/doc-1.pdf' });
 
     const app = buildApp();
@@ -323,7 +325,7 @@ describe('admin/corpus.routes', () => {
   // Test 11 — POST .../tagged-pdf success (operator)
   it('POST /admin/corpus/documents/:id/tagged-pdf uploads for operator', async () => {
     mockUser = { id: 'user-2', userId: 'user-2', role: 'OPERATOR', email: 'op@test.com', tenantId: 't-1' };
-    mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/corpus/doc.pdf' });
+    mockCorpusFindFirst.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/corpus/doc.pdf' });
     mockCorpusUpdate.mockResolvedValue({ id: 'doc-1', taggedPdfPath: 's3://ninja-epub-staging/corpus/tagged/doc-1.pdf' });
 
     const app = buildApp();
@@ -364,7 +366,7 @@ describe('admin/corpus.routes', () => {
 
   // Test 14 — POST .../tagged-pdf doc not found → 404
   it('POST /admin/corpus/documents/:id/tagged-pdf returns 404 when doc not found', async () => {
-    mockCorpusFindUnique.mockResolvedValue(null);
+    mockCorpusFindFirst.mockResolvedValue(null);
 
     const app = buildApp();
     const res = await request(app)
