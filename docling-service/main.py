@@ -123,41 +123,69 @@ def detect(req: DetectRequest):
     doc_dict = result.document.export_to_dict()
     logger.info(f"Docling export_to_dict keys: {list(doc_dict.keys())}")
 
+    # Build page-number lookup from pages dict (Docling v2: {hash: {size, page_no, ...}})
+    pages_dict = doc_dict.get("pages", {})
+    page_no_map = {}
+    if isinstance(pages_dict, dict):
+        for page_hash, page_info in pages_dict.items():
+            if isinstance(page_info, dict):
+                page_no_map[page_hash] = page_info.get("page_no", 0)
+
     zones = []
-    pages = doc_dict.get("pages", [])
 
-    for page in pages:
-        page_num = page.get("page_no", page.get("pageNumber", 0))
+    # Docling v2 stores document items in body.children, texts, pictures, tables
+    # Each item has 'label' and 'prov' (provenance with bbox + page ref)
+    body = doc_dict.get("body", {})
+    items = body.get("children", []) if isinstance(body, dict) else []
 
-        # Docling may use 'cells', 'blocks', or 'body' depending on version
-        elements = (
-            page.get("cells") or
-            page.get("blocks") or
-            page.get("body", {}).get("children", []) or
-            []
-        )
+    # Also include texts, pictures, tables as additional items
+    for key in ("texts", "pictures", "tables"):
+        extra = doc_dict.get(key, [])
+        if isinstance(extra, list):
+            items.extend(extra)
 
-        for el in elements:
-            # Extract label — Docling uses 'label' or 'type'
-            label = el.get("label") or el.get("type") or "Text"
+    for item in items:
+        if not isinstance(item, dict):
+            continue
 
-            # Extract bounding box — Docling uses 'bbox' or 'bounding_box'
-            raw_bbox = el.get("bbox") or el.get("bounding_box") or {}
-            bbox = {
-                "x": float(raw_bbox.get("l", raw_bbox.get("x", 0))),
-                "y": float(raw_bbox.get("t", raw_bbox.get("y", 0))),
-                "w": float(raw_bbox.get("r", raw_bbox.get("w", 0)) -
-                           raw_bbox.get("l", raw_bbox.get("x", 0)))
-                     if "r" in raw_bbox else float(raw_bbox.get("w", 0)),
-                "h": float(raw_bbox.get("b", raw_bbox.get("h", 0)) -
-                           raw_bbox.get("t", raw_bbox.get("y", 0)))
-                     if "b" in raw_bbox else float(raw_bbox.get("h", 0)),
-            }
+        label = item.get("label", item.get("type", "Text"))
+        prov_list = item.get("prov", [])
 
-            confidence = el.get("confidence") or el.get("score") or None
+        for prov in prov_list:
+            if not isinstance(prov, dict):
+                continue
+
+            page_ref = prov.get("page_no", 0)
+            # If page_no is a hash reference, resolve it
+            if isinstance(page_ref, str) and page_ref in page_no_map:
+                page_ref = page_no_map[page_ref]
+
+            raw_bbox = prov.get("bbox", {})
+            if isinstance(raw_bbox, dict):
+                bbox = {
+                    "x": float(raw_bbox.get("l", raw_bbox.get("x", 0))),
+                    "y": float(raw_bbox.get("t", raw_bbox.get("y", 0))),
+                    "w": float(raw_bbox.get("r", raw_bbox.get("w", 0)) -
+                               raw_bbox.get("l", raw_bbox.get("x", 0)))
+                         if "r" in raw_bbox else float(raw_bbox.get("w", 0)),
+                    "h": float(raw_bbox.get("b", raw_bbox.get("h", 0)) -
+                               raw_bbox.get("t", raw_bbox.get("y", 0)))
+                         if "b" in raw_bbox else float(raw_bbox.get("h", 0)),
+                }
+            elif isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+                bbox = {
+                    "x": float(raw_bbox[0]),
+                    "y": float(raw_bbox[1]),
+                    "w": float(raw_bbox[2] - raw_bbox[0]),
+                    "h": float(raw_bbox[3] - raw_bbox[1]),
+                }
+            else:
+                continue
+
+            confidence = item.get("confidence") or item.get("score") or None
 
             zones.append({
-                "page":       int(page_num),
+                "page":       int(page_ref) if isinstance(page_ref, (int, float)) else 0,
                 "bbox":       bbox,
                 "label":      label,
                 "confidence": confidence,
