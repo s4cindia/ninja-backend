@@ -173,6 +173,8 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
     }
 
     // Check for in-progress run (completedAt is null means still running)
+    // Auto-expire stale runs older than 10 minutes (worker crashed or job failed without updating DB)
+    const STALE_THRESHOLD_MS = 10 * 60 * 1000;
     const existing = await prisma.calibrationRun.findFirst({
       where: {
         documentId: id,
@@ -180,13 +182,25 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
       },
     });
     if (existing) {
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'RUN_IN_PROGRESS',
-          message: 'A calibration run is already in progress',
-        },
-      });
+      const age = Date.now() - new Date(existing.runDate).getTime();
+      if (age > STALE_THRESHOLD_MS) {
+        await prisma.calibrationRun.update({
+          where: { id: existing.id },
+          data: {
+            completedAt: new Date(),
+            summary: { error: 'Auto-expired: stale run with no completion', status: 'FAILED' },
+          },
+        });
+        logger.warn(`[CorpusRun] Auto-expired stale run ${existing.id} (age: ${Math.round(age / 1000)}s)`);
+      } else {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'RUN_IN_PROGRESS',
+            message: 'A calibration run is already in progress',
+          },
+        });
+      }
     }
 
     // Use stored taggedPdfPath from CorpusDocument (set via tagged-pdf upload endpoint)
