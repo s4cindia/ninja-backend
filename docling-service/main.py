@@ -45,6 +45,7 @@ def download_from_s3(s3_uri: str) -> str:
     suffix = os.path.splitext(key)[1] or ".pdf"
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.close()
     try:
         get_s3_client().download_file(bucket, key, tmp.name)
         logger.info(f"Downloaded s3://{bucket}/{key} -> {tmp.name}")
