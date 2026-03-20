@@ -4,14 +4,18 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
   "memory": "4096",
-  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
-  "taskRoleArn":      "arn:aws:iam::ACCOUNT_ID:role/ecsTaskRole",
+  "executionRoleArn": "arn:aws:iam::223643972423:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::223643972423:role/ninja-backend-task-role",
   "containerDefinitions": [
     {
       "name": "ninja-docling-service",
-      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/ninja-docling-service:latest",
+      "image": "223643972423.dkr.ecr.ap-south-1.amazonaws.com/ninja-docling-service:latest",
+      "essential": true,
       "portMappings": [
-        { "containerPort": 8080, "protocol": "tcp" }
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
       ],
       "environment": [
         { "name": "LOG_LEVEL", "value": "info" }
@@ -29,12 +33,11 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group":         "/ninja/docling-service",
-          "awslogs-region":        "REGION",
+          "awslogs-group": "/ecs/ninja-docling-service",
+          "awslogs-region": "ap-south-1",
           "awslogs-stream-prefix": "ecs"
         }
-      },
-      "essential": true
+      }
     }
   ]
 }

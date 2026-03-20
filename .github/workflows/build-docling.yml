@@ -1,38 +1,64 @@
-name: Build Docling Service
+name: Build and Deploy Docling Service
 
 on:
   push:
-    branches:
-      - feature/ml-docling-integration
-      - main
+    branches: [main]
     paths:
       - 'docling-service/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: ninja-docling-service
+  ECS_CLUSTER: ninja-cluster
+  ECS_SERVICE: ninja-docling-service
+  CONTAINER_NAME: ninja-docling-service
 
 jobs:
-  build:
+  build-and-deploy:
+    name: Build, Push, Deploy Docling
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          python-version: '3.11'
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Validate Dockerfile syntax
-        run: docker build --dry-run ./docling-service/ 2>/dev/null \
-             || echo "dry-run not supported — skipping"
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Install dependencies (no model download)
-        working-directory: docling-service
+      - name: Build, tag, push image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          pip install fastapi uvicorn pydantic requests
-          echo "Dependency install validated"
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            docling-service/
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            >> $GITHUB_OUTPUT
 
-      - name: Check main.py syntax
-        working-directory: docling-service
-        run: python -m py_compile main.py && echo "Syntax OK"
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
 
-      - name: Check smoke_test.py syntax
-        working-directory: docling-service
-        run: python -m py_compile smoke_test.py && echo "Syntax OK"
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+          echo "Docling service deployed successfully"
