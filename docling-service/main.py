@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import tempfile
 import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -17,6 +19,41 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialise DocumentConverter: {e}")
     converter = None
+
+# Lazy-init S3 client (only created on first S3 request)
+_s3_client = None
+
+S3_URI_PATTERN = re.compile(r"^s3://([^/]+)/(.+)$")
+
+
+def get_s3_client():
+    global _s3_client
+    if _s3_client is None:
+        import boto3
+        _s3_client = boto3.client("s3")
+        logger.info("S3 client initialised")
+    return _s3_client
+
+
+def download_from_s3(s3_uri: str) -> str:
+    """Download an S3 object to a temp file and return the local path."""
+    match = S3_URI_PATTERN.match(s3_uri)
+    if not match:
+        raise ValueError(f"Invalid S3 URI: {s3_uri}")
+
+    bucket, key = match.group(1), match.group(2)
+    suffix = os.path.splitext(key)[1] or ".pdf"
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.close()
+    try:
+        get_s3_client().download_file(bucket, key, tmp.name)
+        logger.info(f"Downloaded s3://{bucket}/{key} -> {tmp.name}")
+        return tmp.name
+    except Exception:
+        os.unlink(tmp.name)
+        raise
+
 
 class DetectRequest(BaseModel):
     pdfPath: str
@@ -37,7 +74,24 @@ def detect(req: DetectRequest):
             detail="Docling model not initialised"
         )
 
-    if not os.path.exists(req.pdfPath):
+    # Resolve path: download from S3 if needed, otherwise use local path
+    local_path = None
+    is_temp = False
+
+    if S3_URI_PATTERN.match(req.pdfPath):
+        try:
+            local_path = download_from_s3(req.pdfPath)
+            is_temp = True
+        except Exception as e:
+            logger.error(f"S3 download failed for {req.pdfPath}: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Failed to download from S3: {e}"
+            )
+    else:
+        local_path = req.pdfPath
+
+    if not os.path.exists(local_path):
         raise HTTPException(
             status_code=422,
             detail=f"File not found: {req.pdfPath}"
@@ -46,13 +100,16 @@ def detect(req: DetectRequest):
     start = time.time()
 
     try:
-        result = converter.convert(req.pdfPath)
+        result = converter.convert(local_path)
     except Exception as e:
         logger.error(f"Docling conversion error for {req.pdfPath}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Docling processing error: {str(e)}"
         )
+    finally:
+        if is_temp and local_path:
+            os.unlink(local_path)
 
     # Log the document dict keys on first call to aid debugging
     doc_dict = result.document.export_to_dict()
