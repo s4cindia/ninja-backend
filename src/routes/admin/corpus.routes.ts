@@ -299,10 +299,6 @@ router.post('/corpus/documents/:id/tagged-pdf-upload-url', authenticate, async (
 
 // POST /api/v1/admin/corpus/documents/:id/tagged-pdf-confirm
 // Step 2 of presigned upload flow: confirm upload and persist taggedPdfPath
-const confirmBodySchema = z.object({
-  s3Key: z.string().min(1),
-});
-
 router.post('/corpus/documents/:id/tagged-pdf-confirm', authenticate, async (req: Request, res: Response) => {
   try {
     if (!isAdminOrOperator(req)) {
@@ -313,17 +309,6 @@ router.post('/corpus/documents/:id/tagged-pdf-confirm', authenticate, async (req
     }
 
     const { id } = req.params;
-    const parsed = confirmBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(422).json({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Request validation failed',
-          details: parsed.error.issues,
-        },
-      });
-    }
 
     const doc = await prisma.corpusDocument.findUnique({ where: { id } });
     if (!doc) {
@@ -333,7 +318,8 @@ router.post('/corpus/documents/:id/tagged-pdf-confirm', authenticate, async (req
       });
     }
 
-    const { s3Key } = parsed.data;
+    // Regenerate s3Key from document ID — never trust client-supplied paths
+    const s3Key = `corpus/tagged/${id}.pdf`;
     const taggedPdfPath = `s3://${config.s3Bucket}/${s3Key}`;
 
     await prisma.corpusDocument.update({
