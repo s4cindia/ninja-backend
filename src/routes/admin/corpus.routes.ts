@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { authenticate } from '../../middleware/auth.middleware';
 import {
   generateUploadUrl,
@@ -250,7 +251,100 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
   }
 });
 
-// POST /api/v1/admin/corpus/documents/:id/tagged-pdf
+// POST /api/v1/admin/corpus/documents/:id/tagged-pdf-upload-url
+// Step 1 of presigned upload flow: generate a presigned PUT URL for the tagged PDF
+router.post('/corpus/documents/:id/tagged-pdf-upload-url', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
+      });
+    }
+
+    const { id } = req.params;
+    const doc = await prisma.corpusDocument.findUnique({ where: { id } });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Corpus document not found' },
+      });
+    }
+
+    const bucket = config.s3Bucket;
+    const s3Key = `corpus/tagged/${id}.pdf`;
+    const command = new PutObjectCommand({
+      Bucket: bucket,
+      Key: s3Key,
+      ContentType: 'application/pdf',
+    });
+    const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+
+    return res.json({
+      success: true,
+      data: {
+        uploadUrl,
+        s3Key,
+        expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      },
+    });
+  } catch (err) {
+    logger.error('POST /admin/corpus/documents/:id/tagged-pdf-upload-url error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
+    });
+  }
+});
+
+// POST /api/v1/admin/corpus/documents/:id/tagged-pdf-confirm
+// Step 2 of presigned upload flow: confirm upload and persist taggedPdfPath
+router.post('/corpus/documents/:id/tagged-pdf-confirm', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
+      });
+    }
+
+    const { id } = req.params;
+
+    const doc = await prisma.corpusDocument.findUnique({ where: { id } });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Corpus document not found' },
+      });
+    }
+
+    // Regenerate s3Key from document ID — never trust client-supplied paths
+    const s3Key = `corpus/tagged/${id}.pdf`;
+    const taggedPdfPath = `s3://${config.s3Bucket}/${s3Key}`;
+
+    await prisma.corpusDocument.update({
+      where: { id },
+      data: { taggedPdfPath },
+    });
+
+    logger.info(`[TaggedPdf] Confirmed tagged PDF for document ${id}: ${taggedPdfPath}`);
+
+    return res.json({
+      success: true,
+      data: { documentId: id, taggedPdfPath },
+    });
+  } catch (err) {
+    logger.error('POST /admin/corpus/documents/:id/tagged-pdf-confirm error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
+    });
+  }
+});
+
+// DEPRECATED: POST /api/v1/admin/corpus/documents/:id/tagged-pdf
+// Multipart upload through CloudFront — blocked by WAF. Kept for local dev.
+// Use tagged-pdf-upload-url + tagged-pdf-confirm instead.
 // Auth check runs BEFORE multer to avoid buffering 100MB for unauthorized users
 router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res: Response, next) => {
   if (!isAdminOrOperator(req)) {
