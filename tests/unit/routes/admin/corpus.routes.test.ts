@@ -9,7 +9,9 @@ const mockCorpusFindUnique = vi.fn();
 const mockCorpusFindFirst = vi.fn();
 const mockCorpusUpdate = vi.fn();
 const mockCalibrationFindFirst = vi.fn();
+const mockCalibrationFindMany = vi.fn();
 const mockCalibrationCreate = vi.fn();
+const mockCalibrationUpdate = vi.fn();
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
@@ -22,7 +24,9 @@ vi.mock('../../../../src/lib/prisma', () => ({
     },
     calibrationRun: {
       findFirst: (...args: unknown[]) => mockCalibrationFindFirst(...args),
+      findMany: (...args: unknown[]) => mockCalibrationFindMany(...args),
       create: (...args: unknown[]) => mockCalibrationCreate(...args),
+      update: (...args: unknown[]) => mockCalibrationUpdate(...args),
     },
   },
 }));
@@ -204,7 +208,7 @@ describe('admin/corpus.routes', () => {
       s3Path: 's3://bucket/corpus/doc.pdf',
       taggedPdfPath: null,
     });
-    mockCalibrationFindFirst.mockResolvedValue(null);
+    mockCalibrationFindMany.mockResolvedValue([]);
     mockCalibrationCreate.mockResolvedValue({ id: 'run-1' });
 
     const app = buildApp();
@@ -248,7 +252,7 @@ describe('admin/corpus.routes', () => {
       s3Path: 's3://bucket/corpus/doc.pdf',
       taggedPdfPath: 's3://bucket/corpus/tagged/doc-1.pdf',
     });
-    mockCalibrationFindFirst.mockResolvedValue(null);
+    mockCalibrationFindMany.mockResolvedValue([]);
     mockCalibrationCreate.mockResolvedValue({ id: 'run-2' });
 
     const app = buildApp();
@@ -270,7 +274,7 @@ describe('admin/corpus.routes', () => {
   // Test 8 — POST .../run: 409 when run in progress (no queue dispatch)
   it('POST /admin/corpus/documents/:id/run returns 409 when run in progress', async () => {
     mockCorpusFindUnique.mockResolvedValue({ id: 'doc-1', s3Path: 's3://bucket/doc.pdf' });
-    mockCalibrationFindFirst.mockResolvedValue({ id: 'existing-run' });
+    mockCalibrationFindMany.mockResolvedValue([{ id: 'existing-run', runDate: new Date() }]);
 
     const app = buildApp();
     const res = await request(app)
