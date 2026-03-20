@@ -12,10 +12,18 @@ logger = logging.getLogger("docling-service")
 app = FastAPI(title="Ninja Docling Service", version="1.0.0")
 
 # Initialise converter once at startup — model loading is expensive
+# OCR is disabled: zone detection doesn't need it, and the RapidOCR model
+# download from modelscope.cn fails in ECS (network timeout)
 try:
-    from docling.document_converter import DocumentConverter
-    converter = DocumentConverter()
-    logger.info("Docling DocumentConverter initialised successfully")
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.base_models import InputFormat
+
+    pipeline_options = PdfPipelineOptions(do_ocr=False)
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)},
+    )
+    logger.info("Docling DocumentConverter initialised successfully (OCR disabled)")
 except Exception as e:
     logger.error(f"Failed to initialise DocumentConverter: {e}")
     converter = None
