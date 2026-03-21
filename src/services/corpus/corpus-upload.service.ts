@@ -80,6 +80,15 @@ export async function listCorpusDocuments(opts: {
         take: 1,
         select: { status: true, id: true },
       },
+      calibrationRuns: {
+        orderBy: { runDate: 'desc' },
+        take: 1,
+        select: {
+          id: true,
+          completedAt: true,
+          summary: true,
+        },
+      },
     },
   });
   const hasMore = docs.length > limit;
