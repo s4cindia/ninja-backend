@@ -457,4 +457,47 @@ router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res
   });
 });
 
+// POST /api/v1/admin/corpus/reset
+// Deletes ALL corpus data: zones, calibration runs, bootstrap jobs, corpus documents
+router.post('/corpus/reset', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin role required' },
+      });
+    }
+
+    // Delete in FK order: zones → calibration runs → bootstrap jobs → corpus documents
+    const [deletedZones, deletedRuns, deletedJobs, deletedDocs] = await prisma.$transaction([
+      prisma.zone.deleteMany({
+        where: { calibrationRunId: { not: null } },
+      }),
+      prisma.calibrationRun.deleteMany({}),
+      prisma.zoneBootstrapJob.deleteMany({}),
+      prisma.corpusDocument.deleteMany({}),
+    ]);
+
+    logger.info(
+      `[CorpusReset] Admin reset: ${deletedDocs.count} docs, ${deletedRuns.count} runs, ${deletedJobs.count} jobs, ${deletedZones.count} zones deleted`,
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        deletedDocuments: deletedDocs.count,
+        deletedCalibrationRuns: deletedRuns.count,
+        deletedBootstrapJobs: deletedJobs.count,
+        deletedZones: deletedZones.count,
+      },
+    });
+  } catch (err) {
+    logger.error('POST /admin/corpus/reset error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
 export default router;
