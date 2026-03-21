@@ -66,26 +66,32 @@ export async function runCalibration(
   );
 
   // pdfxt source: if operator uploaded a tagged PDF, extract zones from StructTreeRoot;
-  // otherwise fall back to the pdfxt HTTP API (backward-compatible)
-  const pdfxtPromise = taggedPdfPath
-    ? extractZonesFromTaggedPdf(taggedPdfPath, calibrationRunId).then(
-        (res) => res.zones.map((z): SourceZone => ({
-          pageNumber: z.pageNumber,
-          bbox: z.bbox,
-          zoneType: z.zoneType,
-          confidence: z.confidence,
-          label: z.label,
-        })),
-      )
-    : detectWithPdfxt(pdfPath, calibrationRunId).then(
-        (res) => res.zones.map((z): SourceZone => ({
-          pageNumber: z.pageNumber,
-          bbox: z.bbox,
-          zoneType: mapPdfxtLabel(z.label),
-          confidence: z.confidence ?? 0.5,
-          label: z.label,
-        })),
-      );
+  // otherwise fall back to the pdfxt HTTP API if available, or skip
+  let pdfxtPromise: Promise<SourceZone[]>;
+  if (taggedPdfPath) {
+    pdfxtPromise = extractZonesFromTaggedPdf(taggedPdfPath, calibrationRunId).then(
+      (res) => res.zones.map((z): SourceZone => ({
+        pageNumber: z.pageNumber,
+        bbox: z.bbox,
+        zoneType: z.zoneType,
+        confidence: z.confidence,
+        label: z.label,
+      })),
+    );
+  } else if (process.env.PDFXT_SERVICE_URL) {
+    pdfxtPromise = detectWithPdfxt(pdfPath, calibrationRunId).then(
+      (res) => res.zones.map((z): SourceZone => ({
+        pageNumber: z.pageNumber,
+        bbox: z.bbox,
+        zoneType: mapPdfxtLabel(z.label),
+        confidence: z.confidence ?? 0.5,
+        label: z.label,
+      })),
+    );
+  } else {
+    logger.warn(`[Calibration] PDFXT_SERVICE_URL not set and no taggedPdfPath — running Docling-only`);
+    pdfxtPromise = Promise.resolve([]);
+  }
 
   try {
     [doclingZones, pdfxtZones] = await Promise.all([doclingPromise, pdfxtPromise]);
