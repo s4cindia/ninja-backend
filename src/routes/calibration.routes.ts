@@ -261,6 +261,10 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
           orderBy: { createdAt: 'desc' },
           take: 1,
         },
+        calibrationRuns: {
+          orderBy: { runDate: 'desc' },
+          take: 1,
+        },
       },
     });
 
