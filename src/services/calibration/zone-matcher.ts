@@ -5,7 +5,7 @@ export interface SourceZone {
   pageNumber: number;
   bbox: BBox;
   zoneType: CanonicalZoneType;
-  confidence: number;
+  confidence: number | null;
   label: string;
 }
 

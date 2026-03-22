@@ -60,7 +60,7 @@ export async function runCalibration(
       pageNumber: z.page,
       bbox: z.bbox,
       zoneType: mapDoclingLabel(z.label),
-      confidence: z.confidence ?? 0.5,
+      confidence: z.confidence ?? null,
       label: z.label,
     })),
   );
@@ -84,7 +84,7 @@ export async function runCalibration(
         pageNumber: z.pageNumber,
         bbox: z.bbox,
         zoneType: mapPdfxtLabel(z.label),
-        confidence: z.confidence ?? 0.5,
+        confidence: z.confidence ?? null,
         label: z.label,
       })),
     );

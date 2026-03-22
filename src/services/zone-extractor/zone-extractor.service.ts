@@ -28,7 +28,7 @@ export async function detectZones(
     pageNumber: zone.page,
     bbox: zone.bbox,
     zoneType: mapDoclingLabel(zone.label),
-    confidence: zone.confidence ?? 0.5,
+    confidence: zone.confidence ?? null,
     source: 'docling' as const,
     doclingLabel: zone.label,
   }));

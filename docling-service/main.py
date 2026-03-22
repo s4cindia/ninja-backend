@@ -136,16 +136,20 @@ def detect(req: DetectRequest):
 
     zones = []
 
-    # Docling v2 stores document items in body.children, texts, pictures, tables
-    # Each item has 'label' and 'prov' (provenance with bbox + page ref)
-    body = doc_dict.get("body", {})
-    items = body.get("children", []) if isinstance(body, dict) else []
-
-    # Also include texts, pictures, tables as additional items
+    # Docling v2 stores document items in body.children (refs) AND in
+    # top-level texts/pictures/tables (full data).  body.children are
+    # lightweight refs that duplicate the top-level items, so we ONLY
+    # use the categorised top-level lists to avoid double-counting.
+    items = []
     for key in ("texts", "pictures", "tables"):
         extra = doc_dict.get(key, [])
         if isinstance(extra, list):
             items.extend(extra)
+
+    # Fallback: if none of the top-level lists exist, use body.children
+    if not items:
+        body = doc_dict.get("body", {})
+        items = body.get("children", []) if isinstance(body, dict) else []
 
     for item in items:
         if not isinstance(item, dict):
@@ -187,16 +191,24 @@ def detect(req: DetectRequest):
             else:
                 continue
 
+            # Docling v2 export_to_dict() does NOT expose per-item confidence.
+            # Return None (not a fake fallback) so the frontend can show "N/A".
             confidence = item.get("confidence") or item.get("score") or None
 
             zones.append({
                 "page":       int(page_ref) if isinstance(page_ref, (int, float)) else 0,
                 "bbox":       bbox,
                 "label":      label,
-                "confidence": confidence,
+                "confidence": float(confidence) if confidence is not None else None,
             })
 
     processing_time_ms = int((time.time() - start) * 1000)
+
+    # Log a sample of raw Docling output (first item) once per run for debugging
+    if items:
+        sample = items[0] if isinstance(items[0], dict) else str(items[0])
+        logger.info(f"Job {req.jobId}: Docling sample item keys={list(sample.keys()) if isinstance(sample, dict) else 'N/A'}, sample={str(sample)[:500]}")
+
     logger.info(
         f"Job {req.jobId}: {len(zones)} zones detected "
         f"in {processing_time_ms}ms"

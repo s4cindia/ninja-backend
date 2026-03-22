@@ -19,7 +19,7 @@ export interface DetectedZone {
   pageNumber: number;
   bbox: BBox;
   zoneType: CanonicalZoneType;
-  confidence: number;
+  confidence: number | null;
   source: 'docling' | 'pdfxt' | 'operator';
   doclingLabel?: string;
 }
