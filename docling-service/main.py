@@ -165,22 +165,24 @@ def detect(req: DetectRequest):
 
             raw_bbox = prov.get("bbox", {})
             if isinstance(raw_bbox, dict):
+                # Docling uses PDF coords (y=0 at bottom, t > b), so
+                # normalise to top-left origin with positive w/h.
+                l = float(raw_bbox.get("l", raw_bbox.get("x", 0)))
+                t = float(raw_bbox.get("t", raw_bbox.get("y", 0)))
+                r = float(raw_bbox.get("r", l + raw_bbox.get("w", 0)))
+                b = float(raw_bbox.get("b", t + raw_bbox.get("h", 0)))
                 bbox = {
-                    "x": float(raw_bbox.get("l", raw_bbox.get("x", 0))),
-                    "y": float(raw_bbox.get("t", raw_bbox.get("y", 0))),
-                    "w": float(raw_bbox.get("r", raw_bbox.get("w", 0)) -
-                               raw_bbox.get("l", raw_bbox.get("x", 0)))
-                         if "r" in raw_bbox else float(raw_bbox.get("w", 0)),
-                    "h": float(raw_bbox.get("b", raw_bbox.get("h", 0)) -
-                               raw_bbox.get("t", raw_bbox.get("y", 0)))
-                         if "b" in raw_bbox else float(raw_bbox.get("h", 0)),
+                    "x": min(l, r),
+                    "y": min(t, b),
+                    "w": abs(r - l),
+                    "h": abs(t - b),
                 }
             elif isinstance(raw_bbox, list) and len(raw_bbox) == 4:
                 bbox = {
-                    "x": float(raw_bbox[0]),
-                    "y": float(raw_bbox[1]),
-                    "w": float(raw_bbox[2] - raw_bbox[0]),
-                    "h": float(raw_bbox[3] - raw_bbox[1]),
+                    "x": float(min(raw_bbox[0], raw_bbox[2])),
+                    "y": float(min(raw_bbox[1], raw_bbox[3])),
+                    "w": float(abs(raw_bbox[2] - raw_bbox[0])),
+                    "h": float(abs(raw_bbox[3] - raw_bbox[1])),
                 }
             else:
                 continue
