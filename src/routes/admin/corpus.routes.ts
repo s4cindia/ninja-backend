@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { authenticate } from '../../middleware/auth.middleware';
 import {
@@ -146,6 +146,55 @@ router.get('/corpus/documents', authenticate, async (req: Request, res: Response
     return res.status(500).json({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/admin/corpus/documents/:id/download-url
+// Returns a presigned S3 GET URL for the source PDF so the frontend can render it
+router.get('/corpus/documents/:id/download-url', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin or Operator role required' },
+      });
+    }
+
+    const { id } = req.params;
+    const doc = await prisma.corpusDocument.findUnique({ where: { id } });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Corpus document not found' },
+      });
+    }
+
+    // Parse s3://bucket/key from the stored s3Path
+    const s3Match = doc.s3Path.match(/^s3:\/\/([^/]+)\/(.+)$/);
+    if (!s3Match) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'INVALID_S3_PATH', message: 'Document has no valid S3 path' },
+      });
+    }
+
+    const [, , s3Key] = s3Match;
+    const command = new GetObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: s3Key,
+    });
+    const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+
+    return res.json({
+      success: true,
+      data: { downloadUrl, expiresIn: 3600 },
+    });
+  } catch (err) {
+    logger.error('GET /admin/corpus/documents/:id/download-url error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });
   }
 });
