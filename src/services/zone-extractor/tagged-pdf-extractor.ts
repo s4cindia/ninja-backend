@@ -98,6 +98,22 @@ async function streamToBuffer(stream: unknown): Promise<Buffer> {
 // ── MCID-based bbox extraction via pdfjs-dist ──────────────────────────
 
 /**
+ * Parse the integer MCID from a pdfjs-dist marked content id string.
+ * pdfjs v5 returns ids like "p44R_mc0", "p44R_mc12" — the integer MCID
+ * is the numeric suffix after "_mc". Falls back to direct numeric parse
+ * for older pdfjs versions that return numeric strings.
+ */
+function parseMcid(id: string | null | undefined): number {
+  if (id == null) return -1;
+  // Try "_mcN" suffix pattern first (pdfjs v5)
+  const match = id.match(/_mc(\d+)$/);
+  if (match) return parseInt(match[1], 10);
+  // Fallback: direct numeric string (older pdfjs)
+  const num = Number(id);
+  return isNaN(num) ? -1 : num;
+}
+
+/**
  * Per-page map of MCID → bounding box, computed from pdfjs-dist text content.
  * Key: page number (1-based), Value: Map<mcid, BBox>
  */
@@ -129,8 +145,10 @@ async function buildMcidBBoxMap(
         // Marked content marker (TextMarkedContent: { type, id })
         const mc = item as unknown as { type: string; id?: string };
         if (mc.type === 'beginMarkedContent' || mc.type === 'beginMarkedContentProps') {
-          const mcid = mc.id != null ? Number(mc.id) : NaN;
-          if (!isNaN(mcid)) {
+          // pdfjs-dist v5 returns string IDs like "p44R_mc0" where the
+          // integer MCID is the suffix after "_mc". Parse it out.
+          const mcid = parseMcid(mc.id);
+          if (mcid >= 0) {
             mcidStack.push(mcid);
           } else {
             mcidStack.push(-1); // non-MCID marked content — push sentinel
