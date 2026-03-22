@@ -6,6 +6,9 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+# Ensure HuggingFace cache matches the build-time pre-download location
+os.environ.setdefault("HF_HOME", "/app/.cache/huggingface")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docling-service")
 
