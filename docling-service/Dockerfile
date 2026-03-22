@@ -18,7 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-download Docling models at build time using the SAME config as runtime.
 # This ensures the HuggingFace model cache is baked into the image layer,
 # since ECS tasks cannot reach huggingface.co at runtime.
+# IMPORTANT: We must convert a real PDF to trigger lazy-loaded model downloads
+# (layout detection, table structure, etc.) — just instantiating the converter
+# is not enough.
 ENV HF_HOME=/app/.cache/huggingface
+COPY warmup.pdf .
 RUN python -c "\
 from docling.document_converter import DocumentConverter, PdfFormatOption; \
 from docling.datamodel.pipeline_options import PdfPipelineOptions; \
@@ -27,6 +31,8 @@ pipeline_options = PdfPipelineOptions(do_ocr=False); \
 converter = DocumentConverter( \
     format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}, \
 ); \
+result = converter.convert('warmup.pdf'); \
+print(f'Warmup conversion done: {len(result.document.export_to_dict().get(\"texts\", []))} text items'); \
 print('Docling models pre-loaded successfully (OCR disabled)')"
 
 COPY main.py .
