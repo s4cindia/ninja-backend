@@ -179,9 +179,15 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
       });
     }
 
-    const [, , s3Key] = s3Match;
+    const [, parsedBucket, s3Key] = s3Match;
+    if (parsedBucket !== config.s3Bucket) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'INVALID_S3_PATH', message: 'Document bucket does not match configured bucket' },
+      });
+    }
     const command = new GetObjectCommand({
-      Bucket: config.s3Bucket,
+      Bucket: parsedBucket,
       Key: s3Key,
     });
     const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
