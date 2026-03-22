@@ -97,7 +97,7 @@ describe('GET /calibration/runs/:runId/zones', () => {
     const res = await request(app).get('/calibration/runs/run-1/zones');
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data.zones).toHaveLength(2);
     expect(mockZoneFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { calibrationRunId: 'run-1' },

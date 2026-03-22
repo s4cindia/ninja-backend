@@ -110,7 +110,7 @@ router.get('/runs', authenticate, async (req: Request, res: Response) => {
       take,
     });
 
-    return res.json({ success: true, data: runs });
+    return res.json({ success: true, data: { runs } });
   } catch (err) {
     return res.status(500).json({
       success: false,
@@ -213,7 +213,7 @@ router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Respons
       nextCursor = extra.id;
     }
 
-    return res.json({ success: true, data: zones, nextCursor });
+    return res.json({ success: true, data: { zones, nextCursor } });
   } catch (err) {
     return res.status(500).json({
       success: false,
