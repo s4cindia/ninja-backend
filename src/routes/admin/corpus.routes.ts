@@ -150,8 +150,8 @@ router.get('/corpus/documents', authenticate, async (req: Request, res: Response
   }
 });
 
-// GET /api/v1/admin/corpus/documents/:id/download-url
-// Returns a presigned S3 GET URL for the source PDF so the frontend can render it
+// GET /api/v1/admin/corpus/documents/:id/download-url?type=source|tagged
+// Returns a presigned S3 GET URL for the source or tagged PDF
 router.get('/corpus/documents/:id/download-url', authenticate, async (req: Request, res: Response) => {
   try {
     if (!isAdminOrOperator(req)) {
@@ -162,6 +162,15 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
     }
 
     const { id } = req.params;
+    const type = (req.query.type as string) || 'source';
+
+    if (type !== 'source' && type !== 'tagged') {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'type must be "source" or "tagged"' },
+      });
+    }
+
     const doc = await prisma.corpusDocument.findUnique({ where: { id } });
     if (!doc) {
       return res.status(404).json({
@@ -170,8 +179,16 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
       });
     }
 
-    // Parse s3://bucket/key from the stored s3Path
-    const s3Match = doc.s3Path.match(/^s3:\/\/([^/]+)\/(.+)$/);
+    const s3Uri = type === 'tagged' ? doc.taggedPdfPath : doc.s3Path;
+    if (!s3Uri) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `No ${type} PDF uploaded for this document` },
+      });
+    }
+
+    // Parse s3://bucket/key from the stored path
+    const s3Match = s3Uri.match(/^s3:\/\/([^/]+)\/(.+)$/);
     if (!s3Match) {
       return res.status(422).json({
         success: false,
@@ -186,15 +203,16 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
         error: { code: 'INVALID_S3_PATH', message: 'Document bucket does not match configured bucket' },
       });
     }
+    const expiresIn = 900;
     const command = new GetObjectCommand({
       Bucket: parsedBucket,
       Key: s3Key,
     });
-    const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+    const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn });
 
     return res.json({
       success: true,
-      data: { downloadUrl, expiresIn: 3600 },
+      data: { downloadUrl, expiresIn },
     });
   } catch (err) {
     logger.error('GET /admin/corpus/documents/:id/download-url error:', err);
