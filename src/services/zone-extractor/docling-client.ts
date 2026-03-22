@@ -17,7 +17,7 @@ export async function detectWithDocling(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120_000);
+    const timer = setTimeout(() => controller.abort(), 300_000);
 
     let response: Response;
     try {
@@ -30,7 +30,7 @@ export async function detectWithDocling(
     } catch (err) {
       clearTimeout(timer);
       if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error(`DOCLING_TIMEOUT: exceeded 120s for jobId ${jobId}`);
+        throw new Error(`DOCLING_TIMEOUT: exceeded 300s for jobId ${jobId}`);
       }
       throw err;
     }
