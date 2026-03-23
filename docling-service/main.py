@@ -3,6 +3,7 @@ import re
 import time
 import tempfile
 import logging
+import threading
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -70,6 +71,13 @@ class DetectRequest(BaseModel):
     pdfPath: str
     jobId:   str
 
+# In-flight request deduplication: prevents duplicate Docling conversions
+# when BullMQ retries arrive while the first request is still processing.
+# Key = pdfPath, value = threading.Event + result/error.
+_inflight_lock = threading.Lock()
+_inflight: dict[str, dict] = {}
+
+
 @app.get("/health")
 def health():
     return {
@@ -84,6 +92,29 @@ def detect(req: DetectRequest):
             status_code=503,
             detail="Docling model not initialised"
         )
+
+    # Dedup: if the same pdfPath is already being processed, wait for it
+    with _inflight_lock:
+        if req.pdfPath in _inflight:
+            entry = _inflight[req.pdfPath]
+            logger.info(f"Job {req.jobId}: dedup — waiting for in-flight conversion of {req.pdfPath}")
+
+    # Check outside lock to avoid holding it during wait
+    with _inflight_lock:
+        existing = _inflight.get(req.pdfPath)
+    if existing is not None:
+        existing["event"].wait(timeout=20 * 60)  # wait up to 20 min
+        if existing.get("error"):
+            raise HTTPException(status_code=500, detail=existing["error"])
+        if existing.get("result"):
+            logger.info(f"Job {req.jobId}: returning cached result for {req.pdfPath}")
+            return {**existing["result"], "jobId": req.jobId}
+        raise HTTPException(status_code=500, detail="In-flight conversion timed out")
+
+    # Register this request as in-flight
+    flight_entry: dict = {"event": threading.Event(), "result": None, "error": None}
+    with _inflight_lock:
+        _inflight[req.pdfPath] = flight_entry
 
     # Resolve path: download from S3 if needed, otherwise use local path
     local_path = None
@@ -114,6 +145,11 @@ def detect(req: DetectRequest):
         result = converter.convert(local_path)
     except Exception as e:
         logger.error(f"Docling conversion error for {req.pdfPath}: {e}")
+        # Signal waiting dedup requests about the failure
+        flight_entry["error"] = str(e)
+        flight_entry["event"].set()
+        with _inflight_lock:
+            _inflight.pop(req.pdfPath, None)
         raise HTTPException(
             status_code=500,
             detail=f"Docling processing error: {str(e)}"
@@ -214,8 +250,21 @@ def detect(req: DetectRequest):
         f"in {processing_time_ms}ms"
     )
 
-    return {
+    response = {
         "jobId":            req.jobId,
         "zones":            zones,
         "processingTimeMs": processing_time_ms,
     }
+
+    # Signal waiting dedup requests and cache result briefly
+    flight_entry["result"] = response
+    flight_entry["event"].set()
+
+    # Clean up after a short delay to allow waiting threads to read the result
+    def _cleanup():
+        time.sleep(5)
+        with _inflight_lock:
+            _inflight.pop(req.pdfPath, None)
+    threading.Thread(target=_cleanup, daemon=True).start()
+
+    return response

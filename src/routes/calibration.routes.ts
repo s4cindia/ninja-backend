@@ -43,6 +43,11 @@ router.post('/run', authenticate, async (req: Request, res: Response) => {
       tenantId,
       userId: req.user!.id,
       options: { documentId, tenantId, fileId },
+    }, {
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 60_000 },
+      removeOnComplete: 100,
+      removeOnFail: 50,
     });
 
     return res.status(202).json({
