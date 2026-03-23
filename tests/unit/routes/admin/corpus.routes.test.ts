@@ -240,7 +240,7 @@ describe('admin/corpus.routes', () => {
       }),
       expect.objectContaining({
         jobId: 'calibration-run-1',
-        attempts: 3,
+        attempts: 2,
       }),
     );
   });
