@@ -17,8 +17,8 @@ export async function detectWithDocling(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
-    // Docling ML inference on CPU can take 10–20 minutes for large PDFs
-    const DOCLING_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+    // Docling ML inference on CPU can take 15–20+ minutes for large PDFs
+    const DOCLING_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
     const timer = setTimeout(() => controller.abort(), DOCLING_TIMEOUT_MS);
 
     let response: Response;
