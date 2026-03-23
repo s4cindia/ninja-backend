@@ -316,8 +316,8 @@ router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res:
           },
         }, {
           jobId: `calibration-${run.id}`,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
+          attempts: 2,
+          backoff: { type: 'exponential', delay: 60_000 },
           removeOnComplete: 100,
           removeOnFail: 50,
         });
