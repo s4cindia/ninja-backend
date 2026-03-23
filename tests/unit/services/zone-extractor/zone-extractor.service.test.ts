@@ -84,7 +84,7 @@ describe('detectZones', () => {
     warnSpy.mockRestore();
   });
 
-  it('confidence defaults to 0.5 when missing', async () => {
+  it('confidence is null when missing from Docling response', async () => {
     const response: DoclingServiceResponse = {
       jobId,
       processingTimeMs: 100,
@@ -96,7 +96,7 @@ describe('detectZones', () => {
 
     const result = await detectZones(pdfPath, jobId, tenantId, fileId);
 
-    expect(result[0].confidence).toBe(0.5);
+    expect(result[0].confidence).toBeNull();
   });
 
   it('rethrows on Docling timeout — no DB write', async () => {
