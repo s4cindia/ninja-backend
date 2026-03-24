@@ -57,7 +57,6 @@ export function classifyPages(
     const headings = typeCounts.get('section-header') ?? 0;
     const paragraphs = typeCounts.get('paragraph') ?? 0;
     const figures = typeCounts.get('figure') ?? 0;
-    const tables = typeCounts.get('table') ?? 0;
     const total = nonGhost.length;
 
     // Check labels for TOC indicators
