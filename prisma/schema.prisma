@@ -1959,6 +1959,8 @@ model Zone {
   verifiedAt            DateTime?
   verifiedBy            String?
   isArtefact            Boolean   @default(false)
+  isGhost               Boolean   @default(false)  // Structure element found but no bbox computed
+  ghostTag              String?   // Original tag name for ghost zones (for debug/QA)
 
   // ML pipeline relations
   bootstrapJobId        String?

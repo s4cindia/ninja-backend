@@ -124,16 +124,38 @@ function buildRoleMap(
 
 export interface TaggedPdfZone {
   pageNumber: number;
-  bbox: BBox;
+  bbox: BBox | null;
   zoneType: CanonicalZoneType;
   confidence: number;
   label: string;
+  isGhost?: boolean;   // true when struct element found but no bbox computable
+  ghostTag?: string;   // original raw tag name for ghost zones
+}
+
+export interface PageClassificationInfo {
+  pageNumber: number;
+  pageType: string;
+  zoneCount: number;
+  confidence: number;
+}
+
+export interface TaggedPdfExtractionStats {
+  structElements: number;
+  zonesExtracted: number;
+  ghostZones: number;
+  textMcids: number;
+  imageMcids: number;
+  droppedNoBbox: number;
+  unmappedTags: Record<string, number>;
+  pagesWithZeroZones: number[];
+  pageClassifications: PageClassificationInfo[];
 }
 
 export interface TaggedPdfResult {
   jobId: string;
   zones: TaggedPdfZone[];
   processingTimeMs: number;
+  extractionStats?: TaggedPdfExtractionStats;
 }
 
 /**
@@ -236,7 +258,11 @@ async function buildMcidBBoxMap(
         width: number;
         height: number;
       };
-      if (!textItem.transform || textItem.str === '') continue;
+      if (!textItem.transform) continue;
+      // Note: we do NOT skip empty-string items (textItem.str === '')
+      // because some MCIDs (e.g., Figure placeholders) only have empty
+      // text items. Skipping them would orphan those MCIDs.
+      // Items with no width/height will contribute zero bbox anyway.
 
       // Find the innermost MCID from the stack
       let activeMcid = -1;
@@ -277,6 +303,120 @@ async function buildMcidBBoxMap(
   }
 
   return pageMap;
+}
+
+// ── Image MCID extraction via getOperatorList ────────────────────────
+
+/**
+ * Multiply two 6-element PDF transform matrices [a,b,c,d,e,f].
+ */
+function multiplyTransforms(t1: number[], t2: number[]): number[] {
+  return [
+    t1[0] * t2[0] + t1[2] * t2[1],
+    t1[1] * t2[0] + t1[3] * t2[1],
+    t1[0] * t2[2] + t1[2] * t2[3],
+    t1[1] * t2[2] + t1[3] * t2[3],
+    t1[0] * t2[4] + t1[2] * t2[5] + t1[4],
+    t1[1] * t2[4] + t1[3] * t2[5] + t1[5],
+  ];
+}
+
+/**
+ * Build MCID → bbox for image/XObject draws that have no text items.
+ * Uses getOperatorList() to track marked content sections (BMC/BDC/EMC)
+ * and capture transform matrices for paintImageXObject operators.
+ *
+ * Only fills MCIDs that are NOT already in the text-based mcidMap
+ * (text takes priority since it has more precise positioning).
+ */
+async function augmentMcidMapWithImages(
+  pdfjsDoc: pdfjsLib.PDFDocumentProxy,
+  mcidMap: McidBBoxMap,
+): Promise<number> {
+  const OPS = pdfjsLib.OPS;
+  let imagesMapped = 0;
+
+  for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
+    const page = await pdfjsDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const opList = await page.getOperatorList();
+
+    const fnArray = opList.fnArray as number[];
+    const argsArray = opList.argsArray as unknown[][];
+
+    const mcidStack: number[] = [];
+    const transformStack: number[][] = [];
+    let currentTransform = [1, 0, 0, 1, 0, 0];
+
+    const existingPageMap = mcidMap.get(pageNum);
+
+    for (let i = 0; i < fnArray.length; i++) {
+      const fn = fnArray[i];
+      const args = argsArray[i];
+
+      if (fn === OPS.save) {
+        transformStack.push([...currentTransform]);
+      } else if (fn === OPS.restore) {
+        if (transformStack.length > 0) {
+          currentTransform = transformStack.pop()!;
+        }
+      } else if (fn === OPS.transform) {
+        currentTransform = multiplyTransforms(currentTransform, args as number[]);
+      } else if (fn === OPS.beginMarkedContent) {
+        // BMC — no properties, push sentinel
+        mcidStack.push(-1);
+      } else if (fn === OPS.beginMarkedContentProps) {
+        // BDC — args[1] may contain MCID
+        const props = args[1] as Record<string, unknown> | undefined;
+        const mcid = typeof props?.mcid === 'number' ? props.mcid : -1;
+        mcidStack.push(mcid);
+      } else if (fn === OPS.endMarkedContent) {
+        mcidStack.pop();
+      } else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+        // Find active MCID
+        let activeMcid = -1;
+        for (let j = mcidStack.length - 1; j >= 0; j--) {
+          if (mcidStack[j] >= 0) {
+            activeMcid = mcidStack[j];
+            break;
+          }
+        }
+        if (activeMcid < 0) continue;
+
+        // Skip if text-based extraction already got this MCID
+        if (existingPageMap?.has(activeMcid)) continue;
+
+        // Compute image bbox from current transform
+        const [a, b, c, d, e, f] = currentTransform;
+        const width = Math.sqrt(a * a + b * b);
+        const height = Math.sqrt(c * c + d * d);
+        const x = e;
+        const y = viewport.height - f - height;
+
+        const bbox: BBox = { x, y, w: width, h: height };
+
+        // Add to mcidMap
+        if (!mcidMap.has(pageNum)) {
+          mcidMap.set(pageNum, new Map());
+        }
+        const pageMap = mcidMap.get(pageNum)!;
+        const existing = pageMap.get(activeMcid);
+        if (existing) {
+          const x2 = Math.max(existing.x + existing.w, bbox.x + bbox.w);
+          const y2 = Math.max(existing.y + existing.h, bbox.y + bbox.h);
+          existing.x = Math.min(existing.x, bbox.x);
+          existing.y = Math.min(existing.y, bbox.y);
+          existing.w = x2 - existing.x;
+          existing.h = y2 - existing.y;
+        } else {
+          pageMap.set(activeMcid, bbox);
+          imagesMapped++;
+        }
+      }
+    }
+  }
+
+  return imagesMapped;
 }
 
 // ── pdf-lib struct tree walking ────────────────────────────────────────
@@ -564,6 +704,16 @@ function walkStructTree(
         });
       } else {
         stats.droppedNoBbox++;
+        // Emit ghost zone — structure element exists but bbox not computable
+        zones.push({
+          pageNumber: pageNum,
+          bbox: null,
+          zoneType,
+          confidence: 0,
+          label: resolvedTag,
+          isGhost: true,
+          ghostTag: rawTag,
+        });
       }
     }
   }
@@ -615,10 +765,15 @@ export async function extractZonesFromTaggedPdf(
 
   // 4. Build MCID → bbox map from pdfjs-dist text content
   const mcidMap = await buildMcidBBoxMap(pdfjsDoc);
+
+  const textMcidCount = [...mcidMap.entries()].reduce((sum, [, m]) => sum + m.size, 0);
+
+  // 4b. Augment with image/XObject MCIDs from operator list
+  const imagesMapped = await augmentMcidMapWithImages(pdfjsDoc, mcidMap);
   await pdfjsDoc.destroy();
 
   logger.info(
-    `[tagged-pdf-extractor] Built MCID bbox map: ${[...mcidMap.entries()].reduce((sum, [, m]) => sum + m.size, 0)} MCIDs across ${mcidMap.size} pages`,
+    `[tagged-pdf-extractor] MCID bbox map: ${textMcidCount} from text + ${imagesMapped} from images across ${mcidMap.size} pages`,
   );
 
   // 5. Build RoleMap for custom tag resolution
@@ -666,9 +821,40 @@ export async function extractZonesFromTaggedPdf(
     );
   }
 
+  // Page classification
+  const { classifyPages } = await import('./page-classifier');
+  const realZones = zones.filter((z) => !z.isGhost && z.bbox);
+  const pageClassifications = classifyPages(
+    realZones.map((z) => ({
+      pageNumber: z.pageNumber,
+      zoneType: z.zoneType,
+      label: z.label,
+      bbox: z.bbox,
+      isGhost: z.isGhost,
+    })),
+    totalPages,
+  );
+
+  const ghostCount = zones.filter((z) => z.isGhost).length;
+
+  logger.info(
+    `[tagged-pdf-extractor] Page types: ${pageClassifications.filter((p) => p.pageType !== 'body').map((p) => `p${p.pageNumber}=${p.pageType}`).join(', ') || 'all body'}`,
+  );
+
   return {
     jobId: calibrationRunId,
     zones,
     processingTimeMs: Date.now() - startTime,
+    extractionStats: {
+      structElements: stats.structElements,
+      zonesExtracted: realZones.length,
+      ghostZones: ghostCount,
+      textMcids: textMcidCount,
+      imageMcids: imagesMapped,
+      droppedNoBbox: stats.droppedNoBbox,
+      unmappedTags: Object.fromEntries(stats.unmappedTags),
+      pagesWithZeroZones: emptyPages,
+      pageClassifications,
+    },
   };
 }

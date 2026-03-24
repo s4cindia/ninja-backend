@@ -2,7 +2,7 @@ import prisma, { Prisma } from '../../lib/prisma';
 import { detectWithDocling } from '../zone-extractor/docling-client';
 import { mapDoclingLabel } from '../zone-extractor/zone-type-mapper';
 import { detectWithPdfxt, mapPdfxtLabel } from '../pdfxt/pdfxt-client';
-import { extractZonesFromTaggedPdf } from '../zone-extractor/tagged-pdf-extractor';
+import { extractZonesFromTaggedPdf, type TaggedPdfExtractionStats } from '../zone-extractor/tagged-pdf-extractor';
 import { matchZones, type SourceZone } from './zone-matcher';
 import { summariseCalibrationRun } from './calibration-summary';
 import { logger } from '../../lib/logger';
@@ -68,15 +68,23 @@ export async function runCalibration(
   // pdfxt source: if operator uploaded a tagged PDF, extract zones from StructTreeRoot;
   // otherwise fall back to the pdfxt HTTP API if available, or skip
   let pdfxtPromise: Promise<SourceZone[]>;
+  let pdfxtExtractionStats: TaggedPdfExtractionStats | undefined;
+  let pdfxtGhostZones: import('../zone-extractor/tagged-pdf-extractor').TaggedPdfZone[] = [];
   if (taggedPdfPath) {
     pdfxtPromise = extractZonesFromTaggedPdf(taggedPdfPath, calibrationRunId).then(
-      (res) => res.zones.map((z): SourceZone => ({
-        pageNumber: z.pageNumber,
-        bbox: z.bbox,
-        zoneType: z.zoneType,
-        confidence: z.confidence,
-        label: z.label,
-      })),
+      (res) => {
+        pdfxtExtractionStats = res.extractionStats;
+        // Separate ghost zones (no bbox) from real zones
+        const realZones = res.zones.filter((z) => z.bbox !== null);
+        pdfxtGhostZones = res.zones.filter((z) => z.bbox === null);
+        return realZones.map((z): SourceZone => ({
+          pageNumber: z.pageNumber,
+          bbox: z.bbox!,
+          zoneType: z.zoneType,
+          confidence: z.confidence,
+          label: z.label,
+        }));
+      },
     );
   } else if (process.env.PDFXT_SERVICE_URL) {
     pdfxtPromise = detectWithPdfxt(pdfPath, calibrationRunId).then(
@@ -123,7 +131,10 @@ export async function runCalibration(
         redCount: summary.redCount,
         completedAt: new Date(),
         durationMs: Date.now() - startTime,
-        summary: summary as unknown as Prisma.InputJsonValue,
+        summary: {
+          ...summary,
+          ...(pdfxtExtractionStats ? { pdfxtExtractionStats } : {}),
+        } as unknown as Prisma.InputJsonValue,
       },
     }),
     prisma.zone.createMany({
@@ -146,8 +157,30 @@ export async function runCalibration(
     }),
   ]);
 
+  // 6. Persist ghost zones (structure elements with no computable bbox)
+  if (pdfxtGhostZones.length > 0) {
+    await prisma.zone.createMany({
+      data: pdfxtGhostZones.map((gz) => ({
+        calibrationRunId,
+        tenantId,
+        ...(fileId ? { fileId } : {}),
+        pageNumber: gz.pageNumber,
+        type: gz.zoneType,
+        bounds: Prisma.DbNull,
+        source: 'pdfxt',
+        pdfxtLabel: gz.label,
+        isGhost: true,
+        ghostTag: gz.ghostTag ?? gz.label,
+        reconciliationBucket: 'RED',
+      })),
+    });
+    logger.info(
+      `[Calibration] Created ${pdfxtGhostZones.length} ghost zones (struct elements with no bbox)`,
+    );
+  }
+
   logger.info(
-    `[Calibration] Run ${calibrationRunId} complete: G:${summary.greenCount} A:${summary.amberCount} R:${summary.redCount} (${Date.now() - startTime}ms)`,
+    `[Calibration] Run ${calibrationRunId} complete: G:${summary.greenCount} A:${summary.amberCount} R:${summary.redCount} ghosts:${pdfxtGhostZones.length} (${Date.now() - startTime}ms)`,
   );
 
   return {
