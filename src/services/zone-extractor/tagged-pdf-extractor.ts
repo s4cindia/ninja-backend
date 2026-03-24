@@ -21,49 +21,141 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(pdfjsWorkerPath).href;
 
 /**
  * Maps PDF structure tags to canonical zone types.
- * Matches the mapPdfxtLabel pattern from pdfxt-client.ts.
+ * Covers standard PDF 1.7 / PDF 2.0 structure tags plus common aliases.
  */
 const TAG_MAP: Record<string, CanonicalZoneType> = {
-  'P':       'paragraph',
-  'H':       'section-header',
-  'H1':      'section-header',
-  'H2':      'section-header',
-  'H3':      'section-header',
-  'H4':      'section-header',
-  'H5':      'section-header',
-  'H6':      'section-header',
-  'Table':   'table',
-  'Figure':  'figure',
-  'Caption': 'caption',
-  'Note':    'footnote',
-  'Sect':    'paragraph',
-  'Div':     'paragraph',
-  'Art':     'paragraph',
-  'Part':    'paragraph',
-  'THead':   'header',
-  'TFoot':   'footer',
-  'TOC':     'paragraph',
-  'TOCI':    'paragraph',
-  'L':       'paragraph',
-  'LI':      'paragraph',
+  // Block-level text
+  'P':          'paragraph',
+  'Span':       'paragraph',
+  'BlockQuote': 'paragraph',
+  'Quote':      'paragraph',
+  'Code':       'paragraph',
+  'Index':      'paragraph',
+  'BibEntry':   'paragraph',
+  'Formula':    'paragraph',
+  'NonStruct':  'paragraph',
+  // Headings
+  'H':          'section-header',
+  'H1':         'section-header',
+  'H2':         'section-header',
+  'H3':         'section-header',
+  'H4':         'section-header',
+  'H5':         'section-header',
+  'H6':         'section-header',
+  // Tables
+  'Table':      'table',
+  'TR':         'table',
+  'TH':         'table',
+  'TD':         'table',
+  // Figures
+  'Figure':     'figure',
+  // Captions
+  'Caption':    'caption',
+  // Notes / footnotes
+  'Note':       'footnote',
+  'NT':         'footnote',
+  'FENote':     'footnote',
+  // Container / grouping (mapped to paragraph so MCIDs are not lost)
+  'Sect':       'paragraph',
+  'Div':        'paragraph',
+  'Art':        'paragraph',
+  'Part':       'paragraph',
+  // Headers / footers (running)
+  'THead':      'header',
+  'TFoot':      'footer',
+  // TOC
+  'TOC':        'paragraph',
+  'TOCI':       'paragraph',
+  // Lists
+  'L':          'paragraph',
+  'LI':         'paragraph',
+  'Lbl':        'paragraph',
+  'LBody':      'paragraph',
+  // Annotations / links
+  'Annot':      'paragraph',
+  'Link':       'paragraph',
+  'Reference':  'paragraph',
+  // Ruby / Warichu (CJK inline)
+  'Ruby':       'paragraph',
+  'Warichu':    'paragraph',
 };
 
-export function mapStructTag(tag: string): CanonicalZoneType | null {
-  return TAG_MAP[tag] ?? null;
+/**
+ * Resolve a tag name through a RoleMap, then look up in TAG_MAP.
+ * RoleMap maps custom tag names to standard tags (e.g. Title → H1).
+ */
+export function mapStructTag(
+  tag: string,
+  roleMap?: Map<string, string>,
+): CanonicalZoneType | null {
+  const resolvedTag = roleMap?.get(tag) ?? tag;
+  return TAG_MAP[resolvedTag] ?? null;
+}
+
+/**
+ * Build a RoleMap from the StructTreeRoot's /RoleMap dictionary.
+ * Returns Map<customTagName, standardTagName>.
+ */
+function buildRoleMap(
+  structTreeRoot: PDFDict,
+  doc: PDFDocument,
+): Map<string, string> {
+  const roleMap = new Map<string, string>();
+  const rmRaw = structTreeRoot.get(PDFName.of('RoleMap'));
+  const rm = resolvePdfObj(rmRaw, doc);
+  if (!(rm instanceof PDFDict)) return roleMap;
+
+  const entries = rm.entries();
+  for (const [key, value] of entries) {
+    const customTag = key instanceof PDFName ? key.decodeText() : String(key);
+    const stdTag = value instanceof PDFName ? value.decodeText() : null;
+    if (stdTag) {
+      roleMap.set(customTag, stdTag);
+    }
+  }
+
+  if (roleMap.size > 0) {
+    logger.debug(
+      `[tagged-pdf-extractor] RoleMap: ${roleMap.size} entries — ${[...roleMap.entries()].slice(0, 10).map(([k, v]) => `${k}→${v}`).join(', ')}`,
+    );
+  }
+  return roleMap;
 }
 
 export interface TaggedPdfZone {
   pageNumber: number;
-  bbox: BBox;
+  bbox: BBox | null;
   zoneType: CanonicalZoneType;
   confidence: number;
   label: string;
+  isGhost?: boolean;   // true when struct element found but no bbox computable
+  ghostTag?: string;   // original raw tag name for ghost zones
+}
+
+export interface PageClassificationInfo {
+  pageNumber: number;
+  pageType: string;
+  zoneCount: number;
+  confidence: number;
+}
+
+export interface TaggedPdfExtractionStats {
+  structElements: number;
+  zonesExtracted: number;
+  ghostZones: number;
+  textMcids: number;
+  imageMcids: number;
+  droppedNoBbox: number;
+  unmappedTags: Record<string, number>;
+  pagesWithZeroZones: number[];
+  pageClassifications: PageClassificationInfo[];
 }
 
 export interface TaggedPdfResult {
   jobId: string;
   zones: TaggedPdfZone[];
   processingTimeMs: number;
+  extractionStats?: TaggedPdfExtractionStats;
 }
 
 /**
@@ -166,7 +258,11 @@ async function buildMcidBBoxMap(
         width: number;
         height: number;
       };
-      if (!textItem.transform || textItem.str === '') continue;
+      if (!textItem.transform) continue;
+      // Note: we do NOT skip empty-string items (textItem.str === '')
+      // because some MCIDs (e.g., Figure placeholders) only have empty
+      // text items. Skipping them would orphan those MCIDs.
+      // Items with no width/height will contribute zero bbox anyway.
 
       // Find the innermost MCID from the stack
       let activeMcid = -1;
@@ -207,6 +303,120 @@ async function buildMcidBBoxMap(
   }
 
   return pageMap;
+}
+
+// ── Image MCID extraction via getOperatorList ────────────────────────
+
+/**
+ * Multiply two 6-element PDF transform matrices [a,b,c,d,e,f].
+ */
+function multiplyTransforms(t1: number[], t2: number[]): number[] {
+  return [
+    t1[0] * t2[0] + t1[2] * t2[1],
+    t1[1] * t2[0] + t1[3] * t2[1],
+    t1[0] * t2[2] + t1[2] * t2[3],
+    t1[1] * t2[2] + t1[3] * t2[3],
+    t1[0] * t2[4] + t1[2] * t2[5] + t1[4],
+    t1[1] * t2[4] + t1[3] * t2[5] + t1[5],
+  ];
+}
+
+/**
+ * Build MCID → bbox for image/XObject draws that have no text items.
+ * Uses getOperatorList() to track marked content sections (BMC/BDC/EMC)
+ * and capture transform matrices for paintImageXObject operators.
+ *
+ * Only fills MCIDs that are NOT already in the text-based mcidMap
+ * (text takes priority since it has more precise positioning).
+ */
+async function augmentMcidMapWithImages(
+  pdfjsDoc: pdfjsLib.PDFDocumentProxy,
+  mcidMap: McidBBoxMap,
+): Promise<number> {
+  const OPS = pdfjsLib.OPS;
+  let imagesMapped = 0;
+
+  for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
+    const page = await pdfjsDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const opList = await page.getOperatorList();
+
+    const fnArray = opList.fnArray as number[];
+    const argsArray = opList.argsArray as unknown[][];
+
+    const mcidStack: number[] = [];
+    const transformStack: number[][] = [];
+    let currentTransform = [1, 0, 0, 1, 0, 0];
+
+    const existingPageMap = mcidMap.get(pageNum);
+
+    for (let i = 0; i < fnArray.length; i++) {
+      const fn = fnArray[i];
+      const args = argsArray[i];
+
+      if (fn === OPS.save) {
+        transformStack.push([...currentTransform]);
+      } else if (fn === OPS.restore) {
+        if (transformStack.length > 0) {
+          currentTransform = transformStack.pop()!;
+        }
+      } else if (fn === OPS.transform) {
+        currentTransform = multiplyTransforms(currentTransform, args as number[]);
+      } else if (fn === OPS.beginMarkedContent) {
+        // BMC — no properties, push sentinel
+        mcidStack.push(-1);
+      } else if (fn === OPS.beginMarkedContentProps) {
+        // BDC — args[1] may contain MCID
+        const props = args[1] as Record<string, unknown> | undefined;
+        const mcid = typeof props?.mcid === 'number' ? props.mcid : -1;
+        mcidStack.push(mcid);
+      } else if (fn === OPS.endMarkedContent) {
+        mcidStack.pop();
+      } else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+        // Find active MCID
+        let activeMcid = -1;
+        for (let j = mcidStack.length - 1; j >= 0; j--) {
+          if (mcidStack[j] >= 0) {
+            activeMcid = mcidStack[j];
+            break;
+          }
+        }
+        if (activeMcid < 0) continue;
+
+        // Skip if text-based extraction already got this MCID
+        if (existingPageMap?.has(activeMcid)) continue;
+
+        // Compute image bbox from current transform
+        const [a, b, c, d, e, f] = currentTransform;
+        const width = Math.sqrt(a * a + b * b);
+        const height = Math.sqrt(c * c + d * d);
+        const x = e;
+        const y = viewport.height - f - height;
+
+        const bbox: BBox = { x, y, w: width, h: height };
+
+        // Add to mcidMap
+        if (!mcidMap.has(pageNum)) {
+          mcidMap.set(pageNum, new Map());
+        }
+        const pageMap = mcidMap.get(pageNum)!;
+        const existing = pageMap.get(activeMcid);
+        if (existing) {
+          const x2 = Math.max(existing.x + existing.w, bbox.x + bbox.w);
+          const y2 = Math.max(existing.y + existing.h, bbox.y + bbox.h);
+          existing.x = Math.min(existing.x, bbox.x);
+          existing.y = Math.min(existing.y, bbox.y);
+          existing.w = x2 - existing.x;
+          existing.h = y2 - existing.y;
+        } else {
+          pageMap.set(activeMcid, bbox);
+          imagesMapped++;
+        }
+      }
+    }
+  }
+
+  return imagesMapped;
 }
 
 // ── pdf-lib struct tree walking ────────────────────────────────────────
@@ -296,32 +506,41 @@ function pdfArrayToBBox(arr: PDFArray): BBox {
   };
 }
 
+interface McidRef {
+  mcid: number;
+  pageNum: number | null; // page override from MCR /Pg, or null to use parent's page
+}
+
 /**
  * Collect all MCIDs from a /K entry (integer MCIDs, MCR dicts with /MCID,
  * and recursively from child arrays/refs). Does NOT recurse into child
  * structure elements (those have their own /S tag).
+ *
+ * MCR dicts may carry their own /Pg reference that overrides the parent
+ * structure element's page — we preserve this so MCIDs are looked up in
+ * the correct page's bbox map.
  */
 function collectMcids(
   kEntry: unknown,
   doc: PDFDocument,
-  mcids: number[],
+  mcidRefs: McidRef[],
   depth: number,
 ): void {
   if (depth > 50) return;
 
   if (kEntry instanceof PDFNumber) {
-    mcids.push(kEntry.asNumber());
+    mcidRefs.push({ mcid: kEntry.asNumber(), pageNum: null });
     return;
   }
 
   if (kEntry instanceof PDFRef) {
-    collectMcids(doc.context.lookup(kEntry), doc, mcids, depth + 1);
+    collectMcids(doc.context.lookup(kEntry), doc, mcidRefs, depth + 1);
     return;
   }
 
   if (kEntry instanceof PDFArray) {
     for (let i = 0; i < kEntry.size(); i++) {
-      collectMcids(kEntry.get(i), doc, mcids, depth + 1);
+      collectMcids(kEntry.get(i), doc, mcidRefs, depth + 1);
     }
     return;
   }
@@ -330,32 +549,49 @@ function collectMcids(
     // MCR dict: { /Type /MCR, /MCID <int>, /Pg <ref> }
     const mcidVal = kEntry.get(PDFName.of('MCID'));
     if (mcidVal instanceof PDFNumber) {
-      mcids.push(mcidVal.asNumber());
+      // Check if MCR has its own /Pg reference (page override)
+      const mcrPageRef = kEntry.get(PDFName.of('Pg'));
+      let mcrPageNum: number | null = null;
+      if (mcrPageRef instanceof PDFRef) {
+        const pages = doc.getPages();
+        for (let i = 0; i < pages.length; i++) {
+          if (pages[i].ref === mcrPageRef) {
+            mcrPageNum = i + 1;
+            break;
+          }
+        }
+      }
+      mcidRefs.push({ mcid: mcidVal.asNumber(), pageNum: mcrPageNum });
       return;
     }
+    // OBJR dict: { /Type /OBJR, /Obj <ref>, /Pg <ref> } — object reference
+    // (annotations, XObjects). Skip for now — P1 will handle these.
+    const typeVal = kEntry.get(PDFName.of('Type'));
+    if (typeVal instanceof PDFName && typeVal.decodeText() === 'OBJR') return;
     // If it has /S, it's a child structure element — don't collect its MCIDs
-    // (it will be processed as its own zone)
     if (kEntry.get(PDFName.of('S'))) return;
     // Otherwise recurse into /K
     const subK = kEntry.get(PDFName.of('K'));
-    if (subK) collectMcids(subK, doc, mcids, depth + 1);
+    if (subK) collectMcids(subK, doc, mcidRefs, depth + 1);
   }
 }
 
 /**
- * Compute the union bounding box from multiple MCIDs on a given page.
+ * Compute the union bounding box from McidRefs.
+ * Each McidRef may override the page number (from MCR /Pg); if null,
+ * falls back to the parent structure element's page.
  */
-function bboxFromMcids(
-  mcids: number[],
-  pageNum: number,
+function bboxFromMcidRefs(
+  mcidRefs: McidRef[],
+  parentPageNum: number,
   mcidMap: McidBBoxMap,
 ): BBox | null {
-  const pageBBoxes = mcidMap.get(pageNum);
-  if (!pageBBoxes) return null;
-
   let result: BBox | null = null;
-  for (const mcid of mcids) {
-    const box = pageBBoxes.get(mcid);
+  for (const ref of mcidRefs) {
+    const effectivePage = ref.pageNum ?? parentPageNum;
+    const pageBBoxes = mcidMap.get(effectivePage);
+    if (!pageBBoxes) continue;
+    const box = pageBBoxes.get(ref.mcid);
     if (!box) continue;
     if (!result) {
       result = { ...box };
@@ -371,29 +607,55 @@ function bboxFromMcids(
   return result;
 }
 
+/** Extraction diagnostic counters — reset per extraction run. */
+interface ExtractionStats {
+  structElements: number;
+  unmappedTags: Map<string, number>;
+  noPageNum: number;
+  mcidsFound: number;
+  mcidsWithBbox: number;
+  bboxFromExplicit: number;
+  droppedNoBbox: number;
+}
+
+function newExtractionStats(): ExtractionStats {
+  return {
+    structElements: 0,
+    unmappedTags: new Map(),
+    noPageNum: 0,
+    mcidsFound: 0,
+    mcidsWithBbox: 0,
+    bboxFromExplicit: 0,
+    droppedNoBbox: 0,
+  };
+}
+
 /**
  * Recursively walk the PDF structure tree and collect zones.
  * Uses MCID → bbox lookup from pdfjs-dist text content, with fallback
  * to explicit /BBox attributes for elements that have them.
+ * Resolves custom tags through the RoleMap before TAG_MAP lookup.
  */
 function walkStructTree(
   node: unknown,
   doc: PDFDocument,
   zones: TaggedPdfZone[],
   mcidMap: McidBBoxMap,
+  roleMap: Map<string, string>,
+  stats: ExtractionStats,
   currentPage: number | null,
   depth: number,
 ): void {
   if (depth > 100 || !node) return;
 
   if (node instanceof PDFRef) {
-    walkStructTree(doc.context.lookup(node), doc, zones, mcidMap, currentPage, depth + 1);
+    walkStructTree(doc.context.lookup(node), doc, zones, mcidMap, roleMap, stats, currentPage, depth + 1);
     return;
   }
 
   if (node instanceof PDFArray) {
     for (let i = 0; i < node.size(); i++) {
-      walkStructTree(node.get(i), doc, zones, mcidMap, currentPage, depth + 1);
+      walkStructTree(node.get(i), doc, zones, mcidMap, roleMap, stats, currentPage, depth + 1);
     }
     return;
   }
@@ -401,22 +663,35 @@ function walkStructTree(
   if (!(node instanceof PDFDict)) return;
 
   const sName = node.get(PDFName.of('S'));
-  const tagName = sName instanceof PDFName ? sName.decodeText() : null;
+  const rawTag = sName instanceof PDFName ? sName.decodeText() : null;
   const pageNum = getPageNumber(node, doc) ?? currentPage;
 
-  if (tagName) {
-    const zoneType = mapStructTag(tagName);
-    if (zoneType && pageNum) {
-      // Try MCID-based bbox first (works for most real tagged PDFs)
+  if (rawTag) {
+    stats.structElements++;
+    const zoneType = mapStructTag(rawTag, roleMap);
+    const resolvedTag = roleMap.get(rawTag) ?? rawTag;
+
+    if (!zoneType) {
+      const count = stats.unmappedTags.get(rawTag) ?? 0;
+      stats.unmappedTags.set(rawTag, count + 1);
+    } else if (!pageNum) {
+      stats.noPageNum++;
+    } else {
+      // Collect MCIDs with page overrides from MCR /Pg refs
       const kids = node.get(PDFName.of('K'));
-      const mcids: number[] = [];
-      if (kids) collectMcids(kids, doc, mcids, 0);
+      const mcidRefs: McidRef[] = [];
+      if (kids) collectMcids(kids, doc, mcidRefs, 0);
+      stats.mcidsFound += mcidRefs.length;
 
-      let bbox = bboxFromMcids(mcids, pageNum, mcidMap);
+      let bbox = bboxFromMcidRefs(mcidRefs, pageNum, mcidMap);
+      if (bbox) {
+        stats.mcidsWithBbox += mcidRefs.length;
+      }
 
-      // Fallback: explicit /BBox or /A attributes (rare but some tools add them)
+      // Fallback: explicit /BBox or /A attributes
       if (!bbox) {
         bbox = extractExplicitBBox(node, doc);
+        if (bbox) stats.bboxFromExplicit++;
       }
 
       if (bbox) {
@@ -425,7 +700,19 @@ function walkStructTree(
           bbox,
           zoneType,
           confidence: 0.9,
-          label: tagName,
+          label: resolvedTag,
+        });
+      } else {
+        stats.droppedNoBbox++;
+        // Emit ghost zone — structure element exists but bbox not computable
+        zones.push({
+          pageNumber: pageNum,
+          bbox: null,
+          zoneType,
+          confidence: 0,
+          label: resolvedTag,
+          isGhost: true,
+          ghostTag: rawTag,
         });
       }
     }
@@ -434,7 +721,7 @@ function walkStructTree(
   // Recurse into /K (kids) for child structure elements
   const kids = node.get(PDFName.of('K'));
   if (kids) {
-    walkStructTree(kids, doc, zones, mcidMap, pageNum, depth + 1);
+    walkStructTree(kids, doc, zones, mcidMap, roleMap, stats, pageNum, depth + 1);
   }
 }
 
@@ -478,25 +765,96 @@ export async function extractZonesFromTaggedPdf(
 
   // 4. Build MCID → bbox map from pdfjs-dist text content
   const mcidMap = await buildMcidBBoxMap(pdfjsDoc);
+
+  const textMcidCount = [...mcidMap.entries()].reduce((sum, [, m]) => sum + m.size, 0);
+
+  // 4b. Augment with image/XObject MCIDs from operator list
+  const imagesMapped = await augmentMcidMapWithImages(pdfjsDoc, mcidMap);
   await pdfjsDoc.destroy();
 
   logger.info(
-    `[tagged-pdf-extractor] Built MCID bbox map: ${[...mcidMap.entries()].reduce((sum, [, m]) => sum + m.size, 0)} MCIDs across ${mcidMap.size} pages`,
+    `[tagged-pdf-extractor] MCID bbox map: ${textMcidCount} from text + ${imagesMapped} from images across ${mcidMap.size} pages`,
   );
 
-  // 5. Walk struct tree and collect zones using MCID bbox lookup
-  const zones: TaggedPdfZone[] = [];
+  // 5. Build RoleMap for custom tag resolution
   const root = resolvePdfObj(structTreeRoot, pdfDoc);
-  walkStructTree(root, pdfDoc, zones, mcidMap, null, 0);
+  const roleMap = root instanceof PDFDict ? buildRoleMap(root, pdfDoc) : new Map<string, string>();
+
+  // 6. Walk struct tree and collect zones using MCID bbox lookup
+  const zones: TaggedPdfZone[] = [];
+  const stats = newExtractionStats();
+  walkStructTree(root, pdfDoc, zones, mcidMap, roleMap, stats, null, 0);
+
+  // 7. Log extraction diagnostics
+  const perPage = new Map<number, number>();
+  for (const z of zones) {
+    perPage.set(z.pageNumber, (perPage.get(z.pageNumber) ?? 0) + 1);
+  }
 
   logger.info(
-    `[tagged-pdf-extractor] Extracted ${zones.length} zones from ${s3Path} ` +
-    `in ${Date.now() - startTime}ms`,
+    `[tagged-pdf-extractor] Extracted ${zones.length} zones from ${s3Path} in ${Date.now() - startTime}ms | ` +
+    `struct_elements=${stats.structElements} mcids_found=${stats.mcidsFound} mcids_with_bbox=${stats.mcidsWithBbox} ` +
+    `bbox_from_explicit=${stats.bboxFromExplicit} dropped_no_bbox=${stats.droppedNoBbox} no_page=${stats.noPageNum}`,
+  );
+
+  if (stats.unmappedTags.size > 0) {
+    logger.warn(
+      `[tagged-pdf-extractor] Unmapped tags: ${[...stats.unmappedTags.entries()].map(([t, c]) => `${t}(${c})`).join(', ')}`,
+    );
+  }
+
+  if (stats.droppedNoBbox > 0) {
+    logger.warn(
+      `[tagged-pdf-extractor] ${stats.droppedNoBbox} structure elements dropped (no bbox from MCIDs or explicit attributes)`,
+    );
+  }
+
+  // Log pages with 0 zones as potential extraction gaps
+  const totalPages = pdfDoc.getPageCount();
+  const emptyPages: number[] = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (!perPage.has(p)) emptyPages.push(p);
+  }
+  if (emptyPages.length > 0 && emptyPages.length < totalPages) {
+    logger.warn(
+      `[tagged-pdf-extractor] Pages with 0 pdfxt zones: ${emptyPages.join(', ')} (${emptyPages.length}/${totalPages})`,
+    );
+  }
+
+  // Page classification
+  const { classifyPages } = await import('./page-classifier');
+  const realZones = zones.filter((z) => !z.isGhost && z.bbox);
+  const pageClassifications = classifyPages(
+    realZones.map((z) => ({
+      pageNumber: z.pageNumber,
+      zoneType: z.zoneType,
+      label: z.label,
+      bbox: z.bbox,
+      isGhost: z.isGhost,
+    })),
+    totalPages,
+  );
+
+  const ghostCount = zones.filter((z) => z.isGhost).length;
+
+  logger.info(
+    `[tagged-pdf-extractor] Page types: ${pageClassifications.filter((p) => p.pageType !== 'body').map((p) => `p${p.pageNumber}=${p.pageType}`).join(', ') || 'all body'}`,
   );
 
   return {
     jobId: calibrationRunId,
     zones,
     processingTimeMs: Date.now() - startTime,
+    extractionStats: {
+      structElements: stats.structElements,
+      zonesExtracted: realZones.length,
+      ghostZones: ghostCount,
+      textMcids: textMcidCount,
+      imageMcids: imagesMapped,
+      droppedNoBbox: stats.droppedNoBbox,
+      unmappedTags: Object.fromEntries(stats.unmappedTags),
+      pagesWithZeroZones: emptyPages,
+      pageClassifications,
+    },
   };
 }

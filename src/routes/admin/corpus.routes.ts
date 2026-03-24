@@ -223,6 +223,58 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
   }
 });
 
+// GET /api/v1/admin/corpus/documents/:id/struct-tree?source=tagged|source
+// Returns the raw StructTreeRoot as JSON for debugging extraction gaps
+router.get('/corpus/documents/:id/struct-tree', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+
+    const doc = await prisma.corpusDocument.findUnique({ where: { id: req.params.id } });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' },
+      });
+    }
+
+    const pdfSource = req.query.source === 'tagged' ? 'tagged' : 'source';
+    const s3Path = pdfSource === 'tagged' ? doc.taggedPdfPath : doc.s3Path;
+    if (!s3Path) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `No ${pdfSource} PDF available` },
+      });
+    }
+
+    // Download PDF from S3
+    const { parseS3Path } = await import('../../services/zone-extractor/tagged-pdf-extractor');
+    const { serializeStructTreeAsync } = await import('../../services/zone-extractor/struct-tree-serializer');
+    const { bucket, key } = parseS3Path(s3Path);
+    const response = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of response.Body as AsyncIterable<Buffer>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const pdfBytes = Buffer.concat(chunks);
+
+    const structTree = await serializeStructTreeAsync(pdfBytes);
+
+    return res.json({ success: true, data: structTree });
+  } catch (err) {
+    logger.error('GET /admin/corpus/documents/:id/struct-tree error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
 // POST /api/v1/admin/corpus/documents/:id/run
 router.post('/corpus/documents/:id/run', authenticate, async (req: Request, res: Response) => {
   try {

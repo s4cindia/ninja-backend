@@ -123,9 +123,25 @@ describe('tagged-pdf-extractor', () => {
       expect(mapStructTag('Caption')).toBe('caption');
     });
 
+    it('Span maps to paragraph', () => {
+      expect(mapStructTag('Span')).toBe('paragraph');
+    });
+
+    it('NT maps to footnote', () => {
+      expect(mapStructTag('NT')).toBe('footnote');
+    });
+
+    it('LBody maps to paragraph', () => {
+      expect(mapStructTag('LBody')).toBe('paragraph');
+    });
+
+    it('Link maps to paragraph', () => {
+      expect(mapStructTag('Link')).toBe('paragraph');
+    });
+
     it('unknown tags return null', () => {
       expect(mapStructTag('CustomTag')).toBeNull();
-      expect(mapStructTag('Span')).toBeNull();
+      expect(mapStructTag('ZZZUnknown')).toBeNull();
     });
   });
 
@@ -211,7 +227,7 @@ describe('tagged-pdf-extractor', () => {
       expect(result.zones[3].zoneType).toBe('footnote');
     });
 
-    it('skips nodes without BBox (Test 5)', async () => {
+    it('emits ghost zones for nodes without BBox (Test 5)', async () => {
       const pdfBytes = await buildTaggedPdf([
         { tag: 'P' },  // no bbox
         { tag: 'H1', bbox: [10, 20, 100, 30] },
@@ -224,10 +240,18 @@ describe('tagged-pdf-extractor', () => {
         'run-partial',
       );
 
-      // Only H1 has bbox
-      expect(result.zones).toHaveLength(1);
-      expect(result.zones[0].zoneType).toBe('section-header');
-      expect(result.zones[0].label).toBe('H1');
+      // H1 has bbox, P and Table are ghost zones
+      const realZones = result.zones.filter((z) => !z.isGhost);
+      const ghostZones = result.zones.filter((z) => z.isGhost);
+
+      expect(realZones).toHaveLength(1);
+      expect(realZones[0].zoneType).toBe('section-header');
+      expect(realZones[0].label).toBe('H1');
+
+      expect(ghostZones).toHaveLength(2);
+      expect(ghostZones[0].bbox).toBeNull();
+      expect(ghostZones[0].isGhost).toBe(true);
+      expect(ghostZones[1].bbox).toBeNull();
     });
 
     it('source confidence is always 0.9 on returned zones (Test 6)', async () => {
