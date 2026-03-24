@@ -123,9 +123,25 @@ describe('tagged-pdf-extractor', () => {
       expect(mapStructTag('Caption')).toBe('caption');
     });
 
+    it('Span maps to paragraph', () => {
+      expect(mapStructTag('Span')).toBe('paragraph');
+    });
+
+    it('NT maps to footnote', () => {
+      expect(mapStructTag('NT')).toBe('footnote');
+    });
+
+    it('LBody maps to paragraph', () => {
+      expect(mapStructTag('LBody')).toBe('paragraph');
+    });
+
+    it('Link maps to paragraph', () => {
+      expect(mapStructTag('Link')).toBe('paragraph');
+    });
+
     it('unknown tags return null', () => {
       expect(mapStructTag('CustomTag')).toBeNull();
-      expect(mapStructTag('Span')).toBeNull();
+      expect(mapStructTag('ZZZUnknown')).toBeNull();
     });
   });
 
