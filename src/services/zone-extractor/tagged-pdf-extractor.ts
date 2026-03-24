@@ -446,7 +446,7 @@ async function augmentMcidMapFromOperatorList(
         textMatrix = [...textLineMatrix];
       } else if (fn === OPS.setLeading) {
         leading = (args as number[])[0];
-      } else if (fn === OPS.moveToNextLine) {
+      } else if (fn === OPS.nextLine) {
         // T* = 0 -TL Td
         textLineMatrix = [
           textLineMatrix[0], textLineMatrix[1],
