@@ -21,20 +21,25 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(pdfjsWorkerPath).href;
 
 /**
  * Maps PDF structure tags to canonical zone types.
- * Covers standard PDF 1.7 / PDF 2.0 structure tags plus common aliases.
+ * Covers ALL standard PDF 1.7 (ISO 32000-1) and PDF 2.0 (ISO 32000-2)
+ * structure tags plus common custom aliases.
  */
 const TAG_MAP: Record<string, CanonicalZoneType> = {
-  // Block-level text
+  // ── Block-level text ──────────────────────────────────
   'P':          'paragraph',
-  'Span':       'paragraph',
   'BlockQuote': 'paragraph',
-  'Quote':      'paragraph',
   'Code':       'paragraph',
-  'Index':      'paragraph',
   'BibEntry':   'paragraph',
   'Formula':    'paragraph',
+  // ── Inline text (emitted when they are leaf elements) ─
+  'Span':       'paragraph',
+  'Quote':      'paragraph',
+  'Em':         'paragraph',      // PDF 2.0 emphasis
+  'Strong':     'paragraph',      // PDF 2.0 strong
+  'Sub':        'paragraph',      // PDF 2.0 subscript
   'NonStruct':  'paragraph',
-  // Headings
+  'Private':    'paragraph',
+  // ── Headings ──────────────────────────────────────────
   'H':          'section-header',
   'H1':         'section-header',
   'H2':         'section-header',
@@ -42,54 +47,77 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'H4':         'section-header',
   'H5':         'section-header',
   'H6':         'section-header',
-  // Tables
+  'H7':         'section-header',  // non-standard but used
+  'Title':      'section-header',  // PDF 2.0
+  // ── Tables ────────────────────────────────────────────
   'Table':      'table',
   'TR':         'table',
   'TH':         'table',
   'TD':         'table',
-  // Figures
+  'TBody':      'table',           // PDF 2.0 table body
+  // ── Figures / illustrations ───────────────────────────
   'Figure':     'figure',
-  // Captions
+  'Form':       'figure',          // interactive form element
+  // ── Captions ──────────────────────────────────────────
   'Caption':    'caption',
-  // Notes / footnotes
+  // ── Notes / footnotes ─────────────────────────────────
   'Note':       'footnote',
   'NT':         'footnote',
   'FENote':     'footnote',
-  // Container / grouping (mapped to paragraph so MCIDs are not lost)
+  // ── Container / grouping (transparent — recurse) ──────
   'Sect':       'paragraph',
   'Div':        'paragraph',
   'Art':        'paragraph',
   'Part':       'paragraph',
-  // Headers / footers (running)
+  'Aside':      'paragraph',       // PDF 2.0
+  'Index':      'paragraph',
+  // ── Headers / footers (running) ───────────────────────
   'THead':      'header',
   'TFoot':      'footer',
-  // TOC
+  'Hdr':        'header',          // running header artifact tag
+  'FTR':        'footer',          // running footer artifact tag
+  'Header':     'header',
+  'Footer':     'footer',
+  // ── TOC ───────────────────────────────────────────────
   'TOC':        'paragraph',
   'TOCI':       'paragraph',
-  // Lists
+  // ── Lists ─────────────────────────────────────────────
   'L':          'paragraph',
   'LI':         'paragraph',
   'Lbl':        'paragraph',
   'LBody':      'paragraph',
-  // Annotations / links
+  // ── Annotations / links ───────────────────────────────
   'Annot':      'paragraph',
   'Link':       'paragraph',
   'Reference':  'paragraph',
-  // Ruby / Warichu (CJK inline)
+  // ── Ruby / Warichu (CJK inline) ──────────────────────
   'Ruby':       'paragraph',
+  'RB':         'paragraph',
+  'RT':         'paragraph',
+  'RP':         'paragraph',
   'Warichu':    'paragraph',
+  'WT':         'paragraph',
+  'WP':         'paragraph',
 };
+
+/**
+ * Tags that should never produce a zone (pure structural containers).
+ * Everything else defaults to 'paragraph' so unknown tags are never lost.
+ */
+const SKIP_TAGS = new Set(['Root', 'Document', 'StructTreeRoot', 'DocumentFragment']);
 
 /**
  * Resolve a tag name through a RoleMap, then look up in TAG_MAP.
  * RoleMap maps custom tag names to standard tags (e.g. Title → H1).
+ * Unknown tags default to 'paragraph' — never silently dropped.
  */
 export function mapStructTag(
   tag: string,
   roleMap?: Map<string, string>,
 ): CanonicalZoneType | null {
   const resolvedTag = roleMap?.get(tag) ?? tag;
-  return TAG_MAP[resolvedTag] ?? null;
+  if (SKIP_TAGS.has(resolvedTag)) return null;
+  return TAG_MAP[resolvedTag] ?? 'paragraph';
 }
 
 export interface TaggedPdfZone {
@@ -520,9 +548,64 @@ async function augmentContentIdMapFromOperatorList(
 }
 
 /**
+ * Recursively collect ALL descendant content IDs from a structure node.
+ * Walks through inline children (Span, Link, etc.) to capture content
+ * that is nested inside inline wrappers.
+ */
+function collectAllDescendantContentIds(
+  node: PdfjsStructNode,
+  depth: number = 0,
+): string[] {
+  if (depth > 100) return [];
+  const ids: string[] = [];
+  for (const child of node.children || []) {
+    if (isPdfjsContent(child) && (child.type === 'content' || child.type === 'object')) {
+      ids.push(child.id);
+    } else if (isPdfjsStructNode(child)) {
+      ids.push(...collectAllDescendantContentIds(child, depth + 1));
+    }
+  }
+  return ids;
+}
+
+/**
+ * Compute a merged bbox from a list of content IDs using the bbox map.
+ */
+function bboxFromContentIds(
+  contentIds: string[],
+  idBBoxMap: ContentIdBBoxMap,
+): { bbox: BBox | null; matched: number } {
+  let bbox: BBox | null = null;
+  let matched = 0;
+  for (const id of contentIds) {
+    const itemBBox = idBBoxMap.get(id);
+    if (itemBBox) {
+      matched++;
+      if (!bbox) {
+        bbox = { ...itemBBox };
+      } else {
+        const x2 = Math.max(bbox.x + bbox.w, itemBBox.x + itemBBox.w);
+        const y2 = Math.max(bbox.y + bbox.h, itemBBox.y + itemBBox.h);
+        bbox.x = Math.min(bbox.x, itemBBox.x);
+        bbox.y = Math.min(bbox.y, itemBBox.y);
+        bbox.w = x2 - bbox.x;
+        bbox.h = y2 - bbox.y;
+      }
+    }
+  }
+  return { bbox, matched };
+}
+
+/**
  * Walk the pdfjs structure tree for a page and extract zones.
- * Only emits zones for elements that have content children (MCIDs) and
- * a recognized zone type.
+ *
+ * Uses a "leaf-node" approach:
+ * - Leaf elements (no struct children) collect ALL descendant content IDs
+ *   through inline wrappers and emit a zone.
+ * - Branch elements (with struct children) recurse into children.
+ *   Any direct content not in child struct nodes is emitted as an
+ *   orphan zone so nothing is lost.
+ * - Unknown tags default to 'paragraph' (never silently dropped).
  */
 function walkPdfjsStructTree(
   node: PdfjsStructNode,
@@ -530,116 +613,114 @@ function walkPdfjsStructTree(
   idBBoxMap: ContentIdBBoxMap,
   zones: TaggedPdfZone[],
   stats: StructTreeApiStats,
+  claimedIds: Set<string>,
   depth: number,
 ): void {
   if (depth > 100) return;
 
   const role = node.role;
   if (!role || role === 'Root') {
-    // Root node — just recurse into children
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
-        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, depth + 1);
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
       }
     }
     return;
   }
 
-  // Collect content IDs for this element
-  const contentIds: string[] = [];
-  for (const child of node.children || []) {
-    if (isPdfjsContent(child) && child.type === 'content') {
-      contentIds.push(child.id);
-    }
-  }
-
   const zoneType = mapStructTag(role);
-
-  if (zoneType && contentIds.length > 0) {
-    stats.structElements++;
-    stats.contentIdsFound += contentIds.length;
-
-    // Compute bbox from content IDs
-    let bbox: BBox | null = null;
-    let matched = 0;
-    for (const id of contentIds) {
-      const itemBBox = idBBoxMap.get(id);
-      if (itemBBox) {
-        matched++;
-        if (!bbox) {
-          bbox = { ...itemBBox };
-        } else {
-          const x2 = Math.max(bbox.x + bbox.w, itemBBox.x + itemBBox.w);
-          const y2 = Math.max(bbox.y + bbox.h, itemBBox.y + itemBBox.h);
-          bbox.x = Math.min(bbox.x, itemBBox.x);
-          bbox.y = Math.min(bbox.y, itemBBox.y);
-          bbox.w = x2 - bbox.x;
-          bbox.h = y2 - bbox.y;
-        }
+  if (!zoneType) {
+    // Skipped tag (Document, etc.) — still recurse
+    for (const child of node.children || []) {
+      if (isPdfjsStructNode(child)) {
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
       }
     }
-
-    if (matched > 0) stats.contentIdsWithBbox += matched;
-
-    // Fallback: explicit bbox from pdfjs (from /A attributes)
-    if (!bbox && node.bbox && node.bbox.length >= 4) {
-      bbox = {
-        x: Math.min(node.bbox[0], node.bbox[2]),
-        y: Math.min(node.bbox[1], node.bbox[3]),
-        w: Math.abs(node.bbox[2] - node.bbox[0]),
-        h: Math.abs(node.bbox[3] - node.bbox[1]),
-      };
-      stats.bboxFromExplicit++;
-    }
-
-    if (bbox) {
-      zones.push({
-        pageNumber: pageNum,
-        bbox,
-        zoneType,
-        confidence: 0.9,
-        label: role,
-      });
-    } else {
-      stats.droppedNoBbox++;
-      zones.push({
-        pageNumber: pageNum,
-        bbox: null,
-        zoneType,
-        confidence: 0,
-        label: role,
-        isGhost: true,
-        ghostTag: role,
-      });
-    }
-  } else if (zoneType && contentIds.length === 0) {
-    // Element with recognized type but no content IDs on this page
-    // Check for object/annotation children
-    const hasObjectChildren = (node.children || []).some(
-      (c) => isPdfjsContent(c) && (c.type === 'object' || c.type === 'annotation'),
-    );
-    if (hasObjectChildren) {
-      stats.structElements++;
-      stats.droppedNoBbox++;
-      zones.push({
-        pageNumber: pageNum,
-        bbox: null,
-        zoneType,
-        confidence: 0,
-        label: role,
-        isGhost: true,
-        ghostTag: role,
-      });
-    }
-  } else if (!zoneType && role !== 'Document') {
-    const count = stats.unmappedTags.get(role) ?? 0;
-    stats.unmappedTags.set(role, count + 1);
+    return;
   }
 
-  // Recurse into struct children
+  // Separate struct children from content children
+  const structChildren: PdfjsStructNode[] = [];
+  const directContentIds: string[] = [];
   for (const child of node.children || []) {
     if (isPdfjsStructNode(child)) {
-      walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, depth + 1);
+      structChildren.push(child);
+    } else if (isPdfjsContent(child) && (child.type === 'content' || child.type === 'object')) {
+      directContentIds.push(child.id);
+    }
+  }
+
+  if (structChildren.length === 0) {
+    // ── LEAF NODE — collect all content (including nested inline) ──
+    const allContentIds = collectAllDescendantContentIds(node);
+    // Include direct content IDs too (object/annotation refs)
+    for (const id of directContentIds) {
+      if (!allContentIds.includes(id)) allContentIds.push(id);
+    }
+
+    stats.structElements++;
+    stats.contentIdsFound += allContentIds.length;
+
+    if (allContentIds.length > 0) {
+      const { bbox, matched } = bboxFromContentIds(allContentIds, idBBoxMap);
+      if (matched > 0) stats.contentIdsWithBbox += matched;
+
+      // Fallback: explicit bbox from pdfjs attributes
+      let finalBBox = bbox;
+      if (!finalBBox && node.bbox && node.bbox.length >= 4) {
+        finalBBox = {
+          x: Math.min(node.bbox[0], node.bbox[2]),
+          y: Math.min(node.bbox[1], node.bbox[3]),
+          w: Math.abs(node.bbox[2] - node.bbox[0]),
+          h: Math.abs(node.bbox[3] - node.bbox[1]),
+        };
+        stats.bboxFromExplicit++;
+      }
+
+      if (finalBBox) {
+        zones.push({ pageNumber: pageNum, bbox: finalBBox, zoneType, confidence: 0.9, label: role });
+        for (const id of allContentIds) claimedIds.add(id);
+      } else {
+        stats.droppedNoBbox++;
+        zones.push({
+          pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
+          label: role, isGhost: true, ghostTag: role,
+        });
+      }
+    } else {
+      // Leaf with object/annotation children but no content IDs
+      const hasObjectChildren = (node.children || []).some(
+        (c) => isPdfjsContent(c) && (c.type === 'object' || c.type === 'annotation'),
+      );
+      if (hasObjectChildren) {
+        stats.structElements++;
+        stats.droppedNoBbox++;
+        zones.push({
+          pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
+          label: role, isGhost: true, ghostTag: role,
+        });
+      }
+    }
+    return;
+  }
+
+  // ── BRANCH NODE — recurse into struct children ──
+  for (const child of structChildren) {
+    walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
+  }
+
+  // Emit zone for any direct content NOT captured by child struct elements
+  if (directContentIds.length > 0) {
+    const orphanIds = directContentIds.filter((id) => !claimedIds.has(id));
+    if (orphanIds.length > 0) {
+      stats.structElements++;
+      stats.contentIdsFound += orphanIds.length;
+      const { bbox, matched } = bboxFromContentIds(orphanIds, idBBoxMap);
+      if (matched > 0) stats.contentIdsWithBbox += matched;
+      if (bbox) {
+        zones.push({ pageNumber: pageNum, bbox, zoneType, confidence: 0.85, label: role });
+        for (const id of orphanIds) claimedIds.add(id);
+      }
     }
   }
 }
@@ -686,14 +767,39 @@ async function extractUsingStructTreeApi(
     stats.opListPath += opStats.path;
 
     // Walk the structure tree and extract zones
+    const claimedIds = new Set<string>();
     walkPdfjsStructTree(
       structTree as unknown as PdfjsStructNode,
       pageNum,
       idBBoxMap,
       zones,
       stats,
+      claimedIds,
       0,
     );
+
+    // Recover orphan content IDs — content in bbox map not claimed by any struct element.
+    // These represent content on the page that the structure tree didn't reference.
+    let orphanCount = 0;
+    for (const [contentId, bbox] of idBBoxMap.entries()) {
+      if (!claimedIds.has(contentId)) {
+        zones.push({
+          pageNumber: pageNum,
+          bbox,
+          zoneType: 'paragraph',
+          confidence: 0.7,
+          label: 'Orphan',
+        });
+        orphanCount++;
+      }
+    }
+
+    if (orphanCount > 0 || idBBoxMap.size > 0) {
+      const treeZones = zones.filter((z) => z.pageNumber === pageNum && z.label !== 'Orphan').length;
+      logger.debug(
+        `[tagged-pdf-extractor] Page ${pageNum}: bboxMap=${idBBoxMap.size} claimed=${claimedIds.size} treeZones=${treeZones} orphans=${orphanCount}`,
+      );
+    }
   }
 
   if (!hasAnyStructTree) return null;
@@ -1081,10 +1187,23 @@ export async function extractZonesFromTaggedPdf(
     );
 
     if (stats.unmappedTags.size > 0) {
-      logger.warn(
-        `[tagged-pdf-extractor] Unmapped tags: ${[...stats.unmappedTags.entries()].map(([t, c]) => `${t}(${c})`).join(', ')}`,
+      logger.info(
+        `[tagged-pdf-extractor] Unmapped tags (defaulted to paragraph): ${[...stats.unmappedTags.entries()].map(([t, c]) => `${t}(${c})`).join(', ')}`,
       );
     }
+
+    // Per-page zone counts for first 10 pages (diagnostic)
+    const perPageReal = new Map<number, number>();
+    for (const z of realZones) perPageReal.set(z.pageNumber, (perPageReal.get(z.pageNumber) ?? 0) + 1);
+    const samplePages = [...perPageReal.entries()].slice(0, 10).map(([p, c]) => `p${p}:${c}`).join(' ');
+    logger.info(`[tagged-pdf-extractor] Per-page zones (first 10): ${samplePages}`);
+
+    // Label distribution across all zones
+    const labelCounts = new Map<string, number>();
+    for (const z of realZones) labelCounts.set(z.label, (labelCounts.get(z.label) ?? 0) + 1);
+    logger.info(
+      `[tagged-pdf-extractor] Label distribution: ${[...labelCounts.entries()].sort((a, b) => b[1] - a[1]).map(([l, c]) => `${l}(${c})`).join(', ')}`,
+    );
 
     if (emptyPages.length > 0 && emptyPages.length < totalPages) {
       logger.warn(
