@@ -3,6 +3,7 @@ import { runCalibration } from '../services/calibration/calibration.service';
 import { createWorker } from './base.worker';
 import { QUEUE_NAMES, type JobData, type JobResult } from '../queues';
 import { logger } from '../lib/logger';
+import prisma from '../lib/prisma';
 
 const processCalibrationJob = async (
   job: Job<JobData, JobResult>,
@@ -21,22 +22,42 @@ const processCalibrationJob = async (
       (taggedPdfPath ? ` (tagged PDF: ${taggedPdfPath})` : ''),
   );
 
-  const result = await runCalibration(documentId, tenantId, {
-    fileId,
-    existingRunId: runId,
-    taggedPdfPath,
-  });
+  try {
+    const result = await runCalibration(documentId, tenantId, {
+      fileId,
+      existingRunId: runId,
+      taggedPdfPath,
+    });
 
-  logger.info(
-    `[CalibrationWorker] Completed: ${result.calibrationRunId}` +
-      ` — ${result.durationMs}ms` +
-      ` G:${result.greenCount} A:${result.amberCount} R:${result.redCount}`,
-  );
+    logger.info(
+      `[CalibrationWorker] Completed: ${result.calibrationRunId}` +
+        ` — ${result.durationMs}ms` +
+        ` G:${result.greenCount} A:${result.amberCount} R:${result.redCount}`,
+    );
 
-  return {
-    success: true,
-    data: result as unknown as Record<string, unknown>,
-  };
+    return {
+      success: true,
+      data: result as unknown as Record<string, unknown>,
+    };
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+    logger.error(`[CalibrationWorker] Failed for document ${documentId}: ${errorMessage}`);
+
+    // Persist error to CalibrationRun so the UI can show it
+    if (runId) {
+      await prisma.calibrationRun.update({
+        where: { id: runId },
+        data: {
+          completedAt: new Date(),
+          summary: { status: 'FAILED', error: errorMessage },
+        },
+      }).catch((dbErr) => {
+        logger.warn(`[CalibrationWorker] Could not update run ${runId} with failure: ${dbErr}`);
+      });
+    }
+
+    throw err;
+  }
 };
 
 export const startCalibrationWorker = () =>
