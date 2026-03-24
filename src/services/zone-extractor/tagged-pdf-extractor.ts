@@ -145,6 +145,8 @@ export interface TaggedPdfExtractionStats {
   ghostZones: number;
   textMcids: number;
   imageMcids: number;
+  opListTextMcids: number;
+  opListPathMcids: number;
   droppedNoBbox: number;
   unmappedTags: Record<string, number>;
   pagesWithZeroZones: number[];
@@ -305,7 +307,7 @@ async function buildMcidBBoxMap(
   return pageMap;
 }
 
-// ── Image MCID extraction via getOperatorList ────────────────────────
+// ── Operator-list MCID extraction (text, images, paths) ─────────────
 
 /**
  * Multiply two 6-element PDF transform matrices [a,b,c,d,e,f].
@@ -321,20 +323,32 @@ function multiplyTransforms(t1: number[], t2: number[]): number[] {
   ];
 }
 
+interface OperatorListStats {
+  imagesMapped: number;
+  textMapped: number;
+  pathMapped: number;
+}
+
 /**
- * Build MCID → bbox for image/XObject draws that have no text items.
- * Uses getOperatorList() to track marked content sections (BMC/BDC/EMC)
- * and capture transform matrices for paintImageXObject operators.
+ * Augment the MCID bbox map using getOperatorList() to capture ALL content
+ * types within marked content sections: text draws, images, and paths.
+ *
+ * getTextContent() misses ~31% of MCIDs because it doesn't surface marked
+ * content wrappers for certain elements (empty text, paths, vector graphics,
+ * nested structures). This function directly parses the content stream
+ * operators to capture those missing MCIDs.
  *
  * Only fills MCIDs that are NOT already in the text-based mcidMap
- * (text takes priority since it has more precise positioning).
+ * (text content layer takes priority since it has more precise positioning).
  */
-async function augmentMcidMapWithImages(
+async function augmentMcidMapFromOperatorList(
   pdfjsDoc: pdfjsLib.PDFDocumentProxy,
   mcidMap: McidBBoxMap,
-): Promise<number> {
+): Promise<OperatorListStats> {
   const OPS = pdfjsLib.OPS;
   let imagesMapped = 0;
+  let textMapped = 0;
+  let pathMapped = 0;
 
   for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
     const page = await pdfjsDoc.getPage(pageNum);
@@ -344,79 +358,234 @@ async function augmentMcidMapWithImages(
     const fnArray = opList.fnArray as number[];
     const argsArray = opList.argsArray as unknown[][];
 
+    // Graphics state
     const mcidStack: number[] = [];
     const transformStack: number[][] = [];
     let currentTransform = [1, 0, 0, 1, 0, 0];
 
+    // Text state
+    let textMatrix = [1, 0, 0, 1, 0, 0];
+    let textLineMatrix = [1, 0, 0, 1, 0, 0];
+    let fontSize = 12;
+    let leading = 0;
+
+    // Snapshot of text-based map for this page (skip MCIDs already mapped)
     const existingPageMap = mcidMap.get(pageNum);
+
+    /** Find the innermost MCID not already in the text-based map. */
+    function getNewActiveMcid(): number {
+      for (let j = mcidStack.length - 1; j >= 0; j--) {
+        if (mcidStack[j] >= 0) {
+          const mcid = mcidStack[j];
+          if (existingPageMap?.has(mcid)) return -1;
+          return mcid;
+        }
+      }
+      return -1;
+    }
+
+    /** Merge a bbox into the mcidMap for this page. Returns true if MCID is new. */
+    function mergeBBox(mcid: number, bbox: BBox): boolean {
+      if (!mcidMap.has(pageNum)) mcidMap.set(pageNum, new Map());
+      const pm = mcidMap.get(pageNum)!;
+      const existing = pm.get(mcid);
+      if (existing) {
+        const x2 = Math.max(existing.x + existing.w, bbox.x + bbox.w);
+        const y2 = Math.max(existing.y + existing.h, bbox.y + bbox.h);
+        existing.x = Math.min(existing.x, bbox.x);
+        existing.y = Math.min(existing.y, bbox.y);
+        existing.w = x2 - existing.x;
+        existing.h = y2 - existing.y;
+        return false;
+      }
+      pm.set(mcid, { ...bbox });
+      return true;
+    }
 
     for (let i = 0; i < fnArray.length; i++) {
       const fn = fnArray[i];
       const args = argsArray[i];
 
+      // ── Graphics state ──
       if (fn === OPS.save) {
         transformStack.push([...currentTransform]);
       } else if (fn === OPS.restore) {
-        if (transformStack.length > 0) {
-          currentTransform = transformStack.pop()!;
-        }
+        if (transformStack.length > 0) currentTransform = transformStack.pop()!;
       } else if (fn === OPS.transform) {
         currentTransform = multiplyTransforms(currentTransform, args as number[]);
-      } else if (fn === OPS.beginMarkedContent) {
-        // BMC — no properties, push sentinel
+      }
+      // ── Marked content ──
+      else if (fn === OPS.beginMarkedContent) {
         mcidStack.push(-1);
       } else if (fn === OPS.beginMarkedContentProps) {
-        // BDC — args[1] may contain MCID
         const props = args[1] as Record<string, unknown> | undefined;
         const mcid = typeof props?.mcid === 'number' ? props.mcid : -1;
         mcidStack.push(mcid);
       } else if (fn === OPS.endMarkedContent) {
         mcidStack.pop();
-      } else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
-        // Find active MCID
-        let activeMcid = -1;
-        for (let j = mcidStack.length - 1; j >= 0; j--) {
-          if (mcidStack[j] >= 0) {
-            activeMcid = mcidStack[j];
-            break;
+      }
+      // ── Text state ──
+      else if (fn === OPS.beginText) {
+        textMatrix = [1, 0, 0, 1, 0, 0];
+        textLineMatrix = [1, 0, 0, 1, 0, 0];
+      } else if (fn === OPS.setFont) {
+        fontSize = (args as [unknown, number])[1] || 12;
+      } else if (fn === OPS.setTextMatrix) {
+        const tm = args as number[];
+        textMatrix = [...tm];
+        textLineMatrix = [...tm];
+      } else if (fn === OPS.moveText) {
+        // Td operator: translate text line matrix
+        const [tx, ty] = args as number[];
+        textLineMatrix = [
+          textLineMatrix[0], textLineMatrix[1],
+          textLineMatrix[2], textLineMatrix[3],
+          textLineMatrix[0] * tx + textLineMatrix[2] * ty + textLineMatrix[4],
+          textLineMatrix[1] * tx + textLineMatrix[3] * ty + textLineMatrix[5],
+        ];
+        textMatrix = [...textLineMatrix];
+      } else if (fn === OPS.setLeading) {
+        leading = (args as number[])[0];
+      } else if (fn === OPS.nextLine) {
+        // T* = 0 -TL Td
+        textLineMatrix = [
+          textLineMatrix[0], textLineMatrix[1],
+          textLineMatrix[2], textLineMatrix[3],
+          textLineMatrix[2] * (-leading) + textLineMatrix[4],
+          textLineMatrix[3] * (-leading) + textLineMatrix[5],
+        ];
+        textMatrix = [...textLineMatrix];
+      }
+      // ── Text drawing (Tj, TJ, ', ") ──
+      else if (fn === OPS.showText || fn === OPS.showSpacedText) {
+        const activeMcid = getNewActiveMcid();
+        if (activeMcid >= 0) {
+          // Compute text position in user space: CTM × textMatrix
+          const tm = multiplyTransforms(currentTransform, textMatrix);
+          const x = tm[4];
+          const y = tm[5];
+          const scaledFontSize = Math.abs(tm[3]) || Math.abs(fontSize * Math.abs(currentTransform[3])) || fontSize;
+
+          // Estimate text width from glyph data in operator args
+          let estWidth = 0;
+          const glyphs = args[0];
+          if (Array.isArray(glyphs)) {
+            for (const g of glyphs) {
+              if (typeof g === 'object' && g !== null && 'width' in g) {
+                estWidth += ((g as { width: number }).width * fontSize) / 1000;
+              } else if (typeof g === 'number') {
+                // TJ spacing adjustment (thousandths of text unit, negative = advance)
+                estWidth -= (g * fontSize) / 1000;
+              }
+            }
+          }
+          if (estWidth <= 0) estWidth = scaledFontSize * 3; // rough fallback
+
+          const h = scaledFontSize;
+          const topY = viewport.height - y - h;
+
+          if (mergeBBox(activeMcid, { x, y: topY, w: Math.abs(estWidth), h })) {
+            textMapped++;
           }
         }
-        if (activeMcid < 0) continue;
 
-        // Skip if text-based extraction already got this MCID
-        if (existingPageMap?.has(activeMcid)) continue;
-
-        // Compute image bbox from current transform
-        const [a, b, c, d, e, f] = currentTransform;
-        const width = Math.sqrt(a * a + b * b);
-        const height = Math.sqrt(c * c + d * d);
-        const x = e;
-        const y = viewport.height - f - height;
-
-        const bbox: BBox = { x, y, w: width, h: height };
-
-        // Add to mcidMap
-        if (!mcidMap.has(pageNum)) {
-          mcidMap.set(pageNum, new Map());
+        // Advance text matrix by drawn width (approximate — move past drawn glyphs)
+        // This ensures subsequent Tj calls on same line don't overlap
+        let advance = 0;
+        const glyphs = args[0];
+        if (Array.isArray(glyphs)) {
+          for (const g of glyphs) {
+            if (typeof g === 'object' && g !== null && 'width' in g) {
+              advance += ((g as { width: number }).width * fontSize) / 1000;
+            } else if (typeof g === 'number') {
+              advance -= (g * fontSize) / 1000;
+            }
+          }
         }
-        const pageMap = mcidMap.get(pageNum)!;
-        const existing = pageMap.get(activeMcid);
-        if (existing) {
-          const x2 = Math.max(existing.x + existing.w, bbox.x + bbox.w);
-          const y2 = Math.max(existing.y + existing.h, bbox.y + bbox.h);
-          existing.x = Math.min(existing.x, bbox.x);
-          existing.y = Math.min(existing.y, bbox.y);
-          existing.w = x2 - existing.x;
-          existing.h = y2 - existing.y;
-        } else {
-          pageMap.set(activeMcid, bbox);
-          imagesMapped++;
+        if (advance > 0) {
+          textMatrix = [
+            textMatrix[0], textMatrix[1],
+            textMatrix[2], textMatrix[3],
+            textMatrix[0] * advance + textMatrix[4],
+            textMatrix[1] * advance + textMatrix[5],
+          ];
+        }
+      } else if (fn === OPS.nextLineShowText || fn === OPS.nextLineSetSpacingShowText) {
+        // Move to next line, then show text
+        textLineMatrix = [
+          textLineMatrix[0], textLineMatrix[1],
+          textLineMatrix[2], textLineMatrix[3],
+          textLineMatrix[2] * (-leading) + textLineMatrix[4],
+          textLineMatrix[3] * (-leading) + textLineMatrix[5],
+        ];
+        textMatrix = [...textLineMatrix];
+
+        const activeMcid = getNewActiveMcid();
+        if (activeMcid >= 0) {
+          const tm = multiplyTransforms(currentTransform, textMatrix);
+          const x = tm[4];
+          const y = tm[5];
+          const scaledFontSize = Math.abs(tm[3]) || fontSize;
+          const h = scaledFontSize;
+          const topY = viewport.height - y - h;
+          const estWidth = scaledFontSize * 5; // rough estimate
+
+          if (mergeBBox(activeMcid, { x, y: topY, w: estWidth, h })) {
+            textMapped++;
+          }
+        }
+      }
+      // ── Images ──
+      else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+        const activeMcid = getNewActiveMcid();
+        if (activeMcid >= 0) {
+          const [a, b, c, d, e, f] = currentTransform;
+          const width = Math.sqrt(a * a + b * b);
+          const height = Math.sqrt(c * c + d * d);
+          const x = e;
+          const y = viewport.height - f - height;
+
+          if (mergeBBox(activeMcid, { x, y, w: width, h: height })) {
+            imagesMapped++;
+          }
+        }
+      }
+      // ── Paths (constructPath carries minMax bbox) ──
+      else if (fn === OPS.constructPath) {
+        const activeMcid = getNewActiveMcid();
+        if (activeMcid >= 0) {
+          // constructPath args: [subOps, subArgs, minMax]
+          const minMax = args[2] as number[] | undefined;
+          if (minMax && minMax.length >= 4) {
+            const [minX, minY, maxX, maxY] = minMax;
+            // Transform path bbox corners through CTM
+            const corners = [
+              [minX, minY], [maxX, minY], [minX, maxY], [maxX, maxY],
+            ];
+            let txMin = Infinity, tyMin = Infinity, txMax = -Infinity, tyMax = -Infinity;
+            for (const [cx, cy] of corners) {
+              const tx = currentTransform[0] * cx + currentTransform[2] * cy + currentTransform[4];
+              const ty = currentTransform[1] * cx + currentTransform[3] * cy + currentTransform[5];
+              txMin = Math.min(txMin, tx);
+              tyMin = Math.min(tyMin, ty);
+              txMax = Math.max(txMax, tx);
+              tyMax = Math.max(tyMax, ty);
+            }
+            const w = txMax - txMin;
+            const h = tyMax - tyMin;
+            if (w > 0.5 && h > 0.5) { // Skip sub-pixel paths (hairlines, dots)
+              const topY = viewport.height - tyMax;
+              if (mergeBBox(activeMcid, { x: txMin, y: topY, w, h })) {
+                pathMapped++;
+              }
+            }
+          }
         }
       }
     }
   }
 
-  return imagesMapped;
+  return { imagesMapped, textMapped, pathMapped };
 }
 
 // ── pdf-lib struct tree walking ────────────────────────────────────────
@@ -768,12 +937,14 @@ export async function extractZonesFromTaggedPdf(
 
   const textMcidCount = [...mcidMap.entries()].reduce((sum, [, m]) => sum + m.size, 0);
 
-  // 4b. Augment with image/XObject MCIDs from operator list
-  const imagesMapped = await augmentMcidMapWithImages(pdfjsDoc, mcidMap);
+  // 4b. Augment with ALL content types from operator list (text, images, paths)
+  const opStats = await augmentMcidMapFromOperatorList(pdfjsDoc, mcidMap);
   await pdfjsDoc.destroy();
 
+  const totalFromOpList = opStats.textMapped + opStats.imagesMapped + opStats.pathMapped;
   logger.info(
-    `[tagged-pdf-extractor] MCID bbox map: ${textMcidCount} from text + ${imagesMapped} from images across ${mcidMap.size} pages`,
+    `[tagged-pdf-extractor] MCID bbox map: ${textMcidCount} from textContent + ${totalFromOpList} from operatorList ` +
+    `(text:${opStats.textMapped} img:${opStats.imagesMapped} path:${opStats.pathMapped}) across ${mcidMap.size} pages`,
   );
 
   // 5. Build RoleMap for custom tag resolution
@@ -850,7 +1021,9 @@ export async function extractZonesFromTaggedPdf(
       zonesExtracted: realZones.length,
       ghostZones: ghostCount,
       textMcids: textMcidCount,
-      imageMcids: imagesMapped,
+      imageMcids: opStats.imagesMapped,
+      opListTextMcids: opStats.textMapped,
+      opListPathMcids: opStats.pathMapped,
       droppedNoBbox: stats.droppedNoBbox,
       unmappedTags: Object.fromEntries(stats.unmappedTags),
       pagesWithZeroZones: emptyPages,
