@@ -275,17 +275,26 @@ interface StructTreeApiStats {
   opListPath: number;
 }
 
+/** Maps content ID → max font size seen in that content run. */
+type ContentIdFontMap = Map<string, number>;
+
+interface ContentIdMaps {
+  bboxMap: ContentIdBBoxMap;
+  fontMap: ContentIdFontMap;
+}
+
 /**
- * Build content-ID → bbox map from getTextContent().
+ * Build content-ID → bbox map (and font size map) from getTextContent().
  * Uses full pdfjs content IDs (e.g., "p44R_mc5") to correctly handle
  * MCIDs from both page content streams AND Form XObjects.
  */
 async function buildContentIdBBoxMap(
   page: pdfjsLib.PDFPageProxy,
-): Promise<ContentIdBBoxMap> {
+): Promise<ContentIdMaps> {
   const viewport = page.getViewport({ scale: 1 });
   const textContent = await page.getTextContent({ includeMarkedContent: true });
-  const map: ContentIdBBoxMap = new Map();
+  const bboxMap: ContentIdBBoxMap = new Map();
+  const fontMap: ContentIdFontMap = new Map();
 
   const idStack: string[] = [];
 
@@ -323,10 +332,53 @@ async function buildContentIdBBoxMap(
     const h = fontSize || textItem.height;
     const topY = viewport.height - y - h;
 
-    mergeBBoxIntoMap(map, activeId, { x, y: topY, w, h });
+    mergeBBoxIntoMap(bboxMap, activeId, { x, y: topY, w, h });
+    // Track max font size per content ID (for heading level inference)
+    if (fontSize > 0) {
+      fontMap.set(activeId, Math.max(fontMap.get(activeId) ?? 0, fontSize));
+    }
   }
 
-  return map;
+  return { bboxMap, fontMap };
+}
+
+/**
+ * Cluster bboxes by vertical proximity into paragraph-level groups.
+ * Merges bboxes whose vertical gap is less than LINE_GAP_THRESHOLD.
+ */
+function clusterBboxesByProximity(bboxes: BBox[]): BBox[] {
+  if (bboxes.length === 0) return [];
+  // Sort by Y position (top to bottom)
+  const sorted = [...bboxes].sort((a, b) => a.y - b.y);
+
+  // Estimate typical line height from the median height of all bboxes
+  const heights = sorted.map((b) => b.h).filter((h) => h > 0).sort((a, b) => a - b);
+  const medianHeight = heights.length > 0 ? heights[Math.floor(heights.length / 2)] : 12;
+  const gapThreshold = medianHeight * 2.0;
+
+  const clusters: BBox[] = [];
+  let current = { ...sorted[0] };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const box = sorted[i];
+    const currentBottom = current.y + current.h;
+    const gap = box.y - currentBottom;
+
+    if (gap < gapThreshold) {
+      // Merge into current cluster
+      const x2 = Math.max(current.x + current.w, box.x + box.w);
+      const y2 = Math.max(currentBottom, box.y + box.h);
+      current.x = Math.min(current.x, box.x);
+      current.w = x2 - current.x;
+      current.h = y2 - current.y;
+    } else {
+      // Start new cluster
+      clusters.push(current);
+      current = { ...box };
+    }
+  }
+  clusters.push(current);
+  return clusters;
 }
 
 function mergeBBoxIntoMap(map: Map<string, BBox>, key: string, bbox: BBox): void {
@@ -637,6 +689,27 @@ function bboxFromContentIds(
 }
 
 /**
+ * Dump the pdfjs structure tree for a page (diagnostic logging).
+ * Only logs the first maxDepth levels to keep output manageable.
+ */
+function dumpStructTree(node: PdfjsStructNode, maxDepth = 4, indent = 0): string {
+  if (indent > maxDepth) return '';
+  const prefix = '  '.repeat(indent);
+  const role = node.role ?? '(root)';
+  const children = node.children || [];
+  const structCount = children.filter((c) => isPdfjsStructNode(c)).length;
+  const contentCount = children.filter((c) => isPdfjsContent(c)).length;
+  let line = `${prefix}${role} [struct:${structCount} content:${contentCount}]`;
+  const lines = [line];
+  for (const child of children) {
+    if (isPdfjsStructNode(child)) {
+      lines.push(dumpStructTree(child, maxDepth, indent + 1));
+    }
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
+/**
  * Walk the pdfjs structure tree for a page and extract zones.
  *
  * Uses a "block-level semantic" approach:
@@ -813,6 +886,7 @@ async function extractUsingStructTreeApi(
   };
 
   let hasAnyStructTree = false;
+  const pageFontSizes = new Set<number>(); // collect all font sizes for heading inference
 
   for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
     const page = await pdfjsDoc.getPage(pageNum);
@@ -824,14 +898,25 @@ async function extractUsingStructTreeApi(
     }
     hasAnyStructTree = true;
 
-    // Build content-ID → bbox map from text content
-    const idBBoxMap = await buildContentIdBBoxMap(page);
+    // Dump struct tree for first page (diagnostic)
+    if (pageNum <= 2) {
+      const treeDump = dumpStructTree(structTree as unknown as PdfjsStructNode, 3);
+      logger.info(`[tagged-pdf-extractor] Page ${pageNum} struct tree:\n${treeDump}`);
+    }
+
+    // Build content-ID → bbox map (and font size map) from text content
+    const { bboxMap: idBBoxMap, fontMap } = await buildContentIdBBoxMap(page);
 
     // Augment with operator list for non-text content (images, paths, missed text)
     const opStats = await augmentContentIdMapFromOperatorList(page, idBBoxMap);
     stats.opListText += opStats.text;
     stats.opListImage += opStats.image;
     stats.opListPath += opStats.path;
+
+    // Collect all font sizes on this page for heading level inference
+    for (const [, size] of fontMap) {
+      if (size > 0) pageFontSizes.add(size);
+    }
 
     // Walk the structure tree and extract zones
     const claimedIds = new Set<string>();
@@ -846,31 +931,95 @@ async function extractUsingStructTreeApi(
     );
 
     // Recover orphan content IDs — content in bbox map not claimed by any struct element.
-    // These represent content on the page that the structure tree didn't reference.
-    let orphanCount = 0;
+    // Cluster nearby orphans into paragraph-level zones instead of emitting one per content ID.
+    const orphanBboxes: BBox[] = [];
     for (const [contentId, bbox] of idBBoxMap.entries()) {
       if (!claimedIds.has(contentId)) {
-        zones.push({
-          pageNumber: pageNum,
-          bbox,
-          zoneType: 'paragraph',
-          confidence: 0.7,
-          label: 'Orphan',
-        });
-        orphanCount++;
+        orphanBboxes.push(bbox);
       }
     }
-
-    if (orphanCount > 0 || idBBoxMap.size > 0) {
-      const treeZones = zones.filter((z) => z.pageNumber === pageNum && z.label !== 'Orphan').length;
-      logger.debug(
-        `[tagged-pdf-extractor] Page ${pageNum}: bboxMap=${idBBoxMap.size} claimed=${claimedIds.size} treeZones=${treeZones} orphans=${orphanCount}`,
-      );
+    const orphanClusters = clusterBboxesByProximity(orphanBboxes);
+    for (const cluster of orphanClusters) {
+      zones.push({
+        pageNumber: pageNum,
+        bbox: cluster,
+        zoneType: 'paragraph',
+        confidence: 0.7,
+        label: 'Orphan',
+      });
     }
+
+    const treeZones = zones.filter((z) => z.pageNumber === pageNum && z.label !== 'Orphan').length;
+    logger.info(
+      `[tagged-pdf-extractor] Page ${pageNum}: bboxMap=${idBBoxMap.size} claimed=${claimedIds.size} treeZones=${treeZones} orphanClusters=${orphanClusters.length} (from ${orphanBboxes.length} IDs)`,
+    );
   }
 
   if (!hasAnyStructTree) return null;
+
+  // Post-process: infer heading levels for generic "H" tags using font sizes
+  inferHeadingLevels(zones, pageFontSizes);
+
   return { zones, stats };
+}
+
+/**
+ * For zones tagged as generic "H", infer H1-H6 from font size.
+ * Builds a descending list of distinct font sizes found in the document,
+ * then maps each heading's font size to a level (largest = H1, etc.).
+ */
+function inferHeadingLevels(
+  zones: TaggedPdfZone[],
+  allFontSizes: Set<number>,
+): void {
+  const genericH = zones.filter((z) => z.label === 'H' && z.zoneType === 'section-header');
+  if (genericH.length === 0) return;
+
+  // Build distinct font sizes sorted descending (largest first)
+  const sortedSizes = [...allFontSizes].filter((s) => s > 0).sort((a, b) => b - a);
+  if (sortedSizes.length === 0) return;
+
+  // Compute body text font size (most common — typically the smallest among frequent sizes)
+  // Use the median font size as a proxy; anything larger is a heading candidate
+  const bodySize = sortedSizes.length > 2 ? sortedSizes[Math.floor(sortedSizes.length / 2)] : sortedSizes[sortedSizes.length - 1];
+
+  // Only consider sizes above body text as heading sizes
+  const headingSizes = sortedSizes.filter((s) => s > bodySize);
+  if (headingSizes.length === 0) {
+    // All same size — can't distinguish, leave as H
+    return;
+  }
+
+  // Map font size → heading level (H1 for largest, H2 for next, etc., max H6)
+  const sizeToLevel = new Map<number, number>();
+  for (let i = 0; i < headingSizes.length && i < 6; i++) {
+    sizeToLevel.set(headingSizes[i], i + 1);
+  }
+
+  for (const zone of genericH) {
+    // Find the font size for this zone — use bbox height as proxy
+    // (heading font size ≈ bbox height for single-line headings)
+    const zoneHeight = zone.bbox?.h ?? 0;
+    if (zoneHeight <= 0) continue;
+
+    // Find closest matching heading size
+    let bestLevel = 6; // default to smallest heading
+    let bestDist = Infinity;
+    for (const [size, level] of sizeToLevel) {
+      const dist = Math.abs(size - zoneHeight);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestLevel = level;
+      }
+    }
+
+    zone.label = `H${bestLevel}`;
+  }
+
+  const relabeled = genericH.filter((z) => z.label !== 'H').length;
+  if (relabeled > 0) {
+    logger.info(`[tagged-pdf-extractor] Inferred heading levels for ${relabeled} generic H tags`);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
