@@ -162,13 +162,19 @@ def detect(req: DetectRequest):
     doc_dict = result.document.export_to_dict()
     logger.info(f"Docling export_to_dict keys: {list(doc_dict.keys())}")
 
-    # Build page-number lookup from pages dict (Docling v2: {hash: {size, page_no, ...}})
+    # Build page-number and page-height lookups from pages dict
+    # (Docling v2: {hash: {size: {width, height}, page_no, ...}})
     pages_dict = doc_dict.get("pages", {})
     page_no_map = {}
+    page_height_map = {}  # page_no → height (for coordinate flip)
     if isinstance(pages_dict, dict):
         for page_hash, page_info in pages_dict.items():
             if isinstance(page_info, dict):
-                page_no_map[page_hash] = page_info.get("page_no", 0)
+                page_no = page_info.get("page_no", 0)
+                page_no_map[page_hash] = page_no
+                size = page_info.get("size", {})
+                if isinstance(size, dict):
+                    page_height_map[page_no] = float(size.get("height", 792))
 
     zones = []
 
@@ -205,8 +211,7 @@ def detect(req: DetectRequest):
 
             raw_bbox = prov.get("bbox", {})
             if isinstance(raw_bbox, dict):
-                # Docling uses PDF coords (y=0 at bottom, t > b), so
-                # normalise to top-left origin with positive w/h.
+                # Docling uses PDF coords (y=0 at bottom, t > b).
                 l = float(raw_bbox.get("l", raw_bbox.get("x", 0)))
                 t = float(raw_bbox.get("t", raw_bbox.get("y", 0)))
                 r = float(raw_bbox.get("r", l + raw_bbox.get("w", 0)))
@@ -226,6 +231,12 @@ def detect(req: DetectRequest):
                 }
             else:
                 continue
+
+            # Flip y from PDF coords (y=0 at bottom) to screen coords
+            # (y=0 at top) so Docling and pdfxt zones use the same system.
+            page_no_int = int(page_ref) if isinstance(page_ref, (int, float)) else 0
+            page_h = page_height_map.get(page_no_int, 792.0)
+            bbox["y"] = page_h - bbox["y"] - bbox["h"]
 
             # Docling v2 export_to_dict() does NOT expose per-item confidence.
             # Return None (not a fake fallback) so the frontend can show "N/A".
