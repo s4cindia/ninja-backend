@@ -53,8 +53,9 @@ export async function runCalibration(
   // 3. Run both detections in parallel
   let doclingZones: SourceZone[];
   let pdfxtZones: SourceZone[];
+  let doclingFailed = false;
 
-  // Map each detection to SourceZone[] before Promise.all to keep types clean
+  // Map each detection to SourceZone[] before settling
   const doclingPromise = detectWithDocling(pdfPath, calibrationRunId).then(
     (res) => res.zones.map((z): SourceZone => ({
       pageNumber: z.page,
@@ -101,18 +102,39 @@ export async function runCalibration(
     pdfxtPromise = Promise.resolve([]);
   }
 
-  try {
-    [doclingZones, pdfxtZones] = await Promise.all([doclingPromise, pdfxtPromise]);
-  } catch (err) {
+  // Use allSettled so Docling failure doesn't kill the whole run
+  const [doclingResult, pdfxtResult] = await Promise.allSettled([doclingPromise, pdfxtPromise]);
+
+  if (doclingResult.status === 'fulfilled') {
+    doclingZones = doclingResult.value;
+  } else {
+    logger.warn(`[Calibration] Docling failed (non-fatal): ${(doclingResult.reason as Error).message}`);
+    doclingZones = [];
+    doclingFailed = true;
+  }
+
+  if (pdfxtResult.status === 'fulfilled') {
+    pdfxtZones = pdfxtResult.value;
+  } else {
+    // pdfxt (tagged-PDF) failure is also non-fatal — proceed with whatever we have
+    logger.warn(`[Calibration] pdfxt/tagged-PDF extraction failed (non-fatal): ${(pdfxtResult.reason as Error).message}`);
+    pdfxtZones = [];
+  }
+
+  // If BOTH sources failed, mark the run as failed
+  if (doclingZones.length === 0 && pdfxtZones.length === 0 && pdfxtGhostZones.length === 0) {
+    const errorMsg = doclingResult.status === 'rejected'
+      ? (doclingResult.reason as Error).message
+      : 'Both extraction sources returned 0 zones';
     await prisma.calibrationRun.update({
       where: { id: calibrationRunId },
       data: {
         completedAt: new Date(),
         durationMs: Date.now() - startTime,
-        summary: { error: (err as Error).message, status: 'FAILED' },
+        summary: { error: errorMsg, status: 'FAILED' },
       },
     });
-    throw err;
+    throw new Error(errorMsg);
   }
 
   // 4. Match and summarise
@@ -134,6 +156,7 @@ export async function runCalibration(
         summary: {
           ...summary,
           ...(pdfxtExtractionStats ? { pdfxtExtractionStats } : {}),
+          ...(doclingFailed ? { doclingFailed: true } : {}),
         } as unknown as Prisma.InputJsonValue,
       },
     }),
