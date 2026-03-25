@@ -7,6 +7,7 @@ beforeEach(() => {
 
 describe('mapDoclingLabel', () => {
   it.each([
+    // Docling v1 PascalCase labels
     ['Text', 'paragraph'],
     ['Section-Header', 'section-header'],
     ['Table', 'table'],
@@ -15,29 +16,26 @@ describe('mapDoclingLabel', () => {
     ['Footnote', 'footnote'],
     ['Page-Header', 'header'],
     ['Page-Footer', 'footer'],
+    // Docling v2 lowercase labels
+    ['text', 'paragraph'],
+    ['section_header', 'section-header'],
+    ['table', 'table'],
+    ['picture', 'figure'],
+    ['caption', 'caption'],
+    ['footnote', 'footnote'],
+    ['page_header', 'header'],
+    ['page_footer', 'footer'],
+    ['list_item', 'paragraph'],
   ] as const)('maps "%s" → "%s"', (label, expected) => {
     expect(mapDoclingLabel(label)).toBe(expected);
   });
 
-  it('returns "paragraph" for unknown label "Formula"', () => {
+  it('returns "paragraph" for truly unknown labels', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(mapDoclingLabel('Formula')).toBe('paragraph');
-    warnSpy.mockRestore();
-  });
-
-  it('logs a warning for unknown label', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    mapDoclingLabel('Formula');
+    expect(mapDoclingLabel('SomethingNew')).toBe('paragraph');
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Formula'),
+      expect.stringContaining('SomethingNew'),
     );
-    warnSpy.mockRestore();
-  });
-
-  it('is case-sensitive: "text" falls through to default', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(mapDoclingLabel('text')).toBe('paragraph');
-    expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });
