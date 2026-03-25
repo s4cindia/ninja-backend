@@ -31,12 +31,12 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'Code':       'paragraph',
   'BibEntry':   'paragraph',
   'Formula':    'paragraph',
-  // ── Inline text (emitted when they are leaf elements) ─
+  // ── Inline text (absorbed into parent block) ──────────
   'Span':       'paragraph',
   'Quote':      'paragraph',
-  'Em':         'paragraph',      // PDF 2.0 emphasis
-  'Strong':     'paragraph',      // PDF 2.0 strong
-  'Sub':        'paragraph',      // PDF 2.0 subscript
+  'Em':         'paragraph',
+  'Strong':     'paragraph',
+  'Sub':        'paragraph',
   'NonStruct':  'paragraph',
   'Private':    'paragraph',
   // ── Headings ──────────────────────────────────────────
@@ -47,35 +47,35 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'H4':         'section-header',
   'H5':         'section-header',
   'H6':         'section-header',
-  'H7':         'section-header',  // non-standard but used
-  'Title':      'section-header',  // PDF 2.0
+  'H7':         'section-header',
+  'Title':      'section-header',
   // ── Tables ────────────────────────────────────────────
   'Table':      'table',
   'TR':         'table',
   'TH':         'table',
   'TD':         'table',
-  'TBody':      'table',           // PDF 2.0 table body
+  'TBody':      'table',
   // ── Figures / illustrations ───────────────────────────
   'Figure':     'figure',
-  'Form':       'figure',          // interactive form element
+  'Form':       'figure',
   // ── Captions ──────────────────────────────────────────
   'Caption':    'caption',
   // ── Notes / footnotes ─────────────────────────────────
   'Note':       'footnote',
   'NT':         'footnote',
   'FENote':     'footnote',
-  // ── Container / grouping (transparent — recurse) ──────
+  // ── Container / grouping ──────────────────────────────
   'Sect':       'paragraph',
   'Div':        'paragraph',
   'Art':        'paragraph',
   'Part':       'paragraph',
-  'Aside':      'paragraph',       // PDF 2.0
+  'Aside':      'paragraph',
   'Index':      'paragraph',
   // ── Headers / footers (running) ───────────────────────
   'THead':      'header',
   'TFoot':      'footer',
-  'Hdr':        'header',          // running header artifact tag
-  'FTR':        'footer',          // running footer artifact tag
+  'Hdr':        'header',
+  'FTR':        'footer',
   'Header':     'header',
   'Footer':     'footer',
   // ── TOC ───────────────────────────────────────────────
@@ -100,11 +100,51 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'WP':         'paragraph',
 };
 
-/**
- * Tags that should never produce a zone (pure structural containers).
- * Everything else defaults to 'paragraph' so unknown tags are never lost.
- */
-const SKIP_TAGS = new Set(['Root', 'Document', 'StructTreeRoot', 'DocumentFragment']);
+// ─── Block-level semantic extraction ────────────────────────────────────
+// Three tag categories control the tree walk strategy:
+//
+// ZONE_TAGS:      Emit a zone, collect ALL descendant content, stop recursing.
+//                 These are meaningful content blocks (paragraphs, headings, etc.)
+//
+// CONTAINER_TAGS: Don't emit a zone — just recurse into children.
+//                 These are structural grouping elements.
+//
+// Everything else is INLINE (Span, Link, Em, Lbl, etc.) — absorbed into
+// the nearest ancestor zone. If encountered at the top level with no
+// block ancestor, emitted as a fallback paragraph zone.
+
+/** Tags that emit a zone and collect ALL descendant content IDs. */
+const ZONE_TAGS = new Set([
+  // Block text
+  'P', 'BlockQuote', 'Code', 'BibEntry', 'Formula',
+  // Headings
+  'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'Title',
+  // Tables (whole table = one zone)
+  'Table',
+  // Figures
+  'Figure', 'Form',
+  // Captions
+  'Caption',
+  // Notes / footnotes
+  'Note', 'NT', 'FENote',
+  // List items (each LI = one zone, absorbs Lbl + LBody)
+  'LI',
+  // Headers / footers
+  'Hdr', 'FTR', 'Header', 'Footer', 'THead', 'TFoot',
+  // TOC entries
+  'TOCI',
+]);
+
+/** Tags that are transparent containers — recurse into children, no zone. */
+const CONTAINER_TAGS = new Set([
+  'Root', 'Document', 'StructTreeRoot', 'DocumentFragment',
+  'Sect', 'Div', 'Art', 'Part', 'Aside', 'Index',
+  'L',      // list: recurse into LI items
+  'LBody',  // list item body: may contain P or inline content
+  'TOC',    // TOC: recurse into TOCI entries
+  'TR', 'TBody', // table internals (Table already captured if above)
+  'NonStruct', 'Private',
+]);
 
 /**
  * Resolve a tag name through a RoleMap, then look up in TAG_MAP.
@@ -116,7 +156,7 @@ export function mapStructTag(
   roleMap?: Map<string, string>,
 ): CanonicalZoneType | null {
   const resolvedTag = roleMap?.get(tag) ?? tag;
-  if (SKIP_TAGS.has(resolvedTag)) return null;
+  if (CONTAINER_TAGS.has(resolvedTag)) return null;
   return TAG_MAP[resolvedTag] ?? 'paragraph';
 }
 
@@ -599,13 +639,17 @@ function bboxFromContentIds(
 /**
  * Walk the pdfjs structure tree for a page and extract zones.
  *
- * Uses a "leaf-node" approach:
- * - Leaf elements (no struct children) collect ALL descendant content IDs
- *   through inline wrappers and emit a zone.
- * - Branch elements (with struct children) recurse into children.
- *   Any direct content not in child struct nodes is emitted as an
- *   orphan zone so nothing is lost.
- * - Unknown tags default to 'paragraph' (never silently dropped).
+ * Uses a "block-level semantic" approach:
+ * - ZONE_TAGS (P, H1-H6, Table, LI, Figure, etc.) emit a zone, collect
+ *   ALL descendant content IDs, and stop recursing. One block = one zone.
+ * - CONTAINER_TAGS (Sect, Div, L, etc.) are transparent — just recurse
+ *   into children. Any orphan direct content emitted as fallback.
+ * - INLINE tags (Span, Link, Em, Lbl, etc.) are absorbed into their
+ *   parent zone. If encountered at the top level (no block ancestor),
+ *   they emit a fallback paragraph zone.
+ *
+ * This matches how native pdfxt extracts: semantic blocks like P, H2,
+ * H3, Table — not fragmented inline elements.
  */
 function walkPdfjsStructTree(
   node: PdfjsStructNode,
@@ -619,7 +663,7 @@ function walkPdfjsStructTree(
   if (depth > 100) return;
 
   const role = node.role;
-  if (!role || role === 'Root') {
+  if (!role) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
         walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
@@ -628,100 +672,123 @@ function walkPdfjsStructTree(
     return;
   }
 
-  const zoneType = mapStructTag(role);
-  if (!zoneType) {
-    // Skipped tag (Document, etc.) — still recurse
+  // ── CONTAINER TAG — recurse into children, no zone ──
+  if (CONTAINER_TAGS.has(role)) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
         walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
       }
     }
+    // Emit orphan direct content not claimed by children
+    emitOrphanContent(node, role, pageNum, idBBoxMap, zones, stats, claimedIds);
     return;
   }
 
-  // Separate struct children from content children
-  const structChildren: PdfjsStructNode[] = [];
+  // ── ZONE TAG — emit one zone, collect ALL descendants, stop recursing ──
+  if (ZONE_TAGS.has(role)) {
+    emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds);
+    return;
+  }
+
+  // ── INLINE TAG at top level (no block ancestor captured it) ──
+  // This happens when inline elements appear directly under containers.
+  // Emit as a fallback zone so nothing is lost.
+  emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds);
+}
+
+/**
+ * Emit a single zone for a block-level element, collecting ALL
+ * descendant content IDs into one merged bbox.
+ */
+function emitBlockZone(
+  node: PdfjsStructNode,
+  role: string,
+  pageNum: number,
+  idBBoxMap: ContentIdBBoxMap,
+  zones: TaggedPdfZone[],
+  stats: StructTreeApiStats,
+  claimedIds: Set<string>,
+): void {
+  const zoneType = TAG_MAP[role] ?? 'paragraph';
+  const allContentIds = collectAllDescendantContentIds(node);
+
+  stats.structElements++;
+  stats.contentIdsFound += allContentIds.length;
+
+  if (allContentIds.length > 0) {
+    const { bbox, matched } = bboxFromContentIds(allContentIds, idBBoxMap);
+    if (matched > 0) stats.contentIdsWithBbox += matched;
+
+    // Fallback: explicit bbox from pdfjs attributes
+    let finalBBox = bbox;
+    if (!finalBBox && node.bbox && node.bbox.length >= 4) {
+      finalBBox = {
+        x: Math.min(node.bbox[0], node.bbox[2]),
+        y: Math.min(node.bbox[1], node.bbox[3]),
+        w: Math.abs(node.bbox[2] - node.bbox[0]),
+        h: Math.abs(node.bbox[3] - node.bbox[1]),
+      };
+      stats.bboxFromExplicit++;
+    }
+
+    if (finalBBox) {
+      zones.push({ pageNumber: pageNum, bbox: finalBBox, zoneType, confidence: 0.9, label: role });
+      for (const id of allContentIds) claimedIds.add(id);
+    } else {
+      stats.droppedNoBbox++;
+      zones.push({
+        pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
+        label: role, isGhost: true, ghostTag: role,
+      });
+    }
+  } else {
+    // Element with no content IDs (e.g., annotation-only or empty)
+    const hasObjectChildren = (node.children || []).some(
+      (c) => isPdfjsContent(c) && (c.type === 'object' || c.type === 'annotation'),
+    );
+    if (hasObjectChildren) {
+      stats.structElements++;
+      stats.droppedNoBbox++;
+      zones.push({
+        pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
+        label: role, isGhost: true, ghostTag: role,
+      });
+    }
+  }
+}
+
+/**
+ * Emit a fallback zone for orphan direct content in a container node
+ * that wasn't claimed by any child struct element.
+ */
+function emitOrphanContent(
+  node: PdfjsStructNode,
+  role: string,
+  pageNum: number,
+  idBBoxMap: ContentIdBBoxMap,
+  zones: TaggedPdfZone[],
+  stats: StructTreeApiStats,
+  claimedIds: Set<string>,
+): void {
   const directContentIds: string[] = [];
   for (const child of node.children || []) {
-    if (isPdfjsStructNode(child)) {
-      structChildren.push(child);
-    } else if (isPdfjsContent(child) && (child.type === 'content' || child.type === 'object')) {
+    if (isPdfjsContent(child) && (child.type === 'content' || child.type === 'object')) {
       directContentIds.push(child.id);
     }
   }
+  if (directContentIds.length === 0) return;
 
-  if (structChildren.length === 0) {
-    // ── LEAF NODE — collect all content (including nested inline) ──
-    const allContentIds = collectAllDescendantContentIds(node);
-    // Include direct content IDs too (object/annotation refs)
-    for (const id of directContentIds) {
-      if (!allContentIds.includes(id)) allContentIds.push(id);
-    }
+  const orphanIds = directContentIds.filter((id) => !claimedIds.has(id));
+  if (orphanIds.length === 0) return;
 
-    stats.structElements++;
-    stats.contentIdsFound += allContentIds.length;
-
-    if (allContentIds.length > 0) {
-      const { bbox, matched } = bboxFromContentIds(allContentIds, idBBoxMap);
-      if (matched > 0) stats.contentIdsWithBbox += matched;
-
-      // Fallback: explicit bbox from pdfjs attributes
-      let finalBBox = bbox;
-      if (!finalBBox && node.bbox && node.bbox.length >= 4) {
-        finalBBox = {
-          x: Math.min(node.bbox[0], node.bbox[2]),
-          y: Math.min(node.bbox[1], node.bbox[3]),
-          w: Math.abs(node.bbox[2] - node.bbox[0]),
-          h: Math.abs(node.bbox[3] - node.bbox[1]),
-        };
-        stats.bboxFromExplicit++;
-      }
-
-      if (finalBBox) {
-        zones.push({ pageNumber: pageNum, bbox: finalBBox, zoneType, confidence: 0.9, label: role });
-        for (const id of allContentIds) claimedIds.add(id);
-      } else {
-        stats.droppedNoBbox++;
-        zones.push({
-          pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
-          label: role, isGhost: true, ghostTag: role,
-        });
-      }
-    } else {
-      // Leaf with object/annotation children but no content IDs
-      const hasObjectChildren = (node.children || []).some(
-        (c) => isPdfjsContent(c) && (c.type === 'object' || c.type === 'annotation'),
-      );
-      if (hasObjectChildren) {
-        stats.structElements++;
-        stats.droppedNoBbox++;
-        zones.push({
-          pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
-          label: role, isGhost: true, ghostTag: role,
-        });
-      }
-    }
-    return;
-  }
-
-  // ── BRANCH NODE — recurse into struct children ──
-  for (const child of structChildren) {
-    walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
-  }
-
-  // Emit zone for any direct content NOT captured by child struct elements
-  if (directContentIds.length > 0) {
-    const orphanIds = directContentIds.filter((id) => !claimedIds.has(id));
-    if (orphanIds.length > 0) {
-      stats.structElements++;
-      stats.contentIdsFound += orphanIds.length;
-      const { bbox, matched } = bboxFromContentIds(orphanIds, idBBoxMap);
-      if (matched > 0) stats.contentIdsWithBbox += matched;
-      if (bbox) {
-        zones.push({ pageNumber: pageNum, bbox, zoneType, confidence: 0.85, label: role });
-        for (const id of orphanIds) claimedIds.add(id);
-      }
-    }
+  const zoneType = TAG_MAP[role] ?? 'paragraph';
+  stats.structElements++;
+  stats.contentIdsFound += orphanIds.length;
+  const { bbox, matched } = bboxFromContentIds(orphanIds, idBBoxMap);
+  if (matched > 0) stats.contentIdsWithBbox += matched;
+  if (bbox) {
+    zones.push({ pageNumber: pageNum, bbox, zoneType, confidence: 0.85, label: role });
+    for (const id of orphanIds) claimedIds.add(id);
   }
 }
 

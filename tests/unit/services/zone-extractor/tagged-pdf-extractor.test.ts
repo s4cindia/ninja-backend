@@ -131,8 +131,8 @@ describe('tagged-pdf-extractor', () => {
       expect(mapStructTag('NT')).toBe('footnote');
     });
 
-    it('LBody maps to paragraph', () => {
-      expect(mapStructTag('LBody')).toBe('paragraph');
+    it('LBody is a container tag (returns null)', () => {
+      expect(mapStructTag('LBody')).toBeNull();
     });
 
     it('Link maps to paragraph', () => {
@@ -144,10 +144,15 @@ describe('tagged-pdf-extractor', () => {
       expect(mapStructTag('ZZZUnknown')).toBe('paragraph');
     });
 
-    it('structural root tags return null (skip list)', () => {
+    it('container tags return null (recurse without emitting)', () => {
       expect(mapStructTag('Document')).toBeNull();
       expect(mapStructTag('Root')).toBeNull();
       expect(mapStructTag('StructTreeRoot')).toBeNull();
+      expect(mapStructTag('Sect')).toBeNull();
+      expect(mapStructTag('Div')).toBeNull();
+      expect(mapStructTag('L')).toBeNull();
+      expect(mapStructTag('LBody')).toBeNull();
+      expect(mapStructTag('NonStruct')).toBeNull();
     });
   });
 
