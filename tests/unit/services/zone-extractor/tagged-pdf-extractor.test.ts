@@ -139,9 +139,15 @@ describe('tagged-pdf-extractor', () => {
       expect(mapStructTag('Link')).toBe('paragraph');
     });
 
-    it('unknown tags return null', () => {
-      expect(mapStructTag('CustomTag')).toBeNull();
-      expect(mapStructTag('ZZZUnknown')).toBeNull();
+    it('unknown tags default to paragraph (catch-all)', () => {
+      expect(mapStructTag('CustomTag')).toBe('paragraph');
+      expect(mapStructTag('ZZZUnknown')).toBe('paragraph');
+    });
+
+    it('structural root tags return null (skip list)', () => {
+      expect(mapStructTag('Document')).toBeNull();
+      expect(mapStructTag('Root')).toBeNull();
+      expect(mapStructTag('StructTreeRoot')).toBeNull();
     });
   });
 
