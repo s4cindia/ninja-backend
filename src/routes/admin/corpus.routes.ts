@@ -210,6 +210,8 @@ router.get('/corpus/documents/:id/download-url', authenticate, async (req: Reque
     });
     const downloadUrl = await getSignedUrl(s3Client, command, { expiresIn });
 
+    logger.info(`[download-url] type=${type} doc=${id} bucket=${parsedBucket} key=${s3Key} urlHost=${new URL(downloadUrl).hostname}`);
+
     return res.json({
       success: true,
       data: { downloadUrl, expiresIn },
