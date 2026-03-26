@@ -178,7 +178,7 @@ router.delete('/runs/:runId', authenticate, async (req: Request, res: Response) 
 
 const zonesQuerySchema = z.object({
   bucket: z.enum(['GREEN', 'AMBER', 'RED']).optional(),
-  limit: z.coerce.number().default(50),
+  limit: z.coerce.number().default(2000),
   cursor: z.string().optional(),
 });
 
@@ -209,7 +209,7 @@ router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Respons
       where,
       take: limit + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
-      orderBy: { id: 'asc' },
+      orderBy: [{ pageNumber: 'asc' }, { id: 'asc' }],
     });
 
     let nextCursor: string | undefined;
