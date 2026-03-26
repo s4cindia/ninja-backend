@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma, { Prisma } from '../lib/prisma';
+import { runAutoAnnotation } from '../services/calibration/auto-annotation.service';
 
 const router = Router();
 
@@ -151,6 +152,41 @@ router.post('/runs/:runId/confirm-all-green', authenticate, async (req: Request,
     });
 
     return res.json({ success: true, data: { confirmedCount: result.count } });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// POST /api/v1/calibration/runs/:runId/auto-annotate
+// Apply rule-based auto-annotation patterns to unreviewed zones.
+// Optional body: { patterns: ["ghost-zone-rejection", "toci-bulk-confirm", ...] }
+// If patterns is omitted or empty, all patterns are applied.
+const autoAnnotateBodySchema = z.object({
+  patterns: z.array(z.string()).optional(),
+}).optional();
+
+router.post('/runs/:runId/auto-annotate', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    // Verify run exists
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
+      });
+    }
+
+    const parsed = autoAnnotateBodySchema.safeParse(req.body);
+    const patterns = parsed.success ? parsed.data?.patterns : undefined;
+
+    const result = await runAutoAnnotation(runId, patterns);
+
+    return res.json({ success: true, data: result });
   } catch (err) {
     return res.status(500).json({
       success: false,
