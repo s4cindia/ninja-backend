@@ -134,6 +134,8 @@ async function applyGhostZoneRejection(zones: ZoneRow[]): Promise<PatternResult>
       data: {
         isArtefact: true,
         operatorVerified: true,
+        decision: 'REJECTED',
+        correctionReason: 'Auto-annotation: ghost zone or zero-area bbox',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -187,6 +189,8 @@ async function applyTociBulkConfirm(zones: ZoneRow[]): Promise<PatternResult> {
       data: {
         operatorVerified: true,
         operatorLabel: 'TOCI',
+        decision: 'CONFIRMED',
+        correctionReason: 'Auto-annotation: TOCI bulk confirm',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -256,6 +260,8 @@ async function applyRunningHeaderClassification(zones: ZoneRow[]): Promise<Patte
       data: {
         operatorVerified: true,
         operatorLabel: 'HDR',
+        decision: 'CORRECTED',
+        correctionReason: 'Auto-annotation: running header reclassification',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -269,6 +275,8 @@ async function applyRunningHeaderClassification(zones: ZoneRow[]): Promise<Patte
       data: {
         operatorVerified: true,
         operatorLabel: 'HDR',
+        decision: 'CONFIRMED',
+        correctionReason: 'Auto-annotation: running header confirm',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -323,6 +331,8 @@ async function applyListItemSequenceConfirm(zones: ZoneRow[]): Promise<PatternRe
       data: {
         operatorVerified: true,
         operatorLabel: 'LI',
+        decision: 'CONFIRMED',
+        correctionReason: 'Auto-annotation: LI sequence confirm',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -408,6 +418,8 @@ async function applyDuplicateFigRejection(zones: ZoneRow[]): Promise<PatternResu
       data: {
         isArtefact: true,
         operatorVerified: true,
+        decision: 'REJECTED',
+        correctionReason: 'Auto-annotation: duplicate FIG rejection',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },

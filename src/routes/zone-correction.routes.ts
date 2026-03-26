@@ -25,6 +25,7 @@ router.post('/zones/:zoneId/confirm', authenticate, async (req: Request, res: Re
       data: {
         operatorVerified: true,
         operatorLabel: zone.operatorLabel ?? zone.type,
+        decision: 'CONFIRMED',
         verifiedAt: new Date(),
         verifiedBy: operatorId,
       },
@@ -41,6 +42,7 @@ router.post('/zones/:zoneId/confirm', authenticate, async (req: Request, res: Re
 
 const correctBodySchema = z.object({
   newLabel: z.string().min(1),
+  correctionReason: z.string().optional(),
   bbox: z.object({
     x: z.number(),
     y: z.number(),
@@ -67,7 +69,7 @@ router.post('/zones/:zoneId/correct', authenticate, async (req: Request, res: Re
       });
     }
 
-    const { newLabel, bbox } = parsed.data;
+    const { newLabel, correctionReason, bbox } = parsed.data;
 
     const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
     if (!zone) {
@@ -83,6 +85,8 @@ router.post('/zones/:zoneId/correct', authenticate, async (req: Request, res: Re
         operatorVerified: true,
         operatorLabel: newLabel,
         operatorBbox: bbox ?? Prisma.DbNull,
+        decision: 'CORRECTED',
+        correctionReason: correctionReason ?? null,
         verifiedAt: new Date(),
         verifiedBy: operatorId,
       },
@@ -98,10 +102,16 @@ router.post('/zones/:zoneId/correct', authenticate, async (req: Request, res: Re
 });
 
 // POST /api/v1/calibration/zones/:zoneId/reject
+const rejectBodySchema = z.object({
+  correctionReason: z.string().optional(),
+}).optional();
+
 router.post('/zones/:zoneId/reject', authenticate, async (req: Request, res: Response) => {
   try {
     const { zoneId } = req.params;
     const operatorId = req.user!.id;
+    const parsed = rejectBodySchema.safeParse(req.body);
+    const correctionReason = parsed.success ? parsed.data?.correctionReason : undefined;
 
     const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
     if (!zone) {
@@ -115,6 +125,8 @@ router.post('/zones/:zoneId/reject', authenticate, async (req: Request, res: Res
       where: { id: zoneId },
       data: {
         isArtefact: true,
+        decision: 'REJECTED',
+        correctionReason: correctionReason ?? null,
         verifiedAt: new Date(),
         verifiedBy: operatorId,
       },
@@ -146,6 +158,7 @@ router.post('/runs/:runId/confirm-all-green', authenticate, async (req: Request,
       },
       data: {
         operatorVerified: true,
+        decision: 'CONFIRMED',
         verifiedAt: new Date(),
         verifiedBy: operatorId,
       },
