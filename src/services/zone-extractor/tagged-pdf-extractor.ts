@@ -419,7 +419,7 @@ function multiplyTransforms(t1: number[], t2: number[]): number[] {
 async function augmentContentIdMapFromOperatorList(
   page: pdfjsLib.PDFPageProxy,
   map: ContentIdBBoxMap,
-): Promise<{ text: number; image: number; path: number }> {
+): Promise<{ text: number; image: number; path: number; mcidBboxMap: Map<number, BBox> }> {
   const OPS = pdfjsLib.OPS;
   const viewport = page.getViewport({ scale: 1 });
   const opList = await page.getOperatorList();
@@ -430,9 +430,21 @@ async function augmentContentIdMapFromOperatorList(
   // Track Form XObject nesting to construct correct content IDs
   // pdfjs serializes content IDs as p{pageObjId}_mc{mcid}
   // We need the page/FormXObj object reference
+  // First try page.ref, then discover from existing text content IDs in map
   const pageRef = (page as unknown as { ref?: { num: number; gen: number } }).ref;
-  const pageObjId = pageRef ? `${pageRef.num}R` : `page${page.pageNumber}`;
+  let pageObjId = pageRef ? `${pageRef.num}R` : '';
+  if (!pageObjId) {
+    // Discover page object ID from existing text content map keys
+    for (const key of map.keys()) {
+      const m = key.match(/^p(.+?)_mc\d+$/);
+      if (m) { pageObjId = m[1]; break; }
+    }
+    if (!pageObjId) pageObjId = `page${page.pageNumber}`;
+  }
   const objIdStack: string[] = [pageObjId];
+
+  // Secondary map: MCID → image/path bbox (fallback for Form XObject ID mismatches)
+  const mcidBboxMap = new Map<number, BBox>();
 
   const mcidStack: number[] = [];
   const transformStack: number[][] = [];
@@ -593,18 +605,35 @@ async function augmentContentIdMapFromOperatorList(
         if (isNew) textMapped++;
       }
     }
-    // Images
+    // Images — always store in mcidBboxMap as fallback for Form XObject ID mismatches
     else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+      const activeMcid = mcidStack.length > 0 ? mcidStack[mcidStack.length - 1] : -1;
       const active = getNewActiveMcid();
+      const [a, b, c, d, e, f] = currentTransform;
+      const width = Math.sqrt(a * a + b * b);
+      const height = Math.sqrt(c * c + d * d);
+      const x = e;
+      const y = viewport.height - f - height;
+      const imgBbox = { x, y, w: width, h: height };
+
       if (active) {
-        const [a, b, c, d, e, f] = currentTransform;
-        const width = Math.sqrt(a * a + b * b);
-        const height = Math.sqrt(c * c + d * d);
-        const x = e;
-        const y = viewport.height - f - height;
         const isNew = !map.has(active.contentId);
-        mergeBBoxIntoMap(map, active.contentId, { x, y, w: width, h: height });
+        mergeBBoxIntoMap(map, active.contentId, imgBbox);
         if (isNew) imageMapped++;
+      }
+      // Always store by raw MCID for fallback lookup (Form XObject ID mismatches)
+      if (activeMcid >= 0) {
+        const existing = mcidBboxMap.get(activeMcid);
+        if (!existing) {
+          mcidBboxMap.set(activeMcid, { ...imgBbox });
+        } else {
+          const x2 = Math.max(existing.x + existing.w, imgBbox.x + imgBbox.w);
+          const y2 = Math.max(existing.y + existing.h, imgBbox.y + imgBbox.h);
+          existing.x = Math.min(existing.x, imgBbox.x);
+          existing.y = Math.min(existing.y, imgBbox.y);
+          existing.w = x2 - existing.x;
+          existing.h = y2 - existing.y;
+        }
       }
     }
     // Paths
@@ -636,7 +665,7 @@ async function augmentContentIdMapFromOperatorList(
     }
   }
 
-  return { text: textMapped, image: imageMapped, path: pathMapped };
+  return { text: textMapped, image: imageMapped, path: pathMapped, mcidBboxMap };
 }
 
 /**
@@ -732,6 +761,7 @@ function walkPdfjsStructTree(
   stats: StructTreeApiStats,
   claimedIds: Set<string>,
   depth: number,
+  mcidBboxMap?: Map<number, BBox>,
 ): void {
   if (depth > 100) return;
 
@@ -739,7 +769,7 @@ function walkPdfjsStructTree(
   if (!role) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
-        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap);
       }
     }
     return;
@@ -749,7 +779,7 @@ function walkPdfjsStructTree(
   if (CONTAINER_TAGS.has(role)) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
-        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1);
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap);
       }
     }
     // Emit orphan direct content not claimed by children
@@ -759,14 +789,14 @@ function walkPdfjsStructTree(
 
   // ── ZONE TAG — emit one zone, collect ALL descendants, stop recursing ──
   if (ZONE_TAGS.has(role)) {
-    emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds);
+    emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap);
     return;
   }
 
   // ── INLINE TAG at top level (no block ancestor captured it) ──
   // This happens when inline elements appear directly under containers.
   // Emit as a fallback zone so nothing is lost.
-  emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds);
+  emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap);
 }
 
 /**
@@ -781,6 +811,7 @@ function emitBlockZone(
   zones: TaggedPdfZone[],
   stats: StructTreeApiStats,
   claimedIds: Set<string>,
+  mcidBboxMap?: Map<number, BBox>,
 ): void {
   const zoneType = TAG_MAP[role] ?? 'paragraph';
   const allContentIds = collectAllDescendantContentIds(node);
@@ -792,8 +823,34 @@ function emitBlockZone(
     const { bbox, matched } = bboxFromContentIds(allContentIds, idBBoxMap);
     if (matched > 0) stats.contentIdsWithBbox += matched;
 
-    // Fallback: explicit bbox from pdfjs attributes
+    // Fallback 1: MCID-only lookup from operator list (fixes Form XObject ID mismatches)
     let finalBBox = bbox;
+    if (!finalBBox && mcidBboxMap && mcidBboxMap.size > 0) {
+      for (const id of allContentIds) {
+        const mcidMatch = id.match(/_mc(\d+)$/);
+        if (mcidMatch) {
+          const mcid = parseInt(mcidMatch[1], 10);
+          const mcidBbox = mcidBboxMap.get(mcid);
+          if (mcidBbox) {
+            if (!finalBBox) {
+              finalBBox = { ...mcidBbox };
+            } else {
+              const x2 = Math.max(finalBBox.x + finalBBox.w, mcidBbox.x + mcidBbox.w);
+              const y2 = Math.max(finalBBox.y + finalBBox.h, mcidBbox.y + mcidBbox.h);
+              finalBBox.x = Math.min(finalBBox.x, mcidBbox.x);
+              finalBBox.y = Math.min(finalBBox.y, mcidBbox.y);
+              finalBBox.w = x2 - finalBBox.x;
+              finalBBox.h = y2 - finalBBox.y;
+            }
+          }
+        }
+      }
+      if (finalBBox && !bbox) {
+        logger.debug(`[tagged-pdf-extractor] MCID fallback resolved bbox for ${role} zone on page ${pageNum} (${allContentIds.length} IDs)`);
+      }
+    }
+
+    // Fallback 2: explicit bbox from pdfjs attributes
     if (!finalBBox && node.bbox && node.bbox.length >= 4) {
       finalBBox = {
         x: Math.min(node.bbox[0], node.bbox[2]),
@@ -815,17 +872,47 @@ function emitBlockZone(
       });
     }
   } else {
-    // Element with no content IDs (e.g., annotation-only or empty)
-    const hasObjectChildren = (node.children || []).some(
+    // Element with no content IDs — try MCID fallback for object/annotation children
+    const objectChildren = (node.children || []).filter(
       (c) => isPdfjsContent(c) && (c.type === 'object' || c.type === 'annotation'),
-    );
-    if (hasObjectChildren) {
-      stats.structElements++;
-      stats.droppedNoBbox++;
-      zones.push({
-        pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
-        label: role, isGhost: true, ghostTag: role,
-      });
+    ) as PdfjsStructContent[];
+
+    if (objectChildren.length > 0) {
+      // Try to resolve bbox from MCID fallback map using object child IDs
+      let objBbox: BBox | null = null;
+      if (mcidBboxMap && mcidBboxMap.size > 0) {
+        for (const child of objectChildren) {
+          const mcidMatch = child.id.match(/_mc(\d+)$/);
+          if (mcidMatch) {
+            const mcid = parseInt(mcidMatch[1], 10);
+            const mcidBbox = mcidBboxMap.get(mcid);
+            if (mcidBbox) {
+              if (!objBbox) {
+                objBbox = { ...mcidBbox };
+              } else {
+                const x2 = Math.max(objBbox.x + objBbox.w, mcidBbox.x + mcidBbox.w);
+                const y2 = Math.max(objBbox.y + objBbox.h, mcidBbox.y + mcidBbox.h);
+                objBbox.x = Math.min(objBbox.x, mcidBbox.x);
+                objBbox.y = Math.min(objBbox.y, mcidBbox.y);
+                objBbox.w = x2 - objBbox.x;
+                objBbox.h = y2 - objBbox.y;
+              }
+            }
+          }
+        }
+      }
+
+      if (objBbox) {
+        logger.debug(`[tagged-pdf-extractor] MCID fallback resolved object-child bbox for ${role} on page ${pageNum}`);
+        zones.push({ pageNumber: pageNum, bbox: objBbox, zoneType, confidence: 0.85, label: role });
+      } else {
+        stats.structElements++;
+        stats.droppedNoBbox++;
+        zones.push({
+          pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
+          label: role, isGhost: true, ghostTag: role,
+        });
+      }
     }
   }
 }
@@ -913,6 +1000,10 @@ async function extractUsingStructTreeApi(
     stats.opListImage += opStats.image;
     stats.opListPath += opStats.path;
 
+    if (opStats.mcidBboxMap.size > 0) {
+      logger.info(`[tagged-pdf-extractor] Page ${pageNum}: mcidBboxMap has ${opStats.mcidBboxMap.size} image/path entries (fallback for figure detection)`);
+    }
+
     // Collect all font sizes on this page for heading level inference
     for (const [, size] of fontMap) {
       if (size > 0) pageFontSizes.add(size);
@@ -928,6 +1019,7 @@ async function extractUsingStructTreeApi(
       stats,
       claimedIds,
       0,
+      opStats.mcidBboxMap,
     );
 
     // Recover orphan content IDs — content in bbox map not claimed by any struct element.
@@ -959,6 +1051,9 @@ async function extractUsingStructTreeApi(
 
   // Post-process: infer heading levels for generic "H" tags using font sizes
   inferHeadingLevels(zones, pageFontSizes);
+
+  // Post-process: absorb orphan captions into adjacent figure zones
+  absorbCaptionsIntoFigures(zones);
 
   return { zones, stats };
 }
@@ -1019,6 +1114,97 @@ function inferHeadingLevels(
   const relabeled = genericH.filter((z) => z.label !== 'H').length;
   if (relabeled > 0) {
     logger.info(`[tagged-pdf-extractor] Inferred heading levels for ${relabeled} generic H tags`);
+  }
+}
+
+/**
+ * Absorb orphan caption zones into their nearest figure zone on the same page.
+ * A caption is "near" a figure if it overlaps horizontally and is within
+ * a small vertical gap (1.5x caption height). The caption's bbox is merged
+ * into the figure and the caption zone is removed.
+ */
+function absorbCaptionsIntoFigures(zones: TaggedPdfZone[]): void {
+  const captionIndices: number[] = [];
+  const figuresByPage = new Map<number, number[]>();
+
+  for (let i = 0; i < zones.length; i++) {
+    const z = zones[i];
+    if (z.zoneType === 'caption' && z.bbox) {
+      captionIndices.push(i);
+    }
+    if (z.zoneType === 'figure' && z.bbox) {
+      const list = figuresByPage.get(z.pageNumber) || [];
+      list.push(i);
+      figuresByPage.set(z.pageNumber, list);
+    }
+  }
+
+  if (captionIndices.length === 0) return;
+
+  const toRemove = new Set<number>();
+
+  for (const ci of captionIndices) {
+    const cap = zones[ci];
+    if (!cap.bbox) continue;
+    const figs = figuresByPage.get(cap.pageNumber);
+    if (!figs || figs.length === 0) continue;
+
+    // Find nearest figure by vertical proximity with horizontal overlap
+    let bestFigIdx = -1;
+    let bestDist = Infinity;
+    const capRight = cap.bbox.x + cap.bbox.w;
+    const capBottom = cap.bbox.y + cap.bbox.h;
+    const maxGap = cap.bbox.h * 1.5; // max vertical gap to consider "nearby"
+
+    for (const fi of figs) {
+      const fig = zones[fi];
+      if (!fig.bbox) continue;
+
+      // Check horizontal overlap (at least 50%)
+      const figRight = fig.bbox.x + fig.bbox.w;
+      const overlapX = Math.min(capRight, figRight) - Math.max(cap.bbox.x, fig.bbox.x);
+      const minWidth = Math.min(cap.bbox.w, fig.bbox.w);
+      if (overlapX < minWidth * 0.3) continue;
+
+      // Vertical distance: caption can be above or below figure
+      const figBottom = fig.bbox.y + fig.bbox.h;
+      let vDist: number;
+      if (capBottom <= fig.bbox.y) {
+        vDist = fig.bbox.y - capBottom; // caption above figure
+      } else if (cap.bbox.y >= figBottom) {
+        vDist = cap.bbox.y - figBottom; // caption below figure
+      } else {
+        vDist = 0; // overlapping vertically
+      }
+
+      if (vDist <= maxGap && vDist < bestDist) {
+        bestDist = vDist;
+        bestFigIdx = fi;
+      }
+    }
+
+    if (bestFigIdx >= 0) {
+      // Merge caption bbox into figure
+      const fig = zones[bestFigIdx];
+      if (fig.bbox && cap.bbox) {
+        const x2 = Math.max(fig.bbox.x + fig.bbox.w, cap.bbox.x + cap.bbox.w);
+        const y2 = Math.max(fig.bbox.y + fig.bbox.h, cap.bbox.y + cap.bbox.h);
+        fig.bbox.x = Math.min(fig.bbox.x, cap.bbox.x);
+        fig.bbox.y = Math.min(fig.bbox.y, cap.bbox.y);
+        fig.bbox.w = x2 - fig.bbox.x;
+        fig.bbox.h = y2 - fig.bbox.y;
+      }
+      toRemove.add(ci);
+    }
+  }
+
+  if (toRemove.size > 0) {
+    // Remove absorbed captions (iterate in reverse to preserve indices)
+    const sortedRemove = [...toRemove].sort((a, b) => b - a);
+    for (const idx of sortedRemove) {
+      zones.splice(idx, 1);
+    }
+    logger.info(`[tagged-pdf-extractor] Absorbed ${toRemove.size} captions into figure zones`);
   }
 }
 
