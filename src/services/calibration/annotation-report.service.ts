@@ -95,10 +95,11 @@ class AnnotationReportService {
     const redCount = zones.filter(z => z.reconciliationBucket === 'RED').length;
 
     const reviewed = confirmed + corrected + rejected;
+    const round4 = (n: number) => Math.round(n * 10000) / 10000;
     const accuracyRate = reviewed > 0
-      ? (confirmed / reviewed) : null;
+      ? round4(confirmed / reviewed) : null;
     const agreementRate = zones.length > 0
-      ? (greenCount / zones.length) : null;
+      ? round4(greenCount / zones.length) : null;
 
     // Annotators
     const annotatorSet = new Set<string>();
@@ -172,10 +173,10 @@ class AnnotationReportService {
 
     return {
       header: {
-        documentName: doc.filename,
-        documentId: doc.id,
+        documentName: doc?.filename ?? 'Unknown',
+        documentId: doc?.id ?? '',
         calibrationRunId: run.id,
-        totalPages: doc.pageCount ?? uniquePages.size,
+        totalPages: doc?.pageCount ?? uniquePages.size,
         reportDate: new Date().toISOString(),
         annotators: [...annotatorSet],
       },
@@ -195,10 +196,10 @@ class AnnotationReportService {
       zoneDetails,
       qualityMetrics: {
         extractorAgreementRate: agreementRate,
-        autoAnnotationCoverage: zones.length > 0 ? autoAnnotated / zones.length : null,
-        humanReviewRequiredPct: zones.length > 0 ? (zones.length - autoAnnotated) / zones.length : null,
-        correctionRate: reviewed > 0 ? corrected / reviewed : null,
-        rejectionRate: reviewed > 0 ? rejected / reviewed : null,
+        autoAnnotationCoverage: zones.length > 0 ? round4(autoAnnotated / zones.length) : null,
+        humanReviewRequiredPct: zones.length > 0 ? round4((zones.length - autoAnnotated) / zones.length) : null,
+        correctionRate: reviewed > 0 ? round4(corrected / reviewed) : null,
+        rejectionRate: reviewed > 0 ? round4(rejected / reviewed) : null,
         typeDistribution,
         pagesWithZeroCorrections,
         mostCorrectedPage,
