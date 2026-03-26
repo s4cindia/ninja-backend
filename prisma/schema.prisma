@@ -1961,6 +1961,8 @@ model Zone {
   isArtefact            Boolean   @default(false)
   isGhost               Boolean   @default(false)  // Structure element found but no bbox computed
   ghostTag              String?   // Original tag name for ghost zones (for debug/QA)
+  correctionReason      String?   // Free-text reason for correction/rejection
+  decision              String?   // 'CONFIRMED' | 'CORRECTED' | 'REJECTED' | null (unreviewed)
 
   // ML pipeline relations
   bootstrapJobId        String?
@@ -1974,6 +1976,7 @@ model Zone {
   @@index([parentZoneId])
   @@index([bootstrapJobId])
   @@index([calibrationRunId])
+  @@index([calibrationRunId, decision])
 }
 
 // ============================================================
@@ -2030,11 +2033,34 @@ model CalibrationRun {
   type             String    @default("CALIBRATION") // 'CALIBRATION' | 'PIKE_PDF_SPIKE'
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
-  zones            Zone[]
-  corpusDocument   CorpusDocument @relation(fields: [documentId], references: [id])
+  zones              Zone[]
+  annotationSessions AnnotationSession[]
+  corpusDocument     CorpusDocument @relation(fields: [documentId], references: [id])
 
   @@index([documentId])
   @@index([completedAt])
+}
+
+model AnnotationSession {
+  id                String          @id @default(cuid())
+  calibrationRunId  String
+  calibrationRun    CalibrationRun  @relation(fields: [calibrationRunId], references: [id])
+  operatorId        String
+  pageNumber        Int?
+  startedAt         DateTime
+  endedAt           DateTime?
+  activeMs          Int             @default(0)
+  idleMs            Int             @default(0)
+  zonesReviewed     Int             @default(0)
+  zonesConfirmed    Int             @default(0)
+  zonesCorrected    Int             @default(0)
+  zonesRejected     Int             @default(0)
+  sessionLog        Json?           // SessionSegment[] from client timer
+  createdAt         DateTime        @default(now())
+
+  @@index([calibrationRunId])
+  @@index([operatorId])
+  @@index([calibrationRunId, operatorId])
 }
 
 model TrainingRun {
