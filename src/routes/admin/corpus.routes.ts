@@ -584,6 +584,85 @@ router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res
   });
 });
 
+// POST /api/v1/admin/corpus/reset-documents
+// Deletes selected corpus documents and their related data (zones, runs, sessions, jobs)
+// Body: { documentIds: string[] }
+const resetDocumentsBodySchema = z.object({
+  documentIds: z.array(z.string().min(1)).min(1).max(100),
+});
+
+router.post('/corpus/reset-documents', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Admin role required' },
+      });
+    }
+
+    const parsed = resetDocumentsBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const { documentIds } = parsed.data;
+
+    // Find calibration runs for these documents
+    const runs = await prisma.calibrationRun.findMany({
+      where: { documentId: { in: documentIds } },
+      select: { id: true },
+    });
+    const runIds = runs.map((r) => r.id);
+
+    // Delete in FK order scoped to these documents
+    const [deletedSessions, deletedZones, deletedRuns, deletedJobs, deletedDocs] = await prisma.$transaction([
+      prisma.annotationSession.deleteMany({
+        where: { calibrationRunId: { in: runIds } },
+      }),
+      prisma.zone.deleteMany({
+        where: { calibrationRunId: { in: runIds } },
+      }),
+      prisma.calibrationRun.deleteMany({
+        where: { documentId: { in: documentIds } },
+      }),
+      prisma.zoneBootstrapJob.deleteMany({
+        where: { documentId: { in: documentIds } },
+      }),
+      prisma.corpusDocument.deleteMany({
+        where: { id: { in: documentIds } },
+      }),
+    ]);
+
+    logger.info(
+      `[CorpusReset] Admin reset ${documentIds.length} docs: ${deletedDocs.count} docs, ${deletedRuns.count} runs, ${deletedJobs.count} jobs, ${deletedZones.count} zones, ${deletedSessions.count} sessions deleted`,
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        deletedDocuments: deletedDocs.count,
+        deletedCalibrationRuns: deletedRuns.count,
+        deletedBootstrapJobs: deletedJobs.count,
+        deletedZones: deletedZones.count,
+        deletedAnnotationSessions: deletedSessions.count,
+      },
+    });
+  } catch (err) {
+    logger.error('POST /admin/corpus/reset-documents error:', err);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
 // POST /api/v1/admin/corpus/reset
 // Deletes ALL corpus data: zones, calibration runs, bootstrap jobs, corpus documents
 router.post('/corpus/reset', authenticate, async (req: Request, res: Response) => {
