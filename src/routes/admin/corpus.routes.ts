@@ -595,8 +595,9 @@ router.post('/corpus/reset', authenticate, async (req: Request, res: Response) =
       });
     }
 
-    // Delete in FK order: zones → calibration runs → bootstrap jobs → corpus documents
-    const [deletedZones, deletedRuns, deletedJobs, deletedDocs] = await prisma.$transaction([
+    // Delete in FK order: annotation sessions → zones → calibration runs → bootstrap jobs → corpus documents
+    const [deletedSessions, deletedZones, deletedRuns, deletedJobs, deletedDocs] = await prisma.$transaction([
+      prisma.annotationSession.deleteMany({}),
       prisma.zone.deleteMany({
         where: { calibrationRunId: { not: null } },
       }),
@@ -606,7 +607,7 @@ router.post('/corpus/reset', authenticate, async (req: Request, res: Response) =
     ]);
 
     logger.info(
-      `[CorpusReset] Admin reset: ${deletedDocs.count} docs, ${deletedRuns.count} runs, ${deletedJobs.count} jobs, ${deletedZones.count} zones deleted`,
+      `[CorpusReset] Admin reset: ${deletedDocs.count} docs, ${deletedRuns.count} runs, ${deletedJobs.count} jobs, ${deletedZones.count} zones, ${deletedSessions.count} sessions deleted`,
     );
 
     return res.json({
@@ -616,6 +617,7 @@ router.post('/corpus/reset', authenticate, async (req: Request, res: Response) =
         deletedCalibrationRuns: deletedRuns.count,
         deletedBootstrapJobs: deletedJobs.count,
         deletedZones: deletedZones.count,
+        deletedAnnotationSessions: deletedSessions.count,
       },
     });
   } catch (err) {
