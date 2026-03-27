@@ -25,6 +25,7 @@ router.post('/zones/:zoneId/confirm', authenticate, async (req: Request, res: Re
       data: {
         operatorVerified: true,
         operatorLabel: zone.operatorLabel ?? zone.type,
+        isArtefact: false,
         decision: 'CONFIRMED',
         verifiedAt: new Date(),
         verifiedBy: operatorId,
@@ -85,6 +86,7 @@ router.post('/zones/:zoneId/correct', authenticate, async (req: Request, res: Re
         operatorVerified: true,
         operatorLabel: newLabel,
         operatorBbox: bbox ?? Prisma.DbNull,
+        isArtefact: false,
         decision: 'CORRECTED',
         correctionReason: correctionReason ?? null,
         verifiedAt: new Date(),
@@ -158,6 +160,7 @@ router.post('/runs/:runId/confirm-all-green', authenticate, async (req: Request,
       },
       data: {
         operatorVerified: true,
+        isArtefact: false,
         decision: 'CONFIRMED',
         verifiedAt: new Date(),
         verifiedBy: operatorId,
