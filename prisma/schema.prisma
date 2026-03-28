@@ -1964,6 +1964,14 @@ model Zone {
   correctionReason      String?   // Free-text reason for correction/rejection
   decision              String?   // 'CONFIRMED' | 'CORRECTED' | 'REJECTED' | null (unreviewed)
 
+  // AI annotation fields
+  aiLabel               String?   // AI-predicted label (e.g. 'paragraph', 'list-item', 'h2')
+  aiConfidence          Float?    // AI confidence score 0-1
+  aiDecision            String?   // 'CONFIRMED' | 'CORRECTED' | 'REJECTED'
+  aiReason              String?   @db.Text // AI reasoning for the decision
+  aiModel               String?   // Model used (e.g. 'gemini-2.0-flash', 'claude-sonnet-4')
+  aiAnnotatedAt         DateTime? // When AI annotation was applied
+
   // ML pipeline relations
   bootstrapJobId        String?
   calibrationRunId      String?
@@ -1977,6 +1985,33 @@ model Zone {
   @@index([bootstrapJobId])
   @@index([calibrationRunId])
   @@index([calibrationRunId, decision])
+}
+
+model AiAnnotationRun {
+  id                 String   @id @default(cuid())
+  calibrationRunId   String
+  model              String   // 'gemini-2.0-flash' | 'claude-sonnet-4'
+  status             String   @default("RUNNING") // 'RUNNING' | 'COMPLETED' | 'FAILED'
+  totalZones         Int      @default(0)
+  annotatedZones     Int      @default(0)
+  skippedZones       Int      @default(0)
+  confirmedCount     Int      @default(0)
+  correctedCount     Int      @default(0)
+  rejectedCount      Int      @default(0)
+  highConfCount      Int      @default(0)  // >= 0.95
+  medConfCount       Int      @default(0)  // 0.80 - 0.95
+  lowConfCount       Int      @default(0)  // < 0.80
+  inputTokens        Int      @default(0)
+  outputTokens       Int      @default(0)
+  estimatedCostUsd   Float    @default(0)
+  durationMs         Int?
+  error              String?  @db.Text
+  createdAt          DateTime @default(now())
+  completedAt        DateTime?
+
+  calibrationRun     CalibrationRun @relation(fields: [calibrationRunId], references: [id], onDelete: Cascade)
+
+  @@index([calibrationRunId])
 }
 
 // ============================================================
@@ -2035,6 +2070,7 @@ model CalibrationRun {
   updatedAt        DateTime  @updatedAt
   zones              Zone[]
   annotationSessions AnnotationSession[]
+  aiAnnotationRuns   AiAnnotationRun[]
   corpusDocument     CorpusDocument @relation(fields: [documentId], references: [id])
 
   @@index([documentId])
