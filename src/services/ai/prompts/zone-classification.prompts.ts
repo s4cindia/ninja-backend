@@ -3,6 +3,8 @@
  * Used by the AI annotation service to classify zones on a per-page basis.
  */
 
+export const PROMPT_VERSION = 'v1';
+
 export const VALID_ZONE_TYPES = [
   'paragraph', 'section-header', 'table', 'figure', 'caption',
   'footnote', 'header', 'footer', 'list-item', 'toci',

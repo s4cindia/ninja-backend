@@ -2004,6 +2004,9 @@ model AiAnnotationRun {
   inputTokens        Int      @default(0)
   outputTokens       Int      @default(0)
   estimatedCostUsd   Float    @default(0)
+  promptVersion      String?  // e.g. 'v1', 'v2' — tracks which prompt was used
+  confidenceThreshold Float?  // threshold used for this run
+  dryRun             Boolean  @default(false)
   durationMs         Int?
   error              String?  @db.Text
   createdAt          DateTime @default(now())
@@ -2117,6 +2120,7 @@ model AnnotationSession {
   zonesConfirmed    Int             @default(0)
   zonesCorrected    Int             @default(0)
   zonesRejected     Int             @default(0)
+  annotationMode    String?         // 'blind' | 'ai-assisted' | 'ai-review-only'
   sessionLog        Json?           // SessionSegment[] from client timer
   createdAt         DateTime        @default(now())
 

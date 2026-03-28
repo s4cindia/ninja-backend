@@ -6,6 +6,11 @@ import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
 import { runAiAnnotation, getAiAnnotationReport } from '../services/calibration/ai-annotation.service';
 import { runAnnotationComparison, getComparisonReport } from '../services/calibration/annotation-comparison.service';
+import { generateAnnotationGuide } from '../services/calibration/annotation-guide.service';
+import { getAnnotationFeedback, getAggregateFeedback } from '../services/calibration/annotation-feedback.service';
+import { getTrainingExportData } from '../services/calibration/training-export.service';
+import { runBulkAiAnnotation } from '../services/calibration/bulk-ai-annotation.service';
+import { getAggregateComparison } from '../services/calibration/aggregate-comparison.service';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -507,6 +512,166 @@ router.get('/runs/:runId/comparison-report', authenticate, async (req: Request, 
 
     const report = await getComparisonReport(runId);
     return res.json({ success: true, data: report });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Annotation Guide Endpoint ---
+
+// GET /api/v1/calibration/runs/:runId/annotation-guide
+router.get('/runs/:runId/annotation-guide', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    const guide = await generateAnnotationGuide(runId);
+    return res.json({ success: true, data: guide });
+  } catch (err) {
+    logger.error(`[calibration] Annotation guide failed for run ${req.params.runId}: ${(err as Error).message}`);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'GUIDE_GENERATION_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Annotation Feedback Endpoints ---
+
+// GET /api/v1/calibration/runs/:runId/feedback
+router.get('/runs/:runId/feedback', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+    const feedback = await getAnnotationFeedback(runId);
+    return res.json({ success: true, data: feedback });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// POST /api/v1/calibration/feedback/aggregate
+router.post('/feedback/aggregate', authenticate, async (req: Request, res: Response) => {
+  try {
+    const schema = z.object({
+      calibrationRunIds: z.array(z.string()).min(1).max(100),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', details: parsed.error.issues },
+      });
+    }
+    const result = await getAggregateFeedback(parsed.data.calibrationRunIds);
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Training Export Endpoint ---
+
+// POST /api/v1/calibration/export-training
+router.post('/export-training', authenticate, async (req: Request, res: Response) => {
+  try {
+    const schema = z.object({
+      documentIds: z.array(z.string()).optional(),
+      minConfidence: z.number().min(0).max(1).optional(),
+      includeAiOnly: z.boolean().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', details: parsed.error.issues },
+      });
+    }
+    const result = await getTrainingExportData(parsed.data);
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error(`[calibration] Training export failed: ${(err as Error).message}`);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'EXPORT_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Bulk AI Annotation Endpoint ---
+
+const bulkAiAnnotateSchema = z.object({
+  documentIds: z.array(z.string()).optional(),
+  runIds: z.array(z.string()).optional(),
+  confidenceThreshold: z.number().min(0).max(1).optional(),
+  model: z.string().optional(),
+  dryRun: z.boolean().optional(),
+}).refine((d) => d.documentIds?.length || d.runIds?.length, {
+  message: 'Either documentIds or runIds must be provided',
+});
+
+// POST /api/v1/calibration/ai-annotate-batch
+router.post('/ai-annotate-batch', authenticate, async (req: Request, res: Response) => {
+  try {
+    const parsed = bulkAiAnnotateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', details: parsed.error.issues },
+      });
+    }
+
+    logger.info(`[calibration] Bulk AI annotation triggered by user ${req.user!.id}`);
+    const result = await runBulkAiAnnotation(parsed.data);
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error(`[calibration] Bulk AI annotation failed: ${(err as Error).message}`);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'BULK_ANNOTATION_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Aggregate Comparison Endpoint ---
+
+// POST /api/v1/calibration/comparison/aggregate
+router.post('/comparison/aggregate', authenticate, async (req: Request, res: Response) => {
+  try {
+    const schema = z.object({
+      documentIds: z.array(z.string()).optional(),
+      fromDate: z.string().datetime().optional(),
+      toDate: z.string().datetime().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', details: parsed.error.issues },
+      });
+    }
+
+    const result = await getAggregateComparison({
+      documentIds: parsed.data.documentIds,
+      fromDate: parsed.data.fromDate ? new Date(parsed.data.fromDate) : undefined,
+      toDate: parsed.data.toDate ? new Date(parsed.data.toDate) : undefined,
+    });
+    return res.json({ success: true, data: result });
   } catch (err) {
     return res.status(500).json({
       success: false,
