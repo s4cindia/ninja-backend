@@ -166,8 +166,8 @@ export async function runAiAnnotation(
         );
 
         if (usage) {
-          totalInputTokens += usage.promptTokenCount ?? 0;
-          totalOutputTokens += usage.candidatesTokenCount ?? 0;
+          totalInputTokens += usage.promptTokens ?? 0;
+          totalOutputTokens += usage.completionTokens ?? 0;
         }
 
         // 6. Process classifications
