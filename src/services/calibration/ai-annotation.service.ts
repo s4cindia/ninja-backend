@@ -7,6 +7,7 @@ import prisma from '../../lib/prisma';
 import { geminiService } from '../ai/gemini.service';
 import {
   buildPageClassificationPrompt,
+  PROMPT_VERSION,
   type ZoneInput,
   type PageClassificationResponse,
   VALID_ZONE_TYPES,
@@ -54,6 +55,9 @@ export async function runAiAnnotation(
     data: {
       calibrationRunId,
       model: modelName,
+      promptVersion: PROMPT_VERSION,
+      confidenceThreshold: confThreshold,
+      dryRun: options.dryRun ?? false,
       status: 'RUNNING',
     },
   });
