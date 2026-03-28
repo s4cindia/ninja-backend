@@ -5,6 +5,7 @@ import { getCalibrationQueue } from '../queues';
 import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
 import { runAiAnnotation, getAiAnnotationReport } from '../services/calibration/ai-annotation.service';
+import { runAnnotationComparison, getComparisonReport } from '../services/calibration/annotation-comparison.service';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -451,6 +452,60 @@ router.get('/runs/:runId/ai-annotation-report', authenticate, async (req: Reques
     }
 
     const report = await getAiAnnotationReport(runId);
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// --- Annotation Comparison Endpoints ---
+
+// POST /api/v1/calibration/runs/:runId/compare
+router.post('/runs/:runId/compare', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    const result = await runAnnotationComparison(runId);
+
+    logger.info(
+      `[calibration] Annotation comparison triggered for run ${runId} by user ${req.user!.id}`,
+    );
+
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error(`[calibration] Annotation comparison failed for run ${req.params.runId}: ${(err as Error).message}`);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'COMPARISON_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/calibration/runs/:runId/comparison-report
+router.get('/runs/:runId/comparison-report', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    const report = await getComparisonReport(runId);
     return res.json({ success: true, data: report });
   } catch (err) {
     return res.status(500).json({
