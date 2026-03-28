@@ -2014,6 +2014,31 @@ model AiAnnotationRun {
   @@index([calibrationRunId])
 }
 
+model AnnotationComparison {
+  id                  String   @id @default(cuid())
+  calibrationRunId    String
+  status              String   @default("RUNNING") // 'RUNNING' | 'COMPLETED' | 'FAILED'
+  totalZones          Int      @default(0)
+  comparableZones     Int      @default(0)   // zones with both human + AI decisions
+  agreementCount      Int      @default(0)
+  disagreementCount   Int      @default(0)
+  agreementRate       Float    @default(0)   // 0-1
+  cohensKappa         Float?                 // -1 to 1
+  perTypeAccuracy     Json?                  // { "paragraph": 0.95, "h1": 0.80, ... }
+  perBucketAccuracy   Json?                  // { "GREEN": 0.98, "AMBER": 0.75, "RED": 0.60 }
+  confidenceCalibration Json?               // [{ bucket: "0.90-0.95", predicted: 0.925, actual: 0.91, count: 40 }, ...]
+  commonMistakes      Json?                  // [{ from: "paragraph", to: "list-item", count: 12 }, ...]
+  zoneDetails         Json?                  // full zone-level comparison array
+  durationMs          Int?
+  error               String?  @db.Text
+  createdAt           DateTime @default(now())
+  completedAt         DateTime?
+
+  calibrationRun      CalibrationRun @relation(fields: [calibrationRunId], references: [id], onDelete: Cascade)
+
+  @@index([calibrationRunId])
+}
+
 // ============================================================
 // ML ZONE DETECTION PIPELINE
 // ============================================================
@@ -2068,10 +2093,11 @@ model CalibrationRun {
   type             String    @default("CALIBRATION") // 'CALIBRATION' | 'PIKE_PDF_SPIKE'
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
-  zones              Zone[]
-  annotationSessions AnnotationSession[]
-  aiAnnotationRuns   AiAnnotationRun[]
-  corpusDocument     CorpusDocument @relation(fields: [documentId], references: [id])
+  zones                  Zone[]
+  annotationSessions     AnnotationSession[]
+  aiAnnotationRuns       AiAnnotationRun[]
+  annotationComparisons  AnnotationComparison[]
+  corpusDocument         CorpusDocument @relation(fields: [documentId], references: [id])
 
   @@index([documentId])
   @@index([completedAt])
