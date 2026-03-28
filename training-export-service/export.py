@@ -6,9 +6,34 @@ from PIL import Image
 CLASS_MAP = {
     'paragraph': 0, 'section-header': 1, 'table': 2,
     'figure': 3, 'caption': 4, 'footnote': 5,
-    'header': 6, 'footer': 7,
+    'header': 6, 'footer': 7, 'list-item': 8,
+    'toci': 9, 'formula': 10,
+    # Map heading levels → section-header for YOLO
+    'h1': 1, 'h2': 1, 'h3': 1, 'h4': 1, 'h5': 1, 'h6': 1,
 }
 ARTIFACT_TYPES = {'header', 'footer'}
+
+# Minimum AI confidence to use aiLabel in training export
+AI_CONFIDENCE_THRESHOLD = 0.95
+
+
+def resolve_label(zone: dict, ai_threshold: float = AI_CONFIDENCE_THRESHOLD) -> str:
+    """Resolve the best label for a zone using priority:
+    operatorLabel > aiLabel (if high confidence) > type.
+    Zones with decision=REJECTED are excluded upstream."""
+    # 1. Human-verified label (highest trust)
+    if zone.get('operatorLabel'):
+        return zone['operatorLabel']
+
+    # 2. AI label if confidence meets threshold
+    ai_label = zone.get('aiLabel')
+    ai_conf = zone.get('aiConfidence', 0) or 0
+    ai_decision = zone.get('aiDecision')
+    if ai_label and ai_conf >= ai_threshold and ai_decision != 'REJECTED':
+        return ai_label
+
+    # 3. Fall back to extraction type
+    return zone.get('type', 'paragraph')
 
 
 def render_page_to_jpg(
@@ -114,8 +139,11 @@ def export_corpus(
     documents: list of {
       documentId, pdfPath, publisher, contentType,
       zones: [{ pageNumber, bounds:{x,y,w,h},
-               type, operatorLabel }]
+               type, operatorLabel, decision,
+               aiLabel, aiConfidence, aiDecision }]
     }
+
+    Label priority: operatorLabel > aiLabel (conf >= 0.95) > type
 
     Returns stats dict.
     """
@@ -144,11 +172,12 @@ def export_corpus(
             by_page.setdefault(pn, []).append(z)
 
         for page_num, page_zones in by_page.items():
-            # Filter out artifact-only pages
+            # Filter out rejected zones and artifact-only pages
             content_zones = [
                 z for z in page_zones
-                if (z.get('operatorLabel') or z.get('type'))
-                   not in ARTIFACT_TYPES
+                if z.get('decision') != 'REJECTED'
+                and z.get('aiDecision') != 'REJECTED'
+                and resolve_label(z) not in ARTIFACT_TYPES
             ]
             if not content_zones:
                 skipped_pages += 1
@@ -185,10 +214,7 @@ def export_corpus(
 
             lines = []
             for z in content_zones:
-                zone_type = (
-                    z.get('operatorLabel') or
-                    z.get('type', 'paragraph')
-                )
+                zone_type = resolve_label(z)
                 cls_idx = CLASS_MAP.get(zone_type, 0)
                 bounds  = z.get('bounds', {})
                 if not bounds:
@@ -213,13 +239,14 @@ def export_corpus(
     names = [
         'paragraph', 'section-header', 'table', 'figure',
         'caption', 'footnote', 'header', 'footer',
+        'list-item', 'toci', 'formula',
     ]
     yaml_content = (
         f"path: {out.absolute()}\n"
         f"train: images/train\n"
         f"val:   images/val\n"
         f"test:  images/test\n"
-        f"nc: 8\n"
+        f"nc: {len(names)}\n"
         f"names: {names}\n"
     )
     with open(out / 'dataset.yaml', 'w') as f:
