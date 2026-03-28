@@ -4,6 +4,7 @@
  * Computes agreement rate, Cohen's kappa, per-type accuracy,
  * confidence calibration, and common mistake patterns.
  */
+import type { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
@@ -351,9 +352,9 @@ async function persistResult(comparisonId: string, result: ComparisonResult) {
       cohensKappa: result.cohensKappa,
       perTypeAccuracy: result.perTypeAccuracy,
       perBucketAccuracy: result.perBucketAccuracy,
-      confidenceCalibration: result.confidenceCalibration,
-      commonMistakes: result.commonMistakes,
-      zoneDetails: result.zoneDetails,
+      confidenceCalibration: result.confidenceCalibration as unknown as Prisma.InputJsonValue,
+      commonMistakes: result.commonMistakes as unknown as Prisma.InputJsonValue,
+      zoneDetails: result.zoneDetails as unknown as Prisma.InputJsonValue,
       durationMs: result.durationMs,
       completedAt: new Date(),
     },
