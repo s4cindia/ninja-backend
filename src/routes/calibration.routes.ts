@@ -4,6 +4,8 @@ import { authenticate } from '../middleware/auth.middleware';
 import { getCalibrationQueue } from '../queues';
 import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
+import { runAiAnnotation, getAiAnnotationReport } from '../services/calibration/ai-annotation.service';
+import { logger } from '../lib/logger';
 
 const router = Router();
 
@@ -378,6 +380,78 @@ router.get('/corpus-stats', authenticate, async (_req: Request, res: Response) =
   try {
     const stats = await getCorpusStats();
     return res.json({ success: true, data: stats });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
+    });
+  }
+});
+
+// --- AI Annotation Endpoints ---
+
+const aiAnnotateBodySchema = z.object({
+  confidenceThreshold: z.number().min(0).max(1).optional(),
+  model: z.string().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+// POST /api/v1/calibration/runs/:runId/ai-annotate
+router.post('/runs/:runId/ai-annotate', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    const parsed = aiAnnotateBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: parsed.error.issues,
+        },
+      });
+    }
+
+    const result = await runAiAnnotation(runId, parsed.data);
+
+    logger.info(
+      `[calibration] AI annotation triggered for run ${runId} by user ${req.user!.id}`,
+    );
+
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error(`[calibration] AI annotation failed for run ${req.params.runId}: ${(err as Error).message}`);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'AI_ANNOTATION_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/calibration/runs/:runId/ai-annotation-report
+router.get('/runs/:runId/ai-annotation-report', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const run = await prisma.calibrationRun.findUnique({ where: { id: runId } });
+    if (!run) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `CalibrationRun ${runId} not found` },
+      });
+    }
+
+    const report = await getAiAnnotationReport(runId);
+    return res.json({ success: true, data: report });
   } catch (err) {
     return res.status(500).json({
       success: false,
