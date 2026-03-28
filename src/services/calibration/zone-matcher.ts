@@ -7,6 +7,7 @@ export interface SourceZone {
   zoneType: CanonicalZoneType;
   confidence: number | null;
   label: string;
+  content?: string;
 }
 
 export interface ZoneMatch {
