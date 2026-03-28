@@ -84,6 +84,7 @@ export async function runCalibration(
           zoneType: z.zoneType,
           confidence: z.confidence,
           label: z.label,
+          content: z.content,
         }));
       },
     );
@@ -175,6 +176,7 @@ export async function runCalibration(
           doclingLabel: m.doclingZone?.label ?? null,
           doclingConfidence: m.doclingZone?.confidence ?? null,
           pdfxtLabel: m.pdfxtZone?.label ?? null,
+          content: zone.content ?? null,
         };
       }),
     }),

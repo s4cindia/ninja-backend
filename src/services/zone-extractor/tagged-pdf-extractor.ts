@@ -166,6 +166,7 @@ export interface TaggedPdfZone {
   zoneType: CanonicalZoneType;
   confidence: number;
   label: string;
+  content?: string;    // text content collected from descendant content IDs
   isGhost?: boolean;   // true when struct element found but no bbox computable
   ghostTag?: string;   // original raw tag name for ghost zones
 }
@@ -278,9 +279,13 @@ interface StructTreeApiStats {
 /** Maps content ID → max font size seen in that content run. */
 type ContentIdFontMap = Map<string, number>;
 
+/** Maps content ID → accumulated text strings. */
+type ContentIdTextMap = Map<string, string[]>;
+
 interface ContentIdMaps {
   bboxMap: ContentIdBBoxMap;
   fontMap: ContentIdFontMap;
+  textMap: ContentIdTextMap;
 }
 
 /**
@@ -295,6 +300,7 @@ async function buildContentIdBBoxMap(
   const textContent = await page.getTextContent({ includeMarkedContent: true });
   const bboxMap: ContentIdBBoxMap = new Map();
   const fontMap: ContentIdFontMap = new Map();
+  const textMap: ContentIdTextMap = new Map();
 
   const idStack: string[] = [];
 
@@ -337,9 +343,18 @@ async function buildContentIdBBoxMap(
     if (fontSize > 0) {
       fontMap.set(activeId, Math.max(fontMap.get(activeId) ?? 0, fontSize));
     }
+    // Accumulate text content per content ID
+    if (textItem.str) {
+      const existing = textMap.get(activeId);
+      if (existing) {
+        existing.push(textItem.str);
+      } else {
+        textMap.set(activeId, [textItem.str]);
+      }
+    }
   }
 
-  return { bboxMap, fontMap };
+  return { bboxMap, fontMap, textMap };
 }
 
 /**
@@ -762,6 +777,7 @@ function walkPdfjsStructTree(
   claimedIds: Set<string>,
   depth: number,
   mcidBboxMap?: Map<number, BBox>,
+  textMap?: ContentIdTextMap,
 ): void {
   if (depth > 100) return;
 
@@ -769,7 +785,7 @@ function walkPdfjsStructTree(
   if (!role) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
-        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap);
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap, textMap);
       }
     }
     return;
@@ -779,7 +795,7 @@ function walkPdfjsStructTree(
   if (CONTAINER_TAGS.has(role)) {
     for (const child of node.children || []) {
       if (isPdfjsStructNode(child)) {
-        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap);
+        walkPdfjsStructTree(child, pageNum, idBBoxMap, zones, stats, claimedIds, depth + 1, mcidBboxMap, textMap);
       }
     }
     // Emit orphan direct content not claimed by children
@@ -789,14 +805,14 @@ function walkPdfjsStructTree(
 
   // ── ZONE TAG — emit one zone, collect ALL descendants, stop recursing ──
   if (ZONE_TAGS.has(role)) {
-    emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap);
+    emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap, textMap);
     return;
   }
 
   // ── INLINE TAG at top level (no block ancestor captured it) ──
   // This happens when inline elements appear directly under containers.
   // Emit as a fallback zone so nothing is lost.
-  emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap);
+  emitBlockZone(node, role, pageNum, idBBoxMap, zones, stats, claimedIds, mcidBboxMap, textMap);
 }
 
 /**
@@ -812,6 +828,7 @@ function emitBlockZone(
   stats: StructTreeApiStats,
   claimedIds: Set<string>,
   mcidBboxMap?: Map<number, BBox>,
+  textMap?: ContentIdTextMap,
 ): void {
   const zoneType = TAG_MAP[role] ?? 'paragraph';
   const allContentIds = collectAllDescendantContentIds(node);
@@ -861,14 +878,26 @@ function emitBlockZone(
       stats.bboxFromExplicit++;
     }
 
+    // Collect text content from all descendant content IDs
+    let content: string | undefined;
+    if (textMap) {
+      const textParts: string[] = [];
+      for (const id of allContentIds) {
+        const parts = textMap.get(id);
+        if (parts) textParts.push(parts.join(''));
+      }
+      const joined = textParts.join(' ').trim();
+      if (joined) content = joined;
+    }
+
     if (finalBBox) {
-      zones.push({ pageNumber: pageNum, bbox: finalBBox, zoneType, confidence: 0.9, label: role });
+      zones.push({ pageNumber: pageNum, bbox: finalBBox, zoneType, confidence: 0.9, label: role, content });
       for (const id of allContentIds) claimedIds.add(id);
     } else {
       stats.droppedNoBbox++;
       zones.push({
         pageNumber: pageNum, bbox: null, zoneType, confidence: 0,
-        label: role, isGhost: true, ghostTag: role,
+        label: role, isGhost: true, ghostTag: role, content,
       });
     }
   } else {
@@ -991,8 +1020,8 @@ async function extractUsingStructTreeApi(
       logger.info(`[tagged-pdf-extractor] Page ${pageNum} struct tree:\n${treeDump}`);
     }
 
-    // Build content-ID → bbox map (and font size map) from text content
-    const { bboxMap: idBBoxMap, fontMap } = await buildContentIdBBoxMap(page);
+    // Build content-ID → bbox map, font size map, and text map from text content
+    const { bboxMap: idBBoxMap, fontMap, textMap } = await buildContentIdBBoxMap(page);
 
     // Augment with operator list for non-text content (images, paths, missed text)
     const opStats = await augmentContentIdMapFromOperatorList(page, idBBoxMap);
@@ -1020,6 +1049,7 @@ async function extractUsingStructTreeApi(
       claimedIds,
       0,
       opStats.mcidBboxMap,
+      textMap,
     );
 
     // Recover orphan content IDs — content in bbox map not claimed by any struct element.
