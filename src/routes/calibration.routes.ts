@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authorize } from '../middleware/auth.middleware';
 import { getCalibrationQueue } from '../queues';
 import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
@@ -403,7 +403,7 @@ const aiAnnotateBodySchema = z.object({
 });
 
 // POST /api/v1/calibration/runs/:runId/ai-annotate
-router.post('/runs/:runId/ai-annotate', authenticate, async (req: Request, res: Response) => {
+router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
 
@@ -523,7 +523,7 @@ router.get('/runs/:runId/comparison-report', authenticate, async (req: Request, 
 // --- Annotation Guide Endpoint ---
 
 // GET /api/v1/calibration/runs/:runId/annotation-guide
-router.get('/runs/:runId/annotation-guide', authenticate, async (req: Request, res: Response) => {
+router.get('/runs/:runId/annotation-guide', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
 
@@ -549,7 +549,7 @@ router.get('/runs/:runId/annotation-guide', authenticate, async (req: Request, r
 // --- Annotation Feedback Endpoints ---
 
 // GET /api/v1/calibration/runs/:runId/feedback
-router.get('/runs/:runId/feedback', authenticate, async (req: Request, res: Response) => {
+router.get('/runs/:runId/feedback', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
     const feedback = await getAnnotationFeedback(runId);
@@ -563,7 +563,7 @@ router.get('/runs/:runId/feedback', authenticate, async (req: Request, res: Resp
 });
 
 // POST /api/v1/calibration/feedback/aggregate
-router.post('/feedback/aggregate', authenticate, async (req: Request, res: Response) => {
+router.post('/feedback/aggregate', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const schema = z.object({
       calibrationRunIds: z.array(z.string()).min(1).max(100),
@@ -588,7 +588,7 @@ router.post('/feedback/aggregate', authenticate, async (req: Request, res: Respo
 // --- Training Export Endpoint ---
 
 // POST /api/v1/calibration/export-training
-router.post('/export-training', authenticate, async (req: Request, res: Response) => {
+router.post('/export-training', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const schema = z.object({
       documentIds: z.array(z.string()).optional(),
@@ -626,7 +626,7 @@ const bulkAiAnnotateSchema = z.object({
 });
 
 // POST /api/v1/calibration/ai-annotate-batch
-router.post('/ai-annotate-batch', authenticate, async (req: Request, res: Response) => {
+router.post('/ai-annotate-batch', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const parsed = bulkAiAnnotateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -651,7 +651,7 @@ router.post('/ai-annotate-batch', authenticate, async (req: Request, res: Respon
 // --- Aggregate Comparison Endpoint ---
 
 // POST /api/v1/calibration/comparison/aggregate
-router.post('/comparison/aggregate', authenticate, async (req: Request, res: Response) => {
+router.post('/comparison/aggregate', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const schema = z.object({
       documentIds: z.array(z.string()).optional(),
