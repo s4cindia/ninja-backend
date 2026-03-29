@@ -23,6 +23,11 @@ vi.mock('../../../src/middleware/auth.middleware', () => ({
     req.user = { id: 'user-1', tenantId: 'tenant-1' } as never;
     next();
   },
+  authorize: () => (
+    _req: express.Request,
+    _res: express.Response,
+    next: express.NextFunction,
+  ) => next(),
 }));
 
 vi.mock('../../../src/queues', () => ({
