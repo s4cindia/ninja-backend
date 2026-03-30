@@ -58,5 +58,5 @@ export function getModelPricing(model: string): { input: number; output: number;
     return aiPricing['gemini-2.5-pro'];
   }
   
-  return aiPricing['gemini-2.0-flash-lite'];
+  return aiPricing['gemini-2.0-flash'];
 }

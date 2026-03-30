@@ -52,7 +52,7 @@ class PhotoAltGeneratorService {
       throw new Error('GEMINI_API_KEY environment variable is required');
     }
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
   }
 
   async generateAltText(
@@ -108,7 +108,7 @@ Flags to include if applicable:
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'] as AltTextFlag[],
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: 'gemini-2.0-flash',
         generatedAt: new Date(),
       };
     }
@@ -124,7 +124,7 @@ Flags to include if applicable:
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'] as AltTextFlag[],
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: 'gemini-2.0-flash',
         generatedAt: new Date(),
       };
     }
@@ -230,7 +230,7 @@ Flags to include if applicable:
           extendedAlt: '',
           confidence: 0,
           flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'],
-          aiModel: 'gemini-2.0-flash-lite',
+          aiModel: 'gemini-2.0-flash',
           generatedAt: new Date(),
         });
       }
@@ -334,7 +334,7 @@ Return JSON only (no markdown):
         extendedAlt: sanitized.extendedAlt,
         confidence: parsed.confidence || 75,
         flags: sanitized.flags,
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: 'gemini-2.0-flash',
         generatedAt: new Date(),
       };
 
