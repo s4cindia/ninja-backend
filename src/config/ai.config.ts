@@ -6,7 +6,7 @@ export const aiConfig = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.0-flash',
     modelPro: 'gemini-2.5-pro',
     maxRetries: 3,
     retryDelay: 1000,

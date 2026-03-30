@@ -1,6 +1,9 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import type { DocumentContext } from './context-extractor.service';
 import { logger } from '../../lib/logger';
+import { aiConfig } from '../../config/ai.config';
+
+const ACTIVE_MODEL = aiConfig.gemini.model;
 
 interface AltTextGenerationResult {
   imageId: string;
@@ -52,7 +55,7 @@ class PhotoAltGeneratorService {
       throw new Error('GEMINI_API_KEY environment variable is required');
     }
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+    this.model = this.genAI.getGenerativeModel({ model: ACTIVE_MODEL });
   }
 
   async generateAltText(
@@ -108,7 +111,7 @@ Flags to include if applicable:
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'] as AltTextFlag[],
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: ACTIVE_MODEL,
         generatedAt: new Date(),
       };
     }
@@ -124,7 +127,7 @@ Flags to include if applicable:
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'] as AltTextFlag[],
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: ACTIVE_MODEL,
         generatedAt: new Date(),
       };
     }
@@ -146,7 +149,7 @@ Flags to include if applicable:
       extendedAlt: sanitized.extendedAlt,
       confidence: parsed.confidence,
       flags: sanitized.flags,
-      aiModel: 'gemini-1.5-pro',
+      aiModel: ACTIVE_MODEL,
       generatedAt: new Date(),
     };
   }
@@ -230,7 +233,7 @@ Flags to include if applicable:
           extendedAlt: '',
           confidence: 0,
           flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'],
-          aiModel: 'gemini-2.0-flash-lite',
+          aiModel: ACTIVE_MODEL,
           generatedAt: new Date(),
         });
       }
@@ -334,7 +337,7 @@ Return JSON only (no markdown):
         extendedAlt: sanitized.extendedAlt,
         confidence: parsed.confidence || 75,
         flags: sanitized.flags,
-        aiModel: 'gemini-2.0-flash-lite',
+        aiModel: ACTIVE_MODEL,
         generatedAt: new Date(),
       };
 
