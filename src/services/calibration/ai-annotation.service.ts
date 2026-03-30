@@ -22,6 +22,7 @@ export interface AiAnnotationOptions {
   confidenceThreshold?: number; // minimum confidence to auto-apply (default 0.95)
   model?: string;               // model override
   dryRun?: boolean;             // if true, classify but don't persist
+  aiRunId?: string;             // pre-created AiAnnotationRun ID (for async pattern)
 }
 
 export interface AiAnnotationResult {
@@ -50,17 +51,19 @@ export async function runAiAnnotation(
   const confThreshold = options.confidenceThreshold ?? 0.95;
   const modelName = options.model ?? 'gemini-2.0-flash';
 
-  // 1. Create AI annotation run record
-  const aiRun = await prisma.aiAnnotationRun.create({
-    data: {
-      calibrationRunId,
-      model: modelName,
-      promptVersion: PROMPT_VERSION,
-      confidenceThreshold: confThreshold,
-      dryRun: options.dryRun ?? false,
-      status: 'RUNNING',
-    },
-  });
+  // 1. Use pre-created AI annotation run or create one
+  const aiRun = options.aiRunId
+    ? await prisma.aiAnnotationRun.findUniqueOrThrow({ where: { id: options.aiRunId } })
+    : await prisma.aiAnnotationRun.create({
+        data: {
+          calibrationRunId,
+          model: modelName,
+          promptVersion: PROMPT_VERSION,
+          confidenceThreshold: confThreshold,
+          dryRun: options.dryRun ?? false,
+          status: 'RUNNING',
+        },
+      });
 
   try {
     // 2. Fetch unreviewed zones (not yet decided by operator or auto-annotation)

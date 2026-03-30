@@ -5,6 +5,7 @@ import { getCalibrationQueue } from '../queues';
 import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
 import { runAiAnnotation, getAiAnnotationReport } from '../services/calibration/ai-annotation.service';
+import { PROMPT_VERSION } from '../services/ai/prompts/zone-classification.prompts';
 import { runAnnotationComparison, getComparisonReport } from '../services/calibration/annotation-comparison.service';
 import { generateAnnotationGuide } from '../services/calibration/annotation-guide.service';
 import { getAnnotationFeedback, getAggregateFeedback } from '../services/calibration/annotation-feedback.service';
@@ -403,6 +404,8 @@ const aiAnnotateBodySchema = z.object({
 });
 
 // POST /api/v1/calibration/runs/:runId/ai-annotate
+// Returns 202 immediately; annotation runs in background.
+// Poll GET /runs/:runId/ai-annotation-status for progress.
 router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
@@ -427,18 +430,82 @@ router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER')
       });
     }
 
-    const result = await runAiAnnotation(runId, parsed.data);
+    // Check for an already-running annotation on this run
+    const existing = await prisma.aiAnnotationRun.findFirst({
+      where: { calibrationRunId: runId, status: 'RUNNING' },
+    });
+    if (existing) {
+      return res.status(202).json({
+        success: true,
+        data: { status: 'ALREADY_RUNNING', aiRunId: existing.id },
+      });
+    }
+
+    // Create the record now so the poller can find it immediately
+    const aiRun = await prisma.aiAnnotationRun.create({
+      data: {
+        calibrationRunId: runId,
+        model: parsed.data.model ?? 'gemini-2.0-flash',
+        promptVersion: PROMPT_VERSION,
+        confidenceThreshold: parsed.data.confidenceThreshold ?? 0.95,
+        dryRun: parsed.data.dryRun ?? false,
+        status: 'RUNNING',
+      },
+    });
 
     logger.info(
-      `[calibration] AI annotation triggered for run ${runId} by user ${req.user!.id}`,
+      `[calibration] AI annotation triggered for run ${runId} (aiRun ${aiRun.id}) by user ${req.user!.id}`,
     );
 
-    return res.json({ success: true, data: result });
+    // Fire-and-forget: run annotation in background, passing pre-created aiRunId
+    runAiAnnotation(runId, { ...parsed.data, aiRunId: aiRun.id }).catch((err) => {
+      logger.error(`[calibration] AI annotation failed for run ${runId}: ${(err as Error).message}`);
+    });
+
+    return res.status(202).json({
+      success: true,
+      data: { status: 'STARTED', aiRunId: aiRun.id },
+    });
   } catch (err) {
     logger.error(`[calibration] AI annotation failed for run ${req.params.runId}: ${(err as Error).message}`);
     return res.status(500).json({
       success: false,
       error: { code: 'AI_ANNOTATION_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/calibration/runs/:runId/ai-annotation-status?aiRunId=xxx
+// Polls a specific AI annotation run, or the latest if no aiRunId given.
+router.get('/runs/:runId/ai-annotation-status', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+    const { aiRunId } = req.query;
+
+    let run;
+    if (aiRunId && typeof aiRunId === 'string') {
+      run = await prisma.aiAnnotationRun.findUnique({
+        where: { id: aiRunId },
+      });
+    } else {
+      run = await prisma.aiAnnotationRun.findFirst({
+        where: { calibrationRunId: runId },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    if (!run) {
+      return res.json({
+        success: true,
+        data: { status: 'NONE', message: 'No AI annotation runs found' },
+      });
+    }
+
+    return res.json({ success: true, data: run });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
     });
   }
 });
