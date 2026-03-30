@@ -403,6 +403,8 @@ const aiAnnotateBodySchema = z.object({
 });
 
 // POST /api/v1/calibration/runs/:runId/ai-annotate
+// Returns 202 immediately; annotation runs in background.
+// Poll GET /runs/:runId/ai-annotation-status for progress.
 router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER'), async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
@@ -427,18 +429,51 @@ router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER')
       });
     }
 
-    const result = await runAiAnnotation(runId, parsed.data);
-
     logger.info(
       `[calibration] AI annotation triggered for run ${runId} by user ${req.user!.id}`,
     );
 
-    return res.json({ success: true, data: result });
+    // Fire-and-forget: run annotation in background
+    runAiAnnotation(runId, parsed.data).catch((err) => {
+      logger.error(`[calibration] AI annotation failed for run ${runId}: ${(err as Error).message}`);
+    });
+
+    return res.status(202).json({
+      success: true,
+      data: { status: 'STARTED', message: 'AI annotation started. Poll ai-annotation-status for progress.' },
+    });
   } catch (err) {
     logger.error(`[calibration] AI annotation failed for run ${req.params.runId}: ${(err as Error).message}`);
     return res.status(500).json({
       success: false,
       error: { code: 'AI_ANNOTATION_FAILED', message: (err as Error).message },
+    });
+  }
+});
+
+// GET /api/v1/calibration/runs/:runId/ai-annotation-status
+// Polls the latest AI annotation run status for a calibration run.
+router.get('/runs/:runId/ai-annotation-status', authenticate, async (req: Request, res: Response) => {
+  try {
+    const { runId } = req.params;
+
+    const latestRun = await prisma.aiAnnotationRun.findFirst({
+      where: { calibrationRunId: runId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!latestRun) {
+      return res.json({
+        success: true,
+        data: { status: 'NONE', message: 'No AI annotation runs found' },
+      });
+    }
+
+    return res.json({ success: true, data: latestRun });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: (err as Error).message },
     });
   }
 });
