@@ -1,10 +1,12 @@
 /**
  * AI-powered zone annotation service.
  * Classifies zones using Gemini Flash (cheap, fast) with batched page-level prompts.
+ * Falls back to Claude Haiku if Gemini is unreachable (e.g. Google blocks cloud IPs).
  * Confidence-gated: >= 0.95 auto-apply, 0.80-0.95 flag, < 0.80 skip.
  */
 import prisma from '../../lib/prisma';
 import { geminiService } from '../ai/gemini.service';
+import { claudeService } from '../ai/claude.service';
 import {
   buildPageClassificationPrompt,
   PROMPT_VERSION,
@@ -14,9 +16,62 @@ import {
 } from '../ai/prompts/zone-classification.prompts';
 import { logger } from '../../lib/logger';
 
-// Cost per 1M tokens for Gemini 2.0 Flash (approximate)
+// Cost per 1M tokens (approximate)
 const GEMINI_FLASH_INPUT_COST_PER_M = 0.075;
 const GEMINI_FLASH_OUTPUT_COST_PER_M = 0.30;
+const CLAUDE_HAIKU_INPUT_COST_PER_M = 1.00;
+const CLAUDE_HAIKU_OUTPUT_COST_PER_M = 5.00;
+
+type AiProvider = 'gemini' | 'claude';
+
+/**
+ * Classify a page's zones using Gemini, falling back to Claude on network failure.
+ * Returns the structured response, token usage, and which provider was used.
+ */
+async function classifyPageWithFallback(
+  prompt: string,
+  preferredProvider: AiProvider,
+): Promise<{
+  data: PageClassificationResponse;
+  usage?: { promptTokens: number; completionTokens: number };
+  provider: AiProvider;
+}> {
+  // Try preferred provider first
+  if (preferredProvider === 'gemini') {
+    try {
+      const { data, usage } = await geminiService.generateStructuredOutput<PageClassificationResponse>(
+        prompt,
+        { temperature: 0.1 },
+      );
+      return { data, usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined, provider: 'gemini' };
+    } catch (err) {
+      const msg = (err as Error).message || '';
+      // Only fall back on network/fetch errors, not on auth or quota errors
+      if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('ENOTFOUND')) {
+        logger.warn(`[ai-annotation] Gemini unreachable (${msg}), falling back to Claude Haiku`);
+      } else {
+        // Non-network error — don't fall back, re-throw
+        throw err;
+      }
+    }
+  }
+
+  // Claude fallback (or primary if preferred)
+  if (!claudeService.isAvailable()) {
+    throw new Error('Both Gemini and Claude are unavailable — check API key configuration');
+  }
+
+  const { data, usage } = await claudeService.generateJSONWithUsage<PageClassificationResponse>(prompt, {
+    model: 'haiku',
+    temperature: 0.1,
+    systemPrompt: 'You are an expert PDF accessibility analyst. Always respond with valid JSON only, no markdown or explanations.',
+  });
+  return {
+    data,
+    usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
+    provider: 'claude',
+  };
+}
 
 export interface AiAnnotationOptions {
   confidenceThreshold?: number; // minimum confidence to auto-apply (default 0.95)
@@ -146,6 +201,8 @@ export async function runAiAnnotation(
     let highConf = 0;
     let medConf = 0;
     let lowConf = 0;
+    // Track which provider is being used (sticky after first fallback)
+    let activeProvider: AiProvider = 'gemini';
 
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
 
@@ -167,10 +224,13 @@ export async function runAiAnnotation(
       const prompt = buildPageClassificationPrompt(pageNum, totalPages, zoneInputs);
 
       try {
-        const { data: response, usage } = await geminiService.generateStructuredOutput<PageClassificationResponse>(
-          prompt,
-          { temperature: 0.1 },
-        );
+        const { data: response, usage, provider } = await classifyPageWithFallback(prompt, activeProvider);
+
+        // Stick with fallback provider for remaining pages to avoid repeated failures
+        if (provider !== activeProvider) {
+          logger.info(`[ai-annotation] Switched provider: ${activeProvider} → ${provider}`);
+          activeProvider = provider;
+        }
 
         if (usage) {
           totalInputTokens += usage.promptTokens ?? 0;
@@ -207,12 +267,13 @@ export async function runAiAnnotation(
             else if (classification.decision === 'REJECTED') rejected++;
 
             // Always persist AI fields for transparency
+            const effectiveModel = activeProvider === 'claude' ? 'claude-haiku-4.5' : modelName;
             const updateData: Record<string, unknown> = {
               aiLabel: classification.label,
               aiConfidence: conf,
               aiDecision: classification.decision,
               aiReason: classification.reason ?? null,
-              aiModel: modelName,
+              aiModel: effectiveModel,
               aiAnnotatedAt: new Date(),
             };
 
@@ -221,15 +282,15 @@ export async function runAiAnnotation(
               if (classification.decision === 'REJECTED') {
                 updateData.decision = 'REJECTED';
                 updateData.isArtefact = true;
-                updateData.verifiedBy = `ai:${modelName}`;
+                updateData.verifiedBy = `ai:${effectiveModel}`;
               } else if (classification.decision === 'CORRECTED') {
                 updateData.decision = 'CORRECTED';
                 updateData.operatorLabel = classification.label;
-                updateData.verifiedBy = `ai:${modelName}`;
+                updateData.verifiedBy = `ai:${effectiveModel}`;
                 updateData.correctionReason = classification.reason ?? 'AI correction';
               } else {
                 updateData.decision = 'CONFIRMED';
-                updateData.verifiedBy = `ai:${modelName}`;
+                updateData.verifiedBy = `ai:${effectiveModel}`;
               }
             }
 
@@ -249,10 +310,12 @@ export async function runAiAnnotation(
       }
     }
 
-    // 7. Calculate cost
+    // 7. Calculate cost (use the active provider's pricing)
+    const inputCostPerM = activeProvider === 'claude' ? CLAUDE_HAIKU_INPUT_COST_PER_M : GEMINI_FLASH_INPUT_COST_PER_M;
+    const outputCostPerM = activeProvider === 'claude' ? CLAUDE_HAIKU_OUTPUT_COST_PER_M : GEMINI_FLASH_OUTPUT_COST_PER_M;
     const estimatedCost =
-      (totalInputTokens / 1_000_000) * GEMINI_FLASH_INPUT_COST_PER_M +
-      (totalOutputTokens / 1_000_000) * GEMINI_FLASH_OUTPUT_COST_PER_M;
+      (totalInputTokens / 1_000_000) * inputCostPerM +
+      (totalOutputTokens / 1_000_000) * outputCostPerM;
 
     const durationMs = Date.now() - startTime;
 
