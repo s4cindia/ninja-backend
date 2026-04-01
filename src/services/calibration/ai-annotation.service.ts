@@ -201,8 +201,8 @@ export async function runAiAnnotation(
     let highConf = 0;
     let medConf = 0;
     let lowConf = 0;
-    // Track which provider is being used (sticky after first fallback)
-    let activeProvider: AiProvider = 'gemini';
+    // Use Claude as primary — Gemini is unreachable from ECS ap-south-1
+    let activeProvider: AiProvider = 'claude';
 
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
 
