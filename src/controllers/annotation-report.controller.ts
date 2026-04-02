@@ -66,6 +66,23 @@ class AnnotationReportController {
     }
   }
 
+  /** GET /calibration/runs/:runId/annotation-report/export/lineage-csv */
+  async exportLineageCsv(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { runId } = req.params;
+      const csv = await annotationReportService.exportLineageCsv(runId);
+      if (!csv) {
+        res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Calibration run not found' } });
+        return;
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="lineage-report-${runId}.csv"`);
+      res.send(csv);
+    } catch (err) {
+      serverError(res, err, 'EXPORT_LINEAGE_CSV_FAILED');
+    }
+  }
+
   /** GET /calibration/runs/:runId/annotation-report/export/pdf */
   async exportAnnotationPdf(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {

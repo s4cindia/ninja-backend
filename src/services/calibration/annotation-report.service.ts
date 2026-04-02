@@ -29,6 +29,23 @@ export interface CorrectionLogRow {
   verifiedAt: string;
 }
 
+export interface LineageRow {
+  zoneId: string;
+  pageNumber: number;
+  zoneIndex: number;
+  doclingLabel: string | null;
+  pdfxtLabel: string | null;
+  reconciliationBucket: string | null;
+  aiDecision: string | null;
+  aiLabel: string | null;
+  aiConfidence: number | null;
+  aiModel: string | null;
+  humanDecision: string | null;
+  humanLabel: string | null;
+  verifiedBy: string | null;
+  finalLabel: string | null;
+}
+
 export interface AnnotationReport {
   header: {
     documentName: string;
@@ -52,6 +69,7 @@ export interface AnnotationReport {
     agreementRate: number | null;
   };
   zoneDetails: ZoneDetailRow[];
+  lineageDetails: LineageRow[];
   qualityMetrics: {
     extractorAgreementRate: number | null;
     autoAnnotationCoverage: number | null;
@@ -132,6 +150,33 @@ class AnnotationReportService {
       };
     });
 
+    // Lineage details
+    const lineagePageCounters = new Map<number, number>();
+    const lineageDetails: LineageRow[] = zones.map(z => {
+      const idx = (lineagePageCounters.get(z.pageNumber) ?? 0) + 1;
+      lineagePageCounters.set(z.pageNumber, idx);
+
+      const finalLabel = z.decision === 'REJECTED' ? null
+        : (z.operatorLabel ?? z.aiLabel ?? z.label ?? z.type);
+
+      return {
+        zoneId: z.id,
+        pageNumber: z.pageNumber,
+        zoneIndex: idx,
+        doclingLabel: z.doclingLabel ?? null,
+        pdfxtLabel: z.pdfxtLabel ?? null,
+        reconciliationBucket: z.reconciliationBucket ?? null,
+        aiDecision: z.aiDecision ?? null,
+        aiLabel: z.aiLabel ?? null,
+        aiConfidence: z.aiConfidence ?? null,
+        aiModel: z.aiModel ?? null,
+        humanDecision: z.decision ?? null,
+        humanLabel: z.operatorLabel ?? null,
+        verifiedBy: z.verifiedBy ?? null,
+        finalLabel,
+      };
+    });
+
     // Quality metrics
     const typeDistribution: Record<string, number> = {};
     for (const z of zones) {
@@ -194,6 +239,7 @@ class AnnotationReportService {
         agreementRate,
       },
       zoneDetails,
+      lineageDetails,
       qualityMetrics: {
         extractorAgreementRate: agreementRate,
         autoAnnotationCoverage: zones.length > 0 ? round4(autoAnnotated / zones.length) : null,
@@ -231,6 +277,37 @@ class AnnotationReportService {
           r.pageNumber, r.zoneIndex, r.zoneId, r.source, r.originalType,
           r.label, r.bucket, r.decision, r.finalLabel, r.correctionReason,
           r.verifiedBy, r.verifiedAt,
+        ].map(escape).join(','),
+      ),
+    ];
+
+    return lines.join('\n');
+  }
+
+  async exportLineageCsv(runId: string): Promise<string | null> {
+    const report = await this.getAnnotationReport(runId);
+    if (!report) return null;
+
+    const headers = [
+      'Page', 'Zone#', 'ZoneID', 'DoclingLabel', 'PdfxtLabel', 'Bucket',
+      'AIDecision', 'AILabel', 'AIConfidence', 'AIModel',
+      'HumanDecision', 'HumanLabel', 'VerifiedBy', 'FinalLabel',
+    ];
+
+    const escape = (v: unknown): string => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"`
+        : s;
+    };
+
+    const lines = [
+      headers.join(','),
+      ...report.lineageDetails.map(r =>
+        [
+          r.pageNumber, r.zoneIndex, r.zoneId, r.doclingLabel, r.pdfxtLabel,
+          r.reconciliationBucket, r.aiDecision, r.aiLabel, r.aiConfidence,
+          r.aiModel, r.humanDecision, r.humanLabel, r.verifiedBy, r.finalLabel,
         ].map(escape).join(','),
       ),
     ];

@@ -8,6 +8,7 @@ router.use(authenticate);
 
 // Annotation report
 router.get('/runs/:runId/annotation-report/export/csv', annotationReportController.exportAnnotationCsv.bind(annotationReportController));
+router.get('/runs/:runId/annotation-report/export/lineage-csv', annotationReportController.exportLineageCsv.bind(annotationReportController));
 router.get('/runs/:runId/annotation-report/export/pdf', annotationReportController.exportAnnotationPdf.bind(annotationReportController));
 router.get('/runs/:runId/annotation-report', annotationReportController.getAnnotationReport.bind(annotationReportController));
 
