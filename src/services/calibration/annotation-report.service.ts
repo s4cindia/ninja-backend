@@ -286,7 +286,7 @@ class AnnotationReportService {
 
   async exportLineageCsv(runId: string): Promise<string | null> {
     const report = await this.getAnnotationReport(runId);
-    if (!report) return null;
+    if (!report || report.lineageDetails.length === 0) return null;
 
     const headers = [
       'Page', 'Zone#', 'ZoneID', 'DoclingLabel', 'PdfxtLabel', 'Bucket',
@@ -295,7 +295,9 @@ class AnnotationReportService {
     ];
 
     const escape = (v: unknown): string => {
-      const s = v === null || v === undefined ? '' : String(v);
+      if (v === null || v === undefined) return '';
+      let s = String(v);
+      if (s.length > 0 && /^[=+\-@]/.test(s)) s = `'${s}`;
       return s.includes(',') || s.includes('"') || s.includes('\n')
         ? `"${s.replace(/"/g, '""')}"`
         : s;
