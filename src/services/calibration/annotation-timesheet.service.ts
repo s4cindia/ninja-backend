@@ -53,6 +53,27 @@ export interface TimesheetReport {
   };
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+const SYSTEM_IDS = new Set(['auto-annotation', 'unknown']);
+
+async function resolveUserNames(ids: string[]): Promise<Map<string, string>> {
+  const userIds = ids.filter(id => id && !SYSTEM_IDS.has(id));
+  if (userIds.length === 0) return new Map();
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+
+  const map = new Map<string, string>();
+  for (const u of users) {
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
+    if (name) map.set(u.id, name);
+  }
+  return map;
+}
+
 // ── Service ─────────────────────────────────────────────────────────
 
 class AnnotationTimesheetService {
@@ -246,6 +267,13 @@ class AnnotationTimesheetService {
       z.reconciliationBucket === 'AMBER' || z.reconciliationBucket === 'RED',
     ).length;
     const complexityScore = zones.length > 0 ? amberRedCount / zones.length : null;
+
+    // Resolve operator UUIDs to display names
+    const operatorIds = operatorBreakdown.map(o => o.operatorId);
+    const nameMap = await resolveUserNames(operatorIds);
+    for (const op of operatorBreakdown) {
+      op.operatorId = nameMap.get(op.operatorId) ?? op.operatorId;
+    }
 
     return {
       header: {
