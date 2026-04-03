@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { getCalibrationQueue } from '../queues';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { getCorpusStats } from '../services/calibration/corpus-stats.service';
 import { runAiAnnotation, getAiAnnotationReport } from '../services/calibration/ai-annotation.service';
@@ -288,9 +289,60 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
       nextCursor = extra.id;
     }
 
+    // Enrich with annotation progress for docs that have a completed run
+    const completedRunIds = new Map<string, string>();
+    for (const doc of documents) {
+      const latestRun = doc.calibrationRuns?.[0];
+      if (latestRun?.completedAt) {
+        completedRunIds.set(latestRun.id, doc.id);
+      }
+    }
+
+    type DocWithProgress = (typeof documents)[number] & {
+      annotationProgress?: { totalZones: number; annotatedZones: number; status: string };
+    };
+    const enriched: DocWithProgress[] = documents;
+
+    if (completedRunIds.size > 0) {
+      const runIds = [...completedRunIds.keys()];
+      const zoneCounts = await prisma.$queryRaw<
+        { calibrationRunId: string; totalZones: bigint; annotatedZones: bigint }[]
+      >`
+        SELECT "calibrationRunId",
+               COUNT(*)::bigint AS "totalZones",
+               COUNT("operatorLabel")::bigint AS "annotatedZones"
+        FROM "Zone"
+        WHERE "calibrationRunId" IN (${Prisma.join(runIds)})
+        GROUP BY "calibrationRunId"
+      `;
+
+      const progressMap = new Map<string, { totalZones: number; annotatedZones: number }>();
+      for (const row of zoneCounts) {
+        const docId = completedRunIds.get(row.calibrationRunId);
+        if (docId) {
+          progressMap.set(docId, {
+            totalZones: Number(row.totalZones),
+            annotatedZones: Number(row.annotatedZones),
+          });
+        }
+      }
+
+      for (const doc of enriched) {
+        const progress = progressMap.get(doc.id);
+        if (progress) {
+          const status = progress.annotatedZones === 0
+            ? 'NOT_STARTED'
+            : progress.annotatedZones === progress.totalZones
+              ? 'COMPLETED'
+              : 'IN_PROGRESS';
+          doc.annotationProgress = { ...progress, status };
+        }
+      }
+    }
+
     return res.json({
       success: true,
-      data: { documents, nextCursor },
+      data: { documents: enriched, nextCursor },
     });
   } catch (err) {
     return res.status(500).json({
