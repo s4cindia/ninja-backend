@@ -83,6 +83,31 @@ export interface AnnotationReport {
   correctionsLog: CorrectionLogRow[];
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+const SYSTEM_IDS = new Set(['auto-annotation', 'unknown']);
+
+async function resolveUserNames(ids: string[]): Promise<Map<string, string>> {
+  const userIds = ids.filter(id => id && !SYSTEM_IDS.has(id));
+  if (userIds.length === 0) return new Map();
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, name: true },
+  });
+
+  const map = new Map<string, string>();
+  for (const u of users) {
+    if (u.name) map.set(u.id, u.name);
+  }
+  return map;
+}
+
+function resolveName(nameMap: Map<string, string>, id: string | null): string | null {
+  if (!id) return null;
+  return nameMap.get(id) ?? id;
+}
+
 // ── Service ─────────────────────────────────────────────────────────
 
 class AnnotationReportService {
@@ -216,6 +241,21 @@ class AnnotationReportService {
         verifiedAt: z.verifiedAt ? new Date(z.verifiedAt).toISOString() : '',
       }));
 
+    // Resolve user UUIDs to display names
+    const allUserIds = new Set<string>();
+    for (const id of annotatorSet) allUserIds.add(id);
+    for (const z of zoneDetails) if (z.verifiedBy) allUserIds.add(z.verifiedBy);
+    for (const z of lineageDetails) if (z.verifiedBy) allUserIds.add(z.verifiedBy);
+    for (const c of correctionsLog) if (c.verifiedBy) allUserIds.add(c.verifiedBy);
+
+    const nameMap = await resolveUserNames([...allUserIds]);
+
+    for (const z of zoneDetails) z.verifiedBy = resolveName(nameMap, z.verifiedBy);
+    for (const z of lineageDetails) z.verifiedBy = resolveName(nameMap, z.verifiedBy);
+    for (const c of correctionsLog) c.verifiedBy = resolveName(nameMap, c.verifiedBy) ?? 'unknown';
+
+    const resolvedAnnotators = [...annotatorSet].map(id => nameMap.get(id) ?? id);
+
     return {
       header: {
         documentName: doc?.filename ?? 'Unknown',
@@ -223,7 +263,7 @@ class AnnotationReportService {
         calibrationRunId: run.id,
         totalPages: doc?.pageCount ?? uniquePages.size,
         reportDate: new Date().toISOString(),
-        annotators: [...annotatorSet],
+        annotators: resolvedAnnotators,
       },
       summary: {
         totalZones: zones.length,
