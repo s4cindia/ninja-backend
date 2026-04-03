@@ -63,12 +63,13 @@ async function resolveUserNames(ids: string[]): Promise<Map<string, string>> {
 
   const users = await prisma.user.findMany({
     where: { id: { in: userIds } },
-    select: { id: true, name: true },
+    select: { id: true, firstName: true, lastName: true },
   });
 
   const map = new Map<string, string>();
   for (const u of users) {
-    if (u.name) map.set(u.id, u.name);
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
+    if (name) map.set(u.id, name);
   }
   return map;
 }
