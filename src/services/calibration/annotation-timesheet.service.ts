@@ -30,13 +30,18 @@ export interface TimesheetReport {
     documentId: string;
     calibrationRunId: string;
     totalPages: number;
+    pageCount: number;
     totalZones: number;
+    zoneCount: number;
     reportPeriod: { from: string | null; to: string | null };
   };
   timeSummary: {
     totalWallClockMs: number;
+    wallClockMs: number;
     totalActiveMs: number;
+    activeMs: number;
     totalIdleMs: number;
+    idleMs: number;
     autoAnnotationMs: number;
     manualReviewMs: number;
     zonesPerHour: number | null;
@@ -275,13 +280,18 @@ class AnnotationTimesheetService {
       op.operatorId = nameMap.get(op.operatorId) ?? op.operatorId;
     }
 
+    const pageCount = doc.pageCount ?? uniquePages.size;
+    const zoneCount = zones.length;
+
     return {
       header: {
         documentName: doc.filename,
         documentId: doc.id,
         calibrationRunId: run.id,
-        totalPages: doc.pageCount ?? uniquePages.size,
-        totalZones: zones.length,
+        totalPages: pageCount,
+        pageCount,
+        totalZones: zoneCount,
+        zoneCount,
         reportPeriod: {
           from: earliestStart ? earliestStart.toISOString() : null,
           to: latestEnd ? latestEnd.toISOString() : null,
@@ -289,8 +299,11 @@ class AnnotationTimesheetService {
       },
       timeSummary: {
         totalWallClockMs,
+        wallClockMs: totalWallClockMs,
         totalActiveMs,
+        activeMs: totalActiveMs,
         totalIdleMs,
+        idleMs: totalIdleMs,
         autoAnnotationMs,
         manualReviewMs,
         zonesPerHour,
