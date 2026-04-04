@@ -205,9 +205,22 @@ export async function runAiAnnotation(
     let activeProvider: AiProvider = 'claude';
 
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
+    const pagesWithZones = sortedPages.length;
+
+    // Set totalPages on the run so the frontend can show progress
+    await prisma.aiAnnotationRun.update({
+      where: { id: aiRun.id },
+      data: { totalZones: zones.length, totalPages: pagesWithZones },
+    });
 
     for (const pageNum of sortedPages) {
       const pageZones = byPage.get(pageNum)!;
+
+      // Update current page progress (fire-and-forget)
+      prisma.aiAnnotationRun.update({
+        where: { id: aiRun.id },
+        data: { currentPage: pageNum, annotatedZones: annotated, skippedZones: skipped },
+      }).catch(() => {});
       const zoneInputs: ZoneInput[] = pageZones.map((z) => ({
         zoneId: z.id,
         type: z.type,

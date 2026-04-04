@@ -1,6 +1,8 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { PDFDocument } from 'pdf-lib';
 import prisma from '../../lib/prisma';
+import { logger } from '../../lib/logger';
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION ?? 'ap-south-1',
@@ -37,6 +39,48 @@ export async function generateUploadUrl(
   };
 }
 
+/**
+ * Extract publisher (and pageCount) from PDF metadata stored in S3.
+ * Returns partial fields; caller merges with user-supplied values.
+ */
+async function extractPdfMetadata(s3Path: string): Promise<{
+  publisher?: string;
+  pageCount?: number;
+}> {
+  try {
+    const match = s3Path.match(/^s3:\/\/([^/]+)\/(.+)$/);
+    if (!match) return {};
+
+    const [, bucket, key] = match;
+    const obj = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!obj.Body) return {};
+
+    const bytes = await obj.Body.transformToByteArray();
+    const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+
+    // pdf-lib exposes Producer/Creator but not a dedicated publisher field.
+    // Many academic/commercial PDFs set Producer or Creator to the publisher name.
+    const creator = pdf.getCreator();
+    const subject = pdf.getSubject();
+
+    // Heuristic: prefer subject (often used for publisher in scholarly PDFs),
+    // then creator (if it doesn't look like a tool name).
+    // Skip producer — usually "Adobe PDF Library" or similar tool names.
+    const toolPatterns = /acrobat|pdf|library|writer|openoffice|libreoffice|microsoft|latex|quark|indesign/i;
+    let publisher: string | undefined;
+    if (subject && !toolPatterns.test(subject)) {
+      publisher = subject;
+    } else if (creator && !toolPatterns.test(creator)) {
+      publisher = creator;
+    }
+
+    return { publisher, pageCount: pdf.getPageCount() };
+  } catch (err) {
+    logger.warn(`[corpus-upload] Failed to extract PDF metadata: ${(err as Error).message}`);
+    return {};
+  }
+}
+
 export async function registerCorpusDocument(input: {
   filename: string;
   s3Path: string;
@@ -45,13 +89,22 @@ export async function registerCorpusDocument(input: {
   pageCount?: number;
   language?: string;
 }): Promise<{ id: string; s3Path: string; status: string }> {
+  // Auto-extract metadata from PDF if publisher or pageCount not provided
+  let autoPublisher: string | undefined;
+  let autoPageCount: number | undefined;
+  if ((!input.publisher || !input.pageCount) && input.filename.toLowerCase().endsWith('.pdf')) {
+    const meta = await extractPdfMetadata(input.s3Path);
+    autoPublisher = meta.publisher;
+    autoPageCount = meta.pageCount;
+  }
+
   const doc = await prisma.corpusDocument.create({
     data: {
       filename: input.filename,
       s3Path: input.s3Path,
-      publisher: input.publisher,
+      publisher: input.publisher || autoPublisher,
       contentType: input.contentType,
-      pageCount: input.pageCount,
+      pageCount: input.pageCount ?? autoPageCount,
       language: input.language ?? 'en',
     },
   });
