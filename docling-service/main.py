@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import uuid
 import tempfile
 import logging
 import threading
@@ -278,4 +279,69 @@ def detect(req: DetectRequest):
             _inflight.pop(req.pdfPath, None)
     threading.Thread(target=_cleanup, daemon=True).start()
 
+    return response
+
+
+# ── Async detect endpoints ──────────────────────────────────────────
+# POST /detect-async  → returns { asyncJobId, status: "PROCESSING" }
+# GET  /jobs/{id}      → returns { status, result?, error? }
+# This avoids NAT Gateway idle-timeout killing long-running connections.
+
+_async_jobs_lock = threading.Lock()
+_async_jobs: dict[str, dict] = {}  # asyncJobId → { status, result, error }
+
+# Auto-cleanup completed jobs after 10 minutes
+_ASYNC_JOB_TTL = 10 * 60
+
+
+def _cleanup_async_job(job_id: str):
+    time.sleep(_ASYNC_JOB_TTL)
+    with _async_jobs_lock:
+        _async_jobs.pop(job_id, None)
+
+
+def _run_detect_async(job_id: str, req: DetectRequest):
+    """Run detection in background thread, store result in _async_jobs."""
+    try:
+        result = detect(req)
+        with _async_jobs_lock:
+            _async_jobs[job_id] = {"status": "COMPLETED", "result": result, "error": None}
+    except HTTPException as e:
+        with _async_jobs_lock:
+            _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": e.detail}
+    except Exception as e:
+        with _async_jobs_lock:
+            _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": str(e)}
+    threading.Thread(target=_cleanup_async_job, args=(job_id,), daemon=True).start()
+
+
+@app.post("/detect-async")
+def detect_async(req: DetectRequest):
+    if converter is None:
+        raise HTTPException(status_code=503, detail="Docling model not initialised")
+
+    async_job_id = str(uuid.uuid4())
+    with _async_jobs_lock:
+        _async_jobs[async_job_id] = {"status": "PROCESSING", "result": None, "error": None}
+
+    thread = threading.Thread(target=_run_detect_async, args=(async_job_id, req), daemon=True)
+    thread.start()
+
+    logger.info(f"Job {req.jobId}: async detect started as {async_job_id}")
+    return {"asyncJobId": async_job_id, "status": "PROCESSING"}
+
+
+@app.get("/jobs/{async_job_id}")
+def get_async_job(async_job_id: str):
+    with _async_jobs_lock:
+        job = _async_jobs.get(async_job_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+
+    response = {"asyncJobId": async_job_id, "status": job["status"]}
+    if job["status"] == "COMPLETED":
+        response["result"] = job["result"]
+    elif job["status"] == "FAILED":
+        response["error"] = job["error"]
     return response
