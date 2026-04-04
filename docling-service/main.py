@@ -290,6 +290,11 @@ def detect(req: DetectRequest):
 _async_jobs_lock = threading.Lock()
 _async_jobs: dict[str, dict] = {}  # asyncJobId → { status, result, error }
 
+# Semaphore to serialize PDF conversions — only one at a time to prevent OOM.
+# Docling ML models (layout + table structure) are memory-heavy on CPU;
+# two concurrent conversions can exceed the ECS task memory limit.
+_conversion_semaphore = threading.Semaphore(1)
+
 # Auto-cleanup completed jobs after 10 minutes
 _ASYNC_JOB_TTL = 10 * 60
 
@@ -301,7 +306,13 @@ def _cleanup_async_job(job_id: str):
 
 
 def _run_detect_async(job_id: str, req: DetectRequest):
-    """Run detection in background thread, store result in _async_jobs."""
+    """Run detection in background thread, store result in _async_jobs.
+
+    Acquires _conversion_semaphore to serialize conversions and prevent OOM.
+    """
+    logger.info(f"Job {req.jobId}: waiting for conversion slot (async {job_id})")
+    _conversion_semaphore.acquire()
+    logger.info(f"Job {req.jobId}: acquired conversion slot, starting processing")
     try:
         result = detect(req)
         with _async_jobs_lock:
@@ -312,6 +323,8 @@ def _run_detect_async(job_id: str, req: DetectRequest):
     except Exception as e:
         with _async_jobs_lock:
             _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": str(e)}
+    finally:
+        _conversion_semaphore.release()
     threading.Thread(target=_cleanup_async_job, args=(job_id,), daemon=True).start()
 
 

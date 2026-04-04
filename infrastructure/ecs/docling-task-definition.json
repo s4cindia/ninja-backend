@@ -3,7 +3,7 @@
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
-  "memory": "4096",
+  "memory": "8192",
   "executionRoleArn": "arn:aws:iam::223643972423:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::223643972423:role/ninja-backend-task-role",
   "containerDefinitions": [
