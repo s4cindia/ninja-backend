@@ -1,7 +1,15 @@
+import { logger } from '../../lib/logger';
 import type { DoclingServiceResponse } from './types';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface AsyncJobResponse {
+  asyncJobId: string;
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  result?: DoclingServiceResponse;
+  error?: string;
 }
 
 export async function detectWithDocling(
@@ -13,52 +21,66 @@ export async function detectWithDocling(
     throw new Error('DOCLING_SERVICE_URL env var is not set');
   }
 
-  const maxAttempts = 3;
+  // Step 1: Submit async job (short-lived request, no idle-timeout risk)
+  const submitResponse = await fetch(`${baseUrl}/detect-async`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pdfPath, jobId }),
+    signal: AbortSignal.timeout(30_000), // 30s to submit
+  });
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const controller = new AbortController();
-    // Docling ML inference on CPU can take 15–20+ minutes for large PDFs
-    const DOCLING_TIMEOUT_MS = 25 * 60 * 1000; // 25 minutes
-    const timer = setTimeout(() => controller.abort(), DOCLING_TIMEOUT_MS);
+  if (!submitResponse.ok) {
+    const body = await submitResponse.text();
+    if (submitResponse.status >= 500) {
+      throw new Error(`DOCLING_SERVICE_ERROR: ${submitResponse.status} ${body}`);
+    }
+    throw new Error(`DOCLING_CLIENT_ERROR: ${submitResponse.status} ${body}`);
+  }
 
-    let response: Response;
+  const { asyncJobId } = (await submitResponse.json()) as AsyncJobResponse;
+  logger.info(`[DoclingClient] Job ${jobId}: async submitted as ${asyncJobId}`);
+
+  // Step 2: Poll for result — each poll is a fresh short-lived connection
+  const POLL_INTERVAL_MS = 5_000; // 5 seconds
+  const MAX_POLL_TIME_MS = 25 * 60 * 1000; // 25 minutes
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < MAX_POLL_TIME_MS) {
+    await sleep(POLL_INTERVAL_MS);
+
+    let pollResponse: Response;
     try {
-      response = await fetch(`${baseUrl}/detect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdfPath, jobId }),
-        signal: controller.signal,
+      pollResponse = await fetch(`${baseUrl}/jobs/${asyncJobId}`, {
+        signal: AbortSignal.timeout(10_000), // 10s per poll
       });
-    } catch (err) {
-      clearTimeout(timer);
-      if (err instanceof Error && err.name === 'AbortError') {
-        throw new Error(`DOCLING_TIMEOUT: exceeded ${DOCLING_TIMEOUT_MS / 1000}s for jobId ${jobId}`);
-      }
-      throw err;
-    }
-
-    clearTimeout(timer);
-
-    if (response.ok) {
-      return (await response.json()) as DoclingServiceResponse;
-    }
-
-    if (response.status >= 400 && response.status < 500) {
-      const body = await response.text();
-      throw new Error(`DOCLING_CLIENT_ERROR: ${response.status} ${body}`);
-    }
-
-    // 5xx — retry if attempts remain
-    if (attempt < maxAttempts) {
-      await sleep(2000);
+    } catch {
+      // Transient network error during poll — retry
+      logger.warn(`[DoclingClient] Job ${jobId}: poll request failed, retrying...`);
       continue;
     }
 
-    throw new Error(
-      `DOCLING_SERVICE_ERROR: ${response.status} after retries`,
-    );
+    if (!pollResponse.ok) {
+      if (pollResponse.status === 404) {
+        throw new Error(`DOCLING_SERVICE_ERROR: async job ${asyncJobId} not found (expired?)`);
+      }
+      // Transient server error — retry
+      logger.warn(`[DoclingClient] Job ${jobId}: poll returned ${pollResponse.status}, retrying...`);
+      continue;
+    }
+
+    const job = (await pollResponse.json()) as AsyncJobResponse;
+
+    if (job.status === 'COMPLETED' && job.result) {
+      logger.info(`[DoclingClient] Job ${jobId}: completed in ${Date.now() - startTime}ms`);
+      return job.result;
+    }
+
+    if (job.status === 'FAILED') {
+      throw new Error(`DOCLING_SERVICE_ERROR: ${job.error ?? 'unknown error'}`);
+    }
+
+    // Still PROCESSING — continue polling
   }
 
-  // Unreachable, but TypeScript needs it
-  throw new Error('DOCLING_SERVICE_ERROR: unexpected');
+  throw new Error(`DOCLING_TIMEOUT: exceeded ${MAX_POLL_TIME_MS / 1000}s for jobId ${jobId}`);
 }
