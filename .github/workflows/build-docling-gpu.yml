@@ -1,25 +1,23 @@
-name: Build and Deploy Docling Service (CPU — Fargate)
+name: Build and Deploy Docling GPU Service
 
-# NOTE: This workflow deploys the CPU/Fargate version of Docling.
-# The GPU version is deployed by build-docling-gpu.yml.
-# Once GPU is verified stable, this workflow can be removed.
 on:
   push:
     branches: [main]
     paths:
-      - 'infrastructure/ecs/docling-task-definition.json'
+      - 'docling-service/**'
+      - 'infrastructure/ecs/docling-gpu-task-definition.json'
   workflow_dispatch:
 
 env:
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: ninja-docling-service
+  ECR_REPOSITORY: ninja-docling-service-gpu
   ECS_CLUSTER: ninja-cluster
-  ECS_SERVICE: ninja-docling-service
+  ECS_SERVICE: ninja-docling-service-gpu
   CONTAINER_NAME: ninja-docling-service
 
 jobs:
   build-and-deploy:
-    name: Build, Push, Deploy Docling
+    name: Build, Push, Deploy Docling GPU
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,13 +34,15 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, push image
+      - name: Build, tag, push GPU image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+          docker build \
+            -f docling-service/Dockerfile.gpu \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
             docling-service/
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -54,7 +54,7 @@ jobs:
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: infrastructure/ecs/docling-task-definition.json
+          task-definition: infrastructure/ecs/docling-gpu-task-definition.json
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.build-image.outputs.image }}
 
@@ -65,3 +65,17 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER }}
           service: ${{ env.ECS_SERVICE }}
           wait-for-service-stability: true
+
+      - name: Scale up service if at zero
+        run: |
+          DESIRED=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query 'services[0].desiredCount' --output text)
+          if [ "$DESIRED" = "0" ]; then
+            echo "Service at 0 desired count — scaling up to 1 for deployment"
+            aws ecs update-service \
+              --cluster $ECS_CLUSTER \
+              --service $ECS_SERVICE \
+              --desired-count 1
+          fi
