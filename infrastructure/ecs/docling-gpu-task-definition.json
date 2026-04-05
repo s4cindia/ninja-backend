@@ -1,0 +1,51 @@
+{
+  "family": "ninja-docling-service-gpu",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "cpu": "4096",
+  "memory": "15360",
+  "executionRoleArn": "arn:aws:iam::223643972423:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::223643972423:role/ninja-backend-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ninja-docling-service",
+      "image": "223643972423.dkr.ecr.ap-south-1.amazonaws.com/ninja-docling-service-gpu:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "LOG_LEVEL", "value": "info" },
+        { "name": "NVIDIA_VISIBLE_DEVICES", "value": "all" },
+        { "name": "NVIDIA_DRIVER_CAPABILITIES", "value": "compute,utility" }
+      ],
+      "resourceRequirements": [
+        {
+          "type": "GPU",
+          "value": "1"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 5,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ninja-docling-service-gpu",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+# GPU-accelerated Docling image for ECS on EC2 (g4dn.xlarge / T4 GPU)
+# Base: NVIDIA CUDA 12.4 + cuDNN 9 on Ubuntu 22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System deps required by Docling / PyTorch / PDF rendering
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    libgomp1 \
+    curl \
+    libxcb1 \
+    libgl1 \
+    libglib2.0-0 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps — GPU PyTorch first, then Docling
+COPY requirements-gpu.txt .
+RUN pip install --no-cache-dir -r requirements-gpu.txt
+
+# Pre-download Docling models at build time.
+# ECS tasks cannot reach huggingface.co at runtime.
+# Must convert a real PDF to trigger lazy-loaded model downloads.
+ENV HF_HOME=/app/.cache/huggingface
+COPY warmup.pdf .
+RUN python -c "\
+from docling.document_converter import DocumentConverter, PdfFormatOption; \
+from docling.datamodel.pipeline_options import PdfPipelineOptions; \
+from docling.datamodel.base_models import InputFormat; \
+pipeline_options = PdfPipelineOptions(do_ocr=False); \
+converter = DocumentConverter( \
+    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}, \
+); \
+result = converter.convert('warmup.pdf'); \
+print(f'Warmup conversion done: {len(result.document.export_to_dict().get(\"texts\", []))} text items'); \
+print('Docling models pre-loaded successfully (OCR disabled)')"
+
+# Verify CUDA is visible to PyTorch
+RUN python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}')"
+
+COPY main.py .
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# NVIDIA runtime env vars (set by nvidia-container-runtime, but explicit for clarity)
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+CMD ["uvicorn", "main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8080", \
+     "--log-level", "info"]
