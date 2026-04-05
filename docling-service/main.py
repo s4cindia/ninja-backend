@@ -437,14 +437,14 @@ def _run_detect_async(job_id: str, req: DetectRequest):
             args=(req.pdfPath, req.jobId, result_file),
         )
         proc.start()
-        proc.join(timeout=20 * 60)  # 20 minute timeout
+        proc.join(timeout=120 * 60)  # 2 hour timeout — large PDFs (500+ pages) need 1-2h on CPU
 
         if proc.is_alive():
-            logger.error(f"Job {req.jobId}: subprocess timed out after 20 minutes, killing")
+            logger.error(f"Job {req.jobId}: subprocess timed out after 2 hours, killing")
             proc.kill()
             proc.join(timeout=10)
             with _async_jobs_lock:
-                _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": "Conversion timed out after 20 minutes"}
+                _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": "Conversion timed out after 2 hours"}
             return
 
         if proc.exitcode != 0:
