@@ -46,8 +46,8 @@ export async function detectWithDocling(
   }
 
   const MAX_RETRIES = 2; // retry up to 2 times on container restart (404)
-  const POLL_INTERVAL_MS = 5_000; // 5 seconds
-  const MAX_POLL_TIME_MS = 25 * 60 * 1000; // 25 minutes
+  const POLL_INTERVAL_MS = 10_000; // 10 seconds (reduced poll frequency for long jobs)
+  const MAX_POLL_TIME_MS = 150 * 60 * 1000; // 2.5 hours — large PDFs (500+ pages) need 1-2h on CPU
   const startTime = Date.now();
 
   let asyncJobId = await submitAsyncJob(baseUrl, pdfPath, jobId);

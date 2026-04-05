@@ -65,6 +65,6 @@ export const startCalibrationWorker = () =>
     queueName: QUEUE_NAMES.CALIBRATION,
     processor: processCalibrationJob,
     concurrency: 2,
-    // Docling ML inference can take 15–20+ min on CPU; lock must exceed that
-    lockDuration: 30 * 60 * 1000,
+    // Docling ML inference can take 1-2 hours for large PDFs (500+ pages) on CPU
+    lockDuration: 3 * 60 * 60 * 1000, // 3 hours
   });
