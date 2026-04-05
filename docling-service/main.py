@@ -1,15 +1,21 @@
 import os
 import re
+import json
 import time
 import uuid
 import tempfile
 import logging
 import threading
+import multiprocessing
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 # Ensure HuggingFace cache matches the build-time pre-download location
 os.environ.setdefault("HF_HOME", "/app/.cache/huggingface")
+
+# Use "spawn" for multiprocessing so subprocesses don't inherit the GIL state.
+# This is the default on macOS/Windows but must be set explicitly on Linux.
+multiprocessing.set_start_method("spawn", force=True)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docling-service")
@@ -305,26 +311,179 @@ def _cleanup_async_job(job_id: str):
         _async_jobs.pop(job_id, None)
 
 
+def _subprocess_detect(pdf_path: str, job_id: str, result_file: str):
+    """Run Docling conversion in a subprocess to avoid GIL blocking health checks.
+
+    Writes JSON result to result_file. Exits with code 0 on success, 1 on error.
+    """
+    try:
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.base_models import InputFormat
+
+        pipeline_options = PdfPipelineOptions(do_ocr=False)
+        conv = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)},
+        )
+
+        # Download from S3 if needed
+        local_path = pdf_path
+        is_temp = False
+        if S3_URI_PATTERN.match(pdf_path):
+            import boto3
+            match = S3_URI_PATTERN.match(pdf_path)
+            bucket, key = match.group(1), match.group(2)
+            suffix = os.path.splitext(key)[1] or ".pdf"
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            tmp.close()
+            boto3.client("s3").download_file(bucket, key, tmp.name)
+            local_path = tmp.name
+            is_temp = True
+
+        start = time.time()
+        result = conv.convert(local_path)
+        if is_temp:
+            os.unlink(local_path)
+
+        doc_dict = result.document.export_to_dict()
+
+        # Build page lookups
+        pages_dict = doc_dict.get("pages", {})
+        page_no_map = {}
+        page_height_map = {}
+        if isinstance(pages_dict, dict):
+            for page_hash, page_info in pages_dict.items():
+                if isinstance(page_info, dict):
+                    page_no = page_info.get("page_no", 0)
+                    page_no_map[page_hash] = page_no
+                    size = page_info.get("size", {})
+                    if isinstance(size, dict):
+                        page_height_map[page_no] = float(size.get("height", 792))
+
+        zones = []
+        items = []
+        for key in ("texts", "pictures", "tables"):
+            extra = doc_dict.get(key, [])
+            if isinstance(extra, list):
+                items.extend(extra)
+        if not items:
+            body = doc_dict.get("body", {})
+            items = body.get("children", []) if isinstance(body, dict) else []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label", item.get("type", "Text"))
+            for prov in item.get("prov", []):
+                if not isinstance(prov, dict):
+                    continue
+                page_ref = prov.get("page_no", 0)
+                if isinstance(page_ref, str) and page_ref in page_no_map:
+                    page_ref = page_no_map[page_ref]
+                raw_bbox = prov.get("bbox", {})
+                if isinstance(raw_bbox, dict):
+                    l = float(raw_bbox.get("l", raw_bbox.get("x", 0)))
+                    t = float(raw_bbox.get("t", raw_bbox.get("y", 0)))
+                    r = float(raw_bbox.get("r", l + raw_bbox.get("w", 0)))
+                    b = float(raw_bbox.get("b", t + raw_bbox.get("h", 0)))
+                    bbox = {"x": min(l, r), "y": min(t, b), "w": abs(r - l), "h": abs(t - b)}
+                elif isinstance(raw_bbox, list) and len(raw_bbox) == 4:
+                    bbox = {
+                        "x": float(min(raw_bbox[0], raw_bbox[2])),
+                        "y": float(min(raw_bbox[1], raw_bbox[3])),
+                        "w": float(abs(raw_bbox[2] - raw_bbox[0])),
+                        "h": float(abs(raw_bbox[3] - raw_bbox[1])),
+                    }
+                else:
+                    continue
+                page_no_int = int(page_ref) if isinstance(page_ref, (int, float)) else 0
+                page_h = page_height_map.get(page_no_int, 792.0)
+                bbox["y"] = page_h - bbox["y"] - bbox["h"]
+                confidence = item.get("confidence") or item.get("score") or None
+                zones.append({
+                    "page": int(page_ref) if isinstance(page_ref, (int, float)) else 0,
+                    "bbox": bbox,
+                    "label": label,
+                    "confidence": float(confidence) if confidence is not None else None,
+                })
+
+        processing_time_ms = int((time.time() - start) * 1000)
+        output = {
+            "success": True,
+            "result": {"jobId": job_id, "zones": zones, "processingTimeMs": processing_time_ms},
+        }
+    except Exception as e:
+        output = {"success": False, "error": str(e)}
+
+    with open(result_file, "w") as f:
+        json.dump(output, f)
+
+
 def _run_detect_async(job_id: str, req: DetectRequest):
-    """Run detection in background thread, store result in _async_jobs.
+    """Run detection in a subprocess to avoid GIL blocking health checks.
 
     Acquires _conversion_semaphore to serialize conversions and prevent OOM.
     """
     logger.info(f"Job {req.jobId}: waiting for conversion slot (async {job_id})")
     _conversion_semaphore.acquire()
-    logger.info(f"Job {req.jobId}: acquired conversion slot, starting processing")
+    logger.info(f"Job {req.jobId}: acquired conversion slot, starting subprocess")
     try:
-        result = detect(req)
-        with _async_jobs_lock:
-            _async_jobs[job_id] = {"status": "COMPLETED", "result": result, "error": None}
-    except HTTPException as e:
-        with _async_jobs_lock:
-            _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": e.detail}
+        # Use a temp file to pass the result back from the subprocess
+        result_fd, result_file = tempfile.mkstemp(suffix=".json")
+        os.close(result_fd)
+
+        proc = multiprocessing.Process(
+            target=_subprocess_detect,
+            args=(req.pdfPath, req.jobId, result_file),
+        )
+        proc.start()
+        proc.join(timeout=20 * 60)  # 20 minute timeout
+
+        if proc.is_alive():
+            logger.error(f"Job {req.jobId}: subprocess timed out after 20 minutes, killing")
+            proc.kill()
+            proc.join(timeout=10)
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": "Conversion timed out after 20 minutes"}
+            return
+
+        if proc.exitcode != 0:
+            # Try to read error from result file
+            error = f"Subprocess exited with code {proc.exitcode}"
+            try:
+                with open(result_file, "r") as f:
+                    output = json.load(f)
+                if not output.get("success"):
+                    error = output.get("error", error)
+            except Exception:
+                pass
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": error}
+            return
+
+        # Read result from temp file
+        with open(result_file, "r") as f:
+            output = json.load(f)
+
+        if output.get("success"):
+            logger.info(f"Job {req.jobId}: {len(output['result']['zones'])} zones detected in {output['result']['processingTimeMs']}ms")
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {"status": "COMPLETED", "result": output["result"], "error": None}
+        else:
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": output.get("error", "Unknown error")}
+
     except Exception as e:
+        logger.error(f"Job {req.jobId}: subprocess orchestration error: {e}")
         with _async_jobs_lock:
             _async_jobs[job_id] = {"status": "FAILED", "result": None, "error": str(e)}
     finally:
         _conversion_semaphore.release()
+        # Clean up result file
+        try:
+            os.unlink(result_file)
+        except Exception:
+            pass
     threading.Thread(target=_cleanup_async_job, args=(job_id,), daemon=True).start()
 
 
