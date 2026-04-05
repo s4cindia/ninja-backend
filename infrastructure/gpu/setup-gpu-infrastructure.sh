@@ -19,11 +19,8 @@ INSTANCE_TYPE="g4dn.xlarge"
 KEY_NAME="${EC2_KEY_NAME:-}"  # Optional SSH key for debugging
 
 # ECS-optimized GPU AMI for ap-south-1 (Amazon Linux 2 + NVIDIA drivers + ECS agent)
-# Find latest: aws ssm get-parameters-by-path --path /aws/service/ecs/optimized-ami/amazon-linux-2/gpu
-GPU_AMI=$(aws ssm get-parameter \
-  --name "/aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended/image_id" \
-  --region "$REGION" \
-  --query "Parameter.Value" --output text)
+# To find latest: aws ec2 describe-images --owners amazon --filters "Name=name,Values=amzn2-ami-ecs-gpu-hvm-*" --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" --output text --region ap-south-1
+GPU_AMI="ami-0c329e08c521f8b07"
 
 echo "=== Ninja Docling GPU Infrastructure Setup ==="
 echo "Region:    $REGION"
