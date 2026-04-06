@@ -49,10 +49,18 @@ export interface TimesheetReport {
     pagesPerHour: number | null;
   };
   operatorBreakdown: OperatorRow[];
+  byOperator: (OperatorRow & { operator: string })[];
   pageBreakdown: PageTimeRow[];
+  byPage: (PageTimeRow & { zones: number })[];
   efficiencyMetrics: {
     autoAnnotationSavingsMs: number;
     reviewQueueReductionPct: number | null;
+    estimatedCost: number | null;
+    complexityScore: number | null;
+  };
+  efficiency: {
+    autoAnnotationSavings: number;
+    reviewQueueReduction: number | null;
     estimatedCost: number | null;
     complexityScore: number | null;
   };
@@ -311,10 +319,25 @@ class AnnotationTimesheetService {
         pagesPerHour,
       },
       operatorBreakdown,
+      // Frontend aliases (byOperator, byPage, efficiency)
+      byOperator: operatorBreakdown.map(op => ({
+        ...op,
+        operator: op.operatorId,
+      })),
       pageBreakdown,
+      byPage: pageBreakdown.map(p => ({
+        ...p,
+        zones: p.zoneCount,
+      })),
       efficiencyMetrics: {
         autoAnnotationSavingsMs,
         reviewQueueReductionPct,
+        estimatedCost,
+        complexityScore,
+      },
+      efficiency: {
+        autoAnnotationSavings: autoAnnotationSavingsMs,
+        reviewQueueReduction: reviewQueueReductionPct,
         estimatedCost,
         complexityScore,
       },
