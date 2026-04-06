@@ -20,6 +20,16 @@ multiprocessing.set_start_method("spawn", force=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docling-service")
 
+# Log GPU/CUDA status at startup
+try:
+    import torch
+    logger.info(
+        f"PyTorch {torch.__version__}, CUDA available: {torch.cuda.is_available()}"
+        + (f", device: {torch.cuda.get_device_name(0)}" if torch.cuda.is_available() else "")
+    )
+except ImportError:
+    logger.info("PyTorch not installed — running without GPU support")
+
 app = FastAPI(title="Ninja Docling Service", version="1.0.0")
 
 # Initialise converter once at startup — model loading is expensive
