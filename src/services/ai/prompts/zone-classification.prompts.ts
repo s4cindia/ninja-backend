@@ -73,7 +73,9 @@ ${VALID_ZONE_TYPES.join(', ')}
 6. **Captions**: Text directly below/above a figure or table describing it = "caption".
 7. **TOCI**: Table of contents items = "toci".
 8. **Paragraphs**: Regular body text = "paragraph".
-9. **Ghost/duplicate zones**: Zones with no content and no bbox = REJECTED.
+9. **Ghost/duplicate zones**: ONLY reject zones that have no content AND no bbox. These are extraction artifacts.
+10. **Missing labels**: If a zone has content or a bbox but its label/type is null or empty, classify it based on its content — do NOT reject it. These zones need labels, not rejection.
+11. **Case normalization**: Labels like "H3", "H2", "LI", "P" are equivalent to "h3", "h2", "list-item", "paragraph". If the existing label matches the correct type (ignoring case and format aliases), use CONFIRMED — not CORRECTED. Only use CORRECTED when the semantic type is actually wrong.
 
 ## Context Clues
 - If content starts with "Chapter" or a number followed by a title → heading

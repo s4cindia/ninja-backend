@@ -267,6 +267,41 @@ export async function runAiAnnotation(
               continue;
             }
 
+            // Prevent false rejections: don't reject zones that have content or a bounding box
+            const zone = pageZones.find(z => z.id === classification.zoneId);
+            if (
+              classification.decision === 'REJECTED' &&
+              zone &&
+              (zone.content || zone.bounds)
+            ) {
+              logger.warn(
+                `[ai-annotation] Overriding REJECTED→CORRECTED for zone ${classification.zoneId} (has content/bbox)`,
+              );
+              classification.decision = 'CORRECTED';
+            }
+
+            // Reclassify case-only "corrections" as confirmations
+            // e.g. H3→h3, LI→list-item, P→paragraph are not real corrections
+            if (classification.decision === 'CORRECTED' && zone) {
+              const existingLabel = (zone.label ?? zone.type ?? '').toLowerCase();
+              const aiLabel = classification.label.toLowerCase();
+              const LABEL_ALIASES: Record<string, string> = {
+                'p': 'paragraph',
+                'li': 'list-item',
+                'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
+                'section_header': 'section-header',
+                'section-header': 'section-header',
+                'list_item': 'list-item',
+                'table_of_contents': 'toci',
+              };
+              const normalizedExisting = LABEL_ALIASES[existingLabel] ?? existingLabel;
+              const normalizedAi = LABEL_ALIASES[aiLabel] ?? aiLabel;
+
+              if (normalizedExisting === normalizedAi) {
+                classification.decision = 'CONFIRMED';
+              }
+            }
+
             const conf = Math.max(0, Math.min(1, classification.confidence ?? 0));
 
             // Confidence bucketing
