@@ -298,8 +298,19 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
       }
     }
 
+    type AiAnnotationSummary = {
+      status: string;
+      annotatedZones: number;
+      skippedZones: number;
+      confirmedCount: number;
+      correctedCount: number;
+      rejectedCount: number;
+      model: string | null;
+      completedAt: string | null;
+    };
     type DocWithProgress = (typeof documents)[number] & {
       annotationProgress?: { totalZones: number; annotatedZones: number; status: string };
+      aiAnnotation?: AiAnnotationSummary;
     };
     const enriched: DocWithProgress[] = documents;
 
@@ -336,6 +347,48 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
               ? 'COMPLETED'
               : 'IN_PROGRESS';
           doc.annotationProgress = { ...progress, status };
+        }
+      }
+
+      // Enrich with latest AI annotation run status
+      const aiRuns = await prisma.aiAnnotationRun.findMany({
+        where: { calibrationRunId: { in: runIds } },
+        orderBy: { createdAt: 'desc' },
+        distinct: ['calibrationRunId'],
+        select: {
+          calibrationRunId: true,
+          status: true,
+          annotatedZones: true,
+          skippedZones: true,
+          confirmedCount: true,
+          correctedCount: true,
+          rejectedCount: true,
+          model: true,
+          completedAt: true,
+        },
+      });
+
+      const aiRunMap = new Map<string, typeof aiRuns[number]>();
+      for (const run of aiRuns) {
+        aiRunMap.set(run.calibrationRunId, run);
+      }
+
+      for (const doc of enriched) {
+        const latestRun = doc.calibrationRuns?.[0];
+        if (latestRun) {
+          const aiRun = aiRunMap.get(latestRun.id);
+          if (aiRun) {
+            doc.aiAnnotation = {
+              status: aiRun.status,
+              annotatedZones: aiRun.annotatedZones ?? 0,
+              skippedZones: aiRun.skippedZones ?? 0,
+              confirmedCount: aiRun.confirmedCount ?? 0,
+              correctedCount: aiRun.correctedCount ?? 0,
+              rejectedCount: aiRun.rejectedCount ?? 0,
+              model: aiRun.model,
+              completedAt: aiRun.completedAt?.toISOString() ?? null,
+            };
+          }
         }
       }
     }
