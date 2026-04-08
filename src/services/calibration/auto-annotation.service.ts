@@ -357,8 +357,9 @@ async function applyDuplicateFigRejection(zones: ZoneRow[]): Promise<PatternResu
 
   const figZones = zones.filter(
     (z) => !z.operatorVerified && !z.isArtefact && !z.isGhost &&
-      (z.type === 'figure' || z.type === 'FIGURE' || z.type === 'FIG' ||
-       z.label === 'Figure' || z.label === 'FIG'),
+      // z.type is always canonical lowercase from zone-matcher
+      (z.type === 'figure' ||
+       (z.label && ['figure', 'fig'].includes(z.label.toLowerCase()))),
   );
 
   if (figZones.length < 2) return result;
@@ -490,6 +491,7 @@ async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult>
 
 // ── Pattern 7: Figure Cross-Validation ────────────────────────────
 
+// Docling currently outputs 'picture'/'Picture'; 'image' is defensive for future versions
 function isFigureDoclingLabel(label: string): boolean {
   return label.toLowerCase() === 'picture' || label.toLowerCase() === 'image';
 }

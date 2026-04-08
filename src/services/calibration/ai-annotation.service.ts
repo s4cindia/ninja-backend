@@ -24,6 +24,22 @@ const CLAUDE_HAIKU_OUTPUT_COST_PER_M = 5.00;
 
 type AiProvider = 'gemini' | 'claude';
 
+// Label normalization map: raw extractor labels → canonical VALID_ZONE_TYPES values.
+// Used to detect case-only "corrections" (e.g. H3→h3, P→paragraph) that should be CONFIRMED.
+const LABEL_ALIASES: Record<string, string> = {
+  'p': 'paragraph',
+  'li': 'list-item',
+  'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
+  'section_header': 'section-header',
+  'section-header': 'section-header',
+  'list_item': 'list-item',
+  'table_of_contents': 'toci',
+  'picture': 'figure',
+  'text': 'paragraph',
+  'page_header': 'header',
+  'page_footer': 'footer',
+};
+
 /**
  * Classify a page's zones using Gemini, falling back to Claude on network failure.
  * Returns the structured response, token usage, and which provider was used.
@@ -252,21 +268,6 @@ export async function runAiAnnotation(
 
         // 6. Process classifications
         if (response?.zones && Array.isArray(response.zones)) {
-          // Reusable label normalization map (raw extractor labels → canonical)
-          const LABEL_ALIASES: Record<string, string> = {
-            'p': 'paragraph',
-            'li': 'list-item',
-            'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
-            'section_header': 'section-header',
-            'section-header': 'section-header',
-            'list_item': 'list-item',
-            'table_of_contents': 'toci',
-            'picture': 'figure',
-            'text': 'paragraph',
-            'page_header': 'header',
-            'page_footer': 'footer',
-          };
-
           for (const classification of response.zones) {
             if (!classification.zoneId || !classification.decision) continue;
 
