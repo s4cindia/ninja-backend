@@ -430,6 +430,97 @@ async function applyDuplicateFigRejection(zones: ZoneRow[]): Promise<PatternResu
   return result;
 }
 
+// ── Pattern 6: GREEN Bucket Confirm ───────────────────────────────
+
+const PDFXT_LABEL_MAP: Record<string, string> = {
+  'P': 'paragraph', 'H1': 'h1', 'H2': 'h2', 'H3': 'h3',
+  'H4': 'h4', 'H5': 'h5', 'H6': 'h6', 'LI': 'list-item',
+  'Figure': 'figure', 'Table': 'table', 'TOCI': 'TOCI',
+  'Caption': 'caption', 'Footnote': 'footnote',
+};
+
+async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult> {
+  const result: PatternResult = {
+    pattern: 'green-bucket-confirm',
+    description: 'Auto-confirm GREEN bucket zones where both extractors agree on type',
+    confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
+  };
+
+  const greenZones = zones.filter(
+    (z) => !z.operatorVerified && !z.isArtefact &&
+      z.reconciliationBucket === 'GREEN' &&
+      z.doclingLabel && z.pdfxtLabel,
+  );
+
+  if (greenZones.length === 0) return result;
+
+  const toConfirm: { id: string; label: string; pageNumber: number }[] = [];
+  for (const z of greenZones) {
+    const normalizedPdfxt = PDFXT_LABEL_MAP[z.pdfxtLabel!] ?? z.pdfxtLabel!.toLowerCase();
+    toConfirm.push({ id: z.id, label: normalizedPdfxt, pageNumber: z.pageNumber });
+  }
+
+  for (const { id, label } of toConfirm) {
+    await prisma.zone.update({
+      where: { id },
+      data: {
+        operatorVerified: true,
+        operatorLabel: label,
+        decision: 'CONFIRMED',
+        correctionReason: 'Auto-annotation: GREEN bucket confirm (both extractors agree)',
+        verifiedAt: new Date(),
+        verifiedBy: SYSTEM_OPERATOR,
+      },
+    });
+  }
+  result.confirmed = toConfirm.length;
+
+  const pageSet = new Set(toConfirm.map(z => z.pageNumber));
+  result.details.push(`Confirmed ${toConfirm.length} GREEN zones across ${pageSet.size} pages`);
+
+  return result;
+}
+
+// ── Pattern 7: Figure Cross-Validation ────────────────────────────
+
+async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResult> {
+  const result: PatternResult = {
+    pattern: 'figure-cross-validation',
+    description: 'Auto-confirm zones where either extractor identifies a figure/picture',
+    confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
+  };
+
+  const figureZones = zones.filter(
+    (z) => !z.operatorVerified && !z.isArtefact &&
+      (z.doclingLabel === 'picture' || z.pdfxtLabel === 'Figure'),
+  );
+
+  if (figureZones.length === 0) return result;
+
+  const toConfirm: string[] = [];
+  for (const z of figureZones) {
+    toConfirm.push(z.id);
+    result.details.push(`Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: figure (docling=${z.doclingLabel}, pdfxt=${z.pdfxtLabel})`);
+  }
+
+  if (toConfirm.length > 0) {
+    await prisma.zone.updateMany({
+      where: { id: { in: toConfirm } },
+      data: {
+        operatorVerified: true,
+        operatorLabel: 'figure',
+        decision: 'CONFIRMED',
+        correctionReason: 'Auto-annotation: figure cross-validation',
+        verifiedAt: new Date(),
+        verifiedBy: SYSTEM_OPERATOR,
+      },
+    });
+    result.confirmed = toConfirm.length;
+  }
+
+  return result;
+}
+
 // ── Main Orchestrator ───────────────────────────────────────────────
 
 export async function runAutoAnnotation(
@@ -470,6 +561,8 @@ export async function runAutoAnnotation(
     { name: 'running-header-classification', fn: applyRunningHeaderClassification },
     { name: 'list-item-sequence-confirm', fn: applyListItemSequenceConfirm },
     { name: 'duplicate-fig-rejection', fn: applyDuplicateFigRejection },
+    { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
+    { name: 'figure-cross-validation', fn: applyFigureCrossValidation },
   ];
 
   // Filter to requested patterns (or run all)

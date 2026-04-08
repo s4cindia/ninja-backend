@@ -3,7 +3,7 @@
  * Used by the AI annotation service to classify zones on a per-page basis.
  */
 
-export const PROMPT_VERSION = 'v1';
+export const PROMPT_VERSION = 'v2';
 
 export const VALID_ZONE_TYPES = [
   'paragraph', 'section-header', 'table', 'figure', 'caption',
@@ -65,8 +65,8 @@ Classify each zone on page ${pageNumber} of ${totalPages}. For each zone, decide
 ${VALID_ZONE_TYPES.join(', ')}
 
 ## Classification Rules
-1. **Headings**: Use h1-h6 based on hierarchy. Chapter numbers = h1, chapter titles = h2, section headings = h3+. "section-header" should be refined to a specific h-level.
-2. **List items**: Salary lists, bullet points, numbered items = "list-item" (not "paragraph").
+1. **Headings**: Use h1-h6 based on document hierarchy. Only classify as heading if the text is short (typically <100 chars), appears to introduce a section, and is stylistically distinct from body text. Long text blocks (>100 chars) are almost never headings — classify as "paragraph" even if the source says "section-header". When both Docling and pdfxt label as paragraph/text but AI considers heading, trust the extractors. "section-header" should be refined to a specific h-level only when genuine heading structure is evident.
+2. **List items**: Only classify as "list-item" if content has explicit list markers: bullets (•, ▪, -, *), numbered prefixes (1., 2., a), b)), or is part of a clearly structured enumeration. Regular body text that happens to contain colons, numbers, or short sentences is still "paragraph". When in doubt between list-item and paragraph, prefer "paragraph".
 3. **Headers/footers**: Running headers/footers on page edges = "header" or "footer". On page 1 they may be content.
 4. **Figures**: Images, photos, diagrams = "figure". Must have visual content.
 5. **Tables**: Tabular data with rows/columns = "table".
@@ -79,7 +79,8 @@ ${VALID_ZONE_TYPES.join(', ')}
 
 ## Context Clues
 - If content starts with "Chapter" or a number followed by a title → heading
-- If content contains ":" with a currency/number → likely list-item (salary/data list)
+- If content has explicit bullet markers (•, -, *, ▪) or numbered prefixes (1., 2., a)) → list-item
+- Body text with colons or numbers but no list markers → paragraph (not list-item)
 - If content is very short (< 10 chars) and at page top/bottom → likely header/footer
 - Page ${pageNumber} of ${totalPages}: ${pageNumber <= 2 ? 'front matter (title, TOC likely)' : pageNumber >= totalPages - 1 ? 'back matter (index, references likely)' : 'body content'}
 
@@ -87,6 +88,13 @@ ${VALID_ZONE_TYPES.join(', ')}
 \`\`\`json
 ${JSON.stringify(zonesJson, null, 2)}
 \`\`\`
+
+## Confidence Calibration
+- Be conservative with confidence scores. Only use >= 0.95 when classification is unambiguous (e.g., both extractors agree, content clearly matches the type).
+- Use 0.70-0.85 when the zone could plausibly be one of two types (e.g., could be paragraph or list-item).
+- Use < 0.70 when you are guessing based on limited evidence.
+- If the reconciliation bucket is RED (extractors disagree or one source is missing), confidence should rarely exceed 0.85.
+- If you are changing the label (CORRECTED), be especially conservative with confidence unless the correct type is obvious from the content.
 
 ## Required Output Format
 Return a JSON object with a "zones" array. Each entry must have:

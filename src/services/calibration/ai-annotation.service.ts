@@ -267,15 +267,15 @@ export async function runAiAnnotation(
               continue;
             }
 
-            // Prevent false rejections: don't reject zones that have content or a bounding box
+            // Prevent false rejections: don't reject zones that have content, bbox, or extractor labels
             const zone = pageZones.find(z => z.id === classification.zoneId);
             if (
               classification.decision === 'REJECTED' &&
               zone &&
-              (zone.content || zone.bounds)
+              (zone.content || zone.bounds || zone.pdfxtLabel || zone.doclingLabel)
             ) {
               logger.warn(
-                `[ai-annotation] Overriding REJECTED→CORRECTED for zone ${classification.zoneId} (has content/bbox)`,
+                `[ai-annotation] Overriding REJECTED→CORRECTED for zone ${classification.zoneId} (has content/bbox/extractor label)`,
               );
               classification.decision = 'CORRECTED';
             }
