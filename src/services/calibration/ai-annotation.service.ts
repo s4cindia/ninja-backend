@@ -24,6 +24,22 @@ const CLAUDE_HAIKU_OUTPUT_COST_PER_M = 5.00;
 
 type AiProvider = 'gemini' | 'claude';
 
+// Label normalization map: raw extractor labels → canonical VALID_ZONE_TYPES values.
+// Used to detect case-only "corrections" (e.g. H3→h3, P→paragraph) that should be CONFIRMED.
+const LABEL_ALIASES: Record<string, string> = {
+  'p': 'paragraph',
+  'li': 'list-item',
+  'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
+  'section_header': 'section-header',
+  'section-header': 'section-header',
+  'list_item': 'list-item',
+  'table_of_contents': 'toci',
+  'picture': 'figure',
+  'text': 'paragraph',
+  'page_header': 'header',
+  'page_footer': 'footer',
+};
+
 /**
  * Classify a page's zones using Gemini, falling back to Claude on network failure.
  * Returns the structured response, token usage, and which provider was used.
@@ -255,6 +271,16 @@ export async function runAiAnnotation(
           for (const classification of response.zones) {
             if (!classification.zoneId || !classification.decision) continue;
 
+            // Guard: skip zones the AI hallucinated (not in this page's zone list)
+            const zone = pageZones.find(z => z.id === classification.zoneId);
+            if (!zone) {
+              logger.warn(
+                `[ai-annotation] Zone ${classification.zoneId} not found on page ${pageNum}, skipping`,
+              );
+              skipped++;
+              continue;
+            }
+
             // Validate the label
             const validLabel = VALID_ZONE_TYPES.includes(
               classification.label as typeof VALID_ZONE_TYPES[number],
@@ -267,33 +293,28 @@ export async function runAiAnnotation(
               continue;
             }
 
-            // Prevent false rejections: don't reject zones that have content or a bounding box
-            const zone = pageZones.find(z => z.id === classification.zoneId);
+            // Prevent false rejections: don't reject zones that have content, bbox,
+            // or agreement from both extractors
             if (
               classification.decision === 'REJECTED' &&
-              zone &&
-              (zone.content || zone.bounds)
+              (zone.content || zone.bounds || (zone.pdfxtLabel && zone.doclingLabel))
             ) {
+              // Override to CONFIRMED using zone.type directly — it is always a
+              // canonical CanonicalZoneType set by zone-matcher during reconciliation.
+              // Avoids re-normalizing from zone.label which can disagree with zone.type
+              // (e.g. zone.label='list_item' maps to 'list-item' but zone.type='paragraph').
               logger.warn(
-                `[ai-annotation] Overriding REJECTED→CORRECTED for zone ${classification.zoneId} (has content/bbox)`,
+                `[ai-annotation] Overriding REJECTED→CONFIRMED for zone ${classification.zoneId} (has content/bbox/both extractor labels)`,
               );
-              classification.decision = 'CORRECTED';
+              classification.decision = 'CONFIRMED';
+              classification.label = zone.type;
             }
 
             // Reclassify case-only "corrections" as confirmations
             // e.g. H3→h3, LI→list-item, P→paragraph are not real corrections
-            if (classification.decision === 'CORRECTED' && zone) {
+            if (classification.decision === 'CORRECTED') {
               const existingLabel = (zone.label ?? zone.type ?? '').toLowerCase();
               const aiLabel = classification.label.toLowerCase();
-              const LABEL_ALIASES: Record<string, string> = {
-                'p': 'paragraph',
-                'li': 'list-item',
-                'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
-                'section_header': 'section-header',
-                'section-header': 'section-header',
-                'list_item': 'list-item',
-                'table_of_contents': 'toci',
-              };
               const normalizedExisting = LABEL_ALIASES[existingLabel] ?? existingLabel;
               const normalizedAi = LABEL_ALIASES[aiLabel] ?? aiLabel;
 
@@ -302,9 +323,16 @@ export async function runAiAnnotation(
               }
             }
 
-            const conf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+            // Preserve original model confidence for analytics, cap for auto-apply
+            const originalConf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+            let conf = originalConf;
 
-            // Confidence bucketing
+            // Hard cap: RED bucket zones must not auto-apply — cap at 0.85
+            if (zone.reconciliationBucket === 'RED' && conf > 0.85) {
+              conf = 0.85;
+            }
+
+            // Confidence bucketing (uses capped value for accurate auto-apply tracking)
             if (conf >= 0.95) highConf++;
             else if (conf >= 0.80) medConf++;
             else lowConf++;
@@ -315,17 +343,18 @@ export async function runAiAnnotation(
             else if (classification.decision === 'REJECTED') rejected++;
 
             // Always persist AI fields for transparency
+            // Store ORIGINAL model confidence (not capped) so model quality can be analyzed
             const effectiveModel = activeProvider === 'claude' ? 'claude-haiku-4.5' : modelName;
             const updateData: Record<string, unknown> = {
               aiLabel: classification.label,
-              aiConfidence: conf,
+              aiConfidence: originalConf,
               aiDecision: classification.decision,
               aiReason: classification.reason ?? null,
               aiModel: effectiveModel,
               aiAnnotatedAt: new Date(),
             };
 
-            // Auto-apply if confidence >= threshold and not dry run
+            // Auto-apply if capped confidence >= threshold and not dry run
             if (!options.dryRun && conf >= confThreshold) {
               if (classification.decision === 'REJECTED') {
                 updateData.decision = 'REJECTED';
