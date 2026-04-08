@@ -191,7 +191,7 @@ async function applyTociBulkConfirm(zones: ZoneRow[]): Promise<PatternResult> {
       where: { id: { in: toConfirm } },
       data: {
         operatorVerified: true,
-        operatorLabel: 'TOCI',
+        operatorLabel: 'toci',
         decision: 'CONFIRMED',
         correctionReason: 'Auto-annotation: TOCI bulk confirm',
         verifiedAt: new Date(),
@@ -262,7 +262,7 @@ async function applyRunningHeaderClassification(zones: ZoneRow[]): Promise<Patte
       where: { id: { in: toCorrect } },
       data: {
         operatorVerified: true,
-        operatorLabel: 'HDR',
+        operatorLabel: 'header',
         decision: 'CORRECTED',
         correctionReason: 'Auto-annotation: running header reclassification',
         verifiedAt: new Date(),
@@ -277,7 +277,7 @@ async function applyRunningHeaderClassification(zones: ZoneRow[]): Promise<Patte
       where: { id: { in: toConfirm } },
       data: {
         operatorVerified: true,
-        operatorLabel: 'HDR',
+        operatorLabel: 'header',
         decision: 'CONFIRMED',
         correctionReason: 'Auto-annotation: running header confirm',
         verifiedAt: new Date(),
@@ -333,7 +333,7 @@ async function applyListItemSequenceConfirm(zones: ZoneRow[]): Promise<PatternRe
       where: { id: { in: toConfirm } },
       data: {
         operatorVerified: true,
-        operatorLabel: 'LI',
+        operatorLabel: 'list-item',
         decision: 'CONFIRMED',
         correctionReason: 'Auto-annotation: LI sequence confirm',
         verifiedAt: new Date(),
@@ -444,8 +444,9 @@ async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult>
 
   // GREEN bucket means canonical types match (IoU >= 0.5 AND same zoneType).
   // Require both extractor labels to be present as a sanity check.
+  // Skip zones that already have a decision (e.g., AI-annotated or human-reviewed).
   const greenZones = zones.filter(
-    (z) => !z.operatorVerified && !z.isArtefact &&
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
       z.reconciliationBucket === 'GREEN' &&
       z.doclingLabel && z.pdfxtLabel &&
       z.type, // must have a canonical type already set by reconciliation

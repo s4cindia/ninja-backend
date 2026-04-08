@@ -298,20 +298,15 @@ export async function runAiAnnotation(
               classification.decision === 'REJECTED' &&
               (zone.content || zone.bounds || (zone.pdfxtLabel && zone.doclingLabel))
             ) {
-              // Override to CONFIRMED with the zone's existing canonical type
-              // (zone.type is always canonical CanonicalZoneType from zone-matcher)
-              // Normalize through LABEL_ALIASES in case zone.label is a raw extractor value
-              const existingRaw = (zone.label ?? zone.type ?? '').toLowerCase();
-              const normalized = LABEL_ALIASES[existingRaw] ?? existingRaw;
-              const safeLabel = VALID_ZONE_TYPES.includes(normalized as typeof VALID_ZONE_TYPES[number])
-                ? normalized
-                : zone.type; // zone.type is always canonical
-
+              // Override to CONFIRMED using zone.type directly — it is always a
+              // canonical CanonicalZoneType set by zone-matcher during reconciliation.
+              // Avoids re-normalizing from zone.label which can disagree with zone.type
+              // (e.g. zone.label='list_item' maps to 'list-item' but zone.type='paragraph').
               logger.warn(
                 `[ai-annotation] Overriding REJECTED→CONFIRMED for zone ${classification.zoneId} (has content/bbox/both extractor labels)`,
               );
               classification.decision = 'CONFIRMED';
-              classification.label = safeLabel;
+              classification.label = zone.type;
             }
 
             // Reclassify case-only "corrections" as confirmations
