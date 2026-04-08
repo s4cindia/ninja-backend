@@ -51,6 +51,7 @@ interface ZoneRow {
   doclingLabel: string | null;
   doclingConfidence: number | null;
   pdfxtLabel: string | null;
+  decision: string | null;
   operatorVerified: boolean;
   isArtefact: boolean;
   isGhost: boolean;
@@ -488,8 +489,14 @@ async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult>
 
 // ── Pattern 7: Figure Cross-Validation ────────────────────────────
 
-const FIGURE_DOCLING_LABELS = ['picture', 'Picture'];
-const FIGURE_PDFXT_LABELS = ['Figure', 'figure', 'FIG', 'Fig'];
+function isFigureDoclingLabel(label: string): boolean {
+  return label.toLowerCase() === 'picture' || label.toLowerCase() === 'image';
+}
+
+function isFigurePdfxtLabel(label: string): boolean {
+  const lower = label.toLowerCase();
+  return lower === 'figure' || lower === 'fig';
+}
 
 async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResult> {
   const result: PatternResult = {
@@ -499,11 +506,12 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
   };
 
   // Require BOTH extractors to agree on figure — single-extractor figure labels
-  // have too high a false-positive rate (OCR artifacts, watermarks, decorative elements)
+  // have too high a false-positive rate (OCR artifacts, watermarks, decorative elements).
+  // Also skip zones that already have a decision (e.g., human-rejected zones).
   const figureZones = zones.filter(
-    (z) => !z.operatorVerified && !z.isArtefact &&
-      z.doclingLabel && FIGURE_DOCLING_LABELS.includes(z.doclingLabel) &&
-      z.pdfxtLabel && FIGURE_PDFXT_LABELS.includes(z.pdfxtLabel),
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
+      z.doclingLabel && isFigureDoclingLabel(z.doclingLabel) &&
+      z.pdfxtLabel && isFigurePdfxtLabel(z.pdfxtLabel),
   );
 
   if (figureZones.length === 0) return result;
@@ -578,6 +586,7 @@ export async function runAutoAnnotation(
       doclingLabel: true,
       doclingConfidence: true,
       pdfxtLabel: true,
+      decision: true,
       operatorVerified: true,
       isArtefact: true,
       isGhost: true,
@@ -593,8 +602,8 @@ export async function runAutoAnnotation(
     { name: 'running-header-classification', fn: applyRunningHeaderClassification },
     { name: 'list-item-sequence-confirm', fn: applyListItemSequenceConfirm },
     { name: 'duplicate-fig-rejection', fn: applyDuplicateFigRejection },
-    { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
     { name: 'figure-cross-validation', fn: applyFigureCrossValidation },
+    { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
   ];
 
   // Filter to requested patterns (or run all)
@@ -613,7 +622,7 @@ export async function runAutoAnnotation(
           id: true, pageNumber: true, type: true, label: true,
           content: true, bounds: true, source: true,
           reconciliationBucket: true, doclingLabel: true,
-          doclingConfidence: true, pdfxtLabel: true,
+          doclingConfidence: true, pdfxtLabel: true, decision: true,
           operatorVerified: true, isArtefact: true,
           isGhost: true, ghostTag: true,
         },

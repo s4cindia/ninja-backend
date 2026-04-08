@@ -94,7 +94,7 @@ ${JSON.stringify(zonesJson, null, 2)}
 - Be conservative with confidence scores. Only use >= 0.95 when classification is unambiguous (e.g., both extractors agree, content clearly matches the type).
 - Use 0.70-0.85 when the zone could plausibly be one of two types (e.g., could be paragraph or list-item).
 - Use < 0.70 when you are guessing based on limited evidence.
-- If the reconciliation bucket is RED (extractors disagree or one source is missing), confidence should rarely exceed 0.85.
+- If the reconciliation bucket is RED (extractors disagree or one source is missing), confidence must not exceed 0.85.
 - If you are changing the label (CORRECTED), be especially conservative with confidence unless the correct type is obvious from the content.
 
 ## Required Output Format

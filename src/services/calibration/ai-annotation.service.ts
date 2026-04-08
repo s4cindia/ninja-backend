@@ -252,8 +252,33 @@ export async function runAiAnnotation(
 
         // 6. Process classifications
         if (response?.zones && Array.isArray(response.zones)) {
+          // Reusable label normalization map (raw extractor labels → canonical)
+          const LABEL_ALIASES: Record<string, string> = {
+            'p': 'paragraph',
+            'li': 'list-item',
+            'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
+            'section_header': 'section-header',
+            'section-header': 'section-header',
+            'list_item': 'list-item',
+            'table_of_contents': 'toci',
+            'picture': 'figure',
+            'text': 'paragraph',
+            'page_header': 'header',
+            'page_footer': 'footer',
+          };
+
           for (const classification of response.zones) {
             if (!classification.zoneId || !classification.decision) continue;
+
+            // Guard: skip zones the AI hallucinated (not in this page's zone list)
+            const zone = pageZones.find(z => z.id === classification.zoneId);
+            if (!zone) {
+              logger.warn(
+                `[ai-annotation] Zone ${classification.zoneId} not found on page ${pageNum}, skipping`,
+              );
+              skipped++;
+              continue;
+            }
 
             // Validate the label
             const validLabel = VALID_ZONE_TYPES.includes(
@@ -267,36 +292,33 @@ export async function runAiAnnotation(
               continue;
             }
 
-            // Prevent false rejections: don't reject zones that have content or a bounding box
-            const zone = pageZones.find(z => z.id === classification.zoneId);
+            // Prevent false rejections: don't reject zones that have content, bbox,
+            // or agreement from both extractors
             if (
               classification.decision === 'REJECTED' &&
-              zone &&
-              (zone.content || zone.bounds)
+              (zone.content || zone.bounds || (zone.pdfxtLabel && zone.doclingLabel))
             ) {
-              // Override to CONFIRMED (keep existing label) rather than CORRECTED,
-              // because the AI's label was chosen in a rejection context and may be wrong
+              // Override to CONFIRMED with the zone's existing canonical type
+              // (zone.type is always canonical CanonicalZoneType from zone-matcher)
+              // Normalize through LABEL_ALIASES in case zone.label is a raw extractor value
+              const existingRaw = (zone.label ?? zone.type ?? '').toLowerCase();
+              const normalized = LABEL_ALIASES[existingRaw] ?? existingRaw;
+              const safeLabel = VALID_ZONE_TYPES.includes(normalized as typeof VALID_ZONE_TYPES[number])
+                ? normalized
+                : zone.type; // zone.type is always canonical
+
               logger.warn(
-                `[ai-annotation] Overriding REJECTED→CONFIRMED for zone ${classification.zoneId} (has content/bbox)`,
+                `[ai-annotation] Overriding REJECTED→CONFIRMED for zone ${classification.zoneId} (has content/bbox/both extractor labels)`,
               );
               classification.decision = 'CONFIRMED';
-              classification.label = zone.label ?? zone.type ?? classification.label;
+              classification.label = safeLabel;
             }
 
             // Reclassify case-only "corrections" as confirmations
             // e.g. H3→h3, LI→list-item, P→paragraph are not real corrections
-            if (classification.decision === 'CORRECTED' && zone) {
+            if (classification.decision === 'CORRECTED') {
               const existingLabel = (zone.label ?? zone.type ?? '').toLowerCase();
               const aiLabel = classification.label.toLowerCase();
-              const LABEL_ALIASES: Record<string, string> = {
-                'p': 'paragraph',
-                'li': 'list-item',
-                'h1': 'h1', 'h2': 'h2', 'h3': 'h3', 'h4': 'h4', 'h5': 'h5', 'h6': 'h6',
-                'section_header': 'section-header',
-                'section-header': 'section-header',
-                'list_item': 'list-item',
-                'table_of_contents': 'toci',
-              };
               const normalizedExisting = LABEL_ALIASES[existingLabel] ?? existingLabel;
               const normalizedAi = LABEL_ALIASES[aiLabel] ?? aiLabel;
 
@@ -305,15 +327,16 @@ export async function runAiAnnotation(
               }
             }
 
-            let conf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+            // Preserve original model confidence for analytics, cap for auto-apply
+            const originalConf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+            let conf = originalConf;
 
-            // Hard cap: RED bucket zones should not auto-apply — cap at 0.85
-            // (prompt instructs the model to do this, but enforce it in code)
-            if (zone?.reconciliationBucket === 'RED' && conf > 0.85) {
+            // Hard cap: RED bucket zones must not auto-apply — cap at 0.85
+            if (zone.reconciliationBucket === 'RED' && conf > 0.85) {
               conf = 0.85;
             }
 
-            // Confidence bucketing
+            // Confidence bucketing (uses capped value for accurate auto-apply tracking)
             if (conf >= 0.95) highConf++;
             else if (conf >= 0.80) medConf++;
             else lowConf++;
@@ -324,17 +347,18 @@ export async function runAiAnnotation(
             else if (classification.decision === 'REJECTED') rejected++;
 
             // Always persist AI fields for transparency
+            // Store ORIGINAL model confidence (not capped) so model quality can be analyzed
             const effectiveModel = activeProvider === 'claude' ? 'claude-haiku-4.5' : modelName;
             const updateData: Record<string, unknown> = {
               aiLabel: classification.label,
-              aiConfidence: conf,
+              aiConfidence: originalConf,
               aiDecision: classification.decision,
               aiReason: classification.reason ?? null,
               aiModel: effectiveModel,
               aiAnnotatedAt: new Date(),
             };
 
-            // Auto-apply if confidence >= threshold and not dry run
+            // Auto-apply if capped confidence >= threshold and not dry run
             if (!options.dryRun && conf >= confThreshold) {
               if (classification.decision === 'REJECTED') {
                 updateData.decision = 'REJECTED';
