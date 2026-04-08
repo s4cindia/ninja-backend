@@ -267,17 +267,20 @@ export async function runAiAnnotation(
               continue;
             }
 
-            // Prevent false rejections: don't reject zones that have content, bbox, or extractor labels
+            // Prevent false rejections: don't reject zones that have content or a bounding box
             const zone = pageZones.find(z => z.id === classification.zoneId);
             if (
               classification.decision === 'REJECTED' &&
               zone &&
-              (zone.content || zone.bounds || zone.pdfxtLabel || zone.doclingLabel)
+              (zone.content || zone.bounds)
             ) {
+              // Override to CONFIRMED (keep existing label) rather than CORRECTED,
+              // because the AI's label was chosen in a rejection context and may be wrong
               logger.warn(
-                `[ai-annotation] Overriding REJECTED→CORRECTED for zone ${classification.zoneId} (has content/bbox/extractor label)`,
+                `[ai-annotation] Overriding REJECTED→CONFIRMED for zone ${classification.zoneId} (has content/bbox)`,
               );
-              classification.decision = 'CORRECTED';
+              classification.decision = 'CONFIRMED';
+              classification.label = zone.label ?? zone.type ?? classification.label;
             }
 
             // Reclassify case-only "corrections" as confirmations
@@ -302,7 +305,13 @@ export async function runAiAnnotation(
               }
             }
 
-            const conf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+            let conf = Math.max(0, Math.min(1, classification.confidence ?? 0));
+
+            // Hard cap: RED bucket zones should not auto-apply — cap at 0.85
+            // (prompt instructs the model to do this, but enforce it in code)
+            if (zone?.reconciliationBucket === 'RED' && conf > 0.85) {
+              conf = 0.85;
+            }
 
             // Confidence bucketing
             if (conf >= 0.95) highConf++;

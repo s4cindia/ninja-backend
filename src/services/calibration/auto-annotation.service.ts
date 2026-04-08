@@ -11,6 +11,8 @@
  *   3. Running Header Auto-Classification — H on page>1 with header content
  *   4. List Item Sequence Confirm — ≥3 consecutive LI zones on a page
  *   5. Duplicate FIG Rejection — overlapping FIG zones, keep higher confidence
+ *   6. GREEN Bucket Confirm — both extractors agree on canonical type
+ *   7. Figure Cross-Validation — both extractors identify figure/picture
  */
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -432,13 +434,6 @@ async function applyDuplicateFigRejection(zones: ZoneRow[]): Promise<PatternResu
 
 // ── Pattern 6: GREEN Bucket Confirm ───────────────────────────────
 
-const PDFXT_LABEL_MAP: Record<string, string> = {
-  'P': 'paragraph', 'H1': 'h1', 'H2': 'h2', 'H3': 'h3',
-  'H4': 'h4', 'H5': 'h5', 'H6': 'h6', 'LI': 'list-item',
-  'Figure': 'figure', 'Table': 'table', 'TOCI': 'TOCI',
-  'Caption': 'caption', 'Footnote': 'footnote',
-};
-
 async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult> {
   const result: PatternResult = {
     pattern: 'green-bucket-confirm',
@@ -446,60 +441,82 @@ async function applyGreenBucketConfirm(zones: ZoneRow[]): Promise<PatternResult>
     confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
   };
 
+  // GREEN bucket means canonical types match (IoU >= 0.5 AND same zoneType).
+  // Require both extractor labels to be present as a sanity check.
   const greenZones = zones.filter(
     (z) => !z.operatorVerified && !z.isArtefact &&
       z.reconciliationBucket === 'GREEN' &&
-      z.doclingLabel && z.pdfxtLabel,
+      z.doclingLabel && z.pdfxtLabel &&
+      z.type, // must have a canonical type already set by reconciliation
   );
 
   if (greenZones.length === 0) return result;
 
-  const toConfirm: { id: string; label: string; pageNumber: number }[] = [];
+  // Group by canonical type for batched updates
+  const byType = new Map<string, string[]>();
   for (const z of greenZones) {
-    const normalizedPdfxt = PDFXT_LABEL_MAP[z.pdfxtLabel!] ?? z.pdfxtLabel!.toLowerCase();
-    toConfirm.push({ id: z.id, label: normalizedPdfxt, pageNumber: z.pageNumber });
+    // Use the zone's canonical `type` field (already computed by zone-matcher)
+    // rather than re-deriving from raw extractor labels
+    const ids = byType.get(z.type) || [];
+    ids.push(z.id);
+    byType.set(z.type, ids);
   }
 
-  for (const { id, label } of toConfirm) {
-    await prisma.zone.update({
-      where: { id },
+  let totalConfirmed = 0;
+  for (const [canonicalType, ids] of byType) {
+    await prisma.zone.updateMany({
+      where: { id: { in: ids } },
       data: {
         operatorVerified: true,
-        operatorLabel: label,
+        operatorLabel: canonicalType,
         decision: 'CONFIRMED',
         correctionReason: 'Auto-annotation: GREEN bucket confirm (both extractors agree)',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
     });
+    totalConfirmed += ids.length;
+    result.details.push(`${ids.length} zones confirmed as "${canonicalType}"`);
   }
-  result.confirmed = toConfirm.length;
+  result.confirmed = totalConfirmed;
 
-  const pageSet = new Set(toConfirm.map(z => z.pageNumber));
-  result.details.push(`Confirmed ${toConfirm.length} GREEN zones across ${pageSet.size} pages`);
+  const pageSet = new Set(greenZones.map(z => z.pageNumber));
+  result.details.push(`Total: ${totalConfirmed} GREEN zones across ${pageSet.size} pages`);
 
   return result;
 }
 
 // ── Pattern 7: Figure Cross-Validation ────────────────────────────
 
+const FIGURE_DOCLING_LABELS = ['picture', 'Picture'];
+const FIGURE_PDFXT_LABELS = ['Figure', 'figure', 'FIG', 'Fig'];
+
 async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResult> {
   const result: PatternResult = {
     pattern: 'figure-cross-validation',
-    description: 'Auto-confirm zones where either extractor identifies a figure/picture',
+    description: 'Auto-confirm zones where both extractors identify a figure/picture',
     confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
   };
 
+  // Require BOTH extractors to agree on figure — single-extractor figure labels
+  // have too high a false-positive rate (OCR artifacts, watermarks, decorative elements)
   const figureZones = zones.filter(
     (z) => !z.operatorVerified && !z.isArtefact &&
-      (z.doclingLabel === 'picture' || z.pdfxtLabel === 'Figure'),
+      z.doclingLabel && FIGURE_DOCLING_LABELS.includes(z.doclingLabel) &&
+      z.pdfxtLabel && FIGURE_PDFXT_LABELS.includes(z.pdfxtLabel),
   );
 
   if (figureZones.length === 0) return result;
 
+  // Split into confirm (already typed as figure) vs correct (typed differently)
   const toConfirm: string[] = [];
+  const toCorrect: string[] = [];
   for (const z of figureZones) {
-    toConfirm.push(z.id);
+    if (z.type === 'figure') {
+      toConfirm.push(z.id);
+    } else {
+      toCorrect.push(z.id);
+    }
     result.details.push(`Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: figure (docling=${z.doclingLabel}, pdfxt=${z.pdfxtLabel})`);
   }
 
@@ -510,12 +527,27 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
         operatorVerified: true,
         operatorLabel: 'figure',
         decision: 'CONFIRMED',
-        correctionReason: 'Auto-annotation: figure cross-validation',
+        correctionReason: 'Auto-annotation: figure cross-validation (both extractors agree)',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
     });
     result.confirmed = toConfirm.length;
+  }
+
+  if (toCorrect.length > 0) {
+    await prisma.zone.updateMany({
+      where: { id: { in: toCorrect } },
+      data: {
+        operatorVerified: true,
+        operatorLabel: 'figure',
+        decision: 'CORRECTED',
+        correctionReason: 'Auto-annotation: figure cross-validation (both extractors agree, type was wrong)',
+        verifiedAt: new Date(),
+        verifiedBy: SYSTEM_OPERATOR,
+      },
+    });
+    result.corrected = toCorrect.length;
   }
 
   return result;
