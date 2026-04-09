@@ -3,7 +3,7 @@
  * Used by the AI annotation service to classify zones on a per-page basis.
  */
 
-export const PROMPT_VERSION = 'v2';
+export const PROMPT_VERSION = 'v3';
 
 export const VALID_ZONE_TYPES = [
   'paragraph', 'section-header', 'table', 'figure', 'caption',
@@ -24,6 +24,13 @@ export interface ZoneInput {
   pdfxtLabel: string | null;
 }
 
+export interface HeadingContext {
+  /** Heading levels seen on previous pages, ordered by first appearance */
+  stack: { level: number; text: string; page: number }[];
+  /** The deepest heading level used so far in the document */
+  maxDepth: number;
+}
+
 export interface ZoneClassification {
   zoneId: string;
   decision: 'CONFIRMED' | 'CORRECTED' | 'REJECTED';
@@ -40,6 +47,7 @@ export function buildPageClassificationPrompt(
   pageNumber: number,
   totalPages: number,
   zones: ZoneInput[],
+  headingContext?: HeadingContext,
 ): string {
   const zonesJson = zones.map((z) => ({
     id: z.zoneId,
@@ -65,7 +73,7 @@ Classify each zone on page ${pageNumber} of ${totalPages}. For each zone, decide
 ${VALID_ZONE_TYPES.join(', ')}
 
 ## Classification Rules
-1. **Headings**: Use h1-h6 based on document hierarchy. Headings typically introduce a section and are shorter than body text. Very long text blocks (multiple sentences) are unlikely to be headings — prefer "paragraph" unless the content is clearly a title or section heading. "section-header" should be refined to a specific h-level when heading structure is evident.
+1. **Headings**: Use h1-h6 based on document hierarchy. Headings typically introduce a section and are shorter than body text. Very long text blocks (multiple sentences) are unlikely to be headings — prefer "paragraph" unless the content is clearly a title or section heading. "section-header" should be refined to a specific h-level when heading structure is evident. **Critical: use the heading context below to determine the correct heading level — do NOT guess in isolation.**
 2. **List items**: Classify as "list-item" if content has explicit list markers (bullets •, ▪, -, *; numbered prefixes 1., 2., a), b)), is part of a structured enumeration, or follows a clear definition-list pattern (term: definition). Regular body text with incidental colons or numbers is "paragraph". When in doubt between list-item and paragraph, prefer "paragraph".
 3. **Headers/footers**: Running headers/footers on page edges = "header" or "footer". On page 1 they may be content.
 4. **Figures**: Images, photos, diagrams = "figure". Must have visual content.
@@ -76,6 +84,7 @@ ${VALID_ZONE_TYPES.join(', ')}
 9. **Ghost/duplicate zones**: ONLY reject zones that have no content AND no bbox. These are extraction artifacts.
 10. **Missing labels**: If a zone has content or a bbox but its label/type is null or empty, classify it based on its content — do NOT reject it. These zones need labels, not rejection.
 11. **Case normalization**: Labels like "H3", "H2", "LI", "P" are equivalent to "h3", "h2", "list-item", "paragraph". If the existing label matches the correct type (ignoring case and format aliases), use CONFIRMED — not CORRECTED. Only use CORRECTED when the semantic type is actually wrong.
+12. **GREEN bucket zones**: When the reconciliation bucket is GREEN, both extractors agree on the zone type. **Strongly prefer CONFIRMED** for GREEN zones unless there is clear, unambiguous evidence the label is wrong. The extractors' agreement is a strong signal — do not second-guess it without compelling reason.
 
 ## Context Clues
 - If content starts with "Chapter" or a number followed by a title → heading
@@ -84,7 +93,17 @@ ${VALID_ZONE_TYPES.join(', ')}
 - Body text with incidental colons or numbers but no list structure → paragraph
 - If content is very short (< 10 chars) and at page top/bottom → likely header/footer
 - Page ${pageNumber} of ${totalPages}: ${pageNumber <= 2 ? 'front matter (title, TOC likely)' : pageNumber >= totalPages - 1 ? 'back matter (index, references likely)' : 'body content'}
+${headingContext && headingContext.stack.length > 0 ? `
+## Document Heading Hierarchy (from previous pages)
+The following headings have been established in this document so far. Use this to determine the correct heading level for new headings on this page — do NOT shift levels or guess in isolation.
 
+Deepest heading level used so far: h${headingContext.maxDepth}
+
+Recent headings (most recent last):
+${headingContext.stack.slice(-10).map(h => `- h${h.level}: "${h.text}" (page ${h.page})`).join('\n')}
+
+**Important**: If the document uses h2 for chapter titles and h3 for sections, continue that pattern. Do not assign h3 to a chapter title because you see h3 elsewhere.
+` : ''}
 ## Zones to Classify
 \`\`\`json
 ${JSON.stringify(zonesJson, null, 2)}

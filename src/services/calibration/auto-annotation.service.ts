@@ -12,7 +12,8 @@
  *   4. List Item Sequence Confirm — ≥3 consecutive LI zones on a page
  *   5. Duplicate FIG Rejection — overlapping FIG zones, keep higher confidence
  *   6. GREEN Bucket Confirm — both extractors agree on canonical type
- *   7. Figure Cross-Validation — both extractors identify figure/picture
+ *   7. Figure Cross-Validation — either extractor identifies figure/picture
+ *   8. Section-Header Resolution — resolve section-header to h-level by bbox height
  */
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -504,17 +505,20 @@ function isFigurePdfxtLabel(label: string): boolean {
 async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResult> {
   const result: PatternResult = {
     pattern: 'figure-cross-validation',
-    description: 'Auto-confirm zones where both extractors identify a figure/picture',
+    description: 'Auto-confirm zones where either extractor identifies a figure/picture',
     confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
   };
 
-  // Require BOTH extractors to agree on figure — single-extractor figure labels
-  // have too high a false-positive rate (OCR artifacts, watermarks, decorative elements).
-  // Also skip zones that already have a decision (e.g., human-rejected zones).
+  // Use OR logic: either extractor identifying a figure is sufficient.
+  // Training data shows Docling and PDFXT have zero overlap on figures —
+  // AND logic was completely ineffective (0 zones matched). Single-extractor
+  // figure labels are reliable: Docling's ML model detects images accurately,
+  // and PDFXT's "figure"/"fig" comes from the PDF tag structure.
+  // Safety: require bounds (not ghost) and no existing decision.
   const figureZones = zones.filter(
-    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
-      z.doclingLabel && isFigureDoclingLabel(z.doclingLabel) &&
-      z.pdfxtLabel && isFigurePdfxtLabel(z.pdfxtLabel),
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision && z.bounds &&
+      ((z.doclingLabel && isFigureDoclingLabel(z.doclingLabel)) ||
+       (z.pdfxtLabel && isFigurePdfxtLabel(z.pdfxtLabel))),
   );
 
   if (figureZones.length === 0) return result;
@@ -528,7 +532,11 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
     } else {
       toCorrect.push(z.id);
     }
-    result.details.push(`Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: figure (docling=${z.doclingLabel}, pdfxt=${z.pdfxtLabel})`);
+    const sources = [
+      z.doclingLabel && isFigureDoclingLabel(z.doclingLabel) ? `docling=${z.doclingLabel}` : null,
+      z.pdfxtLabel && isFigurePdfxtLabel(z.pdfxtLabel) ? `pdfxt=${z.pdfxtLabel}` : null,
+    ].filter(Boolean).join(', ');
+    result.details.push(`Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: figure (${sources})`);
   }
 
   if (toConfirm.length > 0) {
@@ -538,7 +546,7 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
         operatorVerified: true,
         operatorLabel: 'figure',
         decision: 'CONFIRMED',
-        correctionReason: 'Auto-annotation: figure cross-validation (both extractors agree)',
+        correctionReason: 'Auto-annotation: figure cross-validation (extractor identified figure)',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
@@ -553,13 +561,120 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
         operatorVerified: true,
         operatorLabel: 'figure',
         decision: 'CORRECTED',
-        correctionReason: 'Auto-annotation: figure cross-validation (both extractors agree, type was wrong)',
+        correctionReason: 'Auto-annotation: figure cross-validation (extractor identified figure, type was wrong)',
         verifiedAt: new Date(),
         verifiedBy: SYSTEM_OPERATOR,
       },
     });
     result.corrected = toCorrect.length;
   }
+
+  return result;
+}
+
+// ── Pattern 8: Section-Header Resolution ────────────────────────────
+
+/**
+ * Resolve "section-header" zones to a specific h-level (h1-h6) by comparing
+ * the zone's bounding box height to paragraph zones on the same page.
+ *
+ * Heuristic: larger text (taller bbox) = higher heading level.
+ * - >= 2.0x paragraph height → h1
+ * - >= 1.7x → h2
+ * - >= 1.4x → h3
+ * - >= 1.2x → h4
+ * - >= 1.05x → h5
+ * - otherwise → h6
+ */
+async function applySectionHeaderResolution(zones: ZoneRow[]): Promise<PatternResult> {
+  const result: PatternResult = {
+    pattern: 'section-header-resolution',
+    description: 'Resolve section-header zones to specific h-levels by bbox height ratio',
+    confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
+  };
+
+  const sectionHeaders = zones.filter(
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
+      z.type === 'section-header',
+  );
+
+  if (sectionHeaders.length === 0) return result;
+
+  // Compute median paragraph height per page for comparison
+  const paragraphHeightsByPage = new Map<number, number[]>();
+  for (const z of zones) {
+    if (z.type !== 'paragraph') continue;
+    const bbox = parseBBox(z.bounds);
+    if (!bbox) continue;
+    const h = bbox.h ?? bbox.height ?? 0;
+    if (h <= 0) continue;
+    const list = paragraphHeightsByPage.get(z.pageNumber) || [];
+    list.push(h);
+    paragraphHeightsByPage.set(z.pageNumber, list);
+  }
+
+  const toCorrect = new Map<string, string[]>(); // h-level → zone IDs
+
+  for (const z of sectionHeaders) {
+    const bbox = parseBBox(z.bounds);
+    if (!bbox) {
+      result.skipped++;
+      continue;
+    }
+    const zoneHeight = bbox.h ?? bbox.height ?? 0;
+    if (zoneHeight <= 0) {
+      result.skipped++;
+      continue;
+    }
+
+    const pageParaHeights = paragraphHeightsByPage.get(z.pageNumber);
+    if (!pageParaHeights || pageParaHeights.length === 0) {
+      // No paragraph reference on this page — default to h3
+      const ids = toCorrect.get('h3') || [];
+      ids.push(z.id);
+      toCorrect.set('h3', ids);
+      result.details.push(`Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: section-header → h3 (no paragraph reference)`);
+      continue;
+    }
+
+    // Median paragraph height
+    const sorted = [...pageParaHeights].sort((a, b) => a - b);
+    const medianParaHeight = sorted[Math.floor(sorted.length / 2)];
+
+    const ratio = zoneHeight / medianParaHeight;
+    let hLevel: string;
+    if (ratio >= 2.0) hLevel = 'h1';
+    else if (ratio >= 1.7) hLevel = 'h2';
+    else if (ratio >= 1.4) hLevel = 'h3';
+    else if (ratio >= 1.2) hLevel = 'h4';
+    else if (ratio >= 1.05) hLevel = 'h5';
+    else hLevel = 'h6';
+
+    const ids = toCorrect.get(hLevel) || [];
+    ids.push(z.id);
+    toCorrect.set(hLevel, ids);
+    result.details.push(
+      `Zone ${z.id.slice(0, 8)}… p${z.pageNumber}: section-header → ${hLevel} (ratio=${ratio.toFixed(2)})`,
+    );
+  }
+
+  let totalCorrected = 0;
+  for (const [hLevel, ids] of toCorrect) {
+    if (ids.length === 0) continue;
+    await prisma.zone.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        operatorVerified: true,
+        operatorLabel: hLevel,
+        decision: 'CORRECTED',
+        correctionReason: `Auto-annotation: section-header resolved to ${hLevel} by bbox height ratio`,
+        verifiedAt: new Date(),
+        verifiedBy: SYSTEM_OPERATOR,
+      },
+    });
+    totalCorrected += ids.length;
+  }
+  result.corrected = totalCorrected;
 
   return result;
 }
@@ -606,6 +721,7 @@ export async function runAutoAnnotation(
     { name: 'list-item-sequence-confirm', fn: applyListItemSequenceConfirm },
     { name: 'duplicate-fig-rejection', fn: applyDuplicateFigRejection },
     { name: 'figure-cross-validation', fn: applyFigureCrossValidation },
+    { name: 'section-header-resolution', fn: applySectionHeaderResolution },
     { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
   ];
 
