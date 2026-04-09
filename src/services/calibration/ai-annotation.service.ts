@@ -2,7 +2,7 @@
  * AI-powered zone annotation service.
  * Classifies zones using Gemini Flash (cheap, fast) with batched page-level prompts.
  * Falls back to Claude Haiku if Gemini is unreachable (e.g. Google blocks cloud IPs).
- * Confidence-gated: >= 0.95 auto-apply, 0.80-0.95 flag, < 0.80 skip.
+ * Confidence-gated: >= 0.97 auto-apply, 0.80-0.97 flag, < 0.80 skip.
  */
 import prisma from '../../lib/prisma';
 import { geminiService } from '../ai/gemini.service';
@@ -12,6 +12,7 @@ import {
   PROMPT_VERSION,
   type ZoneInput,
   type PageClassificationResponse,
+  type HeadingContext,
   VALID_ZONE_TYPES,
 } from '../ai/prompts/zone-classification.prompts';
 import { logger } from '../../lib/logger';
@@ -90,7 +91,7 @@ async function classifyPageWithFallback(
 }
 
 export interface AiAnnotationOptions {
-  confidenceThreshold?: number; // minimum confidence to auto-apply (default 0.95)
+  confidenceThreshold?: number; // minimum confidence to auto-apply (default 0.97)
   model?: string;               // model override
   dryRun?: boolean;             // if true, classify but don't persist
   aiRunId?: string;             // pre-created AiAnnotationRun ID (for async pattern)
@@ -119,7 +120,7 @@ export async function runAiAnnotation(
   options: AiAnnotationOptions = {},
 ): Promise<AiAnnotationResult> {
   const startTime = Date.now();
-  const confThreshold = options.confidenceThreshold ?? 0.95;
+  const confThreshold = options.confidenceThreshold ?? 0.97;
   const modelName = options.model ?? 'gemini-2.0-flash';
 
   // 1. Use pre-created AI annotation run or create one
@@ -220,6 +221,11 @@ export async function runAiAnnotation(
     // Use Claude as primary — Gemini is unreachable from ECS ap-south-1
     let activeProvider: AiProvider = 'claude';
 
+    // Heading context: track heading decisions across pages so the AI can
+    // maintain consistent heading hierarchy throughout the document
+    const headingContext: HeadingContext = { stack: [], maxDepth: 0 };
+    const HEADING_PATTERN = /^h([1-6])$/;
+
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
     const pagesWithZones = sortedPages.length;
 
@@ -250,7 +256,7 @@ export async function runAiAnnotation(
         pdfxtLabel: z.pdfxtLabel,
       }));
 
-      const prompt = buildPageClassificationPrompt(pageNum, totalPages, zoneInputs);
+      const prompt = buildPageClassificationPrompt(pageNum, totalPages, zoneInputs, headingContext);
 
       try {
         const { data: response, usage, provider } = await classifyPageWithFallback(prompt, activeProvider);
@@ -375,6 +381,17 @@ export async function runAiAnnotation(
               where: { id: classification.zoneId },
               data: updateData,
             });
+
+            // Accumulate heading context for subsequent pages
+            const headingMatch = HEADING_PATTERN.exec(classification.label);
+            if (headingMatch && classification.decision !== 'REJECTED') {
+              const level = parseInt(headingMatch[1], 10);
+              const text = (zone.content ?? '').trim().substring(0, 80);
+              headingContext.stack.push({ level, text, page: pageNum });
+              if (level > headingContext.maxDepth) {
+                headingContext.maxDepth = level;
+              }
+            }
 
             annotated++;
           }
