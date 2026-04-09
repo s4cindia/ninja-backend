@@ -398,10 +398,13 @@ export async function runAiAnnotation(
             // Auto-apply if capped confidence >= threshold and not dry run.
             // Human decisions are sticky: never overwrite a zone that was last verified by a
             // human (verifiedBy not starting with 'ai:') unless forceOverwriteHuman is set.
+            // 'auto-annotation' is the deterministic system verifier, not a human — exclude it
+            // so re-runs over auto-annotated pages can still be reclassified.
             const isHumanVerified =
               !!zone.decision &&
               !!zone.verifiedBy &&
-              !zone.verifiedBy.startsWith('ai:');
+              !zone.verifiedBy.startsWith('ai:') &&
+              zone.verifiedBy !== 'auto-annotation';
             const canAutoApply =
               !options.dryRun &&
               conf >= confThreshold &&

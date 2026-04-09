@@ -298,55 +298,71 @@ class AnnotationTimesheetService {
       }
     }
 
-    // Apportionment pool: distribute the leftover active time across pages with no measured
-    // segments, weighted by *human* zone count. Use a largest-remainder (Hamilton) distribution
-    // so the per-page integers sum exactly to `unmeasuredActiveMs` instead of drifting due to
-    // independent rounding.
+    // Apportionment pool: distribute the leftover active time using a largest-remainder
+    // (Hamilton) split so per-page integers sum exactly to the pool. Three regimes:
+    //
+    //   1. Some pages have no measured segments at all → the leftover gets distributed across
+    //      those unmeasured pages (weighted by human zone count). Measured pages keep their
+    //      measured value untouched.
+    //   2. Every page has at least some measured time, but session time still includes
+    //      page-less segments (so `unmeasuredActiveMs > 0`). We add the leftover on top of the
+    //      measured values across ALL pages so totals reconcile to `totalActiveMs`.
+    //   3. Nothing measured anywhere → fall back to a pure proportional split.
     const unmeasuredActiveMs = Math.max(0, totalActiveMs - measuredTotalMs);
     const totalHumanZoneCount = [...pageMap.values()].reduce((sum, d) => sum + d.humanCount, 0);
     const unmeasuredPages = [...pageMap.entries()].filter(([page]) => !measuredMsByPage.has(page));
     const unmeasuredHumanZoneCount = unmeasuredPages.reduce((sum, [, d]) => sum + d.humanCount, 0);
 
-    const apportionedMs = new Map<number, number>();
-    if (unmeasuredHumanZoneCount > 0 && unmeasuredActiveMs > 0) {
-      // Largest-remainder method
-      const exact = unmeasuredPages.map(([page, d]) => ({
-        page,
-        exact: unmeasuredActiveMs * (d.humanCount / unmeasuredHumanZoneCount),
-      }));
+    /** Largest-remainder distribution helper. Returns map page→ms summing exactly to `pool`. */
+    const distribute = (
+      pool: number,
+      pages: { page: number; weight: number }[],
+    ): Map<number, number> => {
+      const result = new Map<number, number>();
+      const totalWeight = pages.reduce((s, p) => s + p.weight, 0);
+      if (pool <= 0 || totalWeight <= 0 || pages.length === 0) return result;
+      const exact = pages.map(p => ({ page: p.page, exact: pool * (p.weight / totalWeight) }));
       let assigned = 0;
       const withFloor = exact.map(e => {
         const floor = Math.floor(e.exact);
         assigned += floor;
         return { page: e.page, floor, remainder: e.exact - floor };
       });
-      let remainder = unmeasuredActiveMs - assigned;
+      let leftover = pool - assigned;
       withFloor.sort((a, b) => b.remainder - a.remainder);
       for (const row of withFloor) {
-        const bonus = remainder > 0 ? 1 : 0;
-        apportionedMs.set(row.page, row.floor + bonus);
-        if (remainder > 0) remainder--;
+        const bonus = leftover > 0 ? 1 : 0;
+        result.set(row.page, row.floor + bonus);
+        if (leftover > 0) leftover--;
       }
-    } else if (totalHumanZoneCount > 0 && totalActiveMs > 0) {
-      // No segments at all and no measurable split — fall back to a proportional split over all pages
-      const allPages = [...pageMap.entries()];
-      const exact = allPages.map(([page, d]) => ({
-        page,
-        exact: totalActiveMs * (d.humanCount / totalHumanZoneCount),
-      }));
-      let assigned = 0;
-      const withFloor = exact.map(e => {
-        const floor = Math.floor(e.exact);
-        assigned += floor;
-        return { page: e.page, floor, remainder: e.exact - floor };
-      });
-      let remainder = totalActiveMs - assigned;
-      withFloor.sort((a, b) => b.remainder - a.remainder);
-      for (const row of withFloor) {
-        const bonus = remainder > 0 ? 1 : 0;
-        apportionedMs.set(row.page, row.floor + bonus);
-        if (remainder > 0) remainder--;
+      return result;
+    };
+
+    const apportionedMs = new Map<number, number>();   // for pages with no measured time
+    const measuredTopUp = new Map<number, number>();   // extra ms added on top of measured pages
+
+    if (unmeasuredActiveMs > 0) {
+      if (unmeasuredHumanZoneCount > 0) {
+        // Regime 1: distribute leftover across pages with no measured segments
+        const split = distribute(
+          unmeasuredActiveMs,
+          unmeasuredPages.map(([page, d]) => ({ page, weight: d.humanCount })),
+        );
+        for (const [page, ms] of split) apportionedMs.set(page, ms);
+      } else if (totalHumanZoneCount > 0) {
+        // Regime 2: every page already has some measured time but page-less session segments
+        // remain — top up measured pages so totals reconcile
+        const measuredPagesWithHuman = [...pageMap.entries()]
+          .filter(([page]) => measuredMsByPage.has(page))
+          .map(([page, d]) => ({ page, weight: d.humanCount }));
+        const split = distribute(unmeasuredActiveMs, measuredPagesWithHuman);
+        for (const [page, ms] of split) measuredTopUp.set(page, ms);
       }
+    } else if (measuredTotalMs === 0 && totalHumanZoneCount > 0 && totalActiveMs > 0) {
+      // Regime 3: nothing measured anywhere — proportional split over all pages with human zones
+      const allPages = [...pageMap.entries()].map(([page, d]) => ({ page, weight: d.humanCount }));
+      const split = distribute(totalActiveMs, allPages);
+      for (const [page, ms] of split) apportionedMs.set(page, ms);
     }
 
     // Build the union of pages with zones AND pages with measured time only — a page may have
@@ -361,8 +377,12 @@ class AnnotationTimesheetService {
       let timingSource: 'measured' | 'derived' = 'derived';
       const measured = measuredMsByPage.get(page);
       if (measured !== undefined) {
-        timeSpentMs = Math.round(measured);
-        timingSource = 'measured';
+        // Measured page: start from the measured value and add any reconciliation top-up.
+        // The page is still considered 'measured' as long as the top-up is small relative
+        // to the measured value — otherwise mark it 'derived' so the UI can flag it.
+        const topUp = measuredTopUp.get(page) ?? 0;
+        timeSpentMs = Math.round(measured + topUp);
+        timingSource = topUp > measured ? 'derived' : 'measured';
       } else {
         timeSpentMs = apportionedMs.get(page) ?? 0;
       }
