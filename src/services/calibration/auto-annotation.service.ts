@@ -583,7 +583,8 @@ async function applyFigureCrossValidation(zones: ZoneRow[]): Promise<PatternResu
  * - >= 1.7x → h2
  * - >= 1.4x → h3
  * - >= 1.2x → h4
- * - otherwise → h5
+ * - >= 1.05x → h5
+ * - otherwise → h6
  */
 async function applySectionHeaderResolution(zones: ZoneRow[]): Promise<PatternResult> {
   const result: PatternResult = {
@@ -646,7 +647,8 @@ async function applySectionHeaderResolution(zones: ZoneRow[]): Promise<PatternRe
     else if (ratio >= 1.7) hLevel = 'h2';
     else if (ratio >= 1.4) hLevel = 'h3';
     else if (ratio >= 1.2) hLevel = 'h4';
-    else hLevel = 'h5';
+    else if (ratio >= 1.05) hLevel = 'h5';
+    else hLevel = 'h6';
 
     const ids = toCorrect.get(hLevel) || [];
     ids.push(z.id);
