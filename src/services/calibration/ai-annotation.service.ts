@@ -95,6 +95,21 @@ export interface AiAnnotationOptions {
   model?: string;               // model override
   dryRun?: boolean;             // if true, classify but don't persist
   aiRunId?: string;             // pre-created AiAnnotationRun ID (for async pattern)
+  /** Only annotate zones on pages >= pageStart (inclusive). */
+  pageStart?: number;
+  /** Only annotate zones on pages <= pageEnd (inclusive). */
+  pageEnd?: number;
+  /**
+   * If true, include zones that already have a decision (re-processing pass).
+   * AI fields are always overwritten; human decisions are only overwritten when the
+   * new confidence exceeds `confidenceThreshold`.
+   */
+  includeDecided?: boolean;
+  /**
+   * If true, allow auto-apply to overwrite zones that were last verified by a human
+   * (verifiedBy not starting with 'ai:'). Default false — human decisions are sticky.
+   */
+  forceOverwriteHuman?: boolean;
 }
 
 export interface AiAnnotationResult {
@@ -138,13 +153,27 @@ export async function runAiAnnotation(
       });
 
   try {
-    // 2. Fetch unreviewed zones (not yet decided by operator or auto-annotation)
+    // 2. Fetch zones to annotate. By default: unreviewed + not already AI-annotated + not ghost.
+    // When re-processing (includeDecided), skip the decision/aiDecision filters so already-seen
+    // zones can be re-classified under a new prompt version. Ghost zones are always skipped.
+    const pageFilter =
+      options.pageStart !== undefined || options.pageEnd !== undefined
+        ? {
+            pageNumber: {
+              ...(options.pageStart !== undefined ? { gte: options.pageStart } : {}),
+              ...(options.pageEnd !== undefined ? { lte: options.pageEnd } : {}),
+            },
+          }
+        : {};
+
     const zones = await prisma.zone.findMany({
       where: {
         calibrationRunId,
-        decision: null,        // only unreviewed zones
-        aiDecision: null,      // not already AI-annotated
-        isGhost: false,        // skip ghost zones
+        isGhost: false,
+        ...(options.includeDecided
+          ? {}
+          : { decision: null, aiDecision: null }),
+        ...pageFilter,
       },
       select: {
         id: true,
@@ -157,6 +186,12 @@ export async function runAiAnnotation(
         reconciliationBucket: true,
         doclingLabel: true,
         pdfxtLabel: true,
+        decision: true,
+        verifiedBy: true,
+        operatorVerified: true,
+        isArtefact: true,
+        operatorLabel: true,
+        correctionReason: true,
       },
     });
 
@@ -360,21 +395,47 @@ export async function runAiAnnotation(
               aiAnnotatedAt: new Date(),
             };
 
-            // Auto-apply if capped confidence >= threshold and not dry run
-            if (!options.dryRun && conf >= confThreshold) {
+            // Auto-apply if capped confidence >= threshold and not dry run.
+            // Human decisions are sticky: never overwrite a zone that was last verified by a
+            // human (verifiedBy not starting with 'ai:') unless forceOverwriteHuman is set.
+            const isHumanVerified =
+              !!zone.decision &&
+              !!zone.verifiedBy &&
+              !zone.verifiedBy.startsWith('ai:');
+            const canAutoApply =
+              !options.dryRun &&
+              conf >= confThreshold &&
+              (!isHumanVerified || options.forceOverwriteHuman === true);
+
+            if (canAutoApply) {
               if (classification.decision === 'REJECTED') {
                 updateData.decision = 'REJECTED';
                 updateData.isArtefact = true;
+                updateData.operatorLabel = null;
+                updateData.correctionReason = classification.reason ?? 'AI rejection';
                 updateData.verifiedBy = `ai:${effectiveModel}`;
+                updateData.verifiedAt = new Date();
               } else if (classification.decision === 'CORRECTED') {
                 updateData.decision = 'CORRECTED';
                 updateData.operatorLabel = classification.label;
-                updateData.verifiedBy = `ai:${effectiveModel}`;
+                updateData.isArtefact = false;
                 updateData.correctionReason = classification.reason ?? 'AI correction';
+                updateData.verifiedBy = `ai:${effectiveModel}`;
+                updateData.verifiedAt = new Date();
               } else {
                 updateData.decision = 'CONFIRMED';
+                updateData.operatorLabel = null;
+                updateData.correctionReason = null;
+                updateData.isArtefact = false;
                 updateData.verifiedBy = `ai:${effectiveModel}`;
+                updateData.verifiedAt = new Date();
               }
+            } else if (isHumanVerified && !options.dryRun && conf >= confThreshold) {
+              // Skipped auto-apply because the zone was human-verified — log for traceability
+              logger.info(
+                `[ai-annotation] Skipping auto-apply for human-verified zone ${classification.zoneId} ` +
+                `(verifiedBy=${zone.verifiedBy}); only AI fields will be persisted`,
+              );
             }
 
             await prisma.zone.update({

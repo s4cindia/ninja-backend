@@ -506,7 +506,16 @@ const aiAnnotateBodySchema = z.object({
   confidenceThreshold: z.number().min(0).max(1).optional(),
   model: z.string().optional(),
   dryRun: z.boolean().optional(),
-});
+  // Page-range re-processing: restrict to a page window, and optionally include zones that
+  // already have a decision so they can be re-classified under the current prompt version.
+  pageStart: z.number().int().positive().optional(),
+  pageEnd: z.number().int().positive().optional(),
+  includeDecided: z.boolean().optional(),
+  forceOverwriteHuman: z.boolean().optional(),
+}).refine(
+  (v) => v.pageStart === undefined || v.pageEnd === undefined || v.pageStart <= v.pageEnd,
+  { message: 'pageStart must be <= pageEnd', path: ['pageEnd'] },
+);
 
 // POST /api/v1/calibration/runs/:runId/ai-annotate
 // Returns 202 immediately; annotation runs in background.

@@ -22,6 +22,30 @@ export interface PageTimeRow {
   confirmed: number;
   corrected: number;
   rejected: number;
+  /** How timeSpentMs was computed: 'measured' from sessionLog page segments, or 'derived' by apportionment. */
+  timingSource: 'measured' | 'derived';
+  /** Review workflow mode inferred from decision pattern. */
+  reviewMode: 'deep' | 'sampling' | 'unreviewed';
+}
+
+export interface ZoneTypeRow {
+  zoneType: string;
+  total: number;
+  confirmed: number;
+  corrected: number;
+  rejected: number;
+  confirmPct: number | null;
+  correctPct: number | null;
+  rejectPct: number | null;
+}
+
+/** Single entry inside AnnotationSession.sessionLog when the frontend timer emits page-tagged segments. */
+interface SessionSegmentEntry {
+  openedAt?: string;
+  closedAt?: string;
+  activeMs?: number;
+  idleMs?: number;
+  pageNumber?: number | null;
 }
 
 export interface TimesheetReport {
@@ -52,6 +76,7 @@ export interface TimesheetReport {
   byOperator: (OperatorRow & { operator: string })[];
   pageBreakdown: PageTimeRow[];
   byPage: (PageTimeRow & { zones: number })[];
+  zoneTypeBreakdown: ZoneTypeRow[];
   efficiencyMetrics: {
     autoAnnotationSavingsMs: number;
     reviewQueueReductionPct: number | null;
@@ -138,6 +163,8 @@ class AnnotationTimesheetService {
           orderBy: [{ pageNumber: 'asc' }],
           select: {
             id: true,
+            type: true,
+            operatorLabel: true,
             pageNumber: true,
             decision: true,
             verifiedBy: true,
@@ -239,36 +266,190 @@ class AnnotationTimesheetService {
       };
     });
 
-    // Page breakdown — derive from zone decisions (no per-page timing from sessions yet)
-    const pageMap = new Map<number, { count: number; confirmed: number; corrected: number; rejected: number }>();
+    // Page breakdown — aggregate decisions per page.
+    // `pageMap` counts ALL zones for the visible page row; `humanPageMap` excludes zones
+    // that were applied by auto-annotation (so apportionment of human review time is not
+    // diluted by pages that the human never actually opened).
+    const pageMap = new Map<number, { count: number; humanCount: number; confirmed: number; corrected: number; rejected: number }>();
     for (const z of zones) {
-      const existing = pageMap.get(z.pageNumber) ?? { count: 0, confirmed: 0, corrected: 0, rejected: 0 };
+      const existing = pageMap.get(z.pageNumber) ?? { count: 0, humanCount: 0, confirmed: 0, corrected: 0, rejected: 0 };
       existing.count++;
+      if (z.verifiedBy !== 'auto-annotation') existing.humanCount++;
       if (z.decision === 'CONFIRMED') existing.confirmed++;
       if (z.decision === 'CORRECTED') existing.corrected++;
       if (z.decision === 'REJECTED') existing.rejected++;
       pageMap.set(z.pageNumber, existing);
     }
 
-    // Distribute total active time proportionally by zone count
-    const totalZoneCount = zones.length;
-    const pageBreakdown: PageTimeRow[] = [...pageMap.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([page, data]) => {
-        const timeSpentMs = totalZoneCount > 0
-          ? Math.round(totalActiveMs * (data.count / totalZoneCount))
-          : 0;
-        const mins = timeSpentMs / 60_000;
-        return {
-          pageNumber: page,
-          zoneCount: data.count,
-          timeSpentMs,
-          zonesPerMin: mins > 0 ? data.count / mins : null,
-          confirmed: data.confirmed,
-          corrected: data.corrected,
-          rejected: data.rejected,
-        };
+    // Measured per-page time: aggregate active time from sessionLog segments that carry pageNumber.
+    // Falls back to proportional apportionment for pages with no segments (older sessions or missing tags).
+    const measuredMsByPage = new Map<number, number>();
+    let measuredTotalMs = 0;
+    for (const sess of sessions) {
+      const log = sess.sessionLog as unknown;
+      if (!Array.isArray(log)) continue;
+      for (const entry of log as SessionSegmentEntry[]) {
+        if (!entry || typeof entry !== 'object') continue;
+        const page = entry.pageNumber;
+        const ms = entry.activeMs;
+        if (typeof page !== 'number' || typeof ms !== 'number' || ms <= 0) continue;
+        measuredMsByPage.set(page, (measuredMsByPage.get(page) ?? 0) + ms);
+        measuredTotalMs += ms;
+      }
+    }
+
+    // Apportionment pool: distribute the leftover active time across pages with no measured
+    // segments, weighted by *human* zone count. Use a largest-remainder (Hamilton) distribution
+    // so the per-page integers sum exactly to `unmeasuredActiveMs` instead of drifting due to
+    // independent rounding.
+    const unmeasuredActiveMs = Math.max(0, totalActiveMs - measuredTotalMs);
+    const totalHumanZoneCount = [...pageMap.values()].reduce((sum, d) => sum + d.humanCount, 0);
+    const unmeasuredPages = [...pageMap.entries()].filter(([page]) => !measuredMsByPage.has(page));
+    const unmeasuredHumanZoneCount = unmeasuredPages.reduce((sum, [, d]) => sum + d.humanCount, 0);
+
+    const apportionedMs = new Map<number, number>();
+    if (unmeasuredHumanZoneCount > 0 && unmeasuredActiveMs > 0) {
+      // Largest-remainder method
+      const exact = unmeasuredPages.map(([page, d]) => ({
+        page,
+        exact: unmeasuredActiveMs * (d.humanCount / unmeasuredHumanZoneCount),
+      }));
+      let assigned = 0;
+      const withFloor = exact.map(e => {
+        const floor = Math.floor(e.exact);
+        assigned += floor;
+        return { page: e.page, floor, remainder: e.exact - floor };
       });
+      let remainder = unmeasuredActiveMs - assigned;
+      withFloor.sort((a, b) => b.remainder - a.remainder);
+      for (const row of withFloor) {
+        const bonus = remainder > 0 ? 1 : 0;
+        apportionedMs.set(row.page, row.floor + bonus);
+        if (remainder > 0) remainder--;
+      }
+    } else if (totalHumanZoneCount > 0 && totalActiveMs > 0) {
+      // No segments at all and no measurable split — fall back to a proportional split over all pages
+      const allPages = [...pageMap.entries()];
+      const exact = allPages.map(([page, d]) => ({
+        page,
+        exact: totalActiveMs * (d.humanCount / totalHumanZoneCount),
+      }));
+      let assigned = 0;
+      const withFloor = exact.map(e => {
+        const floor = Math.floor(e.exact);
+        assigned += floor;
+        return { page: e.page, floor, remainder: e.exact - floor };
+      });
+      let remainder = totalActiveMs - assigned;
+      withFloor.sort((a, b) => b.remainder - a.remainder);
+      for (const row of withFloor) {
+        const bonus = remainder > 0 ? 1 : 0;
+        apportionedMs.set(row.page, row.floor + bonus);
+        if (remainder > 0) remainder--;
+      }
+    }
+
+    // Build the union of pages with zones AND pages with measured time only — a page may have
+    // recorded segments before any zone was decided, and we must not drop it from the report.
+    const allPageNumbers = new Set<number>([...pageMap.keys(), ...measuredMsByPage.keys()]);
+    const sortedPageNumbers = [...allPageNumbers].sort((a, b) => a - b);
+
+    // First pass: compute time + per-page rows without reviewMode
+    const preliminary = sortedPageNumbers.map(page => {
+      const data = pageMap.get(page) ?? { count: 0, humanCount: 0, confirmed: 0, corrected: 0, rejected: 0 };
+      let timeSpentMs = 0;
+      let timingSource: 'measured' | 'derived' = 'derived';
+      const measured = measuredMsByPage.get(page);
+      if (measured !== undefined) {
+        timeSpentMs = Math.round(measured);
+        timingSource = 'measured';
+      } else {
+        timeSpentMs = apportionedMs.get(page) ?? 0;
+      }
+      const mins = timeSpentMs / 60_000;
+      return {
+        pageNumber: page,
+        zoneCount: data.count,
+        timeSpentMs,
+        zonesPerMin: mins > 0 ? data.count / mins : null,
+        confirmed: data.confirmed,
+        corrected: data.corrected,
+        rejected: data.rejected,
+        timingSource,
+      };
+    });
+
+    // Phase detection: classify each page as 'deep', 'sampling', or 'unreviewed'.
+    // - unreviewed: no decisions recorded on a page that has zones
+    // - sampling:  the page belongs to a run of >= 3 consecutive pages where confirmed <= 3 on pages with > 10 zones
+    //              (matches the pattern seen in Phase B of cmnmw6d4 where triage replaced deep review)
+    // - deep:      everything else (the default quality tier)
+    const SAMPLING_MIN_RUN = 3;
+    const SAMPLING_ZONE_THRESHOLD = 10;
+    const SAMPLING_CONFIRMED_CAP = 3;
+
+    const baseMode: ('deep' | 'sampling' | 'unreviewed')[] = preliminary.map(p => {
+      if (p.confirmed === 0 && p.corrected === 0 && p.rejected === 0) return 'unreviewed';
+      return 'deep';
+    });
+
+    // Walk runs of pages looking for sampling patterns. A run must be both consecutive
+    // *by page number* (no gaps in the page sequence) and meet the sampling heuristic
+    // — otherwise reports with sparse page coverage would falsely group unrelated pages.
+    let runStart = -1;
+    let prevPageNumber = -Infinity;
+    for (let i = 0; i <= preliminary.length; i++) {
+      const p = preliminary[i];
+      const isContiguous = p !== undefined && p.pageNumber === prevPageNumber + 1;
+      const isSamplingCandidate =
+        p !== undefined &&
+        p.zoneCount > SAMPLING_ZONE_THRESHOLD &&
+        p.confirmed <= SAMPLING_CONFIRMED_CAP &&
+        baseMode[i] !== 'unreviewed';
+
+      if (isSamplingCandidate && (runStart === -1 || isContiguous)) {
+        if (runStart === -1) runStart = i;
+      } else {
+        if (runStart !== -1 && i - runStart >= SAMPLING_MIN_RUN) {
+          for (let j = runStart; j < i; j++) baseMode[j] = 'sampling';
+        }
+        // If the current page is itself a candidate but broke the run because of a page gap,
+        // start a fresh run from this index.
+        runStart = isSamplingCandidate ? i : -1;
+      }
+
+      if (p !== undefined) prevPageNumber = p.pageNumber;
+    }
+
+    const pageBreakdown: PageTimeRow[] = preliminary.map((p, i) => ({
+      ...p,
+      reviewMode: baseMode[i],
+    }));
+
+    // Zone type breakdown — correction rates by zone.type (or operatorLabel if corrected)
+    const typeMap = new Map<string, { total: number; confirmed: number; corrected: number; rejected: number }>();
+    for (const z of zones) {
+      if (!z.decision) continue;
+      const key = z.type || 'unknown';
+      const existing = typeMap.get(key) ?? { total: 0, confirmed: 0, corrected: 0, rejected: 0 };
+      existing.total++;
+      if (z.decision === 'CONFIRMED') existing.confirmed++;
+      else if (z.decision === 'CORRECTED') existing.corrected++;
+      else if (z.decision === 'REJECTED') existing.rejected++;
+      typeMap.set(key, existing);
+    }
+    const zoneTypeBreakdown: ZoneTypeRow[] = [...typeMap.entries()]
+      .sort(([, a], [, b]) => b.total - a.total)
+      .map(([zoneType, d]) => ({
+        zoneType,
+        total: d.total,
+        confirmed: d.confirmed,
+        corrected: d.corrected,
+        rejected: d.rejected,
+        confirmPct: d.total > 0 ? d.confirmed / d.total : null,
+        correctPct: d.total > 0 ? d.corrected / d.total : null,
+        rejectPct: d.total > 0 ? d.rejected / d.total : null,
+      }));
 
     // Efficiency metrics
     const avgSecsPerZoneSafe = avgSecsPerZone ?? 6.4; // default estimate
@@ -329,6 +510,7 @@ class AnnotationTimesheetService {
         ...p,
         zones: p.zoneCount,
       })),
+      zoneTypeBreakdown,
       efficiencyMetrics: {
         autoAnnotationSavingsMs,
         reviewQueueReductionPct,
@@ -367,11 +549,23 @@ class AnnotationTimesheetService {
     ].map(escape).join(','));
 
     // Section 2: Page breakdown
-    const pgHeaders = ['Page', 'Zones', 'TimeSpentMs', 'ZonesPerMin', 'Confirmed', 'Corrected', 'Rejected'];
+    const pgHeaders = [
+      'Page', 'Zones', 'TimeSpentMs', 'ZonesPerMin',
+      'Confirmed', 'Corrected', 'Rejected', 'ReviewMode', 'TimingSource',
+    ];
     const pgRows = report.pageBreakdown.map(r => [
       r.pageNumber, r.zoneCount, r.timeSpentMs,
       r.zonesPerMin !== null ? r.zonesPerMin.toFixed(1) : '',
-      r.confirmed, r.corrected, r.rejected,
+      r.confirmed, r.corrected, r.rejected, r.reviewMode, r.timingSource,
+    ].map(escape).join(','));
+
+    // Section 3: Zone type breakdown
+    const ztHeaders = ['ZoneType', 'Total', 'Confirmed', 'Corrected', 'Rejected', 'Confirm%', 'Correct%', 'Reject%'];
+    const ztRows = report.zoneTypeBreakdown.map(r => [
+      r.zoneType, r.total, r.confirmed, r.corrected, r.rejected,
+      r.confirmPct !== null ? (r.confirmPct * 100).toFixed(1) : '',
+      r.correctPct !== null ? (r.correctPct * 100).toFixed(1) : '',
+      r.rejectPct !== null ? (r.rejectPct * 100).toFixed(1) : '',
     ].map(escape).join(','));
 
     return [
@@ -382,6 +576,10 @@ class AnnotationTimesheetService {
       '# Page Breakdown',
       pgHeaders.join(','),
       ...pgRows,
+      '',
+      '# Zone Type Breakdown',
+      ztHeaders.join(','),
+      ...ztRows,
     ].join('\n');
   }
 
