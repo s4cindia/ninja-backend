@@ -14,6 +14,8 @@
  *   6. GREEN Bucket Confirm — both extractors agree on canonical type
  *   7. Figure Cross-Validation — either extractor identifies figure/picture
  *   8. Section-Header Resolution — resolve section-header to h-level by bbox height
+ *   9. Footer Artefact Rejection — reject all footer zones (running page footers)
+ *  10. Header Artefact Rejection — reject RED-bucket header zones (single-extractor page headers)
  */
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -679,6 +681,82 @@ async function applySectionHeaderResolution(zones: ZoneRow[]): Promise<PatternRe
   return result;
 }
 
+// ── Pattern 9: Footer Artefact Rejection ──────────────────────────
+
+async function applyFooterArtefactRejection(zones: ZoneRow[]): Promise<PatternResult> {
+  const result: PatternResult = {
+    pattern: 'footer-artefact-rejection',
+    description: 'Reject all footer zones (running page footers are non-semantic)',
+    confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
+  };
+
+  const footerZones = zones.filter(
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
+      z.type === 'footer',
+  );
+
+  if (footerZones.length === 0) return result;
+
+  const ids = footerZones.map(z => z.id);
+  await prisma.zone.updateMany({
+    where: { id: { in: ids } },
+    data: {
+      isArtefact: true,
+      operatorVerified: true,
+      decision: 'REJECTED',
+      correctionReason: 'Auto-annotation: running footer artefact',
+      verifiedAt: new Date(),
+      verifiedBy: SYSTEM_OPERATOR,
+    },
+  });
+  result.rejected = ids.length;
+
+  const pageSet = new Set(footerZones.map(z => z.pageNumber));
+  result.details.push(`${ids.length} footer zones rejected across ${pageSet.size} pages`);
+
+  return result;
+}
+
+// ── Pattern 10: Header Artefact Rejection (RED bucket) ────────────
+
+async function applyHeaderArtefactRejection(zones: ZoneRow[]): Promise<PatternResult> {
+  const result: PatternResult = {
+    pattern: 'header-artefact-rejection',
+    description: 'Reject RED-bucket header zones (single-extractor running headers)',
+    confirmed: 0, corrected: 0, rejected: 0, skipped: 0, details: [],
+  };
+
+  // Only reject headers in the RED bucket (single-extractor, low confidence).
+  // GREEN-bucket headers where both extractors agree are left for human review
+  // since ~10% of those are legitimate content headers (e.g., page 1 title).
+  const headerZones = zones.filter(
+    (z) => !z.operatorVerified && !z.isArtefact && !z.decision &&
+      z.type === 'header' &&
+      z.reconciliationBucket === 'RED',
+  );
+
+  if (headerZones.length === 0) return result;
+
+  const ids = headerZones.map(z => z.id);
+  await prisma.zone.updateMany({
+    where: { id: { in: ids } },
+    data: {
+      isArtefact: true,
+      operatorVerified: true,
+      decision: 'REJECTED',
+      correctionReason: 'Auto-annotation: RED-bucket running header artefact',
+      verifiedAt: new Date(),
+      verifiedBy: SYSTEM_OPERATOR,
+    },
+  });
+  result.rejected = ids.length;
+
+  const pageSet = new Set(headerZones.map(z => z.pageNumber));
+  result.details.push(`${ids.length} RED-bucket header zones rejected across ${pageSet.size} pages`);
+
+  return result;
+}
+
 // ── Main Orchestrator ───────────────────────────────────────────────
 
 export async function runAutoAnnotation(
@@ -722,6 +800,8 @@ export async function runAutoAnnotation(
     { name: 'duplicate-fig-rejection', fn: applyDuplicateFigRejection },
     { name: 'figure-cross-validation', fn: applyFigureCrossValidation },
     { name: 'section-header-resolution', fn: applySectionHeaderResolution },
+    { name: 'footer-artefact-rejection', fn: applyFooterArtefactRejection },
+    { name: 'header-artefact-rejection', fn: applyHeaderArtefactRejection },
     { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
   ];
 

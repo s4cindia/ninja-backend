@@ -29,6 +29,12 @@ export interface HeadingContext {
   stack: { level: number; text: string; page: number }[];
   /** The deepest heading level used so far in the document */
   maxDepth: number;
+  /**
+   * Document-level heading offset detected from extractor data.
+   * e.g., 1 means extractors report heading levels 1 higher than semantic reality
+   * (H1 in PDF tag tree = h2 semantically). 0 or undefined = no offset.
+   */
+  extractorOffset?: number;
 }
 
 export interface ZoneClassification {
@@ -101,9 +107,20 @@ Deepest heading level used so far: h${headingContext.maxDepth}
 
 Recent headings (most recent last):
 ${headingContext.stack.slice(-10).map(h => `- h${h.level}: "${h.text}" (page ${h.page})`).join('\n')}
-
-**Important**: If the document uses h2 for chapter titles and h3 for sections, continue that pattern. Do not assign h3 to a chapter title because you see h3 elsewhere.
-` : ''}
+${headingContext.extractorOffset ? `
+**CRITICAL — Heading Offset Detected**: The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too high. The extractor labels do NOT reflect the correct semantic hierarchy. Always subtract ${headingContext.extractorOffset} from the extractor heading level:
+- Extractor H1 → use h${1 + headingContext.extractorOffset}
+- Extractor H2 → use h${2 + headingContext.extractorOffset}
+- Extractor H3 → use h${3 + headingContext.extractorOffset}
+Do NOT confirm extractor heading levels at face value — apply the offset correction.` : `
+**Important**: Match heading levels to the established hierarchy above. Do not assign a heading level that contradicts the document structure.`}
+` : `${headingContext?.extractorOffset ? `
+## Heading Offset Detected
+The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too high. When classifying heading zones on this page, subtract ${headingContext.extractorOffset} from the extractor heading level:
+- Extractor H1 → use h${1 + headingContext.extractorOffset}
+- Extractor H2 → use h${2 + headingContext.extractorOffset}
+- Extractor H3 → use h${3 + headingContext.extractorOffset}
+` : ''}`}
 ## Zones to Classify
 \`\`\`json
 ${JSON.stringify(zonesJson, null, 2)}
