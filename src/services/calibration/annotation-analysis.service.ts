@@ -494,6 +494,7 @@ export async function generateAnnotationAnalysis(runId: string): Promise<PerTitl
       id: true,
       summary: true,
       corpusDocument: { select: { filename: true, pageCount: true } },
+      zones: { select: { decision: true }, where: { decision: { not: null } } },
     },
     orderBy: { completedAt: 'desc' },
     take: 10,
@@ -505,14 +506,18 @@ export async function generateAnnotationAnalysis(runId: string): Promise<PerTitl
       return sum?.analysisReports != null;
     })
     .map(r => {
-      const sum = r.summary as Record<string, unknown>;
+      const zones = r.zones;
+      const confirmed = zones.filter(z => z.decision === 'CONFIRMED').length;
+      const corrected = zones.filter(z => z.decision === 'CORRECTED').length;
+      const rejected = zones.filter(z => z.decision === 'REJECTED').length;
+      const totalDecided = confirmed + corrected + rejected;
       return {
         documentName: r.corpusDocument.filename,
         pages: r.corpusDocument.pageCount ?? 0,
-        zones: (sum.totalZones as number) ?? 0,
+        zones: totalDecided,
         throughput: null as number | null,
-        correctionRate: (sum.correctionRate as number | undefined) ?? null,
-        agreementRate: (sum.agreementRate as number | undefined) ?? null,
+        correctionRate: totalDecided > 0 ? corrected / totalDecided : null,
+        agreementRate: totalDecided > 0 ? confirmed / totalDecided : null,
       };
     });
 
@@ -605,12 +610,15 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
     orderBy: { completedAt: 'asc' },
   });
 
-  if (completedRuns.length === 0) {
-    throw new Error('No completed annotation runs found');
+  // Filter to runs that have at least one reviewed zone
+  const analyzedRuns = completedRuns.filter(run => run.zones.length > 0);
+
+  if (analyzedRuns.length === 0) {
+    throw new Error('No completed annotation runs with reviewed zones found');
   }
 
   // 2. Build per-title summaries
-  const runSummaries = completedRuns.map(run => {
+  const runSummaries = analyzedRuns.map(run => {
     const sum = (run.summary as Record<string, unknown>) ?? {};
     const analysisReports = sum.analysisReports as { report: AnalysisReport; costBreakdown: CostBreakdown } | undefined;
     const zones = run.zones;
