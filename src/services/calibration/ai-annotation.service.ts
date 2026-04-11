@@ -285,10 +285,16 @@ export async function runAiAnnotation(
     const headingContext: HeadingContext = { stack: [], maxDepth: 0 };
     const HEADING_PATTERN = /^h([1-6])$/;
 
-    // Detect heading offset from extractor labels before classification begins.
-    // If the PDF tag tree uses H1 for chapter headings (instead of document title),
-    // the AI should subtract 1 from every extractor heading level.
-    headingContext.extractorOffset = detectExtractorHeadingOffset(zones);
+    // Detect heading offset from extractor labels across the FULL document,
+    // not just the current page range. On partial re-runs (pageStart/pageEnd),
+    // using only the filtered zones would undercount H1 pages and miss the offset.
+    const allZonesForOffset = (options.pageStart !== undefined || options.pageEnd !== undefined)
+      ? await prisma.zone.findMany({
+          where: { calibrationRunId, isGhost: false },
+          select: { pageNumber: true, pdfxtLabel: true },
+        })
+      : zones;
+    headingContext.extractorOffset = detectExtractorHeadingOffset(allZonesForOffset);
 
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
     const pagesWithZones = sortedPages.length;

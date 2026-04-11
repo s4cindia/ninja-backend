@@ -5,17 +5,17 @@
  * review effort. Each pattern targets a specific class of zones that
  * can be reliably confirmed, corrected, or rejected without human review.
  *
- * Patterns:
+ * Patterns (execution order):
  *   1. Ghost Zone Rejection — isGhost=true or zero-area bbox
  *   2. TOCI Bulk Confirm — all TOCI zones from pdfxt
- *   3. Running Header Auto-Classification — H on page>1 with header content
- *   4. List Item Sequence Confirm — ≥3 consecutive LI zones on a page
- *   5. Duplicate FIG Rejection — overlapping FIG zones, keep higher confidence
- *   6. GREEN Bucket Confirm — both extractors agree on canonical type
- *   7. Figure Cross-Validation — either extractor identifies figure/picture
- *   8. Section-Header Resolution — resolve section-header to h-level by bbox height
- *   9. Footer Artefact Rejection — reject all footer zones (running page footers)
- *  10. Header Artefact Rejection — reject RED-bucket header zones (single-extractor page headers)
+ *   3. Footer Artefact Rejection — reject all footer zones (running page footers)
+ *   4. Header Artefact Rejection — reject RED-bucket header zones (single-extractor page headers)
+ *   5. Running Header Classification — reclassify running headers from H to HDR
+ *   6. List-Item Sequence Confirm — ≥3 consecutive LI zones on a page
+ *   7. Duplicate Figure Rejection — overlapping FIG zones, keep higher confidence
+ *   8. Figure Cross-Validation — either extractor identifies figure/picture
+ *   9. Section-Header Resolution — resolve section-header to h-level by bbox height
+ *  10. GREEN Bucket Confirm — both extractors agree on canonical type
  */
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -795,13 +795,13 @@ export async function runAutoAnnotation(
   const allPatterns = [
     { name: 'ghost-zone-rejection', fn: applyGhostZoneRejection },
     { name: 'toci-bulk-confirm', fn: applyTociBulkConfirm },
+    { name: 'footer-artefact-rejection', fn: applyFooterArtefactRejection },
+    { name: 'header-artefact-rejection', fn: applyHeaderArtefactRejection },
     { name: 'running-header-classification', fn: applyRunningHeaderClassification },
     { name: 'list-item-sequence-confirm', fn: applyListItemSequenceConfirm },
     { name: 'duplicate-fig-rejection', fn: applyDuplicateFigRejection },
     { name: 'figure-cross-validation', fn: applyFigureCrossValidation },
     { name: 'section-header-resolution', fn: applySectionHeaderResolution },
-    { name: 'footer-artefact-rejection', fn: applyFooterArtefactRejection },
-    { name: 'header-artefact-rejection', fn: applyHeaderArtefactRejection },
     { name: 'green-bucket-confirm', fn: applyGreenBucketConfirm },
   ];
 
