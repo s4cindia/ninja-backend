@@ -351,10 +351,17 @@ ${slowestPage ? `- Slowest page: p${slowestPage.pageNumber} (${slowestPage.zones
 - Zones with AI annotation: ${la.aiCoverage.withAi} (${fmtPct(la.aiCoverage.withAi, s.totalZones)})
 - Zones without AI: ${la.aiCoverage.withoutAi} (${fmtPct(la.aiCoverage.withoutAi, s.totalZones)})
 - AI model: ${la.aiCoverage.model ?? 'none'}
-- AI decisions: CONFIRMED=${la.aiDecisionDist.confirmed}, CORRECTED=${la.aiDecisionDist.corrected}, REJECTED=${la.aiDecisionDist.rejected}
+### AI Decision Distribution
+| Decision | Count | % of AI-Annotated |
+|---|---|---|
+| CONFIRMED | ${la.aiDecisionDist.confirmed} | ${fmtPct(la.aiDecisionDist.confirmed, la.aiCoverage.withAi)} |
+| CORRECTED | ${la.aiDecisionDist.corrected} | ${fmtPct(la.aiDecisionDist.corrected, la.aiCoverage.withAi)} |
+| REJECTED | ${la.aiDecisionDist.rejected} | ${fmtPct(la.aiDecisionDist.rejected, la.aiCoverage.withAi)} |
 
 ## AI Confidence Distribution
-${la.confidenceDist.map(d => `  ${d.confidence}: ${d.count} zones`).join('\n')}
+| Confidence | Count | % of AI-Annotated |
+|---|---|---|
+${la.confidenceDist.map(d => `| ${d.confidence.toFixed(2)} | ${d.count} | ${fmtPct(d.count, la.aiCoverage.withAi)} |`).join('\n')}
 
 ## AI vs Human Agreement (${la.agreement.sameDecisionAndLabel + la.agreement.sameDecisionDiffLabel + la.agreement.differentDecision} zones with both)
 - Same decision AND label: ${la.agreement.sameDecisionAndLabel} (${fmtPct(la.agreement.sameDecisionAndLabel, la.agreement.sameDecisionAndLabel + la.agreement.sameDecisionDiffLabel + la.agreement.differentDecision)})
@@ -388,7 +395,9 @@ ${Object.entries(la.perBucket).map(([b, s]) =>
 ${q.mostCorrectedPage ? `- Most corrected page: p${q.mostCorrectedPage.page} (${q.mostCorrectedPage.corrections} corrections)` : ''}
 
 ## Zone Type Correction Rates
-${ztb.map(z => `  ${z.zoneType}: ${z.total} total, confirm ${z.confirmPct != null ? (z.confirmPct * 100).toFixed(1) + '%' : '—'}, correct ${z.correctPct != null ? (z.correctPct * 100).toFixed(1) + '%' : '—'}, reject ${z.rejectPct != null ? (z.rejectPct * 100).toFixed(1) + '%' : '—'}`).join('\n')}
+| Zone Type | Total | Confirm% | Correct% | Reject% |
+|---|---|---|---|---|
+${ztb.map(z => `| ${z.zoneType} | ${z.total} | ${z.confirmPct != null ? (z.confirmPct * 100).toFixed(1) + '%' : '—'} | ${z.correctPct != null ? (z.correctPct * 100).toFixed(1) + '%' : '—'} | ${z.rejectPct != null ? (z.rejectPct * 100).toFixed(1) + '%' : '—'} |`).join('\n')}
 
 ## Efficiency
 - Auto-annotation savings: ${fmtMs(eff.autoAnnotationSavingsMs)}

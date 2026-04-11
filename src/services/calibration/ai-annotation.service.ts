@@ -90,6 +90,30 @@ async function classifyPageWithFallback(
   };
 }
 
+/**
+ * Detect if the PDF tag tree uses heading levels that are systematically too high.
+ * Heuristic: if H1-level tags (from pdfxtLabel) appear on more than 2 distinct pages,
+ * they are likely chapter headings rather than the document title → offset = 1.
+ */
+function detectExtractorHeadingOffset(
+  zones: Array<{ pageNumber: number; pdfxtLabel: string | null }>,
+): number {
+  const pdfxtHeadingPattern = /^H(\d)$/i;
+  const h1Pages = new Set<number>();
+
+  for (const z of zones) {
+    if (!z.pdfxtLabel) continue;
+    const match = pdfxtHeadingPattern.exec(z.pdfxtLabel.trim());
+    if (match && parseInt(match[1], 10) === 1) {
+      h1Pages.add(z.pageNumber);
+    }
+  }
+
+  // H1 on >2 distinct pages → chapter-level headings, not document title
+  if (h1Pages.size > 2) return 1;
+  return 0;
+}
+
 export interface AiAnnotationOptions {
   confidenceThreshold?: number; // minimum confidence to auto-apply (default 0.97)
   model?: string;               // model override
@@ -260,6 +284,17 @@ export async function runAiAnnotation(
     // maintain consistent heading hierarchy throughout the document
     const headingContext: HeadingContext = { stack: [], maxDepth: 0 };
     const HEADING_PATTERN = /^h([1-6])$/;
+
+    // Detect heading offset from extractor labels across the FULL document,
+    // not just the current page range. On partial re-runs (pageStart/pageEnd),
+    // using only the filtered zones would undercount H1 pages and miss the offset.
+    const allZonesForOffset = (options.pageStart !== undefined || options.pageEnd !== undefined)
+      ? await prisma.zone.findMany({
+          where: { calibrationRunId, isGhost: false },
+          select: { pageNumber: true, pdfxtLabel: true },
+        })
+      : zones;
+    headingContext.extractorOffset = detectExtractorHeadingOffset(allZonesForOffset);
 
     const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
     const pagesWithZones = sortedPages.length;
