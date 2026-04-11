@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { annotationReportService } from '../services/calibration/annotation-report.service';
 import { annotationTimesheetService } from '../services/calibration/annotation-timesheet.service';
+import { generateAnnotationAnalysis, getStoredAnalysis, generateCorpusSummary } from '../services/calibration/annotation-analysis.service';
 import { logger } from '../lib/logger';
 
 function serverError(res: Response, err: unknown, code: string) {
@@ -184,6 +185,42 @@ class AnnotationReportController {
       res.json({ success: true, data: { sessionId } });
     } catch (err) {
       serverError(res, err, 'END_SESSION_FAILED');
+    }
+  }
+
+  /** POST /calibration/runs/:runId/complete — Mark annotation complete + generate analysis */
+  async markAnnotationComplete(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { runId } = req.params;
+      const result = await generateAnnotationAnalysis(runId);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      serverError(res, err, 'MARK_COMPLETE_FAILED');
+    }
+  }
+
+  /** GET /calibration/runs/:runId/analysis — Get stored analysis report */
+  async getAnalysis(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { runId } = req.params;
+      const result = await getStoredAnalysis(runId);
+      if (!result) {
+        res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'No analysis report found for this run' } });
+        return;
+      }
+      res.json({ success: true, data: result });
+    } catch (err) {
+      serverError(res, err, 'GET_ANALYSIS_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/analysis-summary — Cross-title corpus summary */
+  async getCorpusSummary(_req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const result = await generateCorpusSummary();
+      res.json({ success: true, data: result });
+    } catch (err) {
+      serverError(res, err, 'CORPUS_SUMMARY_FAILED');
     }
   }
 }

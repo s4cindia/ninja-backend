@@ -6,6 +6,13 @@ const router = Router();
 
 router.use(authenticate);
 
+// Corpus-level (static route before parameterized)
+router.get('/corpus/analysis-summary', annotationReportController.getCorpusSummary.bind(annotationReportController));
+
+// Annotation analysis
+router.post('/runs/:runId/complete', annotationReportController.markAnnotationComplete.bind(annotationReportController));
+router.get('/runs/:runId/analysis', annotationReportController.getAnalysis.bind(annotationReportController));
+
 // Annotation report
 router.get('/runs/:runId/annotation-report/export/csv', annotationReportController.exportAnnotationCsv.bind(annotationReportController));
 router.get('/runs/:runId/annotation-report/export/lineage-csv', annotationReportController.exportLineageCsv.bind(annotationReportController));
