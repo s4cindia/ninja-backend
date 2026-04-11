@@ -108,7 +108,7 @@ Deepest heading level used so far: h${headingContext.maxDepth}
 Recent headings (most recent last):
 ${headingContext.stack.slice(-10).map(h => `- h${h.level}: "${h.text}" (page ${h.page})`).join('\n')}
 ${headingContext.extractorOffset ? `
-**CRITICAL — Heading Offset Detected**: The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too high. The extractor labels do NOT reflect the correct semantic hierarchy. Always subtract ${headingContext.extractorOffset} from the extractor heading level:
+**CRITICAL — Heading Offset Detected**: The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too shallow. The extractor labels do NOT reflect the correct semantic hierarchy. Shift each extractor heading level down by ${headingContext.extractorOffset} (add ${headingContext.extractorOffset} to the level number):
 - Extractor H1 → use h${1 + headingContext.extractorOffset}
 - Extractor H2 → use h${2 + headingContext.extractorOffset}
 - Extractor H3 → use h${3 + headingContext.extractorOffset}
@@ -116,7 +116,7 @@ Do NOT confirm extractor heading levels at face value — apply the offset corre
 **Important**: Match heading levels to the established hierarchy above. Do not assign a heading level that contradicts the document structure.`}
 ` : `${headingContext?.extractorOffset ? `
 ## Heading Offset Detected
-The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too high. When classifying heading zones on this page, subtract ${headingContext.extractorOffset} from the extractor heading level:
+The PDF tag tree in this document uses heading levels that are ${headingContext.extractorOffset} level(s) too shallow. Shift each extractor heading level down by ${headingContext.extractorOffset} (add ${headingContext.extractorOffset} to the level number):
 - Extractor H1 → use h${1 + headingContext.extractorOffset}
 - Extractor H2 → use h${2 + headingContext.extractorOffset}
 - Extractor H3 → use h${3 + headingContext.extractorOffset}
