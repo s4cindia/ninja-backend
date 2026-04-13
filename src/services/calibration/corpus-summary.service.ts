@@ -519,6 +519,9 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
         },
       },
       annotationSessions: {
+        // NOTE: don't select sessionLog — it's a potentially-large JSONB blob
+        // and this aggregation never reads it. Including it multiplied the
+        // payload size on corpus-wide ranges for no benefit.
         select: {
           operatorId: true,
           startedAt: true,
@@ -529,7 +532,6 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
           zonesConfirmed: true,
           zonesCorrected: true,
           zonesRejected: true,
-          sessionLog: true,
         },
       },
       _count: { select: { issues: true } },
@@ -717,8 +719,14 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
 // ── CSV helpers ─────────────────────────────────────────────────────────
 
 function csvEscape(v: unknown): string {
-  const s = v === null || v === undefined ? '' : String(v);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  const raw = v === null || v === undefined ? '' : String(v);
+  // CSV-formula-injection guard: cells starting with =, +, -, or @ are
+  // interpreted as formulas in Excel / Google Sheets. Prepend a single quote
+  // so the cell renders as text when opened in a spreadsheet tool. This is
+  // particularly important for operator-entered fields like documentName and
+  // issue descriptions that flow into lineage/timesheet CSV exports.
+  const safe = /^[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 function csvRow(values: unknown[]): string {

@@ -924,12 +924,26 @@ export async function generateCorpusSummary(
     const operatorIds = [...new Set(run.annotationSessions.map(s => s.operatorId))];
     const aiCostUsd = run.aiAnnotationRuns.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
 
-    const costBreakdown: CostBreakdown = analysisReports?.costBreakdown ?? {
-      aiAnnotationCostUsd: aiCostUsd,
-      aiReportCostUsd: 0,
+    // Cost-parity invariant (see corpus-summary.service.ts):
+    // Annotator cost MUST be recomputed from the live `annotationSessions.activeMs`
+    // every time — never reused from the persisted `analysisReports.costBreakdown`,
+    // because computeCost() rounds that value to 2 decimal places and the rounded
+    // number then diverges from the unrounded corpus-timesheet total. The AI cost
+    // fields are still allowed to be reused from the persisted breakdown since
+    // they are derived from the AI run logs, not from annotator session time.
+    const persistedAi = analysisReports?.costBreakdown;
+    const aiAnnotationCostUsd = persistedAi?.aiAnnotationCostUsd ?? aiCostUsd;
+    const aiReportCostUsd = persistedAi?.aiReportCostUsd ?? 0;
+    const annotatorCostInrRecomputed = totalHours * ANNOTATOR_RATE_INR_PER_HOUR;
+    const costBreakdown: CostBreakdown = {
+      aiAnnotationCostUsd,
+      aiReportCostUsd,
       annotatorActiveHours: totalHours,
-      annotatorCostInr: totalHours * ANNOTATOR_RATE_INR_PER_HOUR,
-      totalCostInr: aiCostUsd * USD_TO_INR + totalHours * ANNOTATOR_RATE_INR_PER_HOUR,
+      annotatorCostInr: annotatorCostInrRecomputed,
+      totalCostInr:
+        aiAnnotationCostUsd * USD_TO_INR +
+        aiReportCostUsd * USD_TO_INR +
+        annotatorCostInrRecomputed,
     };
 
     return {
