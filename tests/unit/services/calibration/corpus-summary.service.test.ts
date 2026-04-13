@@ -284,6 +284,60 @@ describe('getTimesheetSummary', () => {
     expect(byType.get('Heading')!.avgSecondsPerZone).toBeCloseTo(900, 3);
   });
 
+  it('perZoneType ignores active time from runs with zero decided zones', async () => {
+    // Run A: 1h active, 2 decided Text zones (operator-verified).
+    // Run B: 1h active, ZERO decided zones — an abandoned/QA-only run.
+    // Regression: previously runB's 1h was apportioned across runA's zones,
+    // inflating avgSecondsPerZone from 1800s to 3600s.
+    const runA = makeRun({
+      id: 'run-A',
+      zones: [
+        zone({ type: 'Text', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+        zone({ type: 'Text', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+      ],
+      annotationSessions: [session({ activeMs: 60 * 60 * 1000 })],
+    });
+    const runB = makeRun({
+      id: 'run-B',
+      corpusDocument: { filename: 'Abandoned.pdf', pageCount: 10 },
+      zones: [], // nothing decided
+      annotationSessions: [session({ activeMs: 60 * 60 * 1000 })],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([runA, runB]);
+
+    const result = await getTimesheetSummary(RANGE);
+    const text = result.perZoneType.find(r => r.zoneType === 'Text')!;
+    expect(text.totalZones).toBe(2);
+    // 1h active / 2 zones = 1800s per zone. runB's hour does NOT contribute.
+    expect(text.avgSecondsPerZone).toBeCloseTo(1800, 3);
+  });
+
+  it('totals.wallClockHours sums per-session durations, not range span', async () => {
+    // Two 1-hour sessions 24 hours apart. A naive max(endedAt)-min(startedAt)
+    // would report ~25h. Correct answer is 2h: the gap between sessions is
+    // not work time.
+    const run = makeRun({
+      annotationSessions: [
+        session({
+          startedAt: new Date('2026-04-05T09:00:00Z'),
+          endedAt: new Date('2026-04-05T10:00:00Z'),
+          activeMs: 60 * 60 * 1000,
+        }),
+        session({
+          operatorId: 'op-bob',
+          startedAt: new Date('2026-04-06T09:00:00Z'),
+          endedAt: new Date('2026-04-06T10:00:00Z'),
+          activeMs: 60 * 60 * 1000,
+        }),
+      ],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getTimesheetSummary(RANGE);
+    expect(result.totals.wallClockHours).toBeCloseTo(2, 6);
+    expect(result.totals.activeHours).toBeCloseTo(2, 6);
+  });
+
   it('auto-annotated zones are excluded from perZoneType apportionment', async () => {
     const run = makeRun({
       zones: [

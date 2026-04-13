@@ -552,26 +552,32 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
   if (runs.length === 0) return emptyTimesheetSummary(range);
 
   // ── Totals ────────────────────────────────────────────────────────────
+  // wallClockMs is the SUM of per-session durations, never `max(endedAt)
+  // − min(startedAt)`. Spanning the entire range counts gaps between
+  // unrelated sessions as work time: two one-hour sessions on consecutive
+  // days would report ~25 wall-clock hours, which badly inflates the
+  // totals card and the PDF export. For in-progress sessions (endedAt
+  // null) we fall back to activeMs + idleMs as a best-effort duration.
   let totalActiveMs = 0;
   let totalIdleMs = 0;
+  let totalWallClockMs = 0;
   let totalZonesReviewed = 0;
-  let earliestStart: Date | null = null;
-  let latestEnd: Date | null = null;
   for (const run of runs) {
     for (const sess of run.annotationSessions) {
       totalActiveMs += sess.activeMs;
       totalIdleMs += sess.idleMs;
       totalZonesReviewed += sess.zonesReviewed;
-      if (!earliestStart || sess.startedAt < earliestStart) earliestStart = sess.startedAt;
-      if (sess.endedAt && (!latestEnd || sess.endedAt > latestEnd)) latestEnd = sess.endedAt;
+      if (sess.endedAt) {
+        totalWallClockMs += sess.endedAt.getTime() - sess.startedAt.getTime();
+      } else {
+        // Session in flight — best-effort fallback keeps totals non-negative.
+        totalWallClockMs += sess.activeMs + sess.idleMs;
+      }
     }
   }
   const totalActiveHours = totalActiveMs / 3_600_000;
   const totalIdleHours = totalIdleMs / 3_600_000;
-  const totalWallClockHours =
-    earliestStart && latestEnd
-      ? (latestEnd.getTime() - earliestStart.getTime()) / 3_600_000
-      : totalActiveHours + totalIdleHours;
+  const totalWallClockHours = totalWallClockMs / 3_600_000;
   const totalZonesPerHour = totalActiveHours > 0 ? totalZonesReviewed / totalActiveHours : 0;
   const totalCostInr = totalActiveHours * ANNOTATOR_RATE_INR_PER_HOUR;
 
@@ -648,24 +654,37 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
   });
 
   // ── Per zone type (avg seconds per zone) ──────────────────────────────
-  // Apportion totalActiveMs across zone types proportional to each type's
+  // Apportion active time across zone types proportional to each type's
   // share of reviewed zones. This matches the per-run approach of treating
   // operator time as uniformly distributed over the zones actually decided.
+  //
+  // IMPORTANT: only count active time from runs that actually contributed
+  // at least one human-decided zone. Otherwise a completed but abandoned
+  // run (annotation time, zero decided zones) would still bleed its hours
+  // into every other run's averages and inflate every avgSecondsPerZone.
   const typeCounts = new Map<string, number>();
   let decidedZoneCount = 0;
+  let decidedRunActiveMs = 0;
   for (const run of runs) {
+    let runDecidedInThisLoop = 0;
     for (const z of run.zones) {
       if (!z.decision) continue;
       if (z.verifiedBy === 'auto-annotation') continue;
+      runDecidedInThisLoop++;
       decidedZoneCount++;
       const key = z.type || 'unknown';
       typeCounts.set(key, (typeCounts.get(key) ?? 0) + 1);
+    }
+    if (runDecidedInThisLoop > 0) {
+      for (const sess of run.annotationSessions) {
+        decidedRunActiveMs += sess.activeMs;
+      }
     }
   }
   const perZoneType = [...typeCounts.entries()]
     .sort(([, a], [, b]) => b - a)
     .map(([zoneType, count]) => {
-      const shareMs = decidedZoneCount > 0 ? totalActiveMs * (count / decidedZoneCount) : 0;
+      const shareMs = decidedZoneCount > 0 ? decidedRunActiveMs * (count / decidedZoneCount) : 0;
       return {
         zoneType,
         totalZones: count,

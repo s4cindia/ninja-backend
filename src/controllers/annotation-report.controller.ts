@@ -319,7 +319,11 @@ class AnnotationReportController {
         });
         return;
       }
-      const range = resolveCorpusRange(parsed.data);
+      // Legacy contract: when no from/to is supplied, return the full
+      // history (not a synthesized last-30-days window). Only narrow the
+      // result when the caller explicitly asked for a range.
+      const hasRange = parsed.data.from !== undefined || parsed.data.to !== undefined;
+      const range = hasRange ? resolveCorpusRange(parsed.data) : undefined;
       const result = await generateCorpusSummary(range);
       res.json({ success: true, data: result });
     } catch (err) {
