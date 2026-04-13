@@ -183,6 +183,37 @@ function finalLabelOf(zone: {
   return null;
 }
 
+/**
+ * True when a zone's decision was written by an AI pipeline rather than a
+ * real human reviewer. The two known AI-authoring signals on
+ * `calibration_run_zones.verifiedBy` are the literal `auto-annotation` and
+ * any string prefixed with `ai:` (used by the zone-classification auto-
+ * annotate pass). Treating these as human review would inflate
+ * humanCorrection/rejection rates and feed AI-only decisions into
+ * aiAgreementRate / confusion-matrix computations (AI being graded
+ * against itself).
+ */
+function isAiVerifier(verifiedBy: string | null | undefined): boolean {
+  if (!verifiedBy) return false;
+  return verifiedBy === 'auto-annotation' || verifiedBy.startsWith('ai:');
+}
+
+/**
+ * Final label as set by a HUMAN reviewer. Returns null for AI-authored
+ * decisions even when `decision` is non-null. Used for lineage/agreement
+ * metrics; CSV exports keep using `finalLabelOf` directly so the raw
+ * export still surfaces AI-finalized labels for audit.
+ */
+function humanFinalLabelOf(zone: {
+  decision: string | null;
+  type: string;
+  operatorLabel: string | null;
+  verifiedBy: string | null;
+}): string | null {
+  if (isAiVerifier(zone.verifiedBy)) return null;
+  return finalLabelOf(zone);
+}
+
 /** Return a new Date set to the start of the UTC day containing `d`. */
 function startOfUtcDay(d: Date): Date {
   const copy = new Date(d);
@@ -274,6 +305,7 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
           type: true,
           operatorLabel: true,
           decision: true,
+          verifiedBy: true,
           aiLabel: true,
           aiDecision: true,
           reconciliationBucket: true,
@@ -302,13 +334,17 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
   );
   const totalZones = allZones.length;
 
-  // aiAgreementRate — of zones that have both an AI label AND a final label,
-  // how many match. Zones without either are excluded from the denominator so
-  // unreviewed / AI-untouched zones don't artificially deflate the rate.
+  // aiAgreementRate — of zones with an AI label AND a HUMAN-authored final
+  // label, how many match. Zones without either are excluded from the
+  // denominator so unreviewed / AI-untouched zones don't artificially
+  // deflate the rate. We specifically use `humanFinalLabelOf` (not
+  // `finalLabelOf`) to avoid comparing AI's prediction against its own
+  // auto-annotation — that would silently inflate agreement toward 100%
+  // for runs that went through the auto-annotate pipeline.
   let aiAgreementDenominator = 0;
   let aiAgreementNumerator = 0;
   for (const z of allZones) {
-    const final = finalLabelOf(z);
+    const final = humanFinalLabelOf(z);
     if (z.aiLabel && final) {
       aiAgreementDenominator++;
       if (z.aiLabel === final) aiAgreementNumerator++;
@@ -316,20 +352,25 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
   }
   const aiAgreementRate = aiAgreementDenominator > 0 ? aiAgreementNumerator / aiAgreementDenominator : 0;
 
-  // humanCorrection/Rejection — denominator is zones with ANY human decision.
-  const humanDecided = allZones.filter(z => z.decision != null);
+  // humanCorrection/Rejection — denominator is zones with a human decision,
+  // filtering out AI-authored decisions (verifiedBy = 'auto-annotation' or
+  // 'ai:*'). Otherwise ranges including pre-annotated runs would show
+  // inflated correction/rejection rates that don't reflect real reviewer
+  // behavior.
+  const humanDecided = allZones.filter(z => z.decision != null && !isAiVerifier(z.verifiedBy));
   const humanCorrectedCount = humanDecided.filter(z => z.decision === 'CORRECTED').length;
   const humanRejectedCount = humanDecided.filter(z => z.decision === 'REJECTED').length;
   const humanCorrectionRate = humanDecided.length > 0 ? humanCorrectedCount / humanDecided.length : 0;
   const humanRejectionRate = humanDecided.length > 0 ? humanRejectedCount / humanDecided.length : 0;
 
-  // ── Section 2: confusion matrix (AI × final) ──────────────────────────
+  // ── Section 2: confusion matrix (AI × human-final) ────────────────────
   // Only include labels that actually appear. Sorted alphabetically so the
-  // frontend receives a deterministic order.
+  // frontend receives a deterministic order. Same human-filter reasoning
+  // as aiAgreementRate above.
   const labelSet = new Set<string>();
   const pairs: Array<{ ai: string; final: string }> = [];
   for (const z of allZones) {
-    const final = finalLabelOf(z);
+    const final = humanFinalLabelOf(z);
     if (!z.aiLabel || !final) continue;
     labelSet.add(z.aiLabel);
     labelSet.add(final);
@@ -365,7 +406,10 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
     if (z.aiDecision === 'CONFIRMED') existing.aiConfirm++;
     else if (z.aiDecision === 'CORRECTED') existing.aiCorrect++;
     else if (z.aiDecision === 'REJECTED') existing.aiReject++;
-    if (z.decision === 'CORRECTED' && z.operatorLabel) {
+    // topCorrectedTo: which labels do HUMANS most often correct to. Skip
+    // AI-authored corrections so we don't leak AI self-labeling into the
+    // reviewer-intent signal.
+    if (z.decision === 'CORRECTED' && z.operatorLabel && !isAiVerifier(z.verifiedBy)) {
       existing.correctionCounts.set(z.operatorLabel, (existing.correctionCounts.get(z.operatorLabel) ?? 0) + 1);
     }
     zoneTypeMap.set(key, existing);
@@ -406,6 +450,11 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
     else if (bucket === 'RED') row = bucketFlow.red;
     if (!row) continue;
     row.total++;
+    // humanConfirmed/Corrected/Rejected counters must only track decisions
+    // written by a human reviewer. AI-written decisions have verifiedBy =
+    // 'auto-annotation' or 'ai:*' and would otherwise inflate these counts
+    // for ranges containing auto-annotated runs.
+    if (isAiVerifier(z.verifiedBy)) continue;
     if (z.decision === 'CONFIRMED') row.humanConfirmed++;
     else if (z.decision === 'CORRECTED') row.humanCorrected++;
     else if (z.decision === 'REJECTED') row.humanRejected++;
@@ -472,12 +521,14 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
     }));
 
   // ── Section 6: extractor disagreement ─────────────────────────────────
-  // Group by final label; a zone "disagrees" when docling and pdfxt labels
-  // differ. Zones missing either extractor label are excluded so the rate
-  // reflects head-to-head comparisons only.
+  // Group by human-authored final label; a zone "disagrees" when docling
+  // and pdfxt labels differ. Zones missing either extractor label are
+  // excluded so the rate reflects head-to-head comparisons only. We use
+  // the human-only label because extractor quality is measured against
+  // reviewer ground truth, not AI self-validation.
   const disagreementMap = new Map<string, { total: number; disagreements: number }>();
   for (const z of allZones) {
-    const final = finalLabelOf(z);
+    const final = humanFinalLabelOf(z);
     if (!final) continue;
     if (!z.doclingLabel || !z.pdfxtLabel) continue;
     const entry = disagreementMap.get(final) ?? { total: 0, disagreements: 0 };
@@ -654,37 +705,39 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
   });
 
   // ── Per zone type (avg seconds per zone) ──────────────────────────────
-  // Apportion active time across zone types proportional to each type's
-  // share of reviewed zones. This matches the per-run approach of treating
-  // operator time as uniformly distributed over the zones actually decided.
+  // Apportion each RUN's active time across that run's decided zone types,
+  // then sum the per-type shares across runs. Using a single corpus-wide
+  // ratio (totalActiveMs × type-share-across-corpus) blended throughput
+  // across runs with different mixes — a slow text-heavy run and a fast
+  // figure-heavy run would end up distorting each other's averages. The
+  // per-run approach preserves each run's actual throughput.
   //
-  // IMPORTANT: only count active time from runs that actually contributed
-  // at least one human-decided zone. Otherwise a completed but abandoned
-  // run (annotation time, zero decided zones) would still bleed its hours
-  // into every other run's averages and inflate every avgSecondsPerZone.
+  // Abandoned runs (completed but zero human-decided zones) contribute
+  // zero here because their per-run denominator is zero and we `continue`.
   const typeCounts = new Map<string, number>();
-  let decidedZoneCount = 0;
-  let decidedRunActiveMs = 0;
+  const typeShareMs = new Map<string, number>();
   for (const run of runs) {
-    let runDecidedInThisLoop = 0;
+    const runTypeCounts = new Map<string, number>();
+    let runDecidedCount = 0;
     for (const z of run.zones) {
       if (!z.decision) continue;
       if (z.verifiedBy === 'auto-annotation') continue;
-      runDecidedInThisLoop++;
-      decidedZoneCount++;
       const key = z.type || 'unknown';
+      runDecidedCount++;
+      runTypeCounts.set(key, (runTypeCounts.get(key) ?? 0) + 1);
       typeCounts.set(key, (typeCounts.get(key) ?? 0) + 1);
     }
-    if (runDecidedInThisLoop > 0) {
-      for (const sess of run.annotationSessions) {
-        decidedRunActiveMs += sess.activeMs;
-      }
+    if (runDecidedCount === 0) continue;
+    const runActiveMs = run.annotationSessions.reduce((s, sess) => s + sess.activeMs, 0);
+    for (const [type, n] of runTypeCounts) {
+      const share = runActiveMs * (n / runDecidedCount);
+      typeShareMs.set(type, (typeShareMs.get(type) ?? 0) + share);
     }
   }
   const perZoneType = [...typeCounts.entries()]
     .sort(([, a], [, b]) => b - a)
     .map(([zoneType, count]) => {
-      const shareMs = decidedZoneCount > 0 ? decidedRunActiveMs * (count / decidedZoneCount) : 0;
+      const shareMs = typeShareMs.get(zoneType) ?? 0;
       return {
         zoneType,
         totalZones: count,
@@ -936,6 +989,31 @@ export async function exportTimesheetPerTitleCsv(range: DateRange): Promise<stri
 const PDF_MAX_PER_OPERATOR_ROWS = 200;
 const PDF_MAX_PER_TITLE_ROWS = 1000;
 
+/**
+ * pdf-lib's StandardFonts.Helvetica is WinAnsi-encoded, which cannot render
+ * characters like `→`, `₹`, `…`, smart quotes, or any BMP codepoint outside
+ * CP1252. Passing one of those to `page.drawText` throws at render time and
+ * blows up the whole export. Sanitize every string we're about to render —
+ * both our literal labels AND any user-supplied content (operator names,
+ * document filenames) — by replacing common glyphs with ASCII equivalents
+ * and substituting `?` for anything still out of range. We intentionally
+ * don't embed a Unicode font here to keep the PDF small and avoid pulling
+ * a font asset into the backend deployment.
+ */
+function toWinAnsi(s: string): string {
+  return s
+    .replace(/\u2192/g, '->') // →
+    .replace(/\u20b9/g, 'Rs.') // ₹
+    .replace(/\u2026/g, '...') // …
+    .replace(/[\u2018\u2019]/g, "'") // ‘ ’
+    .replace(/[\u201C\u201D]/g, '"') // “ ”
+    .replace(/\u2013/g, '-') // – en dash
+    .replace(/\u2014/g, '--') // — em dash
+    // Anything still outside the printable ASCII+Latin-1 range gets `?`.
+    // Keep 0x20-0x7E (printable ASCII) and 0xA0-0xFF (Latin-1 Supplement).
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
+}
+
 export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffer> {
   const summary = await getTimesheetSummary(range);
 
@@ -950,7 +1028,9 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
   let y = pageHeight - margin;
 
   const drawText = (text: string, x: number, yPos: number, size: number, useBold = false) => {
-    page.drawText(text, {
+    // Always route through toWinAnsi — StandardFonts.Helvetica cannot
+    // render characters outside CP1252 and would throw at render time.
+    page.drawText(toWinAnsi(text), {
       x,
       y: yPos,
       size,
@@ -987,7 +1067,7 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
     `Idle Hours: ${t.idleHours.toFixed(2)}`,
     `Zones Reviewed: ${t.zonesReviewed}`,
     `Zones / Hour: ${t.zonesPerHour.toFixed(1)}`,
-    `Annotator Cost (INR): ₹${t.annotatorCostInr.toFixed(2)}`,
+    `Annotator Cost (INR): ${t.annotatorCostInr.toFixed(2)}`,
   ]) {
     drawText(line, margin + 10, y, 10);
     y -= 14;
@@ -1002,7 +1082,7 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
   for (const op of operatorRows) {
     ensureSpace(28);
     drawText(
-      `${op.operator}: ${op.zonesReviewed} zones, ${op.activeHours.toFixed(2)}h, ${op.zonesPerHour.toFixed(0)} zones/hr, ₹${op.costInr.toFixed(0)}`,
+      `${op.operator}: ${op.zonesReviewed} zones, ${op.activeHours.toFixed(2)}h, ${op.zonesPerHour.toFixed(0)} zones/hr, INR ${op.costInr.toFixed(0)}`,
       margin + 10,
       y,
       9,
@@ -1029,7 +1109,7 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
   for (const tit of titleRows) {
     ensureSpace(28);
     drawText(
-      `${tit.documentName} (${tit.pages}p): ${tit.zonesReviewed} zones, ${tit.activeHours.toFixed(2)}h, ${tit.issuesCount} issues, ₹${tit.costInr.toFixed(0)}`,
+      `${tit.documentName} (${tit.pages}p): ${tit.zonesReviewed} zones, ${tit.activeHours.toFixed(2)}h, ${tit.issuesCount} issues, INR ${tit.costInr.toFixed(0)}`,
       margin + 10,
       y,
       9,

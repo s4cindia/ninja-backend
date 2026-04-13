@@ -284,6 +284,38 @@ describe('getTimesheetSummary', () => {
     expect(byType.get('Heading')!.avgSecondsPerZone).toBeCloseTo(900, 3);
   });
 
+  it('perZoneType apportions active time per-run, not blended across runs', async () => {
+    // Two runs with very different throughput:
+    //   Run A: 1h active, 2 Text zones → 1800s/Text
+    //   Run B: 4h active, 2 Figure zones → 7200s/Figure
+    // A global ratio (5h × 2/4 = 2.5h for each type = 4500s per zone) would
+    // have blended them. Per-run apportionment keeps them distinct: Text
+    // gets its 1h and Figure gets its 4h, avg = 1800s and 7200s.
+    const runA = makeRun({
+      id: 'run-A',
+      zones: [
+        zone({ type: 'Text', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+        zone({ type: 'Text', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+      ],
+      annotationSessions: [session({ activeMs: 60 * 60 * 1000 })],
+    });
+    const runB = makeRun({
+      id: 'run-B',
+      corpusDocument: { filename: 'Figures.pdf', pageCount: 20 },
+      zones: [
+        zone({ type: 'Figure', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+        zone({ type: 'Figure', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+      ],
+      annotationSessions: [session({ activeMs: 4 * 60 * 60 * 1000 })],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([runA, runB]);
+
+    const result = await getTimesheetSummary(RANGE);
+    const byType = new Map(result.perZoneType.map(r => [r.zoneType, r]));
+    expect(byType.get('Text')!.avgSecondsPerZone).toBeCloseTo(1800, 3);
+    expect(byType.get('Figure')!.avgSecondsPerZone).toBeCloseTo(7200, 3);
+  });
+
   it('perZoneType ignores active time from runs with zero decided zones', async () => {
     // Run A: 1h active, 2 decided Text zones (operator-verified).
     // Run B: 1h active, ZERO decided zones — an abandoned/QA-only run.
@@ -552,6 +584,60 @@ describe('getLineageSummary', () => {
     const other = byCategory.get('OTHER')!;
     expect(other.titleCount).toBe(1);
     expect(other.totalPagesAffected).toBe(0);
+  });
+
+  it('AI-authored decisions do not count as human review in lineage metrics', async () => {
+    // Three zones, all with aiLabel=Text and decision=CONFIRMED:
+    //   - zone A: verifiedBy='op-alice'        → real human confirm
+    //   - zone B: verifiedBy='auto-annotation' → AI-authored, must be skipped
+    //   - zone C: verifiedBy='ai:gemini'       → AI-authored, must be skipped
+    // One human corrected Text → Heading.
+    // Expected: humanDecided = 2 (A + correction), not 4.
+    //           humanCorrectionRate = 1/2, humanRejectionRate = 0
+    //           aiAgreementRate computes over 2 human decisions:
+    //             A: ai=Text final=Text   → match
+    //             corrected: ai=Text final=Heading → no match
+    //           → 0.5
+    const run = makeRun({
+      zones: [
+        zone({ aiLabel: 'Text', type: 'Text', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+        zone({ aiLabel: 'Text', type: 'Text', decision: 'CONFIRMED', verifiedBy: 'auto-annotation' }),
+        zone({ aiLabel: 'Text', type: 'Text', decision: 'CONFIRMED', verifiedBy: 'ai:gemini' }),
+        zone({
+          aiLabel: 'Text',
+          type: 'Text',
+          decision: 'CORRECTED',
+          operatorLabel: 'Heading',
+          verifiedBy: 'op-alice',
+        }),
+      ],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getLineageSummary(RANGE);
+    expect(result.headline.humanCorrectionRate).toBeCloseTo(1 / 2, 6);
+    expect(result.headline.humanRejectionRate).toBeCloseTo(0, 6);
+    expect(result.headline.aiAgreementRate).toBeCloseTo(1 / 2, 6);
+  });
+
+  it('bucketFlow skips AI-authored decisions', async () => {
+    // Same GREEN bucket, 2 CONFIRMED zones but one is AI-authored. Only
+    // the human one should count toward humanConfirmed.
+    const run = makeRun({
+      zones: [
+        zone({ reconciliationBucket: 'GREEN', decision: 'CONFIRMED', verifiedBy: 'op-alice' }),
+        zone({
+          reconciliationBucket: 'GREEN',
+          decision: 'CONFIRMED',
+          verifiedBy: 'auto-annotation',
+        }),
+      ],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getLineageSummary(RANGE);
+    expect(result.bucketFlow.green.total).toBe(2); // bucket total still counts both
+    expect(result.bucketFlow.green.humanConfirmed).toBe(1); // but only 1 human confirm
   });
 
   it('extractorDisagreement excludes zones missing either extractor label', async () => {
