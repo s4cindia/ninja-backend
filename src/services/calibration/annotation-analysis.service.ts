@@ -816,6 +816,9 @@ export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysis
       completionNotes: true,
       // Stable ordering (see note in generateAnnotationAnalysis above).
       issues: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      // Needed to recompute annotatorCostInr from the live session source of
+      // truth — see cost-parity note below.
+      annotationSessions: { select: { activeMs: true } },
     },
   });
 
@@ -835,9 +838,31 @@ export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysis
     createdAt: iss.createdAt.toISOString(),
   }));
 
+  // Cost-parity invariant: annotatorCostInr is ALWAYS recomputed from the
+  // live session data at read time, never returned from the persisted
+  // summary. `computeCost()` rounds to 2 decimals when it writes the
+  // breakdown, so the persisted number drifts from the unrounded
+  // corpus-timesheet total by up to ₹0.01 per run. AI cost fields are
+  // allowed to be reused because they derive from AI run logs, not
+  // annotator session time.
+  const persistedCost = analysisReports.costBreakdown;
+  const totalActiveMs = run.annotationSessions.reduce((s, sess) => s + sess.activeMs, 0);
+  const annotatorActiveHours = totalActiveMs / 3_600_000;
+  const annotatorCostInr = annotatorActiveHours * ANNOTATOR_RATE_INR_PER_HOUR;
+  const recomputedCost: CostBreakdown = {
+    aiAnnotationCostUsd: persistedCost.aiAnnotationCostUsd,
+    aiReportCostUsd: persistedCost.aiReportCostUsd,
+    annotatorActiveHours,
+    annotatorCostInr,
+    totalCostInr:
+      persistedCost.aiAnnotationCostUsd * USD_TO_INR +
+      persistedCost.aiReportCostUsd * USD_TO_INR +
+      annotatorCostInr,
+  };
+
   return {
     report: analysisReports.report,
-    costBreakdown: analysisReports.costBreakdown,
+    costBreakdown: recomputedCost,
     pagesReviewed: run.pagesReviewed ?? null,
     completionNotes: run.completionNotes ?? null,
     issues,
