@@ -200,6 +200,23 @@ class AnnotationReportController {
     try {
       const { runId } = req.params;
 
+      // Check run existence FIRST so a missing runId always returns 404,
+      // regardless of whether the body is also malformed. The previous order
+      // meant {runId: nonexistent, body: bad} returned 422 instead of 404,
+      // making client-side error handling depend on payload shape.
+      const run = await prisma.calibrationRun.findUnique({
+        where: { id: runId },
+        select: { corpusDocument: { select: { pageCount: true } } },
+      });
+      if (!run) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
+        });
+        return;
+      }
+      const pageCount = run.corpusDocument?.pageCount ?? null;
+
       // Backwards-compatible body parsing: empty body or any subset is allowed.
       const rawBody = (req.body ?? {}) as Record<string, unknown>;
       const parsed = markCompleteBodySchema.safeParse(rawBody);
@@ -214,21 +231,6 @@ class AnnotationReportController {
         });
         return;
       }
-
-      // Runtime existence + bound check: return 404 for any missing run and
-      // 422 if pagesReviewed exceeds the document's page count.
-      const run = await prisma.calibrationRun.findUnique({
-        where: { id: runId },
-        select: { corpusDocument: { select: { pageCount: true } } },
-      });
-      if (!run) {
-        res.status(404).json({
-          success: false,
-          error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
-        });
-        return;
-      }
-      const pageCount = run.corpusDocument?.pageCount ?? null;
 
       if (typeof parsed.data.pagesReviewed === 'number' && pageCount != null && parsed.data.pagesReviewed > pageCount) {
         res.status(422).json({

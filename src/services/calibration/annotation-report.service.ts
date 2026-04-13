@@ -134,7 +134,9 @@ class AnnotationReportService {
           orderBy: [{ pageNumber: 'asc' }, { readingOrder: 'asc' }],
         },
         issues: {
-          orderBy: { createdAt: 'asc' },
+          // Stable ordering: createMany can assign identical createdAt timestamps,
+          // so tiebreak on id to keep reads deterministic.
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         },
       },
     });
