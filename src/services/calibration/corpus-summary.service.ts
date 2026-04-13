@@ -139,18 +139,28 @@ export interface TimesheetSummaryResult {
 
 const SYSTEM_OPERATOR_IDS = new Set(['auto-annotation', 'unknown']);
 
-/** Resolve operator UUIDs to human-readable display names. */
+/**
+ * Resolve operator UUIDs to human-readable display names.
+ *
+ * Privacy note: we intentionally do NOT fall back to the operator's email
+ * address. Corpus summaries are surfaced to tenant admins, rendered into
+ * CSV / PDF exports that may be shared with external publishers, and
+ * indexed by frontend caches — dropping an email into any of those paths
+ * would leak PII for no product benefit. When no first/last name is
+ * available we return a short UUID suffix instead, which is enough to
+ * disambiguate operators in a report without exposing personal data.
+ */
 async function resolveOperatorNames(ids: string[]): Promise<Map<string, string>> {
   const userIds = ids.filter(id => id && !SYSTEM_OPERATOR_IDS.has(id));
   const map = new Map<string, string>();
   if (userIds.length === 0) return map;
   const users = await prisma.user.findMany({
     where: { id: { in: userIds } },
-    select: { id: true, firstName: true, lastName: true, email: true },
+    select: { id: true, firstName: true, lastName: true },
   });
   for (const u of users) {
-    const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || u.id;
-    map.set(u.id, name);
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ');
+    map.set(u.id, name || `Operator ${u.id.slice(0, 8)}`);
   }
   return map;
 }
@@ -664,22 +674,34 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
     });
 
   // ── Throughput trend ──────────────────────────────────────────────────
-  // One bucket per UTC day in the range. A session is attributed to the day
-  // its `endedAt` (or `startedAt` fallback) falls on, mirroring how the
-  // per-run timesheet associates time with a wall-clock day.
+  // One bucket per UTC day. Runs are included by `completedAt`, but a
+  // session's actual wall-clock day can be earlier (long-running titles)
+  // or later (finalization sessions) than the request range. We seed the
+  // bucket map with every day in the request range so the chart always
+  // spans at least the requested window, and then add buckets on the fly
+  // for any session whose anchor day falls outside — otherwise
+  // sum(chart.activeHours) would silently disagree with totals.activeHours.
   const trendMap = new Map<
     string,
     { zonesReviewed: number; activeMs: number; operators: Set<string> }
   >();
+  const makeEmptyBucket = () => ({
+    zonesReviewed: 0,
+    activeMs: 0,
+    operators: new Set<string>(),
+  });
   for (const d of enumerateDays(range.from, range.to)) {
-    trendMap.set(ymd(d), { zonesReviewed: 0, activeMs: 0, operators: new Set<string>() });
+    trendMap.set(ymd(d), makeEmptyBucket());
   }
   for (const run of runs) {
     for (const sess of run.annotationSessions) {
       const anchor = sess.endedAt ?? sess.startedAt;
       const key = ymd(anchor);
-      const bucket = trendMap.get(key);
-      if (!bucket) continue; // session outside range — shouldn't happen given the run filter
+      let bucket = trendMap.get(key);
+      if (!bucket) {
+        bucket = makeEmptyBucket();
+        trendMap.set(key, bucket);
+      }
       bucket.zonesReviewed += sess.zonesReviewed;
       bucket.activeMs += sess.activeMs;
       bucket.operators.add(sess.operatorId);
@@ -885,6 +907,16 @@ export async function exportTimesheetPerTitleCsv(range: DateRange): Promise<stri
 
 // ── Timesheet PDF export ────────────────────────────────────────────────
 
+// Hard caps for the rendered PDF. pdf-lib builds the entire document in
+// memory before `save()`, so uncapped rendering scales with the row counts.
+// Realistic inputs sit in the low hundreds for titles and low tens for
+// operators, but we still cap here as a defense-in-depth against pathological
+// inputs (a 10-year range on a mature corpus). If a caller truly needs every
+// row they can pull the per-title / per-operator CSVs instead, which stream
+// cleanly and aren't subject to PDF layout memory.
+const PDF_MAX_PER_OPERATOR_ROWS = 200;
+const PDF_MAX_PER_TITLE_ROWS = 1000;
+
 export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffer> {
   const summary = await getTimesheetSummary(range);
 
@@ -943,11 +975,12 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
   }
   y -= 10;
 
-  // Per-operator
+  // Per-operator (capped)
   ensureSpace(60);
   drawText('Per-Operator Breakdown', margin, y, 14, true);
   y -= 18;
-  for (const op of summary.perOperator) {
+  const operatorRows = summary.perOperator.slice(0, PDF_MAX_PER_OPERATOR_ROWS);
+  for (const op of operatorRows) {
     ensureSpace(28);
     drawText(
       `${op.operator}: ${op.zonesReviewed} zones, ${op.activeHours.toFixed(2)}h, ${op.zonesPerHour.toFixed(0)} zones/hr, ₹${op.costInr.toFixed(0)}`,
@@ -957,19 +990,40 @@ export async function exportTimesheetSummaryPdf(range: DateRange): Promise<Buffe
     );
     y -= 13;
   }
+  if (summary.perOperator.length > PDF_MAX_PER_OPERATOR_ROWS) {
+    ensureSpace(28);
+    drawText(
+      `… ${summary.perOperator.length - PDF_MAX_PER_OPERATOR_ROWS} more operators truncated. Pull /per-operator-csv for the full list.`,
+      margin + 10,
+      y,
+      8,
+    );
+    y -= 13;
+  }
   y -= 10;
 
-  // Per-title
+  // Per-title (capped)
   ensureSpace(60);
   drawText('Per-Title Breakdown', margin, y, 14, true);
   y -= 18;
-  for (const tit of summary.perTitle) {
+  const titleRows = summary.perTitle.slice(0, PDF_MAX_PER_TITLE_ROWS);
+  for (const tit of titleRows) {
     ensureSpace(28);
     drawText(
       `${tit.documentName} (${tit.pages}p): ${tit.zonesReviewed} zones, ${tit.activeHours.toFixed(2)}h, ${tit.issuesCount} issues, ₹${tit.costInr.toFixed(0)}`,
       margin + 10,
       y,
       9,
+    );
+    y -= 13;
+  }
+  if (summary.perTitle.length > PDF_MAX_PER_TITLE_ROWS) {
+    ensureSpace(28);
+    drawText(
+      `… ${summary.perTitle.length - PDF_MAX_PER_TITLE_ROWS} more titles truncated. Pull /per-title-csv for the full list.`,
+      margin + 10,
+      y,
+      8,
     );
     y -= 13;
   }

@@ -22,12 +22,16 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 function serverError(res: Response, err: unknown, code: string) {
+  // Full error + stack goes to the server log for operators, but the
+  // client response only carries a stable error code + generic message.
+  // Returning `err.message` leaks internal details (Prisma constraint
+  // names, file paths, query fragments) to whoever can hit the endpoint.
   logger.error(`[AnnotationReportController] ${code}`, err);
   return res.status(500).json({
     success: false,
     error: {
       code,
-      message: err instanceof Error ? err.message : 'Internal server error',
+      message: 'Internal server error',
     },
   });
 }
