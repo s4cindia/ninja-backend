@@ -8,7 +8,16 @@ import {
   generateCorpusSummary,
   type MarkCompleteInput,
 } from '../services/calibration/annotation-analysis.service';
+import {
+  getLineageSummary,
+  getTimesheetSummary,
+  exportLineageSummaryCsv,
+  exportTimesheetPerOperatorCsv,
+  exportTimesheetPerTitleCsv,
+  exportTimesheetSummaryPdf,
+} from '../services/calibration/corpus-summary.service';
 import { markCompleteBodySchema } from '../schemas/mark-complete.schema';
+import { corpusRangeQuerySchema, resolveCorpusRange } from '../schemas/corpus-summary.schema';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -292,12 +301,158 @@ class AnnotationReportController {
   }
 
   /** GET /calibration/corpus/analysis-summary — Cross-title corpus summary */
-  async getCorpusSummary(_req: Request, res: Response, _next: NextFunction): Promise<void> {
+  async getCorpusSummary(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
-      const result = await generateCorpusSummary();
+      const parsed = corpusRangeQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(422).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid range parameters',
+            details: parsed.error.issues,
+          },
+        });
+        return;
+      }
+      const range = resolveCorpusRange(parsed.data);
+      const result = await generateCorpusSummary(range);
       res.json({ success: true, data: result });
     } catch (err) {
       serverError(res, err, 'CORPUS_SUMMARY_FAILED');
+    }
+  }
+
+  // ── Corpus Summary v2 (Backend PR #2) ─────────────────────────────────
+
+  /**
+   * Shared range-query parser. Returns `null` and writes a 422 response when
+   * parsing fails so callers can simply `if (!range) return;` and stay terse.
+   */
+  private parseCorpusRange(
+    req: Request,
+    res: Response,
+  ): { from: Date; to: Date } | null {
+    const parsed = corpusRangeQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid range parameters',
+          details: parsed.error.issues,
+        },
+      });
+      return null;
+    }
+    return resolveCorpusRange(parsed.data);
+  }
+
+  /** GET /calibration/corpus/lineage-summary */
+  async getCorpusLineageSummary(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const result = await getLineageSummary(range);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      serverError(res, err, 'CORPUS_LINEAGE_SUMMARY_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/timesheet-summary */
+  async getCorpusTimesheetSummary(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const result = await getTimesheetSummary(range);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      serverError(res, err, 'CORPUS_TIMESHEET_SUMMARY_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/lineage-summary/export/csv */
+  async exportCorpusLineageCsv(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const csv = await exportLineageSummaryCsv(range);
+      const fromStr = range.from.toISOString().slice(0, 10).replace(/-/g, '');
+      const toStr = range.to.toISOString().slice(0, 10).replace(/-/g, '');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="corpus-lineage-summary-${fromStr}-${toStr}.csv"`,
+      );
+      res.send(csv);
+    } catch (err) {
+      serverError(res, err, 'EXPORT_CORPUS_LINEAGE_CSV_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/timesheet-summary/export/per-operator-csv */
+  async exportCorpusTimesheetPerOperatorCsv(
+    req: Request,
+    res: Response,
+    _next: NextFunction,
+  ): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const csv = await exportTimesheetPerOperatorCsv(range);
+      const fromStr = range.from.toISOString().slice(0, 10).replace(/-/g, '');
+      const toStr = range.to.toISOString().slice(0, 10).replace(/-/g, '');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="corpus-timesheet-per-operator-${fromStr}-${toStr}.csv"`,
+      );
+      res.send(csv);
+    } catch (err) {
+      serverError(res, err, 'EXPORT_CORPUS_TIMESHEET_PER_OPERATOR_CSV_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/timesheet-summary/export/per-title-csv */
+  async exportCorpusTimesheetPerTitleCsv(
+    req: Request,
+    res: Response,
+    _next: NextFunction,
+  ): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const csv = await exportTimesheetPerTitleCsv(range);
+      const fromStr = range.from.toISOString().slice(0, 10).replace(/-/g, '');
+      const toStr = range.to.toISOString().slice(0, 10).replace(/-/g, '');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="corpus-timesheet-per-title-${fromStr}-${toStr}.csv"`,
+      );
+      res.send(csv);
+    } catch (err) {
+      serverError(res, err, 'EXPORT_CORPUS_TIMESHEET_PER_TITLE_CSV_FAILED');
+    }
+  }
+
+  /** GET /calibration/corpus/timesheet-summary/export/pdf */
+  async exportCorpusTimesheetPdf(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const range = this.parseCorpusRange(req, res);
+      if (!range) return;
+      const pdfBuffer = await exportTimesheetSummaryPdf(range);
+      const fromStr = range.from.toISOString().slice(0, 10).replace(/-/g, '');
+      const toStr = range.to.toISOString().slice(0, 10).replace(/-/g, '');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="corpus-timesheet-summary-${fromStr}-${toStr}.pdf"`,
+      );
+      res.send(pdfBuffer);
+    } catch (err) {
+      serverError(res, err, 'EXPORT_CORPUS_TIMESHEET_PDF_FAILED');
     }
   }
 }
