@@ -1,7 +1,17 @@
 import prisma from '../../lib/prisma';
+import type { RunIssueCategory } from '@prisma/client';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 // ── Types ───────────────────────────────────────────────────────────
+
+export interface RunIssueRow {
+  id: string;
+  category: RunIssueCategory;
+  pagesAffected: number | null;
+  description: string;
+  blocking: boolean;
+  createdAt: string;
+}
 
 export interface ZoneDetailRow {
   zoneId: string;
@@ -47,6 +57,9 @@ export interface LineageRow {
 }
 
 export interface AnnotationReport {
+  pagesReviewed: number | null;
+  completionNotes: string | null;
+  issues: RunIssueRow[];
   header: {
     documentName: string;
     documentId: string;
@@ -119,6 +132,9 @@ class AnnotationReportService {
         corpusDocument: { select: { filename: true, id: true, pageCount: true } },
         zones: {
           orderBy: [{ pageNumber: 'asc' }, { readingOrder: 'asc' }],
+        },
+        issues: {
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
@@ -257,7 +273,19 @@ class AnnotationReportService {
 
     const resolvedAnnotators = [...annotatorSet].map(id => nameMap.get(id) ?? id);
 
+    const issues: RunIssueRow[] = run.issues.map(iss => ({
+      id: iss.id,
+      category: iss.category,
+      pagesAffected: iss.pagesAffected,
+      description: iss.description,
+      blocking: iss.blocking,
+      createdAt: iss.createdAt.toISOString(),
+    }));
+
     return {
+      pagesReviewed: run.pagesReviewed ?? null,
+      completionNotes: run.completionNotes ?? null,
+      issues,
       header: {
         documentName: doc?.filename ?? 'Unknown',
         documentId: doc?.id ?? '',

@@ -2,7 +2,14 @@ import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { annotationReportService } from '../services/calibration/annotation-report.service';
 import { annotationTimesheetService } from '../services/calibration/annotation-timesheet.service';
-import { generateAnnotationAnalysis, getStoredAnalysis, generateCorpusSummary } from '../services/calibration/annotation-analysis.service';
+import {
+  generateAnnotationAnalysis,
+  getStoredAnalysis,
+  generateCorpusSummary,
+  type MarkCompleteInput,
+} from '../services/calibration/annotation-analysis.service';
+import { markCompleteBodySchema } from '../schemas/mark-complete.schema';
+import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 function serverError(res: Response, err: unknown, code: string) {
@@ -192,7 +199,56 @@ class AnnotationReportController {
   async markAnnotationComplete(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { runId } = req.params;
-      const result = await generateAnnotationAnalysis(runId);
+
+      // Backwards-compatible body parsing: empty body or any subset is allowed.
+      const rawBody = (req.body ?? {}) as Record<string, unknown>;
+      const parsed = markCompleteBodySchema.safeParse(rawBody);
+      if (!parsed.success) {
+        res.status(422).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid mark-complete payload',
+            details: parsed.error.issues,
+          },
+        });
+        return;
+      }
+
+      // Runtime bound check: pagesReviewed must not exceed the document's page count.
+      if (typeof parsed.data.pagesReviewed === 'number') {
+        const run = await prisma.calibrationRun.findUnique({
+          where: { id: runId },
+          select: { corpusDocument: { select: { pageCount: true } } },
+        });
+        if (!run) {
+          res.status(404).json({
+            success: false,
+            error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
+          });
+          return;
+        }
+        const pageCount = run.corpusDocument?.pageCount ?? null;
+        if (pageCount != null && parsed.data.pagesReviewed > pageCount) {
+          res.status(422).json({
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `pagesReviewed (${parsed.data.pagesReviewed}) exceeds document page count (${pageCount})`,
+              details: [{ path: ['pagesReviewed'], message: 'must be ≤ document page count' }],
+            },
+          });
+          return;
+        }
+      }
+
+      const input: MarkCompleteInput = {
+        pagesReviewed: parsed.data.pagesReviewed,
+        issues: parsed.data.issues,
+        notes: parsed.data.notes,
+      };
+
+      const result = await generateAnnotationAnalysis(runId, input);
       res.json({ success: true, data: result });
     } catch (err) {
       serverError(res, err, 'MARK_COMPLETE_FAILED');

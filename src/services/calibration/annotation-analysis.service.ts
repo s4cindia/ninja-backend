@@ -4,12 +4,12 @@
  * and cross-title corpus summaries using Claude Haiku.
  */
 import prisma from '../../lib/prisma';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, RunIssueCategory } from '@prisma/client';
 import { claudeService } from '../ai/claude.service';
 import { annotationReportService } from './annotation-report.service';
 import { annotationTimesheetService } from './annotation-timesheet.service';
 import { logger } from '../../lib/logger';
-import type { LineageRow, CorrectionLogRow, AnnotationReport } from './annotation-report.service';
+import type { LineageRow, CorrectionLogRow, AnnotationReport, RunIssueRow } from './annotation-report.service';
 import type { TimesheetReport } from './annotation-timesheet.service';
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -32,6 +32,22 @@ export interface CostBreakdown {
 export interface PerTitleAnalysisResult {
   report: AnalysisReport;
   costBreakdown: CostBreakdown;
+  pagesReviewed: number | null;
+  completionNotes: string | null;
+  issues: RunIssueRow[];
+}
+
+export interface MarkCompleteIssueInput {
+  category: RunIssueCategory;
+  pagesAffected?: number | null;
+  description?: string;
+  blocking?: boolean;
+}
+
+export interface MarkCompleteInput {
+  pagesReviewed?: number;
+  issues?: MarkCompleteIssueInput[];
+  notes?: string;
 }
 
 export interface CorpusSummaryResult {
@@ -471,10 +487,56 @@ Write a **Corpus Summary Analysis** report in markdown:
 Use specific numbers. Keep under 1500 words.`;
 }
 
+// ── Mark-complete persistence ───────────────────────────────────────
+
+async function persistMarkCompleteMetadata(runId: string, input: MarkCompleteInput): Promise<void> {
+  const hasPagesReviewed = typeof input.pagesReviewed === 'number';
+  const hasNotes = typeof input.notes === 'string';
+  const hasIssues = Array.isArray(input.issues);
+
+  if (!hasPagesReviewed && !hasNotes && !hasIssues) {
+    return; // backwards-compat: empty body — no metadata to persist
+  }
+
+  // Replace-all semantics for issues: delete any existing issues on this run,
+  // then create the fresh set. Operators re-complete runs and expect the latest
+  // submission to be authoritative.
+  await prisma.$transaction(async (tx) => {
+    const updateData: Prisma.CalibrationRunUpdateInput = {};
+    if (hasPagesReviewed) updateData.pagesReviewed = input.pagesReviewed;
+    if (hasNotes) updateData.completionNotes = input.notes ?? null;
+
+    if (Object.keys(updateData).length > 0) {
+      await tx.calibrationRun.update({ where: { id: runId }, data: updateData });
+    }
+
+    if (hasIssues) {
+      await tx.calibrationRunIssue.deleteMany({ where: { runId } });
+      const rows = (input.issues ?? []).map(iss => ({
+        runId,
+        category: iss.category,
+        pagesAffected: iss.pagesAffected ?? null,
+        description: iss.description ?? '',
+        blocking: iss.blocking ?? false,
+      }));
+      if (rows.length > 0) {
+        await tx.calibrationRunIssue.createMany({ data: rows });
+      }
+    }
+  });
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
-export async function generateAnnotationAnalysis(runId: string): Promise<PerTitleAnalysisResult> {
-  // 1. Fetch report data and AI run cost data in parallel
+export async function generateAnnotationAnalysis(
+  runId: string,
+  input: MarkCompleteInput = {},
+): Promise<PerTitleAnalysisResult> {
+  // 1. Persist issue log + operator-supplied completion metadata first so that
+  //    downstream report queries (getAnnotationReport) can include them.
+  await persistMarkCompleteMetadata(runId, input);
+
+  // 2. Fetch report data and AI run cost data in parallel
   const [annotationReport, timesheetReport, aiRuns] = await Promise.all([
     annotationReportService.getAnnotationReport(runId),
     annotationTimesheetService.getTimesheetReport(runId),
@@ -582,13 +644,24 @@ export async function generateAnnotationAnalysis(runId: string): Promise<PerTitl
     `cost: AI annotation $${costBreakdown.aiAnnotationCostUsd}, annotator ₹${costBreakdown.annotatorCostInr}`,
   );
 
-  return { report, costBreakdown };
+  return {
+    report,
+    costBreakdown,
+    pagesReviewed: annotationReport.pagesReviewed,
+    completionNotes: annotationReport.completionNotes,
+    issues: annotationReport.issues,
+  };
 }
 
 export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysisResult | null> {
   const run = await prisma.calibrationRun.findUnique({
     where: { id: runId },
-    select: { summary: true },
+    select: {
+      summary: true,
+      pagesReviewed: true,
+      completionNotes: true,
+      issues: { orderBy: { createdAt: 'asc' } },
+    },
   });
 
   if (!run?.summary) return null;
@@ -598,9 +671,21 @@ export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysis
 
   if (!analysisReports?.report) return null;
 
+  const issues: RunIssueRow[] = run.issues.map(iss => ({
+    id: iss.id,
+    category: iss.category,
+    pagesAffected: iss.pagesAffected,
+    description: iss.description,
+    blocking: iss.blocking,
+    createdAt: iss.createdAt.toISOString(),
+  }));
+
   return {
     report: analysisReports.report,
     costBreakdown: analysisReports.costBreakdown,
+    pagesReviewed: run.pagesReviewed ?? null,
+    completionNotes: run.completionNotes ?? null,
+    issues,
   };
 }
 

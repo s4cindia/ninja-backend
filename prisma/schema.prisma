@@ -2096,16 +2096,44 @@ model CalibrationRun {
   mapSnapshot      Json?
   isArchived       Boolean   @default(false)
   type             String    @default("CALIBRATION") // 'CALIBRATION' | 'PIKE_PDF_SPIKE'
+  pagesReviewed    Int?
+  completionNotes  String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   zones                  Zone[]
   annotationSessions     AnnotationSession[]
   aiAnnotationRuns       AiAnnotationRun[]
   annotationComparisons  AnnotationComparison[]
+  issues                 CalibrationRunIssue[]
   corpusDocument         CorpusDocument @relation(fields: [documentId], references: [id])
 
   @@index([documentId])
   @@index([completedAt])
+}
+
+model CalibrationRunIssue {
+  id            String              @id @default(uuid())
+  runId         String
+  run           CalibrationRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  category      RunIssueCategory
+  pagesAffected Int?
+  description   String
+  blocking      Boolean             @default(false)
+  createdAt     DateTime            @default(now())
+
+  @@index([runId])
+  @@index([category])
+}
+
+enum RunIssueCategory {
+  PAGE_ALIGNMENT_MISMATCH
+  INSUFFICIENT_JOINT_COVERAGE
+  LIMITED_ZONE_COVERAGE
+  UNEQUAL_EXTRACTOR_COVERAGE
+  SINGLE_EXTRACTOR_ONLY
+  ZONE_CONTENT_DIVERGENCE
+  COMPLETED_WITH_REDUCED_SCOPE
+  OTHER
 }
 
 model AnnotationSession {
