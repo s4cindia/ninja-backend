@@ -6,7 +6,33 @@ const router = Router();
 
 router.use(authenticate);
 
-// Corpus-level (static route before parameterized)
+// Corpus-level (static routes before parameterized). Order matters — more
+// specific export paths must come before their parent summary routes so the
+// router matches them first.
+router.get(
+  '/corpus/lineage-summary/export/csv',
+  annotationReportController.exportCorpusLineageCsv.bind(annotationReportController),
+);
+router.get(
+  '/corpus/timesheet-summary/export/per-operator-csv',
+  annotationReportController.exportCorpusTimesheetPerOperatorCsv.bind(annotationReportController),
+);
+router.get(
+  '/corpus/timesheet-summary/export/per-title-csv',
+  annotationReportController.exportCorpusTimesheetPerTitleCsv.bind(annotationReportController),
+);
+router.get(
+  '/corpus/timesheet-summary/export/pdf',
+  annotationReportController.exportCorpusTimesheetPdf.bind(annotationReportController),
+);
+router.get(
+  '/corpus/lineage-summary',
+  annotationReportController.getCorpusLineageSummary.bind(annotationReportController),
+);
+router.get(
+  '/corpus/timesheet-summary',
+  annotationReportController.getCorpusTimesheetSummary.bind(annotationReportController),
+);
 router.get('/corpus/analysis-summary', annotationReportController.getCorpusSummary.bind(annotationReportController));
 
 // Annotation analysis

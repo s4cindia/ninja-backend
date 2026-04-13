@@ -52,6 +52,7 @@ export interface MarkCompleteInput {
 
 export interface CorpusSummaryResult {
   summaryReport: AnalysisReport;
+  range?: { from: string; to: string };
   costSummary: {
     titles: Array<{
       documentName: string;
@@ -62,6 +63,10 @@ export interface CorpusSummaryResult {
       aiReportCostInr: number;
       annotatorCostInr: number;
       totalCostInr: number;
+      // NEW in PR #2 — feeds the corpus-summary tabs on the frontend so they
+      // can filter/sort by completion time and surface operator issue counts.
+      completedAt: string | null;
+      issuesCount: number;
     }>;
     totals: {
       documents: number;
@@ -811,6 +816,9 @@ export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysis
       completionNotes: true,
       // Stable ordering (see note in generateAnnotationAnalysis above).
       issues: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      // Needed to recompute annotatorCostInr from the live session source of
+      // truth — see cost-parity note below.
+      annotationSessions: { select: { activeMs: true } },
     },
   });
 
@@ -830,26 +838,66 @@ export async function getStoredAnalysis(runId: string): Promise<PerTitleAnalysis
     createdAt: iss.createdAt.toISOString(),
   }));
 
+  // Cost-parity invariant: annotatorCostInr is ALWAYS recomputed from the
+  // live session data at read time, never returned from the persisted
+  // summary. `computeCost()` rounds to 2 decimals when it writes the
+  // breakdown, so the persisted number drifts from the unrounded
+  // corpus-timesheet total by up to ₹0.01 per run. AI cost fields are
+  // allowed to be reused because they derive from AI run logs, not
+  // annotator session time.
+  const persistedCost = analysisReports.costBreakdown;
+  const totalActiveMs = run.annotationSessions.reduce((s, sess) => s + sess.activeMs, 0);
+  const annotatorActiveHours = totalActiveMs / 3_600_000;
+  const annotatorCostInr = annotatorActiveHours * ANNOTATOR_RATE_INR_PER_HOUR;
+  const recomputedCost: CostBreakdown = {
+    aiAnnotationCostUsd: persistedCost.aiAnnotationCostUsd,
+    aiReportCostUsd: persistedCost.aiReportCostUsd,
+    annotatorActiveHours,
+    annotatorCostInr,
+    totalCostInr:
+      persistedCost.aiAnnotationCostUsd * USD_TO_INR +
+      persistedCost.aiReportCostUsd * USD_TO_INR +
+      annotatorCostInr,
+  };
+
   return {
     report: analysisReports.report,
-    costBreakdown: analysisReports.costBreakdown,
+    costBreakdown: recomputedCost,
     pagesReviewed: run.pagesReviewed ?? null,
     completionNotes: run.completionNotes ?? null,
     issues,
   };
 }
 
-export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
-  // 1. Fetch all completed runs with stored analysis
+/**
+ * Cross-title corpus summary. Now accepts an optional `[from, to]` window
+ * (spec §Backend PR #2, §4 cost-summary additions). When no range is given,
+ * returns *all* completed runs (historical behavior preserved for legacy
+ * callers).
+ *
+ * An empty range returns a valid, zeroed response — never throws. That
+ * matches the spec's empty-range rules for the sibling lineage/timesheet
+ * endpoints so all three feel consistent.
+ */
+export async function generateCorpusSummary(
+  range?: { from: Date; to: Date },
+): Promise<CorpusSummaryResult> {
+  // 1. Fetch all completed runs with stored analysis within the window
   const completedRuns = await prisma.calibrationRun.findMany({
-    where: { completedAt: { not: null } },
+    where: {
+      completedAt: range
+        ? { gte: range.from, lte: range.to, not: null }
+        : { not: null },
+    },
     select: {
       id: true,
+      completedAt: true,
       summary: true,
       corpusDocument: { select: { filename: true, pageCount: true } },
       zones: { select: { decision: true }, where: { decision: { not: null } } },
       annotationSessions: { select: { activeMs: true, operatorId: true, zonesReviewed: true } },
       aiAnnotationRuns: { where: { status: 'COMPLETED' }, select: { estimatedCostUsd: true } },
+      _count: { select: { issues: true } },
     },
     orderBy: { completedAt: 'asc' },
   });
@@ -858,7 +906,33 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
   const analyzedRuns = completedRuns.filter(run => run.zones.length > 0);
 
   if (analyzedRuns.length === 0) {
-    throw new Error('No completed annotation runs with reviewed zones found');
+    // Spec: empty range returns a valid, zeroed response — not a throw.
+    // For legacy callers (no range supplied) we preserve the old behavior
+    // and throw so callers/tests that relied on the error keep working.
+    if (!range) {
+      throw new Error('No completed annotation runs with reviewed zones found');
+    }
+    return {
+      summaryReport: {
+        markdown: '_No completed annotation runs in the selected range._',
+        generatedAt: new Date().toISOString(),
+        model: 'claude-haiku-4.5',
+        tokenUsage: { promptTokens: 0, completionTokens: 0 },
+      },
+      range: { from: range.from.toISOString(), to: range.to.toISOString() },
+      costSummary: {
+        titles: [],
+        totals: {
+          documents: 0,
+          pages: 0,
+          zones: 0,
+          aiAnnotationCostInr: 0,
+          aiReportCostInr: 0,
+          annotatorCostInr: 0,
+          totalCostInr: 0,
+        },
+      },
+    };
   }
 
   // 2. Build per-title summaries
@@ -875,12 +949,26 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
     const operatorIds = [...new Set(run.annotationSessions.map(s => s.operatorId))];
     const aiCostUsd = run.aiAnnotationRuns.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0);
 
-    const costBreakdown: CostBreakdown = analysisReports?.costBreakdown ?? {
-      aiAnnotationCostUsd: aiCostUsd,
-      aiReportCostUsd: 0,
+    // Cost-parity invariant (see corpus-summary.service.ts):
+    // Annotator cost MUST be recomputed from the live `annotationSessions.activeMs`
+    // every time — never reused from the persisted `analysisReports.costBreakdown`,
+    // because computeCost() rounds that value to 2 decimal places and the rounded
+    // number then diverges from the unrounded corpus-timesheet total. The AI cost
+    // fields are still allowed to be reused from the persisted breakdown since
+    // they are derived from the AI run logs, not from annotator session time.
+    const persistedAi = analysisReports?.costBreakdown;
+    const aiAnnotationCostUsd = persistedAi?.aiAnnotationCostUsd ?? aiCostUsd;
+    const aiReportCostUsd = persistedAi?.aiReportCostUsd ?? 0;
+    const annotatorCostInrRecomputed = totalHours * ANNOTATOR_RATE_INR_PER_HOUR;
+    const costBreakdown: CostBreakdown = {
+      aiAnnotationCostUsd,
+      aiReportCostUsd,
       annotatorActiveHours: totalHours,
-      annotatorCostInr: totalHours * ANNOTATOR_RATE_INR_PER_HOUR,
-      totalCostInr: aiCostUsd * USD_TO_INR + totalHours * ANNOTATOR_RATE_INR_PER_HOUR,
+      annotatorCostInr: annotatorCostInrRecomputed,
+      totalCostInr:
+        aiAnnotationCostUsd * USD_TO_INR +
+        aiReportCostUsd * USD_TO_INR +
+        annotatorCostInrRecomputed,
     };
 
     return {
@@ -897,6 +985,8 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
       agreementRate: (sum.agreementRate as number | undefined) ?? null,
       aiAgreementRate: null as number | null,
       costBreakdown,
+      completedAt: run.completedAt ? run.completedAt.toISOString() : null,
+      issuesCount: run._count.issues,
     };
   });
 
@@ -927,6 +1017,8 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
     aiReportCostInr: r.costBreakdown.aiReportCostUsd * USD_TO_INR,
     annotatorCostInr: r.costBreakdown.annotatorCostInr,
     totalCostInr: r.costBreakdown.totalCostInr,
+    completedAt: r.completedAt,
+    issuesCount: r.issuesCount,
   }));
 
   const totals = {
@@ -946,6 +1038,9 @@ export async function generateCorpusSummary(): Promise<CorpusSummaryResult> {
       model: 'claude-haiku-4.5',
       tokenUsage,
     },
+    ...(range
+      ? { range: { from: range.from.toISOString(), to: range.to.toISOString() } }
+      : {}),
     costSummary: { titles: costTitles, totals },
   };
 }
