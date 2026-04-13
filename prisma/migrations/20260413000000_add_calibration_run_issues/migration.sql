@@ -34,8 +34,12 @@ DO $$ BEGIN
 END $$;
 
 -- CreateTable: CalibrationRunIssue
+-- Note: SQL-level DEFAULT gen_random_uuid()::text mirrors the pattern used in
+-- prior migrations (e.g. 20260221100000_add_editor_document_tables) so that
+-- even raw-SQL inserts or Prisma versions that do not auto-fill @default(uuid())
+-- for createMany payloads still satisfy the NOT NULL constraint.
 CREATE TABLE IF NOT EXISTS "CalibrationRunIssue" (
-  "id" TEXT NOT NULL,
+  "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
   "runId" TEXT NOT NULL,
   "category" "RunIssueCategory" NOT NULL,
   "pagesAffected" INTEGER,

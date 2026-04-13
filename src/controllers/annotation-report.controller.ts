@@ -215,19 +215,20 @@ class AnnotationReportController {
         return;
       }
 
-      // Runtime bound check: pagesReviewed must not exceed the document's page count.
-      if (typeof parsed.data.pagesReviewed === 'number') {
-        const run = await prisma.calibrationRun.findUnique({
-          where: { id: runId },
-          select: { corpusDocument: { select: { pageCount: true } } },
+      // Runtime existence + bound check: return 404 for any missing run and
+      // 422 if pagesReviewed exceeds the document's page count.
+      const run = await prisma.calibrationRun.findUnique({
+        where: { id: runId },
+        select: { corpusDocument: { select: { pageCount: true } } },
+      });
+      if (!run) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
         });
-        if (!run) {
-          res.status(404).json({
-            success: false,
-            error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
-          });
-          return;
-        }
+        return;
+      }
+      if (typeof parsed.data.pagesReviewed === 'number') {
         const pageCount = run.corpusDocument?.pageCount ?? null;
         if (pageCount != null && parsed.data.pagesReviewed > pageCount) {
           res.status(422).json({

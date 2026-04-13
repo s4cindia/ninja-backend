@@ -124,6 +124,10 @@ describe('POST /calibration/runs/:runId/complete', () => {
   });
 
   it('accepts an empty body (backwards compatibility) and invokes service with empty input', async () => {
+    mockCalibrationRunFindUnique.mockResolvedValue({
+      corpusDocument: { pageCount: 200 },
+    });
+
     const app = buildApp();
     const res = await request(app).post('/calibration/runs/run-1/complete').send({});
     expect(res.status).toBe(200);
@@ -169,6 +173,30 @@ describe('POST /calibration/runs/:runId/complete', () => {
       .send({ issues: [{ category: 'OTHER' }] });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(mockGenerateAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when run is missing even if only issues are provided (no pagesReviewed)', async () => {
+    mockCalibrationRunFindUnique.mockResolvedValue(null);
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/calibration/runs/missing/complete')
+      .send({ issues: [{ category: 'PAGE_ALIGNMENT_MISMATCH' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(mockGenerateAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when run is missing with empty body', async () => {
+    mockCalibrationRunFindUnique.mockResolvedValue(null);
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/calibration/runs/missing/complete')
+      .send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
     expect(mockGenerateAnalysis).not.toHaveBeenCalled();
   });
 
