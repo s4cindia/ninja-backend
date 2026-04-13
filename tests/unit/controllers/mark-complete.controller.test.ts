@@ -214,6 +214,23 @@ describe('POST /calibration/runs/:runId/complete', () => {
     expect(mockGenerateAnalysis).not.toHaveBeenCalled();
   });
 
+  it('returns 422 when an issue pagesAffected exceeds document page count', async () => {
+    mockCalibrationRunFindUnique.mockResolvedValue({
+      corpusDocument: { pageCount: 20 },
+    });
+
+    const app = buildApp();
+    const res = await request(app)
+      .post('/calibration/runs/run-1/complete')
+      .send({
+        issues: [{ category: 'PAGE_ALIGNMENT_MISMATCH', pagesAffected: 999 }],
+      });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details[0].path).toEqual(['issues', 0, 'pagesAffected']);
+    expect(mockGenerateAnalysis).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when run does not exist and pagesReviewed provided', async () => {
     mockCalibrationRunFindUnique.mockResolvedValue(null);
 

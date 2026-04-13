@@ -228,18 +228,36 @@ class AnnotationReportController {
         });
         return;
       }
-      if (typeof parsed.data.pagesReviewed === 'number') {
-        const pageCount = run.corpusDocument?.pageCount ?? null;
-        if (pageCount != null && parsed.data.pagesReviewed > pageCount) {
-          res.status(422).json({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: `pagesReviewed (${parsed.data.pagesReviewed}) exceeds document page count (${pageCount})`,
-              details: [{ path: ['pagesReviewed'], message: 'must be ≤ document page count' }],
-            },
-          });
-          return;
+      const pageCount = run.corpusDocument?.pageCount ?? null;
+
+      if (typeof parsed.data.pagesReviewed === 'number' && pageCount != null && parsed.data.pagesReviewed > pageCount) {
+        res.status(422).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `pagesReviewed (${parsed.data.pagesReviewed}) exceeds document page count (${pageCount})`,
+            details: [{ path: ['pagesReviewed'], message: 'must be ≤ document page count' }],
+          },
+        });
+        return;
+      }
+
+      // Per-issue bound check: an individual issue cannot claim to affect more
+      // pages than the document actually has.
+      if (pageCount != null && Array.isArray(parsed.data.issues)) {
+        for (let i = 0; i < parsed.data.issues.length; i++) {
+          const iss = parsed.data.issues[i]!;
+          if (typeof iss.pagesAffected === 'number' && iss.pagesAffected > pageCount) {
+            res.status(422).json({
+              success: false,
+              error: {
+                code: 'VALIDATION_ERROR',
+                message: `issues[${i}].pagesAffected (${iss.pagesAffected}) exceeds document page count (${pageCount})`,
+                details: [{ path: ['issues', i, 'pagesAffected'], message: 'must be ≤ document page count' }],
+              },
+            });
+            return;
+          }
         }
       }
 
