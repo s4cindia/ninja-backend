@@ -65,8 +65,13 @@ describe('markCompleteBodySchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects pagesReviewed < 1', () => {
+  it('accepts pagesReviewed = 0 (reduced-scope / aborted runs)', () => {
     const result = markCompleteBodySchema.safeParse({ pagesReviewed: 0 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects negative pagesReviewed', () => {
+    const result = markCompleteBodySchema.safeParse({ pagesReviewed: -1 });
     expect(result.success).toBe(false);
   });
 
@@ -94,9 +99,14 @@ describe('markCompleteBodySchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects extra unknown top-level keys (strict mode)', () => {
+  it('accepts and drops unknown top-level keys (backward compatibility)', () => {
     const result = markCompleteBodySchema.safeParse({ pagesReviewed: 5, bogus: true });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // Unknown keys are stripped, not preserved on the parsed output.
+      expect((result.data as Record<string, unknown>).bogus).toBeUndefined();
+      expect(result.data.pagesReviewed).toBe(5);
+    }
   });
 
   it('defaults blocking to false when omitted', () => {

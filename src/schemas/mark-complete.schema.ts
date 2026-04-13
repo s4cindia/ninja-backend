@@ -28,12 +28,16 @@ export const markCompleteIssueSchema = z
     }
   });
 
-export const markCompleteBodySchema = z
-  .object({
-    pagesReviewed: z.number().int().min(1).optional(),
-    issues: z.array(markCompleteIssueSchema).optional(),
-    notes: z.string().max(2000).optional(),
-  })
-  .strict();
+// NOTE: intentionally NOT `.strict()`. This endpoint previously ignored the
+// request body entirely, so older clients may still post legacy keys alongside
+// the new payload. We drop unknown keys silently to preserve wire-level
+// backward compatibility.
+export const markCompleteBodySchema = z.object({
+  // Allow 0 so callers can record runs that were marked complete before any
+  // page could be reviewed (reduced-scope / blocked completions).
+  pagesReviewed: z.number().int().min(0).optional(),
+  issues: z.array(markCompleteIssueSchema).optional(),
+  notes: z.string().max(2000).optional(),
+});
 
 export type MarkCompleteBody = z.infer<typeof markCompleteBodySchema>;
