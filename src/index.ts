@@ -51,6 +51,9 @@ const corsOptions = {
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
   exposedHeaders: ['Content-Disposition', 'Content-Length', 'Content-Type'],
+  // Cap preflight cache at 10 minutes so a bad preflight during an ECS task
+  // swap can't poison browser caches for the UA default (Chrome 2h, FF 24h).
+  maxAge: 600,
 };
 
 app.options('*', cors(corsOptions));
