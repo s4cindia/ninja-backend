@@ -1,7 +1,7 @@
 import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
-    bbox_to_yolo, stratified_split, CLASS_MAP, ARTIFACT_TYPES
+    bbox_to_yolo, stratified_split, resolve_label, CLASS_MAP, ARTIFACT_TYPES
 )
 
 
@@ -101,6 +101,26 @@ class TestStratifiedSplit(unittest.TestCase):
         # Should not raise — falls back to 'unknown'
         splits = stratified_split(docs)
         self.assertEqual(len(splits), 6)
+
+
+class TestResolveLabel(unittest.TestCase):
+
+    def test_returns_operator_label(self):
+        """Human-verified operatorLabel is returned."""
+        self.assertEqual(resolve_label({'operatorLabel': 'table'}), 'table')
+
+    def test_returns_none_without_operator_label(self):
+        """Zones without operatorLabel return None (excluded from export)."""
+        self.assertIsNone(resolve_label({'type': 'paragraph', 'aiLabel': 'figure', 'aiConfidence': 0.99}))
+
+    def test_returns_none_for_empty_zone(self):
+        """Empty zone dict returns None."""
+        self.assertIsNone(resolve_label({}))
+
+    def test_ai_only_zone_excluded(self):
+        """AI label with high confidence but no human review returns None."""
+        zone = {'aiLabel': 'table', 'aiConfidence': 0.98, 'aiDecision': 'ACCEPTED'}
+        self.assertIsNone(resolve_label(zone))
 
 
 class TestConstants(unittest.TestCase):

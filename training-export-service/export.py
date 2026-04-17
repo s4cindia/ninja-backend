@@ -16,27 +16,15 @@ CLASS_MAP = {
 }
 ARTIFACT_TYPES = {'header', 'footer'}
 
-# Minimum AI confidence to use aiLabel in training export
-AI_CONFIDENCE_THRESHOLD = 0.95
 
-
-def resolve_label(zone: dict, ai_threshold: float = AI_CONFIDENCE_THRESHOLD) -> str:
-    """Resolve the best label for a zone using priority:
-    operatorLabel > aiLabel (if high confidence) > type.
-    Zones with decision=REJECTED are excluded upstream."""
-    # 1. Human-verified label (highest trust)
+def resolve_label(zone: dict) -> str | None:
+    """Return the zone label ONLY if a human operator verified it.
+    Returns None for zones without human review — these are
+    excluded from training export to prevent unverified labels
+    from corrupting ground truth."""
     if zone.get('operatorLabel'):
         return zone['operatorLabel']
-
-    # 2. AI label if confidence meets threshold
-    ai_label = zone.get('aiLabel')
-    ai_conf = zone.get('aiConfidence', 0) or 0
-    ai_decision = zone.get('aiDecision')
-    if ai_label and ai_conf >= ai_threshold and ai_decision != 'REJECTED':
-        return ai_label
-
-    # 3. Fall back to extraction type
-    return zone.get('type', 'paragraph')
+    return None
 
 
 def render_page_to_jpg(
@@ -146,7 +134,7 @@ def export_corpus(
                aiLabel, aiConfidence, aiDecision }]
     }
 
-    Label priority: operatorLabel > aiLabel (conf >= 0.95) > type
+    Label source: operatorLabel only (human-verified ground truth)
 
     Returns stats dict.
     """
@@ -175,13 +163,18 @@ def export_corpus(
             by_page.setdefault(pn, []).append(z)
 
         for page_num, page_zones in by_page.items():
-            # Filter out rejected zones and artifact-only pages
-            content_zones = [
-                z for z in page_zones
-                if z.get('decision') != 'REJECTED'
-                and z.get('aiDecision') != 'REJECTED'
-                and resolve_label(z) not in ARTIFACT_TYPES
-            ]
+            # Only include zones with human-verified labels
+            # Skip rejected zones, unreviewed zones, and artifact-only pages
+            content_zones = []
+            for z in page_zones:
+                if z.get('decision') == 'REJECTED':
+                    continue
+                label = resolve_label(z)
+                if label is None:
+                    continue  # No human review — skip
+                if label.lower() in ARTIFACT_TYPES:
+                    continue
+                content_zones.append(z)
             if not content_zones:
                 skipped_pages += 1
                 continue
