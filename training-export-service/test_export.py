@@ -105,16 +105,26 @@ class TestStratifiedSplit(unittest.TestCase):
 
 class TestConstants(unittest.TestCase):
 
-    def test_class_map_has_8_types(self):
-        self.assertEqual(len(CLASS_MAP), 8)
+    def test_class_map_covers_all_11_classes(self):
+        """All 11 YOLO classes (0-10) must be represented in CLASS_MAP values."""
+        self.assertEqual(sorted(set(CLASS_MAP.values())), list(range(11)))
 
-    def test_class_indices_are_0_to_7(self):
-        self.assertEqual(
-            sorted(CLASS_MAP.values()), list(range(8))
-        )
+    def test_ui_abbreviations_map_correctly(self):
+        """UI dropdown labels must map to the same class as their canonical form."""
+        self.assertEqual(CLASS_MAP['hdr'], CLASS_MAP['header'])      # 6
+        self.assertEqual(CLASS_MAP['ftr'], CLASS_MAP['footer'])      # 7
+        self.assertEqual(CLASS_MAP['li'], CLASS_MAP['list-item'])    # 8
+        self.assertEqual(CLASS_MAP['fn'], CLASS_MAP['footnote'])     # 5
+        self.assertEqual(CLASS_MAP['fig'], CLASS_MAP['figure'])      # 3
+        self.assertEqual(CLASS_MAP['tbl'], CLASS_MAP['table'])       # 2
+        self.assertEqual(CLASS_MAP['cap'], CLASS_MAP['caption'])     # 4
+        self.assertEqual(CLASS_MAP['p'], CLASS_MAP['paragraph'])     # 0
 
-    def test_artifact_types_excluded_from_tags(self):
-        # header and footer are artifacts
+    def test_heading_levels_map_to_section_header(self):
+        for h in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+            self.assertEqual(CLASS_MAP[h], CLASS_MAP['section-header'])
+
+    def test_artifact_types_in_class_map(self):
         for t in ARTIFACT_TYPES:
             self.assertIn(t, CLASS_MAP)
 
