@@ -10,6 +10,9 @@ CLASS_MAP = {
     'toci': 9, 'formula': 10,
     # Map heading levels → section-header for YOLO
     'h1': 1, 'h2': 1, 'h3': 1, 'h4': 1, 'h5': 1, 'h6': 1,
+    # Map UI dropdown abbreviations (stored as operatorLabel)
+    'p': 0, 'hdr': 6, 'ftr': 7, 'li': 8,
+    'fn': 5, 'fig': 3, 'tbl': 2, 'cap': 4,
 }
 ARTIFACT_TYPES = {'header', 'footer'}
 
