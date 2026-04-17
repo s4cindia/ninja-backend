@@ -37,6 +37,7 @@ router.get('/corpus/analysis-summary', annotationReportController.getCorpusSumma
 
 // Annotation analysis
 router.post('/runs/:runId/complete', annotationReportController.markAnnotationComplete.bind(annotationReportController));
+router.get('/runs/:runId/analysis-status', annotationReportController.getAnalysisStatus.bind(annotationReportController));
 router.get('/runs/:runId/analysis', annotationReportController.getAnalysis.bind(annotationReportController));
 
 // Annotation report

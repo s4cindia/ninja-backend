@@ -6,6 +6,9 @@ import {
   generateAnnotationAnalysis,
   getStoredAnalysis,
   generateCorpusSummary,
+  persistMarkCompleteMetadata,
+  setAnalysisFailed,
+  getAnalysisStatus as analysisGetStatus,
   type MarkCompleteInput,
 } from '../services/calibration/annotation-analysis.service';
 import {
@@ -208,18 +211,26 @@ class AnnotationReportController {
     }
   }
 
-  /** POST /calibration/runs/:runId/complete — Mark annotation complete + generate analysis */
+  /**
+   * POST /calibration/runs/:runId/complete
+   *
+   * Returns 202 immediately. Mark-complete metadata (pagesReviewed,
+   * completionNotes, issues) is persisted synchronously; the Claude-powered
+   * analysis report runs in the background. FE polls
+   * GET /runs/:runId/analysis-status until COMPLETED.
+   */
   async markAnnotationComplete(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
       const { runId } = req.params;
 
       // Check run existence FIRST so a missing runId always returns 404,
-      // regardless of whether the body is also malformed. The previous order
-      // meant {runId: nonexistent, body: bad} returned 422 instead of 404,
-      // making client-side error handling depend on payload shape.
+      // regardless of whether the body is also malformed.
       const run = await prisma.calibrationRun.findUnique({
         where: { id: runId },
-        select: { corpusDocument: { select: { pageCount: true } } },
+        select: {
+          summary: true,
+          corpusDocument: { select: { pageCount: true } },
+        },
       });
       if (!run) {
         res.status(404).json({
@@ -228,6 +239,17 @@ class AnnotationReportController {
         });
         return;
       }
+
+      // Guard: don't re-trigger while analysis is already running.
+      const summary = run.summary as Record<string, unknown> | null;
+      if (summary?.analysisStatus === 'RUNNING') {
+        res.status(202).json({
+          success: true,
+          data: { status: 'ALREADY_RUNNING' as const },
+        });
+        return;
+      }
+
       const pageCount = run.corpusDocument?.pageCount ?? null;
 
       // Backwards-compatible body parsing: empty body or any subset is allowed.
@@ -282,10 +304,50 @@ class AnnotationReportController {
         notes: parsed.data.notes,
       };
 
-      const result = await generateAnnotationAnalysis(runId, input);
-      res.json({ success: true, data: result });
+      // Persist metadata + set analysisStatus = RUNNING synchronously.
+      await persistMarkCompleteMetadata(runId, input);
+
+      // Return 202 immediately — analysis runs in the background.
+      res.status(202).json({
+        success: true,
+        data: { status: 'RUNNING' as const },
+      });
+
+      // Fire-and-forget: generate analysis report via Claude Haiku.
+      generateAnnotationAnalysis(runId, input).catch((err) => {
+        logger.error(
+          `[annotation-analysis] Background analysis failed for ${runId}: ${(err as Error).message}`,
+        );
+        setAnalysisFailed(runId, (err as Error).message).catch((e) =>
+          logger.warn(`[annotation-analysis] Failed to mark FAILED for ${runId}`, e),
+        );
+      });
     } catch (err) {
       serverError(res, err, 'MARK_COMPLETE_FAILED');
+    }
+  }
+
+  /** GET /calibration/runs/:runId/analysis-status — Poll analysis progress */
+  async getAnalysisStatus(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { runId } = req.params;
+
+      const run = await prisma.calibrationRun.findUnique({
+        where: { id: runId },
+        select: { id: true },
+      });
+      if (!run) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
+        });
+        return;
+      }
+
+      const status = await analysisGetStatus(runId);
+      res.json({ success: true, data: status });
+    } catch (err) {
+      serverError(res, err, 'ANALYSIS_STATUS_FAILED');
     }
   }
 

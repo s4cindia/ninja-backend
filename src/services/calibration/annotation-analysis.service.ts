@@ -635,6 +635,108 @@ function mergeMarkCompleteMetadata(
   };
 }
 
+// ── Analysis status helpers ────────────────────────────────────────
+
+export type AnalysisStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'NONE';
+
+/**
+ * Read the current analysis status from the run's summary JSON.
+ * Returns the full result when COMPLETED so the FE can poll a single endpoint.
+ */
+export async function getAnalysisStatus(runId: string): Promise<{
+  status: AnalysisStatus;
+  error?: string;
+  result?: PerTitleAnalysisResult;
+}> {
+  const run = await prisma.calibrationRun.findUnique({
+    where: { id: runId },
+    select: { summary: true },
+  });
+  if (!run) return { status: 'NONE' };
+
+  const summary = run.summary as Record<string, unknown> | null;
+  const status = (summary?.analysisStatus as AnalysisStatus) ?? 'NONE';
+
+  if (status === 'COMPLETED') {
+    const result = await getStoredAnalysis(runId);
+    return { status, result: result ?? undefined };
+  }
+  if (status === 'FAILED') {
+    return { status, error: (summary?.analysisError as string) ?? 'Unknown error' };
+  }
+  return { status };
+}
+
+/**
+ * Persist mark-complete metadata (pagesReviewed, completionNotes, issues)
+ * and set analysisStatus = RUNNING on the summary JSON — all in a single
+ * transaction. Called immediately before the 202 response so the metadata
+ * is durable even if the background analysis fails.
+ */
+export async function persistMarkCompleteMetadata(
+  runId: string,
+  input: MarkCompleteInput,
+): Promise<void> {
+  const existing = await prisma.calibrationRun.findUnique({
+    where: { id: runId },
+    select: { summary: true },
+  });
+
+  const mergedSummary = {
+    ...((existing?.summary as Record<string, unknown>) ?? {}),
+    analysisStatus: 'RUNNING',
+  };
+
+  const updateData: Prisma.CalibrationRunUpdateInput = {
+    completedAt: new Date(),
+    summary: mergedSummary as unknown as Prisma.InputJsonValue,
+  };
+  if (typeof input.pagesReviewed === 'number') {
+    updateData.pagesReviewed = input.pagesReviewed;
+  }
+  if (typeof input.notes === 'string') {
+    updateData.completionNotes = input.notes;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.calibrationRun.update({ where: { id: runId }, data: updateData });
+
+    if (Array.isArray(input.issues)) {
+      await tx.calibrationRunIssue.deleteMany({ where: { runId } });
+      const rows = input.issues.map(iss => ({
+        runId,
+        category: iss.category,
+        pagesAffected: iss.pagesAffected ?? null,
+        description: iss.description ?? '',
+        blocking: iss.blocking ?? false,
+      }));
+      if (rows.length > 0) {
+        await tx.calibrationRunIssue.createMany({ data: rows });
+      }
+    }
+  });
+}
+
+/**
+ * Mark analysis as FAILED in the summary JSON. Called from the fire-and-forget
+ * catch handler so the FE can show the failure reason.
+ */
+export async function setAnalysisFailed(runId: string, errorMsg: string): Promise<void> {
+  const existing = await prisma.calibrationRun.findUnique({
+    where: { id: runId },
+    select: { summary: true },
+  });
+  const mergedSummary = {
+    ...((existing?.summary as Record<string, unknown>) ?? {}),
+    analysisStatus: 'FAILED',
+    analysisError: errorMsg,
+  };
+  await prisma.calibrationRun.update({
+    where: { id: runId },
+    data: { summary: mergedSummary as unknown as Prisma.InputJsonValue },
+  });
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
 export async function generateAnnotationAnalysis(
@@ -752,6 +854,8 @@ export async function generateAnnotationAnalysis(
   const mergedSummary = {
     ...((existingSummary?.summary as Record<string, unknown>) ?? {}),
     analysisReports: { report, costBreakdown },
+    analysisStatus: 'COMPLETED',
+    analysisError: undefined,
   };
 
   await prisma.$transaction(async (tx) => {
