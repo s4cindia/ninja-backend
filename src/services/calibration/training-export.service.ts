@@ -49,7 +49,7 @@ export interface ExportOptions {
 export async function getTrainingExportData(
   options: ExportOptions = {},
 ): Promise<TrainingExportResult> {
-  const { documentIds, minConfidence = 0, includeAiOnly = true } = options;
+  const { documentIds, minConfidence = 0, includeAiOnly = false } = options;
 
   // Get corpus documents with calibration runs
   const whereDoc: Record<string, unknown> = {};
