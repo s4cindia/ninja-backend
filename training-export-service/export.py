@@ -147,6 +147,7 @@ def export_corpus(
     total_images = 0
     total_labels = 0
     skipped_pages = 0
+    skipped_no_human_review = 0
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
 
     for doc in documents:
@@ -176,6 +177,10 @@ def export_corpus(
                     continue
                 content_zones.append(z)
             if not content_zones:
+                # Check if skip is because no zones had human review
+                has_any_human = any(z.get('operatorLabel') for z in page_zones)
+                if not has_any_human:
+                    skipped_no_human_review += 1
                 skipped_pages += 1
                 continue
 
@@ -252,6 +257,7 @@ def export_corpus(
         'totalImages':  total_images,
         'totalLabels':  total_labels,
         'skippedPages': skipped_pages,
+        'skippedNoHumanReview': skipped_no_human_review,
         'splitSizes':   split_sizes,
         'datasetYaml':  str(out / 'dataset.yaml'),
     }
