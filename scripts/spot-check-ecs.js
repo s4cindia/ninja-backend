@@ -7,7 +7,7 @@
  *
  * Usage (via ECS run-task command override):
  *   node scripts/spot-check-ecs.js list
- *   node scripts/spot-check-ecs.js pick  <runId> [pages=30] [seed=42]
+ *   node scripts/spot-check-ecs.js pick  <runId> [pages=30] [seed=42] [maxPage]
  *   node scripts/spot-check-ecs.js reset <runId>
  *   node scripts/spot-check-ecs.js compare <runId>
  *   node scripts/spot-check-ecs.js restore <runId>
@@ -152,7 +152,7 @@ async function cmdList() {
 // ---------------------------------------------------------------------------
 // pick — select random pages and snapshot baseline
 // ---------------------------------------------------------------------------
-async function cmdPick(runId, numPages, seed) {
+async function cmdPick(runId, numPages, seed, maxPage) {
   // Verify run exists
   const run = await prisma.calibrationRun.findUnique({
     where: { id: runId },
@@ -173,7 +173,14 @@ async function cmdPick(runId, numPages, seed) {
     distinct: ['pageNumber'],
     orderBy: { pageNumber: 'asc' },
   });
-  const annotatedPages = pages.map(p => p.pageNumber);
+  let annotatedPages = pages.map(p => p.pageNumber);
+
+  // Filter by maxPage if specified (exclude pages beyond the annotated range)
+  if (maxPage != null) {
+    const beforeFilter = annotatedPages.length;
+    annotatedPages = annotatedPages.filter(p => p <= maxPage);
+    console.log(`maxPage filter: ${maxPage} (kept ${annotatedPages.length} of ${beforeFilter} pages)`);
+  }
 
   if (annotatedPages.length === 0) {
     console.error('ERROR: No annotated pages found for this run.');
@@ -233,6 +240,7 @@ async function cmdPick(runId, numPages, seed) {
     title: run.corpusDocument?.filename || null,
     createdAt: new Date().toISOString(),
     seed,
+    maxPage: maxPage || null,
     selectedPages,
     totalAnnotatedPages: annotatedPages.length,
     totalZonesOnPages: baseline.length,
@@ -574,10 +582,15 @@ Spot-check annotation quality for YOLO training data.
 
 Usage:
   node scripts/spot-check-ecs.js list
-  node scripts/spot-check-ecs.js pick  <runId> [pages] [seed]
+  node scripts/spot-check-ecs.js pick  <runId> [pages] [seed] [maxPage]
   node scripts/spot-check-ecs.js reset <runId>
   node scripts/spot-check-ecs.js compare <runId>
   node scripts/spot-check-ecs.js restore <runId>
+
+Arguments for pick:
+  pages   - Number of pages to sample (default: 30)
+  seed    - Random seed for reproducibility (default: random)
+  maxPage - Only sample from pages <= this number (default: no limit)
 
 Plan files stored at: s3://${S3_BUCKET}/${S3_PREFIX}/spot-check-<runId>.json
     `);
@@ -593,8 +606,9 @@ Plan files stored at: s3://${S3_BUCKET}/${S3_PREFIX}/spot-check-<runId>.json
         const runId = args[0];
         const numPages = parseInt(args[1]) || 30;
         const seed = args[2] != null ? parseInt(args[2]) : null;
-        if (!runId) { console.error('Usage: pick <runId> [pages] [seed]'); process.exit(1); }
-        await cmdPick(runId, numPages, seed);
+        const maxPage = args[3] != null ? parseInt(args[3]) : null;
+        if (!runId) { console.error('Usage: pick <runId> [pages] [seed] [maxPage]'); process.exit(1); }
+        await cmdPick(runId, numPages, seed, maxPage);
         break;
       }
       case 'reset': {
