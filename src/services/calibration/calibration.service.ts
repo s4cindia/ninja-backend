@@ -142,6 +142,16 @@ export async function runCalibration(
   const matches = matchZones(doclingZones, pdfxtZones);
   const summary = summariseCalibrationRun(matches);
 
+  const zonePages = new Set<number>([
+    ...matches.map((m) => (m.doclingZone ?? m.pdfxtZone!).pageNumber),
+    ...pdfxtGhostZones.map((gz) => gz.pageNumber),
+  ]);
+  const totalPages = doc.pageCount ?? 0;
+  const emptyPages: number[] = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (!zonePages.has(p)) emptyPages.push(p);
+  }
+
   // 5. Persist in transaction
   await prisma.$transaction([
     prisma.calibrationRun.update({
@@ -156,6 +166,9 @@ export async function runCalibration(
         durationMs: Date.now() - startTime,
         summary: {
           ...summary,
+          pagesWithZonesCount: zonePages.size,
+          emptyPageCount: emptyPages.length,
+          emptyPages,
           ...(pdfxtExtractionStats ? { pdfxtExtractionStats } : {}),
           ...(doclingFailed ? { doclingFailed: true } : {}),
         } as unknown as Prisma.InputJsonValue,
