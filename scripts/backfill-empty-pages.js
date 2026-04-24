@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Backfill script — populate CalibrationRun.summary.{emptyPages, emptyPageCount,
  * pagesWithZonesCount} for runs that completed before the fields were introduced.
@@ -63,7 +62,9 @@ async function main() {
           }
         : {}),
     },
-    include: {
+    select: {
+      id: true,
+      summary: true,
       corpusDocument: { select: { id: true, filename: true, pageCount: true } },
     },
     orderBy: { runDate: 'asc' },
@@ -102,7 +103,13 @@ async function main() {
         select: { pageNumber: true },
         distinct: ['pageNumber'],
       });
-      const zonePages = new Set(zoneRows.map((r) => r.pageNumber));
+      // Clamp to [1, pageCount] so pagesWithZonesCount stays consistent with
+      // emptyPages/emptyPageCount — matches calibration.service.ts.
+      const zonePages = new Set(
+        zoneRows
+          .map((r) => r.pageNumber)
+          .filter((p) => Number.isInteger(p) && p >= 1 && p <= pageCount),
+      );
 
       const patch = computeEmptyPages(pageCount, zonePages);
       const nextSummary = { ...existingSummary, ...patch };
