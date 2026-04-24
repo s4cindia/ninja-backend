@@ -72,8 +72,9 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package*.json ./
 
-# Copy operational scripts (spot-check, etc.)
+# Copy operational scripts (spot-check, backfills, etc.)
 COPY scripts/spot-check-ecs.js ./scripts/
+COPY scripts/backfill-empty-pages.js ./scripts/
 
 # Rebuild native modules for Debian (sharp, prisma) and set permissions
 RUN npm rebuild sharp --platform=linux --arch=x64 \
