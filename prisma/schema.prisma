@@ -55,6 +55,7 @@ model User {
   remediationItemsFixer RemediationItem[] @relation("RemediationFixer")
   editorSessions      EditorSession[]
   notifications       Notification[]
+  emptyPageReviews    EmptyPageReview[]
 
   @@index([tenantId])
   @@index([email])
@@ -2105,6 +2106,7 @@ model CalibrationRun {
   aiAnnotationRuns       AiAnnotationRun[]
   annotationComparisons  AnnotationComparison[]
   issues                 CalibrationRunIssue[]
+  emptyPageReviews       EmptyPageReview[]
   corpusDocument         CorpusDocument @relation(fields: [documentId], references: [id])
 
   @@index([documentId])
@@ -2134,6 +2136,32 @@ enum RunIssueCategory {
   ZONE_CONTENT_DIVERGENCE
   COMPLETED_WITH_REDUCED_SCOPE
   OTHER
+}
+
+enum EmptyPageCategory {
+  LEGIT_EMPTY
+  DETECTION_FAILURE
+  UNSURE
+}
+
+model EmptyPageReview {
+  id               String            @id @default(uuid())
+  calibrationRunId String
+  calibrationRun   CalibrationRun    @relation(fields: [calibrationRunId], references: [id], onDelete: Cascade)
+  pageNumber       Int
+  category         EmptyPageCategory
+  pageType         String
+  expectedContent  String?           @db.Text
+  notes            String?           @db.Text
+  annotatorId      String
+  annotator        User              @relation(fields: [annotatorId], references: [id])
+  reviewedAt       DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  createdAt        DateTime          @default(now())
+
+  @@unique([calibrationRunId, pageNumber])
+  @@index([calibrationRunId])
+  @@index([annotatorId])
 }
 
 model AnnotationSession {
