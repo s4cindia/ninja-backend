@@ -13,9 +13,24 @@ import { getAnnotationFeedback, getAggregateFeedback } from '../services/calibra
 import { getTrainingExportData } from '../services/calibration/training-export.service';
 import { runBulkAiAnnotation } from '../services/calibration/bulk-ai-annotation.service';
 import { getAggregateComparison } from '../services/calibration/aggregate-comparison.service';
+import {
+  deleteEmptyPageReview,
+  getEmptyPageReview,
+  listEmptyPageReviews,
+  upsertEmptyPageReview,
+} from '../controllers/empty-page-review.controller';
 import { logger } from '../lib/logger';
 
 const router = Router();
+
+// --- Empty page review sub-router ---
+// Mounted at /api/v1/calibration/runs/:runId/empty-page-reviews
+const emptyPageReviewRouter = Router({ mergeParams: true });
+emptyPageReviewRouter.get('/', authenticate, listEmptyPageReviews);
+emptyPageReviewRouter.get('/:pageNumber', authenticate, getEmptyPageReview);
+emptyPageReviewRouter.put('/:pageNumber', authenticate, upsertEmptyPageReview);
+emptyPageReviewRouter.delete('/:pageNumber', authenticate, deleteEmptyPageReview);
+router.use('/runs/:runId/empty-page-reviews', emptyPageReviewRouter);
 
 const runBodySchema = z.object({
   documentId: z.string().min(1),
