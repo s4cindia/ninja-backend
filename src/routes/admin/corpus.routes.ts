@@ -9,6 +9,7 @@ import {
   registerCorpusDocument,
   listCorpusDocuments,
 } from '../../services/corpus/corpus-upload.service';
+import { putCorpusDocumentStatus } from '../../controllers/corpus-status.controller';
 import { s3Client } from '../../services/s3.service';
 import { config } from '../../config';
 import prisma from '../../lib/prisma';
@@ -583,6 +584,9 @@ router.post('/corpus/documents/:id/tagged-pdf', authenticate, (req: Request, res
     }
   });
 });
+
+// PUT /api/v1/admin/corpus/documents/:documentId/status — Status Tracker edit
+router.put('/corpus/documents/:documentId/status', authenticate, putCorpusDocumentStatus);
 
 // POST /api/v1/admin/corpus/reset-documents
 // Deletes selected corpus documents and their related data (zones, runs, sessions, jobs)
