@@ -19,6 +19,7 @@ import {
   listEmptyPageReviews,
   upsertEmptyPageReview,
 } from '../controllers/empty-page-review.controller';
+import { getCorpusStatus } from '../controllers/corpus-status.controller';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -31,6 +32,9 @@ emptyPageReviewRouter.get('/:pageNumber', authenticate, getEmptyPageReview);
 emptyPageReviewRouter.put('/:pageNumber', authenticate, upsertEmptyPageReview);
 emptyPageReviewRouter.delete('/:pageNumber', authenticate, deleteEmptyPageReview);
 router.use('/runs/:runId/empty-page-reviews', emptyPageReviewRouter);
+
+// GET /api/v1/calibration/corpus-status — Status Tracker tab list endpoint
+router.get('/corpus-status', authenticate, getCorpusStatus);
 
 const runBodySchema = z.object({
   documentId: z.string().min(1),

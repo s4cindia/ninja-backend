@@ -2078,6 +2078,13 @@ model CorpusDocument {
   trainingSplit   String?   // "train" | "val" | "test" | null
   taggedPdfPath   String?   // S3 path to operator-uploaded pdfxt-tagged PDF
   uploadedAt      DateTime  @default(now())
+  // Status Tracker — operator-editable per-document state. Override values come from
+  // the AnnotationStatus union (NOT_STARTED|IN_PROGRESS|PENDING_REVIEW|COMPLETED|BLOCKED);
+  // when null, the row's status is derived from pagesAnnotated vs pageCount.
+  statusNote      String?   @db.Text
+  statusOverride  String?
+  statusUpdatedAt DateTime?
+  statusUpdatedBy String?
   bootstrapJobs   ZoneBootstrapJob[]
   calibrationRuns CalibrationRun[]
 }
