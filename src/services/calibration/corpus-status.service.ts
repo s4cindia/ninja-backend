@@ -125,23 +125,33 @@ export async function listCorpusStatus(): Promise<CorpusStatusListResponse> {
   //      reviewing, including pages where they agreed with every AI label
   //      (which leave no operatorVerified=true zones behind).
   //   2. distinct count of pageNumbers with operatorVerified=true is the
-  //      fallback for runs still in progress (no Mark Complete yet).
-  // For documents with multiple completed runs we trust the most recently
-  // completed one — that's the latest pass over the document.
-  const pagesReviewedByDoc = new Map<string, number>();
-  const latestCompletedAtByDoc = new Map<string, Date>();
+  //      fallback for runs still in progress (no Mark Complete yet) AND
+  //      for documents whose latest completed run is missing
+  //      `pagesReviewed` (e.g. completed via a legacy / partial-bodied
+  //      client) — using a stale `pagesReviewed` from an older run would
+  //      mask the latest reality.
+  // We pick the latest completed run by completedAt regardless of whether
+  // it carries pagesReviewed; pagesReviewedByDoc is populated only when
+  // that latest run actually has a usable pagesReviewed value.
+  const latestCompletedRunByDoc = new Map<
+    string,
+    { completedAt: Date; pagesReviewed: number | null }
+  >();
   for (const r of runs) {
-    if (
-      r.completedAt == null ||
-      r.pagesReviewed == null ||
-      r.pagesReviewed < 0
-    ) {
-      continue;
+    if (r.completedAt == null) continue;
+    const current = latestCompletedRunByDoc.get(r.documentId);
+    if (!current || r.completedAt > current.completedAt) {
+      latestCompletedRunByDoc.set(r.documentId, {
+        completedAt: r.completedAt,
+        pagesReviewed: r.pagesReviewed,
+      });
     }
-    const current = latestCompletedAtByDoc.get(r.documentId);
-    if (!current || r.completedAt > current) {
-      latestCompletedAtByDoc.set(r.documentId, r.completedAt);
-      pagesReviewedByDoc.set(r.documentId, r.pagesReviewed);
+  }
+
+  const pagesReviewedByDoc = new Map<string, number>();
+  for (const [docId, latest] of latestCompletedRunByDoc) {
+    if (latest.pagesReviewed != null && latest.pagesReviewed >= 0) {
+      pagesReviewedByDoc.set(docId, latest.pagesReviewed);
     }
   }
 

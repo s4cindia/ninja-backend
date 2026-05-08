@@ -325,6 +325,49 @@ describe('listCorpusStatus', () => {
     expect(result.rows[0].status).toBe('IN_PROGRESS');
   });
 
+  it('falls back to verified-zone count when the LATEST completed run is missing pagesReviewed even if an older run has it', async () => {
+    // Regression: don't let a stale pagesReviewed from an older run mask
+    // the latest reality (e.g. legacy/partial-bodied Mark Complete client).
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'multi-run.pdf',
+        pageCount: 295,
+        uploadedAt: new Date('2026-02-01'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run-old',
+        documentId: 'doc1',
+        pagesReviewed: 100,
+        completedAt: new Date('2026-04-01T10:00:00Z'),
+      },
+      {
+        id: 'run-new',
+        documentId: 'doc1',
+        pagesReviewed: null,
+        completedAt: new Date('2026-05-01T10:00:00Z'),
+      },
+    ]);
+    mQueryRaw.mockResolvedValue([
+      { calibrationRunId: 'run-old', pagesAnnotated: BigInt(80) },
+      { calibrationRunId: 'run-new', pagesAnnotated: BigInt(200) },
+    ]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    // Must not pick up the stale 100 from run-old; falls back to the
+    // verified-zone aggregate across runs (80 + 200 = 280).
+    expect(result.rows[0].pagesAnnotated).toBe(280);
+    expect(result.rows[0].status).toBe('IN_PROGRESS');
+  });
+
   it('falls back to verified-zone count when run has pagesReviewed but no completedAt (defensive)', async () => {
     mDocFindMany.mockResolvedValue([
       {
