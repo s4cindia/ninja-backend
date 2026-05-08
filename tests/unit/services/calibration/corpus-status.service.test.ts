@@ -223,6 +223,201 @@ describe('listCorpusStatus', () => {
     const result = await listCorpusStatus();
     expect(result.rows[0].status).toBe('COMPLETED');
   });
+
+  it('uses pagesReviewed from the most recent completed run when both signals exist', async () => {
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'aulakh.pdf',
+        pageCount: 295,
+        uploadedAt: new Date('2026-03-01'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run1',
+        documentId: 'doc1',
+        pagesReviewed: 295,
+        completedAt: new Date('2026-05-01T12:00:00Z'),
+      },
+    ]);
+    // The verified-zone heuristic would say 50, but pagesReviewed wins.
+    mQueryRaw.mockResolvedValue([
+      { calibrationRunId: 'run1', pagesAnnotated: BigInt(50) },
+    ]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    expect(result.rows[0].pagesAnnotated).toBe(295);
+    expect(result.rows[0].status).toBe('COMPLETED');
+  });
+
+  it('most-recent-completed run wins when there are multiple completed runs', async () => {
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'multi-run.pdf',
+        pageCount: 295,
+        uploadedAt: new Date('2026-02-01'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run-old',
+        documentId: 'doc1',
+        pagesReviewed: 100,
+        completedAt: new Date('2026-04-01T10:00:00Z'),
+      },
+      {
+        id: 'run-new',
+        documentId: 'doc1',
+        pagesReviewed: 295,
+        completedAt: new Date('2026-05-01T10:00:00Z'),
+      },
+    ]);
+    mQueryRaw.mockResolvedValue([]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    expect(result.rows[0].pagesAnnotated).toBe(295);
+    expect(result.rows[0].status).toBe('COMPLETED');
+  });
+
+  it('falls back to verified-zone count when no run has pagesReviewed', async () => {
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'inflight.pdf',
+        pageCount: 200,
+        uploadedAt: new Date('2026-04-15'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run1',
+        documentId: 'doc1',
+        pagesReviewed: null,
+        completedAt: null,
+      },
+    ]);
+    mQueryRaw.mockResolvedValue([
+      { calibrationRunId: 'run1', pagesAnnotated: BigInt(50) },
+    ]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    expect(result.rows[0].pagesAnnotated).toBe(50);
+    expect(result.rows[0].status).toBe('IN_PROGRESS');
+  });
+
+  it('falls back to verified-zone count when the LATEST completed run is missing pagesReviewed even if an older run has it', async () => {
+    // Regression: don't let a stale pagesReviewed from an older run mask
+    // the latest reality (e.g. legacy/partial-bodied Mark Complete client).
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'multi-run.pdf',
+        pageCount: 295,
+        uploadedAt: new Date('2026-02-01'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run-old',
+        documentId: 'doc1',
+        pagesReviewed: 100,
+        completedAt: new Date('2026-04-01T10:00:00Z'),
+      },
+      {
+        id: 'run-new',
+        documentId: 'doc1',
+        pagesReviewed: null,
+        completedAt: new Date('2026-05-01T10:00:00Z'),
+      },
+    ]);
+    mQueryRaw.mockResolvedValue([
+      { calibrationRunId: 'run-old', pagesAnnotated: BigInt(80) },
+      { calibrationRunId: 'run-new', pagesAnnotated: BigInt(200) },
+    ]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    // Must not pick up the stale 100 from run-old; falls back to the
+    // verified-zone aggregate across runs (80 + 200 = 280).
+    expect(result.rows[0].pagesAnnotated).toBe(280);
+    expect(result.rows[0].status).toBe('IN_PROGRESS');
+  });
+
+  it('falls back to verified-zone count when run has pagesReviewed but no completedAt (defensive)', async () => {
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'half-marked.pdf',
+        pageCount: 200,
+        uploadedAt: new Date('2026-04-15'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([
+      {
+        id: 'run1',
+        documentId: 'doc1',
+        pagesReviewed: 295,
+        completedAt: null,
+      },
+    ]);
+    mQueryRaw.mockResolvedValue([
+      { calibrationRunId: 'run1', pagesAnnotated: BigInt(75) },
+    ]);
+    mSessionGroupBy.mockResolvedValue([]);
+    mZoneGroupBy.mockResolvedValue([]);
+    mUserFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    expect(result.rows[0].pagesAnnotated).toBe(75);
+    expect(result.rows[0].status).toBe('IN_PROGRESS');
+  });
+
+  it('document with no runs at all stays NOT_STARTED', async () => {
+    mDocFindMany.mockResolvedValue([
+      {
+        id: 'doc1',
+        filename: 'fresh.pdf',
+        pageCount: 100,
+        uploadedAt: new Date('2026-05-08'),
+        statusNote: null,
+        statusOverride: null,
+        statusUpdatedAt: null,
+      },
+    ]);
+    mRunFindMany.mockResolvedValue([]);
+
+    const result = await listCorpusStatus();
+    expect(result.rows[0].pagesAnnotated).toBe(0);
+    expect(result.rows[0].status).toBe('NOT_STARTED');
+  });
 });
 
 describe('updateDocumentStatus', () => {

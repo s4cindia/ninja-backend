@@ -95,10 +95,17 @@ export async function listCorpusStatus(): Promise<CorpusStatusListResponse> {
 
   const documentIds = documents.map((d) => d.id);
 
-  // Map of documentId -> [calibrationRunIds]
+  // Map of documentId -> [calibrationRunIds]. Also pull pagesReviewed +
+  // completedAt so we can prefer the operator-stated page count from Mark
+  // Complete over the operatorVerified-zone heuristic below.
   const runs = await prisma.calibrationRun.findMany({
     where: { documentId: { in: documentIds } },
-    select: { id: true, documentId: true },
+    select: {
+      id: true,
+      documentId: true,
+      pagesReviewed: true,
+      completedAt: true,
+    },
   });
 
   const runIdsByDoc = new Map<string, string[]>();
@@ -111,6 +118,42 @@ export async function listCorpusStatus(): Promise<CorpusStatusListResponse> {
   }
 
   const allRunIds = runs.map((r) => r.id);
+
+  // Page-count signal precedence:
+  //   1. operator-stated `pagesReviewed` (set via Mark Complete) is
+  //      authoritative — it's what the annotator actually committed to
+  //      reviewing, including pages where they agreed with every AI label
+  //      (which leave no operatorVerified=true zones behind).
+  //   2. distinct count of pageNumbers with operatorVerified=true is the
+  //      fallback for runs still in progress (no Mark Complete yet) AND
+  //      for documents whose latest completed run is missing
+  //      `pagesReviewed` (e.g. completed via a legacy / partial-bodied
+  //      client) — using a stale `pagesReviewed` from an older run would
+  //      mask the latest reality.
+  // We pick the latest completed run by completedAt regardless of whether
+  // it carries pagesReviewed; pagesReviewedByDoc is populated only when
+  // that latest run actually has a usable pagesReviewed value.
+  const latestCompletedRunByDoc = new Map<
+    string,
+    { completedAt: Date; pagesReviewed: number | null }
+  >();
+  for (const r of runs) {
+    if (r.completedAt == null) continue;
+    const current = latestCompletedRunByDoc.get(r.documentId);
+    if (!current || r.completedAt > current.completedAt) {
+      latestCompletedRunByDoc.set(r.documentId, {
+        completedAt: r.completedAt,
+        pagesReviewed: r.pagesReviewed,
+      });
+    }
+  }
+
+  const pagesReviewedByDoc = new Map<string, number>();
+  for (const [docId, latest] of latestCompletedRunByDoc) {
+    if (latest.pagesReviewed != null && latest.pagesReviewed >= 0) {
+      pagesReviewedByDoc.set(docId, latest.pagesReviewed);
+    }
+  }
 
   // Aggregations only run when there is at least one calibration run; otherwise
   // every doc is NOT_STARTED with zero hours.
@@ -205,7 +248,12 @@ export async function listCorpusStatus(): Promise<CorpusStatusListResponse> {
   const userById = new Map(users.map((u) => [u.id, u]));
 
   const rows: CorpusStatusRow[] = documents.map((doc, i) => {
-    const pagesAnnotated = pagesAnnotatedByDoc.get(doc.id) ?? 0;
+    // operator-stated pagesReviewed (set via Mark Complete) is authoritative;
+    // the verified-zone count is a fallback for runs still in progress.
+    const pagesAnnotated =
+      pagesReviewedByDoc.get(doc.id) ??
+      pagesAnnotatedByDoc.get(doc.id) ??
+      0;
     const overrideRaw = doc.statusOverride;
     const statusOverride =
       overrideRaw && isAnnotationStatus(overrideRaw) ? overrideRaw : null;
