@@ -57,10 +57,14 @@ export interface PublisherProfile {
   signals: ProfileSignal[];
 }
 
-/** Convenience: the "no profile detected" result. */
-export const NO_PROFILE: PublisherProfile = {
+/**
+ * Convenience: the "no profile detected" result. Frozen so accidental
+ * `NO_PROFILE.signals.push(...)` or property reassignment doesn't corrupt
+ * the shared constant for subsequent callers.
+ */
+export const NO_PROFILE: PublisherProfile = Object.freeze({
   publisher: null,
   imprint: null,
   confidence: 'low',
-  signals: [],
-};
+  signals: Object.freeze([] as ProfileSignal[]),
+}) as PublisherProfile;

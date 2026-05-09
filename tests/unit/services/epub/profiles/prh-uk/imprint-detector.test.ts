@@ -115,6 +115,41 @@ describe('detectPrhImprint', () => {
     expect(result.imprint).toBe('penguin');
   });
 
+  it('does NOT pin a Vintage book as Penguin just because it carries the shared penguin.co.uk a11y URL', () => {
+    // Regression: every PRH-UK EPUB's accessibility-summary metadata
+    // references penguin.co.uk/accessibility regardless of imprint. That
+    // bare URL must not count as Penguin-imprint evidence — the
+    // imprint-specific signal here is `vintage-books.co.uk`.
+    const result = detectPrhImprint({
+      opfContent: `${PRH_PUBLISHER_OPF}
+        <meta property="schema:accessibilitySummary">
+          ... visit us at penguin.co.uk/accessibility ...
+        </meta>`,
+      filePaths: [
+        'EPUB/vintage/copyright.xhtml',
+        'EPUB/vintage/title.xhtml',
+      ],
+      contentSample: 'Find more at www.vintage-books.co.uk',
+    });
+    expect(result.imprint).toBe('vintage');
+  });
+
+  it('does NOT pin a generic PRH book as Penguin just because of the shared penguin.co.uk a11y URL', () => {
+    // No imprint-specific path/text/url evidence — only the publisher-level
+    // signal plus the shared accessibility URL. Should resolve to 'unknown',
+    // not 'penguin'.
+    const result = detectPrhImprint({
+      opfContent: `${PRH_PUBLISHER_OPF}
+        <meta property="schema:accessibilitySummary">
+          ... penguin.co.uk/accessibility ...
+        </meta>`,
+      filePaths: ['EPUB/xhtml/cover.xhtml'],
+      contentSample: '',
+    });
+    expect(result.isPrhUk).toBe(true);
+    expect(result.imprint).toBe('unknown');
+  });
+
   it('handles empty input without throwing', () => {
     const result = detectPrhImprint({
       opfContent: '',

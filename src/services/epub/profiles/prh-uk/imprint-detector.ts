@@ -56,12 +56,18 @@ const IMPRINT_PATTERNS: Record<PrhImprint, {
 }> = {
   penguin: {
     filePathFragments: ['penguin-cover', 'penguin/title', 'penguin/brand'],
-    // "Penguin" alone matches inside "Penguin Random House", which is the
-    // publisher, not the imprint — every PRH-UK book carries that string in
-    // dc:publisher regardless of which line published it. Use negative
-    // lookahead so we don't pin "penguin" the imprint to that phrase.
-    textFragments: [/\bpenguin\b(?!\s+random\s+house)/i, /font-penguin/i],
-    urlFragments: ['penguin.co.uk', 'penguinukbooks'],
+    // Match the actual imprint name "Penguin Books" (used as the [DIVISION]
+    // value in PRH adult copyright pages) and the imprint-specific CSS font
+    // family. Bare "penguin" is too noisy — it appears inside both
+    // "Penguin Random House" (the publisher, on every PRH EPUB) and the
+    // shared `penguin.co.uk` URL (used in the standard accessibility-summary
+    // metadata across all imprints).
+    textFragments: [/\bpenguin\s+books\b/i, /font-penguin/i],
+    // Bare `penguin.co.uk` is shared across PRH-UK (every PRH book's standard
+    // accessibility-summary points to penguin.co.uk/accessibility) — it is
+    // NOT a Penguin-imprint-only signal. The unique social handle is what
+    // distinguishes Penguin from sibling imprints.
+    urlFragments: ['penguinukbooks'],
   },
   puffin: {
     filePathFragments: ['puffin-cover', 'puffin/', 'puffin_logo'],

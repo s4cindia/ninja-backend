@@ -58,9 +58,11 @@ export async function detectPublisherProfile(
 async function readOpf(zip: JSZip): Promise<string> {
   const containerXml = await zip.file('META-INF/container.xml')?.async('text');
   if (!containerXml) return '';
-  const match = containerXml.match(/rootfile[^>]+full-path="([^"]+)"/);
+  // XML allows either quote style around attribute values; accept both.
+  const match = containerXml.match(/rootfile[^>]+full-path=(?:"([^"]+)"|'([^']+)')/);
   if (!match) return '';
-  const opfPath = match[1];
+  const opfPath = match[1] ?? match[2];
+  if (!opfPath) return '';
   return (await zip.file(opfPath)?.async('text')) ?? '';
 }
 

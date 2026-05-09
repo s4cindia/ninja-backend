@@ -86,6 +86,26 @@ describe('detectPublisherProfile', () => {
     expect(profile.signals).toEqual([]);
   });
 
+  it('parses container.xml with single-quoted full-path attribute', async () => {
+    // Regression: XML allows either quote style; some authoring tools emit
+    // single quotes. Detection must still succeed.
+    const zip = new JSZip();
+    zip.file(
+      'META-INF/container.xml',
+      `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path='EPUB/package.opf' media-type='application/oebps-package+xml'/>
+  </rootfiles>
+</container>`,
+    );
+    zip.file('EPUB/package.opf', PENGUIN_OPF);
+    zip.file('EPUB/prh_core_assets/styles/basestyles.css', 'body { }');
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const profile = await detectPublisherProfile(buffer);
+    expect(profile.publisher).toBe('PRH-UK');
+  });
+
   it('handles a missing OPF gracefully', async () => {
     // Build a zip with only the container.xml — no OPF file at the referenced path.
     const zip = new JSZip();
