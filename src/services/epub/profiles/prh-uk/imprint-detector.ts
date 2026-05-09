@@ -107,6 +107,15 @@ const PRH_CORE_ASSETS_PATH_FRAGMENT = 'prh_core_assets';
 const PRH_UK_LOGO_PATH_FRAGMENT = 'prh_uk_logo';
 
 /**
+ * Minimum imprint score required to actually pin an imprint. A single weak
+ * signal (e.g. one CSS reference to a font filename also present in shared
+ * brand assets) shouldn't override the safer 'unknown' default. Real PRH
+ * books with imprint-specific cover/title paths score >= 4 from path
+ * matches alone; multi-imprint demo docs score 0–1.
+ */
+const IMPRINT_SCORE_THRESHOLD = 2;
+
+/**
  * Detect whether an EPUB carries PRH-UK profile signals. Pure function over
  * the inputs — no I/O.
  */
@@ -150,6 +159,14 @@ export function detectPrhImprint(
 
   // ── Imprint-level signals ────────────────────────────────────────────
   // Score each imprint independently so the caller can pick the strongest.
+  // Paths under prh_core_assets/ are excluded from imprint scoring because
+  // that subtree is shared brand infrastructure (fonts, the PRH UK logo)
+  // rather than imprint-specific content. The Technical Guide ships every
+  // imprint's brand fonts in prh_core_assets/fonts/ as a markup-demo doc;
+  // a real PRH book ships only its own imprint's fonts in EPUB/fonts/.
+  const imprintPaths = paths.filter(
+    (p) => !p.toLowerCase().includes(PRH_CORE_ASSETS_PATH_FRAGMENT),
+  );
   const imprintScores = new Map<PrhImprint, number>();
 
   for (const [imprintRaw, patterns] of Object.entries(IMPRINT_PATTERNS)) {
@@ -159,7 +176,7 @@ export function detectPrhImprint(
     let score = 0;
 
     for (const fragment of patterns.filePathFragments) {
-      if (paths.some((p) => p.toLowerCase().includes(fragment.toLowerCase()))) {
+      if (imprintPaths.some((p) => p.toLowerCase().includes(fragment.toLowerCase()))) {
         score += 2;
         signals.push({
           id: `imprint-path-${imprint}`,
@@ -195,7 +212,9 @@ export function detectPrhImprint(
   }
 
   // Pick the imprint with the highest score; ties resolve by first-seen
-  // (Object.entries preserves insertion order in modern engines).
+  // (Object.entries preserves insertion order in modern engines). A score
+  // below IMPRINT_SCORE_THRESHOLD is treated as 'unknown' rather than the
+  // top imprint — a single weak text/CSS reference shouldn't pin a doc.
   let topImprint: PrhImprint | null = null;
   let topScore = 0;
   for (const [imprint, score] of imprintScores) {
@@ -204,6 +223,8 @@ export function detectPrhImprint(
       topImprint = imprint;
     }
   }
+  const selectedImprint: PrhImprint | null =
+    topScore >= IMPRINT_SCORE_THRESHOLD ? topImprint : null;
 
   const isPrhUk = signals.length > 0;
 
@@ -211,7 +232,7 @@ export function detectPrhImprint(
   // the imprint as 'unknown' so callers know we recognised PRH but couldn't
   // pin down the line.
   const imprint: PrhImprint | null = isPrhUk
-    ? topImprint ?? 'unknown'
+    ? selectedImprint ?? 'unknown'
     : null;
 
   return { isPrhUk, imprint, signals };
