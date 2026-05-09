@@ -9,6 +9,8 @@ import prisma from '../../lib/prisma';
 import config from '../../config/index';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
+import { detectPublisherProfile } from './profiles/profile-detector.service';
+import type { PublisherProfile } from './profiles/types';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 import { getFixType } from '../../constants/fix-classification';
 import { s3Service } from '../s3.service';
@@ -117,6 +119,12 @@ interface EpubAuditResult {
     manualRequired: number;
   };
   accessibilityMetadata: AceResult['metadata'] | null;
+  /**
+   * Publisher profile detected for this EPUB (e.g. PRH UK + Penguin imprint).
+   * `publisher: null` means no profile matched — downstream PRH validators
+   * (PR2+) should be skipped in that case.
+   */
+  publisherProfile: PublisherProfile;
   coverage: {
     totalFiles: number;
     filesScanned: number;
@@ -354,6 +362,15 @@ class EpubAuditService {
       logger.info(`  Quick-fixable: ${classificationStats.quickFixable}`);
       logger.info(`  Manual required: ${classificationStats.manualRequired}`);
 
+      // Detect publisher profile (e.g. PRH UK + imprint). Best-effort —
+      // detection failures fall back to NO_PROFILE without breaking the audit.
+      const publisherProfile = await detectPublisherProfile(buffer);
+      if (publisherProfile.publisher) {
+        logger.info(
+          `[Profile] Detected ${publisherProfile.publisher} (imprint=${publisherProfile.imprint}, confidence=${publisherProfile.confidence}, signals=${publisherProfile.signals.length})`,
+        );
+      }
+
       // Calculate coverage
       const coverage = this.calculateCoverage(buffer);
       logger.info(`📊 Audit Coverage: ${coverage.filesScanned}/${coverage.totalFiles} files (${coverage.percentage}%)`);
@@ -380,6 +397,7 @@ class EpubAuditService {
         summaryBySource,
         classificationStats,
         accessibilityMetadata: aceResult?.metadata || null,
+        publisherProfile,
         coverage,
         auditedAt: new Date(),
       };
