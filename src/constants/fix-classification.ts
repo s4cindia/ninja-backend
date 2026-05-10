@@ -30,12 +30,17 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   // PRH UK profile per-XHTML — adds both lang AND xml:lang to <html>
   // (stricter than EPUB-SEM-001 which only requires lang)
   'PRH-XHTML-XML-LANG',
+  // PRH UK profile image — adds role="presentation" to decorative
+  // images (alt="") that are missing the role attribute.
+  'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE',
   // PRH-SPINE-* codes are detect-only in PR2 — spine reordering is risky
   // enough that we want operator review before mutating spine entries.
   // PRH-NAV-* codes are detect-only in PR3 — nav-doc structure changes
   // need operator review (rewriting hidden landmarks can confuse readers).
   // PRH-XHTML-TITLE-EMPTY-OR-GENERIC is detect-only — choosing the right
   // chapter/section title is an editorial decision, not mechanical.
+  // PRH-COVER-ALT-EMPTY is quickfix-only — operator supplies the alt
+  // text (e.g. "Cover for [Book Title]"); we don't fabricate it.
 ]);
 
 export function getAutoFixableCodes(): Set<string> {
@@ -58,6 +63,10 @@ export const QUICK_FIXABLE_CODES = new Set([
   'EPUB-SEM-003',
   'LANDMARK-UNIQUE',
   'EPUB-TYPE-HAS-MATCHING-ROLE',
+  // PRH-COVER-ALT-EMPTY is NOT in this set yet: it falls back to
+  // manual classification (severity=serious so it still stands out in
+  // the UI). Wiring the quick-fix controller route to call addAltText
+  // for the cover image is a small follow-up — out of scope for PR4.
 ]);
 
 // Map ACE codes to equivalent JS Auditor codes to prevent duplicate processing

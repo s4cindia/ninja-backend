@@ -31,6 +31,7 @@ import {
   fixTdmReservation,
   fixA11ySummaryUrl,
   fixXmlLang,
+  fixDecorativeRole,
 } from './profiles/prh-uk';
 
 /**
@@ -1711,6 +1712,12 @@ class RemediationService {
             fixResults = adaptPrhResults(await fixXmlLang(zip), {
               filePath: '(multiple xhtml files)',
               modificationType: 'add_html_lang',
+            });
+            break;
+          case 'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE':
+            fixResults = adaptPrhResults(await fixDecorativeRole(zip), {
+              filePath: '(multiple xhtml files)',
+              modificationType: 'add_presentation_role',
             });
             break;
           default:

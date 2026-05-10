@@ -13,6 +13,7 @@ import {
   fixTdmReservation,
   fixA11ySummaryUrl,
   fixXmlLang,
+  fixDecorativeRole,
 } from './profiles/prh-uk';
 
 const comparisonService = new ComparisonService(prisma);
@@ -159,6 +160,11 @@ class AutoRemediationService {
     // Walks every XHTML/HTML file ensuring <html> carries BOTH lang and
     // xml:lang. Stricter than EPUB-SEM-001 (which only requires lang).
     'PRH-XHTML-XML-LANG': async (zip) => fixXmlLang(zip),
+    // ── PRH UK profile image fix ─────────────────────────────────────────
+    // Adds role="presentation" to <img alt=""> elements that lack it.
+    // Complements addDecorativeAltAttributes which only emits the role
+    // when also adding a missing alt.
+    'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE': async (zip) => fixDecorativeRole(zip),
   };
 
   async runAutoRemediation(

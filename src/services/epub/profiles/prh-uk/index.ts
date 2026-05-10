@@ -20,3 +20,4 @@ export {
   fixA11ySummaryUrl,
 } from './remediators/metadata-remediator';
 export { fixXmlLang } from './remediators/xhtml-remediator';
+export { fixDecorativeRole } from './remediators/image-remediator';
