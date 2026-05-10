@@ -150,6 +150,46 @@ describe('detectPrhImprint', () => {
     expect(result.imprint).toBe('unknown');
   });
 
+  it('does NOT pin imprint to font files inside prh_core_assets/ (multi-imprint demo doc)', () => {
+    // Regression for the staging smoke test: the PRH Technical Guide ships
+    // every PRH imprint's brand fonts in prh_core_assets/fonts/ as a
+    // markup-demo doc. Those font filenames are shared brand infrastructure,
+    // not imprint-specific evidence. A real PRH book ships only its own
+    // imprint's fonts in EPUB/fonts/. The detector must therefore exclude
+    // prh_core_assets/ paths from imprint scoring.
+    const result = detectPrhImprint({
+      opfContent: PRH_PUBLISHER_OPF,
+      filePaths: [
+        'EPUB/prh_core_assets/fonts/ladybird563-regular.otf',
+        'EPUB/prh_core_assets/fonts/ladybird563-bold.otf',
+        'EPUB/prh_core_assets/fonts/PufBkyR.otf',
+        'EPUB/prh_core_assets/images/prh_uk_logo.jpg',
+        'EPUB/xhtml/cover.xhtml',
+      ],
+      contentSample: '',
+    });
+    expect(result.isPrhUk).toBe(true);
+    expect(result.imprint).toBe('unknown');
+    // The publisher-level signals should still fire (logo, OPF text).
+    expect(result.signals.find((s) => s.id === 'publisher-text-opf')).toBeDefined();
+    expect(result.signals.find((s) => s.id === 'prh-core-assets-path')).toBeDefined();
+    // Crucially, NO imprint-path signals for ladybird from the font files.
+    expect(result.signals.find((s) => s.id === 'imprint-path-ladybird')).toBeUndefined();
+  });
+
+  it('does NOT pin imprint when only a single weak text reference matches (sub-threshold)', () => {
+    // Regression: a passing CSS reference to "puffinBeaky" in shared styles
+    // (text match, score=1) should not pin to puffin without corroborating
+    // path/URL evidence reaching the threshold (>= 2).
+    const result = detectPrhImprint({
+      opfContent: PRH_PUBLISHER_OPF,
+      filePaths: ['EPUB/xhtml/cover.xhtml'],
+      contentSample: '@font-face { src: url("puffinBeaky.otf"); }',
+    });
+    expect(result.isPrhUk).toBe(true);
+    expect(result.imprint).toBe('unknown');
+  });
+
   it('handles empty input without throwing', () => {
     const result = detectPrhImprint({
       opfContent: '',
