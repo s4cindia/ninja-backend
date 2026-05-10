@@ -11,11 +11,30 @@ import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
 import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
-export type AcrEdition = 
+export type AcrEdition =
   | 'VPAT2.5-508'
   | 'VPAT2.5-WCAG'
   | 'VPAT2.5-EU'
-  | 'VPAT2.5-INT';
+  | 'VPAT2.5-INT'
+  | 'VPAT2.5-PRH-UK';
+
+/**
+ * Publisher-specific metadata that some VPAT editions embed. Today this
+ * is populated only by the PRH UK edition (certifier-of-record string,
+ * accessibility-summary URL, TDM-reservation note). Other editions
+ * leave it undefined.
+ */
+export interface AcrPublisherMetadata {
+  certifiedBy: string;
+  certifierCredential: string;
+  credentialUrl: string;
+  /** Verbatim string PRH expects in the OPF's dcterms:conformsTo meta. */
+  conformsTo: string;
+  /** Where the publisher's accessibility statement lives (linked from the OPF accessibilitySummary). */
+  accessibilitySummaryUrl: string;
+  /** Optional TDM-reservation note (PRH includes a verbatim paragraph in the copyright page). */
+  tdmReservationNote?: string;
+}
 
 export interface ProductInfo {
   name: string;
@@ -67,6 +86,12 @@ export interface AcrDocument {
   status: 'draft' | 'pending_review' | 'final';
   methodology?: MethodologyInfo;
   footerDisclaimer?: string;
+  /**
+   * Publisher-specific metadata (certifier-of-record, accessibility-summary
+   * URL, TDM-reservation note) — populated for editions tied to a specific
+   * publisher profile (today: only `VPAT2.5-PRH-UK`).
+   */
+  publisherMetadata?: AcrPublisherMetadata;
 }
 
 export interface AcrGenerationOptions {
@@ -135,7 +160,27 @@ const EDITION_INFO: Record<AcrEdition, EditionInfo> = {
     standards: ['Section 508', 'EN 301 549', 'WCAG 2.1'],
     recommended: true,
     isRecommended: true
+  },
+  'VPAT2.5-PRH-UK': {
+    id: 'VPAT2.5-PRH-UK',
+    code: 'VPAT2.5-PRH-UK',
+    name: 'PRH UK Edition',
+    description: 'Penguin Random House UK delivery profile — pinned to EPUB Accessibility 1.1 + WCAG 2.2 Level AA with PRH UK as certifier-of-record',
+    standards: ['EPUB Accessibility 1.1', 'WCAG 2.2'],
+    recommended: false,
+    isRecommended: false
   }
+};
+
+/** Publisher metadata pinned to the PRH UK edition — sourced from the PRH Technical Guide's accessibility_meta_boilerplates.txt. */
+const PRH_UK_PUBLISHER_METADATA: AcrPublisherMetadata = {
+  certifiedBy: 'Penguin Random House UK',
+  certifierCredential: 'Ace by DAISY OK',
+  credentialUrl: 'https://daisy.github.io/ace',
+  conformsTo: 'EPUB Accessibility 1.1 - WCAG 2.2 Level AA',
+  accessibilitySummaryUrl: 'https://www.penguin.co.uk/accessibility',
+  tdmReservationNote:
+    'No part of this work may be used or reproduced in any manner for the purpose of training artificial intelligence technologies or systems. In accordance with Article 4(3) of the DSM Directive 2019/790, Penguin Random House expressly reserves this work from the text and data mining exception.',
 };
 
 class AcrGeneratorService {
@@ -181,7 +226,11 @@ class AcrGeneratorService {
         aiModelInfo: `${AI_MODEL_INFO.name} (${AI_MODEL_INFO.provider}) - ${AI_MODEL_INFO.purpose}`,
         disclaimer: LEGAL_DISCLAIMER
       },
-      footerDisclaimer: generateFooterDisclaimer()
+      footerDisclaimer: generateFooterDisclaimer(),
+      // PRH UK is the only edition today with publisher-specific
+      // metadata embedded in the output. Other editions leave this
+      // field undefined.
+      publisherMetadata: edition === 'VPAT2.5-PRH-UK' ? PRH_UK_PUBLISHER_METADATA : undefined,
     };
 
     return acrDocument;
@@ -291,6 +340,8 @@ class AcrGeneratorService {
         return this.getEuCriteria();
       case 'VPAT2.5-INT':
         return this.getInternationalCriteria();
+      case 'VPAT2.5-PRH-UK':
+        return this.getPrhUkCriteria();
       default:
         return this.getInternationalCriteria();
     }
@@ -524,14 +575,58 @@ class AcrGeneratorService {
     const wcag21Base = this.getWcag21BaseCriteria();
     const enSpecific = this.getEnSpecificCriteria();
     const wcagAaa = this.getWcagAaaCriteria();
-    
+
     const criteriaMap = new Map<string, AcrCriterion>();
-    
+
     section508.forEach(c => criteriaMap.set(c.id, c));
     wcag21Base.forEach(c => criteriaMap.set(c.id, c));
     enSpecific.forEach(c => criteriaMap.set(c.id, c));
     wcagAaa.forEach(c => criteriaMap.set(c.id, c));
-    
+
+    return Array.from(criteriaMap.values());
+  }
+
+  /**
+   * WCAG 2.2 added six new success criteria over 2.1 (not counting
+   * AAA-only additions). PRH UK pins to Level AA, so we include Level A
+   * and AA from this set:
+   *
+   *   2.4.11 Focus Not Obscured (Minimum)   — AA
+   *   2.5.7  Dragging Movements             — AA
+   *   2.5.8  Target Size (Minimum)          — AA
+   *   3.2.6  Consistent Help                — A
+   *   3.3.7  Redundant Entry                — A
+   *   3.3.8  Accessible Authentication (Min)— AA
+   *
+   * (2.4.12, 2.4.13 and 3.3.9 are AAA-only and intentionally excluded —
+   * PRH's published delivery target is AA.)
+   */
+  private getWcag22NewAaCriteria(): AcrCriterion[] {
+    return [
+      criterion('2.4.11', 'Focus Not Obscured (Minimum)', 'AA'),
+      criterion('2.5.7', 'Dragging Movements', 'AA'),
+      criterion('2.5.8', 'Target Size (Minimum)', 'AA'),
+      criterion('3.2.6', 'Consistent Help', 'A'),
+      criterion('3.3.7', 'Redundant Entry', 'A'),
+      criterion('3.3.8', 'Accessible Authentication (Minimum)', 'AA'),
+    ];
+  }
+
+  /**
+   * Criteria list for the PRH UK delivery profile: WCAG 2.2 Level A + AA
+   * (no AAA — PRH's published target is AA). Built on top of the existing
+   * 2.1 base + the six 2.2-new A/AA criteria.
+   *
+   * Note: WCAG 2.2 formally obsoleted 4.1.1 "Parsing", but we keep it in
+   * the list for backward compatibility with VPAT-consuming tools that
+   * still expect it. Conforming-as-not-applicable is the right call.
+   */
+  private getPrhUkCriteria(): AcrCriterion[] {
+    const base = this.getWcag21BaseCriteria();
+    const wcag22NewAa = this.getWcag22NewAaCriteria();
+    const criteriaMap = new Map<string, AcrCriterion>();
+    base.forEach((c) => criteriaMap.set(c.id, c));
+    wcag22NewAa.forEach((c) => criteriaMap.set(c.id, c));
     return Array.from(criteriaMap.values());
   }
 
