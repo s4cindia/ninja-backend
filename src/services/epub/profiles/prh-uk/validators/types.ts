@@ -31,3 +31,25 @@ export interface PrhValidatorInput {
   /** Path of the OPF inside the zip (e.g. 'EPUB/package.opf'). */
   opfPath: string;
 }
+
+/** One XHTML file's content + path, surfaced to per-XHTML validators. */
+export interface PrhXhtmlFile {
+  path: string;
+  content: string;
+}
+
+/** Inputs the per-XHTML validator reads — extends the OPF input. */
+export interface PrhPerXhtmlInput extends PrhValidatorInput {
+  /** dc:title from the OPF, if present. Used to flag generic page titles. */
+  bookTitle: string | null;
+  /** Every XHTML/HTML file in the EPUB. */
+  xhtmlFiles: PrhXhtmlFile[];
+}
+
+/** Inputs the nav-doc validator reads — extends the OPF input. */
+export interface PrhNavInput extends PrhValidatorInput {
+  /** Full nav.xhtml content, or null if no nav doc was located. */
+  navContent: string | null;
+  /** Path of the nav doc inside the zip, or null. */
+  navPath: string | null;
+}

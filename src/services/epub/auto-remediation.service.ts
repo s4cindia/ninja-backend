@@ -12,6 +12,7 @@ import {
   fixCertifierLink,
   fixTdmReservation,
   fixA11ySummaryUrl,
+  fixXmlLang,
 } from './profiles/prh-uk';
 
 const comparisonService = new ComparisonService(prisma);
@@ -154,6 +155,10 @@ class AutoRemediationService {
     'PRH-META-CERTIFIER-LINK': async (zip) => fixCertifierLink(zip),
     'PRH-META-TDM-RESERVATION': async (zip) => fixTdmReservation(zip),
     'PRH-META-A11Y-SUMMARY-URL': async (zip) => fixA11ySummaryUrl(zip),
+    // ── PRH UK profile per-XHTML fix ─────────────────────────────────────
+    // Walks every XHTML/HTML file ensuring <html> carries BOTH lang and
+    // xml:lang. Stricter than EPUB-SEM-001 (which only requires lang).
+    'PRH-XHTML-XML-LANG': async (zip) => fixXmlLang(zip),
   };
 
   async runAutoRemediation(
