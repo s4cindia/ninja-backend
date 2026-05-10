@@ -186,8 +186,13 @@ const EDITION_INFO: Record<AcrEdition, EditionInfo> = {
   }
 };
 
-/** Publisher metadata pinned to the PRH UK edition — sourced from the PRH Technical Guide's accessibility_meta_boilerplates.txt. */
-const PRH_UK_PUBLISHER_METADATA: AcrPublisherMetadata = {
+/**
+ * Publisher metadata pinned to the PRH UK edition — sourced from the
+ * PRH Technical Guide's accessibility_meta_boilerplates.txt. Frozen so
+ * downstream mutation of `doc.publisherMetadata` can't bleed back into
+ * future generations through this shared reference.
+ */
+const PRH_UK_PUBLISHER_METADATA: Readonly<AcrPublisherMetadata> = Object.freeze({
   certifiedBy: 'Penguin Random House UK',
   certifierCredential: 'Ace by DAISY OK',
   credentialUrl: 'https://daisy.github.io/ace',
@@ -195,7 +200,7 @@ const PRH_UK_PUBLISHER_METADATA: AcrPublisherMetadata = {
   accessibilitySummaryUrl: 'https://www.penguin.co.uk/accessibility',
   tdmReservationNote:
     'No part of this work may be used or reproduced in any manner for the purpose of training artificial intelligence technologies or systems. In accordance with Article 4(3) of the DSM Directive 2019/790, Penguin Random House expressly reserves this work from the text and data mining exception.',
-};
+});
 
 class AcrGeneratorService {
   async generateAcr(
@@ -243,8 +248,10 @@ class AcrGeneratorService {
       footerDisclaimer: generateFooterDisclaimer(),
       // PRH UK is the only edition today with publisher-specific
       // metadata embedded in the output. Other editions leave this
-      // field undefined.
-      publisherMetadata: edition === 'VPAT2.5-PRH-UK' ? PRH_UK_PUBLISHER_METADATA : undefined,
+      // field undefined. Spread into a fresh object so downstream
+      // mutations on `doc.publisherMetadata` can't leak between
+      // generated documents through the shared module-level constant.
+      publisherMetadata: edition === 'VPAT2.5-PRH-UK' ? { ...PRH_UK_PUBLISHER_METADATA } : undefined,
     };
 
     return acrDocument;

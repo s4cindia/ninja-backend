@@ -124,6 +124,26 @@ describe('AcrGeneratorService — VPAT2.5-PRH-UK edition', () => {
     expect(details?.sections.some((s) => s.id === 'level-aaa')).toBe(false);
   });
 
+  it('publisherMetadata is a fresh per-document object — mutations do not leak (regression)', async () => {
+    // Regression for CodeRabbit minor: previously the module-level
+    // PRH_UK_PUBLISHER_METADATA was assigned by reference, so a mutation
+    // on docA.publisherMetadata would affect docB's metadata too.
+    const docA = await acrGeneratorService.generateAcr('test-job-a', {
+      edition: 'VPAT2.5-PRH-UK',
+      productInfo: PRODUCT_INFO,
+    });
+    // Mutate the assigned metadata on docA.
+    if (docA.publisherMetadata) {
+      docA.publisherMetadata.certifiedBy = 'Mutated Publisher';
+    }
+    // Generate docB — it must NOT see the mutation.
+    const docB = await acrGeneratorService.generateAcr('test-job-b', {
+      edition: 'VPAT2.5-PRH-UK',
+      productInfo: PRODUCT_INFO,
+    });
+    expect(docB.publisherMetadata?.certifiedBy).toBe('Penguin Random House UK');
+  });
+
   it('template constant agrees with the runtime edition definition (single source of truth)', () => {
     // The template file is declarative metadata; the runtime EDITION_INFO
     // is what generateAcr actually reads. They must agree on the literal
