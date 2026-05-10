@@ -27,8 +27,15 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   'PRH-META-CERTIFIER-LINK',
   'PRH-META-TDM-RESERVATION',
   'PRH-META-A11Y-SUMMARY-URL',
+  // PRH UK profile per-XHTML — adds both lang AND xml:lang to <html>
+  // (stricter than EPUB-SEM-001 which only requires lang)
+  'PRH-XHTML-XML-LANG',
   // PRH-SPINE-* codes are detect-only in PR2 — spine reordering is risky
   // enough that we want operator review before mutating spine entries.
+  // PRH-NAV-* codes are detect-only in PR3 — nav-doc structure changes
+  // need operator review (rewriting hidden landmarks can confuse readers).
+  // PRH-XHTML-TITLE-EMPTY-OR-GENERIC is detect-only — choosing the right
+  // chapter/section title is an editorial decision, not mechanical.
 ]);
 
 export function getAutoFixableCodes(): Set<string> {

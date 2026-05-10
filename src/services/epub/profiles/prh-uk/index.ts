@@ -19,3 +19,4 @@ export {
   fixTdmReservation,
   fixA11ySummaryUrl,
 } from './remediators/metadata-remediator';
+export { fixXmlLang } from './remediators/xhtml-remediator';

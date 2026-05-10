@@ -30,22 +30,26 @@ import {
   fixCertifierLink,
   fixTdmReservation,
   fixA11ySummaryUrl,
+  fixXmlLang,
 } from './profiles/prh-uk';
 
 /**
- * PRH metadata fix functions return a slim {success, description, before?,
- * after?} shape; this autoApplyHighConfidenceFixes pipeline expects the
- * full ModificationResult shape with filePath + modificationType. Adapt
- * the slim results into the expected shape so the caller's success/failure
+ * PRH fix functions return a slim {success, description, before?, after?}
+ * shape; this autoApplyHighConfidenceFixes pipeline expects the full
+ * ModificationResult shape with filePath + modificationType. Adapt the
+ * slim results into the expected shape so the caller's success/failure
  * accounting and change-log code paths work unchanged.
+ *
+ * Defaults assume an OPF metadata fix; xhtml fixes pass overrides.
  */
 function adaptPrhResults(
   results: Array<{ success: boolean; description: string; before?: string; after?: string }>,
+  overrides: { filePath?: string; modificationType?: string } = {},
 ): ModificationResult[] {
   return results.map((r) => ({
     success: r.success,
-    filePath: 'package.opf',
-    modificationType: 'metadata',
+    filePath: overrides.filePath ?? 'package.opf',
+    modificationType: overrides.modificationType ?? 'metadata',
     description: r.description,
     before: r.before,
     after: r.after,
@@ -1702,6 +1706,12 @@ class RemediationService {
             break;
           case 'PRH-META-A11Y-SUMMARY-URL':
             fixResults = adaptPrhResults(await fixA11ySummaryUrl(zip));
+            break;
+          case 'PRH-XHTML-XML-LANG':
+            fixResults = adaptPrhResults(await fixXmlLang(zip), {
+              filePath: '(multiple xhtml files)',
+              modificationType: 'add_html_lang',
+            });
             break;
           default:
             logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
