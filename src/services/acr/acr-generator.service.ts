@@ -11,12 +11,26 @@ import { logger } from '../../lib/logger';
 import { wcagIssueMapperService, IssueMapping, AuditIssueInput } from './wcag-issue-mapper.service';
 import { ConfidenceAnalyzerService } from './confidence-analyzer.service';
 
-export type AcrEdition =
-  | 'VPAT2.5-508'
-  | 'VPAT2.5-WCAG'
-  | 'VPAT2.5-EU'
-  | 'VPAT2.5-INT'
-  | 'VPAT2.5-PRH-UK';
+/**
+ * Single source of truth for the supported ACR / VPAT editions. Schemas
+ * in `src/controllers/acr.controller.ts`, `src/schemas/acr.schemas.ts`,
+ * and `src/schemas/batch.schemas.ts` derive their `z.enum(...)`
+ * whitelists from this constant — adding a new edition only requires
+ * updating this list (plus the per-edition wiring in this service).
+ *
+ * NOTE: `src/types/workflow-contracts.ts` carries an independent copy
+ * of this whitelist; it's marked READ-ONLY per the workflow-sprint
+ * agreement and must be reconciled in a coordinated pass.
+ */
+export const ACR_EDITIONS = [
+  'VPAT2.5-508',
+  'VPAT2.5-WCAG',
+  'VPAT2.5-EU',
+  'VPAT2.5-INT',
+  'VPAT2.5-PRH-UK',
+] as const;
+
+export type AcrEdition = (typeof ACR_EDITIONS)[number];
 
 /**
  * Publisher-specific metadata that some VPAT editions embed. Today this
