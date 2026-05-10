@@ -107,6 +107,35 @@ describe('fixDecorativeRole', () => {
     expect(updated).toMatch(/role="presentation"/);
   });
 
+  it('does NOT add role to img with a non-presentation role (regression: duplicate attribute)', async () => {
+    // Regression for CodeRabbit Critical: previously the remediator only
+    // skipped on role="presentation"/"none". An img with role="button"
+    // would have got role="presentation" inserted, producing
+    // `<img role="presentation" ... role="button">` — invalid XML.
+    const original = '<?xml version="1.0"?><html><body><img src="ornament.png" alt="" role="button"/></body></html>';
+    zip.file('EPUB/xhtml/ch1.xhtml', original);
+    await fixDecorativeRole(zip);
+    const updated = await getFile(zip, 'EPUB/xhtml/ch1.xhtml');
+    // File must be byte-identical — no role attribute added.
+    expect(updated).toBe(original);
+    // Defensive: assert only one role attribute exists on the img.
+    const roleMatches = updated.match(/<img\b[^>]*\brole\s*=/gi) || [];
+    expect(roleMatches.length).toBe(1);
+  });
+
+  it('skips cover XHTML entirely (regression: PRH-COVER-ALT-EMPTY conflict)', async () => {
+    // Regression for CodeRabbit P1: a cover with alt="" should NOT have
+    // role="presentation" auto-applied — that would actively work
+    // against the operator's intent to set a real alt text.
+    const original = `<?xml version="1.0"?><html xmlns:epub="http://www.idpf.org/2007/ops">
+  <body epub:type="cover"><img src="cover.jpg" alt=""/></body>
+</html>`;
+    zip.file('EPUB/xhtml/cover.xhtml', original);
+    await fixDecorativeRole(zip);
+    const updated = await getFile(zip, 'EPUB/xhtml/cover.xhtml');
+    expect(updated).toBe(original);
+  });
+
   it('returns a no-op result when nothing in the zip needs fixing', async () => {
     zip.file('EPUB/xhtml/ch1.xhtml', '<html><body><img src="a.png" alt="" role="presentation"/></body></html>');
     const results = await fixDecorativeRole(zip);

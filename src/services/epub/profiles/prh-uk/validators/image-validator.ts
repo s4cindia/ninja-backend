@@ -39,24 +39,43 @@ export function validatePrhImages(input: PrhPerXhtmlInput): PrhValidatorIssue[] 
   const coverFile = findCoverXhtml(input);
   if (coverFile) {
     const coverAlt = readCoverImageAlt(coverFile.content);
-    if (coverAlt === '' || coverAlt === null) {
+    // Distinguish three cases:
+    //   { kind: 'no-img' }       — cover uses background image / SVG /
+    //                              something other than <img>; that's a
+    //                              different concern, not PRH-COVER-ALT-EMPTY.
+    //   { kind: 'missing-alt' }  — <img> present but alt attribute absent.
+    //   { kind: 'value', value }  — alt attribute present (may be empty).
+    if (coverAlt.kind === 'missing-alt') {
       issues.push(
         buildIssue('PRH-COVER-ALT-EMPTY', coverFile.path, {
-          message: coverAlt === null
-            ? 'Cover XHTML has no <img> alt attribute at all'
-            : 'Cover <img> alt is empty; PRH requires a non-empty alt (e.g. "Cover for [Book Title]")',
+          message: 'Cover <img> has no alt attribute at all',
+          suggestion: input.bookTitle
+            ? `Add alt="Cover for ${input.bookTitle}" to the cover <img>`
+            : 'Add a descriptive alt attribute to the cover <img> (e.g. alt="Cover for [Book Title]")',
+        }),
+      );
+    } else if (coverAlt.kind === 'value' && coverAlt.value.length === 0) {
+      issues.push(
+        buildIssue('PRH-COVER-ALT-EMPTY', coverFile.path, {
+          message: 'Cover <img> alt is empty; PRH requires a non-empty alt (e.g. "Cover for [Book Title]")',
           suggestion: input.bookTitle
             ? `Set the cover image alt to "Cover for ${input.bookTitle}" (or another descriptive non-empty value)`
             : 'Set the cover image alt to "Cover for [Book Title]" using the book title from dc:title',
         }),
       );
     }
+    // kind === 'no-img' or non-empty value → no PRH-COVER-ALT-EMPTY.
   }
 
   // ── 2. Decorative images must declare role="presentation" ──────────────
   // We deliberately scan every XHTML/HTML file (not just spine entries) so
   // long-description appendices, footnote files, etc. are covered too.
+  // Skip cover XHTMLs — their <img alt=""> is a separate concern flagged
+  // by PRH-COVER-ALT-EMPTY (the cover must have a non-empty alt, not
+  // role="presentation"). Auto-fixing it would actively work against the
+  // operator's intent.
   for (const file of input.xhtmlFiles) {
+    if (isCoverXhtml(file.content)) continue;
     const decoratives = findDecorativeImagesMissingRole(file.content);
     for (const img of decoratives) {
       issues.push(
@@ -124,17 +143,32 @@ function findCoverXhtml(input: PrhPerXhtmlInput): CoverFile | null {
 
 /**
  * Match the manifest href against the input file list. We don't have the
- * OPF path in scope, so we use a "ends-with" heuristic — sufficient for
- * the cover (a single canonical file at a well-known location).
+ * OPF path in scope, so we use a "ends-with on path-segment boundary"
+ * heuristic — sufficient for the cover (a single canonical file at a
+ * well-known location). The `/` boundary stops `front-cover.xhtml` from
+ * masquerading as `cover.xhtml`.
  */
 function resolveCoverPath(href: string, xhtmlFiles: PrhPerXhtmlInput['xhtmlFiles']): CoverFile | null {
   // Strip leading `./` and normalise.
   const normalisedHref = href.replace(/^\.\//, '');
-  // Try exact match first, then suffix match (handles OPF-relative paths).
+  // Try exact match first.
   const exact = xhtmlFiles.find((f) => f.path === normalisedHref);
   if (exact) return exact;
-  const suffix = xhtmlFiles.find((f) => f.path.endsWith(`/${normalisedHref}`) || f.path.endsWith(normalisedHref));
+  // Suffix match must respect path-segment boundaries — require a leading
+  // `/` (so 'xhtml/cover.xhtml' matches, but 'front-cover.xhtml' doesn't
+  // match a manifest href of 'cover.xhtml').
+  const suffix = xhtmlFiles.find((f) => f.path.endsWith(`/${normalisedHref}`));
   return suffix ?? null;
+}
+
+/**
+ * Quick test for whether an XHTML file is the cover document. Used to
+ * exclude cover XHTML from the decorative-image scan — the cover's
+ * <img alt=""> belongs to PRH-COVER-ALT-EMPTY, not the decorative
+ * concern.
+ */
+function isCoverXhtml(content: string): boolean {
+  return /<body\b[^>]*\bepub:type\s*=\s*["'][^"']*\bcover\b[^"']*["']/i.test(content);
 }
 
 function readAttr(attrs: string, name: string): string | null {
@@ -144,23 +178,33 @@ function readAttr(attrs: string, name: string): string | null {
   return (m[1] ?? m[2]) ?? null;
 }
 
+type CoverAltResult =
+  | { kind: 'no-img' }
+  | { kind: 'missing-alt' }
+  | { kind: 'value'; value: string };
+
 /**
- * Read the alt attribute of the cover image. Returns:
- *   - the trimmed alt text when non-empty,
- *   - empty string `""` when alt is present but empty (e.g. `alt=""`),
- *   - null when there is no <img> at all OR no alt attribute on it.
+ * Read the alt attribute of the cover image. Distinguishes:
+ *   - 'no-img'      — cover XHTML has no <img> at all (e.g. SVG cover
+ *                      or background-image style); a separate concern,
+ *                      NOT PRH-COVER-ALT-EMPTY.
+ *   - 'missing-alt' — <img> present but with no alt attribute. This is
+ *                      a hard failure of the PRH rule.
+ *   - 'value'       — alt attribute present; value (trimmed) supplied.
+ *                      Empty string here is the canonical "decorative"
+ *                      marker which PRH forbids on the cover.
  */
-function readCoverImageAlt(coverXhtml: string): string | null {
+function readCoverImageAlt(coverXhtml: string): CoverAltResult {
   // Find the FIRST <img> inside <body>. The cover XHTML pattern PRH
   // documents is `<body epub:type="cover"><figure><img .../></figure>`.
   const bodyMatch = coverXhtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
   const haystack = bodyMatch ? bodyMatch[1] : coverXhtml;
   const imgMatch = haystack.match(/<img\b([^>]*)\/?>/i);
-  if (!imgMatch) return null;
+  if (!imgMatch) return { kind: 'no-img' };
   const altMatch = imgMatch[1].match(/\balt\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
-  if (!altMatch) return null;
-  const value = (altMatch[1] ?? altMatch[2] ?? '');
-  return value.trim();
+  if (!altMatch) return { kind: 'missing-alt' };
+  const value = (altMatch[1] ?? altMatch[2] ?? '').trim();
+  return { kind: 'value', value };
 }
 
 interface DecorativeImageHit {
@@ -168,9 +212,14 @@ interface DecorativeImageHit {
 }
 
 /**
- * Find every `<img>` whose alt is empty AND that lacks `role="presentation"`.
- * Returns one hit per offending image, with a short `src=` snippet for the
- * issue message.
+ * Find every `<img>` whose alt is empty AND that has NO `role` attribute
+ * at all. Returns one hit per offending image, with a short `src=`
+ * snippet for the issue message.
+ *
+ * Note: we don't flag images that have a non-presentation role like
+ * `role="button"` either — they're outside this rule's scope, and the
+ * remediator can't safely add another role attribute alongside an
+ * existing one (would produce duplicate attribute = invalid XML).
  */
 function findDecorativeImagesMissingRole(content: string): DecorativeImageHit[] {
   const hits: DecorativeImageHit[] = [];
@@ -183,10 +232,10 @@ function findDecorativeImagesMissingRole(content: string): DecorativeImageHit[] 
     const altMatch = attrs.match(/\balt\s*=\s*(["'])([^"']*)\1/i);
     if (!altMatch) continue;
     if (altMatch[2].length > 0) continue;
-    // Has role="presentation"? (or role="none", which is the ARIA
-    // equivalent for legacy support — accept both.)
-    const roleMatch = attrs.match(/\brole\s*=\s*["'][^"']*\b(?:presentation|none)\b[^"']*["']/i);
-    if (roleMatch) continue;
+    // Any role attribute present? — skip. This includes the canonical
+    // presentation/none roles AND any other role (e.g. role="button")
+    // that we shouldn't touch.
+    if (/\brole\s*=\s*["'][^"']*["']/i.test(attrs)) continue;
     // Capture src for the issue message.
     const srcMatch = attrs.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
     const src = srcMatch?.[1] ?? srcMatch?.[2] ?? '';

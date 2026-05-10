@@ -39,6 +39,14 @@ export async function fixDecorativeRole(zip: JSZip): Promise<ChangeResult[]> {
     const content = await zip.file(filePath)?.async('text');
     if (!content) continue;
 
+    // Skip the cover XHTML entirely — its image's alt should be
+    // non-empty (PRH-COVER-ALT-EMPTY); slapping role="presentation" on
+    // it would actively work against that. The two PRH issues co-fire
+    // on a non-compliant cover, but only the alt fix is correct.
+    if (/<body\b[^>]*\bepub:type\s*=\s*["'][^"']*\bcover\b[^"']*["']/i.test(content)) {
+      continue;
+    }
+
     let touched = 0;
     const beforeSample: string[] = [];
     const afterSample: string[] = [];
@@ -49,8 +57,11 @@ export async function fixDecorativeRole(zip: JSZip): Promise<ChangeResult[]> {
       const altMatch = attrs.match(/\balt\s*=\s*(["'])([^"']*)\1/i);
       if (!altMatch || altMatch[2].length > 0) return match;
 
-      // Already has role="presentation" or role="none"? — skip.
-      if (/\brole\s*=\s*["'][^"']*\b(?:presentation|none)\b[^"']*["']/i.test(attrs)) {
+      // Skip whenever ANY role attribute is already present — even a
+      // non-presentation role like role="button". Inserting another
+      // role attribute would produce duplicate attributes (invalid XML).
+      // The validator likewise only fires when no role exists.
+      if (/\brole\s*=\s*["'][^"']*["']/i.test(attrs)) {
         return match;
       }
 

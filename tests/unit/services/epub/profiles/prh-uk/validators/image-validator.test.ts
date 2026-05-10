@@ -57,7 +57,7 @@ describe('validatePrhImages — PRH-COVER-ALT-EMPTY', () => {
     }));
     const issue = issues.find((i) => i.code === 'PRH-COVER-ALT-EMPTY');
     expect(issue).toBeDefined();
-    expect(issue?.message).toMatch(/no <img> alt/i);
+    expect(issue?.message).toMatch(/has no alt attribute/i);
   });
 
   it('falls back to a generic suggestion when bookTitle is null', () => {
@@ -80,6 +80,22 @@ describe('validatePrhImages — PRH-COVER-ALT-EMPTY', () => {
     }));
     // Should locate cover via manifest id and flag the empty alt.
     expect(issues.find((i) => i.code === 'PRH-COVER-ALT-EMPTY')).toBeDefined();
+  });
+
+  it('does NOT flag a cover XHTML that contains no <img> (regression: SVG / background cover)', () => {
+    // Regression for CodeRabbit Major: previously "no img" was treated
+    // the same as "missing alt", producing a false-serious finding for
+    // covers that use SVG or a background image.
+    const svgCover = `<?xml version="1.0"?>
+<html xmlns:epub="http://www.idpf.org/2007/ops">
+  <body epub:type="cover">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 150" role="doc-cover" aria-label="Cover for SVG Book"/>
+  </body>
+</html>`;
+    const issues = validatePrhImages(input({
+      files: [{ path: 'EPUB/xhtml/cover.xhtml', content: svgCover }],
+    }));
+    expect(issues.find((i) => i.code === 'PRH-COVER-ALT-EMPTY')).toBeUndefined();
   });
 
   it('does NOT emit PRH-COVER-ALT-EMPTY when no cover XHTML is found', () => {
@@ -170,5 +186,37 @@ describe('validatePrhImages — PRH-DECORATIVE-MISSING-PRESENTATION-ROLE', () =>
       files: [{ path: 'EPUB/xhtml/ch1.xhtml', content: xhtml }],
     }));
     expect(issues.find((i) => i.code === 'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE')).toBeDefined();
+  });
+
+  it('does NOT flag images with a non-presentation role like role="button" (regression)', () => {
+    // Regression for CodeRabbit Critical: when an <img alt=""> already
+    // carries a role (any role, not just presentation/none), the
+    // validator should leave it alone — otherwise the auto-fix would
+    // try to insert a second role attribute.
+    const xhtml = `<?xml version="1.0"?><html><body>
+      <img src="control.png" alt="" role="button"/>
+    </body></html>`;
+    const issues = validatePrhImages(input({
+      files: [{ path: 'EPUB/xhtml/ch1.xhtml', content: xhtml }],
+    }));
+    expect(issues.find((i) => i.code === 'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE')).toBeUndefined();
+  });
+
+  it('does NOT scan cover XHTML for decorative images (regression: P1 conflict)', () => {
+    // Regression for CodeRabbit P1: previously a cover with alt="" on
+    // its <img> emitted BOTH PRH-COVER-ALT-EMPTY (correct) and
+    // PRH-DECORATIVE-MISSING-PRESENTATION-ROLE (incorrect — auto-fixing
+    // the role would actively work against the cover-alt fix).
+    const coverXhtml = `<?xml version="1.0"?>
+<html xmlns:epub="http://www.idpf.org/2007/ops">
+  <body epub:type="cover"><img src="cover.jpg" alt=""/></body>
+</html>`;
+    const issues = validatePrhImages(input({
+      files: [{ path: 'EPUB/xhtml/cover.xhtml', content: coverXhtml }],
+    }));
+    // Cover-alt issue SHOULD fire.
+    expect(issues.find((i) => i.code === 'PRH-COVER-ALT-EMPTY')).toBeDefined();
+    // Decorative-role issue must NOT fire for the cover.
+    expect(issues.find((i) => i.code === 'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE')).toBeUndefined();
   });
 });
