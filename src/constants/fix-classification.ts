@@ -20,6 +20,15 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   'METADATA-ACCESSIBILITYFEATURE',
   'METADATA-ACCESSIBILITYHAZARD',
   'METADATA-ACCESSIBILITYSUMMARY',
+  // PRH UK profile metadata — publisher-specific literal-string rewrites
+  'PRH-META-CONFORMS-TO',
+  'PRH-META-CERTIFIED-BY',
+  'PRH-META-CERTIFIER-CRED',
+  'PRH-META-CERTIFIER-LINK',
+  'PRH-META-TDM-RESERVATION',
+  'PRH-META-A11Y-SUMMARY-URL',
+  // PRH-SPINE-* codes are detect-only in PR2 — spine reordering is risky
+  // enough that we want operator review before mutating spine entries.
 ]);
 
 export function getAutoFixableCodes(): Set<string> {

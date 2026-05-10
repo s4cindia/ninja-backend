@@ -10,7 +10,8 @@ import config from '../../config/index';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { detectPublisherProfile } from './profiles/profile-detector.service';
-import type { PublisherProfile } from './profiles/types';
+import { NO_PROFILE, type PublisherProfile } from './profiles/types';
+import { runPrhUkValidators } from './profiles/prh-uk';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 import { getFixType } from '../../constants/fix-classification';
 import { s3Service } from '../s3.service';
@@ -64,7 +65,7 @@ interface AceResult {
 
 interface AccessibilityIssue {
   id: string;
-  source: 'epubcheck' | 'ace' | 'js-auditor';
+  source: 'epubcheck' | 'ace' | 'js-auditor' | 'prh-uk';
   severity: 'critical' | 'serious' | 'moderate' | 'minor';
   code: string;
   message: string;
@@ -112,6 +113,7 @@ interface EpubAuditResult {
     epubcheck: { critical: number; serious: number; moderate: number; minor: number; total: number };
     ace: { critical: number; serious: number; moderate: number; minor: number; total: number };
     'js-auditor': { critical: number; serious: number; moderate: number; minor: number; total: number; autoFixable: number };
+    'prh-uk': { critical: number; serious: number; moderate: number; minor: number; total: number; autoFixable: number };
   };
   classificationStats: {
     autoFixable: number;
@@ -278,6 +280,50 @@ class EpubAuditService {
         logger.warn(`JS audit failed: ${jsError instanceof Error ? jsError.message : 'Unknown error'}`);
       }
 
+      // Detect publisher profile and run profile-gated validators (e.g.
+      // PRH UK metadata + spine). Profile detection itself is best-effort —
+      // failures fall back to NO_PROFILE without breaking the audit. The
+      // profile is attached to the audit result regardless of confidence,
+      // but validators only run on `medium` or `high` confidence to avoid
+      // false-positive PRH issues on incidental signal matches.
+      // Defensive try/catch: detectPublisherProfile catches its own errors
+      // internally, but we belt-and-braces it here so any unforeseen throw
+      // (e.g. logger failure, weird buffer shape) cannot break the audit.
+      let publisherProfile: PublisherProfile = NO_PROFILE;
+      try {
+        publisherProfile = await detectPublisherProfile(buffer);
+        if (publisherProfile.publisher) {
+          logger.info(
+            `[Profile] Detected ${publisherProfile.publisher} (imprint=${publisherProfile.imprint}, confidence=${publisherProfile.confidence}, signals=${publisherProfile.signals.length})`,
+          );
+        }
+      } catch (profileErr) {
+        logger.warn(
+          `[Profile] detection threw: ${profileErr instanceof Error ? profileErr.message : 'Unknown error'} — falling back to NO_PROFILE`,
+        );
+      }
+      if (publisherProfile.publisher === 'PRH-UK' && publisherProfile.confidence !== 'low') {
+        try {
+          const prhIssues = await runPrhUkValidators(buffer);
+          logger.info(`[PRH] validators emitted ${prhIssues.length} issues`);
+          for (const v of prhIssues) {
+            combinedIssues.push({
+              id: `prh-${this.issueCounter++}`,
+              source: 'prh-uk',
+              severity: v.severity,
+              code: v.code,
+              message: v.message,
+              wcagCriteria: v.wcag.length > 0 ? v.wcag : undefined,
+              location: v.location,
+              suggestion: v.suggestion,
+              category: 'publisher-profile',
+            });
+          }
+        } catch (prhErr) {
+          logger.warn(`PRH validators failed: ${prhErr instanceof Error ? prhErr.message : 'Unknown error'}`);
+        }
+      }
+
       captureIssueSnapshot('3_BEFORE_DEDUPLICATION', combinedIssues as unknown as Record<string, unknown>[], true);
 
       logger.info('\nFINAL DEDUPLICATION:');
@@ -349,6 +395,14 @@ class EpubAuditService {
           total: deduplicatedIssues.filter(i => i.source === 'js-auditor').length,
           autoFixable: deduplicatedIssues.filter(i => i.source === 'js-auditor' && getFixType(i.code) === 'auto').length,
         },
+        'prh-uk': {
+          critical: deduplicatedIssues.filter(i => i.source === 'prh-uk' && i.severity === 'critical').length,
+          serious: deduplicatedIssues.filter(i => i.source === 'prh-uk' && i.severity === 'serious').length,
+          moderate: deduplicatedIssues.filter(i => i.source === 'prh-uk' && i.severity === 'moderate').length,
+          minor: deduplicatedIssues.filter(i => i.source === 'prh-uk' && i.severity === 'minor').length,
+          total: deduplicatedIssues.filter(i => i.source === 'prh-uk').length,
+          autoFixable: deduplicatedIssues.filter(i => i.source === 'prh-uk' && getFixType(i.code) === 'auto').length,
+        },
       };
 
       const classificationStats = {
@@ -361,15 +415,6 @@ class EpubAuditService {
       logger.info(`  Auto-fixable: ${classificationStats.autoFixable}`);
       logger.info(`  Quick-fixable: ${classificationStats.quickFixable}`);
       logger.info(`  Manual required: ${classificationStats.manualRequired}`);
-
-      // Detect publisher profile (e.g. PRH UK + imprint). Best-effort —
-      // detection failures fall back to NO_PROFILE without breaking the audit.
-      const publisherProfile = await detectPublisherProfile(buffer);
-      if (publisherProfile.publisher) {
-        logger.info(
-          `[Profile] Detected ${publisherProfile.publisher} (imprint=${publisherProfile.imprint}, confidence=${publisherProfile.confidence}, signals=${publisherProfile.signals.length})`,
-        );
-      }
 
       // Calculate coverage
       const coverage = this.calculateCoverage(buffer);

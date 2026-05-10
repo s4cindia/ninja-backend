@@ -48,6 +48,18 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   // EPUBCheck resource errors
   'RSC-003': [],
 
+  // ============= PRH UK PROFILE RULES =============
+  // Metadata (publisher-specific; see prh-issue-codes.ts registry)
+  'PRH-META-CONFORMS-TO': ['4.1.2'],
+  'PRH-META-CERTIFIED-BY': ['4.1.2'],
+  'PRH-META-CERTIFIER-CRED': ['4.1.2'],
+  'PRH-META-CERTIFIER-LINK': ['4.1.2'],
+  'PRH-META-TDM-RESERVATION': [],
+  'PRH-META-A11Y-SUMMARY-URL': ['4.1.2'],
+  // Spine (publisher-specific; no direct WCAG analogue)
+  'PRH-SPINE-COVER-LINEAR': [],
+  'PRH-SPINE-FOOTNOTES-LAST': [],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],

@@ -5,6 +5,14 @@ import prisma from '../../lib/prisma';
 import JSZip from 'jszip';
 import { isAutoFixable } from '../../constants/fix-classification';
 import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../comparison';
+import {
+  fixConformsTo,
+  fixCertifiedBy,
+  fixCertifierCredential,
+  fixCertifierLink,
+  fixTdmReservation,
+  fixA11ySummaryUrl,
+} from './profiles/prh-uk';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -136,6 +144,16 @@ class AutoRemediationService {
       }
       return epubModifier.fixColorContrast(_zip, contrastIssues);
     },
+    // ── PRH UK profile metadata fixes ────────────────────────────────────
+    // Each writes a single literal PRH-required metadata field back into
+    // the OPF. They're independently re-runnable; calling one twice is a
+    // no-op once the value matches.
+    'PRH-META-CONFORMS-TO': async (zip) => fixConformsTo(zip),
+    'PRH-META-CERTIFIED-BY': async (zip) => fixCertifiedBy(zip),
+    'PRH-META-CERTIFIER-CRED': async (zip) => fixCertifierCredential(zip),
+    'PRH-META-CERTIFIER-LINK': async (zip) => fixCertifierLink(zip),
+    'PRH-META-TDM-RESERVATION': async (zip) => fixTdmReservation(zip),
+    'PRH-META-A11Y-SUMMARY-URL': async (zip) => fixA11ySummaryUrl(zip),
   };
 
   async runAutoRemediation(
