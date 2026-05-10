@@ -152,6 +152,25 @@ describe('fixXmlLang', () => {
     }
   });
 
+  it('rejects an existing lang value containing illegal chars and falls back to default (regression)', async () => {
+    // Regression for CodeRabbit: an attacker-crafted EPUB could carry
+    // <html lang="<script>"> — though the regex rejects the quote char,
+    // it still admits other XML-special characters. The remediator
+    // must validate the token shape before re-injecting it into another
+    // attribute, otherwise it will emit malformed XHTML.
+    zip.file(
+      'EPUB/xhtml/ch1.xhtml',
+      '<?xml version="1.0"?><html lang="<weird>"><head><title>T</title></head><body/></html>',
+    );
+    await fixXmlLang(zip);
+    const updated = await getFile(zip, 'EPUB/xhtml/ch1.xhtml');
+    // The malformed value should be replaced with the default ("en"),
+    // not propagated into xml:lang.
+    expect(updated).toMatch(/lang="en"/);
+    expect(updated).toMatch(/xml:lang="en"/);
+    expect(updated).not.toMatch(/<weird>/);
+  });
+
   it('falls back to "en" when defaultLanguage is empty/whitespace (regression)', async () => {
     // Regression for CodeRabbit: an empty or whitespace defaultLanguage
     // would have written `lang=""` / `xml:lang=""` — the same broken

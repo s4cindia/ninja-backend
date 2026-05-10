@@ -23,6 +23,32 @@ interface ChangeResult {
 }
 
 /**
+ * Loose BCP 47 sanity check: ASCII letters/digits/hyphens, max 35 chars.
+ * Real BCP 47 is more nuanced but this is enough to reject anything we
+ * could safely call "almost certainly malicious or malformed" before
+ * interpolating back into an XML attribute.
+ */
+const BCP47_LIKE = /^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*$/;
+
+function isValidLangToken(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 35 && BCP47_LIKE.test(value);
+}
+
+/**
+ * Pick the first BCP-47-shaped token from the candidate list, falling
+ * back to the supplied default. Used so we never re-inject an attacker-
+ * crafted or malformed `lang` value back into the XHTML.
+ */
+function pickValidLangToken(...candidates: Array<string | null | undefined>): string {
+  for (const c of candidates.slice(0, -1)) {
+    if (isValidLangToken(c)) return c;
+  }
+  // Last candidate is the safe-default fallback (already validated by caller).
+  const fallback = candidates[candidates.length - 1];
+  return isValidLangToken(fallback) ? fallback : 'en';
+}
+
+/**
  * Walk every XHTML/HTML file in the EPUB, ensuring `<html>` has both
  * `lang` and `xml:lang` attributes. Defaults to `"en"` if neither is
  * present (PRH books are English-language unless explicitly translated;
@@ -70,10 +96,17 @@ export async function fixXmlLang(zip: JSZip, defaultLanguage: string = 'en'): Pr
     }
 
     // Decide the language code: prefer existing non-empty lang, else
-    // existing non-empty xml:lang, else the sanitised default.
-    const language = (hasGoodLang ? langValue : null)
-      ?? (hasGoodXmlLang ? xmlLangValue : null)
-      ?? safeDefault;
+    // existing non-empty xml:lang, else the sanitised default. Each
+    // candidate is validated as a BCP 47-shaped token before use — even
+    // though our regex already rejects quote characters, an upstream
+    // value with `<`, `>`, `&` or control chars would still produce
+    // malformed XML when re-injected. If neither captured value is
+    // valid, fall back to the safe default.
+    const language = pickValidLangToken(
+      hasGoodLang ? langValue : null,
+      hasGoodXmlLang ? xmlLangValue : null,
+      safeDefault,
+    );
 
     let newAttrs = attrs;
     if (!hasGoodLang) {
