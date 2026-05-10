@@ -98,6 +98,60 @@ describe('fixXmlLang', () => {
     expect(ch2).toMatch(/lang="en"/);
   });
 
+  it('replaces an empty lang="" with the default language (regression)', async () => {
+    // Regression for CodeRabbit: empty lang="" was treated as "present"
+    // so the remediator left it unchanged, leaving the file invalid.
+    zip.file(
+      'EPUB/xhtml/ch1.xhtml',
+      '<?xml version="1.0"?><html lang=""><head><title>T</title></head><body/></html>',
+    );
+    await fixXmlLang(zip);
+    const updated = await getFile(zip, 'EPUB/xhtml/ch1.xhtml');
+    expect(updated).toMatch(/<html\b[^>]*\blang="en"/);
+    expect(updated).toMatch(/<html\b[^>]*\bxml:lang="en"/);
+    expect(updated).not.toMatch(/lang=""/);
+  });
+
+  it('replaces an empty xml:lang="" with the propagated language (regression)', async () => {
+    zip.file(
+      'EPUB/xhtml/ch1.xhtml',
+      '<?xml version="1.0"?><html lang="fr" xml:lang=""><head><title>T</title></head><body/></html>',
+    );
+    await fixXmlLang(zip);
+    const updated = await getFile(zip, 'EPUB/xhtml/ch1.xhtml');
+    expect(updated).toMatch(/xml:lang="fr"/);
+    expect(updated).not.toMatch(/xml:lang=""/);
+  });
+
+  it('emits one ChangeResult per touched file (per-file accounting)', async () => {
+    // Regression for CodeRabbit major: per-file fixes need per-file
+    // results so completion accounting can match tasks → files.
+    zip.file(
+      'EPUB/xhtml/ch1.xhtml',
+      '<?xml version="1.0"?><html><head><title>T</title></head><body/></html>',
+    );
+    zip.file(
+      'EPUB/xhtml/ch2.xhtml',
+      '<?xml version="1.0"?><html><head><title>T</title></head><body/></html>',
+    );
+    zip.file(
+      'EPUB/xhtml/ch3-already-ok.xhtml',
+      '<?xml version="1.0"?><html lang="en" xml:lang="en"><head><title>T</title></head><body/></html>',
+    );
+    const results = await fixXmlLang(zip);
+    // Two files touched → two results, each with the file path in the
+    // description.
+    expect(results).toHaveLength(2);
+    const descriptions = results.map((r) => r.description).sort();
+    expect(descriptions[0]).toMatch(/ch1\.xhtml/);
+    expect(descriptions[1]).toMatch(/ch2\.xhtml/);
+    for (const r of results) {
+      expect(r.success).toBe(true);
+      expect(r.before).toBeDefined();
+      expect(r.after).toBeDefined();
+    }
+  });
+
   it('uses a custom default language when supplied', async () => {
     zip.file('EPUB/xhtml/ch1.xhtml', '<?xml version="1.0"?><html><body/></html>');
     await fixXmlLang(zip, 'fr');

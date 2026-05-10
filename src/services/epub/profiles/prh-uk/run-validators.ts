@@ -132,12 +132,26 @@ function readDcTitle(opfContent: string): string | null {
 
 /**
  * Resolve a manifest href (relative to the OPF directory) into a zip path.
+ *
+ * The OPF lives in the zip at e.g. `EPUB/package.opf`; manifest item hrefs
+ * are relative to that file's directory. We have to normalise `.` and `..`
+ * segments because some valid manifests carry hrefs like
+ * `../text/nav-doc.xhtml` (when the OPF lives in a sub-directory). Plain
+ * concatenation would emit `EPUB/../text/nav-doc.xhtml`, which doesn't
+ * exist as a literal zip entry, so the lookup would silently fail.
  */
 function resolveOpfRelative(opfPath: string, href: string): string {
-  // OPF paths in the zip usually look like `EPUB/package.opf`. The manifest
-  // item href is relative to that file's directory. So `nav.xhtml` from
-  // `EPUB/package.opf` resolves to `EPUB/nav.xhtml`.
-  const dir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
-  // Don't normalise `..` segments — uncommon and risky to handle here.
-  return dir + href;
+  const dir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')) : '';
+  const combined = dir.length > 0 ? `${dir}/${href}` : href;
+  const segments = combined.split('/');
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join('/');
 }
