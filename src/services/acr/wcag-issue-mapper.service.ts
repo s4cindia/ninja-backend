@@ -59,6 +59,19 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   // Spine (publisher-specific; no direct WCAG analogue)
   'PRH-SPINE-COVER-LINEAR': [],
   'PRH-SPINE-FOOTNOTES-LAST': [],
+  // Nav (PR3)
+  'PRH-NAV-MISSING-PAGELIST': ['2.4.5'],
+  'PRH-NAV-PAGELIST-NOT-HIDDEN': [],
+  'PRH-NAV-LANDMARKS-MISSING-COVER': ['1.3.1'],
+  'PRH-NAV-LANDMARKS-MISSING-FRONTMATTER': ['1.3.1'],
+  'PRH-NAV-LANDMARKS-MISSING-TOC': ['1.3.1'],
+  'PRH-NAV-LANDMARKS-MISSING-BODYMATTER': ['1.3.1'],
+  // Per-XHTML (PR3)
+  'PRH-XHTML-XML-LANG': ['3.1.1'],
+  'PRH-XHTML-TITLE-EMPTY-OR-GENERIC': ['2.4.2'],
+  // Image (PR4)
+  'PRH-COVER-ALT-EMPTY': ['1.1.1'],
+  'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE': ['4.1.2'],
 
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content

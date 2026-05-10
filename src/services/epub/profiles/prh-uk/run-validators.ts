@@ -15,6 +15,7 @@ import { validatePrhMetadata } from './validators/metadata-validator';
 import { validatePrhSpine } from './validators/spine-validator';
 import { validatePrhNav } from './validators/nav-validator';
 import { validatePrhPerXhtml } from './validators/xhtml-validator';
+import { validatePrhImages } from './validators/image-validator';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
 
 export async function runPrhUkValidators(buffer: Buffer): Promise<PrhValidatorIssue[]> {
@@ -47,6 +48,7 @@ export async function runPrhUkValidators(buffer: Buffer): Promise<PrhValidatorIs
       ...validatePrhSpine(opfInput),
       ...validatePrhNav(navInput),
       ...validatePrhPerXhtml(perXhtmlInput),
+      ...validatePrhImages(perXhtmlInput),
     ];
   } catch (err) {
     logger.warn(
