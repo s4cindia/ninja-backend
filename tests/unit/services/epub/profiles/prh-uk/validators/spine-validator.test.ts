@@ -84,7 +84,7 @@ describe('validatePrhSpine', () => {
     const issues = validatePrhSpine(INPUT(opf));
     const issue = issues.find((i) => i.code === 'PRH-SPINE-FOOTNOTES-LAST');
     expect(issue).toBeDefined();
-    expect(issue?.message).toMatch(/last entry/i);
+    expect(issue?.message).toMatch(/trailing block/i);
   });
 
   it('flags footnotes file that is last but missing linear="no"', () => {
@@ -121,6 +121,65 @@ describe('validatePrhSpine', () => {
 
   it('returns empty when OPF has no spine block', () => {
     const opf = `<?xml version="1.0"?><package><manifest></manifest></package>`;
+    expect(validatePrhSpine(INPUT(opf))).toEqual([]);
+  });
+
+  it('does NOT misclassify discover.xhtml as the cover (regression)', () => {
+    // Regression for CodeRabbit P2: /cover/i matched inside "discover".
+    // The token-aware regex requires "cover" to be flanked by separators.
+    const opf = buildOpf({
+      manifest: `
+        <item id="discover" href="xhtml/discover.xhtml" media-type="application/xhtml+xml"/>
+        <item id="ch1" href="xhtml/chapter001.xhtml" media-type="application/xhtml+xml"/>
+      `,
+      spine: `
+        <itemref idref="discover"/>
+        <itemref idref="ch1"/>
+      `,
+    });
+    expect(validatePrhSpine(INPUT(opf)).find((i) => i.code === 'PRH-SPINE-COVER-LINEAR')).toBeUndefined();
+  });
+
+  it('flags an interrupted footnotes block: footnotes1, appendix, footnotes2 (regression)', () => {
+    // Regression for CodeRabbit P2: previously only the final spine entry
+    // was inspected, so a layout where footnotes1.xhtml sits earlier in
+    // the spine with non-footnotes between it and footnotes2.xhtml passed
+    // when only footnotes2 was correctly placed.
+    const opf = buildOpf({
+      manifest: `
+        <item id="cover" href="xhtml/cover.xhtml" media-type="application/xhtml+xml"/>
+        <item id="footnotes1" href="xhtml/footnotes1.xhtml" media-type="application/xhtml+xml"/>
+        <item id="appendix" href="xhtml/appendix.xhtml" media-type="application/xhtml+xml"/>
+        <item id="footnotes2" href="xhtml/footnotes2.xhtml" media-type="application/xhtml+xml"/>
+      `,
+      spine: `
+        <itemref idref="cover" linear="no"/>
+        <itemref idref="footnotes1"/>
+        <itemref idref="appendix"/>
+        <itemref idref="footnotes2" linear="no"/>
+      `,
+    });
+    const issues = validatePrhSpine(INPUT(opf));
+    // Should flag footnotes1 as misplaced AND footnotes1 as missing linear="no".
+    const footnoteIssues = issues.filter((i) => i.code === 'PRH-SPINE-FOOTNOTES-LAST');
+    expect(footnoteIssues.length).toBeGreaterThanOrEqual(1);
+    const combinedMsgs = footnoteIssues.map((i) => i.message).join(' | ');
+    expect(combinedMsgs).toMatch(/footnotes1/);
+  });
+
+  it('passes when both split footnotes files form the trailing block', () => {
+    const opf = buildOpf({
+      manifest: `
+        <item id="cover" href="xhtml/cover.xhtml" media-type="application/xhtml+xml"/>
+        <item id="footnotes1" href="xhtml/footnotes1.xhtml" media-type="application/xhtml+xml"/>
+        <item id="footnotes2" href="xhtml/footnotes2.xhtml" media-type="application/xhtml+xml"/>
+      `,
+      spine: `
+        <itemref idref="cover" linear="no"/>
+        <itemref idref="footnotes1" linear="no"/>
+        <itemref idref="footnotes2" linear="no"/>
+      `,
+    });
     expect(validatePrhSpine(INPUT(opf))).toEqual([]);
   });
 

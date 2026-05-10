@@ -10,7 +10,7 @@ import config from '../../config/index';
 import { epubJSAuditor } from './epub-js-auditor.service';
 import { callAceMicroservice } from './ace-client.service';
 import { detectPublisherProfile } from './profiles/profile-detector.service';
-import type { PublisherProfile } from './profiles/types';
+import { NO_PROFILE, type PublisherProfile } from './profiles/types';
 import { runPrhUkValidators } from './profiles/prh-uk';
 import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../utils/issue-flow-logger';
 import { getFixType } from '../../constants/fix-classification';
@@ -286,10 +286,20 @@ class EpubAuditService {
       // profile is attached to the audit result regardless of confidence,
       // but validators only run on `medium` or `high` confidence to avoid
       // false-positive PRH issues on incidental signal matches.
-      const publisherProfile = await detectPublisherProfile(buffer);
-      if (publisherProfile.publisher) {
-        logger.info(
-          `[Profile] Detected ${publisherProfile.publisher} (imprint=${publisherProfile.imprint}, confidence=${publisherProfile.confidence}, signals=${publisherProfile.signals.length})`,
+      // Defensive try/catch: detectPublisherProfile catches its own errors
+      // internally, but we belt-and-braces it here so any unforeseen throw
+      // (e.g. logger failure, weird buffer shape) cannot break the audit.
+      let publisherProfile: PublisherProfile = NO_PROFILE;
+      try {
+        publisherProfile = await detectPublisherProfile(buffer);
+        if (publisherProfile.publisher) {
+          logger.info(
+            `[Profile] Detected ${publisherProfile.publisher} (imprint=${publisherProfile.imprint}, confidence=${publisherProfile.confidence}, signals=${publisherProfile.signals.length})`,
+          );
+        }
+      } catch (profileErr) {
+        logger.warn(
+          `[Profile] detection threw: ${profileErr instanceof Error ? profileErr.message : 'Unknown error'} — falling back to NO_PROFILE`,
         );
       }
       if (publisherProfile.publisher === 'PRH-UK' && publisherProfile.confidence !== 'low') {

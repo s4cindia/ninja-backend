@@ -56,26 +56,51 @@ export function validatePrhSpine(input: PrhValidatorInput): PrhValidatorIssue[] 
     }
   }
 
-  // ── 2. Footnotes file must be last in spine and linear="no" ────────────
+  // ── 2. Every footnotes file must be in the trailing block of the spine
+  //      AND marked linear="no". A spine like
+  //      [..., footnotes1.xhtml, appendix.xhtml, footnotes2.xhtml] is
+  //      non-conforming because footnotes1 is interrupted by a non-footnotes
+  //      item (appendix), even if footnotes2 is correctly at the end.
   const footnotesItems = findFootnotesManifestItems(manifest);
   if (footnotesItems.length > 0) {
-    const lastSpine = spine[spine.length - 1];
-    const lastItem = manifest.find((m) => m.id === lastSpine.idref);
+    const footnoteIds = new Set(footnotesItems.map((m) => m.id));
 
-    const isFootnotes = lastItem && hrefLooksLikeFootnotes(lastItem.href);
+    // Trailing block: walk back from the end, collecting consecutive
+    // footnote-only itemrefs.
+    let trailingStart = spine.length;
+    while (trailingStart > 0 && footnoteIds.has(spine[trailingStart - 1].idref)) {
+      trailingStart--;
+    }
 
-    if (!isFootnotes) {
+    const misplaced: string[] = [];
+    const missingLinear: string[] = [];
+
+    for (let i = 0; i < spine.length; i++) {
+      const ref = spine[i];
+      if (!footnoteIds.has(ref.idref)) continue;
+      // Position must be inside the trailing footnote-only block.
+      if (i < trailingStart) {
+        misplaced.push(ref.idref);
+      }
+      // Each footnote itemref must be linear="no".
+      if (ref.linear !== 'no') {
+        missingLinear.push(ref.idref);
+      }
+    }
+
+    if (misplaced.length > 0) {
       issues.push(
         buildIssue('PRH-SPINE-FOOTNOTES-LAST', location, {
-          message: `A footnotes file is present (${footnotesItems.map((f) => f.href).join(', ')}) but is not the last entry in the spine; PRH requires footnotes to come last`,
-          suggestion: 'Reorder the spine so the footnotes itemref is the final entry, and add linear="no" to it',
+          message: `Footnotes itemref(s) [${misplaced.join(', ')}] are not in the trailing block of the spine; PRH requires every footnotes file to come at the end`,
+          suggestion: `Reorder the spine so all footnotes itemrefs (${footnotesItems.map((m) => m.id).join(', ')}) form the final contiguous block, each with linear="no"`,
         }),
       );
-    } else if (lastSpine.linear !== 'no') {
+    }
+    if (missingLinear.length > 0) {
       issues.push(
         buildIssue('PRH-SPINE-FOOTNOTES-LAST', location, {
-          message: `Footnotes spine entry is last but ${lastSpine.linear == null ? 'is missing linear="no"' : `has linear="${lastSpine.linear}"`}`,
-          suggestion: `Add linear="no" to <itemref idref="${lastSpine.idref}">`,
+          message: `Footnotes itemref(s) [${missingLinear.join(', ')}] are missing linear="no"`,
+          suggestion: `Add linear="no" to each: ${missingLinear.map((id) => `<itemref idref="${id}">`).join(', ')}`,
         }),
       );
     }
@@ -132,13 +157,16 @@ function readAttr(attrs: string, name: string): string | null {
 function findCoverManifestItem(manifest: ManifestItem[]): ManifestItem | null {
   // Most reliable: an item explicitly carrying properties="cover-image" is
   // the cover IMAGE; the cover XHTML is usually id="cover" or has cover in
-  // its href. We want the cover XHTML (the spine entry), not the image.
-  // Heuristic: prefer XHTML/HTML entries where id or href matches /cover/i.
+  // its href basename. Use a token-aware regex so unrelated names like
+  // `discover.xhtml` or `covers.xhtml` are not mistaken for the cover.
+  // The pattern requires "cover" to be flanked by a separator on both sides
+  // (start-of-string, `/`, `_`, `-`, `.` or end-of-string).
+  const COVER_TOKEN = /(?:^|[/_-])cover(?:[/._-]|$)/i;
   const candidates = manifest.filter(
-    (m) => /\.(x?html?)$/i.test(m.href) && /cover/i.test(m.id + ' ' + m.href),
+    (m) => /\.(x?html?)$/i.test(m.href) && (COVER_TOKEN.test(m.id) || COVER_TOKEN.test(m.href)),
   );
   if (candidates.length === 0) return null;
-  // Prefer id=cover exact, then anything with "cover" in href.
+  // Prefer id=cover exact, then anything with "cover" token in href.
   const exactId = candidates.find((c) => c.id.toLowerCase() === 'cover');
   if (exactId) return exactId;
   return candidates[0];

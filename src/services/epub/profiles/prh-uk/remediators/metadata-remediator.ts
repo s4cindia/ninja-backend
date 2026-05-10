@@ -82,8 +82,10 @@ export async function fixTdmReservation(zip: JSZip): Promise<ChangeResult[]> {
     let working = opf;
     let changed = false;
 
-    // 1. Ensure the tdm: prefix is declared on <package>.
-    const tdmPrefix = 'tdm: http://www.w3.org/ns/tdmrep#';
+    // 1. Ensure the tdm: prefix is declared on <package> AND maps to the
+    //    correct URI (an existing `tdm:` mapped to a wrong URI must be
+    //    rewritten — not silently kept).
+    const tdmUri = 'http://www.w3.org/ns/tdmrep#';
     const packageOpenRe = /<package\b([^>]*)>/i;
     const pkgMatch = working.match(packageOpenRe);
     if (pkgMatch) {
@@ -91,15 +93,27 @@ export async function fixTdmReservation(zip: JSZip): Promise<ChangeResult[]> {
       const prefixAttrRe = /\bprefix\s*=\s*(["'])([^"']*)\1/i;
       const existing = attrs.match(prefixAttrRe);
       if (existing) {
-        if (!existing[2].toLowerCase().includes('tdm:')) {
-          const newPrefix = `${existing[2].trim()} ${tdmPrefix}`.trim();
-          const newAttrs = attrs.replace(prefixAttrRe, `prefix="${newPrefix}"`);
+        const pairs = parsePrefixPairs(existing[2]);
+        const tdmIdx = pairs.findIndex(([k]) => k.toLowerCase() === 'tdm:');
+        if (tdmIdx === -1) {
+          pairs.push(['tdm:', tdmUri]);
+        } else if (pairs[tdmIdx][1] !== tdmUri) {
+          pairs[tdmIdx] = ['tdm:', tdmUri];
+        } else {
+          // Already correct — don't touch.
+          // (skip the rewrite to keep the OPF byte-identical)
+          // This path leaves `changed` to be set only by step 2.
+          // Continue.
+        }
+        const serialised = pairs.map(([k, v]) => `${k} ${v}`).join(' ');
+        if (serialised !== existing[2].trim()) {
+          const newAttrs = attrs.replace(prefixAttrRe, `prefix="${serialised}"`);
           working = working.replace(packageOpenRe, `<package${newAttrs}>`);
           changed = true;
         }
       } else {
         // No prefix attribute at all — add one.
-        const newAttrs = `${attrs.trimEnd()} prefix="${tdmPrefix}"`;
+        const newAttrs = `${attrs.trimEnd()} prefix="tdm: ${tdmUri}"`;
         working = working.replace(packageOpenRe, `<package${newAttrs}>`);
         changed = true;
       }
@@ -256,6 +270,20 @@ function insertIntoMetadata(opf: string, fragment: string): string | null {
   const closeRe = /<\/metadata>/i;
   if (!closeRe.test(opf)) return null;
   return opf.replace(closeRe, `  ${fragment}\n</metadata>`);
+}
+
+/**
+ * Parse the value of a `prefix=` attribute on `<package>` into [name, uri]
+ * pairs. The attribute is a space-separated stream of `name: uri` tokens
+ * (e.g. `schema: http://schema.org/ tdm: http://www.w3.org/ns/tdmrep#`).
+ */
+function parsePrefixPairs(prefixValue: string): [string, string][] {
+  const tokens = prefixValue.trim().split(/\s+/).filter((t) => t.length > 0);
+  const pairs: [string, string][] = [];
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    pairs.push([tokens[i], tokens[i + 1]]);
+  }
+  return pairs;
 }
 
 /** Pull out a short excerpt of the metadata block for change-log diffing. */

@@ -157,17 +157,22 @@ function readDcMetaValue(opf: string, name: string): string | null {
 }
 
 function hasCertifierLink(opf: string, expectedHref: string): boolean {
-  // Find <link rel="a11y:certifierCredential" ... href="..."/>
+  // Find <link rel="a11y:certifierCredential" ... href="..."/>. Exact-match
+  // the href (after normalising trailing slash + case) so we don't accept
+  // values like "https://example.com/?next=https://daisy.github.io/ace".
   const re = /<link\b[^>]*\brel\s*=\s*["']a11y:certifierCredential["'][^>]*\bhref\s*=\s*["']([^"']+)["']/i;
-  const m = opf.match(re);
+  let m = opf.match(re);
   if (!m) {
     // Try with attribute order reversed (href before rel).
     const re2 = /<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\brel\s*=\s*["']a11y:certifierCredential["']/i;
-    const m2 = opf.match(re2);
-    if (!m2) return false;
-    return m2[1].toLowerCase().includes(expectedHref.toLowerCase());
+    m = opf.match(re2);
+    if (!m) return false;
   }
-  return m[1].toLowerCase().includes(expectedHref.toLowerCase());
+  return normaliseHref(m[1]) === normaliseHref(expectedHref);
+}
+
+function normaliseHref(href: string): string {
+  return href.trim().toLowerCase().replace(/\/+$/, '');
 }
 
 function buildIssue(

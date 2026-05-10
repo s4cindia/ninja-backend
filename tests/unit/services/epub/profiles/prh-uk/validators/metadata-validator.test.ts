@@ -161,6 +161,26 @@ describe('validatePrhMetadata', () => {
     }
   });
 
+  it('rejects a phishing-style certifier link href (substring impostor)', () => {
+    // Regression for CodeRabbit major: previously hasCertifierLink used
+    // includes() which would accept this attacker-controlled redirect URL.
+    const opf = compliantOpf().replace(
+      'href="https://daisy.github.io/ace"',
+      'href="https://example.com/?next=https://daisy.github.io/ace"',
+    );
+    const issues = validatePrhMetadata(INPUT(opf));
+    expect(issues.find((i) => i.code === 'PRH-META-CERTIFIER-LINK')).toBeDefined();
+  });
+
+  it('accepts a certifier link href that differs only by trailing slash', () => {
+    const opf = compliantOpf().replace(
+      'href="https://daisy.github.io/ace"',
+      'href="https://daisy.github.io/ace/"',
+    );
+    const issues = validatePrhMetadata(INPUT(opf));
+    expect(issues.find((i) => i.code === 'PRH-META-CERTIFIER-LINK')).toBeUndefined();
+  });
+
   it('handles single-quoted attributes', () => {
     const opf = compliantOpf().replaceAll('"', "'");
     const issues = validatePrhMetadata(INPUT(opf));

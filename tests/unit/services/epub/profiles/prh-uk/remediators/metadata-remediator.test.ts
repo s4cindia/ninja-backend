@@ -161,6 +161,22 @@ describe('PRH metadata remediators', () => {
     expect(result2[0].description).toMatch(/already compliant/i);
   });
 
+  it('fixTdmReservation rewrites a wrong tdm: URI mapping (regression)', async () => {
+    // Regression for CodeRabbit major: previously the prefix-attribute
+    // check only verified that `tdm:` existed, so a wrong URI mapping
+    // (e.g. a stale older URI) was silently kept.
+    const opf0 = await readOpf(zip);
+    const opfWithWrongTdm = opf0.replace(
+      '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">',
+      '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" prefix="tdm: http://wrong.example.com/tdm/">',
+    );
+    zip.file('EPUB/package.opf', opfWithWrongTdm);
+    await fixTdmReservation(zip);
+    const after = await readOpf(zip);
+    expect(after).toContain('tdm: http://www.w3.org/ns/tdmrep#');
+    expect(after).not.toContain('http://wrong.example.com/tdm/');
+  });
+
   it('returns success:false when OPF is missing', async () => {
     const broken = new JSZip();
     broken.file('META-INF/container.xml', CONTAINER_XML);

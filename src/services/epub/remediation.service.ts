@@ -23,6 +23,34 @@ import {
   findMissingIssues,
 } from '../../utils/issue-debugger';
 import type { ModificationResult } from './epub-modifier.service';
+import {
+  fixConformsTo,
+  fixCertifiedBy,
+  fixCertifierCredential,
+  fixCertifierLink,
+  fixTdmReservation,
+  fixA11ySummaryUrl,
+} from './profiles/prh-uk';
+
+/**
+ * PRH metadata fix functions return a slim {success, description, before?,
+ * after?} shape; this autoApplyHighConfidenceFixes pipeline expects the
+ * full ModificationResult shape with filePath + modificationType. Adapt
+ * the slim results into the expected shape so the caller's success/failure
+ * accounting and change-log code paths work unchanged.
+ */
+function adaptPrhResults(
+  results: Array<{ success: boolean; description: string; before?: string; after?: string }>,
+): ModificationResult[] {
+  return results.map((r) => ({
+    success: r.success,
+    filePath: 'package.opf',
+    modificationType: 'metadata',
+    description: r.description,
+    before: r.before,
+    after: r.after,
+  }));
+}
 
 type RemediationStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
 type RemediationPriority = 'critical' | 'high' | 'medium' | 'low';
@@ -1653,6 +1681,27 @@ class RemediationService {
               .map(t => t.location)
               .filter((loc): loc is string => !!loc);
             fixResults = await epubModifier.addAriaLandmarks(zip, targetLocations);
+            break;
+          // ── PRH UK profile metadata auto-fixes ────────────────────────
+          // Each handler rewrites a single literal PRH-required field in
+          // the OPF. Idempotent: re-running on a compliant OPF is a no-op.
+          case 'PRH-META-CONFORMS-TO':
+            fixResults = adaptPrhResults(await fixConformsTo(zip));
+            break;
+          case 'PRH-META-CERTIFIED-BY':
+            fixResults = adaptPrhResults(await fixCertifiedBy(zip));
+            break;
+          case 'PRH-META-CERTIFIER-CRED':
+            fixResults = adaptPrhResults(await fixCertifierCredential(zip));
+            break;
+          case 'PRH-META-CERTIFIER-LINK':
+            fixResults = adaptPrhResults(await fixCertifierLink(zip));
+            break;
+          case 'PRH-META-TDM-RESERVATION':
+            fixResults = adaptPrhResults(await fixTdmReservation(zip));
+            break;
+          case 'PRH-META-A11Y-SUMMARY-URL':
+            fixResults = adaptPrhResults(await fixA11ySummaryUrl(zip));
             break;
           default:
             logger.debug(`[AutoFix] No auto-fix handler for ${code}, skipping`);
