@@ -73,9 +73,18 @@ describe('runPrhUkValidators (orchestrator)', () => {
   </spine>
 </package>`,
     );
-    // The nav doc lives at `text/nav-doc.xhtml` (zip-root-relative),
-    // reached from OEBPS/package.opf via `../text/nav-doc.xhtml`.
-    zip.file('text/nav-doc.xhtml', COMPLIANT_NAV);
+    // Use a deliberately non-compliant nav doc — it has the toc + landmarks
+    // blocks but is MISSING the page-list block. If path normalisation
+    // works, the nav validator parses the doc and emits
+    // PRH-NAV-MISSING-PAGELIST. If normalisation is broken, the doc isn't
+    // found and the validator silently emits nothing — and the test fails.
+    // This makes the assertion unambiguous about whether the nav lookup
+    // actually succeeded.
+    const NAV_MISSING_PAGELIST = COMPLIANT_NAV.replace(
+      /<nav epub:type="page-list"[\s\S]*?<\/nav>/,
+      '',
+    );
+    zip.file('text/nav-doc.xhtml', NAV_MISSING_PAGELIST);
     zip.file(
       'text/cover.xhtml',
       '<?xml version="1.0"?><html lang="en" xml:lang="en"><head><title>Cover, Cross-dir Book</title></head><body/></html>',
@@ -83,15 +92,13 @@ describe('runPrhUkValidators (orchestrator)', () => {
 
     const buffer = await zip.generateAsync({ type: 'nodebuffer' });
     const issues = await runPrhUkValidators(buffer);
-    // If path normalisation is broken, the orchestrator can't find
-    // nav-doc.xhtml and the nav validator silently emits nothing — but
-    // we'd also get NO PRH-NAV-MISSING-PAGELIST issue (since the source
-    // input was null). With normalisation working, the compliant nav doc
-    // is parsed and yields zero PRH-NAV-* issues.
-    const navIssues = issues.filter((i) => i.code.startsWith('PRH-NAV-'));
-    expect(navIssues).toEqual([]);
-    // Sanity: metadata validator also ran (we'd have flagged missing
-    // metadata if the orchestrator had aborted early).
+    // Path normalisation working ⇒ nav doc found ⇒ PRH-NAV-MISSING-PAGELIST
+    // is emitted. If normalisation is broken, the nav doc isn't found and
+    // this assertion fails — making the regression test unambiguous.
+    const pageListIssue = issues.find((i) => i.code === 'PRH-NAV-MISSING-PAGELIST');
+    expect(pageListIssue).toBeDefined();
+    // Sanity: metadata validator also ran (we'd have seen all-six PRH-META-*
+    // issues if the orchestrator had aborted early before reading the OPF).
     const metaIssues = issues.filter((i) => i.code.startsWith('PRH-META-'));
     expect(metaIssues).toEqual([]);
   });

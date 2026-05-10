@@ -152,6 +152,19 @@ describe('fixXmlLang', () => {
     }
   });
 
+  it('falls back to "en" when defaultLanguage is empty/whitespace (regression)', async () => {
+    // Regression for CodeRabbit: an empty or whitespace defaultLanguage
+    // would have written `lang=""` / `xml:lang=""` — the same broken
+    // attributes the validator complains about. Sanitise to "en".
+    zip.file('EPUB/xhtml/ch1.xhtml', '<?xml version="1.0"?><html><body/></html>');
+    await fixXmlLang(zip, '   ');
+    const updated = await getFile(zip, 'EPUB/xhtml/ch1.xhtml');
+    expect(updated).toMatch(/lang="en"/);
+    expect(updated).toMatch(/xml:lang="en"/);
+    expect(updated).not.toMatch(/lang=""/);
+    expect(updated).not.toMatch(/lang="   "/);
+  });
+
   it('uses a custom default language when supplied', async () => {
     zip.file('EPUB/xhtml/ch1.xhtml', '<?xml version="1.0"?><html><body/></html>');
     await fixXmlLang(zip, 'fr');

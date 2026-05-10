@@ -31,6 +31,9 @@ interface ChangeResult {
  * the existing value is reused so we don't drift the language code.
  */
 export async function fixXmlLang(zip: JSZip, defaultLanguage: string = 'en'): Promise<ChangeResult[]> {
+  // Reject empty / whitespace-only language codes so they can't flow
+  // through and produce `lang=""` (which would re-trigger the validator).
+  const safeDefault = defaultLanguage.trim().length > 0 ? defaultLanguage.trim() : 'en';
   const results: ChangeResult[] = [];
   const filePaths = Object.keys(zip.files);
   let touched = 0;
@@ -67,10 +70,10 @@ export async function fixXmlLang(zip: JSZip, defaultLanguage: string = 'en'): Pr
     }
 
     // Decide the language code: prefer existing non-empty lang, else
-    // existing non-empty xml:lang, else default.
+    // existing non-empty xml:lang, else the sanitised default.
     const language = (hasGoodLang ? langValue : null)
       ?? (hasGoodXmlLang ? xmlLangValue : null)
-      ?? defaultLanguage;
+      ?? safeDefault;
 
     let newAttrs = attrs;
     if (!hasGoodLang) {
