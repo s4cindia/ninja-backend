@@ -4,7 +4,7 @@ export const batchAcrGenerateSchema = z.object({
   batchId: z.string().min(1, 'Batch ID is required'),
   mode: z.enum(['individual', 'aggregate']).describe('Mode is required'),
   options: z.object({
-    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']),
+    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT', 'VPAT2.5-PRH-UK']),
     batchName: z.string().min(1, 'Batch name is required'),
     vendor: z.string().min(1, 'Vendor name is required'),
     contactEmail: z.string().email('Invalid email format'),

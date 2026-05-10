@@ -469,6 +469,7 @@ class AcrGeneratorService {
       criterion('1.2.1', 'Audio-only and Video-only (Prerecorded)', 'A'),
       criterion('1.2.2', 'Captions (Prerecorded)', 'A'),
       criterion('1.2.3', 'Audio Description or Media Alternative', 'A'),
+      criterion('1.2.4', 'Captions (Live)', 'AA'),
       criterion('1.2.5', 'Audio Description (Prerecorded)', 'AA'),
       criterion('1.3.1', 'Info and Relationships', 'A'),
       criterion('1.3.2', 'Meaningful Sequence', 'A'),

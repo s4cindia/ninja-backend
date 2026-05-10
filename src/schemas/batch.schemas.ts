@@ -20,7 +20,7 @@ export const batchListSchema = z.object({
 export const batchAcrGenerateSchema = z.object({
   mode: z.enum(['individual', 'aggregate']),
   options: z.object({
-    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']),
+    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT', 'VPAT2.5-PRH-UK']),
     batchName: z.string().min(1),
     vendor: z.string().min(1),
     contactEmail: z.string().email(),

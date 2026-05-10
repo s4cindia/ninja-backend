@@ -61,6 +61,17 @@ describe('AcrGeneratorService — VPAT2.5-PRH-UK edition', () => {
     expect(ids.has('3.3.9')).toBe(false);  // Accessible Authentication (Enhanced) — AAA
   });
 
+  it('includes WCAG 2.1 AA criterion 1.2.4 Captions (Live) — regression', async () => {
+    // Regression for CodeRabbit P2: getWcag21BaseCriteria previously
+    // omitted 1.2.4 (Captions (Live), AA). For a report claiming WCAG 2.2
+    // Level AA conformance, omitting an AA criterion is a hard gap.
+    const criteria = await acrGeneratorService.getCriteriaForEdition('VPAT2.5-PRH-UK');
+    const c124 = criteria.find((c) => c.id === '1.2.4');
+    expect(c124).toBeDefined();
+    expect(c124?.level).toBe('AA');
+    expect(c124?.name).toMatch(/Captions \(Live\)/i);
+  });
+
   it('still contains the WCAG 2.1 base criteria (no regression in coverage)', async () => {
     const criteria = await acrGeneratorService.getCriteriaForEdition('VPAT2.5-PRH-UK');
     const ids = new Set(criteria.map((c) => c.id));
