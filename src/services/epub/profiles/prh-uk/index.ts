@@ -1,9 +1,21 @@
 /**
  * PRH UK profile module.
  *
- * PR1 (foundation): exposes the imprint detector only. Validators (metadata,
- * spine, nav, per-XHTML, image) and remediators land in PR2-PR4.
+ * PR1 (foundation) added the imprint detector. PR2 adds the metadata and
+ * spine validators plus their auto-fix remediators. PR3+ will add nav,
+ * per-XHTML, and image validators.
  */
 
 export { detectPrhImprint } from './imprint-detector';
 export type { ImprintDetectionInput, ImprintDetectionResult } from './imprint-detector';
+
+export { runPrhUkValidators } from './run-validators';
+export type { PrhValidatorIssue } from './validators/types';
+export {
+  fixConformsTo,
+  fixCertifiedBy,
+  fixCertifierCredential,
+  fixCertifierLink,
+  fixTdmReservation,
+  fixA11ySummaryUrl,
+} from './remediators/metadata-remediator';
