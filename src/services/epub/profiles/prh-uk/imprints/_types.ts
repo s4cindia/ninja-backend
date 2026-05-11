@@ -136,6 +136,18 @@ export interface SocialChannel {
   id: 'twitter' | 'facebook' | 'instagram' | 'youtube' | 'pinterest' | 'linkedin' | 'tiktok' | 'newsletter';
   /** Substring that must appear in the socials page (case-insensitive, post-normalisation). */
   handle: string;
+  /**
+   * Optional context-aware matcher used when the bare `handle` is
+   * ambiguous across channels. Vintage is the motivating case — three
+   * of its four channels share the handle "@vintagebooks", so a plain
+   * `includes('@vintagebooks')` returns the same index for all three
+   * and silently bypasses the order check. When `detector` is set, the
+   * validator uses its match position for ordering/presence; `handle`
+   * is still surfaced in messages and suggestions as the canonical
+   * text the operator should display. The detector should be
+   * case-insensitive (the haystack is lowercased before matching).
+   */
+  detector?: RegExp;
 }
 
 /**
@@ -213,4 +225,14 @@ export interface ImprintRules {
    * Ladybird, #Merky).
    */
   socials: SocialsRules | null;
+  /**
+   * Optional secondary socials ruleset for imprints that ship a
+   * cut-down variant (Penguin's `follow_penguin_ya.xhtml` is the
+   * motivating case — YA editions list Instagram + YouTube + TikTok
+   * only, with TikTok pointing at `@houseofya`). When the validator
+   * detects the YA-variant filename it switches to these rules in
+   * place of the full set; otherwise undefined means the imprint
+   * has no YA variant.
+   */
+  socialsYa?: SocialsRules;
 }

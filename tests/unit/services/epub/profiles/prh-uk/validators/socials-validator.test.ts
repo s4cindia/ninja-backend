@@ -191,6 +191,108 @@ describe('validatePrhSocials — Cornerstone Saga (newsletter + Facebook)', () =
   });
 });
 
+describe('validatePrhSocials — Vintage ambiguous handle regression', () => {
+  const vintageRules = getImprintRules('vintage')!;
+
+  it('flags order error when twitter and instagram swap positions (detector regression)', () => {
+    // Three Vintage channels share the bare handle "@vintagebooks";
+    // the order check must rely on per-channel detectors, not on
+    // raw indexOf. Swapping twitter and instagram blocks should fire
+    // CHANNEL-ORDER-WRONG even though "@vintagebooks" first occurs
+    // at the same position regardless of which line is first.
+    const swapped = `<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>Follow Vintage</title></head>
+<body epub:type="backmatter">
+  <p>Instagram @vintagebooks</p>
+  <p>Twitter @vintagebooks</p>
+  <p>TikTok @vintageukbooks</p>
+  <p>Facebook @vintagebooks</p>
+  <p>World-class writing. Beautiful design. Ideas that matter.</p>
+</body>
+</html>`;
+    const file: PrhXhtmlFile = {
+      path: 'EPUB/xhtml/vintage/vin_endpage_socials.xhtml',
+      content: swapped,
+    };
+    const issues = validatePrhSocials(input([file], vintageRules));
+    expect(issues.find((i) => i.code === 'PRH-SOCIALS-CHANNEL-ORDER-WRONG')).toBeDefined();
+  });
+
+  it('reports twitter as missing when only the bare @vintagebooks appears with no "Twitter" keyword nearby', () => {
+    // The handle string is shared across three channels; without the
+    // channel keyword the detector should not match → twitter shows
+    // up as MISSING rather than silently passing on the shared handle.
+    const noTwitterKeyword = `<?xml version="1.0"?>
+<html xmlns:epub="http://www.idpf.org/2007/ops">
+<body epub:type="backmatter">
+  <p>Instagram @vintagebooks</p>
+  <p>TikTok @vintageukbooks</p>
+  <p>Facebook @vintagebooks</p>
+  <p>World-class writing. Beautiful design. Ideas that matter.</p>
+</body>
+</html>`;
+    const file: PrhXhtmlFile = {
+      path: 'EPUB/xhtml/vintage/vin_endpage_socials.xhtml',
+      content: noTwitterKeyword,
+    };
+    const issues = validatePrhSocials(input([file], vintageRules));
+    const missingTwitter = issues.find(
+      (i) => i.code === 'PRH-SOCIALS-CHANNEL-MISSING' && /twitter/i.test(i.message),
+    );
+    expect(missingTwitter).toBeDefined();
+  });
+});
+
+describe('validatePrhSocials — Penguin YA cut-down variant', () => {
+  const penguinRules = getImprintRules('penguin')!;
+
+  function compliantPenguinYaSocials(): string {
+    return `<?xml version="1.0"?>
+<html xmlns:epub="http://www.idpf.org/2007/ops">
+<body epub:type="backmatter">
+  <h2>Follow Penguin YA</h2>
+  <ul>
+    <li><a href="https://instagram.com/penguinukbooks">Instagram</a></li>
+    <li><a href="https://youtube.com/penguinbooks">YouTube</a></li>
+    <li><a href="https://tiktok.com/@houseofya">TikTok</a></li>
+  </ul>
+</body>
+</html>`;
+  }
+
+  it('emits zero issues for a compliant Penguin YA page (Instagram + YouTube + TikTok @houseofya)', () => {
+    const file: PrhXhtmlFile = {
+      path: 'EPUB/xhtml/follow_penguin_ya.xhtml',
+      content: compliantPenguinYaSocials(),
+    };
+    expect(validatePrhSocials(input([file], penguinRules))).toEqual([]);
+  });
+
+  it('does NOT flag the missing 4 channels that the full Penguin page requires (Twitter, Facebook, Pinterest, LinkedIn)', () => {
+    const file: PrhXhtmlFile = {
+      path: 'EPUB/xhtml/follow_penguin_ya.xhtml',
+      content: compliantPenguinYaSocials(),
+    };
+    const issues = validatePrhSocials(input([file], penguinRules));
+    for (const channelId of ['twitter', 'facebook', 'pinterest', 'linkedin']) {
+      const missing = issues.find(
+        (i) => i.code === 'PRH-SOCIALS-CHANNEL-MISSING' && i.message.toLowerCase().includes(channelId),
+      );
+      expect(missing, `${channelId} should not be flagged on the YA variant`).toBeUndefined();
+    }
+  });
+
+  it('still flags YA-page issues if the TikTok handle uses the full-Penguin account (@penguinukbooks)', () => {
+    const file: PrhXhtmlFile = {
+      path: 'EPUB/xhtml/follow_penguin_ya.xhtml',
+      content: compliantPenguinYaSocials().replace('tiktok.com/@houseofya', 'tiktok.com/@penguinukbooks'),
+    };
+    const issues = validatePrhSocials(input([file], penguinRules));
+    expect(issues.find((i) => i.code === 'PRH-SOCIALS-HANDLE-WRONG')).toBeDefined();
+  });
+});
+
 describe('validatePrhSocials — imprints without a canonical socials page', () => {
   it('Puffin emits zero socials issues regardless of EPUB content', () => {
     const puffinRules = getImprintRules('puffin')!;

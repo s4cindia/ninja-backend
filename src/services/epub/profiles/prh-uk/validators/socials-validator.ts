@@ -64,9 +64,17 @@ export function validatePrhSocials(input: SocialsInput): PrhValidatorIssue[] {
 
   // Imprint has no canonical socials page (Puffin / Pelican / Ladybird / Merky).
   if (!input.imprintRules.socials) return issues;
-  const rules = input.imprintRules.socials;
 
   const socialsFile = findSocialsXhtml(input.xhtmlFiles, input.imprintRules.imprint);
+  // Pick the YA ruleset when the YA-variant filename matches AND the
+  // imprint declares one (Penguin only). Otherwise use the full rules.
+  // The YA variant ships a smaller channel set per Branding Guide §6 —
+  // validating it against the full ruleset would emit a flurry of
+  // CHANNEL-MISSING issues for conformant YA builds.
+  const rules = socialsFile && isPenguinYaFile(socialsFile.path) && input.imprintRules.socialsYa
+    ? input.imprintRules.socialsYa
+    : input.imprintRules.socials;
+
   if (!socialsFile) {
     issues.push(buildIssue(
       'PRH-SOCIALS-PAGE-MISSING',
@@ -81,16 +89,18 @@ export function validatePrhSocials(input: SocialsInput): PrhValidatorIssue[] {
 
   // Track which channels are present (handle matches) — order check
   // only considers channels that are actually present, so a missing
-  // channel doesn't double-fire as out-of-order too.
-  const channelsPresent: SocialChannel[] = [];
+  // channel doesn't double-fire as out-of-order too. Each entry
+  // records the channel and its match index in the normalised text
+  // (so the order check uses the actual detector position rather than
+  // recomputing it later).
+  const channelsPresent: Array<{ channel: SocialChannel; index: number }> = [];
   for (const channel of rules.channels) {
-    const handle = channel.handle.toLowerCase();
+    const presentAt = findChannelIndex(channel, normalised);
     const prefix = CHANNEL_URL_PREFIX[channel.id].toLowerCase();
-    const handlePresent = normalised.includes(handle);
     const prefixPresent = prefix.length > 0 && normalised.includes(prefix);
 
-    if (handlePresent) {
-      channelsPresent.push(channel);
+    if (presentAt >= 0) {
+      channelsPresent.push({ channel, index: presentAt });
       continue;
     }
 
@@ -118,9 +128,12 @@ export function validatePrhSocials(input: SocialsInput): PrhValidatorIssue[] {
     ));
   }
 
-  // Order check — compare the FIRST occurrence of each present channel's
-  // url-prefix (or handle, for newsletter) against the declared order.
-  if (channelsPresent.length >= 2 && !isOrderCorrect(channelsPresent, normalised)) {
+  // Order check — the indices were captured per-channel above using
+  // the channel-specific detector (regex or handle substring), so the
+  // check is just "do these indices increase monotonically?". This
+  // gives correct behaviour for Vintage where three channels share
+  // the same plain handle but each has its own context-aware detector.
+  if (channelsPresent.length >= 2 && !isOrderMonotonic(channelsPresent.map((c) => c.index))) {
     issues.push(buildIssue(
       'PRH-SOCIALS-CHANNEL-ORDER-WRONG',
       `Socials channels appear in a different order than ${input.imprintRules.displayName} specifies (expected: ${rules.channels.map((c) => c.id).join(' → ')}).`,
@@ -249,26 +262,60 @@ function normaliseSocialsText(html: string): string {
 }
 
 /**
- * Verify that the channels appear in the page in the declared order.
- * Uses the FIRST occurrence of each channel's distinguishing marker
- * (url-prefix for social channels, the handle itself for newsletter)
- * and asserts the indices increase monotonically.
+ * Locate a channel's first match position in the normalised text.
+ * Preference order:
+ *   1. Channel-specific `detector` regex (used by Vintage to
+ *      disambiguate three @vintagebooks channels).
+ *   2. URL prefix (`twitter.com/` etc.) — used when the channel's
+ *      canonical handle is a URL.
+ *   3. Bare handle substring — used for newsletter or @-only handles
+ *      with no URL prefix.
+ *
+ * Returns -1 when none of these are present in the text.
+ *
+ * IMPORTANT: this function decides BOTH "is the channel present?" AND
+ * "where in the page is it?" — so a channel with a `detector` is
+ * considered missing whenever the detector regex fails, even if the
+ * bare handle string happens to appear elsewhere in the page (e.g. a
+ * stray @vintagebooks mention in body copy). That stricter rule is
+ * intentional: detectors exist precisely to disambiguate ambiguous
+ * handles.
  */
-function isOrderCorrect(channels: SocialChannel[], normalised: string): boolean {
-  const indices: number[] = [];
-  for (const c of channels) {
-    const prefix = CHANNEL_URL_PREFIX[c.id].toLowerCase();
-    const marker = prefix.length > 0 ? prefix : c.handle.toLowerCase();
-    const idx = normalised.indexOf(marker);
-    // All channels we're checking are .channelsPresent, so idx must be ≥0.
-    // Defensive guard kept in case the caller drifts.
-    if (idx < 0) return true;
-    indices.push(idx);
+function findChannelIndex(channel: SocialChannel, normalised: string): number {
+  if (channel.detector) {
+    const m = channel.detector.exec(normalised);
+    return m ? m.index : -1;
   }
+  const prefix = CHANNEL_URL_PREFIX[channel.id].toLowerCase();
+  if (prefix.length > 0) {
+    // For URL-shaped handles, look for the canonical handle first
+    // (so HANDLE-WRONG can still distinguish present-with-wrong-handle
+    // from genuinely-missing). The handle match takes precedence; the
+    // prefix-only check is the fallback decided by the caller.
+    const handleIdx = normalised.indexOf(channel.handle.toLowerCase());
+    if (handleIdx >= 0) return handleIdx;
+    return -1;
+  }
+  // Newsletter (no URL prefix) — handle IS the substring.
+  const idx = normalised.indexOf(channel.handle.toLowerCase());
+  return idx;
+}
+
+/** True when the indices are strictly increasing. Used for the channel-order check. */
+function isOrderMonotonic(indices: number[]): boolean {
   for (let i = 1; i < indices.length; i += 1) {
     if (indices[i] <= indices[i - 1]) return false;
   }
   return true;
+}
+
+/**
+ * Detects the Penguin YA-variant filename.
+ * `follow_penguin_ya.xhtml` is documented in Branding Guide §6 as the
+ * cut-down socials page with 3 channels instead of 7.
+ */
+function isPenguinYaFile(path: string): boolean {
+  return /(?:^|\/)follow_penguin_ya\.x?html?$/i.test(path);
 }
 
 function buildIssue(

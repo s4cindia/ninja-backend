@@ -21,11 +21,7 @@ export const PENGUIN_RULES: ImprintRules = {
   },
   socials: {
     // Penguin full socials page (follow_penguin.xhtml). Order matters
-    // per Branding Guide §6 — Twitter first, TikTok last. The YA
-    // cut-down variant (follow_penguin_ya.xhtml) is a subset of these
-    // channels and is treated as conformant by the validator's
-    // missing-channel logic (it only flags channels declared here that
-    // don't appear in the page).
+    // per Branding Guide §6 — Twitter first, TikTok last.
     channels: [
       { id: 'twitter', handle: 'twitter.com/penguinukbooks' },
       { id: 'facebook', handle: 'facebook.com/penguinbooks' },
@@ -36,5 +32,15 @@ export const PENGUIN_RULES: ImprintRules = {
       { id: 'tiktok', handle: 'tiktok.com/@penguinukbooks' },
     ],
     strapline: 'Find out more about the author and discover your next read at',
+  },
+  // Penguin YA cut-down socials page (follow_penguin_ya.xhtml). Per
+  // Branding Guide §6: Instagram + YouTube + TikTok only, with the
+  // TikTok handle pointing at @houseofya rather than @penguinukbooks.
+  socialsYa: {
+    channels: [
+      { id: 'instagram', handle: 'instagram.com/penguinukbooks' },
+      { id: 'youtube', handle: 'youtube.com/penguinbooks' },
+      { id: 'tiktok', handle: 'tiktok.com/@houseofya' },
+    ],
   },
 };
