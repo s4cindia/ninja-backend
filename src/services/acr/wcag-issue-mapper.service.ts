@@ -98,6 +98,13 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-SOCIALS-HANDLE-WRONG': [],
   'PRH-SOCIALS-STRAPLINE-MISSING': [],
 
+  // Content order (P2/PR4) — all publisher-specific (no WCAG analogue).
+  'PRH-ORDER-COVER-NOT-FIRST': [],
+  'PRH-ORDER-MISSING-BRAND-PAGE': [],
+  'PRH-ORDER-FOOTNOTES-NOT-LAST': [],
+  'PRH-ORDER-COPYRIGHT-WRONG-POSITION': [],
+  'PRH-ORDER-MISSING-ABOUT-AUTHOR': [],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],
