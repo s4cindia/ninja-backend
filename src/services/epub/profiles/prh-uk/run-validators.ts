@@ -17,6 +17,8 @@ import { validatePrhNav } from './validators/nav-validator';
 import { validatePrhPerXhtml } from './validators/xhtml-validator';
 import { validatePrhImages } from './validators/image-validator';
 import { validatePrhCopyrightContent } from './validators/copyright-content-validator';
+import { validatePrhBrandPage } from './validators/brand-page-validator';
+import { validatePrhTitlePage } from './validators/title-page-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
@@ -78,8 +80,11 @@ export async function runPrhUkValidators(
       ? getImprintRules(publisherProfile.imprint)
       : null;
     if (imprintRules && publisherProfile && publisherProfile.confidence !== 'low') {
+      const imprintInput = { ...perXhtmlInput, imprintRules };
       issues.push(
-        ...validatePrhCopyrightContent({ ...perXhtmlInput, imprintRules }),
+        ...validatePrhCopyrightContent(imprintInput),
+        ...validatePrhBrandPage(imprintInput),
+        ...validatePrhTitlePage(imprintInput),
       );
     }
 

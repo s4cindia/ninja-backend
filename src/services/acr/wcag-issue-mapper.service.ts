@@ -82,6 +82,15 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-COPY-PRH-LOGO-MISSING': ['1.1.1'],
   'PRH-COPY-ISBN-MISSING': [],
 
+  // Brand + title page (P2/PR2)
+  'PRH-BRAND-PAGE-MISSING': [],
+  'PRH-BRAND-PAGE-WRONG-CLASS': [],
+  'PRH-BRAND-PAGE-WRONG-LOGO-ALT': ['1.1.1'],
+  'PRH-TITLE-PAGE-MISSING': [],
+  'PRH-TITLE-PAGE-WRONG-STRUCTURE': [],
+  'PRH-TITLE-PAGE-MISSING-IMPRINT-LOGO': [],
+  'PRH-TITLE-PAGE-WRONG-LOGO-ALT': ['1.1.1'],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],

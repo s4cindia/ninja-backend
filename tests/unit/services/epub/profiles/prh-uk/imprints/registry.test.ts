@@ -97,4 +97,47 @@ describe('getImprintRules', () => {
       }
     }
   });
+
+  // ── Brand-page rules (P2/PR2) ─────────────────────────────────────────
+  it('imprints with a brand page expose the canonical figure class', () => {
+    expect(getImprintRules('penguin')?.brandPage?.figureClass).toBe('brand_logo_solo');
+    expect(getImprintRules('puffin')?.brandPage?.figureClass).toBe('brand_logo_solo');
+    expect(getImprintRules('pelican')?.brandPage?.figureClass).toBe('brand_logo_solo');
+    expect(getImprintRules('ladybird')?.brandPage?.figureClass).toBe('brand_logo_solo');
+  });
+
+  it('Vintage uses .image_full on its brand page (not .brand_logo_solo)', () => {
+    expect(getImprintRules('vintage')?.brandPage?.figureClass).toBe('image_full');
+  });
+
+  it('#Merky and Cornerstone Saga have no brand page', () => {
+    expect(getImprintRules('merky')?.brandPage).toBeNull();
+    expect(getImprintRules('cornerstone-saga')?.brandPage).toBeNull();
+  });
+
+  it('brand-page logo alts match the marketing names', () => {
+    expect(getImprintRules('penguin')?.brandPage?.logoAlt).toBe('Penguin Random House');
+    expect(getImprintRules('puffin')?.brandPage?.logoAlt).toBe('Puffin Books');
+    expect(getImprintRules('vintage')?.brandPage?.logoAlt).toBe('Vintage Books');
+    expect(getImprintRules('pelican')?.brandPage?.logoAlt).toBe('Pelican Books');
+    expect(getImprintRules('ladybird')?.brandPage?.logoAlt).toBe('Ladybird Books');
+  });
+
+  // ── Title-page rules (P2/PR2) ─────────────────────────────────────────
+  it('imprints with a structured title page expose logo alt', () => {
+    expect(getImprintRules('penguin')?.titlePage?.logoAlt).toBe('Penguin Random House');
+    expect(getImprintRules('pelican')?.titlePage?.logoAlt).toBe('Pelican Books');
+    expect(getImprintRules('ladybird')?.titlePage?.logoAlt).toBe('Ladybird Books');
+    expect(getImprintRules('merky')?.titlePage?.logoAlt).toBe('Penguin Random House');
+  });
+
+  it('Puffin uses the image-only title page', () => {
+    const titlePage = getImprintRules('puffin')?.titlePage;
+    expect(titlePage?.imageOnly).toBe(true);
+  });
+
+  it('Vintage and Cornerstone Saga have no separate title page', () => {
+    expect(getImprintRules('vintage')?.titlePage).toBeNull();
+    expect(getImprintRules('cornerstone-saga')?.titlePage).toBeNull();
+  });
 });
