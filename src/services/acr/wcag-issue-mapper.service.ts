@@ -72,6 +72,15 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   // Image (PR4)
   'PRH-COVER-ALT-EMPTY': ['1.1.1'],
   'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE': ['4.1.2'],
+  // Copyright content (P2/PR1) — mostly publisher-specific, no WCAG analogue
+  'PRH-COPY-TDM-PARAGRAPH-MISSING': [],
+  'PRH-COPY-EEA-LINE-MISSING': [],
+  'PRH-COPY-BL-CIP-MISSING': [],
+  'PRH-COPY-ADDRESS-BLOCK-MISSING': [],
+  'PRH-COPY-GROUP-STATEMENT-MISSING': [],
+  'PRH-COPY-IMPRINT-URL-MISSING': [],
+  'PRH-COPY-PRH-LOGO-MISSING': ['1.1.1'],
+  'PRH-COPY-ISBN-MISSING': [],
 
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content

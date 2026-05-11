@@ -166,6 +166,67 @@ export const PRH_ISSUE_CODES = {
     fixType: 'auto',
     summary: 'Decorative images must declare role="presentation" alongside alt=""',
   },
+
+  // ── Copyright content (P2/PR1) ─────────────────────────────────────────
+  // All publisher-specific; mostly empty WCAG (legal/branding rather than
+  // accessibility). Auto-fix is intentionally deferred to P5 — pasting
+  // verbatim legal boilerplate is operator-supervised work.
+  'PRH-COPY-TDM-PARAGRAPH-MISSING': {
+    code: 'PRH-COPY-TDM-PARAGRAPH-MISSING',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the PRH TDM-reservation paragraph (DSM Directive 2019/790 opt-out)',
+  },
+  'PRH-COPY-EEA-LINE-MISSING': {
+    code: 'PRH-COPY-EEA-LINE-MISSING',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the EEA-representative line (Penguin Random House Ireland, Dublin)',
+  },
+  'PRH-COPY-BL-CIP-MISSING': {
+    code: 'PRH-COPY-BL-CIP-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the British Library CIP statement',
+  },
+  'PRH-COPY-ADDRESS-BLOCK-MISSING': {
+    code: 'PRH-COPY-ADDRESS-BLOCK-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the PRH correspondence address (imprint-specific)',
+  },
+  'PRH-COPY-GROUP-STATEMENT-MISSING': {
+    code: 'PRH-COPY-GROUP-STATEMENT-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the PRH group-of-companies statement',
+  },
+  'PRH-COPY-IMPRINT-URL-MISSING': {
+    code: 'PRH-COPY-IMPRINT-URL-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must reference the imprint URL (penguin.co.uk for adult; three URLs for children\'s; penguin.co.uk/vintage for Vintage)',
+  },
+  'PRH-COPY-PRH-LOGO-MISSING': {
+    code: 'PRH-COPY-PRH-LOGO-MISSING',
+    severity: 'minor',
+    wcag: ['1.1.1'],
+    fixType: 'manual',
+    summary: 'Copyright page must include the Penguin Random House UK logo via <figure class="copyright_logo">',
+  },
+  'PRH-COPY-ISBN-MISSING': {
+    code: 'PRH-COPY-ISBN-MISSING',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must include the ISBN in 978-X-XXX-XXXXX-X format',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
