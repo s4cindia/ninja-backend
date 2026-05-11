@@ -90,7 +90,15 @@ export function validatePrhContentOrder(input: ContentOrderInput): PrhValidatorI
   const rawSpine = parseSpine(opf, manifest);
   if (rawSpine.length === 0) return issues;
 
-  const opfDir = opf.includes('/') ? input.opfPath.slice(0, input.opfPath.lastIndexOf('/')) : '';
+  // Resolve hrefs relative to the OPF directory — derived from the
+  // OPF *path* (not the OPF XML content). The original draft checked
+  // `opf.includes('/')` which is virtually always true because the
+  // XML body carries xmlns URLs etc., so the branch had no effect in
+  // practice. The bug only mattered on a flat zip where the OPF sits
+  // at the root and opfPath has no directory component.
+  const opfDir = input.opfPath.includes('/')
+    ? input.opfPath.slice(0, input.opfPath.lastIndexOf('/'))
+    : '';
   const filesByPath = new Map(input.xhtmlFiles.map((f) => [f.path, f.content]));
 
   const spine: ClassifiedSpine[] = rawSpine.map((ref) => {
