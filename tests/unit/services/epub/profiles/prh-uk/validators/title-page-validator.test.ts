@@ -136,6 +136,14 @@ describe('validatePrhTitlePage — Puffin image-only', () => {
     expect(issues.find((i) => i.code === 'PRH-TITLE-PAGE-MISSING-IMPRINT-LOGO')).toBeUndefined();
     expect(issues.find((i) => i.code === 'PRH-TITLE-PAGE-WRONG-LOGO-ALT')).toBeUndefined();
   });
+
+  it('finds the image-only title page even when the filename is not title-like', () => {
+    // Real Puffin EPUBs use `half.xhtml`, `image-title.xhtml`, etc. as
+    // the title-page filename. The detector must accept any frontmatter
+    // file with <figure class="image_full"> — filename is not load-bearing.
+    const file: PrhXhtmlFile = { path: 'EPUB/xhtml/half.xhtml', content: puffinImageOnlyTitlePage() };
+    expect(validatePrhTitlePage(input([file], puffinRules))).toEqual([]);
+  });
 });
 
 describe('validatePrhTitlePage — Pelican (imprint-specific alt)', () => {

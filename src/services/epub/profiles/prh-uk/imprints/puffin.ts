@@ -42,10 +42,11 @@ export const PUFFIN_RULES: ImprintRules = {
   },
   titlePage: {
     // Puffin uses the children's full-bleed title page (image-only).
-    // The validator drops the structured-imprint-logo check for this
-    // path; alt text is descriptive ("Book Title - Subtitle by Author")
-    // rather than the imprint name.
-    logoAlt: 'Puffin Books',
+    // The validator skips the structured-imprint-logo check on this
+    // path — the image itself carries the imprint mark with a
+    // descriptive alt ("Book Title - Subtitle by Author"), not the
+    // imprint name. The discriminated TitlePageRules union enforces
+    // that `logoAlt` is absent here.
     imageOnly: true,
   },
 };

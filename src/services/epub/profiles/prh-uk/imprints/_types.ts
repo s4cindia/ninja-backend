@@ -88,23 +88,38 @@ export interface BrandPageRules {
  * Imprints with `titlePage: null` are skipped by the validator (the
  * imprint genuinely doesn't have one in the canonical template).
  */
-export interface TitlePageRules {
-  /**
-   * Expected alt text on the `<figure class="imprint_logo">` <img>.
-   * Matched case-insensitively after whitespace normalisation. Most
-   * imprints reference the parent group ("Penguin Random House"); a few
-   * use their own marketing name (Pelican → "Pelican Books").
-   */
-  logoAlt: string;
-  /**
-   * Whether this imprint uses the image-only title page (Puffin's full-bleed
-   * pattern). When true the validator looks for `<figure class="image_full">`
-   * instead of the structured `<section epub:type="titlepage">`, and the
-   * imprint_logo check is dropped (Puffin embeds the logo inside the
-   * full-bleed image).
-   */
-  imageOnly?: boolean;
-}
+/**
+ * Discriminated union: the structured-titlepage path validates an
+ * imprint-logo alt, but the image-only path skips that check entirely
+ * (the logo is baked into the full-bleed image). Modelling these as
+ * separate variants prevents config drift — e.g. setting both
+ * `imageOnly: true` and `logoAlt: 'Puffin Books'` (where the alt would
+ * silently be ignored).
+ */
+export type TitlePageRules =
+  | {
+      /**
+       * Image-only title page (Puffin's full-bleed pattern). The
+       * validator looks for `<figure class="image_full">` inside a
+       * frontmatter body and skips the imprint-logo check — the image
+       * itself carries the imprint mark + descriptive alt.
+       */
+      imageOnly: true;
+    }
+  | {
+      /**
+       * Structured title page (Penguin / Pelican / Ladybird / #Merky).
+       * `imageOnly` is omitted or explicitly false on this branch.
+       */
+      imageOnly?: false;
+      /**
+       * Expected alt text on the `<figure class="imprint_logo">` <img>.
+       * Matched case-insensitively after whitespace normalisation. Most
+       * imprints reference the parent group ("Penguin Random House");
+       * a few use their own marketing name (Pelican → "Pelican Books").
+       */
+      logoAlt: string;
+    };
 
 export interface ImprintRules {
   /**

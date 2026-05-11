@@ -156,12 +156,14 @@ function findTitlePageXhtml(
       }
     }
   } else {
-    // Image-only title page: look for a frontmatter file with
-    // <figure class="image_full"> + a single descriptive <img>.
+    // Image-only title page: a frontmatter file with
+    // <figure class="image_full"> is sufficient — the filename is not
+    // a reliable signal for Puffin (real EPUBs use `half.xhtml`,
+    // `image-title.xhtml`, etc., not always `title.xhtml`). Filename
+    // heuristic is applied below as a secondary fallback only.
     for (const f of files) {
       if (/<body\b[^>]*\bepub:type\s*=\s*["'][^"']*\bfrontmatter\b/i.test(f.content)
-        && hasFigureWithClass(f.content, 'image_full')
-        && isLikelyTitlePageFilename(f.path)) {
+        && hasFigureWithClass(f.content, 'image_full')) {
         return f;
       }
     }
