@@ -325,6 +325,46 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'Socials page must include the imprint strapline (Penguin: "Find out more…at Penguin.co.uk"; Vintage: "World-class writing. Beautiful design. Ideas that matter.")',
   },
+
+  // ── Content order (P2/PR4) ─────────────────────────────────────────────
+  // Walks the spine and asserts PRH's mandated reading order. All
+  // detect-only (spine reordering is risky enough to require operator
+  // review). Imprint-gated like the other P2 validators.
+  'PRH-ORDER-COVER-NOT-FIRST': {
+    code: 'PRH-ORDER-COVER-NOT-FIRST',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Cover spine entry must be the first item in <spine>',
+  },
+  'PRH-ORDER-MISSING-BRAND-PAGE': {
+    code: 'PRH-ORDER-MISSING-BRAND-PAGE',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Brand page must appear in the spine — required by PRH UK mandatory boilerplate (Branding Guide §7) for imprints that ship one',
+  },
+  'PRH-ORDER-FOOTNOTES-NOT-LAST': {
+    code: 'PRH-ORDER-FOOTNOTES-NOT-LAST',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Footnotes file must be the last entry in the spine (separate from the spine-flag rule PRH-SPINE-FOOTNOTES-LAST — this one flags ORDERING, not linear="no")',
+  },
+  'PRH-ORDER-COPYRIGHT-WRONG-POSITION': {
+    code: 'PRH-ORDER-COPYRIGHT-WRONG-POSITION',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Copyright page must appear in the frontmatter portion of the spine (PRH treats copyright as frontmatter, not backmatter)',
+  },
+  'PRH-ORDER-MISSING-ABOUT-AUTHOR': {
+    code: 'PRH-ORDER-MISSING-ABOUT-AUTHOR',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB is missing an About-the-Author section — required in every PRH reflow EPUB (Style Guide §6.6)',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
