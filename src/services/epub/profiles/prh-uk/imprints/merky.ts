@@ -15,4 +15,13 @@ export const MERKY_RULES: ImprintRules = {
     ...adultCopyrightChecks(),
     PENGUIN_CO_UK_URL_CHECK,
   ],
+  // No dedicated brand page in the #Merky template — the imprint relies
+  // on the title page's logo and bespoke styling rather than a separate
+  // brand-mark frontmatter section.
+  brandPage: null,
+  titlePage: {
+    // #Merky uses the parent-group logo alt rather than its own
+    // marketing name (Branding Guide §6).
+    logoAlt: 'Penguin Random House',
+  },
 };

@@ -23,6 +23,15 @@ export const VINTAGE_RULES: ImprintRules = {
   imprint: 'vintage',
   displayName: 'Vintage',
   copyrightTemplate: 'vintage-bespoke',
+  brandPage: {
+    // Vintage uses .image_full instead of .brand_logo_solo (red banner
+    // logo treated as a full image rather than a centred mark).
+    figureClass: 'image_full',
+    logoAlt: 'Vintage Books',
+  },
+  // Vintage's bespoke template doesn't ship a separate titlepage section;
+  // the copyright page carries the imprint header. Validator skips.
+  titlePage: null,
   copyrightContentChecks: [
     // No TDM check — Vintage doesn't use it.
     // No EEA check — Vintage doesn't use it either.

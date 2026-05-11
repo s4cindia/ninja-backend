@@ -43,6 +43,69 @@ export interface CopyrightContentCheck {
   suggestion: string;
 }
 
+/**
+ * Brand-page rules per imprint (P2/PR2).
+ *
+ * Per Branding Guide §6, every imprint except #Merky and Cornerstone Saga
+ * ships a dedicated brand page — a frontmatter section with
+ * `<body epub:type="frontmatter" id="brand_page">` containing a full-bleed
+ * imprint logo. The logo's CSS class differs by imprint (`.brand_logo_solo`
+ * for most, `.image_full` for Vintage) and the alt text matches the
+ * imprint's marketing name ("Penguin Random House", "Puffin Books", etc.).
+ *
+ * When `null`, the imprint has no brand page in the canonical template
+ * and the validator should not emit `PRH-BRAND-PAGE-MISSING` for that
+ * imprint.
+ */
+export interface BrandPageRules {
+  /** Expected CSS class on the brand-page <figure>. */
+  figureClass: 'brand_logo_solo' | 'image_full';
+  /**
+   * Expected alt text on the brand-page <img>. Matched
+   * case-insensitively after whitespace normalisation.
+   */
+  logoAlt: string;
+}
+
+/**
+ * Title-page rules per imprint (P2/PR2).
+ *
+ * Every PRH imprint ships a title page, but the shape differs:
+ *   - Penguin (adult) — six structural variants. The validator does
+ *     a soft fingerprint match (which structural elements are present)
+ *     so any of the 6 variants passes.
+ *   - Puffin — full-bleed image-only title page (`<figure class="image_full">`
+ *     with descriptive alt text).
+ *   - Pelican — `<body class="pelican_titlepage">`, drops `<hr/>`.
+ *   - Ladybird — adds `<figure class="portrait_small">` interior
+ *     illustration + credits.
+ *   - #Merky — single bespoke title page (Penguin Random House logo
+ *     parent group).
+ *   - Vintage — n/a (Vintage's bespoke template doesn't include a
+ *     separate title-page section).
+ *   - Cornerstone Saga — n/a.
+ *
+ * Imprints with `titlePage: null` are skipped by the validator (the
+ * imprint genuinely doesn't have one in the canonical template).
+ */
+export interface TitlePageRules {
+  /**
+   * Expected alt text on the `<figure class="imprint_logo">` <img>.
+   * Matched case-insensitively after whitespace normalisation. Most
+   * imprints reference the parent group ("Penguin Random House"); a few
+   * use their own marketing name (Pelican → "Pelican Books").
+   */
+  logoAlt: string;
+  /**
+   * Whether this imprint uses the image-only title page (Puffin's full-bleed
+   * pattern). When true the validator looks for `<figure class="image_full">`
+   * instead of the structured `<section epub:type="titlepage">`, and the
+   * imprint_logo check is dropped (Puffin embeds the logo inside the
+   * full-bleed image).
+   */
+  imageOnly?: boolean;
+}
+
 export interface ImprintRules {
   /**
    * Stable identifier — must match a `PrhImprint` value. Used to look up
@@ -63,8 +126,16 @@ export interface ImprintRules {
    * XHTML's path.
    */
   copyrightContentChecks: CopyrightContentCheck[];
-  // Future fields land in P2/PR2-PR3:
-  //   brandPage: { logoAlt: string; brandFigureClass: string };
-  //   titlePage: { logoAlt: string; acceptedVariants: TitleVariantFingerprint[] };
+  /**
+   * Brand-page expectations. `null` when the imprint has no brand page
+   * in the canonical template (#Merky, Cornerstone Saga).
+   */
+  brandPage: BrandPageRules | null;
+  /**
+   * Title-page expectations. `null` when the imprint has no separate
+   * title page (Vintage, Cornerstone Saga).
+   */
+  titlePage: TitlePageRules | null;
+  // Future fields land in P2/PR3:
   //   socials: { channels: SocialChannel[]; strapline?: string } | null;
 }

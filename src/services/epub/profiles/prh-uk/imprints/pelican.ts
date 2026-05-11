@@ -14,4 +14,14 @@ export const PELICAN_RULES: ImprintRules = {
     ...adultCopyrightChecks(),
     PENGUIN_CO_UK_URL_CHECK,
   ],
+  brandPage: {
+    figureClass: 'brand_logo_solo',
+    logoAlt: 'Pelican Books',
+  },
+  titlePage: {
+    // Pelican's title page drops <hr/> and uses <br/> for line breaks
+    // (Branding Guide §4); alt text uses the imprint name rather than
+    // the parent group.
+    logoAlt: 'Pelican Books',
+  },
 };

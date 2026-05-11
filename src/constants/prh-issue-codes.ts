@@ -227,6 +227,64 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'Copyright page must include the ISBN in 978-X-XXX-XXXXX-X format',
   },
+
+  // ── Brand page (P2/PR2) ────────────────────────────────────────────────
+  // Imprint-conditional. #Merky and Cornerstone Saga have no brand page in
+  // the canonical template — the validator gates on the imprint rules and
+  // does not emit these codes for those imprints.
+  'PRH-BRAND-PAGE-MISSING': {
+    code: 'PRH-BRAND-PAGE-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB must include a brand page: <body epub:type="frontmatter" id="brand_page">',
+  },
+  'PRH-BRAND-PAGE-WRONG-CLASS': {
+    code: 'PRH-BRAND-PAGE-WRONG-CLASS',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Brand-page <figure> must use the imprint-specific CSS class (.brand_logo_solo for most; .image_full for Vintage)',
+  },
+  'PRH-BRAND-PAGE-WRONG-LOGO-ALT': {
+    code: 'PRH-BRAND-PAGE-WRONG-LOGO-ALT',
+    severity: 'minor',
+    wcag: ['1.1.1'],
+    fixType: 'manual',
+    summary: 'Brand-page logo alt text must match the imprint name (e.g. "Penguin Random House", "Puffin Books")',
+  },
+
+  // ── Title page (P2/PR2) ────────────────────────────────────────────────
+  // Imprint-conditional. Vintage and Cornerstone Saga don't ship a separate
+  // titlepage section in their canonical templates.
+  'PRH-TITLE-PAGE-MISSING': {
+    code: 'PRH-TITLE-PAGE-MISSING',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB must include a title page: <section epub:type="titlepage">',
+  },
+  'PRH-TITLE-PAGE-WRONG-STRUCTURE': {
+    code: 'PRH-TITLE-PAGE-WRONG-STRUCTURE',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Title page must use <section epub:type="titlepage" class="titlepage"> with book title (.booktitle)',
+  },
+  'PRH-TITLE-PAGE-MISSING-IMPRINT-LOGO': {
+    code: 'PRH-TITLE-PAGE-MISSING-IMPRINT-LOGO',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Title page must include <figure class="imprint_logo"> with the imprint logo image',
+  },
+  'PRH-TITLE-PAGE-WRONG-LOGO-ALT': {
+    code: 'PRH-TITLE-PAGE-WRONG-LOGO-ALT',
+    severity: 'minor',
+    wcag: ['1.1.1'],
+    fixType: 'manual',
+    summary: 'Title-page imprint logo alt text must match the imprint expectation (most imprints: "Penguin Random House"; Pelican: "Pelican Books"; Ladybird: "Ladybird Books")',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

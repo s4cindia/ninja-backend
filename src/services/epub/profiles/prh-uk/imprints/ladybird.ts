@@ -30,4 +30,14 @@ export const LADYBIRD_RULES: ImprintRules = {
       suggestion: 'Add the imprint URL: www.puffin.co.uk',
     },
   ],
+  brandPage: {
+    figureClass: 'brand_logo_solo',
+    logoAlt: 'Ladybird Books',
+  },
+  titlePage: {
+    // Ladybird's title page adds <figure class="portrait_small"> for the
+    // interior illustration plus <h4> credits; structurally still a
+    // <section epub:type="titlepage"> with imprint_logo.
+    logoAlt: 'Ladybird Books',
+  },
 };

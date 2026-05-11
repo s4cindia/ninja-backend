@@ -36,4 +36,16 @@ export const PUFFIN_RULES: ImprintRules = {
       suggestion: 'Add the imprint URL: www.ladybird.co.uk',
     },
   ],
+  brandPage: {
+    figureClass: 'brand_logo_solo',
+    logoAlt: 'Puffin Books',
+  },
+  titlePage: {
+    // Puffin uses the children's full-bleed title page (image-only).
+    // The validator drops the structured-imprint-logo check for this
+    // path; alt text is descriptive ("Book Title - Subtitle by Author")
+    // rather than the imprint name.
+    logoAlt: 'Puffin Books',
+    imageOnly: true,
+  },
 };
