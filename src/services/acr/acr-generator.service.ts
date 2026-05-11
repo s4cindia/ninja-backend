@@ -649,7 +649,15 @@ class AcrGeneratorService {
     const criteriaMap = new Map<string, AcrCriterion>();
     base.forEach((c) => criteriaMap.set(c.id, c));
     wcag22NewAa.forEach((c) => criteriaMap.set(c.id, c));
-    return Array.from(criteriaMap.values());
+    // Sort by canonical WCAG dotted-number ordering — the Map preserves
+    // insertion order, which would otherwise emit the six 2.2-new
+    // criteria after `4.1.3` instead of interspersed where they belong
+    // (e.g. 2.4.11 between 2.4.7 and 2.5.1).
+    return Array.from(criteriaMap.values()).sort((a, b) => {
+      const [aMajor = 0, aMinor = 0, aPatch = 0] = a.id.split('.').map(Number);
+      const [bMajor = 0, bMinor = 0, bPatch = 0] = b.id.split('.').map(Number);
+      return aMajor - bMajor || aMinor - bMinor || aPatch - bPatch;
+    });
   }
 
   async generateConfidenceAnalysis(

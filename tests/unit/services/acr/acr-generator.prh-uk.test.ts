@@ -82,6 +82,29 @@ describe('AcrGeneratorService — VPAT2.5-PRH-UK edition', () => {
     }
   });
 
+  it('emits criteria in canonical WCAG dotted-number order (regression)', async () => {
+    // Regression for CodeRabbit: the Map-based merge preserves insertion
+    // order, so the six WCAG 2.2-new criteria (2.4.11, 2.5.7, 2.5.8,
+    // 3.2.6, 3.3.7, 3.3.8) were emitted after 4.1.3 instead of where
+    // they belong numerically (e.g. 2.4.11 between 2.4.7 and 2.5.1).
+    const criteria = await acrGeneratorService.getCriteriaForEdition('VPAT2.5-PRH-UK');
+    for (let i = 1; i < criteria.length; i++) {
+      const prev = criteria[i - 1].id.split('.').map(Number);
+      const curr = criteria[i].id.split('.').map(Number);
+      // Compare lexicographically as numbers, not strings.
+      const compare =
+        (prev[0] - curr[0])
+        || (prev[1] - curr[1])
+        || ((prev[2] ?? 0) - (curr[2] ?? 0));
+      expect(compare).toBeLessThanOrEqual(0);
+    }
+    // Spot-check: 2.4.11 must come before 2.5.1 (was after 4.1.3 before fix).
+    const idx2411 = criteria.findIndex((c) => c.id === '2.4.11');
+    const idx251 = criteria.findIndex((c) => c.id === '2.5.1');
+    expect(idx2411).toBeGreaterThanOrEqual(0);
+    expect(idx2411).toBeLessThan(idx251);
+  });
+
   it('does not duplicate criteria when 2.1 and 2.2 lists overlap (defensive)', async () => {
     const criteria = await acrGeneratorService.getCriteriaForEdition('VPAT2.5-PRH-UK');
     const ids = criteria.map((c) => c.id);
