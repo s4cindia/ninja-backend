@@ -24,4 +24,6 @@ export const PELICAN_RULES: ImprintRules = {
     // the parent group.
     logoAlt: 'Pelican Books',
   },
+  // Pelican has no canonical socials page — series list backmatter only.
+  socials: null,
 };

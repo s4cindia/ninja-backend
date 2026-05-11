@@ -32,6 +32,24 @@ export const VINTAGE_RULES: ImprintRules = {
   // Vintage's bespoke template doesn't ship a separate titlepage section;
   // the copyright page carries the imprint header. Validator skips.
   titlePage: null,
+  socials: {
+    // Vintage socials page (`vintage/vin_endpage_socials.xhtml`).
+    // Three channels share the handle "@vintagebooks", so each
+    // SocialChannel carries a context-aware detector that requires
+    // the channel keyword near the handle (`/\btwitter[^@]{0,40}@vintagebooks/`).
+    // Without those detectors a plain `includes('@vintagebooks')`
+    // would return the same first-occurrence index for twitter,
+    // instagram, and facebook, silently bypassing the order check.
+    // The validator surfaces `handle` in suggestions; `detector` is
+    // only used for presence and ordering.
+    channels: [
+      { id: 'twitter', handle: '@vintagebooks', detector: /\btwitter\b[^@]{0,40}@vintagebooks\b/i },
+      { id: 'instagram', handle: '@vintagebooks', detector: /\binstagram\b[^@]{0,40}@vintagebooks\b/i },
+      { id: 'tiktok', handle: '@vintageukbooks', detector: /\btiktok\b[^@]{0,40}@vintageukbooks\b/i },
+      { id: 'facebook', handle: '@vintagebooks', detector: /\bfacebook\b[^@]{0,40}@vintagebooks\b/i },
+    ],
+    strapline: 'World-class writing. Beautiful design. Ideas that matter.',
+  },
   copyrightContentChecks: [
     // No TDM check — Vintage doesn't use it.
     // No EEA check — Vintage doesn't use it either.

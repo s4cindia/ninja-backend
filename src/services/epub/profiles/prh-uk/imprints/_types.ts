@@ -121,6 +121,74 @@ export type TitlePageRules =
       logoAlt: string;
     };
 
+/**
+ * Per-channel needle for a socials page (P2/PR3).
+ *
+ * Each channel has a stable `id` (used to detect missing channels and
+ * to assert ordering) and a `handle` — a URL or @-handle fragment that
+ * MUST appear in the socials page content. The handle is matched as a
+ * lowercased substring after whitespace normalisation, so it tolerates
+ * markup variations like `<a href="...">@vintagebooks</a>` vs
+ * `Twitter: @vintagebooks` vs link wrapping.
+ */
+export interface SocialChannel {
+  /** Channel identifier — used for ordering and missing-channel diagnostics. */
+  id: 'twitter' | 'facebook' | 'instagram' | 'youtube' | 'pinterest' | 'linkedin' | 'tiktok' | 'newsletter';
+  /** Substring that must appear in the socials page (case-insensitive, post-normalisation). */
+  handle: string;
+  /**
+   * Optional context-aware matcher used when the bare `handle` is
+   * ambiguous across channels. Vintage is the motivating case — three
+   * of its four channels share the handle "@vintagebooks", so a plain
+   * `includes('@vintagebooks')` returns the same index for all three
+   * and silently bypasses the order check. When `detector` is set, the
+   * validator uses its match position for ordering/presence; `handle`
+   * is still surfaced in messages and suggestions as the canonical
+   * text the operator should display. The detector should be
+   * case-insensitive (the haystack is lowercased before matching).
+   */
+  detector?: RegExp;
+}
+
+/**
+ * Socials-page rules per imprint (P2/PR3).
+ *
+ * Per Branding Guide §6, the "Follow us" / socials page is in
+ * `<body epub:type="backmatter">`. Only a handful of imprints ship
+ * one in the canonical template:
+ *
+ *   - Penguin → 7 channels in a prescribed order, plus a closing
+ *     strapline pointing at Penguin.co.uk.
+ *   - Vintage → 4 channels (Twitter / Instagram / TikTok / Facebook),
+ *     all under `@vintagebooks` except TikTok (`@vintageukbooks`),
+ *     plus the Vintage strapline.
+ *   - Cornerstone Saga → Facebook + Penny Street newsletter URL.
+ *   - Puffin / Pelican / Ladybird / #Merky → no socials page;
+ *     `socials: null` skips the validator entirely.
+ *
+ * Penguin's "YA cut-down" socials page (`follow_penguin_ya.xhtml`,
+ * Instagram + YouTube + TikTok @houseofya only) is treated as an
+ * alternate Penguin variant in the detector; the validator falls
+ * back to the full 7-channel ruleset when both variants are absent
+ * but doesn't false-positive on a conformant YA-only build.
+ */
+export interface SocialsRules {
+  /**
+   * Ordered list of expected channels. Order is enforced via
+   * `PRH-SOCIALS-CHANNEL-ORDER-WRONG`; presence is enforced via
+   * `PRH-SOCIALS-CHANNEL-MISSING`; handle correctness is enforced via
+   * `PRH-SOCIALS-HANDLE-WRONG`.
+   */
+  channels: SocialChannel[];
+  /**
+   * Optional verbatim strapline expected at the foot of the socials
+   * page. When set, `PRH-SOCIALS-STRAPLINE-MISSING` fires when it's
+   * absent. Match is case-insensitive substring after whitespace
+   * collapse.
+   */
+  strapline?: string;
+}
+
 export interface ImprintRules {
   /**
    * Stable identifier — must match a `PrhImprint` value. Used to look up
@@ -151,6 +219,20 @@ export interface ImprintRules {
    * title page (Vintage, Cornerstone Saga).
    */
   titlePage: TitlePageRules | null;
-  // Future fields land in P2/PR3:
-  //   socials: { channels: SocialChannel[]; strapline?: string } | null;
+  /**
+   * Socials-page expectations. `null` when the imprint has no
+   * dedicated socials page in the canonical template (Puffin, Pelican,
+   * Ladybird, #Merky).
+   */
+  socials: SocialsRules | null;
+  /**
+   * Optional secondary socials ruleset for imprints that ship a
+   * cut-down variant (Penguin's `follow_penguin_ya.xhtml` is the
+   * motivating case — YA editions list Instagram + YouTube + TikTok
+   * only, with TikTok pointing at `@houseofya`). When the validator
+   * detects the YA-variant filename it switches to these rules in
+   * place of the full set; otherwise undefined means the imprint
+   * has no YA variant.
+   */
+  socialsYa?: SocialsRules;
 }

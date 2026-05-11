@@ -19,4 +19,13 @@ export const CORNERSTONE_SAGA_RULES: ImprintRules = {
   // styling lives on the socials page and end-matter promo blocks.
   brandPage: null,
   titlePage: null,
+  socials: {
+    // Penny Street Saga has a slimmer socials page than the main
+    // imprints — a Facebook link plus the Penny Street newsletter URL.
+    // Order: Facebook first, newsletter second per the Branding Guide.
+    channels: [
+      { id: 'facebook', handle: 'facebook.com/welcometopennystreet' },
+      { id: 'newsletter', handle: 'penguin.co.uk/pennystreet' },
+    ],
+  },
 };
