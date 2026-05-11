@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ACR_EDITIONS } from '../services/acr/acr-generator.service';
 
 export const batchCreateSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -20,7 +21,7 @@ export const batchListSchema = z.object({
 export const batchAcrGenerateSchema = z.object({
   mode: z.enum(['individual', 'aggregate']),
   options: z.object({
-    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']),
+    edition: z.enum(ACR_EDITIONS),
     batchName: z.string().min(1),
     vendor: z.string().min(1),
     contactEmail: z.string().email(),

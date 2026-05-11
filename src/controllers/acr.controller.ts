@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { acrGeneratorService, AcrGenerationOptions, AcrDocument, AcrCriterion, AcrEdition } from '../services/acr/acr-generator.service';
+import { acrGeneratorService, AcrGenerationOptions, AcrDocument, AcrCriterion, AcrEdition, ACR_EDITIONS } from '../services/acr/acr-generator.service';
 import { conformanceEngineService, ConformanceLevel, ValidationResult } from '../services/acr/conformance-engine.service';
 import { 
   generateMethodologySection, 
@@ -37,7 +37,7 @@ const ProductInfoSchema = z.object({
 const GenerateAcrSchema = z.object({
   jobId: z.string().uuid(),
   options: z.object({
-    edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
+    edition: z.enum(ACR_EDITIONS).optional(),
     includeAppendix: z.boolean().optional(),
     includeMethodology: z.boolean().optional(),
     productInfo: ProductInfoSchema
@@ -319,7 +319,7 @@ export class AcrController {
       const ExportRequestSchema = z.object({
         options: ExportOptionsSchema,
         acrData: z.object({
-          edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
+          edition: z.enum(ACR_EDITIONS).optional(),
           productInfo: ProductInfoSchema.partial()
         }).optional()
       });
@@ -898,7 +898,7 @@ export class AcrController {
       const CreateVersionSchema = z.object({
         reason: z.string().optional(),
         acrData: z.object({
-          edition: z.enum(['VPAT2.5-508', 'VPAT2.5-WCAG', 'VPAT2.5-EU', 'VPAT2.5-INT']).optional(),
+          edition: z.enum(ACR_EDITIONS).optional(),
           productInfo: ProductInfoSchema
         }).optional()
       });
