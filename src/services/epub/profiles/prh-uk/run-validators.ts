@@ -16,9 +16,28 @@ import { validatePrhSpine } from './validators/spine-validator';
 import { validatePrhNav } from './validators/nav-validator';
 import { validatePrhPerXhtml } from './validators/xhtml-validator';
 import { validatePrhImages } from './validators/image-validator';
+import { validatePrhCopyrightContent } from './validators/copyright-content-validator';
+import { getImprintRules } from './imprints';
+import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
 
-export async function runPrhUkValidators(buffer: Buffer): Promise<PrhValidatorIssue[]> {
+/**
+ * Run all PRH UK validators against an EPUB buffer.
+ *
+ * @param buffer            The EPUB file as a Buffer.
+ * @param publisherProfile  Optional profile from the detector. When
+ *                          omitted, all standards-based PRH validators
+ *                          (PR1-PR5 from P1) still run; imprint-gated
+ *                          validators (P2/PR1+) only run when the
+ *                          profile includes a recognised imprint AND
+ *                          confidence is `medium` or `high`. The
+ *                          confidence gate at the *publisher* level is
+ *                          done by the caller in `epub-audit.service.ts`.
+ */
+export async function runPrhUkValidators(
+  buffer: Buffer,
+  publisherProfile?: PublisherProfile,
+): Promise<PrhValidatorIssue[]> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const opf = await readOpf(zip);
@@ -43,13 +62,28 @@ export async function runPrhUkValidators(buffer: Buffer): Promise<PrhValidatorIs
       bookTitle,
     };
 
-    return [
+    const issues: PrhValidatorIssue[] = [
       ...validatePrhMetadata(opfInput),
       ...validatePrhSpine(opfInput),
       ...validatePrhNav(navInput),
       ...validatePrhPerXhtml(perXhtmlInput),
       ...validatePrhImages(perXhtmlInput),
     ];
+
+    // Imprint-gated P2 validators run only when we have a recognised
+    // imprint (not 'unknown' / null) AND confidence is medium-or-high.
+    // Multi-imprint demo docs (PRH Technical Guide / Branding Guide)
+    // resolve to 'unknown' and intentionally skip these.
+    const imprintRules = publisherProfile
+      ? getImprintRules(publisherProfile.imprint)
+      : null;
+    if (imprintRules && publisherProfile && publisherProfile.confidence !== 'low') {
+      issues.push(
+        ...validatePrhCopyrightContent({ ...perXhtmlInput, imprintRules }),
+      );
+    }
+
+    return issues;
   } catch (err) {
     logger.warn(
       `[PRH validators] run failed; returning no issues: ${err instanceof Error ? err.message : 'unknown error'}`,

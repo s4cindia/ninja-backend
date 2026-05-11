@@ -304,7 +304,7 @@ class EpubAuditService {
       }
       if (publisherProfile.publisher === 'PRH-UK' && publisherProfile.confidence !== 'low') {
         try {
-          const prhIssues = await runPrhUkValidators(buffer);
+          const prhIssues = await runPrhUkValidators(buffer, publisherProfile);
           logger.info(`[PRH] validators emitted ${prhIssues.length} issues`);
           for (const v of prhIssues) {
             combinedIssues.push({
