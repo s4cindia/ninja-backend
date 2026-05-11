@@ -49,4 +49,8 @@ export const PUFFIN_RULES: ImprintRules = {
     // that `logoAlt` is absent here.
     imageOnly: true,
   },
+  // Puffin's branding guide doesn't ship a dedicated "Follow us" page;
+  // social mentions appear inline within end-matter ads (`puffin_ad.xhtml`)
+  // rather than on a separate backmatter section. Validator skips.
+  socials: null,
 };

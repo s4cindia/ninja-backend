@@ -140,4 +140,43 @@ describe('getImprintRules', () => {
     expect(getImprintRules('vintage')?.titlePage).toBeNull();
     expect(getImprintRules('cornerstone-saga')?.titlePage).toBeNull();
   });
+
+  // ── Socials rules (P2/PR3) ────────────────────────────────────────────
+  it('Penguin defines the full 7-channel socials list in canonical order', () => {
+    const socials = getImprintRules('penguin')?.socials;
+    expect(socials).not.toBeNull();
+    const ids = socials?.channels.map((c) => c.id) ?? [];
+    expect(ids).toEqual([
+      'twitter', 'facebook', 'instagram', 'youtube', 'pinterest', 'linkedin', 'tiktok',
+    ]);
+  });
+
+  it('Penguin TikTok handle is @penguinukbooks (not @penguinbooks)', () => {
+    const socials = getImprintRules('penguin')?.socials;
+    const tiktok = socials?.channels.find((c) => c.id === 'tiktok');
+    expect(tiktok?.handle).toBe('tiktok.com/@penguinukbooks');
+  });
+
+  it('Vintage TikTok handle differs from the rest (@vintageukbooks)', () => {
+    const socials = getImprintRules('vintage')?.socials;
+    const tiktok = socials?.channels.find((c) => c.id === 'tiktok');
+    expect(tiktok?.handle).toBe('@vintageukbooks');
+  });
+
+  it('Vintage strapline is the Branding Guide §6 verbatim phrase', () => {
+    expect(getImprintRules('vintage')?.socials?.strapline)
+      .toBe('World-class writing. Beautiful design. Ideas that matter.');
+  });
+
+  it('Cornerstone Saga has a slim 2-channel socials list (Facebook + Newsletter)', () => {
+    const ids = getImprintRules('cornerstone-saga')?.socials?.channels.map((c) => c.id) ?? [];
+    expect(ids).toEqual(['facebook', 'newsletter']);
+  });
+
+  it('Puffin / Pelican / Ladybird / #Merky have no socials page', () => {
+    expect(getImprintRules('puffin')?.socials).toBeNull();
+    expect(getImprintRules('pelican')?.socials).toBeNull();
+    expect(getImprintRules('ladybird')?.socials).toBeNull();
+    expect(getImprintRules('merky')?.socials).toBeNull();
+  });
 });

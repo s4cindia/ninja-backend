@@ -40,4 +40,6 @@ export const LADYBIRD_RULES: ImprintRules = {
     // <section epub:type="titlepage"> with imprint_logo.
     logoAlt: 'Ladybird Books',
   },
+  // Ladybird has no canonical socials page — classics ads only.
+  socials: null,
 };

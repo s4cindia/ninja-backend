@@ -24,4 +24,6 @@ export const MERKY_RULES: ImprintRules = {
     // marketing name (Branding Guide §6).
     logoAlt: 'Penguin Random House',
   },
+  // #Merky has no canonical socials page in the Branding Guide.
+  socials: null,
 };

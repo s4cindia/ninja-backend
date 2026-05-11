@@ -19,6 +19,7 @@ import { validatePrhImages } from './validators/image-validator';
 import { validatePrhCopyrightContent } from './validators/copyright-content-validator';
 import { validatePrhBrandPage } from './validators/brand-page-validator';
 import { validatePrhTitlePage } from './validators/title-page-validator';
+import { validatePrhSocials } from './validators/socials-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
@@ -85,6 +86,7 @@ export async function runPrhUkValidators(
         ...validatePrhCopyrightContent(imprintInput),
         ...validatePrhBrandPage(imprintInput),
         ...validatePrhTitlePage(imprintInput),
+        ...validatePrhSocials(imprintInput),
       );
     }
 

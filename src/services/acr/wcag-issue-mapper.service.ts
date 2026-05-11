@@ -91,6 +91,13 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-TITLE-PAGE-MISSING-IMPRINT-LOGO': [],
   'PRH-TITLE-PAGE-WRONG-LOGO-ALT': ['1.1.1'],
 
+  // Socials page (P2/PR3) — all publisher-specific (no WCAG analogue).
+  'PRH-SOCIALS-PAGE-MISSING': [],
+  'PRH-SOCIALS-CHANNEL-MISSING': [],
+  'PRH-SOCIALS-CHANNEL-ORDER-WRONG': [],
+  'PRH-SOCIALS-HANDLE-WRONG': [],
+  'PRH-SOCIALS-STRAPLINE-MISSING': [],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],

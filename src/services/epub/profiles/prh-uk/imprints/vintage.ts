@@ -32,6 +32,19 @@ export const VINTAGE_RULES: ImprintRules = {
   // Vintage's bespoke template doesn't ship a separate titlepage section;
   // the copyright page carries the imprint header. Validator skips.
   titlePage: null,
+  socials: {
+    // Vintage socials page (`vintage/vin_endpage_socials.xhtml`).
+    // Four channels — note tiktok is `@vintageukbooks` while the other
+    // three are `@vintagebooks`. Order follows the Branding Guide §6
+    // narrative (Twitter, Instagram, TikTok, Facebook).
+    channels: [
+      { id: 'twitter', handle: '@vintagebooks' },
+      { id: 'instagram', handle: '@vintagebooks' },
+      { id: 'tiktok', handle: '@vintageukbooks' },
+      { id: 'facebook', handle: '@vintagebooks' },
+    ],
+    strapline: 'World-class writing. Beautiful design. Ideas that matter.',
+  },
   copyrightContentChecks: [
     // No TDM check — Vintage doesn't use it.
     // No EEA check — Vintage doesn't use it either.

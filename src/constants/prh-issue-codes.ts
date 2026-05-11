@@ -285,6 +285,46 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'Title-page imprint logo alt text must match the imprint expectation (most imprints: "Penguin Random House"; Pelican: "Pelican Books"; Ladybird: "Ladybird Books")',
   },
+
+  // ── Socials page (P2/PR3) ──────────────────────────────────────────────
+  // Imprint-conditional. Only Penguin / Vintage / Cornerstone Saga ship a
+  // canonical socials page. Puffin / Pelican / Ladybird / #Merky have
+  // `socials: null` in the imprint registry and the validator skips them.
+  'PRH-SOCIALS-PAGE-MISSING': {
+    code: 'PRH-SOCIALS-PAGE-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB must include a socials / "Follow us" page in backmatter',
+  },
+  'PRH-SOCIALS-CHANNEL-MISSING': {
+    code: 'PRH-SOCIALS-CHANNEL-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Socials page is missing one or more expected channels for the imprint',
+  },
+  'PRH-SOCIALS-CHANNEL-ORDER-WRONG': {
+    code: 'PRH-SOCIALS-CHANNEL-ORDER-WRONG',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Socials channels appear in a different order than the imprint specifies (Penguin: Twitter, Facebook, Instagram, YouTube, Pinterest, LinkedIn, TikTok)',
+  },
+  'PRH-SOCIALS-HANDLE-WRONG': {
+    code: 'PRH-SOCIALS-HANDLE-WRONG',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Socials page references a channel but with an unexpected handle (e.g. twitter.com/penguinbooks instead of twitter.com/penguinukbooks)',
+  },
+  'PRH-SOCIALS-STRAPLINE-MISSING': {
+    code: 'PRH-SOCIALS-STRAPLINE-MISSING',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Socials page must include the imprint strapline (Penguin: "Find out more…at Penguin.co.uk"; Vintage: "World-class writing. Beautiful design. Ideas that matter.")',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
