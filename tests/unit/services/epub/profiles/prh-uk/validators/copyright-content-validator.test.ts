@@ -114,6 +114,29 @@ describe('validatePrhCopyrightContent — Penguin (adult template)', () => {
     expect(issues.find((i) => i.code === 'PRH-COPY-ISBN-MISSING')).toBeDefined();
   });
 
+  it('flags ISBN placeholders that don\'t match the 13-digit format (regression)', () => {
+    // Regression for CodeRabbit P2: previously the substring needle
+    // "isbn" matched any copyright page that mentioned the word — so
+    // "ISBN pending" or an empty ISBN placeholder passed.
+    const placeholder = compliantAdultCopyrightXhtml().replace(
+      /<p>ISBN: [^<]*<\/p>/i,
+      '<p>ISBN: TBD pending publication</p>',
+    );
+    const file: PrhXhtmlFile = { path: 'EPUB/xhtml/copyright.xhtml', content: placeholder };
+    const issues = validatePrhCopyrightContent(input(file, penguinRules));
+    expect(issues.find((i) => i.code === 'PRH-COPY-ISBN-MISSING')).toBeDefined();
+  });
+
+  it('accepts a valid ISBN-13 without hyphens', () => {
+    const unhyphenated = compliantAdultCopyrightXhtml().replace(
+      /<p>ISBN: 978-1-234-56789-0<\/p>/i,
+      '<p>ISBN: 9781234567890</p>',
+    );
+    const file: PrhXhtmlFile = { path: 'EPUB/xhtml/copyright.xhtml', content: unhyphenated };
+    const issues = validatePrhCopyrightContent(input(file, penguinRules));
+    expect(issues.find((i) => i.code === 'PRH-COPY-ISBN-MISSING')).toBeUndefined();
+  });
+
   it('flags missing PRH UK logo when neither src nor alt matches', () => {
     const stripped = compliantAdultCopyrightXhtml().replace(
       /<figure class="copyright_logo">[\s\S]*?<\/figure>/i,

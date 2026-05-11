@@ -40,15 +40,33 @@ export const GROUP_STATEMENT_FRAGMENT =
 export const ADULT_ADDRESS_FRAGMENT =
   'one embassy gardens, 8 viaduct gardens, london sw11 7bw';
 
-/** Children's correspondence address. */
-export const CHILDRENS_ADDRESS_FRAGMENT =
-  "penguin random house children's";
+/**
+ * Children's correspondence-address needle. Dropped the trailing
+ * apostrophe-s so the check is robust to curly-vs-straight apostrophe
+ * variations in real EPUBs (`children's` vs `children's`). The
+ * validator's normalisation step folds curly to straight quotes too,
+ * but this is belt-and-braces.
+ */
+export const CHILDRENS_ADDRESS_FRAGMENT = 'penguin random house children';
 
 /** PRH UK logo reference — checked separately as a file/alt-text concern, not text. */
 export const PRH_UK_LOGO_ALT = 'penguin random house uk';
 
-/** Generic ISBN pattern check — ISBN 13-digit format. */
-export const ISBN_FRAGMENT_HINT = 'isbn';
+/**
+ * ISBN-13 format check — matches `isbn` followed by an optional colon
+ * and a 978/979 prefix with the canonical hyphenated form `978-X-XXX-
+ * XXXXX-X`. Also accepts the unhyphenated 13-digit form so books that
+ * inline `ISBN 9781234567890` still pass. This is a *format* check —
+ * placeholders like "ISBN pending" intentionally fail it.
+ *
+ * Regex anchors are deliberately loose: case-insensitive, allows any
+ * whitespace runs around the colon, and matches the prefix + 13 digits
+ * with optional hyphens. Operates on the normalised (whitespace-
+ * collapsed, lowercased) text so the case flag here is redundant but
+ * kept for clarity.
+ */
+export const ISBN_FORMAT_REGEX =
+  /\bisbn\s*:?\s*97[89](?:[\s-]?\d){10}\b/i;
 
 // ── Shared check builders ────────────────────────────────────────────────
 
@@ -96,9 +114,9 @@ export function adultCopyrightChecks(): CopyrightContentCheck[] {
     },
     {
       code: 'PRH-COPY-ISBN-MISSING',
-      needle: ISBN_FRAGMENT_HINT,
+      regex: ISBN_FORMAT_REGEX,
       severity: 'moderate',
-      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X".',
+      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X". Placeholders like "ISBN pending" do not satisfy this check.',
     },
     // PRH-COPY-PRH-LOGO-MISSING is checked separately via an alt-text
     // probe rather than a string-needle (the validator hands the
@@ -153,9 +171,9 @@ export function childrensCopyrightChecks(): CopyrightContentCheck[] {
     },
     {
       code: 'PRH-COPY-ISBN-MISSING',
-      needle: ISBN_FRAGMENT_HINT,
+      regex: ISBN_FORMAT_REGEX,
       severity: 'moderate',
-      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X".',
+      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X". Placeholders like "ISBN pending" do not satisfy this check.',
     },
   ];
 }

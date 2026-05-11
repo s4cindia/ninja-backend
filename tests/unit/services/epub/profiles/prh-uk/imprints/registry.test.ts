@@ -79,14 +79,19 @@ describe('getImprintRules', () => {
     expect(urlCheck?.needle).toBe('penguin.co.uk/vintage');
   });
 
-  it('every check has severity, needle, suggestion, and a registered PRH code', () => {
+  it('every check has severity, a needle OR regex, suggestion, and a registered PRH code', () => {
     const imprints = ['penguin', 'puffin', 'vintage', 'pelican', 'ladybird', 'merky', 'cornerstone-saga'] as const;
     for (const imprint of imprints) {
       const rules = getImprintRules(imprint);
       expect(rules).not.toBeNull();
       for (const check of rules!.copyrightContentChecks) {
         expect(check.code, `${imprint}: ${check.code} should start with PRH-COPY-`).toMatch(/^PRH-COPY-/);
-        expect(check.needle.length).toBeGreaterThan(0);
+        // Every check must have either a needle OR a regex (validator
+        // short-circuits if neither is set, which would be a silent
+        // false-pass — guard against it).
+        const hasNeedle = typeof check.needle === 'string' && check.needle.length > 0;
+        const hasRegex = check.regex instanceof RegExp;
+        expect(hasNeedle || hasRegex, `${imprint}: ${check.code} must have needle or regex`).toBe(true);
         expect(check.suggestion.length).toBeGreaterThan(0);
         expect(['minor', 'moderate', 'serious', 'critical']).toContain(check.severity);
       }

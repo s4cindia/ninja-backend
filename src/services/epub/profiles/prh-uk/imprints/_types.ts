@@ -12,21 +12,28 @@
 import type { PrhIssueSeverity } from '../../../../../constants/prh-issue-codes';
 
 /**
- * A "must-contain" check against the normalised copyright text. Code,
- * needle, and severity are mandatory; suggestion is shown to the
- * operator when the needle is missing.
+ * A "must-contain" check against the normalised copyright text. Provide
+ * either a `needle` (substring match, case-insensitive after
+ * normalisation) OR a `regex` (pattern match against the normalised
+ * text). Use `regex` for format checks like ISBN where presence of the
+ * word alone isn't enough.
  */
 export interface CopyrightContentCheck {
-  /** PRH-COPY-* code emitted when the needle is not found. */
+  /** PRH-COPY-* code emitted when the needle/regex doesn't match. */
   code: string;
   /**
-   * Needle to search for in the normalised copyright text. Should be a
-   * short distinctive fragment, NOT the whole boilerplate paragraph —
-   * matching the entire prose is brittle to typesetting drift. For the
-   * TDM-reservation paragraph for example, "Article 4(3) of the DSM
-   * Directive" is enough to uniquely identify it.
+   * Substring to search for in the normalised copyright text. Should be
+   * a short distinctive fragment, NOT the whole boilerplate paragraph —
+   * matching the entire prose is brittle to typesetting drift. Provide
+   * either `needle` OR `regex`; if both are supplied the regex wins.
    */
-  needle: string;
+  needle?: string;
+  /**
+   * Pattern to match against the normalised text. Use this for format
+   * checks (e.g. ISBN-13 digit pattern) where a plain substring match
+   * would let placeholders like "ISBN pending" pass.
+   */
+  regex?: RegExp;
   severity: PrhIssueSeverity;
   /**
    * Human-readable note about WHAT the operator should add. The

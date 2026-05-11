@@ -1,5 +1,5 @@
 import type { ImprintRules } from './_types';
-import { BL_CIP_FRAGMENT, GROUP_STATEMENT_FRAGMENT, ISBN_FRAGMENT_HINT } from './_shared';
+import { BL_CIP_FRAGMENT, GROUP_STATEMENT_FRAGMENT, ISBN_FORMAT_REGEX } from './_shared';
 
 /**
  * Vintage — bespoke copyright template per the Branding Guide
@@ -50,9 +50,9 @@ export const VINTAGE_RULES: ImprintRules = {
     },
     {
       code: 'PRH-COPY-ISBN-MISSING',
-      needle: ISBN_FRAGMENT_HINT,
+      regex: ISBN_FORMAT_REGEX,
       severity: 'moderate',
-      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X".',
+      suggestion: 'Add the ISBN line in the format "ISBN: 978-X-XXX-XXXXX-X". Placeholders like "ISBN pending" do not satisfy this check.',
     },
     {
       code: 'PRH-COPY-IMPRINT-URL-MISSING',

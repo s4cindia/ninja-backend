@@ -51,7 +51,7 @@ export function validatePrhCopyrightContent(input: CopyrightInput): PrhValidator
 
   for (const check of input.imprintRules.copyrightContentChecks) {
     if (emittedCodes.has(check.code)) continue;
-    const present = normalised.includes(check.needle.toLowerCase());
+    const present = isCheckSatisfied(check, normalised);
     if (present) {
       // For codes that have multiple needles (URL check on children's
       // imprints), one match doesn't mean all three URLs are present.
@@ -114,12 +114,14 @@ function findCopyrightXhtml(files: PrhPerXhtmlInput['xhtmlFiles']): XhtmlFile | 
  * Normalise copyright XHTML to a single lowercase whitespace-collapsed
  * string for substring matching. Strips:
  *   - HTML tags (<...>),
- *   - HTML entities (&amp; etc. — collapsed to their general meaning
- *     so "&amp;" becomes " ", which still matches because we collapse
- *     whitespace),
+ *   - HTML entities (&amp; etc.),
  *   - whitespace runs (multiple spaces / newlines / tabs → single space),
  *   - script/style blocks (defensive — copyright pages shouldn't have
- *     either, but malformed input is real).
+ *     either, but malformed input is real),
+ *   - smart-quote variations: curly quotes (’ ‘ “ ”), and a handful of
+ *     non-ASCII apostrophes get folded to ASCII equivalents so a needle
+ *     written with a straight apostrophe matches a haystack typeset
+ *     with a curly one.
  */
 function normaliseCopyrightText(html: string): string {
   return html
@@ -133,11 +135,36 @@ function normaliseCopyrightText(html: string): string {
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
-    .replace(/&#x?[0-9a-f]+;/gi, ' ')  // numeric entities → space
+    // Smart-quote handling: replace common curly variants with ASCII
+    // equivalents BEFORE the numeric-entity strip catches them. Both raw
+    // characters and HTML numeric refs are covered.
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/&#(?:8216|8217|8218|8219|x201[89ab]);/gi, "'")
+    .replace(/&#(?:8220|8221|8222|8223|x201[cdef]);/gi, '"')
+    .replace(/&#x?[0-9a-f]+;/gi, ' ')  // remaining numeric entities → space
     // Collapse whitespace.
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+/**
+ * Test whether a check is satisfied by the normalised text. Uses the
+ * regex when provided; otherwise falls back to a case-insensitive
+ * substring match on `needle`. Returns true (satisfied) when neither is
+ * defined — that's a malformed check and we don't want to false-fail
+ * over it. Validator should ensure every check has at least one of the
+ * two via tests.
+ */
+function isCheckSatisfied(check: CopyrightContentCheck, normalisedText: string): boolean {
+  if (check.regex) {
+    return check.regex.test(normalisedText);
+  }
+  if (check.needle) {
+    return normalisedText.includes(check.needle.toLowerCase());
+  }
+  return true;
 }
 
 /** Detect the PRH UK logo via image src or alt-text reference. */
@@ -154,11 +181,19 @@ function hasPrhUkLogo(html: string): boolean {
 }
 
 function buildIssue(check: CopyrightContentCheck, location: string): PrhValidatorIssue {
+  const summary = PRH_ISSUE_CODES[check.code as keyof typeof PRH_ISSUE_CODES]?.summary ?? check.code;
+  // Describe what we were looking for in the message — substring needle
+  // or regex source, whichever this check uses.
+  const fragment = check.needle
+    ? `needle "${check.needle.slice(0, 60)}"`
+    : check.regex
+      ? `pattern /${check.regex.source.slice(0, 60)}/`
+      : 'check';
   return {
     code: check.code,
     severity: check.severity,
     wcag: PRH_ISSUE_CODES[check.code as keyof typeof PRH_ISSUE_CODES]?.wcag ?? [],
-    message: `${PRH_ISSUE_CODES[check.code as keyof typeof PRH_ISSUE_CODES]?.summary ?? check.code}: needle "${check.needle.slice(0, 60)}" not found in copyright page`,
+    message: `${summary}: ${fragment} not found in copyright page`,
     suggestion: check.suggestion,
     location,
   };
