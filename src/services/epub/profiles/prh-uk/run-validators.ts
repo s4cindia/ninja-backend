@@ -29,6 +29,9 @@ import { validatePrhInlineStyles } from './validators/inline-style-validator';
 import { validatePrhLayoutTables } from './validators/layout-table-validator';
 import { validatePrhFootnoteIdParity } from './validators/footnote-id-parity-validator';
 import { validatePrhPageBreakShape } from './validators/page-break-shape-validator';
+import { validatePrhInlineLang } from './validators/inline-lang-validator';
+import { validatePrhHashtags } from './validators/hashtag-validator';
+import { validatePrhAcronyms } from './validators/acronym-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
@@ -100,6 +103,9 @@ export async function runPrhUkValidators(
         ...validatePrhLayoutTables(perXhtmlInput),
         ...validatePrhFootnoteIdParity(perXhtmlInput),
         ...validatePrhPageBreakShape(perXhtmlInput),
+        ...validatePrhInlineLang(perXhtmlInput),
+        ...validatePrhHashtags(perXhtmlInput),
+        ...validatePrhAcronyms(perXhtmlInput),
       );
     }
 

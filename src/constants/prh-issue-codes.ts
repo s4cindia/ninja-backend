@@ -469,6 +469,34 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: '<span epub:type="pagebreak"> must carry role="doc-pagebreak" AND a numeric-only aria-label (no "page"/"pg" prefix, no roman-numeral text)',
   },
+
+  // ── Text-pattern heuristics (P3/PR4) ──────────────────────────────────
+  // All publisher-gated and explicitly HEURISTIC. False positives are
+  // expected on real content — the FE renders these with an info
+  // "review manually" marker (P2-P3 frontend follow-up Prompt 8) so
+  // operators don't treat them as definitive bugs. Severity stays at
+  // `minor` to keep the FP cost low.
+  'PRH-LANG-INLINE-NOT-MARKED': {
+    code: 'PRH-LANG-INLINE-NOT-MARKED',
+    severity: 'minor',
+    wcag: ['3.1.2'],
+    fixType: 'manual',
+    summary: 'Body contains a run of non-Latin-script text not wrapped in <span lang="…"> — screen readers may mispronounce. Heuristic; review manually before fixing',
+  },
+  'PRH-HASHTAG-NOT-CAMEL-CASE': {
+    code: 'PRH-HASHTAG-NOT-CAMEL-CASE',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Hashtag tokens (#example) must be PascalCase/camelCase so screen readers can pronounce them. Heuristic; review manually',
+  },
+  'PRH-ACRONYM-INSERTED-SEPARATORS': {
+    code: 'PRH-ACRONYM-INSERTED-SEPARATORS',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'ALL-CAPS sequence with inserted separators (N.A.S.A. / F, B, I) — PRH wants compact form (NASA / FBI). Heuristic; review manually for legitimate formal abbreviations',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
