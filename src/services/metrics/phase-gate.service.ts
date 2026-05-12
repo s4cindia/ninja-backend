@@ -25,7 +25,10 @@ const ALL_ZONE_TYPES = [
 // C1 selects the BEST overallMAP across the N most recently completed runs.
 // Rationale: one degraded run on a poorly-annotated doc shouldn't yank the
 // Phase-2 readiness gauge backwards; "what we can reach" is the question.
-const C1_RECENT_RUN_WINDOW = 10;
+// Window was 10 initially; widened to 14 (2026-05-12) once the corpus had
+// 17 scored runs and "last 10" was excluding genuinely-recent strong runs
+// (e.g. BirdingwithAI at 75.8%, just one run outside the prior window).
+const C1_RECENT_RUN_WINDOW = 14;
 
 export async function getPhaseGateStatus(): Promise<PhaseGateStatus> {
   const [recentMapRuns, zoneCounts, publishers, contentTypes, spikeRun] =
