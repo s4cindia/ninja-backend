@@ -124,6 +124,11 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-FOOTNOTE-ID-MISMATCH': ['1.3.1'],
   'PRH-PAGEBREAK-MALFORMED': ['2.4.5'],
 
+  // Text-pattern heuristics (P3/PR4)
+  'PRH-LANG-INLINE-NOT-MARKED': ['3.1.2'],
+  'PRH-HASHTAG-NOT-CAMEL-CASE': [],
+  'PRH-ACRONYM-INSERTED-SEPARATORS': [],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],
