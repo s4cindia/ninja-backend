@@ -64,7 +64,21 @@ export function validatePrhEpubTypePlacement(input: PrhPerXhtmlInput): PrhValida
     // ── <body epub:type="…"> ───────────────────────────────────────────
     const bodyTypes = extractBodyEpubTypes(file.content);
     if (bodyTypes !== null) {
-      for (const tok of bodyTypes) {
+      // Multi-token body epub:type ("frontmatter bodymatter") is
+      // nonsensical — a single file is either frontmatter OR
+      // bodymatter, not both — so reject it as MISPLACED before the
+      // per-token whitelist check. Without this guard, a
+      // `<body epub:type="cover bodymatter">` would silently pass
+      // because both tokens are in the whitelist.
+      if (bodyTypes.length !== 1) {
+        issues.push(buildIssue(
+          'PRH-MARKUP-EPUB-TYPE-MISPLACED',
+          `<body epub:type="${bodyTypes.join(' ')}"> declares ${bodyTypes.length} transition tokens. PRH requires exactly one of: cover, frontmatter, bodymatter, backmatter.`,
+          `Reduce <body epub:type="…"> to a single value matching the file's actual role (cover, frontmatter, bodymatter, or backmatter).`,
+          file.path,
+        ));
+      } else {
+        const tok = bodyTypes[0];
         if (!ALLOWED_BODY_EPUB_TYPES.has(tok)) {
           issues.push(buildIssue(
             'PRH-MARKUP-EPUB-TYPE-MISPLACED',
@@ -72,14 +86,16 @@ export function validatePrhEpubTypePlacement(input: PrhPerXhtmlInput): PrhValida
             `Move "${tok}" to the section level if it's a section type, or remove it if it duplicates the surrounding transition. Use role="doc-${tok.replace(/-page$/, '')}" if a doc-* ARIA role exists for this semantic.`,
             file.path,
           ));
-          continue;
-        }
-        // Track for duplicate detection.
-        const existing = transitionTypeSeenIn.get(tok);
-        if (existing) {
-          existing.push(file.path);
         } else {
-          transitionTypeSeenIn.set(tok, [file.path]);
+          // Track for duplicate detection (only when the value is
+          // valid — otherwise we'd track misplaced/multi-token values
+          // and spuriously fire DUPLICATE on the same file twice).
+          const existing = transitionTypeSeenIn.get(tok);
+          if (existing) {
+            existing.push(file.path);
+          } else {
+            transitionTypeSeenIn.set(tok, [file.path]);
+          }
         }
       }
     }

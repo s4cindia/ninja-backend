@@ -34,6 +34,87 @@
 import { PRH_ISSUE_CODES } from '../../../../../constants/prh-issue-codes';
 import type { PrhValidatorIssue, PrhPerXhtmlInput, PrhXhtmlFile } from './types';
 
+/**
+ * Order the XHTML files by the EPUB spine when possible. The "first
+ * chapter section" check needs the AUTHORITATIVE first chapter — zip
+ * entry order is usually a good proxy (zips are typically built from
+ * spine order) but a re-zipped EPUB could have a different on-disk
+ * order than its declared reading order. Spine wins when we have it.
+ *
+ * Falls back to the raw `xhtmlFiles` order when:
+ *   - opfContent has no <spine>
+ *   - spine itemrefs don't reference any manifest items
+ *   - manifest doesn't carry an href we can resolve to an xhtmlFiles path
+ *
+ * Files that aren't in the spine (orphans) are appended at the end in
+ * their original order, so the SLIM BOOK GUARD's count of
+ * chapter-shaped files stays consistent across both code paths.
+ */
+function orderFilesBySpine(
+  opfContent: string,
+  opfPath: string,
+  xhtmlFiles: PrhXhtmlFile[],
+): PrhXhtmlFile[] {
+  const manifestMatch = opfContent.match(/<manifest\b[^>]*>([\s\S]*?)<\/manifest>/i);
+  const spineMatch = opfContent.match(/<spine\b[^>]*>([\s\S]*?)<\/spine>/i);
+  if (!manifestMatch || !spineMatch) return xhtmlFiles;
+
+  // Build idref → resolved zip path.
+  const manifest = new Map<string, string>();
+  const itemRe = /<item\b([^>]*)\/?>/gi;
+  let im: RegExpExecArray | null;
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/')) : '';
+  while ((im = itemRe.exec(manifestMatch[1])) !== null) {
+    const idMatch = im[1].match(/\bid\s*=\s*["']([^"']+)["']/i);
+    const hrefMatch = im[1].match(/\bhref\s*=\s*["']([^"']+)["']/i);
+    if (!idMatch || !hrefMatch) continue;
+    manifest.set(idMatch[1], resolveOpfRelative(opfDir, hrefMatch[1]));
+  }
+
+  // Walk spine itemrefs, collecting resolved paths in spine order.
+  const spineOrderedPaths: string[] = [];
+  const refRe = /<itemref\b([^>]*)\/?>/gi;
+  let rm: RegExpExecArray | null;
+  while ((rm = refRe.exec(spineMatch[1])) !== null) {
+    const idrefMatch = rm[1].match(/\bidref\s*=\s*["']([^"']+)["']/i);
+    if (!idrefMatch) continue;
+    const resolved = manifest.get(idrefMatch[1]);
+    if (resolved) spineOrderedPaths.push(resolved);
+  }
+  if (spineOrderedPaths.length === 0) return xhtmlFiles;
+
+  const filesByPath = new Map(xhtmlFiles.map((f) => [f.path, f]));
+  const seen = new Set<string>();
+  const ordered: PrhXhtmlFile[] = [];
+  for (const p of spineOrderedPaths) {
+    const f = filesByPath.get(p);
+    if (f && !seen.has(p)) {
+      ordered.push(f);
+      seen.add(p);
+    }
+  }
+  // Append any xhtml files not referenced by the spine (orphans).
+  for (const f of xhtmlFiles) {
+    if (!seen.has(f.path)) ordered.push(f);
+  }
+  return ordered;
+}
+
+function resolveOpfRelative(opfDir: string, href: string): string {
+  const combined = opfDir.length > 0 ? `${opfDir}/${href}` : href;
+  const segments = combined.split('/');
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join('/');
+}
+
 interface SectionKindRule {
   /** Code to emit when the role is missing. */
   code: keyof typeof PRH_ISSUE_CODES;
@@ -85,10 +166,14 @@ const SECTION_RULES: SectionKindRule[] = [
 export function validatePrhDocAriaRoles(input: PrhPerXhtmlInput): PrhValidatorIssue[] {
   const issues: PrhValidatorIssue[] = [];
 
+  // Order files by EPUB spine (authoritative reading order). Falls
+  // back to xhtmlFiles order when the spine can't be parsed.
+  const ordered = orderFilesBySpine(input.opfContent, input.opfPath, input.xhtmlFiles);
+
   // SLIM BOOK GUARD: count files that LOOK like chapter sections.
   // When we have zero or one chapter-shaped file, skip the chapter
   // check entirely (Q5 default).
-  const chapterCandidateCount = input.xhtmlFiles.filter((f) =>
+  const chapterCandidateCount = ordered.filter((f) =>
     SECTION_RULES[0].pathPattern.test(f.path),
   ).length;
 
@@ -97,11 +182,10 @@ export function validatePrhDocAriaRoles(input: PrhPerXhtmlInput): PrhValidatorIs
       continue;
     }
 
-    // FIRST-ONLY: find the first file matching the pattern. Files are
-    // walked in their natural xhtmlFiles order, which mirrors the zip
-    // entry order — close enough to "first by spine" without dragging
-    // OPF parsing into this validator.
-    const candidate = firstMatch(input.xhtmlFiles, rule.pathPattern);
+    // FIRST-ONLY: find the first file matching the pattern, in spine
+    // order. PRH's "Chapter 1 only" rule depends on reading-order
+    // "first", not zip-order "first".
+    const candidate = firstMatch(ordered, rule.pathPattern);
     if (!candidate) continue;
 
     if (!hasDocRole(candidate.content, rule.element, rule.docRole)) {

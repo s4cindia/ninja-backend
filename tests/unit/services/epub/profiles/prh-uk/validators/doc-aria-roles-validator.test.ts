@@ -127,3 +127,43 @@ describe('validatePrhDocAriaRoles — multi-value role attributes', () => {
     expect(validatePrhDocAriaRoles(input(files))).toEqual([]);
   });
 });
+
+describe('validatePrhDocAriaRoles — spine-order "first" detection (regression)', () => {
+  it('uses spine order, not zip order, when picking the FIRST chapter', () => {
+    // Zip order: chapter2.xhtml first, then chapter1.xhtml.
+    // Spine order: chapter1 → chapter2.
+    // The validator should flag chapter1.xhtml (spine "first"), not
+    // chapter2.xhtml (zip "first").
+    const opf = `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+  </spine>
+</package>`;
+    const input = {
+      opfContent: opf,
+      opfPath: 'EPUB/package.opf',
+      bookTitle: 'Test',
+      xhtmlFiles: [
+        // Reversed order — zip puts chapter2 first.
+        {
+          path: 'EPUB/chapter2.xhtml',
+          content: '<html xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="bodymatter"><section role="doc-chapter"><h1>Ch 2</h1></section></body></html>',
+        },
+        {
+          path: 'EPUB/chapter1.xhtml',
+          content: '<html xmlns:epub="http://www.idpf.org/2007/ops"><body epub:type="bodymatter"><section><h1>Ch 1</h1></section></body></html>',
+        },
+      ],
+    };
+    const issues = validatePrhDocAriaRoles(input);
+    const issue = issues.find((i) => i.code === 'PRH-ARIA-CHAPTER-ROLE-MISSING');
+    expect(issue).toBeDefined();
+    expect(issue?.location).toBe('EPUB/chapter1.xhtml');
+  });
+});

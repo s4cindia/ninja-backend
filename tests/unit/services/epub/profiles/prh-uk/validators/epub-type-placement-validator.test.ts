@@ -49,6 +49,29 @@ describe('validatePrhEpubTypePlacement — body epub:type whitelist', () => {
     const files = [file('nav.xhtml', '')];
     expect(validatePrhEpubTypePlacement(input(files))).toEqual([]);
   });
+
+  it('rejects multi-token body epub:type ("frontmatter bodymatter") even when each token is in the whitelist (regression)', () => {
+    // A single body can't simultaneously be two transitions. Without
+    // the multi-token guard, both whitelisted tokens would silently
+    // pass and inflate the duplicate-detection state.
+    const files = [file('weird.xhtml', 'epub:type="frontmatter bodymatter"')];
+    const issues = validatePrhEpubTypePlacement(input(files));
+    const misplaced = issues.find((i) => i.code === 'PRH-MARKUP-EPUB-TYPE-MISPLACED');
+    expect(misplaced).toBeDefined();
+    expect(misplaced?.message).toMatch(/2 transition tokens/i);
+  });
+
+  it('multi-token rejection does NOT also fire DUPLICATE on later legitimate uses', () => {
+    // Regression: the duplicate tracker should not count the
+    // multi-token file's tokens — otherwise a subsequent
+    // <body epub:type="frontmatter"> would falsely fire DUPLICATE.
+    const files = [
+      file('weird.xhtml', 'epub:type="frontmatter bodymatter"'),
+      file('legitimate.xhtml', 'epub:type="frontmatter"'),
+    ];
+    const issues = validatePrhEpubTypePlacement(input(files));
+    expect(issues.find((i) => i.code === 'PRH-MARKUP-EPUB-TYPE-DUPLICATE')).toBeUndefined();
+  });
 });
 
 describe('validatePrhEpubTypePlacement — duplicate transitions across <body>', () => {
