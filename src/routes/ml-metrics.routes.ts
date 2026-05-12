@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
-import prisma from '../lib/prisma';
+import prisma, { Prisma } from '../lib/prisma';
 import { calculateMAP } from '../services/metrics/map.service';
 import {
   saveMapSnapshot,
@@ -49,12 +49,15 @@ router.post('/map', async (req: Request, res: Response) => {
       });
     }
 
-    // Fetch operator-verified zones as ground truth
+    // Fetch operator-verified zones as ground truth.
+    // bounds: { not: null } guards calculateIoU against legacy ghost zones
+    // (structure elements with no computable bbox) which would crash on .x access.
     const gtZones = await prisma.zone.findMany({
       where: {
         calibrationRunId: runId,
         operatorVerified: true,
         isArtefact: false,
+        bounds: { not: Prisma.DbNull },
       },
     });
 
@@ -64,11 +67,12 @@ router.post('/map', async (req: Request, res: Response) => {
       zoneType: (z.operatorLabel ?? z.type) as CanonicalZoneType,
     }));
 
-    // Fetch docling predictions
+    // Fetch docling predictions (same null-bounds guard as ground truth)
     const predZones = await prisma.zone.findMany({
       where: {
         calibrationRunId: runId,
         source: 'docling',
+        bounds: { not: Prisma.DbNull },
       },
     });
 
