@@ -9,6 +9,7 @@ import {
   getMapHistory,
 } from '../services/metrics/map-persistence';
 import { getPhaseGateStatus } from '../services/metrics/phase-gate.service';
+import { normalizeOperatorLabel } from '../services/metrics/operator-label-normalizer';
 import type { AnnotatedZone, PredictedZone } from '../services/metrics/ml-metrics.types';
 import type { BBox } from '../services/calibration/iou';
 import type { CanonicalZoneType } from '../services/zone-extractor/types';
@@ -61,11 +62,22 @@ router.post('/map', async (req: Request, res: Response) => {
       },
     });
 
-    const groundTruth: AnnotatedZone[] = gtZones.map((z) => ({
-      pageNumber: z.pageNumber,
-      bbox: z.bounds as unknown as BBox,
-      zoneType: (z.operatorLabel ?? z.type) as CanonicalZoneType,
-    }));
+    // Normalize operator labels to canonical zone types. The Zone.operatorLabel
+    // column is free-text and the corpus contains at least two non-canonical
+    // conventions (PDF-tag-name like 'LI'/'HDR' and HTML-semantic like 'h1'-'h6').
+    // Without this step every off-canon label leaks through as its own bucket,
+    // produces zero matching predictions, and drags AP to 0 for every class.
+    const groundTruth: AnnotatedZone[] = gtZones.flatMap((z) => {
+      const canonical =
+        normalizeOperatorLabel(z.operatorLabel) ??
+        normalizeOperatorLabel(z.type);
+      if (!canonical) return [];
+      return [{
+        pageNumber: z.pageNumber,
+        bbox: z.bounds as unknown as BBox,
+        zoneType: canonical,
+      }];
+    });
 
     // Fetch docling predictions (same null-bounds guard as ground truth)
     const predZones = await prisma.zone.findMany({
