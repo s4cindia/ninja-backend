@@ -41,8 +41,13 @@ export function validatePrhLayoutTables(input: PrhPerXhtmlInput): PrhValidatorIs
       const innerHtml = m[2];
 
       // Skip if the table declares role="presentation" (or "none" —
-      // ARIA treats them as synonyms for "no semantic role").
-      const roleMatch = openAttrs.match(/\brole\s*=\s*["']([^"']+)["']/i);
+      // ARIA treats them as synonyms for "no semantic role"). The
+      // leading anchor MUST be start-of-string or whitespace, NOT
+      // `\b`: `\b` would land between `-` and `r` in `data-role`,
+      // letting a `data-role="presentation"` metadata attribute
+      // silently suppress the issue. Whitespace anchoring is how
+      // HTML attributes actually serialise.
+      const roleMatch = openAttrs.match(/(?:^|\s)role\s*=\s*["']([^"']+)["']/i);
       if (roleMatch) {
         const tokens = roleMatch[1].split(/\s+/).map((t) => t.toLowerCase());
         if (tokens.includes('presentation') || tokens.includes('none')) continue;

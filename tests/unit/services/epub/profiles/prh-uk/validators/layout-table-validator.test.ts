@@ -81,4 +81,15 @@ describe('validatePrhLayoutTables', () => {
     const files = [file('ch.xhtml', body)];
     expect(validatePrhLayoutTables(input(files))).toEqual([]);
   });
+
+  it('does NOT skip layout table when only `data-role="presentation"` is present (regression)', () => {
+    // `\b` word-boundary against `role` would false-match inside
+    // `data-role` because `-` to `r` is a word transition. The
+    // validator must anchor on start-of-string or whitespace to
+    // require a REAL role attribute, not data-role metadata.
+    const files = [file('ch.xhtml', layoutTable(6, ' data-role="presentation"'))];
+    const issues = validatePrhLayoutTables(input(files));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('PRH-TABLE-LAYOUT-WITHOUT-PRESENTATION');
+  });
 });
