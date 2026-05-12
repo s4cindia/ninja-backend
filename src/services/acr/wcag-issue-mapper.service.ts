@@ -115,6 +115,11 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-ARIA-APPENDIX-ROLE-MISSING': ['1.3.1'],
   'PRH-BODY-HAS-ARIA': ['4.1.2'],
 
+  // Forbidden constructs (P3/PR2)
+  'PRH-MARKUP-DEPRECATED-TAG': [],
+  'PRH-MARKUP-INLINE-STYLE': [],
+  'PRH-TABLE-LAYOUT-WITHOUT-PRESENTATION': ['1.3.1'],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],
