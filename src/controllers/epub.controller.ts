@@ -22,6 +22,38 @@ import { workflowConfigService } from '../services/workflow/workflow-config.serv
 
 const comparisonService = new ComparisonService(prisma);
 
+/**
+ * Validate the imageAlts payload supplied for PRH-COVER-ALT-EMPTY
+ * quick-fix requests. Returns null when the payload is well-formed
+ * (non-empty array, every entry has a non-empty imageSrc and a
+ * non-whitespace altText). Returns a human-readable error string
+ * when the payload is malformed — the caller renders that as a 400.
+ *
+ * PRH's rule is that the cover image MUST have explicit alt text;
+ * an empty / whitespace-only altText is the precise failure mode
+ * the validator is designed to catch, so accepting it here would
+ * defeat the rule. Same applies to imageAlts entries whose imageSrc
+ * is missing — without a target there's nothing for addAltText to
+ * write into.
+ */
+function validateCoverAltPayload(
+  imageAlts: Array<{ imageSrc?: string; altText?: string }> | undefined,
+): string | null {
+  if (!imageAlts || imageAlts.length === 0) {
+    return 'PRH-COVER-ALT-EMPTY requires options.imageAlts with at least one { imageSrc, altText } entry — cover image must have explicit alt text, never decorative.';
+  }
+  for (let i = 0; i < imageAlts.length; i += 1) {
+    const entry = imageAlts[i];
+    if (!entry.imageSrc || entry.imageSrc.trim().length === 0) {
+      return `PRH-COVER-ALT-EMPTY: options.imageAlts[${i}].imageSrc must be a non-empty string identifying the cover image.`;
+    }
+    if (!entry.altText || entry.altText.trim().length === 0) {
+      return `PRH-COVER-ALT-EMPTY: options.imageAlts[${i}].altText must be non-empty (e.g. "Cover for [Book Title]"). PRH forbids empty or whitespace-only cover alt.`;
+    }
+  }
+  return null;
+}
+
 export const epubController = {
   async getJob(req: AuthenticatedRequest, res: Response) {
     try {
@@ -972,6 +1004,7 @@ export const epubController = {
             'EPUB-NAV-001': 'Add skip navigation links',
             'EPUB-NAV-002': 'Add unique aria-labels to navigation landmarks',
             'EPUB-FIG-001': 'Add figure/figcaption structure',
+            'PRH-COVER-ALT-EMPTY': 'Add cover image alt text (e.g. "Cover for [Book Title]")',
           },
         },
       });
@@ -1165,6 +1198,25 @@ export const epubController = {
             results = await epubModifier.addDecorativeAltAttributes(zip);
           }
           break;
+        case 'PRH-COVER-ALT-EMPTY': {
+          // Cover-image alt is REQUIRED by PRH — never marked decorative.
+          // The FE quick-fix dialog must supply `options.imageAlts`
+          // with at least one { imageSrc, altText } entry, where
+          // altText is non-empty after trim. Reject the request
+          // rather than falling back to addDecorativeAltAttributes —
+          // that would silently mark the cover as decorative. Also
+          // reject per-entry empty altText / imageSrc, otherwise a
+          // payload like [{ imageSrc: '...', altText: '   ' }] would
+          // produce empty alt and defeat the very rule we enforce.
+          const validation = validateCoverAltPayload(options?.imageAlts);
+          if (validation) {
+            return res.status(400).json({ success: false, error: validation });
+          }
+          // Non-null assertion is safe — validateCoverAltPayload
+          // returns null only when imageAlts is a non-empty array.
+          results = await epubModifier.addAltText(zip, options!.imageAlts!);
+          break;
+        }
         case 'EPUB-STRUCT-002':
           results = await epubModifier.addTableHeaders(zip);
           break;
@@ -2171,6 +2223,18 @@ export const epubController = {
             allResults = await epubModifier.addDecorativeAltAttributes(zip);
           }
           break;
+        case 'PRH-COVER-ALT-EMPTY': {
+          // Same contract as the applyQuickFix arm — cover image alt
+          // is REQUIRED, every entry must carry a non-empty imageSrc
+          // and a non-whitespace altText (empty alt would silently
+          // defeat the rule).
+          const validation = validateCoverAltPayload(options?.imageAlts);
+          if (validation) {
+            return res.status(400).json({ success: false, error: validation });
+          }
+          allResults = await epubModifier.addAltText(zip, options!.imageAlts!);
+          break;
+        }
         case 'EPUB-STRUCT-002':
           allResults = await epubModifier.addTableHeaders(zip);
           break;

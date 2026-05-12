@@ -63,10 +63,13 @@ export const QUICK_FIXABLE_CODES = new Set([
   'EPUB-SEM-003',
   'LANDMARK-UNIQUE',
   'EPUB-TYPE-HAS-MATCHING-ROLE',
-  // PRH-COVER-ALT-EMPTY is NOT in this set yet: it falls back to
-  // manual classification (severity=serious so it still stands out in
-  // the UI). Wiring the quick-fix controller route to call addAltText
-  // for the cover image is a small follow-up — out of scope for PR4.
+  // PRH UK cover alt — operator supplies alt text via the existing
+  // quick-fix dialog ("Cover for [Book Title]" template). Routed
+  // through the same addAltText handler as EPUB-IMG-001, with a
+  // dedicated controller arm that rejects missing imageAlts (cover
+  // MUST have alt; falling back to decorative is wrong for the cover
+  // image specifically).
+  'PRH-COVER-ALT-EMPTY',
 ]);
 
 // Map ACE codes to equivalent JS Auditor codes to prevent duplicate processing
