@@ -425,6 +425,32 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: '<body> must NOT carry role / aria-label / aria-labelledby (PRH explicitly prohibits)',
   },
+
+  // ── Forbidden constructs (P3/PR2) ─────────────────────────────────────
+  // Publisher-gated. Detect-only — auto-fix (swap <b>→<strong>, etc.)
+  // is a P5 concern because the semantic intent isn't always
+  // mechanically recoverable.
+  'PRH-MARKUP-DEPRECATED-TAG': {
+    code: 'PRH-MARKUP-DEPRECATED-TAG',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Body contains deprecated presentational tags (<b>, <i>, <big>, <small>, <u>, <strike>, <center>, <font>) — PRH requires semantic tags (<strong>, <em>) instead',
+  },
+  'PRH-MARKUP-INLINE-STYLE': {
+    code: 'PRH-MARKUP-INLINE-STYLE',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Body element carries inline style attribute — PRH requires styles in CSS, not inline (Technical Guide §15 allows one demo per book; we flag every instance)',
+  },
+  'PRH-TABLE-LAYOUT-WITHOUT-PRESENTATION': {
+    code: 'PRH-TABLE-LAYOUT-WITHOUT-PRESENTATION',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'Likely layout <table> (no <th>, ≥6 cells, not marked role="presentation") — PRH requires layout tables to declare role="presentation"',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

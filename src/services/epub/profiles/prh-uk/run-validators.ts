@@ -24,6 +24,9 @@ import { validatePrhContentOrder } from './validators/content-order-validator';
 import { validatePrhEpubTypePlacement } from './validators/epub-type-placement-validator';
 import { validatePrhDocAriaRoles } from './validators/doc-aria-roles-validator';
 import { validatePrhBodyPurity } from './validators/body-purity-validator';
+import { validatePrhForbiddenTags } from './validators/forbidden-tags-validator';
+import { validatePrhInlineStyles } from './validators/inline-style-validator';
+import { validatePrhLayoutTables } from './validators/layout-table-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
@@ -90,6 +93,9 @@ export async function runPrhUkValidators(
         ...validatePrhEpubTypePlacement(perXhtmlInput),
         ...validatePrhDocAriaRoles(perXhtmlInput),
         ...validatePrhBodyPurity(perXhtmlInput),
+        ...validatePrhForbiddenTags(perXhtmlInput),
+        ...validatePrhInlineStyles(perXhtmlInput),
+        ...validatePrhLayoutTables(perXhtmlInput),
       );
     }
 
