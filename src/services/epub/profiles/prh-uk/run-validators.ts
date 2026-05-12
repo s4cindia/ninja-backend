@@ -21,6 +21,9 @@ import { validatePrhBrandPage } from './validators/brand-page-validator';
 import { validatePrhTitlePage } from './validators/title-page-validator';
 import { validatePrhSocials } from './validators/socials-validator';
 import { validatePrhContentOrder } from './validators/content-order-validator';
+import { validatePrhEpubTypePlacement } from './validators/epub-type-placement-validator';
+import { validatePrhDocAriaRoles } from './validators/doc-aria-roles-validator';
+import { validatePrhBodyPurity } from './validators/body-purity-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
 import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
@@ -73,6 +76,22 @@ export async function runPrhUkValidators(
       ...validatePrhPerXhtml(perXhtmlInput),
       ...validatePrhImages(perXhtmlInput),
     ];
+
+    // Publisher-gated P3 validators run when the publisher is PRH-UK
+    // AND confidence is medium-or-high. P3 rules are markup-level and
+    // apply to every PRH-UK build regardless of imprint — multi-imprint
+    // demo docs (PRH Technical Guide / Branding Guide) still get these
+    // checks because the markup conventions are imprint-agnostic.
+    const isPrhAtMediumConfidence =
+      publisherProfile?.publisher === 'PRH-UK'
+      && publisherProfile.confidence !== 'low';
+    if (isPrhAtMediumConfidence) {
+      issues.push(
+        ...validatePrhEpubTypePlacement(perXhtmlInput),
+        ...validatePrhDocAriaRoles(perXhtmlInput),
+        ...validatePrhBodyPurity(perXhtmlInput),
+      );
+    }
 
     // Imprint-gated P2 validators run only when we have a recognised
     // imprint (not 'unknown' / null) AND confidence is medium-or-high.

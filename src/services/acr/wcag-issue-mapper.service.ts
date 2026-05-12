@@ -105,6 +105,16 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-ORDER-COPYRIGHT-WRONG-POSITION': [],
   'PRH-ORDER-MISSING-ABOUT-AUTHOR': [],
 
+  // Body epub:type + doc-* ARIA (P3/PR1)
+  'PRH-MARKUP-EPUB-TYPE-MISPLACED': ['1.3.1'],
+  'PRH-MARKUP-EPUB-TYPE-DUPLICATE': [],
+  'PRH-ARIA-CHAPTER-ROLE-MISSING': ['1.3.1'],
+  'PRH-ARIA-PART-ROLE-MISSING': ['1.3.1'],
+  'PRH-ARIA-DEDICATION-ROLE-MISSING': ['1.3.1'],
+  'PRH-ARIA-EPIGRAPH-ROLE-MISSING': ['1.3.1'],
+  'PRH-ARIA-APPENDIX-ROLE-MISSING': ['1.3.1'],
+  'PRH-BODY-HAS-ARIA': ['4.1.2'],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],
