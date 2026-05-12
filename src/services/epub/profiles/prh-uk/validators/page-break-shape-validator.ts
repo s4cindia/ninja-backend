@@ -44,7 +44,14 @@ export function validatePrhPageBreakShape(input: PrhPerXhtmlInput): PrhValidator
     // Match <span …epub:type="pagebreak"…> opening tags (self-closing
     // variant `<span … />` and explicit-close `<span …></span>` both
     // pass — the validator only reads the open tag's attributes).
-    const tagRe = /<span\b([^>]*\bepub:type\s*=\s*["'][^"']*\bpagebreak\b[^"']*["'][^>]*)\/?>/gi;
+    //
+    // The leading anchor on epub:type MUST be whitespace, NOT `\b`:
+    // a `\b` between `-` and `e` lets `data-epub:type="pagebreak"`
+    // false-match a real epub:type attribute (the validator would
+    // then try to verify the role + aria-label and fire a spurious
+    // PRH-PAGEBREAK-MALFORMED issue against a metadata-only span).
+    // See memory: feedback_attribute_regex_anchor.md.
+    const tagRe = /<span\b([^>]*(?:^|\s)epub:type\s*=\s*["'][^"']*\bpagebreak\b[^"']*["'][^>]*)\/?>/gi;
     let m: RegExpExecArray | null;
     while ((m = tagRe.exec(file.content)) !== null) {
       const attrs = m[1];

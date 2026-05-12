@@ -43,7 +43,11 @@ export function validatePrhFootnoteIdParity(input: PrhPerXhtmlInput): PrhValidat
 
   // 2. Walk every XHTML for `<a epub:type="noteref">` refs.
   for (const file of input.xhtmlFiles) {
-    const refRe = /<a\b([^>]*\bepub:type\s*=\s*["'][^"']*\bnoteref\b[^"']*["'][^>]*)>/gi;
+    // `(?:^|\s)epub:type` (NOT \b): `\b` matches inside
+    // `data-epub:type` because the boundary lands between `-` and `e`,
+    // so a custom prefixed attribute would silently look like a real
+    // noteref. Whitespace anchor mirrors how HTML attributes serialise.
+    const refRe = /<a\b([^>]*(?:^|\s)epub:type\s*=\s*["'][^"']*\bnoteref\b[^"']*["'][^>]*)>/gi;
     let m: RegExpExecArray | null;
     while ((m = refRe.exec(file.content)) !== null) {
       const attrs = m[1];
@@ -59,13 +63,27 @@ export function validatePrhFootnoteIdParity(input: PrhPerXhtmlInput): PrhValidat
         continue;
       }
       const href = hrefMatch[1];
-      const idTarget = parseFragmentId(href);
-      if (!idTarget) {
-        // href present but no `#` fragment — also broken (web link?).
+
+      // Reject hrefs that carry a URL scheme (http:, https:, mailto:,
+      // tel:, data:, etc.) OR protocol-relative URLs ("//host/path").
+      // Without this check `https://example.com#fn1` would extract
+      // the fragment "fn1" and silently match a legitimate in-EPUB
+      // footnote id, hiding a real broken-link bug.
+      if (isExternalHref(href)) {
         issues.push(buildIssue(
           file.path,
           href,
-          'Noteref href must reference an in-EPUB fragment (e.g. href="#fn12"), not an external URL.',
+          'Noteref href must reference an in-EPUB fragment (e.g. href="#fn12" or "footnotes.xhtml#fn12"), not an external URL.',
+        ));
+        continue;
+      }
+
+      const idTarget = parseFragmentId(href);
+      if (!idTarget) {
+        issues.push(buildIssue(
+          file.path,
+          href,
+          'Noteref href has no fragment identifier. Add "#<footnote-id>" so the link targets a specific footnote.',
         ));
         continue;
       }
@@ -102,7 +120,9 @@ function collectDestinationIds(files: PrhXhtmlFile[]): Set<string> {
   for (const file of files) {
     // Footnote asides — match <aside …> opening tags that carry the
     // canonical epub:type="footnote" marker, then extract id.
-    const asideRe = /<aside\b([^>]*\bepub:type\s*=\s*["'][^"']*\bfootnote\b[^"']*["'][^>]*)>/gi;
+    // Whitespace-anchored epub:type per the attribute-regex rule
+    // (see memory: feedback_attribute_regex_anchor.md).
+    const asideRe = /<aside\b([^>]*(?:^|\s)epub:type\s*=\s*["'][^"']*\bfootnote\b[^"']*["'][^>]*)>/gi;
     let am: RegExpExecArray | null;
     while ((am = asideRe.exec(file.content)) !== null) {
       const idMatch = am[1].match(/(?:^|\s)id\s*=\s*["']([^"']+)["']/i);
@@ -113,11 +133,11 @@ function collectDestinationIds(files: PrhXhtmlFile[]): Set<string> {
     // <section epub:type="endnotes">…</section> block. Using a
     // section-scoped scan avoids picking up <li id="…"> from
     // unrelated lists (e.g. a chapter's bullet list).
-    const sectionRe = /<section\b[^>]*\bepub:type\s*=\s*["'][^"']*\bendnotes\b[^"']*["'][^>]*>([\s\S]*?)<\/section>/gi;
+    const sectionRe = /<section\b[^>]*(?:^|\s)epub:type\s*=\s*["'][^"']*\bendnotes\b[^"']*["'][^>]*>([\s\S]*?)<\/section>/gi;
     let sm: RegExpExecArray | null;
     while ((sm = sectionRe.exec(file.content)) !== null) {
       const sectionBody = sm[1];
-      const liRe = /<li\b[^>]*\bid\s*=\s*["']([^"']+)["']/gi;
+      const liRe = /<li\b[^>]*(?:^|\s)id\s*=\s*["']([^"']+)["']/gi;
       let lm: RegExpExecArray | null;
       while ((lm = liRe.exec(sectionBody)) !== null) {
         ids.add(lm[1]);
@@ -126,6 +146,24 @@ function collectDestinationIds(files: PrhXhtmlFile[]): Set<string> {
   }
 
   return ids;
+}
+
+/**
+ * True when the href carries a URL scheme or is protocol-relative —
+ * i.e. an external URL rather than an in-EPUB reference.
+ *
+ * Patterns matched:
+ *   - `<scheme>:` followed by anything (http:, https:, mailto:, tel:,
+ *     data:, javascript:, etc.) — the scheme rule per RFC 3986 is a
+ *     letter followed by letters/digits/`+`/`-`/`.`.
+ *   - `//host/path` (protocol-relative).
+ *
+ * In-EPUB refs like `#fn1` and `footnotes.xhtml#fn1` both return
+ * false — those are local fragments / relative paths.
+ */
+function isExternalHref(href: string): boolean {
+  if (href.startsWith('//')) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(href);
 }
 
 /**

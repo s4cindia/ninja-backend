@@ -110,4 +110,14 @@ describe('validatePrhPageBreakShape — malformed cases', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toMatch(/role attribute is missing/i);
   });
+
+  it('does NOT treat `data-epub:type="pagebreak"` as a real pagebreak (regression)', () => {
+    // Prefixed attributes like data-epub:type are author-defined
+    // metadata, not the canonical epub:type. The validator must skip
+    // the span entirely so it doesn't fire spurious malformed-pagebreak
+    // issues against arbitrary metadata-only spans.
+    const files = [file('<span data-epub:type="pagebreak">12</span>')];
+    const issues = validatePrhPageBreakShape(input(files));
+    expect(issues).toEqual([]);
+  });
 });

@@ -108,6 +108,24 @@ describe('validatePrhFootnoteIdParity — orphan detection', () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toMatch(/example\.com/);
   });
+
+  it('emits PRH-FOOTNOTE-ID-MISMATCH for external URL + fragment (https://…#fn1) — regression', () => {
+    // Without an external-URL guard, parseFragmentId would extract
+    // "fn1" from the URL and silently match an in-EPUB footnote
+    // with id="fn1", hiding the real broken-link bug.
+    const files = [chapterWithRef('https://example.com/notes#fn1'), footnotesFileWithIds(['fn1'])];
+    const issues = validatePrhFootnoteIdParity(input(files));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('PRH-FOOTNOTE-ID-MISMATCH');
+    expect(issues[0].message).toMatch(/example\.com/);
+  });
+
+  it('rejects protocol-relative URLs (//host/path)', () => {
+    const files = [chapterWithRef('//example.com/notes#fn1'), footnotesFileWithIds(['fn1'])];
+    const issues = validatePrhFootnoteIdParity(input(files));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('PRH-FOOTNOTE-ID-MISMATCH');
+  });
 });
 
 describe('validatePrhFootnoteIdParity — id-set scope', () => {
