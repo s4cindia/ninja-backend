@@ -24,6 +24,7 @@
  */
 
 import { PRH_ISSUE_CODES } from '../../../../../constants/prh-issue-codes';
+import { stripHtmlMarkup } from './text-utils';
 import type { PrhValidatorIssue, PrhPerXhtmlInput } from './types';
 
 /**
@@ -84,15 +85,6 @@ function isPascalOrCamelCase(token: string): boolean {
   const hasUpper = /[A-Z]/.test(letterPart);
   // Need BOTH cases present. All-lower or all-upper fails.
   return hasLower && hasUpper;
-}
-
-function stripHtmlMarkup(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z]+;/gi, ' ')
-    .replace(/&#x?[0-9a-f]+;/gi, ' ');
 }
 
 function buildIssue(location: string, offenders: string[]): PrhValidatorIssue {

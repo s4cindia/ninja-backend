@@ -73,10 +73,19 @@ describe('validatePrhInlineLang — non-Latin run detection', () => {
     expect(issues[0].message).toMatch(/3 unmarked/);
   });
 
-  it('reports up to 3 sample runs in the message', () => {
-    const files = [file('<p>привет здравствуйте добрый</p>')];
+  it('reports up to 3 sample runs in the message — first three only, fourth excluded', () => {
+    // Four distinct Russian words. The validator caps the in-message
+    // sample list at 3 so the message stays readable on books with
+    // dozens of inline runs. Assert all three early samples appear
+    // AND that the fourth is excluded — otherwise the cap is silently
+    // off.
+    const files = [file('<p>привет здравствуйте добрый вечер</p>')];
     const issues = validatePrhInlineLang(input(files));
+    expect(issues).toHaveLength(1);
     expect(issues[0].message).toMatch(/привет/);
+    expect(issues[0].message).toMatch(/здравствуйте/);
+    expect(issues[0].message).toMatch(/добрый/);
+    expect(issues[0].message).not.toMatch(/вечер/);
   });
 });
 

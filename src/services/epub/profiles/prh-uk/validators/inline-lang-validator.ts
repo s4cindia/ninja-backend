@@ -30,6 +30,7 @@
  */
 
 import { PRH_ISSUE_CODES } from '../../../../../constants/prh-issue-codes';
+import { stripHtmlMarkup } from './text-utils';
 import type { PrhValidatorIssue, PrhPerXhtmlInput } from './types';
 
 /**
@@ -123,15 +124,6 @@ function stripLangBearingElements(html: string): string {
     /<(?!html\b|body\b)([a-z][a-z0-9]*)\b[^>]*(?:^|\s)(?:lang|xml:lang)\s*=\s*["'][^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,
     ' ',
   );
-}
-
-function stripHtmlMarkup(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z]+;/gi, ' ')
-    .replace(/&#x?[0-9a-f]+;/gi, ' ');
 }
 
 function buildIssue(location: string, runCount: number, samples: string[]): PrhValidatorIssue {
