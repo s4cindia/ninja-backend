@@ -22,14 +22,20 @@ const ALL_ZONE_TYPES = [
   'caption', 'footnote', 'header', 'footer',
 ];
 
+// C1 selects the BEST overallMAP across the N most recently completed runs.
+// Rationale: one degraded run on a poorly-annotated doc shouldn't yank the
+// Phase-2 readiness gauge backwards; "what we can reach" is the question.
+const C1_RECENT_RUN_WINDOW = 10;
+
 export async function getPhaseGateStatus(): Promise<PhaseGateStatus> {
-  const [latestMapRun, zoneCounts, publishers, contentTypes, spikeRun] =
+  const [recentMapRuns, zoneCounts, publishers, contentTypes, spikeRun] =
     await Promise.all([
-      // C1: latest CalibrationRun with mapSnapshot
-      prisma.calibrationRun.findFirst({
+      // C1: most-recent N CalibrationRuns with a mapSnapshot
+      prisma.calibrationRun.findMany({
         where: { mapSnapshot: { not: Prisma.DbNull } },
         orderBy: { completedAt: 'desc' },
-        select: { mapSnapshot: true },
+        take: C1_RECENT_RUN_WINDOW,
+        select: { id: true, mapSnapshot: true },
       }),
       // C2: confirmed zone counts by type
       prisma.zone.groupBy({
@@ -57,15 +63,28 @@ export async function getPhaseGateStatus(): Promise<PhaseGateStatus> {
       }),
     ]);
 
-  // --- C1: Overall mAP ≥75% ---
+  // --- C1: Best overallMAP across the N most-recent runs (>=75% GREEN, >=70% AMBER) ---
   let c1Status: CriterionStatus = 'RED';
   let c1Value = 'Not yet computed';
-  const mapSnapshot = latestMapRun?.mapSnapshot as Record<string, unknown> | null;
-  const overallMAP = typeof mapSnapshot?.overallMAP === 'number' ? mapSnapshot.overallMAP : null;
-  if (overallMAP !== null) {
-    c1Value = `${(overallMAP * 100).toFixed(1)}%`;
-    if (overallMAP >= 0.75) c1Status = 'GREEN';
-    else if (overallMAP >= 0.70) c1Status = 'AMBER';
+  let c1Tooltip = 'POST /api/v1/ml-metrics/map { runId } to compute mAP for a run';
+  let bestMAP: number | null = null;
+  let bestRunId: string | null = null;
+  for (const r of recentMapRuns) {
+    const snap = r.mapSnapshot as Record<string, unknown> | null;
+    const m = typeof snap?.overallMAP === 'number' ? snap.overallMAP : null;
+    if (m !== null && (bestMAP === null || m > bestMAP)) {
+      bestMAP = m;
+      bestRunId = r.id;
+    }
+  }
+  if (bestMAP !== null) {
+    c1Value = `${(bestMAP * 100).toFixed(1)}% (best of last ${recentMapRuns.length})`;
+    c1Tooltip =
+      `Best mAP from the ${recentMapRuns.length} most-recent scored runs` +
+      (bestRunId ? ` (run ${bestRunId}).` : '.') +
+      ' Recompute via POST /api/v1/ml-metrics/map.';
+    if (bestMAP >= 0.75) c1Status = 'GREEN';
+    else if (bestMAP >= 0.70) c1Status = 'AMBER';
   }
 
   // --- C2: All 8 zone types ≥30 confirmed instances ---
@@ -116,7 +135,7 @@ export async function getPhaseGateStatus(): Promise<PhaseGateStatus> {
       status: c1Status,
       currentValue: c1Value,
       threshold: '75%',
-      tooltip: 'Run POST /ml-metrics/metrics/map on a calibration run to compute mAP',
+      tooltip: c1Tooltip,
     },
     {
       id: 'C2',

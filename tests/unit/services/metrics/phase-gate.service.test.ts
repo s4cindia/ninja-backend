@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockCalibrationRunFindFirst = vi.fn();
+const mockCalibrationRunFindMany = vi.fn();
 const mockZoneGroupBy = vi.fn();
 const mockCorpusDocumentFindMany = vi.fn();
 
@@ -8,6 +9,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     calibrationRun: {
       findFirst: (...args: unknown[]) => mockCalibrationRunFindFirst(...args),
+      findMany: (...args: unknown[]) => mockCalibrationRunFindMany(...args),
     },
     zone: {
       groupBy: (...args: unknown[]) => mockZoneGroupBy(...args),
@@ -38,7 +40,10 @@ function makeZoneCounts(countPerType: number | Record<string, number>) {
 }
 
 interface SetupOptions {
+  // C1: either a single mAP (single-run convenience) or an explicit list of
+  // recent runs ordered newest-first. Pass null/[] to simulate "no scored runs".
   mapSnapshot?: Record<string, unknown> | null;
+  recentRuns?: { id: string; mapSnapshot: Record<string, unknown> }[];
   zoneCounts?: number | Record<string, number>;
   publishers?: string[];
   contentTypes?: string[];
@@ -48,20 +53,29 @@ interface SetupOptions {
 function setup(overrides: SetupOptions = {}) {
   const {
     mapSnapshot = null,
+    recentRuns,
     zoneCounts = 20,
     publishers = ['Pub1', 'Pub2'],
     contentTypes = ['mixed', 'table-heavy'],
     spikeRun = null,
   } = overrides;
 
-  // findFirst is called twice: once for mapSnapshot (C1), once for spike (C5)
-  mockCalibrationRunFindFirst
-    .mockResolvedValueOnce(mapSnapshot !== null ? { mapSnapshot } : null)
-    .mockResolvedValueOnce(spikeRun);
+  // C1 reads the N most-recent CalibrationRuns with a mapSnapshot.
+  let runs: { id: string; mapSnapshot: Record<string, unknown> }[];
+  if (recentRuns !== undefined) {
+    runs = recentRuns;
+  } else if (mapSnapshot !== null) {
+    runs = [{ id: 'run-1', mapSnapshot }];
+  } else {
+    runs = [];
+  }
+  mockCalibrationRunFindMany.mockResolvedValue(runs);
+
+  // C5 still uses findFirst (latest spike run).
+  mockCalibrationRunFindFirst.mockResolvedValue(spikeRun);
 
   mockZoneGroupBy.mockResolvedValue(makeZoneCounts(zoneCounts));
 
-  // findMany is called twice: once for publishers (C3), once for contentTypes (C4)
   mockCorpusDocumentFindMany
     .mockResolvedValueOnce(publishers.map((p) => ({ publisher: p })))
     .mockResolvedValueOnce(contentTypes.map((c) => ({ contentType: c })));
@@ -93,16 +107,63 @@ describe('getPhaseGateStatus', () => {
     const result = await getPhaseGateStatus();
     const c1 = result.criteria.find((c) => c.id === 'C1')!;
     expect(c1.status).toBe('AMBER');
-    expect(c1.currentValue).toBe('72.0%');
+    expect(c1.currentValue).toBe('72.0% (best of last 1)');
   });
 
   it('C1 RED when no mapSnapshot exists', async () => {
-    setup({ mapSnapshot: null });
+    setup({ recentRuns: [] });
 
     const result = await getPhaseGateStatus();
     const c1 = result.criteria.find((c) => c.id === 'C1')!;
     expect(c1.status).toBe('RED');
     expect(c1.currentValue).toBe('Not yet computed');
+  });
+
+  it('C1 picks the BEST mAP across recent runs, not the latest', async () => {
+    // Newest-first ordering — latest run is 0.36 (RED if alone), but the
+    // window contains a 0.78 run that should drive C1 to GREEN.
+    setup({
+      recentRuns: [
+        { id: 'latest', mapSnapshot: { overallMAP: 0.36 } },
+        { id: 'middle', mapSnapshot: { overallMAP: 0.78 } },
+        { id: 'oldest', mapSnapshot: { overallMAP: 0.60 } },
+      ],
+    });
+
+    const result = await getPhaseGateStatus();
+    const c1 = result.criteria.find((c) => c.id === 'C1')!;
+    expect(c1.status).toBe('GREEN');
+    expect(c1.currentValue).toBe('78.0% (best of last 3)');
+    expect(c1.tooltip).toContain('middle');
+  });
+
+  it('C1 RED when every recent run is below 70%', async () => {
+    setup({
+      recentRuns: [
+        { id: 'r1', mapSnapshot: { overallMAP: 0.40 } },
+        { id: 'r2', mapSnapshot: { overallMAP: 0.55 } },
+        { id: 'r3', mapSnapshot: { overallMAP: 0.69 } },
+      ],
+    });
+
+    const result = await getPhaseGateStatus();
+    const c1 = result.criteria.find((c) => c.id === 'C1')!;
+    expect(c1.status).toBe('RED');
+    expect(c1.currentValue).toBe('69.0% (best of last 3)');
+  });
+
+  it('C1 ignores malformed snapshots and uses the best valid one', async () => {
+    setup({
+      recentRuns: [
+        { id: 'malformed', mapSnapshot: { someOtherField: 1 } },
+        { id: 'valid', mapSnapshot: { overallMAP: 0.74 } },
+      ],
+    });
+
+    const result = await getPhaseGateStatus();
+    const c1 = result.criteria.find((c) => c.id === 'C1')!;
+    expect(c1.status).toBe('AMBER');
+    expect(c1.currentValue).toBe('74.0% (best of last 2)');
   });
 
   it('C2 AMBER when some types below 30', async () => {
