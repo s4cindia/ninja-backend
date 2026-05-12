@@ -153,10 +153,13 @@ export const PRH_ISSUE_CODES = {
     severity: 'serious',
     wcag: ['1.1.1'],
     // Quick-fix: operator supplies alt text via the existing
-    // EPUB-IMG-001-style dialog, controller arm in epub.controller.ts
-    // routes the payload through epubModifier.addAltText. Falls back
-    // to manual if imageAlts is missing — we don't fabricate cover
-    // alt text or mark the cover decorative.
+    // EPUB-IMG-001-style dialog. The controller arm in
+    // epub.controller.ts validates the payload — missing/empty
+    // imageAlts, missing imageSrc, or whitespace-only altText all
+    // produce a 400 with a clear error message rather than silently
+    // writing empty alt to the cover image. addAltText is only
+    // invoked when the payload is well-formed; we never fabricate
+    // cover alt text or fall back to marking the cover decorative.
     fixType: 'quickfix',
     summary: 'Cover image alt must be non-empty (e.g. "Cover for [Book Title]")',
   },
