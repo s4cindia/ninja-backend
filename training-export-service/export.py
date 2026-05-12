@@ -15,6 +15,7 @@ CLASS_MAP = {
     'fn': 5, 'fig': 3, 'tbl': 2, 'cap': 4,
 }
 ARTIFACT_TYPES = {'header', 'footer'}
+ARTIFACT_CLASS_INDICES = {CLASS_MAP['header'], CLASS_MAP['footer']}
 
 
 def resolve_label(zone: dict) -> str | None:
@@ -25,6 +26,29 @@ def resolve_label(zone: dict) -> str | None:
     if zone.get('operatorLabel'):
         return zone['operatorLabel']
     return None
+
+
+def resolve_class_index(label: Optional[str]) -> Optional[int]:
+    """Map a free-text operatorLabel to a CLASS_MAP class index.
+
+    Case-insensitive and whitespace-tolerant. Returns None when the
+    label is not in CLASS_MAP so the caller can skip the zone (with
+    a stat) instead of silently misclassifying it as class 0
+    (paragraph) — which is what `CLASS_MAP.get(label, 0)` used to do.
+
+    Operators in the corpus today emit at least two label conventions:
+      - PDF-tag style (uppercase): LI, HDR, TOCI, FTR
+      - HTML-semantic (lowercase): h1..h6, list-item, toci
+    CLASS_MAP keys are lowercase, so the uppercase convention used to
+    silently fall through to class 0. Lowercasing here closes that gap
+    without expanding CLASS_MAP (which the test suite asserts covers
+    exactly the 11 YOLO classes)."""
+    if not label:
+        return None
+    key = label.strip().lower()
+    if not key:
+        return None
+    return CLASS_MAP.get(key)
 
 
 def render_page_to_jpg(
@@ -148,6 +172,10 @@ def export_corpus(
     total_labels = 0
     skipped_pages = 0
     skipped_no_human_review = 0
+    # Per-label counts for operatorLabel values that aren't in CLASS_MAP.
+    # Previously these were silently coerced to class 0 (paragraph) — surfacing
+    # them lets the ML team spot annotation-vocabulary drift before retraining.
+    unknown_labels: dict[str, int] = {}
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
 
     for doc in documents:
@@ -164,18 +192,24 @@ def export_corpus(
             by_page.setdefault(pn, []).append(z)
 
         for page_num, page_zones in by_page.items():
-            # Only include zones with human-verified labels
-            # Skip rejected zones, unreviewed zones, and artifact-only pages
-            content_zones = []
+            # Only include zones with human-verified labels.
+            # Skip rejected, unreviewed, artefact, and unknown-label zones.
+            # Each retained zone carries its resolved class index so the bbox
+            # writing loop doesn't have to re-resolve.
+            content_zones: list[tuple[dict, int]] = []
             for z in page_zones:
                 if z.get('decision') == 'REJECTED':
                     continue
                 label = resolve_label(z)
                 if label is None:
                     continue  # No human review — skip
-                if label.lower() in ARTIFACT_TYPES:
+                cls_idx = resolve_class_index(label)
+                if cls_idx is None:
+                    unknown_labels[label] = unknown_labels.get(label, 0) + 1
                     continue
-                content_zones.append(z)
+                if cls_idx in ARTIFACT_CLASS_INDICES:
+                    continue  # Headers/footers are artefacts, not training content
+                content_zones.append((z, cls_idx))
             if not content_zones:
                 # Check if skip is because no zones had human review
                 has_any_human = any(z.get('operatorLabel') for z in page_zones)
@@ -214,10 +248,8 @@ def export_corpus(
                 continue
 
             lines = []
-            for z in content_zones:
-                zone_type = resolve_label(z)
-                cls_idx = CLASS_MAP.get(zone_type, 0)
-                bounds  = z.get('bounds', {})
+            for z, cls_idx in content_zones:
+                bounds = z.get('bounds', {})
                 if not bounds:
                     continue
                 cx, cy, bw, bh = bbox_to_yolo(
@@ -258,6 +290,7 @@ def export_corpus(
         'totalLabels':  total_labels,
         'skippedPages': skipped_pages,
         'skippedNoHumanReview': skipped_no_human_review,
+        'unknownLabels': unknown_labels,
         'splitSizes':   split_sizes,
         'datasetYaml':  str(out / 'dataset.yaml'),
     }

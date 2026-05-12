@@ -1,7 +1,8 @@
 import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
-    bbox_to_yolo, stratified_split, resolve_label, CLASS_MAP, ARTIFACT_TYPES
+    bbox_to_yolo, stratified_split, resolve_label, resolve_class_index,
+    CLASS_MAP, ARTIFACT_TYPES, ARTIFACT_CLASS_INDICES,
 )
 
 
@@ -121,6 +122,62 @@ class TestResolveLabel(unittest.TestCase):
         """AI label with high confidence but no human review returns None."""
         zone = {'aiLabel': 'table', 'aiConfidence': 0.98, 'aiDecision': 'ACCEPTED'}
         self.assertIsNone(resolve_label(zone))
+
+
+class TestResolveClassIndex(unittest.TestCase):
+    """resolve_class_index must be case-insensitive and whitespace-tolerant.
+    Returns None for unknown labels so the caller can skip the zone instead
+    of silently misclassifying it as class 0 (paragraph)."""
+
+    def test_canonical_lowercase_labels_resolve(self):
+        for label, expected in CLASS_MAP.items():
+            self.assertEqual(resolve_class_index(label), expected)
+
+    def test_uppercase_pdf_tag_convention_resolves(self):
+        """PDF-tag-style uppercase labels used by Boyd-Hamill / Flanagan."""
+        self.assertEqual(resolve_class_index('LI'),   CLASS_MAP['li'])
+        self.assertEqual(resolve_class_index('HDR'),  CLASS_MAP['header'])
+        self.assertEqual(resolve_class_index('FTR'),  CLASS_MAP['footer'])
+        self.assertEqual(resolve_class_index('TOCI'), CLASS_MAP['toci'])
+        self.assertEqual(resolve_class_index('FN'),   CLASS_MAP['footnote'])
+
+    def test_mixed_case_resolves(self):
+        self.assertEqual(resolve_class_index('Paragraph'), CLASS_MAP['paragraph'])
+        self.assertEqual(resolve_class_index('Section-Header'), CLASS_MAP['section-header'])
+        self.assertEqual(resolve_class_index('TaBlE'), CLASS_MAP['table'])
+
+    def test_heading_levels_resolve_to_section_header_any_case(self):
+        for h in ('h1', 'H2', 'h3', 'H4', 'h5', 'H6'):
+            self.assertEqual(resolve_class_index(h), CLASS_MAP['section-header'])
+
+    def test_surrounding_whitespace_tolerated(self):
+        self.assertEqual(resolve_class_index('  table  '), CLASS_MAP['table'])
+        self.assertEqual(resolve_class_index('\tLI\n'), CLASS_MAP['li'])
+
+    def test_unknown_label_returns_none(self):
+        self.assertIsNone(resolve_class_index('wat-is-this'))
+        self.assertIsNone(resolve_class_index('blockquote'))  # not in CLASS_MAP yet
+        self.assertIsNone(resolve_class_index('xyz123'))
+
+    def test_none_and_empty_return_none(self):
+        self.assertIsNone(resolve_class_index(None))
+        self.assertIsNone(resolve_class_index(''))
+        self.assertIsNone(resolve_class_index('   '))
+
+
+class TestArtifactClassIndices(unittest.TestCase):
+    """ARTIFACT_CLASS_INDICES must match the class indices for ARTIFACT_TYPES,
+    so post-normalization filtering doesn't drift from the canonical-name set."""
+
+    def test_indices_match_artifact_type_lookups(self):
+        expected = {CLASS_MAP[t] for t in ARTIFACT_TYPES}
+        self.assertEqual(ARTIFACT_CLASS_INDICES, expected)
+
+    def test_uppercase_artifact_labels_filtered_after_resolve(self):
+        # HDR/FTR resolve to header/footer indices, which the export loop
+        # treats as artefacts. This is the bug-fix path for Boyd-Hamill etc.
+        self.assertIn(resolve_class_index('HDR'), ARTIFACT_CLASS_INDICES)
+        self.assertIn(resolve_class_index('FTR'), ARTIFACT_CLASS_INDICES)
 
 
 class TestConstants(unittest.TestCase):
