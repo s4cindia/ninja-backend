@@ -365,6 +365,66 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'EPUB is missing an About-the-Author section — required in every PRH reflow EPUB (Style Guide §6.6)',
   },
+
+  // ── Body epub:type + doc-* ARIA (P3/PR1) ──────────────────────────────
+  // Publisher-gated (not imprint-gated) — these markup rules apply to
+  // every PRH UK build regardless of imprint. Detect-only in P3.
+  'PRH-MARKUP-EPUB-TYPE-MISPLACED': {
+    code: 'PRH-MARKUP-EPUB-TYPE-MISPLACED',
+    severity: 'moderate',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'epub:type is allowed on <body> only for cover/frontmatter/bodymatter/backmatter; on <section> chapter/part/dedication/epigraph/appendix are forbidden (use ARIA doc-* role instead)',
+  },
+  'PRH-MARKUP-EPUB-TYPE-DUPLICATE': {
+    code: 'PRH-MARKUP-EPUB-TYPE-DUPLICATE',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Each of cover/frontmatter/bodymatter/backmatter must appear on at most one <body> across the EPUB',
+  },
+  'PRH-ARIA-CHAPTER-ROLE-MISSING': {
+    code: 'PRH-ARIA-CHAPTER-ROLE-MISSING',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'First chapter section should carry role="doc-chapter" instead of epub:type="chapter"',
+  },
+  'PRH-ARIA-PART-ROLE-MISSING': {
+    code: 'PRH-ARIA-PART-ROLE-MISSING',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'First part section should carry role="doc-part" instead of epub:type="part"',
+  },
+  'PRH-ARIA-DEDICATION-ROLE-MISSING': {
+    code: 'PRH-ARIA-DEDICATION-ROLE-MISSING',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'Dedication section should carry role="doc-dedication" instead of epub:type="dedication"',
+  },
+  'PRH-ARIA-EPIGRAPH-ROLE-MISSING': {
+    code: 'PRH-ARIA-EPIGRAPH-ROLE-MISSING',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'Epigraph block should be a <blockquote role="doc-epigraph">',
+  },
+  'PRH-ARIA-APPENDIX-ROLE-MISSING': {
+    code: 'PRH-ARIA-APPENDIX-ROLE-MISSING',
+    severity: 'minor',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'Appendix section should carry role="doc-appendix" instead of epub:type="appendix"',
+  },
+  'PRH-BODY-HAS-ARIA': {
+    code: 'PRH-BODY-HAS-ARIA',
+    severity: 'moderate',
+    wcag: ['4.1.2'],
+    fixType: 'manual',
+    summary: '<body> must NOT carry role / aria-label / aria-labelledby (PRH explicitly prohibits)',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
