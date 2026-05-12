@@ -451,6 +451,24 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'Likely layout <table> (no <th>, ≥6 cells, not marked role="presentation") — PRH requires layout tables to declare role="presentation"',
   },
+
+  // ── Notes + page-break shape (P3/PR3) ─────────────────────────────────
+  // Publisher-gated. Detect-only — auto-fix lands in P5 where we can
+  // safely insert/repair role attributes on the relevant elements.
+  'PRH-FOOTNOTE-ID-MISMATCH': {
+    code: 'PRH-FOOTNOTE-ID-MISMATCH',
+    severity: 'moderate',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: '<a epub:type="noteref"> references an id that doesn\'t exist on any <aside epub:type="footnote"> or <li> inside <section epub:type="endnotes">. Kindle popup behaviour breaks silently on these mismatches',
+  },
+  'PRH-PAGEBREAK-MALFORMED': {
+    code: 'PRH-PAGEBREAK-MALFORMED',
+    severity: 'minor',
+    wcag: ['2.4.5'],
+    fixType: 'manual',
+    summary: '<span epub:type="pagebreak"> must carry role="doc-pagebreak" AND a numeric-only aria-label (no "page"/"pg" prefix, no roman-numeral text)',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

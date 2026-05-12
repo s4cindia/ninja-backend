@@ -120,6 +120,10 @@ export const RULE_TO_CRITERIA_MAP: Record<string, string[]> = {
   'PRH-MARKUP-INLINE-STYLE': [],
   'PRH-TABLE-LAYOUT-WITHOUT-PRESENTATION': ['1.3.1'],
 
+  // Notes + page-break shape (P3/PR3)
+  'PRH-FOOTNOTE-ID-MISMATCH': ['1.3.1'],
+  'PRH-PAGEBREAK-MALFORMED': ['2.4.5'],
+
   // ============= STANDARD ACE RULES =============
   // Images and Non-text Content
   'img-alt': ['1.1.1'],
