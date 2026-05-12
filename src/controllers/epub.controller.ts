@@ -972,6 +972,7 @@ export const epubController = {
             'EPUB-NAV-001': 'Add skip navigation links',
             'EPUB-NAV-002': 'Add unique aria-labels to navigation landmarks',
             'EPUB-FIG-001': 'Add figure/figcaption structure',
+            'PRH-COVER-ALT-EMPTY': 'Add cover image alt text (e.g. "Cover for [Book Title]")',
           },
         },
       });
@@ -1164,6 +1165,21 @@ export const epubController = {
           } else {
             results = await epubModifier.addDecorativeAltAttributes(zip);
           }
+          break;
+        case 'PRH-COVER-ALT-EMPTY':
+          // Cover-image alt is REQUIRED by PRH — never marked decorative.
+          // The FE quick-fix dialog must supply `options.imageAlts`
+          // with at least one { imageSrc, altText } entry (template:
+          // "Cover for [Book Title]"). Reject the request rather than
+          // falling back to addDecorativeAltAttributes — that would
+          // silently mark the cover as decorative.
+          if (!options?.imageAlts || options.imageAlts.length === 0) {
+            return res.status(400).json({
+              success: false,
+              error: 'PRH-COVER-ALT-EMPTY requires options.imageAlts with at least one { imageSrc, altText } entry — cover image must have explicit alt text, never decorative.',
+            });
+          }
+          results = await epubModifier.addAltText(zip, options.imageAlts);
           break;
         case 'EPUB-STRUCT-002':
           results = await epubModifier.addTableHeaders(zip);
@@ -2170,6 +2186,17 @@ export const epubController = {
           } else {
             allResults = await epubModifier.addDecorativeAltAttributes(zip);
           }
+          break;
+        case 'PRH-COVER-ALT-EMPTY':
+          // Same contract as the applyQuickFix arm — cover image alt
+          // is REQUIRED; reject if imageAlts is missing/empty.
+          if (!options?.imageAlts || options.imageAlts.length === 0) {
+            return res.status(400).json({
+              success: false,
+              error: 'PRH-COVER-ALT-EMPTY requires options.imageAlts with at least one { imageSrc, altText } entry — cover image must have explicit alt text, never decorative.',
+            });
+          }
+          allResults = await epubModifier.addAltText(zip, options.imageAlts);
           break;
         case 'EPUB-STRUCT-002':
           allResults = await epubModifier.addTableHeaders(zip);

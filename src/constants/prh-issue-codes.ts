@@ -150,13 +150,14 @@ export const PRH_ISSUE_CODES = {
   // ── Image (PR4) ────────────────────────────────────────────────────────
   'PRH-COVER-ALT-EMPTY': {
     code: 'PRH-COVER-ALT-EMPTY',
-    // Marked `manual` for now: the existing applyBatchQuickFix
-    // controller switch has no case for this code (would 400 on
-    // "unknown fix code"). Operator fixes the cover alt manually until
-    // a follow-up wires the quick-fix route to addAltText for the cover.
     severity: 'serious',
     wcag: ['1.1.1'],
-    fixType: 'manual',
+    // Quick-fix: operator supplies alt text via the existing
+    // EPUB-IMG-001-style dialog, controller arm in epub.controller.ts
+    // routes the payload through epubModifier.addAltText. Falls back
+    // to manual if imageAlts is missing — we don't fabricate cover
+    // alt text or mark the cover decorative.
+    fixType: 'quickfix',
     summary: 'Cover image alt must be non-empty (e.g. "Cover for [Book Title]")',
   },
   'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE': {
