@@ -195,7 +195,7 @@ class EPUBExportService {
         // jobs"); log at debug rather than warn so non-PRH exports
         // stay quiet.
         const msg = error instanceof Error ? error.message : 'Unknown error';
-        if (/only available on PRH-UK|no audit output/i.test(msg)) {
+        if (/only available on PRH-UK|no audit output|medium-or-high/i.test(msg)) {
           logger.debug(`PRH conformance report skipped: ${msg}`);
         } else {
           logger.warn(`Failed to generate PRH conformance report: ${msg}`);
