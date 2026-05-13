@@ -102,7 +102,19 @@ class EPUBExportService {
       throw new Error('Remediated EPUB not found. Run auto-remediation first.');
     }
 
-    if (!options.includeOriginal && !options.includeComparison && !options.includeReport) {
+    // Early-return short-circuit: when the caller wants ONLY the
+    // remediated EPUB (no original, comparison, report, or PRH
+    // conformance bundle), skip the zip pipeline and return the
+    // raw .epub. The PRH conformance check is included here so a
+    // PRH-job export that requests the conformance bundle still
+    // goes through the zip pipeline below — otherwise the bundle
+    // would silently be dropped.
+    if (
+      !options.includeOriginal
+      && !options.includeComparison
+      && !options.includeReport
+      && !options.includePrhConformance
+    ) {
       return {
         fileName: `${baseName}_remediated.epub`,
         mimeType: 'application/epub+zip',
@@ -574,8 +586,10 @@ class EPUBExportService {
       const msg = err instanceof Error ? err.message : 'unknown';
       // Non-PRH or pre-audit jobs: the gate doesn't apply. ok=true so
       // the FE doesn't show a confirmation dialog; applicable=false
-      // so it knows the PRH UI shouldn't render.
-      if (/only available on PRH-UK|no audit output|not found/i.test(msg)) {
+      // so it knows the PRH UI shouldn't render. We deliberately do
+      // NOT swallow "Job ... not found" here — that's an authorization
+      // / lookup failure the caller needs to see as an error.
+      if (/only available on PRH-UK|no audit output|medium-or-high/i.test(msg)) {
         return {
           ok: true,
           requiresConfirmation: false,

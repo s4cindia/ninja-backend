@@ -109,9 +109,10 @@ export async function generatePrhConformanceReport(jobId: string): Promise<PrhCo
     if (!code || !code.startsWith('PRH-')) continue;
     const tier = priorityTierForCode(code);
     if (!tier) continue;
+    const rawSeverity = typeof issue.severity === 'string' ? issue.severity : 'minor';
     outstandingIssues.push({
       code,
-      severity: (typeof issue.severity === 'string' ? issue.severity : 'minor') as PrhConformanceIssue['severity'],
+      severity: isValidSeverity(rawSeverity) ? rawSeverity : 'minor',
       message: typeof issue.message === 'string' ? issue.message : code,
       location: typeof issue.location === 'string' ? issue.location : 'EPUB',
       priorityTier: tier,
@@ -120,10 +121,14 @@ export async function generatePrhConformanceReport(jobId: string): Promise<PrhCo
 
   const priorityStatus = (['P1', 'P2', 'P3', 'P4'] as const).map((tier) => {
     const outstanding = outstandingIssues.filter((i) => i.priorityTier === tier);
+    // Dedupe by code so a single failing code with multiple instances
+    // doesn't subtract more than once from the passed count.
+    const uniqueFailingCodes = new Set(outstanding.map((i) => i.code));
+    const failed = uniqueFailingCodes.size;
     return {
       tier,
-      passed: TIER_CODE_COUNT[tier] - outstanding.length,
-      failed: outstanding.length,
+      passed: Math.max(0, TIER_CODE_COUNT[tier] - failed),
+      failed,
       outstanding,
     };
   });
@@ -296,6 +301,16 @@ function priorityTierForCode(code: string): PriorityTier | null {
   if (code === 'PRH-ACRONYM-INSERTED-SEPARATORS') return 'P3';
 
   return null;
+}
+
+/**
+ * Whitelist of allowed severity values. Audit issues come from
+ * unrelated validators that may use other vocabularies; anything
+ * outside this set falls back to 'minor' so the report keeps a
+ * sound type contract.
+ */
+function isValidSeverity(value: string): value is PrhConformanceIssue['severity'] {
+  return value === 'critical' || value === 'serious' || value === 'moderate' || value === 'minor';
 }
 
 function readJobInputFileName(input: unknown): string | null {

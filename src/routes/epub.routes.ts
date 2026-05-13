@@ -62,8 +62,10 @@ router.post('/batch/:batchId/cancel', authenticate, epubController.cancelBatch);
 router.post('/batch/:batchId/retry/:jobId', authenticate, epubController.retryBatchJob);
 router.get('/batches', authenticate, epubController.listBatches);
 
-router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
+// Static / longer-prefix routes BEFORE parameterized routes to
+// prevent route shadowing (per the routes convention).
 router.get('/job/:jobId/export/prh-preflight', authenticate, authorizeJob, epubController.getPrhExportPreflight);
+router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
 router.post('/export-batch', authenticate, epubController.exportBatch);
 router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
 router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
