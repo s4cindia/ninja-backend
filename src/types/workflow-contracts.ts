@@ -204,7 +204,7 @@ export interface GateStatus {
 /** POST /api/v1/workflows */
 export interface StartWorkflowRequest {
   fileId: string;
-  vpatEditions?: string[];             // 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT'
+  vpatEditions?: string[];             // 'VPAT2.5-508' | 'VPAT2.5-WCAG' | 'VPAT2.5-EU' | 'VPAT2.5-INT' | 'VPAT2.5-PRH-UK'
 }
 
 /** POST /api/v1/workflows/:id/pause|resume|cancel|retry */
