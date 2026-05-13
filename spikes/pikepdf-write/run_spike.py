@@ -12,10 +12,19 @@ from write_tagged_pdf import write_tagged_pdf
 
 
 def run_verapdf(pdf_path: str) -> dict:
-    """Run veraPDF PDF/UA-1 validation. Returns pass/fail + failures."""
+    """Run veraPDF PDF/UA-1 validation. Returns pass/fail + failures.
+
+    Resolves the veraPDF binary in this order:
+      1. VERAPDF_PATH env var (matches the backend container, which sets
+         /opt/verapdf/verapdf)
+      2. Windows-developer default at C:/verapdf/verapdf.bat
+    If neither resolves, the spike returns passed=None (NO_VALIDATOR) for
+    that doc instead of crashing.
+    """
+    verapdf_bin = os.environ.get('VERAPDF_PATH', 'C:/verapdf/verapdf.bat')
     try:
         result = subprocess.run(
-            ['C:/verapdf/verapdf.bat', '--flavour', 'ua1', pdf_path],
+            [verapdf_bin, '--flavour', 'ua1', pdf_path],
             capture_output=True, text=True, timeout=60
         )
         output = result.stdout + result.stderr

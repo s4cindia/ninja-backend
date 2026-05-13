@@ -105,3 +105,30 @@ export function normalizeOperatorLabel(label: string | null | undefined): Canoni
 export function __resetWarnedUnknownsForTest(): void {
   warnedUnknowns.clear();
 }
+
+export interface NormalizedLabel {
+  canonical: CanonicalZoneType;
+  /** Heading level 1–6 when the input was h1..h6; otherwise undefined. */
+  headingLevel?: number;
+}
+
+/**
+ * Variant of normalizeOperatorLabel that also extracts the heading level
+ * from h1..h6 inputs. Useful where the downstream consumer needs both —
+ * e.g. the pikepdf write spike which renders /H{n} tags.
+ *
+ * Returns null for unknown labels (same drop semantics as
+ * normalizeOperatorLabel) so the caller can skip the zone instead of
+ * silently miscounting.
+ */
+export function normalizeWithHeadingLevel(
+  label: string | null | undefined,
+): NormalizedLabel | null {
+  const canonical = normalizeOperatorLabel(label);
+  if (!canonical) return null;
+  if (canonical === 'section-header' && label) {
+    const m = label.trim().toLowerCase().match(/^h([1-6])$/);
+    if (m) return { canonical, headingLevel: parseInt(m[1], 10) };
+  }
+  return { canonical };
+}
