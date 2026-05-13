@@ -21,3 +21,11 @@ export {
 } from './remediators/metadata-remediator';
 export { fixXmlLang } from './remediators/xhtml-remediator';
 export { fixDecorativeRole } from './remediators/image-remediator';
+export {
+  fixDeprecatedTags,
+  fixInlineStyles,
+  fixEpubTypePlacement,
+  addDocAriaRoles,
+  fixBodyPurity,
+  fixPagebreakMalformed,
+} from './remediators/markup-remediator';
