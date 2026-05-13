@@ -194,11 +194,17 @@ async function readNavDoc(
 }
 
 /**
- * Read every CSS file in the zip and classify each as
+ * Read every CSS file REFERENCED BY THE MANIFEST and classify each as
  * publisher-owned vs. third-party / vendor. The CSS-conventions
  * validator only enforces class-name rules against publisher-owned
  * stylesheets so vendored utility frameworks (TailwindCSS, Bootstrap)
  * don't false-flag.
+ *
+ * Manifest-scoped: an EPUB may carry unused source / backup CSS files
+ * in the zip that aren't part of the publication. Iterating the zip
+ * blindly would produce false-positive findings on those. The
+ * manifest is the authoritative list of files that participate in
+ * the EPUB at runtime.
  *
  * Classification heuristic:
  *   - publisher-owned: path lives under a `/styles/` (or `/style/` /
@@ -210,15 +216,23 @@ async function readNavDoc(
  */
 async function readAllCss(
   zip: JSZip,
-  _opfPath: string,
-  _opfContent: string,
+  opfPath: string,
+  opfContent: string,
 ): Promise<PrhCssFile[]> {
+  const manifestMatch = opfContent.match(/<manifest\b[^>]*>([\s\S]*?)<\/manifest>/i);
+  if (!manifestMatch) return [];
+
   const out: PrhCssFile[] = [];
-  for (const filePath of Object.keys(zip.files)) {
-    if (!/\.css$/i.test(filePath)) continue;
-    const content = await zip.file(filePath)?.async('text');
+  for (const item of manifestMatch[1].matchAll(/<item\b([^>]*)\/?>/gi)) {
+    const attrs = item[1];
+    const mediaTypeMatch = attrs.match(/\bmedia-type\s*=\s*["']([^"']+)["']/i);
+    if (!mediaTypeMatch || mediaTypeMatch[1].toLowerCase() !== 'text/css') continue;
+    const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+    if (!hrefMatch) continue;
+    const cssPath = resolveOpfRelative(opfPath, hrefMatch[1]);
+    const content = await zip.file(cssPath)?.async('text');
     if (!content) continue;
-    out.push({ path: filePath, content, isPublisherOwned: classifyPublisherOwned(filePath) });
+    out.push({ path: cssPath, content, isPublisherOwned: classifyPublisherOwned(cssPath) });
   }
   return out;
 }
