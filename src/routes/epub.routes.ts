@@ -63,6 +63,7 @@ router.post('/batch/:batchId/retry/:jobId', authenticate, epubController.retryBa
 router.get('/batches', authenticate, epubController.listBatches);
 
 router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
+router.get('/job/:jobId/export/prh-preflight', authenticate, authorizeJob, epubController.getPrhExportPreflight);
 router.post('/export-batch', authenticate, epubController.exportBatch);
 router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
 router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
