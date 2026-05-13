@@ -51,6 +51,13 @@ describe('validatePrhCssConventions — PRH-CSS-BASESTYLES-RENAMED', () => {
     );
     expect(issues.some((i) => i.code === 'PRH-CSS-BASESTYLES-RENAMED')).toBe(false);
   });
+
+  it('emits when basestyles.css exists OUTSIDE /styles', () => {
+    const issues = validatePrhCssConventions(
+      input({ cssFiles: [cssFile('EPUB/basestyles.css', 'body{}')] }),
+    );
+    expect(issues.some((i) => i.code === 'PRH-CSS-BASESTYLES-RENAMED')).toBe(true);
+  });
 });
 
 describe('validatePrhCssConventions — PRH-CSS-IMPORT-ORDER-WRONG', () => {
@@ -235,6 +242,25 @@ describe('validatePrhCssConventions — PRH-CSS-PER-PARAGRAPH-FONT', () => {
       }),
     );
     expect(issues.some((i) => i.code === 'PRH-CSS-PER-PARAGRAPH-FONT')).toBe(true);
+  });
+
+  it('extracts every class from a grouped selector (.a, .b { font-family })', () => {
+    const css = `.scriptface_a, .scriptface_b { font-family: cursive; }`;
+    const aParas = Array.from({ length: 6 }, () => '<p class="scriptface_a">x</p>').join('');
+    const bParas = Array.from({ length: 6 }, () => '<p class="scriptface_b">y</p>').join('');
+    const issues = validatePrhCssConventions(
+      input({
+        cssFiles: [
+          cssFile('EPUB/styles/basestyles.css', 'body{}'),
+          cssFile('EPUB/styles/bespoke.css', css),
+        ],
+        xhtmlFiles: [xhtmlFile('ch1.xhtml', aParas + bParas)],
+      }),
+    );
+    const fontIssue = issues.find((i) => i.code === 'PRH-CSS-PER-PARAGRAPH-FONT');
+    expect(fontIssue).toBeDefined();
+    expect(fontIssue?.message).toMatch(/scriptface_a/);
+    expect(fontIssue?.message).toMatch(/scriptface_b/);
   });
 
   it('handles the class appearing alongside other tokens in class="..."', () => {

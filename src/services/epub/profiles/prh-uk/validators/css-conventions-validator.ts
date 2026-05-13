@@ -97,8 +97,17 @@ export function validatePrhCssConventions(input: PrhCssConventionsInput): PrhVal
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * basestyles.css must live UNDER `/styles/` per Technical Guide §15.
+ * A file at the EPUB root or under a different directory is still a
+ * violation because Kindle ET, NCX-fallback CSS, and the brand-font
+ * lookup all resolve relative to the canonical /styles location.
+ */
 function hasBasestyles(cssFiles: PrhCssFile[]): boolean {
-  return cssFiles.some((f) => basename(f.path).toLowerCase() === CANONICAL_BASESTYLES);
+  return cssFiles.some((f) => {
+    const lower = f.path.toLowerCase();
+    return lower.endsWith(`/styles/${CANONICAL_BASESTYLES}`) || lower === `styles/${CANONICAL_BASESTYLES}`;
+  });
 }
 
 /**
@@ -165,30 +174,37 @@ function collectHyphenatedPublisherClasses(cssFiles: PrhCssFile[]): string[] {
  * because that's what breaks Kindle font-customisation.
  */
 function findPerParagraphFontClasses(input: PrhCssConventionsInput): string[] {
-  const fontClasses = new Set<string>();
+  // Collect groups of classes that share a single font-family rule.
+  // Grouped selectors (`.a, .b { font-family: ... }`) form ONE scope:
+  // their per-paragraph counts aggregate because the font is applied
+  // identically to every paragraph carrying any of those classes.
+  const fontGroups: string[][] = [];
   for (const css of input.cssFiles) {
     if (!css.isPublisherOwned) continue;
-    // Match `.class-name { ... font-family: ... }`. Use [\s\S] so the
-    // body can span newlines; non-greedy to avoid swallowing adjacent
-    // rules.
-    const blocks = css.content.matchAll(/\.([a-z][a-z0-9_-]*)\b[^{]*\{([^}]*)\}/gi);
+    // Match `<selector> { <body> }` blocks. `[^{}@]+` skips at-rules
+    // (e.g. `@media`) which would otherwise confuse the flat parser.
+    const blocks = css.content.matchAll(/([^{}@]+)\{([^{}]*)\}/g);
     for (const m of blocks) {
-      const className = m[1];
+      const selector = m[1];
       const body = m[2];
-      if (/font-family\s*:/i.test(body)) {
-        fontClasses.add(className);
+      if (!/font-family\s*:/i.test(body)) continue;
+      const group: string[] = [];
+      for (const cm of selector.matchAll(/\.([a-z][a-z0-9_-]*)\b/gi)) {
+        group.push(cm[1]);
       }
+      if (group.length > 0) fontGroups.push(group);
     }
   }
-  if (fontClasses.size === 0) return [];
+  if (fontGroups.length === 0) return [];
 
-  const offenders: string[] = [];
-  for (const className of fontClasses) {
-    // Count <p> usages of this class across all XHTML. The `class`
-    // attribute can carry multiple space-separated tokens, so we use
-    // a token-aware regex rather than a substring match.
+  const offenders = new Set<string>();
+  for (const group of fontGroups) {
+    // Count <p> usages of ANY class in the group across all XHTML.
+    // The `class` attribute can carry multiple space-separated tokens,
+    // so we use a token-aware regex rather than a substring match.
+    const alternation = group.map(escapeRegex).join('|');
     const tokenRegex = new RegExp(
-      `<p\\b[^>]*\\bclass\\s*=\\s*["'][^"']*\\b${escapeRegex(className)}\\b[^"']*["']`,
+      `<p\\b[^>]*\\bclass\\s*=\\s*["'][^"']*\\b(?:${alternation})\\b[^"']*["']`,
       'gi',
     );
     let total = 0;
@@ -198,9 +214,11 @@ function findPerParagraphFontClasses(input: PrhCssConventionsInput): string[] {
       if (matches) total += matches.length;
       if (total >= PER_PARAGRAPH_FONT_THRESHOLD) break;
     }
-    if (total >= PER_PARAGRAPH_FONT_THRESHOLD) offenders.push(className);
+    if (total >= PER_PARAGRAPH_FONT_THRESHOLD) {
+      for (const c of group) offenders.add(c);
+    }
   }
-  return offenders.sort();
+  return [...offenders].sort();
 }
 
 function countInlineStyles(input: PrhCssConventionsInput): number {
