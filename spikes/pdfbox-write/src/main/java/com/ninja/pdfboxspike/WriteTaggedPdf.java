@@ -91,8 +91,12 @@ public final class WriteTaggedPdf {
             catalog.setLanguage("en-US");
 
             // 3) ViewerPreferences/DisplayDocTitle = true (7.1 test 10).
-            PDViewerPreferences viewerPrefs = new PDViewerPreferences(new COSDictionary());
-            viewerPrefs.setShowTitleBar(true);
+            //    The high-level setter on PDViewerPreferences was renamed
+            //    between PDFBox 2.x and 3.x; set the COS field directly to
+            //    stay version-agnostic.
+            COSDictionary viewerPrefsDict = new COSDictionary();
+            viewerPrefsDict.setBoolean(COSName.getPDFName("DisplayDocTitle"), true);
+            PDViewerPreferences viewerPrefs = new PDViewerPreferences(viewerPrefsDict);
             catalog.setViewerPreferences(viewerPrefs);
 
             // 4) Document title — required when DisplayDocTitle is true.
