@@ -1686,6 +1686,11 @@ export const epubController = {
       const includeOriginal = req.query.includeOriginal === 'true';
       const includeComparison = req.query.includeComparison === 'true';
       const includeReport = req.query.includeReport === 'true';
+      // PRH conformance bundling defaults to true (soft on-by-default
+      // for any export — service skips silently on non-PRH jobs).
+      // FE can opt out with ?includePrhConformance=false on the rare
+      // case it doesn't want the extra files.
+      const includePrhConformance = req.query.includePrhConformance !== 'false';
 
       if (!tenantId) {
         return res.status(401).json({
@@ -1698,6 +1703,7 @@ export const epubController = {
         includeOriginal,
         includeComparison,
         includeReport,
+        includePrhConformance,
       });
 
       res.setHeader('Content-Type', result.mimeType);
@@ -1710,6 +1716,40 @@ export const epubController = {
       return res.status(500).json({
         success: false,
         error: error instanceof Error ? error.message : 'Failed to export',
+      });
+    }
+  },
+
+  /**
+   * Preflight check used by the FE before triggering an export.
+   * Returns whether the job has outstanding P1/P2 PRH issues that
+   * the operator should confirm before delivery. Non-PRH jobs
+   * return { applicable: false } so the FE can hide the PRH UI.
+   *
+   * Soft warning, not a hard block — the FE renders a confirmation
+   * dialog listing outstanding issues; operator can override and
+   * proceed to export.
+   */
+  async getPrhExportPreflight(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: 'Authentication required' });
+      }
+      // Defence-in-depth: verify the job belongs to this tenant.
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId }, select: { id: true } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: 'Job not found' });
+      }
+
+      const preflight = await epubExportService.getPrhConformancePreflight(jobId);
+      return res.json({ success: true, data: preflight });
+    } catch (error) {
+      logger.error('PRH export preflight failed', error instanceof Error ? error : undefined);
+      return res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Preflight check failed',
       });
     }
   },

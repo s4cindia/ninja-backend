@@ -4,11 +4,23 @@ import { epubComparisonService } from './epub-comparison.service';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { AUTO_FIXABLE_ISSUE_CODES } from '../../constants/auto-fix-codes';
+import {
+  generatePrhConformanceReport,
+  renderHtml as renderPrhConformanceHtml,
+} from '../acr/prh-conformance-report.service';
 
 interface ExportOptions {
   includeOriginal?: boolean;
   includeComparison?: boolean;
   includeReport?: boolean;
+  /**
+   * Bundle a PRH UK conformance report (JSON + HTML) alongside the
+   * standard ACR. Only applies to jobs detected as PRH-UK at
+   * medium-or-high confidence — the service skips silently on
+   * non-PRH jobs even when this is true. FE defaults this to true
+   * for PRH jobs.
+   */
+  includePrhConformance?: boolean;
   format?: 'epub' | 'zip';
 }
 
@@ -90,7 +102,19 @@ class EPUBExportService {
       throw new Error('Remediated EPUB not found. Run auto-remediation first.');
     }
 
-    if (!options.includeOriginal && !options.includeComparison && !options.includeReport) {
+    // Early-return short-circuit: when the caller wants ONLY the
+    // remediated EPUB (no original, comparison, report, or PRH
+    // conformance bundle), skip the zip pipeline and return the
+    // raw .epub. The PRH conformance check is included here so a
+    // PRH-job export that requests the conformance bundle still
+    // goes through the zip pipeline below — otherwise the bundle
+    // would silently be dropped.
+    if (
+      !options.includeOriginal
+      && !options.includeComparison
+      && !options.includeReport
+      && !options.includePrhConformance
+    ) {
       return {
         fileName: `${baseName}_remediated.epub`,
         mimeType: 'application/epub+zip',
@@ -140,7 +164,7 @@ class EPUBExportService {
     if (options.includeReport) {
       try {
         const report = await this.generateAccessibilityReport(jobId, tenantId);
-        
+
         const reportJson = JSON.stringify(report, null, 2);
         zip.file(`${baseName}_accessibility_report.json`, reportJson);
         contents.push(`${baseName}_accessibility_report.json`);
@@ -150,6 +174,32 @@ class EPUBExportService {
         contents.push(`${baseName}_accessibility_report.md`);
       } catch (error) {
         logger.warn(`Failed to generate report for export: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    // PRH UK conformance report. Skipped silently on non-PRH jobs —
+    // the service throws a descriptive error which we catch + log,
+    // never blocks the export. Bundled JSON + HTML alongside the
+    // standard ACR for operator review.
+    if (options.includePrhConformance) {
+      try {
+        const prhReport = await generatePrhConformanceReport(jobId);
+        const prhJsonName = `${baseName}_prh_conformance_report.json`;
+        const prhHtmlName = `${baseName}_prh_conformance_report.html`;
+        zip.file(prhJsonName, JSON.stringify(prhReport, null, 2));
+        zip.file(prhHtmlName, renderPrhConformanceHtml(prhReport));
+        contents.push(prhJsonName);
+        contents.push(prhHtmlName);
+      } catch (error) {
+        // Expected on non-PRH jobs ("only available on PRH-UK
+        // jobs"); log at debug rather than warn so non-PRH exports
+        // stay quiet.
+        const msg = error instanceof Error ? error.message : 'Unknown error';
+        if (/only available on PRH-UK|no audit output|medium-or-high/i.test(msg)) {
+          logger.debug(`PRH conformance report skipped: ${msg}`);
+        } else {
+          logger.warn(`Failed to generate PRH conformance report: ${msg}`);
+        }
       }
     }
 
@@ -495,6 +545,61 @@ class EPUBExportService {
     compliance.sort((a, b) => a.criterion.localeCompare(b.criterion));
 
     return compliance;
+  }
+
+  /**
+   * Preflight check used by the FE before triggering an export.
+   * Returns either:
+   *   - { ok: true } — non-PRH job OR all P1+P2 issues resolved
+   *   - { ok: false, requiresConfirmation: true, outstanding } —
+   *     PRH job with remaining P1/P2 issues; operator can confirm
+   *     to proceed (soft warning, not a hard block)
+   *
+   * Non-PRH jobs always pass — the gate doesn't apply to them.
+   */
+  async getPrhConformancePreflight(jobId: string): Promise<{
+    ok: boolean;
+    requiresConfirmation: boolean;
+    outstanding: Array<{ code: string; severity: string; priorityTier: string; location: string; message: string }>;
+    readyForDelivery: boolean;
+    applicable: boolean;
+  }> {
+    try {
+      const report = await generatePrhConformanceReport(jobId);
+      const p1p2Outstanding = report.outstandingIssues.filter(
+        (i) => i.priorityTier === 'P1' || i.priorityTier === 'P2',
+      );
+      return {
+        ok: report.readyForDelivery,
+        requiresConfirmation: !report.readyForDelivery,
+        outstanding: p1p2Outstanding.map((i) => ({
+          code: i.code,
+          severity: i.severity,
+          priorityTier: i.priorityTier,
+          location: i.location,
+          message: i.message,
+        })),
+        readyForDelivery: report.readyForDelivery,
+        applicable: true,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown';
+      // Non-PRH or pre-audit jobs: the gate doesn't apply. ok=true so
+      // the FE doesn't show a confirmation dialog; applicable=false
+      // so it knows the PRH UI shouldn't render. We deliberately do
+      // NOT swallow "Job ... not found" here — that's an authorization
+      // / lookup failure the caller needs to see as an error.
+      if (/only available on PRH-UK|no audit output|medium-or-high/i.test(msg)) {
+        return {
+          ok: true,
+          requiresConfirmation: false,
+          outstanding: [],
+          readyForDelivery: false,
+          applicable: false,
+        };
+      }
+      throw err;
+    }
   }
 
   private generateComparisonMarkdown(comparison: Record<string, unknown>): string {
