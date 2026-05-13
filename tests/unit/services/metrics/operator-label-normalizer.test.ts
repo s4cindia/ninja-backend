@@ -6,6 +6,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import {
   normalizeOperatorLabel,
+  normalizeWithHeadingLevel,
   __resetWarnedUnknownsForTest,
 } from '../../../../src/services/metrics/operator-label-normalizer';
 import { logger } from '../../../../src/lib/logger';
@@ -105,5 +106,47 @@ describe('normalizeOperatorLabel', () => {
     normalizeOperatorLabel('h3');
     normalizeOperatorLabel('paragraph');
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('normalizeWithHeadingLevel', () => {
+  it('returns null for unknown labels', () => {
+    expect(normalizeWithHeadingLevel('xyz')).toBeNull();
+    expect(normalizeWithHeadingLevel(null)).toBeNull();
+    expect(normalizeWithHeadingLevel('')).toBeNull();
+  });
+
+  it('passes through non-heading canonical types with no headingLevel', () => {
+    expect(normalizeWithHeadingLevel('paragraph')).toEqual({ canonical: 'paragraph' });
+    expect(normalizeWithHeadingLevel('table')).toEqual({ canonical: 'table' });
+    expect(normalizeWithHeadingLevel('LI')).toEqual({ canonical: 'paragraph' });
+  });
+
+  it('extracts headingLevel from h1..h6 (any case)', () => {
+    for (let n = 1; n <= 6; n++) {
+      expect(normalizeWithHeadingLevel(`h${n}`)).toEqual({
+        canonical: 'section-header',
+        headingLevel: n,
+      });
+      expect(normalizeWithHeadingLevel(`H${n}`)).toEqual({
+        canonical: 'section-header',
+        headingLevel: n,
+      });
+    }
+  });
+
+  it('returns section-header without headingLevel for non-numeric heading labels', () => {
+    // "section-header" itself, "title", "heading" — all canonical-collapse to
+    // section-header but carry no level signal.
+    expect(normalizeWithHeadingLevel('section-header')).toEqual({ canonical: 'section-header' });
+    expect(normalizeWithHeadingLevel('title')).toEqual({ canonical: 'section-header' });
+    expect(normalizeWithHeadingLevel('heading')).toEqual({ canonical: 'section-header' });
+  });
+
+  it('trims whitespace before parsing headingLevel', () => {
+    expect(normalizeWithHeadingLevel('  H4  ')).toEqual({
+      canonical: 'section-header',
+      headingLevel: 4,
+    });
   });
 });
