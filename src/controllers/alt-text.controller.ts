@@ -3,6 +3,7 @@ import { photoAltGenerator } from '../services/alt-text/photo-alt-generator.serv
 import { contextExtractor } from '../services/alt-text/context-extractor.service';
 import { chartDiagramGenerator } from '../services/alt-text/chart-diagram-generator.service';
 import { longDescriptionGenerator } from '../services/alt-text/long-description-generator.service';
+import { gateAiAltText } from '../utils/prh-ai-gate';
 import prisma from '../lib/prisma';
 import { Prisma } from '@prisma/client';
 import fs from 'fs/promises';
@@ -12,27 +13,33 @@ export const altTextController = {
   async generate(req: Request, res: Response) {
     try {
       const { imageId, jobId } = req.body;
-      
+
       if (!imageId || !jobId) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'imageId and jobId are required' 
+        return res.status(400).json({
+          success: false,
+          error: 'imageId and jobId are required'
         });
       }
-      
+
+      // PRH UK AI policy gate (Style Guide Appendix 7). When the
+      // job is PRH-UK AND the tenant has not flipped the
+      // aiAltTextEnabled flag, this returns true and sends a 403
+      // with the structured PRH_AI_DISABLED payload.
+      if (await gateAiAltText(req, res, jobId)) return;
+
       const file = await prisma.file.findFirst({
         where: { id: imageId }
       });
-      
+
       if (!file) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Image not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Image not found'
         });
       }
-      
+
       const imageBuffer = await fs.readFile(file.path);
-      
+
       const result = await photoAltGenerator.generateAltText(
         imageBuffer,
         file.mimeType || 'image/jpeg'
@@ -78,6 +85,12 @@ export const altTextController = {
         });
       }
 
+      // No jobId on this endpoint — it accepts a raw buffer for
+      // ad-hoc testing. The PRH gate doesn't apply because we
+      // can't tell whether the image belongs to a PRH-UK book
+      // without job context. Production paths invoke `generate` /
+      // `generateForJob`, both of which DO go through the gate.
+
       const result = await photoAltGenerator.generateAltText(
         req.file.buffer,
         req.file.mimetype || 'image/jpeg'
@@ -103,20 +116,25 @@ export const altTextController = {
     try {
       const { jobId } = req.params;
       const userId = req.user?.id;
-      
+
       const job = await prisma.job.findFirst({
-        where: { 
+        where: {
           id: jobId,
           userId: userId,
         },
       });
-      
+
       if (!job) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Job not found or access denied' 
+        return res.status(404).json({
+          success: false,
+          error: 'Job not found or access denied'
         });
       }
+
+      // PRH UK AI policy gate (Style Guide Appendix 7). Bulk-generate
+      // is the highest-volume Gemini caller — blocking it is the
+      // single most consequential gate point on the controller.
+      if (await gateAiAltText(req, res, jobId)) return;
       
       interface ExtractedImage { id?: string; path?: string; mimeType?: string }
       const jobOutput = job.output as { extractedImages?: ExtractedImage[] } | null;
@@ -276,14 +294,18 @@ export const altTextController = {
   async generateContextual(req: Request, res: Response) {
     try {
       const { imageId, jobId } = req.body;
-      
+
       if (!imageId || !jobId) {
-        return res.status(400).json({ 
-          success: false, 
-          error: 'imageId and jobId are required' 
+        return res.status(400).json({
+          success: false,
+          error: 'imageId and jobId are required'
         });
       }
-      
+
+      // PRH UK AI policy gate — context-aware generation is also a
+      // Gemini caller and must respect the same Appendix 7 rule.
+      if (await gateAiAltText(req, res, jobId)) return;
+
       const file = await prisma.file.findFirst({
         where: { id: imageId }
       });
@@ -585,18 +607,24 @@ export const altTextController = {
     try {
       const { id } = req.params;
       const { additionalContext, useContextAware } = req.body;
-      
+
       const existing = await prisma.generatedAltText.findUnique({
         where: { id },
       });
-      
+
       if (!existing) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Alt text record not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Alt text record not found'
         });
       }
-      
+
+      // PRH UK AI policy gate — regenerate is just a re-invocation
+      // of the generators (with optional context), so the same
+      // Appendix 7 gate applies. The jobId comes from the existing
+      // alt-text record.
+      if (await gateAiAltText(req, res, existing.jobId)) return;
+
       const file = await prisma.file.findFirst({
         where: { id: existing.imageId }
       });
@@ -786,18 +814,23 @@ export const altTextController = {
     try {
       const { id } = req.params;
       const { trigger = 'MANUAL_REQUEST' } = req.body;
-      
+
       const altText = await prisma.generatedAltText.findUnique({
         where: { id },
       });
-      
+
       if (!altText) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Alt text record not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Alt text record not found'
         });
       }
-      
+
+      // PRH UK AI policy gate — long-description generation is the
+      // OTHER Gemini caller (alongside the photo-alt generator) and
+      // shares the same Appendix 7 prohibition.
+      if (await gateAiAltText(req, res, altText.jobId)) return;
+
       const file = await prisma.file.findFirst({
         where: { id: altText.imageId }
       });

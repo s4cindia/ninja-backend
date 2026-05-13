@@ -6,6 +6,7 @@ import { AppError } from '../utils/app-error';
 import { logger } from '../lib/logger';
 import { z } from 'zod';
 import type { ExplanationSource } from '../services/acr/explanation-catalog.service';
+import { getPrhConfig, updatePrhConfig } from '../services/prh/prh-config.service';
 
 /**
  * Zod schema for workflow configuration updates.
@@ -34,6 +35,17 @@ const DEFAULT_TIME_METRICS_CONFIG = {
     ACR_SIGNOFF: 10,
   },
 };
+
+/**
+ * PRH UK config — currently a single feature flag for AI alt-text
+ * gating per Style Guide Appendix 7. Schema only accepts the flag
+ * field; the audit-trail fields (aiAltTextEnabledBy /
+ * aiAltTextEnabledAt) are stamped server-side from the calling
+ * user's id, not client-supplied.
+ */
+const prhConfigUpdateSchema = z.object({
+  aiAltTextEnabled: z.boolean(),
+}).strict();
 
 const aiRemediationConfigUpdateSchema = z.object({
   tableFixMode: z.enum(['apply-to-pdf', 'guidance-only', 'summaries-to-pdf-headers-as-guidance']).optional(),
@@ -520,6 +532,61 @@ export class TenantConfigController {
         success: true,
         data: effectiveConfig,
         message: 'AI remediation configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get current PRH UK tenant config. Returns the flag + audit-trail
+   * fields (last-flipped userId and timestamp). When the tenant has
+   * never touched PRH settings, returns the default (flag off,
+   * audit fields null) — disabled-by-default per Style Guide
+   * Appendix 7.
+   */
+  async getPrhConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const config = await getPrhConfig(req.user.tenantId);
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update PRH UK tenant config. Admin-only — flipping the AI gate
+   * is a policy attestation that the tenant has completed PRH UK
+   * vetting per Appendix 7. The route is wired with
+   * `authorize('ADMIN')` so non-admin requests 403 before reaching
+   * this method, but we defence-in-depth check the role again here.
+   *
+   * Server-stamped audit trail: `aiAltTextEnabledBy` = req.user.id,
+   * `aiAltTextEnabledAt` = now. Client cannot override these.
+   */
+  async updatePrhConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      if (req.user.role !== 'ADMIN') {
+        throw AppError.forbidden('Only admins can update PRH UK configuration');
+      }
+
+      const validationResult = prhConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid PRH configuration: ' + validationResult.error.message);
+      }
+
+      const config = await updatePrhConfig(
+        req.user.tenantId,
+        validationResult.data,
+        req.user.id,
+      );
+
+      res.json({
+        success: true,
+        data: config,
+        message: 'PRH UK configuration updated successfully',
       });
     } catch (error) {
       next(error);
