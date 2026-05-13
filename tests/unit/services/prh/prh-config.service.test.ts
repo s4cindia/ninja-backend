@@ -156,6 +156,49 @@ describe('updatePrhConfig', () => {
     ).rejects.toThrow(/not found/i);
     expect(mTenantUpdate).not.toHaveBeenCalled();
   });
+
+  it('preserves existing aiAltTextEnabledBy on no-op PATCH (audit-trail integrity)', async () => {
+    // Admin1 originally flipped the flag on; admin2 now PATCHes the
+    // same value (no actual change). The original flipper's
+    // attribution must NOT be overwritten by admin2 — they didn't
+    // make the policy decision, they just re-confirmed it.
+    const originalState = {
+      aiAltTextEnabled: true,
+      aiAltTextEnabledBy: 'admin-1',
+      aiAltTextEnabledAt: '2026-05-01T00:00:00.000Z',
+    };
+    mTenantFindUnique
+      .mockResolvedValueOnce({ settings: { prh: originalState } })
+      .mockResolvedValueOnce({ settings: { prh: originalState } });
+    mTenantUpdate.mockResolvedValue({});
+
+    await updatePrhConfig('tenant-1', { aiAltTextEnabled: true }, 'admin-2');
+
+    const updateCall = mTenantUpdate.mock.calls[0][0];
+    const writtenPrh = (updateCall.data.settings as Record<string, Record<string, unknown>>).prh;
+    expect(writtenPrh.aiAltTextEnabledBy).toBe('admin-1');
+    expect(writtenPrh.aiAltTextEnabledAt).toBe('2026-05-01T00:00:00.000Z');
+  });
+
+  it('re-stamps audit fields when the flag value actually flips', async () => {
+    const originalState = {
+      aiAltTextEnabled: true,
+      aiAltTextEnabledBy: 'admin-1',
+      aiAltTextEnabledAt: '2026-05-01T00:00:00.000Z',
+    };
+    mTenantFindUnique
+      .mockResolvedValueOnce({ settings: { prh: originalState } })
+      .mockResolvedValueOnce({ settings: { prh: { ...originalState, aiAltTextEnabled: false } } });
+    mTenantUpdate.mockResolvedValue({});
+
+    // Flip from true → false; admin-2 is the new flipper.
+    await updatePrhConfig('tenant-1', { aiAltTextEnabled: false }, 'admin-2');
+
+    const updateCall = mTenantUpdate.mock.calls[0][0];
+    const writtenPrh = (updateCall.data.settings as Record<string, Record<string, unknown>>).prh;
+    expect(writtenPrh.aiAltTextEnabledBy).toBe('admin-2');
+    expect(writtenPrh.aiAltTextEnabledAt).not.toBe(originalState.aiAltTextEnabledAt);
+  });
 });
 
 describe('isJobPrhUk', () => {
@@ -200,6 +243,23 @@ describe('isJobPrhUk', () => {
       output: { publisherProfile: { publisher: 'PRH-UK', confidence: 'high' } },
     });
     expect(await isJobPrhUk('job-1')).toBe(true);
+  });
+
+  it('returns false for PRH-UK with malformed / unknown confidence value (regression)', async () => {
+    // The predicate whitelists explicit 'medium' or 'high'. A
+    // garbage / missing confidence value used to slip through under
+    // the old `confidence !== 'low'` check.
+    mJobFindUnique.mockResolvedValue({
+      output: { publisherProfile: { publisher: 'PRH-UK', confidence: 'unknown' } },
+    });
+    expect(await isJobPrhUk('job-1')).toBe(false);
+  });
+
+  it('returns false for PRH-UK with missing confidence field', async () => {
+    mJobFindUnique.mockResolvedValue({
+      output: { publisherProfile: { publisher: 'PRH-UK' } },
+    });
+    expect(await isJobPrhUk('job-1')).toBe(false);
   });
 });
 

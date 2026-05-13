@@ -111,11 +111,16 @@ export async function updatePrhConfig(
     ? (currentSettings.prh as Record<string, unknown>)
     : {};
 
+  // Only re-stamp the audit fields when the flag value actually
+  // changes. No-op PATCHes (admin re-confirms the existing state)
+  // shouldn't falsify "last flipped by / at" — the operator who
+  // genuinely made the policy decision stays on the record.
+  const flagChanged = currentPrh.aiAltTextEnabled !== patch.aiAltTextEnabled;
   const updatedPrh = {
     ...currentPrh,
     aiAltTextEnabled: patch.aiAltTextEnabled,
-    aiAltTextEnabledBy: userId,
-    aiAltTextEnabledAt: new Date().toISOString(),
+    aiAltTextEnabledBy: flagChanged ? userId : (currentPrh.aiAltTextEnabledBy ?? null),
+    aiAltTextEnabledAt: flagChanged ? new Date().toISOString() : (currentPrh.aiAltTextEnabledAt ?? null),
   };
 
   await prisma.tenant.update({
@@ -156,7 +161,12 @@ export async function isJobPrhUk(jobId: string): Promise<boolean> {
     : null;
   if (!profile) return false;
 
-  return profile.publisher === 'PRH-UK' && profile.confidence !== 'low';
+  // Whitelist explicit confidence values rather than blacklisting
+  // `'low'`. Anything malformed, missing, or unknown is treated as
+  // "not high enough to trigger the gate" — failsafe to NOT block
+  // when we can't determine confidence positively.
+  return profile.publisher === 'PRH-UK'
+    && (profile.confidence === 'medium' || profile.confidence === 'high');
 }
 
 /**

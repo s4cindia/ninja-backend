@@ -13,16 +13,23 @@
 
 import type { Request, Response } from 'express';
 import { assertAiAltTextAllowed, PrhAiDisabledError } from '../services/prh/prh-config.service';
+import { logger } from '../lib/logger';
 
 /**
  * Returns `true` when the gate fired (a 403 response has already
  * been sent — caller should `return` immediately); returns `false`
  * when the call may proceed.
  *
- * Skips the gate entirely when jobId or tenantId is missing — those
- * are unusual edge cases (e.g. raw-buffer endpoints without job
- * context) where PRH detection isn't possible anyway. Production
- * Gemini-invoking paths always pass both.
+ * Skips the gate ONLY when jobId is missing — that's the explicit
+ * raw-buffer test path (`generateFromBuffer`) which has no job
+ * context and is documented as outside the PRH-job flow.
+ *
+ * If jobId is supplied but tenantId is missing on req.user, we
+ * FAIL CLOSED — the `authenticate` middleware should always
+ * populate req.user.tenantId, so a missing value is a sign of
+ * either a misconfigured route (no auth middleware) or a malformed
+ * request slipping through. Failing closed prevents the gate from
+ * silently allowing AI generation when it can't verify the policy.
  */
 export async function gateAiAltText(
   req: Request,
@@ -31,7 +38,19 @@ export async function gateAiAltText(
 ): Promise<boolean> {
   if (!jobId) return false;
   const tenantId = req.user?.tenantId;
-  if (!tenantId) return false;
+  if (!tenantId) {
+    logger.warn(
+      `[gateAiAltText] missing req.user.tenantId on request that supplied jobId=${jobId} — failing closed`,
+    );
+    res.status(401).json({
+      success: false,
+      error: {
+        code: 'NOT_AUTHENTICATED',
+        message: 'Authentication required to invoke alt-text generation.',
+      },
+    });
+    return true;
+  }
   try {
     await assertAiAltTextAllowed(jobId, tenantId);
     return false;

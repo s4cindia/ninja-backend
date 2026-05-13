@@ -21,12 +21,6 @@ export const altTextController = {
         });
       }
 
-      // PRH UK AI policy gate (Style Guide Appendix 7). When the
-      // job is PRH-UK AND the tenant has not flipped the
-      // aiAltTextEnabled flag, this returns true and sends a 403
-      // with the structured PRH_AI_DISABLED payload.
-      if (await gateAiAltText(req, res, jobId)) return;
-
       const file = await prisma.file.findFirst({
         where: { id: imageId }
       });
@@ -37,6 +31,15 @@ export const altTextController = {
           error: 'Image not found'
         });
       }
+
+      // PRH UK AI policy gate (Style Guide Appendix 7). Use the
+      // FILE'S authoritative jobId (file.latestJobId) for the gate
+      // check rather than trusting the body-supplied jobId — a
+      // client could otherwise pass an unrelated non-PRH jobId to
+      // bypass the gate while the actual image lives on a PRH job.
+      // Falls back to body jobId if the file hasn't been audited yet.
+      const gateJobId = file.latestJobId ?? jobId;
+      if (await gateAiAltText(req, res, gateJobId)) return;
 
       const imageBuffer = await fs.readFile(file.path);
 
@@ -302,21 +305,24 @@ export const altTextController = {
         });
       }
 
-      // PRH UK AI policy gate — context-aware generation is also a
-      // Gemini caller and must respect the same Appendix 7 rule.
-      if (await gateAiAltText(req, res, jobId)) return;
-
       const file = await prisma.file.findFirst({
         where: { id: imageId }
       });
-      
+
       if (!file) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Image not found' 
+        return res.status(404).json({
+          success: false,
+          error: 'Image not found'
         });
       }
-      
+
+      // PRH UK AI policy gate — context-aware generation is also a
+      // Gemini caller and must respect the same Appendix 7 rule.
+      // Use file.latestJobId for the gate (authoritative source)
+      // rather than the body-supplied jobId.
+      const gateJobId = file.latestJobId ?? jobId;
+      if (await gateAiAltText(req, res, gateJobId)) return;
+
       const imageBuffer = await fs.readFile(file.path);
       
       const context = await contextExtractor.extractContext(jobId, imageId);
