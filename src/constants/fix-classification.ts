@@ -33,6 +33,20 @@ const BASE_AUTO_FIXABLE_CODES = new Set([
   // PRH UK profile image — adds role="presentation" to decorative
   // images (alt="") that are missing the role attribute.
   'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE',
+  // PRH UK markup auto-fixes (P5/PR3) — promoted from detect-only
+  // because each is a mechanical text/markup transformation that
+  // doesn't change semantic meaning. The remediator caps inline-
+  // style auto-strip at 50 attributes per file (defers above).
+  'PRH-MARKUP-DEPRECATED-TAG',
+  'PRH-MARKUP-INLINE-STYLE',
+  'PRH-MARKUP-EPUB-TYPE-MISPLACED',
+  'PRH-ARIA-CHAPTER-ROLE-MISSING',
+  'PRH-ARIA-PART-ROLE-MISSING',
+  'PRH-ARIA-DEDICATION-ROLE-MISSING',
+  'PRH-ARIA-EPIGRAPH-ROLE-MISSING',
+  'PRH-ARIA-APPENDIX-ROLE-MISSING',
+  'PRH-BODY-HAS-ARIA',
+  'PRH-PAGEBREAK-MALFORMED',
   // PRH-SPINE-* codes are detect-only in PR2 — spine reordering is risky
   // enough that we want operator review before mutating spine entries.
   // PRH-NAV-* codes are detect-only in PR3 — nav-doc structure changes

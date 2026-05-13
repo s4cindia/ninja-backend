@@ -14,6 +14,12 @@ import {
   fixA11ySummaryUrl,
   fixXmlLang,
   fixDecorativeRole,
+  fixDeprecatedTags,
+  fixInlineStyles,
+  fixEpubTypePlacement,
+  addDocAriaRoles,
+  fixBodyPurity,
+  fixPagebreakMalformed,
 } from './profiles/prh-uk';
 
 const comparisonService = new ComparisonService(prisma);
@@ -165,6 +171,20 @@ class AutoRemediationService {
     // Complements addDecorativeAltAttributes which only emits the role
     // when also adding a missing alt.
     'PRH-DECORATIVE-MISSING-PRESENTATION-ROLE': async (zip) => fixDecorativeRole(zip),
+    // ── PRH UK markup auto-fixes (P5/PR3) ────────────────────────────────
+    // Mechanical text/markup transformations for P3 detect-only codes.
+    // Idempotent; safe to re-run; conservative thresholds for the
+    // FP-prone cases (inline-style auto-strip caps at 50 per file).
+    'PRH-MARKUP-DEPRECATED-TAG': async (zip) => fixDeprecatedTags(zip),
+    'PRH-MARKUP-INLINE-STYLE': async (zip) => fixInlineStyles(zip),
+    'PRH-MARKUP-EPUB-TYPE-MISPLACED': async (zip) => fixEpubTypePlacement(zip),
+    'PRH-ARIA-CHAPTER-ROLE-MISSING': async (zip) => addDocAriaRoles(zip),
+    'PRH-ARIA-PART-ROLE-MISSING': async (zip) => addDocAriaRoles(zip),
+    'PRH-ARIA-DEDICATION-ROLE-MISSING': async (zip) => addDocAriaRoles(zip),
+    'PRH-ARIA-EPIGRAPH-ROLE-MISSING': async (zip) => addDocAriaRoles(zip),
+    'PRH-ARIA-APPENDIX-ROLE-MISSING': async (zip) => addDocAriaRoles(zip),
+    'PRH-BODY-HAS-ARIA': async (zip) => fixBodyPurity(zip),
+    'PRH-PAGEBREAK-MALFORMED': async (zip) => fixPagebreakMalformed(zip),
   };
 
   async runAutoRemediation(
