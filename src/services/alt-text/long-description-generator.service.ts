@@ -1,6 +1,18 @@
 import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import DOMPurify from 'isomorphic-dompurify';
 import { logger } from '../../lib/logger';
+import type { AltTextProfile } from './photo-alt-generator.service';
+
+/**
+ * Optional generation tweaks. Callers from PRH-UK audited jobs should
+ * set `profile: 'prh-uk'` so the prose follows Style Guide Appendix 7
+ * rules (literal/objective wording, neutral pronouns, full-stop
+ * endings, etc.) — same shape as photo-alt-generator's options so
+ * the two services align.
+ */
+export interface LongDescriptionOptions {
+  profile?: AltTextProfile;
+}
 
 interface LongDescription {
   id: string;
@@ -87,7 +99,8 @@ class LongDescriptionGeneratorService {
     imageBuffer: Buffer,
     mimeType: string,
     trigger: LongDescriptionTrigger,
-    existingShortAlt?: string
+    existingShortAlt?: string,
+    options: LongDescriptionOptions = {},
   ): Promise<LongDescription> {
     if (!this.model) {
       return {
@@ -100,36 +113,8 @@ class LongDescriptionGeneratorService {
         aiModel: 'gemini-1.5-pro',
       };
     }
-    const prompt = `
-Generate a comprehensive long description for this image to be used with aria-describedby for accessibility.
-
-${existingShortAlt ? `Short alt text: "${existingShortAlt}"` : ''}
-
-Trigger: ${trigger}
-
-Requirements:
-- Write a detailed prose description (300-500 words)
-- Structure with clear sections if the image has distinct parts
-- For charts/graphs: describe all data points, trends, and axes
-- For flowcharts: describe each step and decision in sequence
-- For diagrams: explain all components and their relationships
-- For tables: describe all rows and columns of data
-- Use clear, plain language
-- Do NOT use "Image shows" or similar phrases
-- Present tense
-
-Return JSON only (no markdown):
-{
-  "plainText": "Full prose description...",
-  "markdown": "# Title\\n\\nDescription with **emphasis** and structure...",
-  "html": "<h2>Title</h2><p>Description...</p>",
-  "sections": [
-    { "heading": "Overview", "content": "..." },
-    { "heading": "Data Details", "content": "..." }
-  ],
-  "wordCount": 350
-}
-`;
+    const profile: AltTextProfile = options.profile ?? 'default';
+    const prompt = buildLongDescriptionPrompt(profile, trigger, existingShortAlt);
 
     const imagePart = {
       inlineData: {
@@ -230,3 +215,91 @@ Return JSON only (no markdown):
 
 export const longDescriptionGenerator = new LongDescriptionGeneratorService();
 export type { LongDescription, LongDescriptionTrigger, DescriptionSection };
+
+/**
+ * Build the long-description prompt. Two variants:
+ *   - default: existing detailed-prose rules
+ *   - prh-uk: PRH UK Style Guide Appendix 7 rules layered on top
+ *
+ * Both return JSON with plainText / markdown / html / sections /
+ * wordCount. PRH variant adds literal/objective wording, full-stop
+ * sentence endings, neutral pronouns, colour-only-when-significant.
+ */
+function buildLongDescriptionPrompt(
+  profile: AltTextProfile,
+  trigger: LongDescriptionTrigger,
+  existingShortAlt: string | undefined,
+): string {
+  const shortAltLine = existingShortAlt ? `Short alt text: "${existingShortAlt}"` : '';
+
+  if (profile === 'prh-uk') {
+    return `
+Generate a comprehensive long description for this image to be used with aria-describedby for accessibility.
+
+${shortAltLine}
+
+Trigger: ${trigger}
+
+PRH UK Style Guide Appendix 7 requirements (STRICT — follow exactly):
+- Write a detailed prose description (300-500 words).
+- Structure with clear sections if the image has distinct parts.
+- For charts/graphs: describe all data points, trends, and axes.
+- For flowcharts: describe each step and decision in sequence.
+- For diagrams: explain all components and their relationships.
+- For tables: describe all rows and columns of data.
+- Use clear, plain language.
+- Use LITERAL, OBJECTIVE wording. Do NOT speculate ("appears to be",
+  "perhaps", "seems to") or interpret emotion / motive.
+- END every sentence with a full stop.
+- Use NEUTRAL / non-gendered language by default ("person", "they")
+  unless context confirms identification.
+- Mention COLOUR only when significant to identification or meaning.
+- Do NOT use "Image shows", "This image depicts", "Picture of",
+  "Photo of", or similar opener phrases.
+- Present tense throughout.
+
+Return JSON only (no markdown):
+{
+  "plainText": "Full prose description with every sentence ending in a full stop...",
+  "markdown": "# Title\\n\\nDescription with **emphasis** and structure...",
+  "html": "<h2>Title</h2><p>Description...</p>",
+  "sections": [
+    { "heading": "Overview", "content": "..." },
+    { "heading": "Data Details", "content": "..." }
+  ],
+  "wordCount": 350
+}
+`;
+  }
+
+  return `
+Generate a comprehensive long description for this image to be used with aria-describedby for accessibility.
+
+${shortAltLine}
+
+Trigger: ${trigger}
+
+Requirements:
+- Write a detailed prose description (300-500 words)
+- Structure with clear sections if the image has distinct parts
+- For charts/graphs: describe all data points, trends, and axes
+- For flowcharts: describe each step and decision in sequence
+- For diagrams: explain all components and their relationships
+- For tables: describe all rows and columns of data
+- Use clear, plain language
+- Do NOT use "Image shows" or similar phrases
+- Present tense
+
+Return JSON only (no markdown):
+{
+  "plainText": "Full prose description...",
+  "markdown": "# Title\\n\\nDescription with **emphasis** and structure...",
+  "html": "<h2>Title</h2><p>Description...</p>",
+  "sections": [
+    { "heading": "Overview", "content": "..." },
+    { "heading": "Data Details", "content": "..." }
+  ],
+  "wordCount": 350
+}
+`;
+}
