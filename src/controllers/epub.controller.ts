@@ -19,6 +19,7 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extractWcagLevel } from '../services/comparison';
 import { workflowService } from '../services/workflow/workflow.service';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
+import { gateAiAltText } from '../utils/prh-ai-gate';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -2511,6 +2512,12 @@ export const epubController = {
           error: 'imagePath is required. Send { imagePath: "OEBPS/images/file.png", imageType: "informative" }',
         });
       }
+
+      // PRH UK AI policy gate (Style Guide Appendix 7). When the
+      // job is PRH-UK AND the tenant has not flipped the
+      // aiAltTextEnabled flag, this returns a 403 with the
+      // structured PRH_AI_DISABLED payload and bails out.
+      if (await gateAiAltText(req, res, jobId)) return;
 
       logger.info(`[Alt Text] Generating for job ${jobId}, image: ${imagePath}`);
 

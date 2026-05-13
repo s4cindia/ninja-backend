@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { tenantConfigController } from '../controllers/tenant-config.controller';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authorize } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -91,6 +91,35 @@ router.patch(
   '/ai-remediation',
   authenticate,
   tenantConfigController.updateAiRemediationConfig.bind(tenantConfigController)
+);
+
+/**
+ * GET /api/v1/tenant/config/prh
+ * Get PRH UK tenant config (currently the AI-altext gate flag + audit
+ * trail of last-flipped userId / timestamp). Returns
+ * { aiAltTextEnabled: false, aiAltTextEnabledBy: null,
+ *   aiAltTextEnabledAt: null } when never touched — disabled-by-default
+ * per Style Guide Appendix 7.
+ */
+router.get(
+  '/prh',
+  authenticate,
+  tenantConfigController.getPrhConfig.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/prh
+ * Update PRH UK tenant config. ADMIN-ONLY — flipping the AI gate is
+ * a policy attestation that the tenant has completed PRH UK vetting
+ * per Appendix 7. Body: { aiAltTextEnabled: boolean }. Audit trail
+ * (aiAltTextEnabledBy / aiAltTextEnabledAt) is server-stamped from
+ * req.user.id and the current time.
+ */
+router.patch(
+  '/prh',
+  authenticate,
+  authorize('ADMIN'),
+  tenantConfigController.updatePrhConfig.bind(tenantConfigController)
 );
 
 export default router;
