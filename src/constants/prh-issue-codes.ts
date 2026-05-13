@@ -501,6 +501,48 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'ALL-CAPS sequence with inserted separators (N.A.S.A. / F, B, I) — PRH wants compact form (NASA / FBI). Heuristic; review manually for legitimate formal abbreviations',
   },
+
+  // ── CSS conventions (P6/PR1) ──────────────────────────────────────────
+  // Publisher-gated and detect-only. Per Technical Guide §15 + Style
+  // Guide on the canonical stylesheet stack. Renaming basestyles.css,
+  // re-ordering @imports, or rewriting class-name conventions cascades
+  // across the publisher's dev pipeline; we surface the finding and let
+  // the operator fix in their authoring tool, not auto-remediate.
+  'PRH-CSS-BASESTYLES-RENAMED': {
+    code: 'PRH-CSS-BASESTYLES-RENAMED',
+    severity: 'serious',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'No file named basestyles.css under /styles — PRH Technical Guide §15 requires the canonical filename so Kindle ET, NCX-fallback CSS and brand fonts resolve correctly',
+  },
+  'PRH-CSS-IMPORT-ORDER-WRONG': {
+    code: 'PRH-CSS-IMPORT-ORDER-WRONG',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: '@import order in a PRH stylesheet deviates from the required cascade basestyles → complex → bespoke → mediaquery (Technical Guide §15)',
+  },
+  'PRH-CSS-CLASS-NAME-HYPHEN': {
+    code: 'PRH-CSS-CLASS-NAME-HYPHEN',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Publisher-defined class selector uses hyphen separator (e.g. .first-para) — PRH convention is underscore (.first_para). Vendor/utility prefixes (tw-, bs-, ng-) and non-publisher stylesheets are ignored',
+  },
+  'PRH-CSS-PER-PARAGRAPH-FONT': {
+    code: 'PRH-CSS-PER-PARAGRAPH-FONT',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'A class that sets font-family is applied to 10+ <p> elements — PRH disallows per-paragraph fonts because they break Kindle font-customisation. Set primary font on <body>, override only via bespoke.css',
+  },
+  'PRH-CSS-INLINE-STYLE-AT-SCALE': {
+    code: 'PRH-CSS-INLINE-STYLE-AT-SCALE',
+    severity: 'serious',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB contains 100+ inline style="…" attributes across all XHTML — book-wide pattern of inline styles; PRH demonstration carve-out (one per book) does not apply at this scale',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

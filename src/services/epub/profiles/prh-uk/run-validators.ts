@@ -32,9 +32,10 @@ import { validatePrhPageBreakShape } from './validators/page-break-shape-validat
 import { validatePrhInlineLang } from './validators/inline-lang-validator';
 import { validatePrhHashtags } from './validators/hashtag-validator';
 import { validatePrhAcronyms } from './validators/acronym-validator';
+import { validatePrhCssConventions } from './validators/css-conventions-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
-import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
+import type { PrhValidatorIssue, PrhXhtmlFile, PrhCssFile } from './validators/types';
 
 /**
  * Run all PRH UK validators against an EPUB buffer.
@@ -63,6 +64,7 @@ export async function runPrhUkValidators(
 
     const navDoc = await readNavDoc(zip, opf.path, opf.content);
     const xhtmlFiles = await readAllXhtml(zip);
+    const cssFiles = await readAllCss(zip, opf.path, opf.content);
     const bookTitle = readDcTitle(opf.content);
 
     const opfInput = { opfContent: opf.content, opfPath: opf.path };
@@ -75,6 +77,10 @@ export async function runPrhUkValidators(
       ...opfInput,
       xhtmlFiles,
       bookTitle,
+    };
+    const cssInput = {
+      ...perXhtmlInput,
+      cssFiles,
     };
 
     const issues: PrhValidatorIssue[] = [
@@ -106,6 +112,7 @@ export async function runPrhUkValidators(
         ...validatePrhInlineLang(perXhtmlInput),
         ...validatePrhHashtags(perXhtmlInput),
         ...validatePrhAcronyms(perXhtmlInput),
+        ...validatePrhCssConventions(cssInput),
       );
     }
 
@@ -184,6 +191,67 @@ async function readNavDoc(
     }
   }
   return null;
+}
+
+/**
+ * Read every CSS file REFERENCED BY THE MANIFEST and classify each as
+ * publisher-owned vs. third-party / vendor. The CSS-conventions
+ * validator only enforces class-name rules against publisher-owned
+ * stylesheets so vendored utility frameworks (TailwindCSS, Bootstrap)
+ * don't false-flag.
+ *
+ * Manifest-scoped: an EPUB may carry unused source / backup CSS files
+ * in the zip that aren't part of the publication. Iterating the zip
+ * blindly would produce false-positive findings on those. The
+ * manifest is the authoritative list of files that participate in
+ * the EPUB at runtime.
+ *
+ * Classification heuristic:
+ *   - publisher-owned: path lives under a `/styles/` (or `/style/` /
+ *     `/css/`) directory AND the basename is not one of the well-known
+ *     vendor filenames.
+ *   - vendor: everything else (including stylesheets under
+ *     `/vendor/`, `/lib/`, `/node_modules-style/`, or that match
+ *     filenames like `tailwind.css` / `bootstrap.css`).
+ */
+async function readAllCss(
+  zip: JSZip,
+  opfPath: string,
+  opfContent: string,
+): Promise<PrhCssFile[]> {
+  const manifestMatch = opfContent.match(/<manifest\b[^>]*>([\s\S]*?)<\/manifest>/i);
+  if (!manifestMatch) return [];
+
+  const out: PrhCssFile[] = [];
+  for (const item of manifestMatch[1].matchAll(/<item\b([^>]*)\/?>/gi)) {
+    const attrs = item[1];
+    const mediaTypeMatch = attrs.match(/\bmedia-type\s*=\s*["']([^"']+)["']/i);
+    if (!mediaTypeMatch || mediaTypeMatch[1].toLowerCase() !== 'text/css') continue;
+    const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+    if (!hrefMatch) continue;
+    const cssPath = resolveOpfRelative(opfPath, hrefMatch[1]);
+    const content = await zip.file(cssPath)?.async('text');
+    if (!content) continue;
+    out.push({ path: cssPath, content, isPublisherOwned: classifyPublisherOwned(cssPath) });
+  }
+  return out;
+}
+
+function classifyPublisherOwned(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  if (/(?:^|\/)(?:vendor|lib|third[_-]?party|node_modules)\//.test(lower)) return false;
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+  const vendorFilenames = [
+    'tailwind.css',
+    'bootstrap.css',
+    'bootstrap.min.css',
+    'normalize.css',
+    'reset.css',
+    'foundation.css',
+  ];
+  if (vendorFilenames.includes(base)) return false;
+  // Default to publisher-owned for anything under a /styles[/]?/ root.
+  return /(?:^|\/)(?:styles?|css)\//.test(lower);
 }
 
 /**

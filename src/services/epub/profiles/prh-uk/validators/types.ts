@@ -53,3 +53,24 @@ export interface PrhNavInput extends PrhValidatorInput {
   /** Path of the nav doc inside the zip, or null. */
   navPath: string | null;
 }
+
+/** One CSS stylesheet's content + path. */
+export interface PrhCssFile {
+  /** Zip-relative path (e.g. 'EPUB/styles/basestyles.css'). */
+  path: string;
+  content: string;
+  /**
+   * Whether this stylesheet is part of the publisher's own /styles
+   * directory (vs. a vendor/utility file vendored into the EPUB).
+   * Class-name rules apply only to publisher stylesheets so we don't
+   * false-flag third-party utility frameworks (TailwindCSS,
+   * Bootstrap, NG-style) that the publisher may have embedded.
+   */
+  isPublisherOwned: boolean;
+}
+
+/** Inputs the CSS-conventions validator reads. */
+export interface PrhCssConventionsInput extends PrhPerXhtmlInput {
+  /** Every CSS file referenced by the manifest. */
+  cssFiles: PrhCssFile[];
+}
