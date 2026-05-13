@@ -127,6 +127,14 @@ interface EpubAuditResult {
    * (PR2+) should be skipped in that case.
    */
   publisherProfile: PublisherProfile;
+  /**
+   * Book title parsed from the OPF's `<dc:title>` element. Null when
+   * the OPF can't be located or the element is missing/empty. The FE
+   * uses this to pre-fill cover-alt quick-fix dialogs with the PRH
+   * template `"Cover for [Book Title]."` — see the photo-alt-generator
+   * service's `buildPrhCoverAlt` helper.
+   */
+  bookTitle: string | null;
   coverage: {
     totalFiles: number;
     filesScanned: number;
@@ -421,6 +429,11 @@ class EpubAuditService {
       logger.info(`📊 Audit Coverage: ${coverage.filesScanned}/${coverage.totalFiles} files (${coverage.percentage}%)`);
       logger.info(`   Front Matter: ${coverage.fileCategories.frontMatter}, Chapters: ${coverage.fileCategories.chapters}, Back Matter: ${coverage.fileCategories.backMatter}`);
 
+      // Read dc:title for downstream consumers (FE cover-alt template,
+      // ACR generation). Best-effort — never block the audit on a
+      // missing or malformed OPF.
+      const bookTitle = this.readBookTitle(buffer);
+
       const result: EpubAuditResult = {
         jobId,
         fileName,
@@ -443,6 +456,7 @@ class EpubAuditService {
         classificationStats,
         accessibilityMetadata: aceResult?.metadata || null,
         publisherProfile,
+        bookTitle,
         coverage,
         auditedAt: new Date(),
       };
@@ -793,6 +807,44 @@ class EpubAuditService {
         percentage: 0,
         fileCategories: { frontMatter: 0, chapters: 0, backMatter: 0 }
       };
+    }
+  }
+
+  /**
+   * Read the book's title (`<dc:title>`) from the EPUB's OPF.
+   * Best-effort — returns `null` on any structural problem rather
+   * than throwing, so a malformed OPF never breaks the audit flow.
+   *
+   * Resolution order:
+   *   1. Read `META-INF/container.xml` to find the OPF rootfile path.
+   *   2. Read that OPF; extract the first `<dc:title>…</dc:title>`.
+   *   3. Trim whitespace; return null if empty after trim.
+   *
+   * The PRH-UK validator orchestrator does the same parsing inside
+   * `run-validators.ts`; we deliberately duplicate the lightweight
+   * regex parse here rather than depending on that module — the
+   * audit service is upstream of profile detection, and a circular
+   * import would be worse than a few lines of duplicated regex.
+   */
+  private readBookTitle(buffer: Buffer): string | null {
+    try {
+      const zip = new AdmZip(buffer);
+      const containerEntry = zip.getEntry('META-INF/container.xml');
+      if (!containerEntry) return null;
+      const containerXml = containerEntry.getData().toString('utf-8');
+      const m = containerXml.match(/rootfile[^>]+full-path\s*=\s*(?:"([^"]+)"|'([^']+)')/i);
+      const opfPath = m?.[1] ?? m?.[2];
+      if (!opfPath) return null;
+      const opfEntry = zip.getEntry(opfPath);
+      if (!opfEntry) return null;
+      const opfContent = opfEntry.getData().toString('utf-8');
+      const titleMatch = opfContent.match(/<dc:title\b[^>]*>([\s\S]*?)<\/dc:title>/i);
+      if (!titleMatch) return null;
+      const trimmed = titleMatch[1].trim();
+      return trimmed.length === 0 ? null : trimmed;
+    } catch (err) {
+      logger.warn(`[readBookTitle] failed: ${err instanceof Error ? err.message : 'unknown'}`);
+      return null;
     }
   }
 
