@@ -65,6 +65,16 @@ export const startCalibrationWorker = () =>
     queueName: QUEUE_NAMES.CALIBRATION,
     processor: processCalibrationJob,
     concurrency: 2,
-    // Docling ML inference can take 1-2 hours for large PDFs (500+ pages) on CPU
-    lockDuration: 3 * 60 * 60 * 1000, // 3 hours
+    // lockDuration bounds **crash recovery**, not job duration. A live worker
+    // renews the lock every lockDuration/2; long jobs (Docling on a 672-page
+    // PDF took ~17min on GPU) are unaffected as long as no single synchronous
+    // block exceeds the renewal interval. The previous 3h value was sized for
+    // CPU-Docling but meant a crashed worker held a job for up to 3 hours
+    // before BullMQ's stalled-job sweeper could reassign it — exactly the
+    // failure mode of the 2026-05-11 OOM incident (Issue #366).
+    //
+    // 5 minutes gives the renewer (2.5min cadence) plenty of margin over the
+    // observed ~50s pdfjs extraction block on a 672-page PDF, while reducing
+    // post-crash recovery from hours to minutes.
+    lockDuration: 5 * 60 * 1000, // 5 minutes
   });
