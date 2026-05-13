@@ -366,13 +366,47 @@ function hasCopyrightPage(zip: AdmZip): boolean {
  * to `<opf-dir>/copyright.xhtml`; if that already exists, appends
  * `_prh` to avoid clobbering. The "already exists" pre-check above
  * usually short-circuits before we reach this, but be defensive.
+ *
+ * When the OPF sits at the zip root (`opfInfo.dir === ''`), we
+ * deliberately use a bare filename — `${dir}/...` would yield a
+ * leading-slash path that doesn't match how AdmZip indexes entries.
  */
 function derivePathForNewCopyrightFile(zip: AdmZip): string {
   const opfInfo = readOpfPath(zip);
   const dir = opfInfo?.dir ?? 'EPUB';
-  const primary = `${dir}/copyright.xhtml`;
+  const primary = dir.length > 0 ? `${dir}/copyright.xhtml` : 'copyright.xhtml';
   if (!zip.getEntry(primary)) return primary;
-  return `${dir}/copyright_prh.xhtml`;
+  return dir.length > 0 ? `${dir}/copyright_prh.xhtml` : 'copyright_prh.xhtml';
+}
+
+/**
+ * Resolve a manifest href (which is relative to the OPF directory)
+ * into the zip-entry path the file actually lives at. Normalises
+ * `./` and `../` segments — without this, a manifest entry like
+ * `<item href="../text/chapter.xhtml"/>` would yield a lookup path
+ * of `EPUB/../text/chapter.xhtml` that AdmZip can't match.
+ *
+ * Mirrors the path-resolution logic in run-validators.ts so the
+ * scaffolder lines up exactly with the validator's view of the
+ * spine.
+ */
+function resolveOpfRelative(opfDir: string, href: string): string {
+  let cleanHref = href.trim();
+  // Strip leading "./" segments.
+  while (cleanHref.startsWith('./')) cleanHref = cleanHref.slice(2);
+
+  const combined = opfDir.length > 0 ? `${opfDir}/${cleanHref}` : cleanHref;
+  const segments = combined.split('/');
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join('/');
 }
 
 function manifestIdForPath(path: string): string {
@@ -456,8 +490,10 @@ function buildManifestIdToPath(opf: string, opfDir: string): Map<string, string>
     const idMatch = attrs.match(/\bid\s*=\s*["']([^"']+)["']/i);
     const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
     if (!idMatch || !hrefMatch) continue;
-    const fullPath = opfDir ? `${opfDir}/${hrefMatch[1]}` : hrefMatch[1];
-    map.set(idMatch[1], fullPath);
+    // Normalise `./` and `../` segments — see resolveOpfRelative.
+    // Without this, hrefs like "../text/chapter.xhtml" become
+    // unresolvable zip-entry lookups.
+    map.set(idMatch[1], resolveOpfRelative(opfDir, hrefMatch[1]));
   }
   return map;
 }
@@ -498,17 +534,44 @@ function updateNavLandmarks(
   return { path: navPath, content: nav };
 }
 
-function hrefRelativeToNav(navPath: string, copyrightPath: string, opfDir: string): string {
-  // Nav and copyright both inside the same opf-dir on most EPUBs —
-  // emit a basename href, which is correct relative to the nav.
-  const copyrightBasename = copyrightPath.includes('/') ? copyrightPath.slice(copyrightPath.lastIndexOf('/') + 1) : copyrightPath;
-  const navBasename = navPath.includes('/') ? navPath.slice(navPath.lastIndexOf('/') + 1) : navPath;
-  // Both in same dir → bare filename is fine.
-  if (opfDir && navPath.startsWith(opfDir + '/') && copyrightPath.startsWith(opfDir + '/')) {
-    return copyrightBasename;
+/**
+ * Compute a POSIX-style relative href from the nav doc to the new
+ * copyright XHTML. Real PRH EPUBs nest XHTML two ways:
+ *   - flat:    EPUB/nav.xhtml + EPUB/copyright.xhtml → "copyright.xhtml"
+ *   - nested:  EPUB/nav.xhtml + EPUB/xhtml/copyright.xhtml → "xhtml/copyright.xhtml"
+ *   - sibling: EPUB/nav/nav.xhtml + EPUB/text/copyright.xhtml → "../text/copyright.xhtml"
+ *
+ * The earlier "always basename" shortcut was wrong on the third
+ * shape — the resulting link would 404 in the reading system.
+ */
+function hrefRelativeToNav(navPath: string, copyrightPath: string, _opfDir: string): string {
+  const navDir = navPath.includes('/') ? navPath.slice(0, navPath.lastIndexOf('/')) : '';
+  if (navDir.length === 0) {
+    // Nav at zip root — emit the copyright path verbatim.
+    return copyrightPath;
   }
-  // Otherwise fall back to opf-relative href (rare in real EPUBs).
-  return copyrightBasename || navBasename;
+  if (copyrightPath.startsWith(navDir + '/')) {
+    // Copyright nested under the nav's directory — strip the
+    // shared prefix.
+    return copyrightPath.slice(navDir.length + 1);
+  }
+
+  // Walk up from navDir to a common ancestor, then descend into
+  // copyrightPath. Standard POSIX-relative-path algorithm.
+  const navParts = navDir.split('/');
+  const targetParts = copyrightPath.split('/');
+  let common = 0;
+  while (
+    common < navParts.length
+    && common < targetParts.length - 1
+    && navParts[common] === targetParts[common]
+  ) {
+    common += 1;
+  }
+  const upHops = navParts.length - common;
+  const ups = new Array(upHops).fill('..');
+  const downs = targetParts.slice(common);
+  return [...ups, ...downs].join('/');
 }
 
 /**
@@ -569,6 +632,11 @@ async function loadJobEpubBuffer(jobId: string, originalFileName: string | null)
   return null;
 }
 
-// Re-export the composer for unit testing — it's pure and worth
-// testing without the full draft pipeline.
-export const _internals = { composeCopyrightXhtml, bodyClassForTemplate };
+// Re-export composer + path helpers for unit testing. All pure
+// functions, worth covering without the full draft pipeline.
+export const _internals = {
+  composeCopyrightXhtml,
+  bodyClassForTemplate,
+  resolveOpfRelative,
+  hrefRelativeToNav,
+};
