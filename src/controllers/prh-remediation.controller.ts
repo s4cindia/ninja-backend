@@ -30,10 +30,18 @@ import {
   buildBoilerplateDraft,
   applyBoilerplate,
 } from '../services/epub/profiles/prh-uk/remediators/boilerplate-injector.service';
+import {
+  buildCopyrightPageDraft,
+  applyCopyrightPage,
+} from '../services/epub/profiles/prh-uk/remediators/copyright-page-scaffolder.service';
 
 const applyBoilerplateSchema = z.object({
   approvedCodes: z.array(z.string().min(1)).min(1, 'At least one code must be approved'),
   overrides: z.record(z.string(), z.string()).optional(),
+}).strict();
+
+const applyCopyrightPageSchema = z.object({
+  xhtmlOverride: z.string().min(1).optional(),
 }).strict();
 
 class PrhRemediationController {
@@ -99,6 +107,54 @@ class PrhRemediationController {
       res.json({ success: true, data: result });
     } catch (error) {
       if (error instanceof Error && /only runs on PRH-UK|medium-or-high|No snippets approved|Copyright page not found|EPUB buffer not found/i.test(error.message)) {
+        return next(AppError.badRequest(error.message));
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * GET draft for the copyright-page scaffolder. Read-only. Used
+   * when the EPUB has no copyright page at all — the injector PR1
+   * handles the partial-page case.
+   */
+  async getCopyrightPageDraft(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const { jobId } = req.params;
+      await this.assertJobAccess(jobId, req.user.tenantId);
+
+      const draft = await buildCopyrightPageDraft(jobId);
+      res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof Error && /only runs on PRH-UK|medium-or-high|no audit output/i.test(error.message)) {
+        return next(AppError.badRequest(error.message));
+      }
+      next(error);
+    }
+  }
+
+  /**
+   * POST apply: inserts the scaffolded copyright page into the
+   * EPUB's zip, manifest, spine, and nav landmarks. Atomic in
+   * memory before save — all four updates land or none do.
+   */
+  async applyCopyrightPage(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const { jobId } = req.params;
+      await this.assertJobAccess(jobId, req.user.tenantId);
+
+      const validation = applyCopyrightPageSchema.safeParse(req.body);
+      if (!validation.success) {
+        throw AppError.badRequest('Invalid request body: ' + validation.error.message);
+      }
+
+      const result = await applyCopyrightPage(jobId, validation.data);
+      logger.info(`[PRH remediation] scaffolded copyright page for job ${jobId} → ${result.newFilePath}`);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof Error && /only runs on PRH-UK|medium-or-high|already exists|EPUB buffer not found|OPF not found/i.test(error.message)) {
         return next(AppError.badRequest(error.message));
       }
       next(error);

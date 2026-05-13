@@ -36,4 +36,28 @@ router.post(
   prhRemediationController.applyBoilerplate.bind(prhRemediationController),
 );
 
+/**
+ * POST /api/v1/jobs/:jobId/prh-remediation/copyright-page/draft
+ * Composes a full <section epub:type="copyright-page"> XHTML from
+ * the imprint's template — for EPUBs that have no copyright page at
+ * all. Returns the XHTML for operator preview.
+ */
+router.post(
+  '/:jobId/prh-remediation/copyright-page/draft',
+  authenticate,
+  prhRemediationController.getCopyrightPageDraft.bind(prhRemediationController),
+);
+
+/**
+ * POST /api/v1/jobs/:jobId/prh-remediation/copyright-page/apply
+ * Body: { xhtmlOverride?: string }
+ * Inserts the (optionally edited) XHTML into the zip + manifest +
+ * spine + nav landmarks. Atomic in memory before save.
+ */
+router.post(
+  '/:jobId/prh-remediation/copyright-page/apply',
+  authenticate,
+  prhRemediationController.applyCopyrightPage.bind(prhRemediationController),
+);
+
 export default router;
