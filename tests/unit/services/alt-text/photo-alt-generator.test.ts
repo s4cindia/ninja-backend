@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   photoAltGenerator,
   buildPrhCoverAlt,
@@ -43,6 +43,10 @@ describe('generateAltText — PRH cover short-circuit', () => {
   // we don't need to mock GEMINI_API_KEY or the model.
   const dummyBuffer = Buffer.from('dummy');
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('returns the PRH template without invoking Gemini when isCover + prh-uk profile', async () => {
     const result = await photoAltGenerator.generateAltText(
       dummyBuffer,
@@ -66,37 +70,57 @@ describe('generateAltText — PRH cover short-circuit', () => {
   });
 
   it('does NOT short-circuit when isCover is true but profile is default', async () => {
-    // The cover template is PRH-specific. Default-profile cover
-    // images go through the normal Gemini path. We don't run that
-    // path here (would need API mocking) — assert via behaviour: the
-    // short-circuit returns confidence 100 + aiModel 'prh-cover-template',
-    // so if those aren't present we know we'd have entered the
-    // Gemini path. We use a try/catch to handle the inevitable
-    // ensureInitialized() failure on missing GEMINI_API_KEY.
-    try {
-      const result = await photoAltGenerator.generateAltText(
+    // Stub the lazy Gemini initializer to throw a known marker error.
+    // If the test enters the model path (i.e. short-circuit DIDN'T
+    // fire), the stub trips and we catch a marker error. If the
+    // short-circuit DID fire, the stub is never invoked.
+    const initSpy = vi
+      .spyOn(photoAltGenerator as unknown as { ensureInitialized: () => void }, 'ensureInitialized')
+      .mockImplementation(() => {
+        throw new Error('STUB_ENSURED_INIT_CALLED');
+      });
+
+    await expect(
+      photoAltGenerator.generateAltText(
         dummyBuffer,
         'image/jpeg',
         { isCover: true }, // no profile → defaults to 'default'
-      );
-      expect(result.aiModel).not.toBe('prh-cover-template');
-    } catch (err) {
-      // Expected when GEMINI_API_KEY is absent — proves we entered
-      // the model path, not the short-circuit.
-      expect((err as Error).message).toMatch(/GEMINI_API_KEY/);
-    }
+      ),
+    ).rejects.toThrow('STUB_ENSURED_INIT_CALLED');
+
+    expect(initSpy).toHaveBeenCalled();
   });
 
   it('does NOT short-circuit when profile is prh-uk but isCover is false', async () => {
-    try {
-      const result = await photoAltGenerator.generateAltText(
+    const initSpy = vi
+      .spyOn(photoAltGenerator as unknown as { ensureInitialized: () => void }, 'ensureInitialized')
+      .mockImplementation(() => {
+        throw new Error('STUB_ENSURED_INIT_CALLED');
+      });
+
+    await expect(
+      photoAltGenerator.generateAltText(
         dummyBuffer,
         'image/jpeg',
         { profile: 'prh-uk' }, // no isCover
-      );
-      expect(result.aiModel).not.toBe('prh-cover-template');
-    } catch (err) {
-      expect((err as Error).message).toMatch(/GEMINI_API_KEY/);
-    }
+      ),
+    ).rejects.toThrow('STUB_ENSURED_INIT_CALLED');
+
+    expect(initSpy).toHaveBeenCalled();
+  });
+
+  it('short-circuit does NOT invoke ensureInitialized (no Gemini call)', async () => {
+    const initSpy = vi.spyOn(
+      photoAltGenerator as unknown as { ensureInitialized: () => void },
+      'ensureInitialized',
+    );
+
+    await photoAltGenerator.generateAltText(
+      dummyBuffer,
+      'image/jpeg',
+      { profile: 'prh-uk', isCover: true, bookTitle: 'Test' },
+    );
+
+    expect(initSpy).not.toHaveBeenCalled();
   });
 });

@@ -826,6 +826,27 @@ class EpubAuditService {
    * audit service is upstream of profile detection, and a circular
    * import would be worse than a few lines of duplicated regex.
    */
+  /**
+   * Decode the named + numeric XML entities that legitimately appear
+   * in `<dc:title>` values: `&amp;`, `&lt;`, `&gt;`, `&quot;`,
+   * `&apos;`, and decimal/hex numeric refs (`&#8217;`, `&#x2019;`).
+   * Doesn't handle the long tail of HTML named entities — those
+   * aren't valid in OPF XML anyway. Idempotent; safe to call on
+   * already-decoded strings.
+   */
+  private decodeXmlEntities(text: string): string {
+    return text
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/&#([0-9]+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+      .replace(/&apos;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      // `&amp;` must be last so a string like `&amp;amp;` decodes
+      // to `&amp;` (one round-trip), not `&` (two).
+      .replace(/&amp;/g, '&');
+  }
+
   private readBookTitle(buffer: Buffer): string | null {
     try {
       const zip = new AdmZip(buffer);
@@ -840,8 +861,14 @@ class EpubAuditService {
       const opfContent = opfEntry.getData().toString('utf-8');
       const titleMatch = opfContent.match(/<dc:title\b[^>]*>([\s\S]*?)<\/dc:title>/i);
       if (!titleMatch) return null;
-      const trimmed = titleMatch[1].trim();
-      return trimmed.length === 0 ? null : trimmed;
+      // Decode XML entities BEFORE trimming so titles containing
+      // `&amp;`, `&apos;`, `&#8217;` etc. surface as human-readable
+      // text on the audit response. The FE templates the title into
+      // alt strings like "Cover for [Book Title]." — entity-encoded
+      // output ("Cover for A &amp; B.") would silently break the
+      // intended cover-alt format.
+      const decoded = this.decodeXmlEntities(titleMatch[1]).trim();
+      return decoded.length === 0 ? null : decoded;
     } catch (err) {
       logger.warn(`[readBookTitle] failed: ${err instanceof Error ? err.message : 'unknown'}`);
       return null;
