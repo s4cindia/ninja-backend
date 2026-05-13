@@ -83,32 +83,43 @@ export function imprintTemplate(imprint: PrhImprint | null | 'unknown'): Imprint
   }
 }
 
-/** Substitute metadata placeholders, leaving `__MISSING_*__` for absent values. */
+/**
+ * Substitute metadata placeholders, leaving `__MISSING_*__` for
+ * absent values. Each token is replaced INDEPENDENTLY and ALL
+ * occurrences are replaced (`replaceAll`) — a snippet containing
+ * both `[ISBN]` and `[YEAR]` correctly gets each substituted with
+ * its own metadata value, not the first one applied to whichever
+ * token appears first.
+ */
 function sub(text: string, metadata: BoilerplateMetadata): { html: string; missing: BoilerplateMissingField[] } {
   const missing: BoilerplateMissingField[] = [];
-  const substitute = (
-    template: string,
+  let html = text;
+
+  const applyToken = (
+    token: '[BOOK_TITLE]' | '[AUTHOR_NAME]' | '[ISBN]' | '[YEAR]',
     value: string | null,
     field: BoilerplateMissingField,
-  ): string => {
-    if (value && value.trim().length > 0) return template.replace(/\[BOOK_TITLE\]|\[AUTHOR_NAME\]|\[ISBN\]|\[YEAR\]/, value.trim());
+  ): void => {
+    if (!html.includes(token)) return;
+    if (value && value.trim().length > 0) {
+      html = html.replaceAll(token, value.trim());
+      return;
+    }
     if (!missing.includes(field)) missing.push(field);
-    return template;
   };
 
-  let html = text;
-  if (html.includes('[BOOK_TITLE]')) html = substitute(html, metadata.bookTitle, 'bookTitle');
-  if (html.includes('[AUTHOR_NAME]')) html = substitute(html, metadata.authorName, 'authorName');
-  if (html.includes('[ISBN]')) html = substitute(html, metadata.isbn, 'isbn');
-  if (html.includes('[YEAR]')) html = substitute(html, metadata.year, 'year');
+  applyToken('[BOOK_TITLE]', metadata.bookTitle, 'bookTitle');
+  applyToken('[AUTHOR_NAME]', metadata.authorName, 'authorName');
+  applyToken('[ISBN]', metadata.isbn, 'isbn');
+  applyToken('[YEAR]', metadata.year, 'year');
 
   // Convert any remaining placeholders to the explicit __MISSING_*__
   // token so the FE renders them as editable required fields.
   html = html
-    .replace(/\[BOOK_TITLE\]/g, `${MISSING_TOKEN_PREFIX}BOOK_TITLE__`)
-    .replace(/\[AUTHOR_NAME\]/g, `${MISSING_TOKEN_PREFIX}AUTHOR_NAME__`)
-    .replace(/\[ISBN\]/g, `${MISSING_TOKEN_PREFIX}ISBN__`)
-    .replace(/\[YEAR\]/g, `${MISSING_TOKEN_PREFIX}YEAR__`);
+    .replaceAll('[BOOK_TITLE]', `${MISSING_TOKEN_PREFIX}BOOK_TITLE__`)
+    .replaceAll('[AUTHOR_NAME]', `${MISSING_TOKEN_PREFIX}AUTHOR_NAME__`)
+    .replaceAll('[ISBN]', `${MISSING_TOKEN_PREFIX}ISBN__`)
+    .replaceAll('[YEAR]', `${MISSING_TOKEN_PREFIX}YEAR__`);
 
   return { html, missing };
 }

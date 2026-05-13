@@ -186,7 +186,17 @@ export async function applyBoilerplate(
   // the operator didn't override.
   const draft = await buildBoilerplateDraft(jobId);
 
-  const approvedSnippets = draft.snippets.filter((s) => approval.approvedCodes.includes(s.code));
+  // Preserve the operator's approval ORDER — they may want TDM before
+  // EEA, or imprint URL before the address block. Iterating over
+  // approval.approvedCodes (not draft.snippets) gives the operator
+  // control over insertion sequence. Unknown codes are dropped silently;
+  // the count check below catches the all-unknown case.
+  const snippetByCode = new Map(draft.snippets.map((s) => [s.code, s]));
+  const approvedSnippets: BoilerplateSnippet[] = [];
+  for (const code of approval.approvedCodes) {
+    const s = snippetByCode.get(code);
+    if (s) approvedSnippets.push(s);
+  }
   if (approvedSnippets.length === 0) {
     throw new Error('No snippets approved — nothing to apply');
   }
