@@ -161,7 +161,14 @@ export async function fixDeprecatedTags(zip: JSZip): Promise<ChangeResult[]> {
  */
 export async function fixInlineStyles(zip: JSZip): Promise<ChangeResult[]> {
   const results: ChangeResult[] = [];
-  const inlineStyleRe = /(\s)style\s*=\s*["'][^"']*["']/gi;
+  // Backreference (\2) ensures the closing quote matches the opening
+  // quote. Without it, an attribute like style="font-family: 'Times
+  // New Roman'" would have its value truncated at the inner single
+  // quote (the regex would see `style="font-family: '` as a full
+  // match), leaving `Times New Roman'"` orphaned in the markup.
+  // The (\s) capture preserves leading whitespace so the strip
+  // doesn't collapse adjacent attributes.
+  const inlineStyleRe = /(\s)style\s*=\s*(["'])([\s\S]*?)\2/gi;
 
   for (const filePath of Object.keys(zip.files)) {
     if (!/\.x?html?$/i.test(filePath)) continue;
@@ -174,8 +181,12 @@ export async function fixInlineStyles(zip: JSZip): Promise<ChangeResult[]> {
     if (!matches || matches.length === 0) continue;
 
     if (matches.length > INLINE_STYLE_AUTO_THRESHOLD) {
+      // Deferred ≠ fixed. Return success: false so the auto-
+      // remediation pipeline counts this file as outstanding rather
+      // than counting it toward the "resolved" tally. The operator
+      // sees the file in the still-needs-review bucket.
       results.push({
-        success: true,
+        success: false,
         description: `${filePath} has ${matches.length} inline styles — deferred to operator review (auto threshold is ${INLINE_STYLE_AUTO_THRESHOLD})`,
       });
       continue;
@@ -344,7 +355,10 @@ export async function fixBodyPurity(zip: JSZip): Promise<ChangeResult[]> {
     let attrs = bodyOpenMatch[1];
     const offenders: string[] = [];
     for (const attr of BANNED) {
-      const re = new RegExp(`(\\s)${attr}\\s*=\\s*["'][^"']*["']`, 'i');
+      // Backreference pattern handles `aria-label="Chapter's start"`
+      // and similar attributes that contain inner quotes. Without it
+      // the strip would truncate at the inner apostrophe.
+      const re = new RegExp(`(\\s)${attr}\\s*=\\s*(["'])[\\s\\S]*?\\2`, 'i');
       if (re.test(attrs)) {
         offenders.push(attr);
         attrs = attrs.replace(re, '');

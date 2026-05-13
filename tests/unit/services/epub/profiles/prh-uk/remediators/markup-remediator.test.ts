@@ -113,6 +113,35 @@ describe('fixInlineStyles', () => {
     const result = await fixInlineStyles(zip);
     expect(result[0].description).toMatch(/no inline styles/i);
   });
+
+  it('handles style attribute with inner single quotes (regression)', async () => {
+    // Quote-agnostic regex would have stopped at the inner `'` and
+    // left `Times New Roman'"` orphaned in the markup. The
+    // backreference pattern requires the closing quote to match the
+    // opening quote, so the full attribute value is consumed.
+    zip.file('ch1.xhtml', buildXhtml(`<p style="font-family: 'Times New Roman'">x</p>`));
+    await fixInlineStyles(zip);
+    const updated = await getFile(zip, 'ch1.xhtml');
+    expect(updated).toContain('<p>x</p>');
+    expect(updated).not.toMatch(/style=/);
+    expect(updated).not.toContain("Times New Roman");
+  });
+
+  it('handles single-quoted style with inner double quotes', async () => {
+    zip.file('ch1.xhtml', buildXhtml(`<p style='font-family: "Helvetica Neue"'>y</p>`));
+    await fixInlineStyles(zip);
+    const updated = await getFile(zip, 'ch1.xhtml');
+    expect(updated).toContain('<p>y</p>');
+    expect(updated).not.toMatch(/style=/);
+  });
+
+  it('marks deferred files as success: false so the pipeline does not count them as fixed (regression)', async () => {
+    const bigContent = Array(60).fill('<p style="margin: 1em">x</p>').join('');
+    zip.file('big.xhtml', buildXhtml(bigContent));
+    const result = await fixInlineStyles(zip);
+    expect(result[0].success).toBe(false);
+    expect(result[0].description).toMatch(/deferred to operator review/i);
+  });
 });
 
 describe('fixEpubTypePlacement', () => {
@@ -240,6 +269,17 @@ describe('fixBodyPurity', () => {
     await fixBodyPurity(zip);
     const result = await fixBodyPurity(zip);
     expect(result[0].description).toMatch(/no <body> ARIA/i);
+  });
+
+  it('handles aria-label with inner apostrophe (regression)', async () => {
+    // Quote-agnostic strip would have stopped at the inner `'` and
+    // left `s start"` orphaned in the markup, breaking subsequent
+    // attributes. Backreference pattern handles it correctly.
+    zip.file('ch1.xhtml', buildXhtml('<p>x</p>', `aria-label="Chapter's start" epub:type="bodymatter"`));
+    await fixBodyPurity(zip);
+    const updated = await getFile(zip, 'ch1.xhtml');
+    expect(updated).not.toMatch(/aria-label/);
+    expect(updated).toMatch(/<body[^>]*epub:type="bodymatter"/);
   });
 });
 
