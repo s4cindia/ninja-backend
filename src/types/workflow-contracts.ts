@@ -484,7 +484,7 @@ export const batchAutoApprovalPolicySchema = z.object({
 export const acrBatchConfigSchema = z.object({
   vendor: z.string().min(1, 'Vendor name is required'),
   contactEmail: z.string().email('Valid email required'),
-  edition: z.enum(['VPAT2.5-WCAG', 'VPAT2.5-508', 'VPAT2.5-EU', 'VPAT2.5-INT']).default('VPAT2.5-WCAG'),
+  edition: z.enum(['VPAT2.5-WCAG', 'VPAT2.5-508', 'VPAT2.5-EU', 'VPAT2.5-INT', 'VPAT2.5-PRH-UK']).default('VPAT2.5-WCAG'),
   mode: z.enum(['individual', 'aggregate']).default('individual'),
   aggregationStrategy: z.enum(['conservative', 'optimistic']).default('conservative'),
 });
