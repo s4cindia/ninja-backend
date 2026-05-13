@@ -32,9 +32,10 @@ import { validatePrhPageBreakShape } from './validators/page-break-shape-validat
 import { validatePrhInlineLang } from './validators/inline-lang-validator';
 import { validatePrhHashtags } from './validators/hashtag-validator';
 import { validatePrhAcronyms } from './validators/acronym-validator';
+import { validatePrhCssConventions } from './validators/css-conventions-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
-import type { PrhValidatorIssue, PrhXhtmlFile } from './validators/types';
+import type { PrhValidatorIssue, PrhXhtmlFile, PrhCssFile } from './validators/types';
 
 /**
  * Run all PRH UK validators against an EPUB buffer.
@@ -63,6 +64,7 @@ export async function runPrhUkValidators(
 
     const navDoc = await readNavDoc(zip, opf.path, opf.content);
     const xhtmlFiles = await readAllXhtml(zip);
+    const cssFiles = await readAllCss(zip, opf.path, opf.content);
     const bookTitle = readDcTitle(opf.content);
 
     const opfInput = { opfContent: opf.content, opfPath: opf.path };
@@ -75,6 +77,10 @@ export async function runPrhUkValidators(
       ...opfInput,
       xhtmlFiles,
       bookTitle,
+    };
+    const cssInput = {
+      ...perXhtmlInput,
+      cssFiles,
     };
 
     const issues: PrhValidatorIssue[] = [
@@ -106,6 +112,7 @@ export async function runPrhUkValidators(
         ...validatePrhInlineLang(perXhtmlInput),
         ...validatePrhHashtags(perXhtmlInput),
         ...validatePrhAcronyms(perXhtmlInput),
+        ...validatePrhCssConventions(cssInput),
       );
     }
 
@@ -184,6 +191,53 @@ async function readNavDoc(
     }
   }
   return null;
+}
+
+/**
+ * Read every CSS file in the zip and classify each as
+ * publisher-owned vs. third-party / vendor. The CSS-conventions
+ * validator only enforces class-name rules against publisher-owned
+ * stylesheets so vendored utility frameworks (TailwindCSS, Bootstrap)
+ * don't false-flag.
+ *
+ * Classification heuristic:
+ *   - publisher-owned: path lives under a `/styles/` (or `/style/` /
+ *     `/css/`) directory AND the basename is not one of the well-known
+ *     vendor filenames.
+ *   - vendor: everything else (including stylesheets under
+ *     `/vendor/`, `/lib/`, `/node_modules-style/`, or that match
+ *     filenames like `tailwind.css` / `bootstrap.css`).
+ */
+async function readAllCss(
+  zip: JSZip,
+  _opfPath: string,
+  _opfContent: string,
+): Promise<PrhCssFile[]> {
+  const out: PrhCssFile[] = [];
+  for (const filePath of Object.keys(zip.files)) {
+    if (!/\.css$/i.test(filePath)) continue;
+    const content = await zip.file(filePath)?.async('text');
+    if (!content) continue;
+    out.push({ path: filePath, content, isPublisherOwned: classifyPublisherOwned(filePath) });
+  }
+  return out;
+}
+
+function classifyPublisherOwned(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  if (/(?:^|\/)(?:vendor|lib|third[_-]?party|node_modules)\//.test(lower)) return false;
+  const base = lower.slice(lower.lastIndexOf('/') + 1);
+  const vendorFilenames = [
+    'tailwind.css',
+    'bootstrap.css',
+    'bootstrap.min.css',
+    'normalize.css',
+    'reset.css',
+    'foundation.css',
+  ];
+  if (vendorFilenames.includes(base)) return false;
+  // Default to publisher-owned for anything under a /styles[/]?/ root.
+  return /(?:^|\/)(?:styles?|css)\//.test(lower);
 }
 
 /**
