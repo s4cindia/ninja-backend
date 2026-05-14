@@ -219,6 +219,33 @@ async function readNavDoc(
 }
 
 /**
+ * Cap total pixels for the palette-probe fast path. The PNG-vs-JPEG
+ * heuristic only fires below 800px width AND ≤256 distinct colours,
+ * so the typical line-drawing is well under this ceiling. Bound to
+ * stop a very tall narrow image (e.g. 800×100000) from forcing a
+ * multi-megapixel raw decode.
+ */
+const MAX_PALETTE_PROBE_PIXELS = 800 * 1200;
+
+/**
+ * Normalise sharp's `density` field to a trustworthy value or null.
+ *
+ * sharp returns `density: 72` even for JPEGs that carry no embedded
+ * density metadata at all — that's libvips' default, not a signal
+ * from the source. We can't distinguish "stripped EXIF" from "EXIF
+ * present at 72dpi" given sharp's API alone, so we treat any 72dpi
+ * reading as ambiguous and yield null rather than fire a false
+ * `PRH-IMG-DPI-TOO-LOW`. Genuine 72dpi sources will be silently
+ * accepted; this is an explicit trade-off favouring zero false
+ * positives on an advisory rule.
+ */
+function extractDensity(rawDensity: unknown): number | null {
+  if (typeof rawDensity !== 'number' || rawDensity <= 0) return null;
+  if (rawDensity === 72) return null;
+  return rawDensity;
+}
+
+/**
  * Run sharp once per manifested image and build the per-image
  * metadata the image-assets validator consumes. The validator is
  * synchronous + pure; all sharp I/O lives here.
@@ -249,10 +276,14 @@ async function readImageMetadata(
       if (
         entry.mediaType === 'image/jpeg'
         && typeof meta.width === 'number'
+        && typeof meta.height === 'number'
         && meta.width <= 800
+        // Guardrail: cap total pixels examined to keep palette probing
+        // bounded — even within the 800px width gate, a very tall image
+        // could otherwise decode a multi-MB raw buffer.
+        && meta.width * meta.height <= MAX_PALETTE_PROBE_PIXELS
       ) {
         try {
-          const stats = await sharp(buf).stats();
           // sharp's `stats.channels` doesn't expose distinct colour
           // count directly. Use raw pixels + a Set for small images.
           const { data, info } = await sharp(buf)
@@ -269,7 +300,6 @@ async function readImageMetadata(
             if (seen.size > 256) break;
           }
           colorCount = seen.size;
-          void stats;
         } catch {
           colorCount = null;
         }
@@ -279,7 +309,7 @@ async function readImageMetadata(
         mediaType: entry.mediaType,
         width: typeof meta.width === 'number' ? meta.width : null,
         height: typeof meta.height === 'number' ? meta.height : null,
-        density: typeof meta.density === 'number' && meta.density > 0 ? meta.density : null,
+        density: extractDensity(meta.density),
         colorSpace: typeof meta.space === 'string' ? meta.space : null,
         colorCount,
         sizeBytes: buf.length,
