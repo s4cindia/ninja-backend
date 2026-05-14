@@ -100,11 +100,6 @@ export async function runPrhUkValidators(
       zipPaths,
       requiresNcx,
     };
-    const imageMetadata = await readImageMetadata(zip, manifestEntries);
-    const imageAssetsInput = {
-      ...perXhtmlInput,
-      images: imageMetadata,
-    };
 
     const issues: PrhValidatorIssue[] = [
       ...validatePrhMetadata(opfInput),
@@ -123,6 +118,14 @@ export async function runPrhUkValidators(
       publisherProfile?.publisher === 'PRH-UK'
       && publisherProfile.confidence !== 'low';
     if (isPrhAtMediumConfidence) {
+      // Image metadata is read lazily here — `readImageMetadata` runs
+      // sharp once per manifested image, so we only pay that cost when
+      // the P3 gate is open and `validatePrhImageAssets` will actually
+      // consume the result.
+      const imageAssetsInput = {
+        ...perXhtmlInput,
+        images: await readImageMetadata(zip, manifestEntries),
+      };
       issues.push(
         ...validatePrhEpubTypePlacement(perXhtmlInput),
         ...validatePrhDocAriaRoles(perXhtmlInput),
