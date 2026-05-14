@@ -262,8 +262,9 @@ const TIER_CODE_COUNT: Record<PriorityTier, number> = {
   P2: 25,
   // P3 — body epub:type + doc-* ARIA (8) + forbidden (3) + notes/pagebreak (2)
   // + text heuristics (3) + CSS conventions (5, P6/PR1) + file/dir/size
-  // (5, P6/PR2) + image assets (5, P6/PR3) = 31
-  P3: 31,
+  // (5, P6/PR2) + image assets (5, P6/PR3) + content-type markup
+  // (6, P6/PR5) = 37
+  P3: 37,
   // P4 has no PRH-* codes (AI policy gate + cover-alt template were
   // implemented as behaviors, not new codes). 0 to keep the type happy.
   P4: 0,
