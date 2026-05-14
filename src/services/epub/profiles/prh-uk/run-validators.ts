@@ -34,13 +34,16 @@ import { validatePrhHashtags } from './validators/hashtag-validator';
 import { validatePrhAcronyms } from './validators/acronym-validator';
 import { validatePrhCssConventions } from './validators/css-conventions-validator';
 import { validatePrhFileLayout } from './validators/file-layout-validator';
+import { validatePrhImageAssets } from './validators/image-assets-validator';
 import { getImprintRules } from './imprints';
+import sharp from 'sharp';
 import type { PublisherProfile } from '../types';
 import type {
   PrhValidatorIssue,
   PrhXhtmlFile,
   PrhCssFile,
   PrhManifestEntry,
+  PrhImageMetadata,
 } from './validators/types';
 
 /**
@@ -97,6 +100,11 @@ export async function runPrhUkValidators(
       zipPaths,
       requiresNcx,
     };
+    const imageMetadata = await readImageMetadata(zip, manifestEntries);
+    const imageAssetsInput = {
+      ...perXhtmlInput,
+      images: imageMetadata,
+    };
 
     const issues: PrhValidatorIssue[] = [
       ...validatePrhMetadata(opfInput),
@@ -129,6 +137,7 @@ export async function runPrhUkValidators(
         ...validatePrhAcronyms(perXhtmlInput),
         ...validatePrhCssConventions(cssInput),
         ...validatePrhFileLayout(fileLayoutInput),
+        ...validatePrhImageAssets(imageAssetsInput),
       );
     }
 
@@ -207,6 +216,82 @@ async function readNavDoc(
     }
   }
   return null;
+}
+
+/**
+ * Run sharp once per manifested image and build the per-image
+ * metadata the image-assets validator consumes. The validator is
+ * synchronous + pure; all sharp I/O lives here.
+ *
+ * Per-image failures are caught locally — a corrupt image or one
+ * sharp can't decode produces a `null`-fields entry so the validator
+ * simply skips it rather than aborting the whole audit.
+ *
+ * `colorCount` is intentionally NOT computed for images wider than
+ * 800px: the PNG-vs-JPEG heuristic only fires below that width, so
+ * computing the palette for a 4000px hero illustration would be
+ * wasted work.
+ */
+async function readImageMetadata(
+  zip: JSZip,
+  manifestEntries: PrhManifestEntry[],
+): Promise<PrhImageMetadata[]> {
+  const out: PrhImageMetadata[] = [];
+  for (const entry of manifestEntries) {
+    if (!entry.mediaType.startsWith('image/')) continue;
+    const zipFile = zip.file(entry.path);
+    if (!zipFile) continue;
+    try {
+      const buf = await zipFile.async('nodebuffer');
+      const isCover = entry.properties.includes('cover-image');
+      const meta = await sharp(buf).metadata();
+      let colorCount: number | null = null;
+      if (
+        entry.mediaType === 'image/jpeg'
+        && typeof meta.width === 'number'
+        && meta.width <= 800
+      ) {
+        try {
+          const stats = await sharp(buf).stats();
+          // sharp's `stats.channels` doesn't expose distinct colour
+          // count directly. Use raw pixels + a Set for small images.
+          const { data, info } = await sharp(buf)
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          const seen = new Set<number>();
+          const stride = info.channels;
+          for (let i = 0; i + stride <= data.length; i += stride) {
+            // Pack RGB(A) into a single 32-bit integer for the Set.
+            const r = data[i];
+            const g = stride >= 2 ? data[i + 1] : 0;
+            const b = stride >= 3 ? data[i + 2] : 0;
+            seen.add((r << 16) | (g << 8) | b);
+            if (seen.size > 256) break;
+          }
+          colorCount = seen.size;
+          void stats;
+        } catch {
+          colorCount = null;
+        }
+      }
+      out.push({
+        path: entry.path,
+        mediaType: entry.mediaType,
+        width: typeof meta.width === 'number' ? meta.width : null,
+        height: typeof meta.height === 'number' ? meta.height : null,
+        density: typeof meta.density === 'number' && meta.density > 0 ? meta.density : null,
+        colorSpace: typeof meta.space === 'string' ? meta.space : null,
+        colorCount,
+        sizeBytes: buf.length,
+        isCover,
+      });
+    } catch (err) {
+      logger.warn(
+        `[PRH image metadata] sharp failed for ${entry.path}; skipping: ${err instanceof Error ? err.message : 'unknown'}`,
+      );
+    }
+  }
+  return out;
 }
 
 /**
