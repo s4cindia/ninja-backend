@@ -64,15 +64,30 @@ def write_tagged_pdf(
             Type=pikepdf.Name('/StructTreeRoot'),
         )
 
+        # RoleMap (PDF/UA-1 7.3 test 1): map every structure type this
+        # writer emits to its PDF 1.7 standard type. All of these already
+        # ARE standard types, so each maps to itself — but supplying an
+        # explicit RoleMap is the conformant practice and removes any
+        # ambiguity for the validator. Increment-1 of Issue #396.
+        role_map = pikepdf.Dictionary()
+        for _role in ('Document', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+                      'Table', 'Figure', 'Caption', 'Note'):
+            role_map[pikepdf.Name('/' + _role)] = pikepdf.Name('/' + _role)
+        struct_tree_root.RoleMap = role_map
+
         struct_tree_ref = pdf.make_indirect(struct_tree_root)
 
-        # Create document-level structure element
+        # Create document-level structure element. make_indirect is called
+        # exactly once here — the previous code re-ran it inside the page
+        # loop, risking duplicate indirect objects for the same dict and a
+        # malformed tree. Every StructElem's /P now points at this one ref.
         doc_elem = pikepdf.Dictionary(
             Type=pikepdf.Name('/StructElem'),
             S=pikepdf.Name('/Document'),
             P=struct_tree_ref,
             K=pikepdf.Array(),
         )
+        doc_ref = pdf.make_indirect(doc_elem)
 
         # Group zones by page
         by_page = defaultdict(list)
@@ -91,7 +106,9 @@ def write_tagged_pdf(
                 continue
             page_obj = pdf.pages[page_idx].obj
 
-            doc_ref = pdf.make_indirect(doc_elem)
+            # Tab order must follow structure order (PDF/UA-1 7.18.x).
+            # /Tabs /S declares structure-order tabbing on every page.
+            page_obj[pikepdf.Name('/Tabs')] = pikepdf.Name('/S')
 
             for zone in page_zones:
                 zone_type = zone.get('operatorLabel') \
@@ -126,8 +143,9 @@ def write_tagged_pdf(
                 doc_elem.K.append(pdf.make_indirect(struct_elem))
                 zone_count += 1
 
-        # Attach structure tree to document
-        struct_tree_root.K = pdf.make_indirect(doc_elem)
+        # Attach structure tree to document. Reuse the single doc_ref made
+        # above rather than calling make_indirect again on doc_elem.
+        struct_tree_root.K = doc_ref
         pdf.Root.StructTreeRoot = struct_tree_ref
 
         pdf.save(output_path)
