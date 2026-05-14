@@ -32,20 +32,17 @@ const PLATE_OVERSIZE_LIMIT = 11 * 1024 * 1024;
 const XHTML_MEDIA_TYPE = 'application/xhtml+xml';
 
 /**
- * Filenames in a manifested EPUB that should NOT be scanned for
- * naming-convention violations because they're metadata or
- * boilerplate that lives at the EPUB root (where PRH's lowercase
- * rule doesn't apply by convention).
+ * Paths that are exempt from the naming-convention check. The
+ * canonical exemptions are:
+ *   - the literal `mimetype` file at the zip root
+ *   - anything under the `META-INF/` directory (reader-specific
+ *     display options like `META-INF/com.apple.ibooks.display-options.xml`
+ *     are legitimate even though they don't match the lowercase /
+ *     underscore-only rule)
  */
-const NAMING_EXCEPTIONS = new Set([
-  'mimetype',
-  'META-INF/container.xml',
-  'META-INF/encryption.xml',
-  'META-INF/signatures.xml',
-  'META-INF/metadata.xml',
-  'META-INF/rights.xml',
-  'META-INF/manifest.xml',
-]);
+function isNamingException(zipPath: string): boolean {
+  return zipPath === 'mimetype' || /^META-INF\//i.test(zipPath);
+}
 
 /** Filename pattern: lowercase alphanumeric + `_` + `-`, single `.` before extension. */
 const VALID_FILENAME = /^[a-z0-9][a-z0-9_-]*\.[a-z0-9]+$/;
@@ -83,7 +80,7 @@ export function validatePrhFileLayout(input: PrhFileLayoutInput): PrhValidatorIs
   //    content of that type lives at a non-canonical path. Only fire
   //    when content exists but isn't in the canonical place — empty
   //    sub-directories are not enforced.
-  for (const violation of findDirLayoutViolations(input.manifestEntries)) {
+  for (const violation of findDirLayoutViolations(input.manifestEntries, input.opfPath)) {
     issues.push(buildIssue('PRH-DIR-LAYOUT-NONSTANDARD', violation.detail));
   }
 
@@ -127,29 +124,40 @@ function isPlateXhtml(zipPath: string): boolean {
  * canonical sub-directory. Returns one entry per affected type, not
  * per file, so a book with 50 mis-located images produces a single
  * finding rather than 50.
+ *
+ * Canonical = directly under the OPF root. We anchor on the OPF dir
+ * because manifest hrefs are resolved relative to it; both common
+ * EPUB layouts (`EPUB/package.opf` + `EPUB/images/...` and the
+ * root-level `package.opf` + `images/...`) are accepted, while
+ * nested paths like `EPUB/xhtml/images/foo.png` are flagged because
+ * they don't live directly under the canonical top-level dir.
  */
 function findDirLayoutViolations(
   entries: PrhManifestEntry[],
+  opfPath: string,
 ): Array<{ detail: string }> {
+  const opfDir = opfPath.includes('/')
+    ? opfPath.slice(0, opfPath.lastIndexOf('/')).toLowerCase()
+    : '';
   const typeGroups: Array<{ pred: (e: PrhManifestEntry) => boolean; dirSegment: string; label: string }> = [
     {
       pred: (e) => e.mediaType.startsWith('image/'),
-      dirSegment: '/images/',
+      dirSegment: 'images',
       label: 'images',
     },
     {
       pred: (e) => e.mediaType === 'text/css',
-      dirSegment: '/styles/',
+      dirSegment: 'styles',
       label: 'stylesheets',
     },
     {
       pred: (e) => e.mediaType.startsWith('font/') || /\b(application\/vnd\.ms-opentype|application\/font-woff2?)\b/.test(e.mediaType),
-      dirSegment: '/fonts/',
+      dirSegment: 'fonts',
       label: 'fonts',
     },
     {
       pred: (e) => e.mediaType === XHTML_MEDIA_TYPE,
-      dirSegment: '/xhtml/',
+      dirSegment: 'xhtml',
       label: 'XHTML files',
     },
   ];
@@ -158,12 +166,13 @@ function findDirLayoutViolations(
   for (const group of typeGroups) {
     const matching = entries.filter(group.pred);
     if (matching.length === 0) continue;
-    const offenders = matching.filter((e) => !e.path.toLowerCase().includes(group.dirSegment));
+    const canonicalPrefix = opfDir ? `${opfDir}/${group.dirSegment}/` : `${group.dirSegment}/`;
+    const offenders = matching.filter((e) => !e.path.toLowerCase().startsWith(canonicalPrefix));
     if (offenders.length > 0) {
       const sample = offenders.slice(0, 3).map((e) => e.path).join(', ');
       const more = offenders.length > 3 ? `, +${offenders.length - 3} more` : '';
       out.push({
-        detail: `${group.label} not under ${group.dirSegment} (${offenders.length} file(s): ${sample}${more})`,
+        detail: `${group.label} not under ${canonicalPrefix} (${offenders.length} file(s): ${sample}${more})`,
       });
     }
   }
@@ -178,7 +187,7 @@ function findDirLayoutViolations(
 function findNamingViolations(zipPaths: string[]): string[] {
   const offenders: string[] = [];
   for (const path of zipPaths) {
-    if (NAMING_EXCEPTIONS.has(path)) continue;
+    if (isNamingException(path)) continue;
     if (path === '' || path.endsWith('/')) continue; // directory entries
     const base = basename(path);
     if (!VALID_FILENAME.test(base)) {

@@ -181,6 +181,46 @@ describe('validatePrhFileLayout — PRH-DIR-LAYOUT-NONSTANDARD', () => {
     expect(issues.some((i) => i.code === 'PRH-DIR-LAYOUT-NONSTANDARD')).toBe(false);
   });
 
+  it('accepts a root-level OPF layout (package.opf at zip root, images/ at zip root)', () => {
+    const issues = validatePrhFileLayout(
+      input({
+        opfPath: 'package.opf',
+        manifestEntries: [
+          manifestEntry('xhtml/nav.xhtml', 'application/xhtml+xml', {
+            properties: ['nav'],
+            sizeBytes: 5000,
+          }),
+          manifestEntry('xhtml/chapter_001.xhtml', 'application/xhtml+xml', {
+            sizeBytes: 200 * 1024,
+          }),
+          manifestEntry('images/cover.jpg', 'image/jpeg', {
+            properties: ['cover-image'],
+            sizeBytes: 500_000,
+          }),
+        ],
+        zipPaths: [
+          'mimetype',
+          'META-INF/container.xml',
+          'package.opf',
+          'xhtml/nav.xhtml',
+          'xhtml/chapter_001.xhtml',
+          'images/cover.jpg',
+        ],
+      }),
+    );
+    expect(issues.some((i) => i.code === 'PRH-DIR-LAYOUT-NONSTANDARD')).toBe(false);
+  });
+
+  it('rejects nested-canonical paths like EPUB/xhtml/images/foo.png', () => {
+    const base = conformantBaseline();
+    const entries = [
+      ...(base.manifestEntries ?? []),
+      manifestEntry('EPUB/xhtml/images/diagram_01.png', 'image/png'),
+    ];
+    const issues = validatePrhFileLayout(input({ ...base, manifestEntries: entries }));
+    expect(issues.some((i) => i.code === 'PRH-DIR-LAYOUT-NONSTANDARD')).toBe(true);
+  });
+
   it('emits ONE issue per content type even with many violators', () => {
     const base = conformantBaseline();
     const entries = [
@@ -236,6 +276,21 @@ describe('validatePrhFileLayout — PRH-FILE-NAMING-NONSTANDARD', () => {
       input({
         ...conformantBaseline(),
         zipPaths: ['mimetype', 'META-INF/container.xml', 'EPUB/package.opf'],
+      }),
+    );
+    expect(issues.some((i) => i.code === 'PRH-FILE-NAMING-NONSTANDARD')).toBe(false);
+  });
+
+  it('exempts reader-specific META-INF files (e.g. iBooks display-options)', () => {
+    const issues = validatePrhFileLayout(
+      input({
+        ...conformantBaseline(),
+        zipPaths: [
+          'mimetype',
+          'META-INF/container.xml',
+          'META-INF/com.apple.ibooks.display-options.xml',
+          'EPUB/package.opf',
+        ],
       }),
     );
     expect(issues.some((i) => i.code === 'PRH-FILE-NAMING-NONSTANDARD')).toBe(false);
