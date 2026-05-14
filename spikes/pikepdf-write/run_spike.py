@@ -30,14 +30,20 @@ def run_verapdf(pdf_path: str) -> dict:
         output = result.stdout + result.stderr
         # Check isCompliant attribute in veraPDF XML output
         passed = 'isCompliant="true"' in output
-        # Extract only actual failed rule descriptions
-        failures = []
-        for line in output.split('\n'):
-            if 'status="failed"' in line:
-                failures.append(line.strip())
+        # Extract failed rule clauses. Capture ALL of them (not a cap of 10)
+        # so increment-over-increment clause progress on Issue #396 is
+        # measurable — with a 10-line cap you can't tell whether a fix
+        # removed a clause or just pushed it past the cutoff.
+        # Keep only <rule> lines (they carry clause/testNumber); drop the
+        # per-element <check status="failed"> noise.
+        failures = [
+            line.strip()
+            for line in output.split('\n')
+            if 'status="failed"' in line and '<rule ' in line
+        ]
         return {
             'passed':   passed,
-            'failures': failures[:10],  # cap at 10
+            'failures': failures,
             'raw':      output[:500],
         }
     except FileNotFoundError:
