@@ -159,16 +159,24 @@ public final class RunSpike {
 
     static Validation runVerapdf(File pdf) {
         String bin = System.getenv().getOrDefault("VERAPDF_PATH", "C:/verapdf/verapdf.bat");
-        // veraPDF can take 1–3 minutes on multi-megabyte tagged PDFs (PDFBox
-        // saves richer files than pikepdf, so 60s isn't enough). Override
-        // via VERAPDF_TIMEOUT_SEC for outlier docs.
+        // veraPDF emits ~150-200 KB of XML per doc — far larger than the OS
+        // pipe buffer (~64 KB on Linux). Reading the pipe AFTER waitFor()
+        // deadlocks: veraPDF blocks writing to a full pipe while we block in
+        // waitFor() not draining it. Redirect stdout+stderr to a temp file
+        // so there is no pipe to fill, then read the file once veraPDF exits.
+        // 300s is generous now that the pipe deadlock is fixed — veraPDF
+        // validates these docs in ~10-20s. Override via VERAPDF_TIMEOUT_SEC
+        // if a pathological doc ever needs longer.
         int timeoutSec = Integer.parseInt(
-            System.getenv().getOrDefault("VERAPDF_TIMEOUT_SEC", "600"));
+            System.getenv().getOrDefault("VERAPDF_TIMEOUT_SEC", "300"));
         Validation v = new Validation();
         v.failures = new ArrayList<>();
+        File reportFile = null;
         try {
+            reportFile = File.createTempFile("verapdf-", ".xml");
             ProcessBuilder pb = new ProcessBuilder(bin, "--flavour", "ua1", pdf.getAbsolutePath());
             pb.redirectErrorStream(true);
+            pb.redirectOutput(reportFile);
             Process p = pb.start();
             boolean finished = p.waitFor(timeoutSec, TimeUnit.SECONDS);
             if (!finished) {
@@ -177,7 +185,7 @@ public final class RunSpike {
                 v.failures.add("Validation timed out after " + timeoutSec + "s");
                 return v;
             }
-            String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            String output = Files.readString(reportFile.toPath(), StandardCharsets.UTF_8);
             v.raw = output.length() > 500 ? output.substring(0, 500) : output;
             v.passed = output.contains("isCompliant=\"true\"");
             for (String line : output.split("\n")) {
@@ -192,6 +200,11 @@ public final class RunSpike {
         } catch (Exception e) {
             v.passed = false;
             v.failures.add("Validation error: " + e.getMessage());
+        } finally {
+            if (reportFile != null) {
+                // Best-effort cleanup; a stale temp file shouldn't fail the run.
+                reportFile.delete();
+            }
         }
         return v;
     }
