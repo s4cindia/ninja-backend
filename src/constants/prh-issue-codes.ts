@@ -626,6 +626,55 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'JPEG file-size-to-pixel ratio suggests quality > 9 — PRH wants JPEG quality 8 (NOT max). Heuristic; cover.jpg is exempt because covers are deliberately kept at maximum quality',
   },
+
+  // ── Content-type markup (P6/PR5) ──────────────────────────────────────
+  // Publisher-gated and detect-only. Per Technical Guide §§ sidebars /
+  // textboxes / floated elements / poetry / speech bubbles / recipes.
+  // Each rule only activates when the relevant construct is present in
+  // the book — these are content-type-specific (cookbook / poetry /
+  // craft titles) so most books trip none of them.
+  'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING': {
+    code: 'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING',
+    severity: 'serious',
+    wcag: ['1.3.2'],
+    fixType: 'manual',
+    summary: 'A .sidebar_wrapper is not paired with a .maincontent_wrapper sibling — PRH requires the main-content wrapper as the immediate sibling so Kindle ET can collapse to a single column in reading order',
+  },
+  'PRH-MARKUP-TEXTBOX-USES-REAL-HEADER': {
+    code: 'PRH-MARKUP-TEXTBOX-USES-REAL-HEADER',
+    severity: 'moderate',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'A text box (.txt_box*) carries the document\'s first real <h*> heading — PRH requires box headers to use <div class="boxhead"> so they don\'t corrupt the page-level heading order',
+  },
+  'PRH-MARKUP-FLOATBOX-USES-REAL-HEADER': {
+    code: 'PRH-MARKUP-FLOATBOX-USES-REAL-HEADER',
+    severity: 'moderate',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'A floated box (.floatbox_left / .floatbox_right) contains a real <h*> heading — PRH requires <div class="boxhead"> inside floatboxes so heading-navigation isn\'t corrupted',
+  },
+  'PRH-MARKUP-POETRY-WRONG-STRUCTURE': {
+    code: 'PRH-MARKUP-POETRY-WRONG-STRUCTURE',
+    severity: 'serious',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'A .poetry_stanza uses <p> for its lines — PRH requires <div class="poetry_line"> (or .poetry_line_indented) so line breaks survive reflow. Detect-only: Style Guide forbids modifying poetry markup without instruction',
+  },
+  'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS': {
+    code: 'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'A speech-bubble <figure> uses a non-canonical class — PRH speech bubbles must use exactly speechbubble / speechbubble_r / speechbubble_bl / speechbubble_br so night-mode inversion works',
+  },
+  'PRH-MARKUP-METHOD-STEPS-NOT-OL': {
+    code: 'PRH-MARKUP-METHOD-STEPS-NOT-OL',
+    severity: 'moderate',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'A run of <p> paragraphs is numbered like recipe method steps (1. 2. 3.) but not marked up as an <ol> — PRH requires <ol class="method_steps">. Heuristic; only fires when the book already uses .method_steps elsewhere (cookbook signal)',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

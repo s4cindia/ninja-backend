@@ -35,6 +35,7 @@ import { validatePrhAcronyms } from './validators/acronym-validator';
 import { validatePrhCssConventions } from './validators/css-conventions-validator';
 import { validatePrhFileLayout } from './validators/file-layout-validator';
 import { validatePrhImageAssets } from './validators/image-assets-validator';
+import { validatePrhContentTypeMarkup } from './validators/content-type-markup-validator';
 import { getImprintRules } from './imprints';
 import sharp from 'sharp';
 import type { PublisherProfile } from '../types';
@@ -141,6 +142,7 @@ export async function runPrhUkValidators(
         ...validatePrhCssConventions(cssInput),
         ...validatePrhFileLayout(fileLayoutInput),
         ...validatePrhImageAssets(imageAssetsInput),
+        ...validatePrhContentTypeMarkup(perXhtmlInput),
       );
     }
 
