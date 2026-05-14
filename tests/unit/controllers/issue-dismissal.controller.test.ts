@@ -78,7 +78,23 @@ describe('IssueDismissalController.createDismissal', () => {
       message: 'msg',
       reason: 'FP',
     });
-    expect(jsonMock).toHaveBeenCalledWith({ dismissal: row });
+    expect(jsonMock).toHaveBeenCalledWith({ success: true, data: { dismissal: row } });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('defaults location to an empty string when omitted (location-less issues)', async () => {
+    mockReq.body = { code: 'RSC-005', message: 'epubcheck fatal error' };
+    mCreate.mockResolvedValue({ id: 'd1' });
+
+    await issueDismissalController.createDismissal(
+      mockReq as Request,
+      mockRes as Response,
+      next,
+    );
+
+    expect(mCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'RSC-005', location: '', message: 'epubcheck fatal error' }),
+    );
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -206,7 +222,7 @@ describe('IssueDismissalController.listDismissals', () => {
     );
 
     expect(mList).toHaveBeenCalledWith('job-1', { code: undefined });
-    expect(jsonMock).toHaveBeenCalledWith({ dismissals: rows });
+    expect(jsonMock).toHaveBeenCalledWith({ success: true, data: { dismissals: rows } });
   });
 
   it('passes the code query filter through to the service', async () => {

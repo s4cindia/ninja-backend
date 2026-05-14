@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     issueDismissal: { findMany: vi.fn() },
+    job: { findUnique: vi.fn() },
   },
 }));
 
@@ -28,6 +29,7 @@ import {
 } from '../../../../src/services/issues/issue-dismissal.service';
 
 const mFindMany = prisma.issueDismissal.findMany as ReturnType<typeof vi.fn>;
+const mJobFindUnique = prisma.job.findUnique as ReturnType<typeof vi.fn>;
 
 /** Build a stored dismissal row matching the given issue content. */
 function dismissalRow(
@@ -50,6 +52,9 @@ function dismissalRow(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the audited job is a normal job (no sourceJobId), so the
+  // dismissal lookup targets the job itself.
+  mJobFindUnique.mockResolvedValue({ input: {} });
 });
 
 afterEach(() => {
@@ -153,5 +158,32 @@ describe('attachDismissals', () => {
     mFindMany.mockResolvedValue([dismissalRow('CODE', 'loc', 'msg')]);
     const matched = await attachDismissals('job-1', []);
     expect(matched).toBe(0);
+  });
+
+  it('carries dismissals through a re-audit by resolving input.sourceJobId', async () => {
+    // The re-audit runs under a fresh job id; its `input.sourceJobId`
+    // points back at the job the operator dismissed against.
+    mJobFindUnique.mockResolvedValue({
+      input: { sourceJobId: 'original-job', auditType: 'reaudit' },
+    });
+    mFindMany.mockResolvedValue([
+      dismissalRow('PRH-HASHTAG-NOT-CAMEL-CASE', 'ch1.xhtml', 'hashtag #brand not camelCase'),
+    ]);
+
+    const issues: DismissableIssue[] = [
+      {
+        code: 'PRH-HASHTAG-NOT-CAMEL-CASE',
+        location: 'ch1.xhtml',
+        message: 'hashtag #brand not camelCase',
+      },
+    ];
+
+    const matched = await attachDismissals('reaudit-job', issues);
+
+    // The dismissal lookup must have targeted the SOURCE job, not the
+    // fresh re-audit job id.
+    expect(mFindMany).toHaveBeenCalledWith({ where: { jobId: 'original-job' } });
+    expect(matched).toBe(1);
+    expect(issues[0].dismissedAt).not.toBeNull();
   });
 });

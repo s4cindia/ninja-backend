@@ -27,15 +27,20 @@ import { AppError } from '../../utils/app-error';
 import type { IssueDismissal } from '@prisma/client';
 
 /**
- * Content-derived per-instance identity. `sha256(code|location|message)`.
- * Pure + exported so it can be unit-tested directly and reused by the
- * audit pipeline when matching freshly-produced issues to dismissals.
+ * Content-derived per-instance identity — `sha256` of the three
+ * fields. Pure + exported so it can be unit-tested directly and
+ * reused by the audit pipeline when matching freshly-produced issues
+ * to dismissals.
  *
- * The `|` separator is included so `code='A', location='BC'` and
- * `code='AB', location='C'` can't collide.
+ * The fields are serialised via `JSON.stringify([...])` rather than a
+ * delimiter join: a literal `|` (or any delimiter) appearing inside a
+ * `code` / `location` / `message` could otherwise make two different
+ * tuples serialise identically and collide. JSON-array serialisation
+ * is unambiguous because the values are individually quoted + escaped.
  */
 export function computeInstanceKey(code: string, location: string, message: string): string {
-  return createHash('sha256').update(`${code}|${location}|${message}`).digest('hex');
+  const canonical = JSON.stringify([code, location, message]);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export interface CreateDismissalInput {
@@ -139,6 +144,32 @@ export async function getDismissalMap(jobId: string): Promise<Map<string, IssueD
   return new Map(dismissals.map((d) => [d.instanceKey, d]));
 }
 
+/**
+ * Resolve the job a dismissal lookup should target.
+ *
+ * A re-audit creates a NEW job whose `input.sourceJobId` points back
+ * at the job the operator actually dismissed against (see
+ * `remediation.service.ts` `reauditEpub`). Dismissals live on the
+ * SOURCE job, so a re-audit must look them up there — otherwise the
+ * carry-through promise breaks and dismissed issues reappear.
+ *
+ * Returns `input.sourceJobId` when present, else the job itself.
+ */
+export async function resolveDismissalJobId(jobId: string): Promise<string> {
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+    select: { input: true },
+  });
+  const input = job?.input;
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const sourceJobId = (input as Record<string, unknown>).sourceJobId;
+    if (typeof sourceJobId === 'string' && sourceJobId.length > 0) {
+      return sourceJobId;
+    }
+  }
+  return jobId;
+}
+
 /** Minimal issue shape the dismissal-attachment step needs. */
 export interface DismissableIssue {
   code: string;
@@ -165,7 +196,10 @@ export async function attachDismissals(
   jobId: string,
   issues: DismissableIssue[],
 ): Promise<number> {
-  const dismissalMap = await getDismissalMap(jobId);
+  // A re-audit runs under a fresh job id; resolve back to the source
+  // job so dismissals made against the original carry through.
+  const dismissalJobId = await resolveDismissalJobId(jobId);
+  const dismissalMap = await getDismissalMap(dismissalJobId);
   let matched = 0;
   for (const issue of issues) {
     const instanceKey = computeInstanceKey(issue.code, issue.location ?? '', issue.message);

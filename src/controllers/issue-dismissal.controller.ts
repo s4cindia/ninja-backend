@@ -16,8 +16,9 @@
  * All endpoints require `authenticate`; each then verifies the user's
  * tenant owns the job (defence-in-depth on top of the middleware).
  *
- * Response contract is the one the FE (P2-P3 Prompt 9) was built
- * against: POST -> { dismissal }, GET -> { dismissals }, DELETE -> 204.
+ * Responses follow the repo-standard `{ success, data }` envelope:
+ * POST -> { success, data: { dismissal } }, GET -> { success, data:
+ * { dismissals } }, DELETE -> 204 no body.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -34,7 +35,11 @@ import {
 const createDismissalSchema = z
   .object({
     code: z.string().min(1, 'code is required'),
-    location: z.string().min(1, 'location is required'),
+    // location is optional and defaults to ''. Some audit issues are
+    // legitimately location-less (EPUBCheck fatal errors, package-level
+    // findings); `attachDismissals` already hashes a missing location
+    // as '', so the API must accept '' to produce the same instanceKey.
+    location: z.string().optional().default(''),
     message: z.string().min(1, 'message is required'),
     reason: z.string().max(280, 'reason must be 280 characters or fewer').optional(),
   })
@@ -86,7 +91,7 @@ class IssueDismissalController {
         message: validation.data.message,
         reason: validation.data.reason,
       });
-      res.json({ dismissal });
+      res.json({ success: true, data: { dismissal } });
     } catch (error) {
       next(error);
     }
@@ -127,7 +132,7 @@ class IssueDismissalController {
       logger.debug(
         `[issue-dismissal] listed ${dismissals.length} dismissal(s) for job ${jobId}`,
       );
-      res.json({ dismissals });
+      res.json({ success: true, data: { dismissals } });
     } catch (error) {
       next(error);
     }

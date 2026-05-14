@@ -10,6 +10,9 @@ vi.mock('../../../../src/lib/prisma', async () => {
         findMany: vi.fn(),
         delete: vi.fn(),
       },
+      job: {
+        findUnique: vi.fn(),
+      },
     },
     Prisma: actual.Prisma,
   };
@@ -26,12 +29,14 @@ import {
   deleteDismissal,
   listDismissals,
   getDismissalMap,
+  resolveDismissalJobId,
 } from '../../../../src/services/issues/issue-dismissal.service';
 
 const mCreate = prisma.issueDismissal.create as ReturnType<typeof vi.fn>;
 const mFindUnique = prisma.issueDismissal.findUnique as ReturnType<typeof vi.fn>;
 const mFindMany = prisma.issueDismissal.findMany as ReturnType<typeof vi.fn>;
 const mDelete = prisma.issueDismissal.delete as ReturnType<typeof vi.fn>;
+const mJobFindUnique = prisma.job.findUnique as ReturnType<typeof vi.fn>;
 
 function p2002(): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
@@ -73,10 +78,18 @@ describe('computeInstanceKey', () => {
     expect(a).not.toBe(b);
   });
 
-  it('does not collide across the field boundary (separator is significant)', () => {
+  it('does not collide across the field boundary', () => {
     // 'A' + 'BC' vs 'AB' + 'C' must NOT hash the same.
     const a = computeInstanceKey('A', 'BC', 'msg');
     const b = computeInstanceKey('AB', 'C', 'msg');
+    expect(a).not.toBe(b);
+  });
+
+  it('is delimiter-ambiguity safe — a literal pipe in a field cannot collide', () => {
+    // A naive `${code}|${location}|${message}` join would make these
+    // two tuples serialise identically; JSON-array serialisation must not.
+    const a = computeInstanceKey('A|B', 'loc', 'msg');
+    const b = computeInstanceKey('A', 'B|loc', 'msg');
     expect(a).not.toBe(b);
   });
 
@@ -230,5 +243,32 @@ describe('getDismissalMap', () => {
     mFindMany.mockResolvedValue([]);
     const map = await getDismissalMap('job-1');
     expect(map.size).toBe(0);
+  });
+});
+
+describe('resolveDismissalJobId', () => {
+  it('returns the job id itself when the job has no sourceJobId', async () => {
+    mJobFindUnique.mockResolvedValue({ input: { fileName: 'book.epub' } });
+    const resolved = await resolveDismissalJobId('job-1');
+    expect(resolved).toBe('job-1');
+  });
+
+  it('returns input.sourceJobId for a re-audit job', async () => {
+    mJobFindUnique.mockResolvedValue({
+      input: { sourceJobId: 'original-job', auditType: 'reaudit' },
+    });
+    const resolved = await resolveDismissalJobId('reaudit-job');
+    expect(resolved).toBe('original-job');
+  });
+
+  it('falls back to the job id when the job is not found', async () => {
+    mJobFindUnique.mockResolvedValue(null);
+    const resolved = await resolveDismissalJobId('job-1');
+    expect(resolved).toBe('job-1');
+  });
+
+  it('ignores a non-string / empty sourceJobId', async () => {
+    mJobFindUnique.mockResolvedValue({ input: { sourceJobId: '' } });
+    expect(await resolveDismissalJobId('job-1')).toBe('job-1');
   });
 });
