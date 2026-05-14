@@ -128,15 +128,18 @@ function stripComments(html: string): string {
 }
 
 /**
- * Count occurrences of a specific class TOKEN across the HTML. We
- * match `class="…"` attributes and split into whitespace-separated
- * tokens so `class="foo sidebar_wrapper bar"` counts once, and
- * `data-sidebar_wrapper` / partial substrings never match.
+ * Count elements carrying a specific class TOKEN. We scan real tag
+ * openings (`<tag …>`) and read the `class` attribute from within
+ * them, so literal `class="method_steps"` text in prose / code
+ * samples is NOT counted, and `data-method_steps` / partial
+ * substrings never match.
  */
 function countClassTokenOccurrences(html: string, token: string): number {
   let count = 0;
-  for (const m of html.matchAll(/(?:^|\s)class\s*=\s*["']([^"']*)["']/gi)) {
-    const tokens = m[1].split(/\s+/).filter(Boolean);
+  for (const m of html.matchAll(/<[a-z][a-z0-9]*\b([^>]*)>/gi)) {
+    const classMatch = m[1].match(/(?:^|\s)class\s*=\s*["']([^"']*)["']/i);
+    if (!classMatch) continue;
+    const tokens = classMatch[1].split(/\s+/).filter(Boolean);
     if (tokens.includes(token)) count++;
   }
   return count;
@@ -205,7 +208,9 @@ function findNonCanonicalSpeechbubbleClasses(html: string): string[] {
     if (!classMatch) continue;
     const tokens = classMatch[1].split(/\s+/).filter(Boolean);
     for (const token of tokens) {
-      if (!/speech[-_]?bubble/i.test(token)) continue;
+      // Anchor to the start of the token so `nonspeechbubble` or
+      // `foo-speechbubble-helper` don't false-match.
+      if (!/^speech[-_]?bubble/i.test(token)) continue;
       if (!CANONICAL_SPEECHBUBBLE_CLASSES.has(token)) {
         bad.add(token);
       }
