@@ -220,33 +220,35 @@ function findMissingFixedNames(input: PrhFileLayoutInput): string[] {
     missing.push(`package.opf (actual: ${input.opfPath})`);
   }
 
-  // nav.xhtml — the manifest item with properties="nav" must have
-  // basename nav.xhtml.
-  const navEntry = input.manifestEntries.find((e) => e.properties.includes('nav'));
-  if (navEntry) {
-    if (basename(navEntry.path).toLowerCase() !== 'nav.xhtml') {
-      missing.push(`nav.xhtml (actual: ${navEntry.path})`);
-    }
-  } else {
+  // nav.xhtml — pass if ANY manifest item with properties="nav" has
+  // basename nav.xhtml. EPUB 3 specifies exactly one such item, but a
+  // non-conformant input could carry more than one; matching on "any"
+  // avoids order-dependent false negatives.
+  const navEntries = input.manifestEntries.filter((e) => e.properties.includes('nav'));
+  if (navEntries.length === 0) {
     missing.push('nav.xhtml (no manifest item with properties="nav")');
+  } else if (!navEntries.some((e) => basename(e.path).toLowerCase() === 'nav.xhtml')) {
+    missing.push(`nav.xhtml (actual: ${navEntries[0].path})`);
   }
 
   // toc.ncx — only when EPUB2 compat is in use.
   if (input.requiresNcx) {
-    const ncxEntry = input.manifestEntries.find((e) => e.mediaType === 'application/x-dtbncx+xml');
-    if (!ncxEntry) {
+    const ncxEntries = input.manifestEntries.filter(
+      (e) => e.mediaType === 'application/x-dtbncx+xml',
+    );
+    if (ncxEntries.length === 0) {
       missing.push('toc.ncx (spine declares toc="ncx" but no NCX manifest item)');
-    } else if (basename(ncxEntry.path).toLowerCase() !== 'toc.ncx') {
-      missing.push(`toc.ncx (actual: ${ncxEntry.path})`);
+    } else if (!ncxEntries.some((e) => basename(e.path).toLowerCase() === 'toc.ncx')) {
+      missing.push(`toc.ncx (actual: ${ncxEntries[0].path})`);
     }
   }
 
   // cover.<ext> — image (via properties="cover-image").
-  const coverImage = input.manifestEntries.find((e) => e.properties.includes('cover-image'));
-  if (!coverImage) {
+  const coverImages = input.manifestEntries.filter((e) => e.properties.includes('cover-image'));
+  if (coverImages.length === 0) {
     missing.push('cover.<ext> (no manifest item with properties="cover-image")');
-  } else if (!/^cover\.[a-z0-9]+$/i.test(basename(coverImage.path))) {
-    missing.push(`cover.<ext> image (actual: ${coverImage.path})`);
+  } else if (!coverImages.some((e) => /^cover\.[a-z0-9]+$/i.test(basename(e.path)))) {
+    missing.push(`cover.<ext> image (actual: ${coverImages[0].path})`);
   }
 
   return missing;
