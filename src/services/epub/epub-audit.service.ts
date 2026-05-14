@@ -16,6 +16,7 @@ import { captureIssueSnapshot, compareSnapshots, clearSnapshots } from '../../ut
 import { getFixType } from '../../constants/fix-classification';
 import { s3Service } from '../s3.service';
 import { artifactService } from '../artifact.service';
+import { attachDismissals } from '../issues/issue-dismissal.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,6 +76,13 @@ interface AccessibilityIssue {
   category?: string;
   element?: string;
   context?: string;
+  // Per-instance dismissal metadata. Populated at the end of an audit
+  // run from the IssueDismissal table when the issue's content-derived
+  // instanceKey matches an operator dismissal. Dismissed issues are
+  // STILL returned — the FE renders them at reduced opacity rather
+  // than hiding them, so the operator can see what they've dismissed.
+  dismissedAt?: string | null;
+  dismissedBy?: string | null;
 }
 
 interface ScoreBreakdown {
@@ -368,6 +376,26 @@ class EpubAuditService {
       captureIssueSnapshot('4_AFTER_DEDUPLICATION', deduplicatedIssues as unknown as Record<string, unknown>[], true);
 
       compareSnapshots('1_AFTER_COMBINE_EPUBCHECK_ACE', '4_AFTER_DEDUPLICATION');
+
+      // Attach per-instance dismissal metadata. An operator may have
+      // dismissed specific issue instances on a previous run; because
+      // `instanceKey` is content-derived, the same issue content
+      // re-hashes to the same key and the dismissal carries through.
+      // Dismissed issues are STILL returned — the FE renders them at
+      // reduced opacity rather than hiding them. Best-effort: a lookup
+      // failure must never break the audit.
+      try {
+        const matched = await attachDismissals(jobId, deduplicatedIssues);
+        if (matched > 0) {
+          logger.info(
+            `[EPUB Audit] Attached dismissal metadata: ${matched}/${deduplicatedIssues.length} issue(s) carry an active dismissal`,
+          );
+        }
+      } catch (dismissalErr) {
+        logger.warn(
+          `[EPUB Audit] Failed to attach dismissal metadata: ${dismissalErr instanceof Error ? dismissalErr.message : 'Unknown error'}`,
+        );
+      }
 
       logger.info('\n📊 AUDIT ISSUE FLOW SUMMARY:');
       logger.info(`  EPUBCheck+ACE combined: ${combinedIssues.length - (deduplicatedIssues.filter(i => i.source === 'js-auditor').length)}`);

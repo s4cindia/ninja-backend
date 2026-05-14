@@ -129,12 +129,41 @@ model Job {
   remediationChanges RemediationChange[]
   comparisonReport   ComparisonReport?
   editorialDocument  EditorialDocument?
+  issueDismissals    IssueDismissal[]
 
   @@index([tenantId])
   @@index([status])
   @@index([userId])
   @@index([createdAt])
   @@index([isBatchAcr])
+}
+
+/// Per-instance audit-issue dismissal. An operator marks a single
+/// issue instance as a known false-positive / accepted exception;
+/// the dismissal carries through re-audits automatically because
+/// `instanceKey` is content-derived (sha256 of code|location|message).
+/// Per-job blast radius — cascades on job delete.
+model IssueDismissal {
+  id          String   @id @default(uuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  // Per-instance identity. instanceKey is sha256(code + location +
+  // message) so the same content across re-audits hashes to the same
+  // key — that's how dismissals carry through automatically.
+  code        String
+  location    String
+  instanceKey String
+
+  // Audit trail. dismissedBy is the userId from req.user; reason is
+  // operator-supplied free text (max 280 chars to discourage essays).
+  dismissedBy String
+  dismissedAt DateTime @default(now())
+  reason      String?  @db.VarChar(280)
+
+  @@unique([jobId, instanceKey])
+  @@index([jobId])
+  @@index([code])
 }
 
 model AcrVersion {
