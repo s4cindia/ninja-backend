@@ -61,7 +61,11 @@ export function validatePrhContentTypeMarkup(input: PrhPerXhtmlInput): PrhValida
   const cookbookSignal = methodStepsCount >= METHOD_STEPS_COOKBOOK_THRESHOLD;
 
   for (const file of input.xhtmlFiles) {
-    const body = stripHead(file.content);
+    // Strip <head> and HTML comments before any regex scan — commented
+    // -out markup (`<!-- <h1>… -->`, `<!-- class="method_steps" -->`)
+    // is still text to a regex and would otherwise raise false findings
+    // or even flip the cookbook heuristic on.
+    const body = stripComments(stripHead(file.content));
 
     // 1. Sidebar / maincontent pairing.
     if (hasSidebarWithoutMaincontentSibling(body)) {
@@ -117,6 +121,10 @@ const REAL_HEADER_REGEX = /<h[1-6]\b/i;
 
 function stripHead(html: string): string {
   return html.replace(/<head\b[^>]*>[\s\S]*?<\/head>/i, '');
+}
+
+function stripComments(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, '');
 }
 
 /**
@@ -206,11 +214,16 @@ function findNonCanonicalSpeechbubbleClasses(html: string): string[] {
   return [...bad].sort();
 }
 
-/** Count elements anywhere in the book carrying `class="…method_steps…"`. */
+/** Count elements anywhere in the book carrying `class="…method_steps…"`.
+ *  Comments + <head> stripped first so a commented-out method_steps
+ *  reference can't flip the cookbook heuristic on. */
 function countMethodStepsElements(files: PrhXhtmlFile[]): number {
   let total = 0;
   for (const file of files) {
-    total += countClassTokenOccurrences(file.content, 'method_steps');
+    total += countClassTokenOccurrences(
+      stripComments(stripHead(file.content)),
+      'method_steps',
+    );
   }
   return total;
 }
@@ -221,13 +234,24 @@ function countMethodStepsElements(files: PrhXhtmlFile[]): number {
  * `<p>…</p>` elements in document order and track the longest run of
  * consecutively-numbered ones; a non-numbered <p> resets the run.
  *
+ * The run only counts paragraphs that are genuine ADJACENT siblings —
+ * if any non-whitespace markup sits between two numbered `<p>` tags
+ * (e.g. `</div><div>` wrappers, an image, a heading), the run resets.
+ * Numbered paragraphs scattered across unrelated sections shouldn't
+ * be mistaken for a method-steps list.
+ *
  * Conservative by design — short numbered runs (2 items) are common
  * in ordinary prose, and this only runs at all when the book-wide
  * cookbook signal is set.
  */
 function hasNumberedParagraphRun(body: string): boolean {
   let run = 0;
+  let previousParagraphEnd: number | null = null;
   for (const m of body.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)) {
+    if (previousParagraphEnd !== null) {
+      const between = body.slice(previousParagraphEnd, m.index).trim();
+      if (between !== '') run = 0;
+    }
     const text = stripTags(m[1]).trim();
     if (/^\d+\./.test(text)) {
       run++;
@@ -235,6 +259,7 @@ function hasNumberedParagraphRun(body: string): boolean {
     } else {
       run = 0;
     }
+    previousParagraphEnd = m.index + m[0].length;
   }
   return false;
 }

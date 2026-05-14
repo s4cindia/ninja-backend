@@ -241,6 +241,15 @@ describe('validatePrhContentTypeMarkup — PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS',
     expect(issues.some((i) => i.code === 'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS')).toBe(false);
   });
 
+  it('does NOT emit for a non-canonical speechbubble class inside an HTML comment', () => {
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        file('ch1.xhtml', '<!-- <figure class="speechbubble_alt"><p>draft</p></figure> -->'),
+      ]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS')).toBe(false);
+  });
+
   it('does NOT emit for a speechbubble* class on a non-<figure> element', () => {
     // A CSS-helper class or wrapper div carrying a speechbubble-like
     // token must not trip the rule — PRH speech bubbles are always
@@ -296,6 +305,41 @@ describe('validatePrhContentTypeMarkup — PRH-MARKUP-METHOD-STEPS-NOT-OL', () =
         file('recipe2.xhtml', '<ol class="method_steps"><li>step</li></ol>'),
         file('recipe3.xhtml', '<ol class="method_steps"><li>step</li></ol>'),
         file('recipe4.xhtml', '<p>1. Only one numbered.</p><p>Plain follow-up paragraph.</p>'),
+      ]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-METHOD-STEPS-NOT-OL')).toBe(false);
+  });
+
+  it('does NOT emit when numbered paragraphs are split across wrappers (not adjacent siblings)', () => {
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        file('recipe1.xhtml', '<ol class="method_steps"><li>step</li></ol>'),
+        file('recipe2.xhtml', '<ol class="method_steps"><li>step</li></ol>'),
+        file('recipe3.xhtml', '<ol class="method_steps"><li>step</li></ol>'),
+        // Each numbered <p> is isolated in its own wrapper div — not a
+        // contiguous run, so the adjacency guard resets between them.
+        file(
+          'recipe4.xhtml',
+          '<div><p>1. First.</p></div><div><p>2. Second.</p></div><div><p>3. Third.</p></div>',
+        ),
+      ]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-METHOD-STEPS-NOT-OL')).toBe(false);
+  });
+
+  it('does NOT let a commented-out method_steps reference flip the cookbook signal', () => {
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        // The only "method_steps" tokens are inside HTML comments — the
+        // cookbook signal must stay off, so the numbered <p> run below
+        // is treated as ordinary prose.
+        file('a.xhtml', '<!-- <ol class="method_steps"></ol> -->'),
+        file('b.xhtml', '<!-- <ol class="method_steps"></ol> -->'),
+        file('c.xhtml', '<!-- <ol class="method_steps"></ol> -->'),
+        file(
+          'd.xhtml',
+          '<p>1. First clause.</p><p>2. Second clause.</p><p>3. Third clause.</p>',
+        ),
       ]),
     );
     expect(issues.some((i) => i.code === 'PRH-MARKUP-METHOD-STEPS-NOT-OL')).toBe(false);
