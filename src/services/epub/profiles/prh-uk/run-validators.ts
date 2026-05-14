@@ -34,13 +34,16 @@ import { validatePrhHashtags } from './validators/hashtag-validator';
 import { validatePrhAcronyms } from './validators/acronym-validator';
 import { validatePrhCssConventions } from './validators/css-conventions-validator';
 import { validatePrhFileLayout } from './validators/file-layout-validator';
+import { validatePrhImageAssets } from './validators/image-assets-validator';
 import { getImprintRules } from './imprints';
+import sharp from 'sharp';
 import type { PublisherProfile } from '../types';
 import type {
   PrhValidatorIssue,
   PrhXhtmlFile,
   PrhCssFile,
   PrhManifestEntry,
+  PrhImageMetadata,
 } from './validators/types';
 
 /**
@@ -115,6 +118,14 @@ export async function runPrhUkValidators(
       publisherProfile?.publisher === 'PRH-UK'
       && publisherProfile.confidence !== 'low';
     if (isPrhAtMediumConfidence) {
+      // Image metadata is read lazily here — `readImageMetadata` runs
+      // sharp once per manifested image, so we only pay that cost when
+      // the P3 gate is open and `validatePrhImageAssets` will actually
+      // consume the result.
+      const imageAssetsInput = {
+        ...perXhtmlInput,
+        images: await readImageMetadata(zip, manifestEntries),
+      };
       issues.push(
         ...validatePrhEpubTypePlacement(perXhtmlInput),
         ...validatePrhDocAriaRoles(perXhtmlInput),
@@ -129,6 +140,7 @@ export async function runPrhUkValidators(
         ...validatePrhAcronyms(perXhtmlInput),
         ...validatePrhCssConventions(cssInput),
         ...validatePrhFileLayout(fileLayoutInput),
+        ...validatePrhImageAssets(imageAssetsInput),
       );
     }
 
@@ -207,6 +219,112 @@ async function readNavDoc(
     }
   }
   return null;
+}
+
+/**
+ * Cap total pixels for the palette-probe fast path. The PNG-vs-JPEG
+ * heuristic only fires below 800px width AND ≤256 distinct colours,
+ * so the typical line-drawing is well under this ceiling. Bound to
+ * stop a very tall narrow image (e.g. 800×100000) from forcing a
+ * multi-megapixel raw decode.
+ */
+const MAX_PALETTE_PROBE_PIXELS = 800 * 1200;
+
+/**
+ * Normalise sharp's `density` field to a trustworthy value or null.
+ *
+ * sharp returns `density: 72` even for JPEGs that carry no embedded
+ * density metadata at all — that's libvips' default, not a signal
+ * from the source. We can't distinguish "stripped EXIF" from "EXIF
+ * present at 72dpi" given sharp's API alone, so we treat any 72dpi
+ * reading as ambiguous and yield null rather than fire a false
+ * `PRH-IMG-DPI-TOO-LOW`. Genuine 72dpi sources will be silently
+ * accepted; this is an explicit trade-off favouring zero false
+ * positives on an advisory rule.
+ */
+function extractDensity(rawDensity: unknown): number | null {
+  if (typeof rawDensity !== 'number' || rawDensity <= 0) return null;
+  if (rawDensity === 72) return null;
+  return rawDensity;
+}
+
+/**
+ * Run sharp once per manifested image and build the per-image
+ * metadata the image-assets validator consumes. The validator is
+ * synchronous + pure; all sharp I/O lives here.
+ *
+ * Per-image failures are caught locally — a corrupt image or one
+ * sharp can't decode produces a `null`-fields entry so the validator
+ * simply skips it rather than aborting the whole audit.
+ *
+ * `colorCount` is intentionally NOT computed for images wider than
+ * 800px: the PNG-vs-JPEG heuristic only fires below that width, so
+ * computing the palette for a 4000px hero illustration would be
+ * wasted work.
+ */
+async function readImageMetadata(
+  zip: JSZip,
+  manifestEntries: PrhManifestEntry[],
+): Promise<PrhImageMetadata[]> {
+  const out: PrhImageMetadata[] = [];
+  for (const entry of manifestEntries) {
+    if (!entry.mediaType.startsWith('image/')) continue;
+    const zipFile = zip.file(entry.path);
+    if (!zipFile) continue;
+    try {
+      const buf = await zipFile.async('nodebuffer');
+      const isCover = entry.properties.includes('cover-image');
+      const meta = await sharp(buf).metadata();
+      let colorCount: number | null = null;
+      if (
+        entry.mediaType === 'image/jpeg'
+        && typeof meta.width === 'number'
+        && typeof meta.height === 'number'
+        && meta.width <= 800
+        // Guardrail: cap total pixels examined to keep palette probing
+        // bounded — even within the 800px width gate, a very tall image
+        // could otherwise decode a multi-MB raw buffer.
+        && meta.width * meta.height <= MAX_PALETTE_PROBE_PIXELS
+      ) {
+        try {
+          // sharp's `stats.channels` doesn't expose distinct colour
+          // count directly. Use raw pixels + a Set for small images.
+          const { data, info } = await sharp(buf)
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          const seen = new Set<number>();
+          const stride = info.channels;
+          for (let i = 0; i + stride <= data.length; i += stride) {
+            // Pack RGB(A) into a single 32-bit integer for the Set.
+            const r = data[i];
+            const g = stride >= 2 ? data[i + 1] : 0;
+            const b = stride >= 3 ? data[i + 2] : 0;
+            seen.add((r << 16) | (g << 8) | b);
+            if (seen.size > 256) break;
+          }
+          colorCount = seen.size;
+        } catch {
+          colorCount = null;
+        }
+      }
+      out.push({
+        path: entry.path,
+        mediaType: entry.mediaType,
+        width: typeof meta.width === 'number' ? meta.width : null,
+        height: typeof meta.height === 'number' ? meta.height : null,
+        density: extractDensity(meta.density),
+        colorSpace: typeof meta.space === 'string' ? meta.space : null,
+        colorCount,
+        sizeBytes: buf.length,
+        isCover,
+      });
+    } catch (err) {
+      logger.warn(
+        `[PRH image metadata] sharp failed for ${entry.path}; skipping: ${err instanceof Error ? err.message : 'unknown'}`,
+      );
+    }
+  }
+  return out;
 }
 
 /**

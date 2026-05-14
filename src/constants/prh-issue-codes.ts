@@ -585,6 +585,47 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'EPUB is missing a required fixed-name file (package.opf / toc.ncx when EPUB2-compat / nav.xhtml / cover.<ext>) — Kindle popup links, NCX fallback navigation and the cover-image surface all resolve by canonical filename',
   },
+
+  // ── Image assets (P6/PR3) ─────────────────────────────────────────────
+  // Publisher-gated and detect-only. Per Technical Guide §§11-12 image
+  // asset rules: canonical capture sizes per CSS class, ≥300dpi, sRGB,
+  // PNG-8 for line-drawings, JPEG quality cap. Operator fixes in their
+  // image-prep pipeline; auto-resize lives in P7 if/when demanded.
+  'PRH-IMG-CAPTURE-SIZE-WRONG': {
+    code: 'PRH-IMG-CAPTURE-SIZE-WRONG',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Image width does not match its CSS-class capture size (e.g. .portrait_large requires 1900px ±5%) — Technical Guide §11 per-class capture sizes',
+  },
+  'PRH-IMG-DPI-TOO-LOW': {
+    code: 'PRH-IMG-DPI-TOO-LOW',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Image density is below the PRH 300dpi minimum — Technical Guide §11. Images with no embedded DPI metadata are NOT flagged here (EXIF-stripped sources are common)',
+  },
+  'PRH-IMG-COLORSPACE-NOT-SRGB': {
+    code: 'PRH-IMG-COLORSPACE-NOT-SRGB',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Image color space is not sRGB — Technical Guide §11 requires all images to be converted to sRGB so Kindle / KFX rendering is colour-accurate',
+  },
+  'PRH-IMG-PNG-EXPECTED-JPEG': {
+    code: 'PRH-IMG-PNG-EXPECTED-JPEG',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'JPEG image is a low-resolution low-colour line drawing / schematic — PRH recommends PNG-8 for line drawings and text-replacement glyphs. Heuristic: width ≤ 800 AND ≤256 distinct colours',
+  },
+  'PRH-IMG-JPEG-QUALITY-SUSPECT': {
+    code: 'PRH-IMG-JPEG-QUALITY-SUSPECT',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'JPEG file-size-to-pixel ratio suggests quality > 9 — PRH wants JPEG quality 8 (NOT max). Heuristic; cover.jpg is exempt because covers are deliberately kept at maximum quality',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

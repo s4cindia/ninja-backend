@@ -99,3 +99,45 @@ export interface PrhFileLayoutInput extends PrhValidatorInput {
    *  becomes required when this flag is set). */
   requiresNcx: boolean;
 }
+
+/**
+ * Pre-computed metadata for one image asset. The orchestrator runs
+ * sharp once per image and passes the resulting metadata to the
+ * validator so the validator stays pure / synchronous / cheap.
+ *
+ * Any field is `null` when sharp couldn't determine it — for
+ * example, sharp returns `density: 0` (mapped here to `null`) when
+ * the source EXIF has been stripped; we do NOT emit
+ * `PRH-IMG-DPI-TOO-LOW` on `null` because stripped EXIF is a common
+ * production-pipeline artefact, not a quality signal.
+ */
+export interface PrhImageMetadata {
+  /** Zip-relative path of the image. */
+  path: string;
+  /** OPF manifest media-type (lowercased). */
+  mediaType: string;
+  /** Image width in pixels. */
+  width: number | null;
+  /** Image height in pixels. */
+  height: number | null;
+  /** Density (DPI) — null when EXIF strips the value; rule
+   *  intentionally skips emission on null to avoid noise on
+   *  EXIF-stripped sources. */
+  density: number | null;
+  /** Color space as reported by sharp ('srgb' / 'rgb16' / 'cmyk' / ...). */
+  colorSpace: string | null;
+  /** Distinct colour count for the PNG-vs-JPEG heuristic; null when
+   *  unavailable (computing it is non-trivial for very large images,
+   *  the orchestrator may decide to skip it). */
+  colorCount: number | null;
+  /** Uncompressed image file size in bytes. */
+  sizeBytes: number;
+  /** True when this image is the manifest cover (properties="cover-image"). */
+  isCover: boolean;
+}
+
+/** Inputs the image-assets validator reads. */
+export interface PrhImageAssetsInput extends PrhPerXhtmlInput {
+  /** Pre-computed metadata for every image asset in the manifest. */
+  images: PrhImageMetadata[];
+}
