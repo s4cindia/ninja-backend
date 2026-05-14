@@ -159,17 +159,22 @@ public final class RunSpike {
 
     static Validation runVerapdf(File pdf) {
         String bin = System.getenv().getOrDefault("VERAPDF_PATH", "C:/verapdf/verapdf.bat");
+        // veraPDF can take 1–3 minutes on multi-megabyte tagged PDFs (PDFBox
+        // saves richer files than pikepdf, so 60s isn't enough). Override
+        // via VERAPDF_TIMEOUT_SEC for outlier docs.
+        int timeoutSec = Integer.parseInt(
+            System.getenv().getOrDefault("VERAPDF_TIMEOUT_SEC", "600"));
         Validation v = new Validation();
         v.failures = new ArrayList<>();
         try {
             ProcessBuilder pb = new ProcessBuilder(bin, "--flavour", "ua1", pdf.getAbsolutePath());
             pb.redirectErrorStream(true);
             Process p = pb.start();
-            boolean finished = p.waitFor(60, TimeUnit.SECONDS);
+            boolean finished = p.waitFor(timeoutSec, TimeUnit.SECONDS);
             if (!finished) {
                 p.destroyForcibly();
                 v.passed = false;
-                v.failures.add("Validation timed out");
+                v.failures.add("Validation timed out after " + timeoutSec + "s");
                 return v;
             }
             String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

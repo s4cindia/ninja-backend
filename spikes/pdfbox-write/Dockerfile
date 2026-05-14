@@ -31,33 +31,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /tmp/aws /tmp/aws.zip \
     && rm -rf /var/lib/apt/lists/*
 
-# veraPDF — installed from the same official tarball the main backend
-# image uses (matches /opt/verapdf/verapdf layout). The argument-style
-# installer needs xvfb/headless awareness, so use the package's own
-# installer-with-script payload.
-RUN mkdir -p /opt/verapdf \
-    && curl -fsSL "https://software.verapdf.org/rel/1.26/verapdf-greenfield-1.26.2-installer.zip" -o /tmp/verapdf.zip \
+# veraPDF — aligned with scripts/install-verapdf.sh in the main backend
+# image: use the rolling installer URL and the bundled verapdf-install
+# shell wrapper (rather than calling the IzPack jar directly), so panel
+# IDs and pack indices stay in sync with the installer's own assumptions.
+COPY verapdf-auto-install.xml /tmp/verapdf-auto-install.xml
+RUN set -eux \
+    && curl -fsSL --retry 3 "https://software.verapdf.org/rel/verapdf-installer.zip" -o /tmp/verapdf.zip \
     && unzip -q /tmp/verapdf.zip -d /tmp/verapdf-installer \
-    && INSTALLER_JAR=$(find /tmp/verapdf-installer -name 'verapdf-installer.jar' | head -1) \
-    && cat > /tmp/auto-install.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<AutomatedInstallation langpack="eng">
-    <com.izforge.izpack.panels.target.TargetPanel id="install.dir">
-        <installpath>/opt/verapdf</installpath>
-    </com.izforge.izpack.panels.target.TargetPanel>
-    <com.izforge.izpack.panels.packs.PacksPanel id="sdk.pack.select">
-        <pack index="0" name="veraPDF GUI" selected="true"/>
-        <pack index="1" name="veraPDF Mac and *nix Scripts" selected="true"/>
-        <pack index="2" name="veraPDF Validation model" selected="true"/>
-        <pack index="3" name="veraPDF Documentation" selected="false"/>
-        <pack index="4" name="veraPDF Sample Plugins" selected="false"/>
-    </com.izforge.izpack.panels.packs.PacksPanel>
-    <com.izforge.izpack.panels.install.InstallPanel id="install"/>
-    <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
-</AutomatedInstallation>
-EOF
-    && java -jar "$INSTALLER_JAR" /tmp/auto-install.xml \
-    && rm -rf /tmp/verapdf-installer /tmp/verapdf.zip /tmp/auto-install.xml
+    && VERAPDF_DIR=$(ls -d /tmp/verapdf-installer/verapdf-greenfield-*/ | head -1) \
+    && test -n "$VERAPDF_DIR" || { echo "verapdf-greenfield-* dir not found in installer zip"; find /tmp/verapdf-installer -maxdepth 2 -type d; exit 1; } \
+    && "$VERAPDF_DIR/verapdf-install" /tmp/verapdf-auto-install.xml \
+    && /opt/verapdf/verapdf --version \
+    && rm -rf /tmp/verapdf-installer /tmp/verapdf.zip /tmp/verapdf-auto-install.xml
 
 ENV VERAPDF_PATH=/opt/verapdf/verapdf
 
