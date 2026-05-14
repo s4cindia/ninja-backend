@@ -33,9 +33,15 @@ import { validatePrhInlineLang } from './validators/inline-lang-validator';
 import { validatePrhHashtags } from './validators/hashtag-validator';
 import { validatePrhAcronyms } from './validators/acronym-validator';
 import { validatePrhCssConventions } from './validators/css-conventions-validator';
+import { validatePrhFileLayout } from './validators/file-layout-validator';
 import { getImprintRules } from './imprints';
 import type { PublisherProfile } from '../types';
-import type { PrhValidatorIssue, PrhXhtmlFile, PrhCssFile } from './validators/types';
+import type {
+  PrhValidatorIssue,
+  PrhXhtmlFile,
+  PrhCssFile,
+  PrhManifestEntry,
+} from './validators/types';
 
 /**
  * Run all PRH UK validators against an EPUB buffer.
@@ -65,6 +71,9 @@ export async function runPrhUkValidators(
     const navDoc = await readNavDoc(zip, opf.path, opf.content);
     const xhtmlFiles = await readAllXhtml(zip);
     const cssFiles = await readAllCss(zip, opf.path, opf.content);
+    const manifestEntries = await readManifestEntries(zip, opf.path, opf.content);
+    const zipPaths = Object.keys(zip.files);
+    const requiresNcx = /\<spine\b[^>]*\btoc\s*=\s*["']ncx["']/i.test(opf.content);
     const bookTitle = readDcTitle(opf.content);
 
     const opfInput = { opfContent: opf.content, opfPath: opf.path };
@@ -81,6 +90,12 @@ export async function runPrhUkValidators(
     const cssInput = {
       ...perXhtmlInput,
       cssFiles,
+    };
+    const fileLayoutInput = {
+      ...opfInput,
+      manifestEntries,
+      zipPaths,
+      requiresNcx,
     };
 
     const issues: PrhValidatorIssue[] = [
@@ -113,6 +128,7 @@ export async function runPrhUkValidators(
         ...validatePrhHashtags(perXhtmlInput),
         ...validatePrhAcronyms(perXhtmlInput),
         ...validatePrhCssConventions(cssInput),
+        ...validatePrhFileLayout(fileLayoutInput),
       );
     }
 
@@ -191,6 +207,49 @@ async function readNavDoc(
     }
   }
   return null;
+}
+
+/**
+ * Walk the OPF manifest and resolve every item into a
+ * `PrhManifestEntry`. Sizes come from JSZip's already-loaded entry
+ * table when available (we use `async('uint8array').then(u => u.length)`
+ * because JSZip doesn't expose a stable public sync size accessor;
+ * decompression is one-time and cheap on the typical EPUB).
+ */
+async function readManifestEntries(
+  zip: JSZip,
+  opfPath: string,
+  opfContent: string,
+): Promise<PrhManifestEntry[]> {
+  const manifestMatch = opfContent.match(/<manifest\b[^>]*>([\s\S]*?)<\/manifest>/i);
+  if (!manifestMatch) return [];
+
+  const out: PrhManifestEntry[] = [];
+  for (const item of manifestMatch[1].matchAll(/<item\b([^>]*)\/?>/gi)) {
+    const attrs = item[1];
+    const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+    const mediaTypeMatch = attrs.match(/\bmedia-type\s*=\s*["']([^"']+)["']/i);
+    if (!hrefMatch || !mediaTypeMatch) continue;
+    const propsMatch = attrs.match(/\bproperties\s*=\s*["']([^"']+)["']/i);
+    const itemPath = resolveOpfRelative(opfPath, hrefMatch[1]);
+    let sizeBytes: number | null = null;
+    const zipEntry = zip.file(itemPath);
+    if (zipEntry) {
+      try {
+        const u = await zipEntry.async('uint8array');
+        sizeBytes = u.length;
+      } catch {
+        sizeBytes = null;
+      }
+    }
+    out.push({
+      path: itemPath,
+      mediaType: mediaTypeMatch[1].toLowerCase(),
+      properties: propsMatch ? propsMatch[1].toLowerCase().split(/\s+/).filter(Boolean) : [],
+      sizeBytes,
+    });
+  }
+  return out;
 }
 
 /**

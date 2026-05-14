@@ -74,3 +74,28 @@ export interface PrhCssConventionsInput extends PrhPerXhtmlInput {
   /** Every CSS file referenced by the manifest. */
   cssFiles: PrhCssFile[];
 }
+
+/** One manifest item resolved into a zip path + media type. */
+export interface PrhManifestEntry {
+  /** Resolved zip-relative path. */
+  path: string;
+  /** OPF media-type attribute (lowercased). */
+  mediaType: string;
+  /** Manifest item `properties` tokens, lowercased + split on whitespace. */
+  properties: string[];
+  /** Uncompressed size in bytes. May be `null` when the entry is
+   *  manifested but absent from the zip (a separate concern handled
+   *  by epubcheck). */
+  sizeBytes: number | null;
+}
+
+/** Inputs the file-layout validator reads. */
+export interface PrhFileLayoutInput extends PrhValidatorInput {
+  /** Resolved manifest entries with sizes. */
+  manifestEntries: PrhManifestEntry[];
+  /** Every zip entry path (for dir-layout + fixed-name checks). */
+  zipPaths: string[];
+  /** True when the spine declares `toc="ncx"` (EPUB2 compat — toc.ncx
+   *  becomes required when this flag is set). */
+  requiresNcx: boolean;
+}

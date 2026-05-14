@@ -543,6 +543,48 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'EPUB contains 100+ inline style="…" attributes across all XHTML — book-wide pattern of inline styles; PRH demonstration carve-out (one per book) does not apply at this scale',
   },
+
+  // ── File / directory / size (P6/PR2) ──────────────────────────────────
+  // Publisher-gated and detect-only. Per Technical Guide §3 + §15.
+  // Renaming files / restructuring directories cascades through the
+  // manifest, hrefs and fragment identifiers, so auto-remediation is
+  // unsafe; surface the finding and let the operator fix in their
+  // authoring tool.
+  'PRH-FILE-XHTML-OVERSIZE': {
+    code: 'PRH-FILE-XHTML-OVERSIZE',
+    severity: 'serious',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'XHTML chapter exceeds 600KB — PRH requires chapter splits at section boundaries to keep Kindle / older e-readers responsive (Technical Guide §3)',
+  },
+  'PRH-FILE-PLATE-OVERSIZE': {
+    code: 'PRH-FILE-PLATE-OVERSIZE',
+    severity: 'serious',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Plate XHTML exceeds 11MB — too large for Kindle ET / KFX rendering; split image-heavy plate sections',
+  },
+  'PRH-DIR-LAYOUT-NONSTANDARD': {
+    code: 'PRH-DIR-LAYOUT-NONSTANDARD',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB content exists outside the canonical /xhtml /images /fonts /styles directory layout — PRH Technical Guide §3 requires resources under fixed sub-directories so reading systems can resolve cross-file references reliably',
+  },
+  'PRH-FILE-NAMING-NONSTANDARD': {
+    code: 'PRH-FILE-NAMING-NONSTANDARD',
+    severity: 'moderate',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'Filename contains uppercase / multiple dots / disallowed characters — PRH requires lowercase alphanumeric + underscore + hyphen with a single dot before the extension',
+  },
+  'PRH-FILE-FIXED-NAME-MISSING': {
+    code: 'PRH-FILE-FIXED-NAME-MISSING',
+    severity: 'serious',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'EPUB is missing a required fixed-name file (package.opf / toc.ncx when EPUB2-compat / nav.xhtml / cover.<ext>) — Kindle popup links, NCX fallback navigation and the cover-image surface all resolve by canonical filename',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

@@ -261,8 +261,9 @@ const TIER_CODE_COUNT: Record<PriorityTier, number> = {
   // P2 — copyright (8) + brand (3) + title (4) + socials (5) + order (5) = 25
   P2: 25,
   // P3 — body epub:type + doc-* ARIA (8) + forbidden (3) + notes/pagebreak (2)
-  // + text heuristics (3) + CSS conventions (5, P6/PR1) = 21
-  P3: 21,
+  // + text heuristics (3) + CSS conventions (5, P6/PR1) + file/dir/size
+  // (5, P6/PR2) = 26
+  P3: 26,
   // P4 has no PRH-* codes (AI policy gate + cover-alt template were
   // implemented as behaviors, not new codes). 0 to keep the type happy.
   P4: 0,
@@ -294,6 +295,8 @@ function priorityTierForCode(code: string): PriorityTier | null {
   if (code.startsWith('PRH-MARKUP-')) return 'P3';
   if (code.startsWith('PRH-ARIA-')) return 'P3';
   if (code.startsWith('PRH-CSS-')) return 'P3';
+  if (code.startsWith('PRH-FILE-')) return 'P3';
+  if (code.startsWith('PRH-DIR-')) return 'P3';
   if (code === 'PRH-BODY-HAS-ARIA') return 'P3';
   if (code === 'PRH-PAGEBREAK-MALFORMED') return 'P3';
   if (code === 'PRH-FOOTNOTE-ID-MISMATCH') return 'P3';
