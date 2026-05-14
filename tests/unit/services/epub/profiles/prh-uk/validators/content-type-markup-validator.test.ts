@@ -68,6 +68,35 @@ describe('validatePrhContentTypeMarkup — PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSIN
     );
     expect(issues.some((i) => i.code === 'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING')).toBe(false);
   });
+
+  it('emits when counts are equal but the sibling pairing is wrong', () => {
+    // 2 sidebars + 2 maincontents — equal totals — but the first
+    // sidebar is immediately followed by the SECOND sidebar, not by a
+    // maincontent wrapper.
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        file(
+          'ch1.xhtml',
+          '<div class="sidebar_wrapper"></div><div class="sidebar_wrapper"></div>' +
+            '<div class="maincontent_wrapper"></div><div class="maincontent_wrapper"></div>',
+        ),
+      ]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING')).toBe(true);
+  });
+
+  it('does NOT emit when each sidebar is immediately followed by its maincontent', () => {
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        file(
+          'ch1.xhtml',
+          '<section><div class="sidebar_wrapper"></div><div class="maincontent_wrapper"></div></section>' +
+            '<section><div class="sidebar_wrapper"></div><div class="maincontent_wrapper"></div></section>',
+        ),
+      ]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING')).toBe(false);
+  });
 });
 
 describe('validatePrhContentTypeMarkup — PRH-MARKUP-TEXTBOX-USES-REAL-HEADER', () => {
@@ -208,6 +237,21 @@ describe('validatePrhContentTypeMarkup — PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS',
   it('does NOT emit for books with no speech bubbles', () => {
     const issues = validatePrhContentTypeMarkup(
       input([file('ch1.xhtml', '<p>No bubbles here.</p>')]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS')).toBe(false);
+  });
+
+  it('does NOT emit for a speechbubble* class on a non-<figure> element', () => {
+    // A CSS-helper class or wrapper div carrying a speechbubble-like
+    // token must not trip the rule — PRH speech bubbles are always
+    // <figure> elements.
+    const issues = validatePrhContentTypeMarkup(
+      input([
+        file(
+          'ch1.xhtml',
+          '<div class="speechbubble_left"><figure class="speechbubble_r"><p>Hi</p></figure></div>',
+        ),
+      ]),
     );
     expect(issues.some((i) => i.code === 'PRH-MARKUP-SPEECHBUBBLE-WRONG-CLASS')).toBe(false);
   });

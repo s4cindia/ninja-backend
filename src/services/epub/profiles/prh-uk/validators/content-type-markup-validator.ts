@@ -64,16 +64,8 @@ export function validatePrhContentTypeMarkup(input: PrhPerXhtmlInput): PrhValida
     const body = stripHead(file.content);
 
     // 1. Sidebar / maincontent pairing.
-    const sidebarCount = countClassTokenOccurrences(body, 'sidebar_wrapper');
-    const maincontentCount = countClassTokenOccurrences(body, 'maincontent_wrapper');
-    if (sidebarCount > maincontentCount) {
-      issues.push(
-        buildIssue(
-          'PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING',
-          file.path,
-          ` (${sidebarCount} .sidebar_wrapper vs ${maincontentCount} .maincontent_wrapper)`,
-        ),
-      );
+    if (hasSidebarWithoutMaincontentSibling(body)) {
+      issues.push(buildIssue('PRH-MARKUP-SIDEBAR-MAINCONTENT-MISSING', file.path));
     }
 
     // 2. Textbox holding the document's first real heading.
@@ -143,6 +135,32 @@ function countClassTokenOccurrences(html: string, token: string): number {
 }
 
 /**
+ * Structural sidebar-pairing check. PRH requires the
+ * `.maincontent_wrapper` to be the IMMEDIATE sibling of each
+ * `.sidebar_wrapper` — a count comparison isn't enough, because a
+ * file can have equal totals while individual sidebars are still
+ * unpaired (the main-content wrapper sits in an unrelated section).
+ *
+ * For each `.sidebar_wrapper` element we look at what immediately
+ * follows its closing tag, skipping whitespace and comments, and
+ * confirm the next element carries `maincontent_wrapper`. Any
+ * sidebar that fails — including one with nothing after it —
+ * triggers the finding.
+ */
+function hasSidebarWithoutMaincontentSibling(body: string): boolean {
+  const sidebars = findClassedElements(body, (tokens) => tokens.includes('sidebar_wrapper'));
+  for (const sidebar of sidebars) {
+    const tail = body.slice(sidebar.end);
+    const nextElement = tail.match(/^\s*(?:<!--[\s\S]*?-->\s*)*<([a-z][a-z0-9]*)\b([^>]*)>/i);
+    if (!nextElement) return true;
+    const classMatch = nextElement[2].match(/(?:^|\s)class\s*=\s*["']([^"']*)["']/i);
+    const tokens = classMatch ? classMatch[1].split(/\s+/).filter(Boolean) : [];
+    if (!tokens.includes('maincontent_wrapper')) return true;
+  }
+  return false;
+}
+
+/**
  * Locate the document's first real <h*> heading and report whether
  * it sits inside a `.txt_box*` element. The "first heading" framing
  * matches the Technical Guide rule — a real header inside a textbox
@@ -163,15 +181,21 @@ function firstRealHeaderIsInsideTextbox(body: string): boolean {
 }
 
 /**
- * Find `<figure>` (or any element) carrying a class token that looks
- * like a speech bubble (`speech-bubble`, `speech_bubble`,
- * `speechbubble`, `speechbubble_left`, …) but is NOT one of the four
- * canonical classes. Returns the offending tokens, deduped.
+ * Find `<figure>` elements carrying a class token that looks like a
+ * speech bubble (`speech-bubble`, `speech_bubble`, `speechbubble`,
+ * `speechbubble_left`, …) but is NOT one of the four canonical
+ * classes. Returns the offending tokens, deduped.
+ *
+ * Scoped to `<figure>` deliberately — PRH speech bubbles are always
+ * `<figure>` elements, so a CSS-helper class on a `<div>`/`<p>` (or
+ * a wrapper named `speechbubble_styles`) must not false-flag.
  */
 function findNonCanonicalSpeechbubbleClasses(html: string): string[] {
   const bad = new Set<string>();
-  for (const m of html.matchAll(/(?:^|\s)class\s*=\s*["']([^"']*)["']/gi)) {
-    const tokens = m[1].split(/\s+/).filter(Boolean);
+  for (const m of html.matchAll(/<figure\b([^>]*)>/gi)) {
+    const classMatch = m[1].match(/(?:^|\s)class\s*=\s*["']([^"']*)["']/i);
+    if (!classMatch) continue;
+    const tokens = classMatch[1].split(/\s+/).filter(Boolean);
     for (const token of tokens) {
       if (!/speech[-_]?bubble/i.test(token)) continue;
       if (!CANONICAL_SPEECHBUBBLE_CLASSES.has(token)) {
