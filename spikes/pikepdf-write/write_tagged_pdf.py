@@ -4,6 +4,7 @@ writes a Tagged PDF structure tree using pikepdf."""
 import pikepdf
 from collections import defaultdict
 from zone_to_tags import get_pdf_role, is_artifact, get_heading_level
+from content_tagger import retag_page_content
 
 
 def write_tagged_pdf(
@@ -59,21 +60,18 @@ def write_tagged_pdf(
         metadata_stream[pikepdf.Name('/Subtype')] = pikepdf.Name('/XML')
         pdf.Root.Metadata = pdf.make_indirect(metadata_stream)
 
-        # Build structure tree
+        # Build structure tree.
+        #
+        # No /RoleMap: every structure type this writer emits (Document, P,
+        # H1-H6, Table, Figure, Caption, Note) is already a PDF 1.7 standard
+        # type. A RoleMap is ONLY for mapping non-standard custom types to
+        # standard ones. Increment 1 wrongly added self-mappings
+        # (Document -> Document, …) which veraPDF flags as a *circular*
+        # mapping (PDF/UA-1 7.1 test 6). With all-standard types the
+        # conformant choice is to omit the RoleMap entirely.
         struct_tree_root = pikepdf.Dictionary(
             Type=pikepdf.Name('/StructTreeRoot'),
         )
-
-        # RoleMap (PDF/UA-1 7.3 test 1): map every structure type this
-        # writer emits to its PDF 1.7 standard type. All of these already
-        # ARE standard types, so each maps to itself — but supplying an
-        # explicit RoleMap is the conformant practice and removes any
-        # ambiguity for the validator. Increment-1 of Issue #396.
-        role_map = pikepdf.Dictionary()
-        for _role in ('Document', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
-                      'Table', 'Figure', 'Caption', 'Note'):
-            role_map[pikepdf.Name('/' + _role)] = pikepdf.Name('/' + _role)
-        struct_tree_root.RoleMap = role_map
 
         struct_tree_ref = pdf.make_indirect(struct_tree_root)
 
@@ -97,19 +95,36 @@ def write_tagged_pdf(
 
         zone_count = 0
 
-        for page_num in sorted(by_page.keys()):
-            page_zones = by_page[page_num]
+        # ParentTree (a number tree) maps each page's /StructParents index
+        # to the per-MCID array of structure-element references — the
+        # content→structure reverse lookup PDF/UA-1 requires alongside the
+        # forward /K → MCID links. Nums is [key0, val0, key1, val1, …].
+        parent_tree_nums = pikepdf.Array()
+        next_struct_parent = 0
 
-            # Get the actual page object (0-indexed)
-            page_idx = page_num - 1
-            if page_idx >= len(pdf.pages):
-                continue
-            page_obj = pdf.pages[page_idx].obj
+        # Process EVERY page, not only pages that have zones. PDF/UA-1 7.1
+        # test 3 requires *all* content on *every* page to be marked —
+        # a cover image on a zoneless page still has to be artifacted, so
+        # iterating sorted(by_page) (zone-bearing pages only) under-tags
+        # the document.
+        for page_idx in range(len(pdf.pages)):
+            page_num = page_idx + 1
+            page_zones = by_page.get(page_num, [])
+
+            pdf_page = pdf.pages[page_idx]
+            page_obj = pdf_page.obj
 
             # Tab order must follow structure order (PDF/UA-1 7.18.x).
             # /Tabs /S declares structure-order tabbing on every page.
             page_obj[pikepdf.Name('/Tabs')] = pikepdf.Name('/S')
 
+            mb = page_obj.MediaBox
+            page_height = float(mb[3]) - float(mb[1])
+
+            # 1. Build one StructElem per zone, in structure order. Each
+            #    starts with an empty /K — MCIDs get appended in step 3.
+            zone_elems = []      # parallel to page_zones: the dict objects
+            zone_elem_refs = []  # the indirect refs (for ParentTree)
             for zone in page_zones:
                 zone_type = zone.get('operatorLabel') \
                     or zone.get('type', 'paragraph')
@@ -122,29 +137,74 @@ def write_tagged_pdf(
                 else:
                     tag_name = role
 
-                # Create structure element
                 attrs = {
                     'Type': pikepdf.Name('/StructElem'),
                     'S':    pikepdf.Name(tag_name),
                     'P':    doc_ref,
                     'Pg':   page_obj,
+                    'K':    pikepdf.Array(),
                 }
-
-                # Add Alt attribute for figure zones
                 if zone_type == 'figure' and zone.get('altText'):
                     attrs['Alt'] = pikepdf.String(zone['altText'])
-
-                # Note tags require an ID entry (PDF/UA 7.9 test 1)
                 if tag_name == '/Note':
                     note_id = f'note-p{zone.get("pageNumber", 0)}-{zone_count}'
                     attrs['ID'] = pikepdf.String(note_id)
 
                 struct_elem = pikepdf.Dictionary(**attrs)
-                doc_elem.K.append(pdf.make_indirect(struct_elem))
+                elem_ref = pdf.make_indirect(struct_elem)
+                doc_elem.K.append(elem_ref)
+                zone_elems.append(struct_elem)
+                zone_elem_refs.append(elem_ref)
                 zone_count += 1
 
-        # Attach structure tree to document. Reuse the single doc_ref made
-        # above rather than calling make_indirect again on doc_elem.
+            # 2. Rewrite the page content stream so every drawing op is
+            #    inside a marked-content sequence; get MCID→zone mapping.
+            new_ops, assignments = retag_page_content(
+                pdf_page, page_zones, page_height
+            )
+            new_stream = pikepdf.Stream(
+                pdf, pikepdf.unparse_content_stream(new_ops)
+            )
+            page_obj.Contents = pdf.make_indirect(new_stream)
+
+            # 3. Wire each MCID into its zone's /K array, and build the
+            #    page's ParentTree row (index = MCID, value = elem ref).
+            #    A page whose content is entirely artifacts produces no
+            #    assignments — it needs no /StructParents and no ParentTree
+            #    row (those exist only for content the structure tree
+            #    actually references).
+            if not assignments:
+                continue
+
+            max_mcid = -1
+            for mcid, zone_idx in assignments:
+                if 0 <= zone_idx < len(zone_elems):
+                    zone_elems[zone_idx].K.append(mcid)
+                    max_mcid = max(max_mcid, mcid)
+
+            mcid_to_elem = pikepdf.Array()
+            for mcid in range(max_mcid + 1):
+                # Default: point at the first zone elem so the array has no
+                # holes; overwrite with the real owner below.
+                mcid_to_elem.append(
+                    zone_elem_refs[0] if zone_elem_refs else doc_ref
+                )
+            for mcid, zone_idx in assignments:
+                if 0 <= mcid <= max_mcid and 0 <= zone_idx < len(zone_elem_refs):
+                    mcid_to_elem[mcid] = zone_elem_refs[zone_idx]
+
+            struct_parent_idx = next_struct_parent
+            next_struct_parent += 1
+            page_obj[pikepdf.Name('/StructParents')] = struct_parent_idx
+            parent_tree_nums.append(struct_parent_idx)
+            parent_tree_nums.append(pdf.make_indirect(mcid_to_elem))
+
+        # Attach the ParentTree + structure tree to the document.
+        struct_tree_root.ParentTree = pdf.make_indirect(
+            pikepdf.Dictionary(Nums=parent_tree_nums)
+        )
+        struct_tree_root.ParentTreeNextKey = next_struct_parent
+        # Reuse the single doc_ref rather than make_indirect again.
         struct_tree_root.K = doc_ref
         pdf.Root.StructTreeRoot = struct_tree_ref
 
