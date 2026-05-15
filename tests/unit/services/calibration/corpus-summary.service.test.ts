@@ -106,17 +106,102 @@ describe('getTimesheetSummary', () => {
     expect(result.throughputTrend.every(d => d.activeHours === 0)).toBe(true);
   });
 
-  it('passes completedAt filter for the supplied range to Prisma', async () => {
+  it('filters by annotationSession.startedAt — NOT completedAt — so in-progress runs are included', async () => {
     mockCalibrationRunFindMany.mockResolvedValue([]);
 
     await getTimesheetSummary(RANGE);
 
     const call = mockCalibrationRunFindMany.mock.calls[0]![0] as {
-      where: { completedAt: { gte: Date; lte: Date; not: null } };
+      where: { annotationSessions: { some: { startedAt: { gte: Date; lte: Date } } } };
+      select: { annotationSessions: { where: { startedAt: { gte: Date; lte: Date } } } };
     };
-    expect(call.where.completedAt.gte).toEqual(RANGE.from);
-    expect(call.where.completedAt.lte).toEqual(RANGE.to);
-    expect(call.where.completedAt.not).toBeNull();
+    // Run inclusion: at least one session in range.
+    expect(call.where.annotationSessions.some.startedAt.gte).toEqual(RANGE.from);
+    expect(call.where.annotationSessions.some.startedAt.lte).toEqual(RANGE.to);
+    // Sessions windowed: only in-range sessions are loaded.
+    expect(call.select.annotationSessions.where.startedAt.gte).toEqual(RANGE.from);
+    expect(call.select.annotationSessions.where.startedAt.lte).toEqual(RANGE.to);
+    // completedAt must NOT be a filter on the run inclusion.
+    expect((call.where as Record<string, unknown>).completedAt).toBeUndefined();
+  });
+
+  it('in-progress run (no completedAt) appears with completedAt: null', async () => {
+    const run = makeRun({
+      completedAt: null,
+      annotationSessions: [session({ activeMs: 30 * 60 * 1000 })],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getTimesheetSummary(RANGE);
+
+    expect(result.runsIncluded).toBe(1);
+    expect(result.perTitle[0]!.completedAt).toBeNull();
+    expect(result.perTitle[0]!.activeHours).toBeCloseTo(0.5, 6);
+    expect(result.totals.activeHours).toBeCloseTo(0.5, 6);
+  });
+
+  it('run with completedAt still reports it as an ISO string', async () => {
+    const completedDate = new Date('2026-04-05T10:00:00Z');
+    const run = makeRun({
+      completedAt: completedDate,
+      annotationSessions: [session({ activeMs: 60 * 60 * 1000 })],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getTimesheetSummary(RANGE);
+
+    expect(result.perTitle[0]!.completedAt).toBe(completedDate.toISOString());
+  });
+
+  it('activeHours counts only in-window sessions — Prisma windowing means out-of-window sessions are absent from mock data', async () => {
+    // The Prisma query windows sessions by startedAt. This test feeds
+    // only in-window sessions (mirroring what Prisma would return), so
+    // totals reflect only those sessions. A run that had 4h spread
+    // across two weeks contributes only the 1h from the in-window
+    // sessions supplied here.
+    const run = makeRun({
+      completedAt: null,
+      annotationSessions: [
+        session({ operatorId: 'op-alice', activeMs: 60 * 60 * 1000, zonesReviewed: 10 }),
+      ],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([run]);
+
+    const result = await getTimesheetSummary(RANGE);
+
+    expect(result.totals.activeHours).toBeCloseTo(1, 6);
+    expect(result.perTitle[0]!.activeHours).toBeCloseTo(1, 6);
+    expect(result.perOperator[0]!.activeHours).toBeCloseTo(1, 6);
+  });
+
+  it('runsIncluded / totals / perOperator / perTitle are all consistent with the windowed session set', async () => {
+    const runA = makeRun({
+      id: 'run-A',
+      completedAt: new Date('2026-04-10T12:00:00Z'),
+      corpusDocument: { filename: 'Alpha.pdf', pageCount: 50 },
+      annotationSessions: [
+        session({ operatorId: 'op-alice', activeMs: 60 * 60 * 1000, zonesReviewed: 10 }),
+      ],
+    });
+    const runB = makeRun({
+      id: 'run-B',
+      completedAt: null, // in-progress
+      corpusDocument: { filename: 'Beta.pdf', pageCount: 30 },
+      annotationSessions: [
+        session({ operatorId: 'op-bob', activeMs: 30 * 60 * 1000, zonesReviewed: 5 }),
+      ],
+    });
+    mockCalibrationRunFindMany.mockResolvedValue([runA, runB]);
+
+    const result = await getTimesheetSummary(RANGE);
+
+    expect(result.runsIncluded).toBe(2);
+    expect(result.totals.activeHours).toBeCloseTo(1.5, 6);
+    expect(result.perTitle).toHaveLength(2);
+    expect(result.perTitle.every(t => ['Alpha.pdf', 'Beta.pdf'].includes(t.documentName))).toBe(true);
+    expect(result.perOperator).toHaveLength(2);
+    const sumTitleHours = result.perTitle.reduce((s, t) => s + t.activeHours, 0);
+    expect(sumTitleHours).toBeCloseTo(result.totals.activeHours, 6);
   });
 
   // ── Cost parity ──────────────────────────────────────────────────
@@ -387,7 +472,11 @@ describe('getTimesheetSummary', () => {
     expect(text.avgSecondsPerZone).toBeCloseTo(3600, 3);
   });
 
-  it('throughputTrend attributes sessions to UTC end-day', async () => {
+  it('throughputTrend attributes sessions to UTC start-day (matches inclusion rule)', async () => {
+    // A cross-midnight session: started Apr 5, ended Apr 6. The inclusion
+    // criterion is startedAt, so the trend also buckets by startedAt.
+    // Using endedAt would push this session to Apr 6, creating a chart
+    // point outside the requested window even though the session is in totals.
     const run = makeRun({
       annotationSessions: [
         session({
@@ -403,10 +492,10 @@ describe('getTimesheetSummary', () => {
 
     const result = await getTimesheetSummary(RANGE);
     const byDate = new Map(result.throughputTrend.map(d => [d.date, d]));
-    // Session attributed to endedAt day (2026-04-06), not startedAt day.
-    expect(byDate.get('2026-04-06')!.zonesReviewed).toBe(20);
-    expect(byDate.get('2026-04-06')!.activeHours).toBeCloseTo(1, 6);
-    expect(byDate.get('2026-04-05')!.zonesReviewed).toBe(0);
+    // Session attributed to startedAt day (2026-04-05), not endedAt day.
+    expect(byDate.get('2026-04-05')!.zonesReviewed).toBe(20);
+    expect(byDate.get('2026-04-05')!.activeHours).toBeCloseTo(1, 6);
+    expect(byDate.get('2026-04-06')!.zonesReviewed).toBe(0);
   });
 
   it('resolves operator display names from User table when available', async () => {
