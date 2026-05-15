@@ -165,8 +165,15 @@ def write_tagged_pdf(
                     'Pg':   page_obj,
                     'K':    pikepdf.Array(),
                 }
-                if zone_type == 'figure' and zone.get('altText'):
-                    attrs['Alt'] = pikepdf.String(zone['altText'])
+                # PDF/UA-1 7.3 t1: every Figure element must have a non-empty
+                # /Alt (alternative description) or /ActualText. Use the
+                # zone's altText when available; fall back to "Figure" as a
+                # generic placeholder. veraPDF rejects an empty string ("").
+                # In production the AI alt-text generator provides real text.
+                if zone_type == 'figure':
+                    attrs['Alt'] = pikepdf.String(
+                        zone.get('altText') or 'Figure'
+                    )
                 if tag_name == '/Note':
                     note_id = f'note-p{zone.get("pageNumber", 0)}-{zone_count}'
                     attrs['ID'] = pikepdf.String(note_id)
