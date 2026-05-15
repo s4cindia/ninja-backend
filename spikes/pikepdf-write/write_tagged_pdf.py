@@ -39,12 +39,31 @@ def write_tagged_pdf(
             for _k in ('/StructParents', '/StructParent'):
                 if _k in _po:
                     del _po[_k]
-            # Strip /StructParent from annotations on this page too.
+            # Process annotations on this page.
             annots = _po.get('/Annots')
             if annots:
                 for ann in annots:
                     if '/StructParent' in ann:
                         del ann['/StructParent']
+                    # PDF/UA-1 7.18.1 t2: every visible Link annotation must
+                    # have either a /Contents key (preferred — on the annotation
+                    # itself) or an /Alt on its enclosing structure element.
+                    # /Contents is simpler: extract the URI/destination from
+                    # the annotation's /A action; fall back to "Link".
+                    if ann.get('/Subtype') == pikepdf.Name('/Link') \
+                            and '/Contents' not in ann:
+                        contents = 'Link'
+                        _a = ann.get('/A')
+                        if _a is not None:
+                            if _a.get('/S') == pikepdf.Name('/URI'):
+                                _uri = _a.get('/URI')
+                                if _uri is not None:
+                                    contents = str(_uri)
+                            elif _a.get('/S') == pikepdf.Name('/GoTo'):
+                                _dest = _a.get('/D')
+                                if _dest is not None:
+                                    contents = f'Link to {_dest}'
+                        ann['/Contents'] = pikepdf.String(contents)
 
         # Set MarkInfo - required for Tagged PDF
         pdf.Root.MarkInfo = pikepdf.Dictionary(Marked=True)
