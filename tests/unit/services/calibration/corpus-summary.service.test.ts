@@ -472,7 +472,11 @@ describe('getTimesheetSummary', () => {
     expect(text.avgSecondsPerZone).toBeCloseTo(3600, 3);
   });
 
-  it('throughputTrend attributes sessions to UTC end-day', async () => {
+  it('throughputTrend attributes sessions to UTC start-day (matches inclusion rule)', async () => {
+    // A cross-midnight session: started Apr 5, ended Apr 6. The inclusion
+    // criterion is startedAt, so the trend also buckets by startedAt.
+    // Using endedAt would push this session to Apr 6, creating a chart
+    // point outside the requested window even though the session is in totals.
     const run = makeRun({
       annotationSessions: [
         session({
@@ -488,10 +492,10 @@ describe('getTimesheetSummary', () => {
 
     const result = await getTimesheetSummary(RANGE);
     const byDate = new Map(result.throughputTrend.map(d => [d.date, d]));
-    // Session attributed to endedAt day (2026-04-06), not startedAt day.
-    expect(byDate.get('2026-04-06')!.zonesReviewed).toBe(20);
-    expect(byDate.get('2026-04-06')!.activeHours).toBeCloseTo(1, 6);
-    expect(byDate.get('2026-04-05')!.zonesReviewed).toBe(0);
+    // Session attributed to startedAt day (2026-04-05), not endedAt day.
+    expect(byDate.get('2026-04-05')!.zonesReviewed).toBe(20);
+    expect(byDate.get('2026-04-05')!.activeHours).toBeCloseTo(1, 6);
+    expect(byDate.get('2026-04-06')!.zonesReviewed).toBe(0);
   });
 
   it('resolves operator display names from User table when available', async () => {

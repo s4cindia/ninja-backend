@@ -732,12 +732,16 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
   });
 
   // ── Per zone type (avg seconds per zone) ──────────────────────────────
-  // Apportion each RUN's active time across that run's decided zone types,
-  // then sum the per-type shares across runs. Using a single corpus-wide
-  // ratio (totalActiveMs × type-share-across-corpus) blended throughput
-  // across runs with different mixes — a slow text-heavy run and a fast
-  // figure-heavy run would end up distorting each other's averages. The
-  // per-run approach preserves each run's actual throughput.
+  // Apportion each RUN's in-window active time across that run's decided
+  // zone types. The numerator (runActiveMs) is windowed — only sessions
+  // whose startedAt falls in the request range contribute. The denominator
+  // (zone counts) is run-level: zones don't carry a decidedAt timestamp in
+  // the current schema, so there's no way to window zone-type counts to the
+  // same billing window without schema changes. For runs that span multiple
+  // billing windows this means perZoneType reflects that run's zone-type mix
+  // in full while using only the in-window portion of active time.
+  // Acceptable for throughput analysis (perZoneType is a rate metric, not a
+  // billing metric); revisit if zone-decision timestamps are added later.
   //
   // Abandoned runs (completed but zero human-decided zones) contribute
   // zero here because their per-run denominator is zero and we `continue`.
@@ -797,8 +801,12 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
   }
   for (const run of runs) {
     for (const sess of run.annotationSessions) {
-      const anchor = sess.endedAt ?? sess.startedAt;
-      const key = ymd(anchor);
+      // Bucket by startedAt so the trend uses the same attribution rule
+      // as session inclusion: a session belongs to the day it STARTED.
+      // Using endedAt would push cross-midnight sessions one day later,
+      // putting them outside the requested window on the chart even
+      // though they're in the totals.
+      const key = ymd(sess.startedAt);
       let bucket = trendMap.get(key);
       if (!bucket) {
         bucket = makeEmptyBucket();
