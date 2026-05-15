@@ -244,4 +244,27 @@ describe('validatePrhMediaMarkup — overall', () => {
     );
     expect(issues).toEqual([]);
   });
+
+  it('ignores commented-out media markup (no false advisory failures)', () => {
+    // A commented-out media element must not raise wrapper/fallback/width
+    // failures — the reading system ignores comments and so should the
+    // validator.
+    const issues = validatePrhMediaMarkup(
+      input([
+        file('ch1.xhtml', '<!-- <video src="old.mp4" width="640">x</video> -->'),
+      ]),
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it('skips unbalanced media tags rather than emitting false fallback-missing', () => {
+    // A <video> with no matching </video> is malformed — epubcheck flags
+    // it. We must NOT pretend it's a self-closing element and emit a
+    // PRH-MEDIA-FALLBACK-TEXT-MISSING for it.
+    const issues = validatePrhMediaMarkup(
+      input([file('ch1.xhtml', '<video controls src="v.mp4"><p>orphan')]),
+    );
+    expect(issues.some((i) => i.code === 'PRH-MEDIA-FALLBACK-TEXT-MISSING')).toBe(false);
+    expect(issues.some((i) => i.code === 'PRH-MEDIA-WRAPPER-MISSING')).toBe(false);
+  });
 });

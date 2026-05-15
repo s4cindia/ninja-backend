@@ -44,7 +44,12 @@ export function validatePrhMediaMarkup(input: PrhPerXhtmlInput): PrhValidatorIss
   const issues: PrhValidatorIssue[] = [];
 
   for (const file of input.xhtmlFiles) {
-    const body = stripHead(file.content);
+    // Strip <head> and HTML comments before scanning — commented-out
+    // media markup (`<!-- <video src="old.mp4"/> -->`) is still text to
+    // a regex and would otherwise raise false advisory failures for
+    // content the reading system ignores. Mirrors the content-type
+    // markup validator.
+    const body = stripComments(stripHead(file.content));
     const mediaElements = findMediaElements(body);
     if (mediaElements.length === 0) continue;
 
@@ -86,6 +91,10 @@ function stripHead(html: string): string {
   return html.replace(/<head\b[^>]*>[\s\S]*?<\/head>/i, '');
 }
 
+function stripComments(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 /**
  * Find every `<video>` / `<audio>` element. Handles both the normal
  * `<video …>…</video>` form (depth-counted balanced close so a nested
@@ -101,14 +110,26 @@ function findMediaElements(body: string): MediaElement[] {
       const attrs = m[1];
       const start = m.index;
       const openTagEnd = openRe.lastIndex;
-      if (attrs.trimEnd().endsWith('/')) {
+      // Self-closing test inspects the full matched tag — `m[0]` ends
+      // with `>` and the preceding `/` is the unambiguous self-closing
+      // signal. Testing `attrs.endsWith('/')` instead would misread an
+      // unquoted attribute value whose last character is `/`.
+      if (m[0].trimEnd().endsWith('/>')) {
         // Self-closing: no inner content.
         out.push({ tag, attrs, inner: '', start });
         continue;
       }
       const close = findBalancedClose(body, tag, openTagEnd);
-      const inner = close ? body.slice(openTagEnd, close.innerEnd) : '';
-      out.push({ tag, attrs, inner, start });
+      // Unbalanced markup (no matching `</tag>`) is malformed —
+      // epubcheck is the right tool to flag it; skip silently here so
+      // we don't emit a false fallback-text-missing on garbage input.
+      if (!close) continue;
+      out.push({
+        tag,
+        attrs,
+        inner: body.slice(openTagEnd, close.innerEnd),
+        start,
+      });
     }
   }
   return out;
@@ -125,7 +146,10 @@ function findMediaWrapperSpans(body: string): Array<{ start: number; end: number
   let m: RegExpExecArray | null;
   while ((m = openRe.exec(body)) !== null) {
     const attrs = m[1];
-    if (attrs.trimEnd().endsWith('/')) continue; // self-closing figure can't wrap anything
+    // Self-closing figure can't wrap anything; check the full matched
+    // tag so unquoted attribute values ending in `/` don't fool the
+    // detection.
+    if (m[0].trimEnd().endsWith('/>')) continue;
     const classMatch = attrs.match(/(?:^|\s)class\s*=\s*["']([^"']*)["']/i);
     if (!classMatch) continue;
     const tokens = classMatch[1].split(/\s+/).filter(Boolean);
