@@ -675,6 +675,34 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'A run of <p> paragraphs is numbered like recipe method steps (1. 2. 3.) but not marked up as an <ol> — PRH requires <ol class="method_steps">. Heuristic; only fires when the book already uses .method_steps elsewhere (cookbook signal)',
   },
+
+  // ── Audio / video markup (P6/PR4) ─────────────────────────────────────
+  // Publisher-gated and detect-only. The MARKUP rules — these three —
+  // are pure XHTML checks. The codec / bitrate / dimensions rules
+  // (PRH-MEDIA-VIDEO-NOT-H264-BASELINE etc.) are deferred to a follow-up
+  // pending a media-inspection decision; they need ffprobe-grade
+  // container parsing that isn't worth building speculatively.
+  'PRH-MEDIA-WRAPPER-MISSING': {
+    code: 'PRH-MEDIA-WRAPPER-MISSING',
+    severity: 'serious',
+    wcag: ['1.3.1'],
+    fixType: 'manual',
+    summary: 'A <video> or <audio> element is not wrapped in <figure class="media_wrapper"> — PRH requires the figure wrapper so media has a consistent structural container and reflows predictably',
+  },
+  'PRH-MEDIA-FALLBACK-TEXT-MISSING': {
+    code: 'PRH-MEDIA-FALLBACK-TEXT-MISSING',
+    severity: 'serious',
+    wcag: ['1.1.1'],
+    fixType: 'manual',
+    summary: 'A <video> or <audio> element has no fallback text for reading systems that cannot play it — PRH requires fallback content describing the media inside the element',
+  },
+  'PRH-MEDIA-INLINE-WIDTH': {
+    code: 'PRH-MEDIA-INLINE-WIDTH',
+    severity: 'minor',
+    wcag: [],
+    fixType: 'manual',
+    summary: 'A <video> or <audio> element sets width via a width attribute or inline style — PRH requires media width to be set in CSS, not on the element',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;
