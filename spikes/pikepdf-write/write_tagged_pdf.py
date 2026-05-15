@@ -28,6 +28,24 @@ def write_tagged_pdf(
     try:
         pdf = pikepdf.open(input_pdf_path)
 
+        # Strip any pre-existing structure tree so we write onto a clean
+        # canvas regardless of whether the input is publisher-tagged or not.
+        # Without this, new marked-content wrapping nests inside the original
+        # publisher BDC/EMC sequences → PDF/UA-1 7.1 t1/t2 nesting failures.
+        if '/StructTreeRoot' in pdf.Root:
+            del pdf.Root.StructTreeRoot
+        for _page in pdf.pages:
+            _po = _page.obj
+            for _k in ('/StructParents', '/StructParent'):
+                if _k in _po:
+                    del _po[_k]
+            # Strip /StructParent from annotations on this page too.
+            annots = _po.get('/Annots')
+            if annots:
+                for ann in annots:
+                    if '/StructParent' in ann:
+                        del ann['/StructParent']
+
         # Set MarkInfo - required for Tagged PDF
         pdf.Root.MarkInfo = pikepdf.Dictionary(Marked=True)
 
@@ -102,6 +120,9 @@ def write_tagged_pdf(
         parent_tree_nums = pikepdf.Array()
         next_struct_parent = 0
 
+        # Shared set across pages so each form XObject is strip+retag'd once.
+        processed_forms: set = set()
+
         # Process EVERY page, not only pages that have zones. PDF/UA-1 7.1
         # test 3 requires *all* content on *every* page to be marked —
         # a cover image on a zoneless page still has to be artifacted, so
@@ -159,8 +180,10 @@ def write_tagged_pdf(
 
             # 2. Rewrite the page content stream so every drawing op is
             #    inside a marked-content sequence; get MCID→zone mapping.
+            #    processed_forms is shared across pages so each form XObject
+            #    is strip+retag'd exactly once.
             new_ops, assignments = retag_page_content(
-                pdf_page, page_zones, page_height
+                pdf_page, page_zones, page_height, processed_forms
             )
             new_stream = pikepdf.Stream(
                 pdf, pikepdf.unparse_content_stream(new_ops)

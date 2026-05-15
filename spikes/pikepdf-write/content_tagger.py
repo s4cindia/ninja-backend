@@ -26,12 +26,131 @@ Scope / known limitations (tracked in #396):
     and graphics matrices. It does not advance position within a TJ run
     or account for font glyph widths — fine for ZONE assignment (we only
     need the start point of each show op), not for glyph-precise tagging.
-  - Assumes input pages are NOT already tagged (true for the corpus).
-    Pre-existing marked content would be double-wrapped.
+  - Pre-existing marked content is stripped before retagging; call
+    strip_marked_content() first, or set strip=True in retag_page_content.
+  - Form XObject content is tagged as /Artifact in this increment.
+    Full structure-referenced tagging of form content (needed when forms
+    carry real text) is a future increment.
   - Inline images (BI/ID/EI) are passed through untagged-but-artifacted.
 """
 
 import pikepdf
+
+# ─── Marked-content stripping ────────────────────────────────────────────────
+
+def strip_marked_content(operations):
+    """Remove all existing BMC/BDC/EMC operators from an operation list,
+    keeping every other operator unchanged.
+
+    This is a prerequisite for clean retagging: without stripping, any
+    pre-existing publisher or pdfxt marked-content wrapping causes the new
+    /Span MCID and /Artifact sequences to nest inside it, triggering
+    PDF/UA-1 7.1 test 1/2 ("tagged/artifact content inside artifact/tagged
+    content") failures.
+
+    Depth tracking ensures matched pairs are removed even when nested.
+    Unmatched EMC operators (malformed but possible) are also dropped.
+    """
+    result = []
+    depth = 0
+    for operands, operator in operations:
+        op = str(operator)
+        if op in ('BDC', 'BMC'):
+            depth += 1          # skip opener
+        elif op == 'EMC':
+            if depth > 0:
+                depth -= 1      # skip matched closer
+            # else: unmatched EMC — drop it
+        else:
+            result.append((operands, operator))
+    return result
+
+
+# ─── Form-XObject helper ─────────────────────────────────────────────────────
+
+def retag_form_xobjects(page_resources, processed_forms):
+    """Recursively strip and artifact-wrap content in all form XObjects
+    referenced by `page_resources`.
+
+    Form XObject content runs in the form's own local coordinate space, so
+    we cannot reliably assign its operators to page-level zones. Wrapping
+    everything as /Artifact satisfies PDF/UA-1 clause 7.1 (all content is
+    marked) without needing the full form→structure-tree linkage chain.
+
+    Args:
+        pdf: the pikepdf.Pdf being written.
+        page_resources: the /Resources dict of the page (or of a form XObject
+            being recursed into).
+        processed_forms: a set of object-number ints already handled; prevents
+            double-processing when the same form is Do'd from multiple pages.
+    """
+    xobjs = page_resources.get('/XObject')
+    if not xobjs:
+        return
+    for name in xobjs.keys():
+        xo = xobjs[name]
+        if xo.get('/Subtype') != pikepdf.Name('/Form'):
+            continue
+        obj_num = xo.objgen[0] if xo.is_indirect else None
+        if obj_num is not None and obj_num in processed_forms:
+            continue
+        if obj_num is not None:
+            processed_forms.add(obj_num)
+
+        # Strip existing marked content from the form's stream.
+        try:
+            ops = list(pikepdf.parse_content_stream(xo))
+        except Exception:
+            continue
+        stripped = strip_marked_content(ops)
+
+        # Wrap all drawing operators in the form as /Artifact. Tracks
+        # path state so the whole m…f construction is one BMC…EMC.
+        new_ops = []
+        in_path = False
+
+        for operands, operator in stripped:
+            op = str(operator)
+            if op in _PATH_START_OPS:
+                if not in_path:
+                    new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                                    pikepdf.Operator('BMC')))
+                    in_path = True
+                new_ops.append((operands, operator))
+            elif op in _PATH_CONT_OPS:
+                new_ops.append((operands, operator))
+            elif op in _PATH_PAINT_OPS:
+                new_ops.append((operands, operator))
+                if in_path:
+                    new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+                    in_path = False
+            elif op == _SHADING_OP or 'INLINE IMAGE' in op.upper():
+                new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                                pikepdf.Operator('BMC')))
+                new_ops.append((operands, operator))
+                new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+            elif op == _XOBJECT_OP:
+                # Nested form — recurse, then artifact-wrap the Do.
+                nested_res = xo.get('/Resources')
+                if nested_res:
+                    retag_form_xobjects(nested_res, processed_forms)
+                new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                                pikepdf.Operator('BMC')))
+                new_ops.append((operands, operator))
+                new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+            else:
+                new_ops.append((operands, operator))
+
+        if in_path:  # safety net for malformed streams
+            new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+
+        xo.write(pikepdf.unparse_content_stream(new_ops))
+
+        # Recurse into this form's own resources.
+        form_res = xo.get('/Resources')
+        if form_res:
+            retag_form_xobjects(form_res, processed_forms)
+
 
 # Operators that draw text.
 _TEXT_SHOW_OPS = {'Tj', 'TJ', "'", '"'}
@@ -103,15 +222,24 @@ def _find_zone(px, py, zone_boxes):
     return best_idx
 
 
-def retag_page_content(page, page_zones, page_height):
+def retag_page_content(page, page_zones, page_height, processed_forms=None):
     """Rewrite a page's content stream so every text/image drawing
     operator is wrapped in a marked-content sequence.
+
+    Pre-existing marked content (BMC/BDC/EMC) is stripped first so
+    publisher-tagged inputs don't produce nested marked content.  Form
+    XObjects referenced on this page are recursively stripped and
+    artifact-wrapped via retag_form_xobjects() before the page stream
+    itself is rewritten.
 
     Args:
         page: pikepdf page object.
         page_zones: list of zone dicts on this page (artifacts already
             excluded by the caller), in structure order.
         page_height: float, page MediaBox height.
+        processed_forms: optional set of already-handled form XObject
+            object numbers (shared across pages so each form is rewritten
+            exactly once).
 
     Returns:
         (new_operations, assignments) where
@@ -120,7 +248,18 @@ def retag_page_content(page, page_zones, page_height):
           assignments is a list of (mcid:int, zone_index:int) — zone_index
             indexes into page_zones.
     """
-    operations = list(pikepdf.parse_content_stream(page))
+    if processed_forms is None:
+        processed_forms = set()
+
+    # Recurse into form XObjects before processing the page stream so
+    # their content is clean when the page's Do ops execute them.
+    page_resources = page.obj.get('/Resources')
+    if page_resources:
+        retag_form_xobjects(page_resources, processed_forms)
+
+    raw_ops = list(pikepdf.parse_content_stream(page))
+    # Strip pre-existing marked content so we write onto a clean stream.
+    operations = strip_marked_content(raw_ops)
 
     # Precompute each zone's PDF-space box, paired with its index.
     zone_boxes = [
@@ -249,13 +388,30 @@ def retag_page_content(page, page_zones, page_height):
             continue
 
         if op == _XOBJECT_OP:
-            # Image/form XObject — position from CTM origin.
-            dx, dy = _apply(ctm, 0.0, 0.0)
-            zone_idx = _find_zone(dx, dy, zone_boxes)
-            if zone_idx is not None:
-                wrap(operands, operator, zone_idx)
+            # Look up the XObject to distinguish image vs form.
+            # Form XObjects have already been stripped + artifact-wrapped by
+            # retag_form_xobjects(), so the Do itself passes through unwrapped —
+            # the form's content IS marked; wrapping the Do again would nest marks.
+            # Image XObjects are single ops that need an MCID or /Artifact wrap.
+            xo_name = operands[0] if operands else None
+            xo_subtype = None
+            if xo_name and page_resources:
+                xobjs = page_resources.get('/XObject')
+                if xobjs:
+                    xo = xobjs.get(xo_name)
+                    if xo is not None:
+                        xo_subtype = xo.get('/Subtype')
+            if xo_subtype == pikepdf.Name('/Form'):
+                # Form already handled; just emit the Do.
+                new_ops.append((operands, operator))
             else:
-                artifact_wrap(operands, operator)
+                # Image (or unknown) — position from CTM origin.
+                dx, dy = _apply(ctm, 0.0, 0.0)
+                zone_idx = _find_zone(dx, dy, zone_boxes)
+                if zone_idx is not None:
+                    wrap(operands, operator, zone_idx)
+                else:
+                    artifact_wrap(operands, operator)
             continue
 
         # ----- vector paths: bracket the whole construction→paint run -----
