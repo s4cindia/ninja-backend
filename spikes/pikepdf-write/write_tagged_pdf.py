@@ -218,35 +218,65 @@ def write_tagged_pdf(
 
             # 3. Wire each MCID into its zone's /K array, and build the
             #    page's ParentTree row (index = MCID, value = elem ref).
-            #    A page whose content is entirely artifacts produces no
-            #    assignments — it needs no /StructParents and no ParentTree
-            #    row (those exist only for content the structure tree
-            #    actually references).
-            if not assignments:
-                continue
+            #    Only pages that produce MCID assignments need /StructParents.
+            if assignments:
+                max_mcid = -1
+                for mcid, zone_idx in assignments:
+                    if 0 <= zone_idx < len(zone_elems):
+                        zone_elems[zone_idx].K.append(mcid)
+                        max_mcid = max(max_mcid, mcid)
 
-            max_mcid = -1
-            for mcid, zone_idx in assignments:
-                if 0 <= zone_idx < len(zone_elems):
-                    zone_elems[zone_idx].K.append(mcid)
-                    max_mcid = max(max_mcid, mcid)
+                mcid_to_elem = pikepdf.Array()
+                for mcid in range(max_mcid + 1):
+                    mcid_to_elem.append(
+                        zone_elem_refs[0] if zone_elem_refs else doc_ref
+                    )
+                for mcid, zone_idx in assignments:
+                    if 0 <= mcid <= max_mcid and 0 <= zone_idx < len(zone_elem_refs):
+                        mcid_to_elem[mcid] = zone_elem_refs[zone_idx]
 
-            mcid_to_elem = pikepdf.Array()
-            for mcid in range(max_mcid + 1):
-                # Default: point at the first zone elem so the array has no
-                # holes; overwrite with the real owner below.
-                mcid_to_elem.append(
-                    zone_elem_refs[0] if zone_elem_refs else doc_ref
-                )
-            for mcid, zone_idx in assignments:
-                if 0 <= mcid <= max_mcid and 0 <= zone_idx < len(zone_elem_refs):
-                    mcid_to_elem[mcid] = zone_elem_refs[zone_idx]
+                struct_parent_idx = next_struct_parent
+                next_struct_parent += 1
+                page_obj[pikepdf.Name('/StructParents')] = struct_parent_idx
+                parent_tree_nums.append(struct_parent_idx)
+                parent_tree_nums.append(pdf.make_indirect(mcid_to_elem))
 
-            struct_parent_idx = next_struct_parent
-            next_struct_parent += 1
-            page_obj[pikepdf.Name('/StructParents')] = struct_parent_idx
-            parent_tree_nums.append(struct_parent_idx)
-            parent_tree_nums.append(pdf.make_indirect(mcid_to_elem))
+            # 4. Wire Link annotations into the structure tree.
+            #    Processed unconditionally — a page may have Link annotations
+            #    but no operator-verified content zones (e.g. a TOC page where
+            #    text lives in form XObjects). Without this, 7.18.5 t1 fires on
+            #    those pages even if the same page passes the MCID wiring test.
+            #
+            #    PDF/UA-1 7.18.5 t1 (ISO 32000-1 §14.8.4.4.2): each Link
+            #    annotation must be enclosed in a /Link structure element with
+            #    an /OBJR (object reference) in its /K array.  Annotations use
+            #    /StructParent (singular integer) — distinct from page MCIDs
+            #    which use /StructParents (plural, array).
+            annots = page_obj.get('/Annots')
+            if annots:
+                for ann in annots:
+                    if ann.get('/Subtype') != pikepdf.Name('/Link'):
+                        continue
+                    ann_ref = pdf.make_indirect(ann)
+                    objr = pikepdf.Dictionary(
+                        Type=pikepdf.Name('/OBJR'),
+                        Obj=ann_ref,
+                        Pg=page_obj,
+                    )
+                    link_elem = pikepdf.Dictionary(
+                        Type=pikepdf.Name('/StructElem'),
+                        S=pikepdf.Name('/Link'),
+                        P=doc_ref,
+                        Pg=page_obj,
+                        K=pikepdf.Array([pdf.make_indirect(objr)]),
+                    )
+                    link_elem_ref = pdf.make_indirect(link_elem)
+                    doc_elem.K.append(link_elem_ref)
+                    ann_sp_idx = next_struct_parent
+                    next_struct_parent += 1
+                    ann['/StructParent'] = ann_sp_idx
+                    parent_tree_nums.append(ann_sp_idx)
+                    parent_tree_nums.append(link_elem_ref)
 
         # Attach the ParentTree + structure tree to the document.
         struct_tree_root.ParentTree = pdf.make_indirect(
