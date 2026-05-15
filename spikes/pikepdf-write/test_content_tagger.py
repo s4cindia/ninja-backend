@@ -8,7 +8,12 @@ it. See content_tagger module docstring for the derivation."""
 
 import unittest
 
-from content_tagger import _mat_mul, _apply, _zone_pdf_box, _find_zone, _IDENTITY
+import pikepdf
+
+from content_tagger import (
+    _mat_mul, _apply, _zone_pdf_box, _find_zone, _IDENTITY,
+    strip_marked_content,
+)
 
 
 class TestMatrixMath(unittest.TestCase):
@@ -97,6 +102,65 @@ class TestFindZone(unittest.TestCase):
 
     def test_empty_zone_list_returns_none(self):
         self.assertIsNone(_find_zone(100.0, 100.0, []))
+
+
+class TestStripMarkedContent(unittest.TestCase):
+    """strip_marked_content must remove all BMC/BDC/EMC pairs while
+    keeping every other operator unchanged, regardless of nesting depth."""
+
+    @staticmethod
+    def _op(name, *args):
+        return (pikepdf.Array(list(args)), pikepdf.Operator(name))
+
+    def _ops(self, *names):
+        return [self._op(n) for n in names]
+
+    def test_empty_list(self):
+        self.assertEqual(strip_marked_content([]), [])
+
+    def test_no_marked_content_passes_through(self):
+        ops = self._ops('BT', 'Tm', 'Tj', 'ET')
+        self.assertEqual(
+            [str(o) for _, o in strip_marked_content(ops)],
+            ['BT', 'Tm', 'Tj', 'ET'],
+        )
+
+    def test_single_bmc_emc_pair_removed(self):
+        ops = self._ops('BMC', 'Tj', 'EMC')
+        result = strip_marked_content(ops)
+        self.assertEqual([str(o) for _, o in result], ['Tj'])
+
+    def test_single_bdc_emc_pair_removed(self):
+        ops = self._ops('BDC', 'Tj', 'EMC')
+        result = strip_marked_content(ops)
+        self.assertEqual([str(o) for _, o in result], ['Tj'])
+
+    def test_nested_marked_content_removed(self):
+        # /Part BDC … /Span BDC … EMC … EMC → inner ops remain
+        ops = self._ops('BDC', 'q', 'BDC', 'Tj', 'EMC', 'Q', 'EMC')
+        result = strip_marked_content(ops)
+        self.assertEqual([str(o) for _, o in result], ['q', 'Tj', 'Q'])
+
+    def test_content_between_pairs_preserved(self):
+        ops = self._ops('BMC', 'f', 'EMC', 'Tm', 'BMC', 'Tj', 'EMC')
+        result = strip_marked_content(ops)
+        self.assertEqual([str(o) for _, o in result], ['f', 'Tm', 'Tj'])
+
+    def test_unmatched_emc_dropped(self):
+        # Malformed but should not crash or leave stray EMC.
+        ops = self._ops('Tj', 'EMC', 'Tj')
+        result = strip_marked_content(ops)
+        self.assertEqual([str(o) for _, o in result], ['Tj', 'Tj'])
+
+    def test_round_trip_idempotent(self):
+        # Stripping an already-stripped stream produces the same result.
+        ops = self._ops('BT', 'Tm', 'Tj', 'ET')
+        once = strip_marked_content(ops)
+        twice = strip_marked_content(once)
+        self.assertEqual(
+            [str(o) for _, o in once],
+            [str(o) for _, o in twice],
+        )
 
 
 if __name__ == '__main__':
