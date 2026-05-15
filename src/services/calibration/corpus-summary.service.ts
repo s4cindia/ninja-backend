@@ -9,7 +9,16 @@
  * - PDF export (timesheet)
  *
  * Correctness notes:
- * - Only includes runs with `completedAt` inside [from, to].
+ * - Lineage summary includes runs with `completedAt` inside [from, to].
+ * - Timesheet summary (getTimesheetSummary) instead includes runs that
+ *   have at least one `AnnotationSession` whose `startedAt` falls inside
+ *   [from, to], and aggregates ONLY those in-window sessions. The tab
+ *   answers "hours worked in this window" — the lens an invoice bills on
+ *   — so a run worked during the period but completed later (or never
+ *   marked complete) still surfaces. Sessions are short bursts: a session
+ *   is attributed wholly to the window its `startedAt` falls in, with no
+ *   partial-attribution for sessions straddling the boundary (deliberate
+ *   — invoices don't bill sub-session granularity).
  * - Empty ranges return a valid, zeroed response — never a 404 or throw.
  * - Cost is computed through the SAME formula as the per-run path:
  *     annotatorActiveHours = sum(session.activeMs) / 3_600_000
@@ -119,7 +128,12 @@ export interface TimesheetSummaryResult {
     zonesPerHour: number;
     costInr: number;
     issuesCount: number;
-    completedAt: string;
+    /**
+     * The run's actual completion timestamp, or `null` for runs that
+     * qualified via in-window session activity but aren't marked
+     * complete yet. The FE renders a "Run status" column off this.
+     */
+    completedAt: string | null;
   }>;
   perZoneType: Array<{
     zoneType: string;
@@ -564,9 +578,21 @@ export async function getLineageSummary(range: DateRange): Promise<LineageSummar
 // ── Timesheet summary ───────────────────────────────────────────────────
 
 export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSummaryResult> {
+  // A run is included if it has at least one AnnotationSession whose
+  // startedAt falls within [from, to] — the "hours worked in this
+  // window" lens an invoice bills on. completedAt is NOT the inclusion
+  // criterion: a run worked during the period but completed later (or
+  // never marked complete) must still appear.
+  //
+  // The annotationSessions relation is also windowed by the same
+  // startedAt range so every downstream aggregation (totals, perOperator,
+  // perTitle, perZoneType, throughputTrend) automatically operates on
+  // in-window sessions only. A run with sessions in two different weeks
+  // contributes distinct in-window portions to each week's request.
+  const sessionWindow = { startedAt: { gte: range.from, lte: range.to } };
   const runs = await prisma.calibrationRun.findMany({
     where: {
-      completedAt: { gte: range.from, lte: range.to, not: null },
+      annotationSessions: { some: sessionWindow },
     },
     select: {
       id: true,
@@ -580,6 +606,7 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
         },
       },
       annotationSessions: {
+        where: sessionWindow,
         // NOTE: don't select sessionLog — it's a potentially-large JSONB blob
         // and this aggregation never reads it. Including it multiplied the
         // payload size on corpus-wide ranges for no benefit.
@@ -700,7 +727,7 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
       zonesPerHour: runActiveHours > 0 ? runZonesReviewed / runActiveHours : 0,
       costInr: runActiveHours * ANNOTATOR_RATE_INR_PER_HOUR,
       issuesCount: run._count.issues,
-      completedAt: (run.completedAt ?? new Date(0)).toISOString(),
+      completedAt: run.completedAt ? run.completedAt.toISOString() : null,
     };
   });
 
@@ -746,9 +773,12 @@ export async function getTimesheetSummary(range: DateRange): Promise<TimesheetSu
     });
 
   // ── Throughput trend ──────────────────────────────────────────────────
-  // One bucket per UTC day. Runs are included by `completedAt`, but a
-  // session's actual wall-clock day can be earlier (long-running titles)
-  // or later (finalization sessions) than the request range. We seed the
+  // One bucket per UTC day. Runs are included by session activity (not
+  // completedAt). Because annotationSessions is already windowed to the
+  // request range, the only sessions here are in-window ones — but the
+  // bucket anchor is sess.endedAt ?? sess.startedAt so a session that
+  // started just before midnight and ended just after will bucket on its
+  // end day. We seed the
   // bucket map with every day in the request range so the chart always
   // spans at least the requested window, and then add buckets on the fly
   // for any session whose anchor day falls outside — otherwise
