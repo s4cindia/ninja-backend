@@ -122,6 +122,12 @@ def write_tagged_pdf(
             P=struct_tree_ref,
             K=pikepdf.Array(),
         )
+
+        # PDF/UA-1 7.4.2: heading levels must not skip when going deeper.
+        # Track the last heading level emitted (0 = no heading yet) so we
+        # can clamp each new heading to at most last_heading_level + 1.
+        # Ascending (H3 → H1) is always allowed; only descending skips fail.
+        last_heading_level = [0]   # list to allow mutation inside inner scope
         doc_ref = pdf.make_indirect(doc_elem)
 
         # Group zones by page
@@ -170,9 +176,16 @@ def write_tagged_pdf(
                     or zone.get('type', 'paragraph')
                 role = get_pdf_role(zone_type)
 
-                # Build the tag role - headings use H1-H6
+                # Build the tag role - headings use H1-H6.
+                # Clamp skipped levels: if we go from H1 → H3 the veraPDF
+                # 7.4.2 check fires because H2 was skipped. Allow ascending
+                # (H3 → H1) freely; only prevent jumps >1 when descending.
                 if zone_type == 'section-header':
                     level = get_heading_level(zone)
+                    prev = last_heading_level[0]
+                    if prev > 0 and level > prev + 1:
+                        level = prev + 1      # close the gap
+                    last_heading_level[0] = level
                     tag_name = f'/H{level}'
                 else:
                     tag_name = role
