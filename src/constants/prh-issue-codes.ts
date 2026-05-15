@@ -703,6 +703,20 @@ export const PRH_ISSUE_CODES = {
     fixType: 'manual',
     summary: 'A <video> or <audio> element sets width via a width attribute or inline style — PRH requires media width to be set in CSS, not on the element',
   },
+
+  // ── Figure long-description detection (P6/PR6) ────────────────────────
+  // Publisher-gated and detect-only. Per PRH Technical Guide, long
+  // descriptions of complex images belong in a non-linear XHTML
+  // appendix (linked via aria-describedby), not inline in <figcaption>.
+  // We flag the cases worth refactoring; the actual non-linear-XHTML
+  // remediator is deferred until tenant demand surfaces.
+  'PRH-FIGURE-LONG-DESC-INLINE': {
+    code: 'PRH-FIGURE-LONG-DESC-INLINE',
+    severity: 'minor',
+    wcag: ['1.1.1'],
+    fixType: 'manual',
+    summary: 'A <figcaption> contains 250+ characters of text — PRH recommends moving long descriptions to a non-linear XHTML appendix (file_longdesc<N>.xhtml linked via aria-describedby) so the main reading flow stays uncluttered',
+  },
 } satisfies Record<string, PrhIssueDefinition>;
 
 export type PrhIssueCode = keyof typeof PRH_ISSUE_CODES;

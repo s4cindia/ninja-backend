@@ -37,6 +37,7 @@ import { validatePrhFileLayout } from './validators/file-layout-validator';
 import { validatePrhImageAssets } from './validators/image-assets-validator';
 import { validatePrhContentTypeMarkup } from './validators/content-type-markup-validator';
 import { validatePrhMediaMarkup } from './validators/media-markup-validator';
+import { validatePrhLongDescriptionInline } from './validators/long-description-validator';
 import { getImprintRules } from './imprints';
 import sharp from 'sharp';
 import type { PublisherProfile } from '../types';
@@ -145,6 +146,7 @@ export async function runPrhUkValidators(
         ...validatePrhImageAssets(imageAssetsInput),
         ...validatePrhContentTypeMarkup(perXhtmlInput),
         ...validatePrhMediaMarkup(perXhtmlInput),
+        ...validatePrhLongDescriptionInline(perXhtmlInput),
       );
     }
 
