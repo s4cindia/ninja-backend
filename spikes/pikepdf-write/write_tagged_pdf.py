@@ -183,14 +183,18 @@ def write_tagged_pdf(
                 role = get_pdf_role(zone_type)
 
                 # Build the tag role - headings use H1-H6.
-                # Clamp skipped levels: if we go from H1 → H3 the veraPDF
-                # 7.4.2 check fires because H2 was skipped. Allow ascending
-                # (H3 → H1) freely; only prevent jumps >1 when descending.
+                # Clamp skipped levels (PDF/UA-1 7.4.2): no jump of >1 in
+                # the "descending" direction (increasing level number). The
+                # first heading in a document is also constrained — starting
+                # at H3 means H1 and H2 were "skipped" per veraPDF, so the
+                # `prev > 0` guard from the previous increment is removed.
+                # With prev=0, the first heading is clamped to H1.
+                # Ascending (H3 → H1) always allowed — `level <= prev` path.
                 if zone_type == 'section-header':
                     level = get_heading_level(zone)
                     prev = last_heading_level[0]
-                    if prev > 0 and level > prev + 1:
-                        level = prev + 1      # close the gap
+                    if level > prev + 1:
+                        level = prev + 1      # close the gap (also first heading)
                     last_heading_level[0] = level
                     tag_name = f'/H{level}'
                 else:
