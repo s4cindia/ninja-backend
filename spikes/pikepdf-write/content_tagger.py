@@ -36,6 +36,112 @@ Scope / known limitations (tracked in #396):
 
 import pikepdf
 
+# ─── Inherited resource lookup ───────────────────────────────────────────────
+
+def _find_xobject_in_tree(page_obj, xo_name):
+    """Walk up the PDF page tree looking for *xo_name* in /XObject dicts.
+
+    PDF resources are inherited: an XObject referenced by a page's content
+    stream may be defined in a parent /Pages node, not in the leaf page's
+    own /Resources. `page.obj.get('/Resources')` only returns the *page*
+    level; this helper also checks ancestors.
+
+    Returns the XObject object, or None if not found.
+    """
+    node = page_obj
+    while node is not None:
+        res = node.get('/Resources')
+        if res is not None:
+            xobjs = res.get('/XObject')
+            if xobjs is not None and xo_name in xobjs:
+                return xobjs[xo_name]
+        parent = node.get('/Parent')
+        if parent is None:
+            break
+        node = parent
+    return None
+
+
+def _process_form_xobject(xo, processed_forms):
+    """Strip old marked content from *xo* and wrap its drawing ops as
+    /Artifact.  Recurses into nested form XObjects.  Idempotent: the
+    xObject's object number is added to *processed_forms* so it is only
+    rewritten once even when invoked from multiple call sites.
+
+    Used by the `Do` handler in retag_page_content to ensure that form
+    XObjects found via inherited resources (not in the leaf page's own
+    /Resources dict) are processed just like those found via the normal
+    page-resource walk.
+    """
+    obj_num = xo.objgen[0] if xo.is_indirect else None
+    if obj_num is not None and obj_num in processed_forms:
+        return
+    if obj_num is not None:
+        processed_forms.add(obj_num)
+
+    try:
+        ops = list(pikepdf.parse_content_stream(xo))
+    except Exception:
+        return
+    stripped = strip_marked_content(ops)
+
+    # Artifact-wrap ALL drawing ops (paths, text, images) in the form.
+    # Text-show ops (Tj/TJ etc.) also count as "real content" for PDF/UA-1
+    # 7.1 test 3 — they must be wrapped just like path-painting ops.
+    new_ops = []
+    in_path = False
+    for operands, operator in stripped:
+        op = str(operator)
+        if op in _PATH_START_OPS:
+            if not in_path:
+                new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                                pikepdf.Operator('BMC')))
+                in_path = True
+            new_ops.append((operands, operator))
+        elif op in _PATH_CONT_OPS:
+            new_ops.append((operands, operator))
+        elif op in _PATH_PAINT_OPS:
+            new_ops.append((operands, operator))
+            if in_path:
+                new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+                in_path = False
+        elif op in _TEXT_SHOW_OPS:
+            # Single-op artifact wrap for each text-show op.
+            new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                            pikepdf.Operator('BMC')))
+            new_ops.append((operands, operator))
+            new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+        elif op in (_SHADING_OP,) or 'INLINE IMAGE' in op.upper():
+            new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                            pikepdf.Operator('BMC')))
+            new_ops.append((operands, operator))
+            new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+        elif op == _XOBJECT_OP:
+            nested_name = operands[0] if operands else None
+            nested_res = xo.get('/Resources')
+            if nested_res and nested_name:
+                nested_xobjs = nested_res.get('/XObject')
+                if nested_xobjs:
+                    nxo = nested_xobjs.get(nested_name)
+                    if nxo is not None and nxo.get('/Subtype') == pikepdf.Name('/Form'):
+                        _process_form_xobject(nxo, processed_forms)
+            new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                            pikepdf.Operator('BMC')))
+            new_ops.append((operands, operator))
+            new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+        else:
+            new_ops.append((operands, operator))
+
+    if in_path:
+        new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
+
+    xo.write(pikepdf.unparse_content_stream(new_ops))
+
+    form_res = xo.get('/Resources')
+    if form_res:
+        retag_form_xobjects(form_res, processed_forms)
+
+
 # ─── Marked-content stripping ────────────────────────────────────────────────
 
 def strip_marked_content(operations):
@@ -124,6 +230,13 @@ def retag_form_xobjects(page_resources, processed_forms):
                 if in_path:
                     new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
                     in_path = False
+            elif op in _TEXT_SHOW_OPS:
+                # Text-show ops inside a form must also be artifact-wrapped
+                # so veraPDF's 7.1 test 3 sees them as "marked content".
+                new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
+                                pikepdf.Operator('BMC')))
+                new_ops.append((operands, operator))
+                new_ops.append((pikepdf.Array([]), pikepdf.Operator('EMC')))
             elif op == _SHADING_OP or 'INLINE IMAGE' in op.upper():
                 new_ops.append((pikepdf.Array([pikepdf.Name('/Artifact')]),
                                 pikepdf.Operator('BMC')))
@@ -388,21 +501,32 @@ def retag_page_content(page, page_zones, page_height, processed_forms=None):
             continue
 
         if op == _XOBJECT_OP:
-            # Look up the XObject to distinguish image vs form.
-            # Form XObjects have already been stripped + artifact-wrapped by
-            # retag_form_xobjects(), so the Do itself passes through unwrapped —
-            # the form's content IS marked; wrapping the Do again would nest marks.
-            # Image XObjects are single ops that need an MCID or /Artifact wrap.
+            # Look up the XObject to distinguish image vs form. Check the
+            # page-level resources first, then inherited resources in the
+            # page tree — some PDFs store form XObjects in parent /Pages
+            # nodes and leave the leaf page's /Resources empty.
             xo_name = operands[0] if operands else None
-            xo_subtype = None
-            if xo_name and page_resources:
-                xobjs = page_resources.get('/XObject')
-                if xobjs:
-                    xo = xobjs.get(xo_name)
-                    if xo is not None:
-                        xo_subtype = xo.get('/Subtype')
+            xo = None
+            if xo_name:
+                # 1. Page-level resources
+                if page_resources:
+                    xobjs = page_resources.get('/XObject')
+                    if xobjs:
+                        xo = xobjs.get(xo_name)
+                # 2. Fallback: inherited resources via page tree
+                if xo is None:
+                    xo = _find_xobject_in_tree(page.obj, xo_name)
+
+            xo_subtype = xo.get('/Subtype') if xo is not None else None
+
             if xo_subtype == pikepdf.Name('/Form'):
-                # Form already handled; just emit the Do.
+                # Ensure the form is stripped+artifact-wrapped before the
+                # Do is emitted — required when the form was found via
+                # inherited resources and therefore missed by the earlier
+                # retag_form_xobjects() call on page-level resources.
+                if xo is not None:
+                    _process_form_xobject(xo, processed_forms)
+                # Form content is now marked; pass the Do through unwrapped.
                 new_ops.append((operands, operator))
             else:
                 # Image (or unknown) — position from CTM origin.
