@@ -40,9 +40,15 @@ def write_tagged_pdf(
                 if _k in _po:
                     del _po[_k]
             # Process annotations on this page.
+            # Guard against null/deleted annotation entries — some PDFs store
+            # null indirect references in the /Annots array which pikepdf
+            # yields as None.  Without the `if ann is not None` check the `in`
+            # operator raises "argument of type 'NoneType' is not iterable".
             annots = _po.get('/Annots')
             if annots:
                 for ann in annots:
+                    if ann is None:
+                        continue
                     if '/StructParent' in ann:
                         del ann['/StructParent']
                     # PDF/UA-1 7.18.1 t2: every visible Link annotation must
@@ -268,6 +274,8 @@ def write_tagged_pdf(
             annots = page_obj.get('/Annots')
             if annots:
                 for ann in annots:
+                    if ann is None:          # null indirect reference
+                        continue
                     if ann.get('/Subtype') != pikepdf.Name('/Link'):
                         continue
                     ann_ref = pdf.make_indirect(ann)
