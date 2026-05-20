@@ -5,6 +5,7 @@ import pikepdf
 from collections import defaultdict
 from zone_to_tags import get_pdf_role, is_artifact, get_heading_level
 from content_tagger import retag_page_content
+from font_repair import repair_pdf
 
 
 def write_tagged_pdf(
@@ -27,6 +28,13 @@ def write_tagged_pdf(
     """
     try:
         pdf = pikepdf.open(input_pdf_path)
+
+        # Font repair pass: add missing /ToUnicode CMaps (PDF/UA-1 7.21.7),
+        # delete incorrect /CIDSet entries (7.21.4.2 t2), and fix missing
+        # /OCProperties /D /Name (7.10 t1). These are metadata defects in
+        # the source PDFs that the write step can repair without touching
+        # the font programs themselves.
+        repair_pdf(pdf)
 
         # Strip any pre-existing structure tree so we write onto a clean
         # canvas regardless of whether the input is publisher-tagged or not.
