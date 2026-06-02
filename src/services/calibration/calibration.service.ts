@@ -6,6 +6,7 @@ import { extractZonesFromTaggedPdf, type TaggedPdfExtractionStats } from '../zon
 import { matchZones, type SourceZone } from './zone-matcher';
 import { summariseCalibrationRun } from './calibration-summary';
 import { logger } from '../../lib/logger';
+import { stripPgUnsafeChars } from '../../utils/pg-text';
 
 export interface CalibrationRunResult {
   calibrationRunId: string;
@@ -196,7 +197,9 @@ export async function runCalibration(
           doclingLabel: m.doclingZone?.label ?? null,
           doclingConfidence: m.doclingZone?.confidence ?? null,
           pdfxtLabel: m.pdfxtZone?.label ?? null,
-          content: zone.content ?? null,
+          // Defense-in-depth: strip NUL / C0 control chars so a single bad glyph
+          // can't abort the whole createMany transaction (Postgres rejects 0x00).
+          content: stripPgUnsafeChars(zone.content),
         };
       }),
     }),
