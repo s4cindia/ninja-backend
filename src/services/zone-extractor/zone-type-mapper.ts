@@ -14,6 +14,7 @@ const DOCLING_LABEL_MAP: Record<string, CanonicalZoneType> = {
   'formula':         'paragraph',
   'code':            'paragraph',
   'reference':       'paragraph',
+  'document_index':  'paragraph',
   // Docling v1 labels (PascalCase with dashes) — keep for compatibility
   'Text':           'paragraph',
   'Section-Header': 'section-header',

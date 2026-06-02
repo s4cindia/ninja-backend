@@ -6,6 +6,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client } from '../s3.service';
 import type { CanonicalZoneType, BBox } from './types';
 import { logger } from '../../lib/logger';
+import { stripPgUnsafeChars } from '../../utils/pg-text';
 import type { Readable } from 'stream';
 
 // Ensure pdfjs worker is configured (same pattern as pdf-parser.service.ts)
@@ -886,7 +887,9 @@ function emitBlockZone(
         const parts = textMap.get(id);
         if (parts) textParts.push(parts.join(''));
       }
-      const joined = textParts.join(' ').trim();
+      // Strip NUL / C0 control chars: pdfjs emits U+0000 for unmapped glyphs
+      // (common in STEM/CID fonts), which PostgreSQL rejects in text columns.
+      const joined = stripPgUnsafeChars(textParts.join(' ').trim());
       if (joined) content = joined;
     }
 
