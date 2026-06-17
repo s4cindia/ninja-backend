@@ -104,6 +104,67 @@ class TestStratifiedSplit(unittest.TestCase):
         self.assertEqual(len(splits), 6)
 
 
+class TestRareClassCoverage(unittest.TestCase):
+    """The split must guarantee formula/table reach val AND test even when they
+    are concentrated in small (1-2-doc) publishers that the per-publisher split
+    would otherwise send entirely to train."""
+
+    def _formula_zones(self, n):
+        return [
+            {'pageNumber': 1, 'bounds': {'x': 0, 'y': 0, 'w': 10, 'h': 10},
+             'operatorLabel': 'formula'}
+            for _ in range(n)
+        ]
+
+    def test_formula_reaches_val_and_test_despite_small_publishers(self):
+        docs = [
+            # large publisher with no formula
+            *[{'documentId': f'big-{i}', 'publisher': 'BigPub', 'zones': []}
+              for i in range(8)],
+            # three single-doc publishers, each carrying formula -> per-publisher
+            # split would dump all three into train
+            *[{'documentId': f'solo-{j}', 'publisher': pub,
+               'zones': self._formula_zones(50)}
+              for j, pub in enumerate(['SoloA', 'SoloB', 'SoloC'])],
+        ]
+        splits = stratified_split(docs)
+        carrier_splits = {splits[f'solo-{j}'] for j in range(3)}
+        self.assertIn('train', carrier_splits, 'formula must stay in train')
+        self.assertIn('val', carrier_splits, 'formula must reach val')
+        self.assertIn('test', carrier_splits, 'formula must reach test')
+
+    def test_largest_carrier_kept_in_train(self):
+        docs = [
+            {'documentId': 'big', 'publisher': 'A', 'zones': self._formula_zones(500)},
+            {'documentId': 'mid', 'publisher': 'B', 'zones': self._formula_zones(200)},
+            {'documentId': 'small', 'publisher': 'C', 'zones': self._formula_zones(50)},
+        ]
+        splits = stratified_split(docs)
+        self.assertEqual(splits['big'], 'train', 'largest carrier should train')
+        self.assertEqual({splits['mid'], splits['small']}, {'val', 'test'})
+
+    def test_no_op_without_rare_carriers(self):
+        docs = [{'documentId': f'd{i}', 'publisher': 'P', 'zones': []}
+                for i in range(6)]
+        splits = stratified_split(docs)
+        self.assertEqual(len(splits), 6)
+        for v in splits.values():
+            self.assertIn(v, ('train', 'val', 'test'))
+
+    def test_too_few_carriers_left_untouched(self):
+        # Only 2 formula carriers — not enough for train+val+test; leave as-is.
+        docs = [
+            {'documentId': 'big', 'publisher': 'BigPub', 'zones': []}
+            for _ in range(1)
+        ] + [
+            {'documentId': 'f1', 'publisher': 'BigPub', 'zones': self._formula_zones(40)},
+            {'documentId': 'f2', 'publisher': 'BigPub', 'zones': self._formula_zones(40)},
+        ]
+        splits = stratified_split(docs)
+        # No crash; all assigned
+        self.assertEqual(len(splits), 3)
+
+
 class TestResolveLabel(unittest.TestCase):
 
     def test_returns_operator_label(self):

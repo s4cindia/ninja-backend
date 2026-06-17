@@ -17,6 +17,14 @@ CLASS_MAP = {
 ARTIFACT_TYPES = {'header', 'footer'}
 ARTIFACT_CLASS_INDICES = {CLASS_MAP['header'], CLASS_MAP['footer']}
 
+# Classes that must be EVALUABLE — present in val AND test, not merely trainable.
+# The publisher-stratified split sends every doc from a 1-2-doc publisher to
+# train, so a class concentrated in small publishers (notably formula) can be
+# absent from val/test and therefore impossible to measure. A coverage-repair
+# pass in stratified_split() relocates the minimum number of carrier docs to fix
+# this while keeping the largest carrier in train.
+EVAL_REQUIRED_CLASSES = (CLASS_MAP['formula'], CLASS_MAP['table'])  # 10, 2
+
 
 def resolve_label(zone: dict) -> str | None:
     """Return the zone label ONLY if a human operator verified it.
@@ -109,11 +117,64 @@ def bbox_to_yolo(
     return (cx, cy, w, h)
 
 
+def _class_doc_counts(documents: list[dict], class_idx: int) -> dict[str, int]:
+    """{documentId: number of non-rejected, human-verified zones whose resolved
+    class index == class_idx}. Used to find which docs 'carry' a rare class."""
+    counts: dict[str, int] = {}
+    for doc in documents:
+        n = 0
+        for z in doc.get('zones', []):
+            if z.get('decision') == 'REJECTED':
+                continue
+            label = resolve_label(z)
+            if label is None:
+                continue
+            if resolve_class_index(label) == class_idx:
+                n += 1
+        counts[doc['documentId']] = n
+    return counts
+
+
+def _ensure_class_in_eval_splits(
+    documents: list[dict],
+    splits: dict[str, str],
+    class_idx: int,
+    eval_min: int = 30,
+) -> None:
+    """Guarantee a class appears in BOTH val and test (when the data allows),
+    without stripping it from train. Mutates `splits` in place.
+
+    Relocates the minimum number of 'carrier' docs (those containing the class)
+    out of train, always keeping the single largest carrier in train so the
+    training signal is preserved. A no-op when the class is already present in
+    val/test, or when there are too few carriers to populate all three splits."""
+    counts = _class_doc_counts(documents, class_idx)
+    carriers = [doc_id for doc_id, n in counts.items() if n > 0]
+    if len(carriers) < 3:
+        return  # too few carriers to populate train+val+test; leave as-is
+
+    def carriers_in(split_name: str) -> list[str]:
+        return [c for c in carriers if splits.get(c) == split_name]
+
+    for target in ('val', 'test'):
+        if carriers_in(target):
+            continue  # class already evaluable in this split
+        train_carriers = carriers_in('train')
+        if len(train_carriers) <= 1:
+            return  # keep >=1 carrier in train; don't strip the training signal
+        largest = max(train_carriers, key=lambda c: counts[c])
+        candidates = [c for c in train_carriers if c != largest]
+        substantial = [c for c in candidates if counts[c] >= eval_min]
+        pool = substantial if substantial else candidates
+        mover = min(pool, key=lambda c: counts[c])  # smallest eligible carrier
+        splits[mover] = target
+
+
 def stratified_split(
     documents: list[dict],
     ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
 ) -> dict[str, str]:
-    """Stratified split by publisher.
+    """Stratified split by publisher, with a rare-class coverage-repair pass.
     Returns {documentId: 'train'|'val'|'test'}"""
     by_publisher: dict[str, list] = {}
     for doc in documents:
@@ -140,6 +201,12 @@ def stratified_split(
                 splits[doc_id] = 'val'
             else:
                 splits[doc_id] = 'test'
+
+    # Repair pass: ensure rare-but-required classes (formula, table) are present
+    # in val AND test, not just train. Without this, formula — concentrated in
+    # 1-2-doc publishers — stays train-only and cannot be measured.
+    for class_idx in EVAL_REQUIRED_CLASSES:
+        _ensure_class_in_eval_splits(documents, splits, class_idx)
 
     return splits
 
@@ -177,6 +244,9 @@ def export_corpus(
     # them lets the ML team spot annotation-vocabulary drift before retraining.
     unknown_labels: dict[str, int] = {}
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
+    # Per-split per-class instance counts — proves rare classes (formula, table)
+    # actually reach val/test, the whole point of the corpus expansion.
+    split_class_counts: dict[str, dict[int, int]] = {'train': {}, 'val': {}, 'test': {}}
 
     for doc in documents:
         raw_id   = doc['documentId']
@@ -259,6 +329,9 @@ def export_corpus(
                     f"{cls_idx} {cx:.6f} {cy:.6f}"
                     f" {bw:.6f} {bh:.6f}"
                 )
+                split_class_counts[split][cls_idx] = (
+                    split_class_counts[split].get(cls_idx, 0) + 1
+                )
 
             if lines:
                 with open(lbl_path, 'w') as f:
@@ -292,5 +365,6 @@ def export_corpus(
         'skippedNoHumanReview': skipped_no_human_review,
         'unknownLabels': unknown_labels,
         'splitSizes':   split_sizes,
+        'splitClassCounts': split_class_counts,
         'datasetYaml':  str(out / 'dataset.yaml'),
     }
