@@ -68,6 +68,14 @@ def main():
     device = 0 if has_cuda else 'cpu'
 
     # 4. Train
+    # MODEL may be an s3:// URI (custom checkpoint, e.g. DocLayNet-pretrained)
+    # or a plain Ultralytics name (auto-downloaded from their CDN).
+    if MODEL.startswith('s3://'):
+        m_bkt, m_key = parse_s3(MODEL)
+        local_model = '/tmp/' + os.path.basename(m_key)
+        print(f'[train] downloading model checkpoint {MODEL}', flush=True)
+        s3.download_file(m_bkt, m_key, local_model)
+        MODEL = local_model
     from ultralytics import YOLO
     model = YOLO(MODEL)
     model.train(
