@@ -21,7 +21,7 @@ import {
 } from '../services/calibration/corpus-summary.service';
 import { markCompleteBodySchema } from '../schemas/mark-complete.schema';
 import { corpusRangeQuerySchema, resolveCorpusRange } from '../schemas/corpus-summary.schema';
-import prisma from '../lib/prisma';
+import prisma, { Prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 
 function serverError(res: Response, err: unknown, code: string) {
@@ -324,6 +324,65 @@ class AnnotationReportController {
       });
     } catch (err) {
       serverError(res, err, 'MARK_COMPLETE_FAILED');
+    }
+  }
+
+  /**
+   * POST /calibration/runs/:runId/reopen
+   *
+   * Reverses Mark Complete so a completed corpus document can be re-annotated
+   * (e.g. to fix table labels). Clears the run's annotation-completion signals
+   * — `pagesReviewed` and `summary.analysisStatus` — and sets the document's
+   * `statusOverride` to IN_PROGRESS. Operator zones are left untouched, and the
+   * extraction `completedAt` is preserved (this does not re-run extraction).
+   * Returns `documentId` so the FE can navigate straight to the review workspace.
+   */
+  async reopenAnnotation(req: Request, res: Response, _next: NextFunction): Promise<void> {
+    try {
+      const { runId } = req.params;
+
+      const run = await prisma.calibrationRun.findUnique({
+        where: { id: runId },
+        select: { id: true, documentId: true, summary: true },
+      });
+      if (!run) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: 'Calibration run not found' },
+        });
+        return;
+      }
+
+      // Drop the analysis-complete marker but keep the rest of the summary.
+      const summary = { ...((run.summary as Record<string, unknown> | null) ?? {}) };
+      delete summary.analysisStatus;
+
+      await prisma.$transaction([
+        prisma.calibrationRun.update({
+          where: { id: runId },
+          data: {
+            pagesReviewed: null,
+            summary: summary as Prisma.InputJsonValue,
+          },
+        }),
+        prisma.corpusDocument.update({
+          where: { id: run.documentId },
+          data: {
+            statusOverride: 'IN_PROGRESS',
+            statusUpdatedAt: new Date(),
+            statusUpdatedBy: req.user?.id ?? null,
+          },
+        }),
+      ]);
+
+      logger.info(`[AnnotationReport] Reopened run ${runId} (doc ${run.documentId}) for re-annotation`);
+
+      res.json({
+        success: true,
+        data: { runId, documentId: run.documentId, status: 'IN_PROGRESS' as const },
+      });
+    } catch (err) {
+      serverError(res, err, 'REOPEN_FAILED');
     }
   }
 
