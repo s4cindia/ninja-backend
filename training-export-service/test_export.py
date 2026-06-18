@@ -2,8 +2,39 @@ import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
     bbox_to_yolo, stratified_split, resolve_label, resolve_class_index,
+    collapse_nested_table_boxes,
     CLASS_MAP, ARTIFACT_TYPES, ARTIFACT_CLASS_INDICES,
 )
+
+
+class TestCollapseNestedTableBoxes(unittest.TestCase):
+    """Operators boxed the whole table AND each cell as 'table'. The collapse
+    must keep the outermost whole-table box and drop the nested cell fragments."""
+
+    def _z(self, x, y, w, h):
+        return {'bounds': {'x': x, 'y': y, 'w': w, 'h': h}}
+
+    def test_drops_cells_keeps_whole_table(self):
+        whole = self._z(70, 98, 470, 338)          # whole table (Kim p191 style)
+        cells = [self._z(250 + i * 8, 120, 6, 8) for i in range(20)]  # tiny cells inside
+        kept = collapse_nested_table_boxes([whole] + cells)
+        self.assertEqual(kept, [whole], 'only the outermost table box should survive')
+
+    def test_keeps_two_separate_tables(self):
+        t1 = self._z(50, 50, 200, 150)
+        t2 = self._z(300, 50, 200, 150)           # side-by-side, non-overlapping
+        kept = collapse_nested_table_boxes([t1, t2])
+        self.assertEqual(len(kept), 2)
+
+    def test_supports_width_height_keys(self):
+        whole = {'bounds': {'x': 0, 'y': 0, 'width': 400, 'height': 300}}
+        cell = {'bounds': {'x': 10, 'y': 10, 'width': 20, 'height': 10}}
+        kept = collapse_nested_table_boxes([whole, cell])
+        self.assertEqual(kept, [whole])
+
+    def test_single_box_unchanged(self):
+        whole = self._z(10, 10, 100, 100)
+        self.assertEqual(collapse_nested_table_boxes([whole]), [whole])
 
 
 class TestBboxToYolo(unittest.TestCase):

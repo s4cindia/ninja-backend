@@ -211,9 +211,52 @@ def stratified_split(
     return splits
 
 
+def _bounds_xywh(zone: dict) -> tuple[float, float, float, float]:
+    b = zone.get('bounds') or {}
+    x = float(b.get('x', 0) or 0)
+    y = float(b.get('y', 0) or 0)
+    w = float(b.get('w', b.get('width', 0)) or 0)
+    h = float(b.get('h', b.get('height', 0)) or 0)
+    return x, y, w, h
+
+
+def collapse_nested_table_boxes(
+    table_zones: list[dict],
+    frac: float = 0.7,
+) -> list[dict]:
+    """Keep only 'maximal' table boxes — drop any table box that is mostly
+    contained inside a larger table box on the same page.
+
+    Operators annotated tables inconsistently: in several documents the whole
+    table is boxed AND every cell/row is ALSO boxed as 'table', producing dozens
+    of tiny overlapping fragments that look identical to paragraph text. The
+    detector cannot learn a coherent 'table' from that mix (measured: 89% of
+    test tables missed). This keeps the outermost whole-table box and removes the
+    nested cell fragments, so 'table' means one box = one table.
+    """
+    boxed = [(_bounds_xywh(z), z) for z in table_zones]
+    # Largest area first, so a containing box is always seen before its cells.
+    boxed.sort(key=lambda t: t[0][2] * t[0][3], reverse=True)
+    kept: list[tuple[tuple[float, float, float, float], dict]] = []
+    for (x, y, w, h), z in boxed:
+        area = w * h
+        contained = False
+        for (kx, ky, kw, kh), _ in kept:
+            ix = max(0.0, min(x + w, kx + kw) - max(x, kx))
+            iy = max(0.0, min(y + h, ky + kh) - max(y, ky))
+            inter = ix * iy
+            if area > 0 and (inter / area) >= frac and (kw * kh) >= area:
+                contained = True
+                break
+        if not contained:
+            kept.append(((x, y, w, h), z))
+    return [z for _, z in kept]
+
+
 def export_corpus(
     documents: list[dict],
     output_dir: str,
+    collapse_table_cells: bool = False,
 ) -> dict:
     """
     Export corpus to YOLO training format.
@@ -247,6 +290,7 @@ def export_corpus(
     # Per-split per-class instance counts — proves rare classes (formula, table)
     # actually reach val/test, the whole point of the corpus expansion.
     split_class_counts: dict[str, dict[int, int]] = {'train': {}, 'val': {}, 'test': {}}
+    collapsed_table_cells = 0  # nested per-cell 'table' boxes dropped (when enabled)
 
     for doc in documents:
         raw_id   = doc['documentId']
@@ -280,6 +324,18 @@ def export_corpus(
                 if cls_idx in ARTIFACT_CLASS_INDICES:
                     continue  # Headers/footers are artefacts, not training content
                 content_zones.append((z, cls_idx))
+
+            # Optional table normalisation: collapse nested per-cell 'table'
+            # boxes into the outermost whole-table box (annotation-quality fix).
+            if collapse_table_cells:
+                table_idx = CLASS_MAP['table']
+                tbls = [z for z, c in content_zones if c == table_idx]
+                if len(tbls) > 1:
+                    keep_ids = {id(z) for z in collapse_nested_table_boxes(tbls)}
+                    content_zones = [(z, c) for z, c in content_zones
+                                     if c != table_idx or id(z) in keep_ids]
+                    collapsed_table_cells += len(tbls) - len(keep_ids)
+
             if not content_zones:
                 # Check if skip is because no zones had human review
                 has_any_human = any(z.get('operatorLabel') for z in page_zones)
@@ -366,5 +422,6 @@ def export_corpus(
         'unknownLabels': unknown_labels,
         'splitSizes':   split_sizes,
         'splitClassCounts': split_class_counts,
+        'collapsedTableCells': collapsed_table_cells,
         'datasetYaml':  str(out / 'dataset.yaml'),
     }
