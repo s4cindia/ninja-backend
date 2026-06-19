@@ -220,37 +220,64 @@ def _bounds_xywh(zone: dict) -> tuple[float, float, float, float]:
     return x, y, w, h
 
 
-def collapse_nested_table_boxes(
+def merge_table_cells_into_tables(
     table_zones: list[dict],
-    frac: float = 0.7,
+    gap: float = 20.0,
 ) -> list[dict]:
-    """Keep only 'maximal' table boxes — drop any table box that is mostly
-    contained inside a larger table box on the same page.
+    """Cluster the 'table' boxes on a page by spatial proximity and return ONE
+    synthesised whole-table box (the union) per cluster.
 
     Operators annotated tables inconsistently: in several documents the whole
-    table is boxed AND every cell/row is ALSO boxed as 'table', producing dozens
-    of tiny overlapping fragments that look identical to paragraph text. The
-    detector cannot learn a coherent 'table' from that mix (measured: 89% of
-    test tables missed). This keeps the outermost whole-table box and removes the
-    nested cell fragments, so 'table' means one box = one table.
+    table is boxed AND every cell/row is ALSO boxed as 'table'; in others the
+    table is boxed ONLY as cells (no enclosing box). Both produce dozens of tiny
+    fragments that look identical to paragraph text, so the detector misses 89%
+    of test tables. Merging fixes both cases without any manual drawing:
+
+    - whole-table-box + cells → the cells overlap the whole box → one cluster →
+      union = the whole-table box.
+    - cells only (e.g. Nikitopoulos, Patton) → the cells of a table are adjacent
+      → one cluster per table → union = a synthesised whole-table box.
+
+    Two boxes join the same cluster when their rectangles, expanded by `gap`
+    points on every side, overlap (connected components). Each returned dict has
+    only `bounds` — that's all the export's bbox writer needs.
     """
-    boxed = [(_bounds_xywh(z), z) for z in table_zones]
-    # Largest area first, so a containing box is always seen before its cells.
-    boxed.sort(key=lambda t: t[0][2] * t[0][3], reverse=True)
-    kept: list[tuple[tuple[float, float, float, float], dict]] = []
-    for (x, y, w, h), z in boxed:
-        area = w * h
-        contained = False
-        for (kx, ky, kw, kh), _ in kept:
-            ix = max(0.0, min(x + w, kx + kw) - max(x, kx))
-            iy = max(0.0, min(y + h, ky + kh) - max(y, ky))
-            inter = ix * iy
-            if area > 0 and (inter / area) >= frac and (kw * kh) >= area:
-                contained = True
-                break
-        if not contained:
-            kept.append(((x, y, w, h), z))
-    return [z for _, z in kept]
+    boxes = [_bounds_xywh(z) for z in table_zones]
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def near(a, b) -> bool:
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        # NOT separated on either axis once each box is grown by `gap`.
+        return not (
+            ax - gap > bx + bw or bx - gap > ax + aw
+            or ay - gap > by + bh or by - gap > ay + ah
+        )
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if near(boxes[i], boxes[j]):
+                parent[find(i)] = find(j)
+
+    clusters: dict[int, list[tuple[float, float, float, float]]] = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(boxes[i])
+
+    merged: list[dict] = []
+    for group in clusters.values():
+        x0 = min(b[0] for b in group)
+        y0 = min(b[1] for b in group)
+        x1 = max(b[0] + b[2] for b in group)
+        y1 = max(b[1] + b[3] for b in group)
+        merged.append({'bounds': {'x': x0, 'y': y0, 'w': x1 - x0, 'h': y1 - y0}})
+    return merged
 
 
 def export_corpus(
@@ -325,16 +352,16 @@ def export_corpus(
                     continue  # Headers/footers are artefacts, not training content
                 content_zones.append((z, cls_idx))
 
-            # Optional table normalisation: collapse nested per-cell 'table'
-            # boxes into the outermost whole-table box (annotation-quality fix).
+            # Optional table normalisation: merge per-cell 'table' fragments into
+            # one synthesised whole-table box per table (annotation-quality fix).
             if collapse_table_cells:
                 table_idx = CLASS_MAP['table']
                 tbls = [z for z, c in content_zones if c == table_idx]
                 if len(tbls) > 1:
-                    keep_ids = {id(z) for z in collapse_nested_table_boxes(tbls)}
-                    content_zones = [(z, c) for z, c in content_zones
-                                     if c != table_idx or id(z) in keep_ids]
-                    collapsed_table_cells += len(tbls) - len(keep_ids)
+                    merged = merge_table_cells_into_tables(tbls)
+                    non_table = [(z, c) for z, c in content_zones if c != table_idx]
+                    content_zones = non_table + [(mz, table_idx) for mz in merged]
+                    collapsed_table_cells += len(tbls) - len(merged)
 
             if not content_zones:
                 # Check if skip is because no zones had human review

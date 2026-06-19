@@ -2,39 +2,56 @@ import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
     bbox_to_yolo, stratified_split, resolve_label, resolve_class_index,
-    collapse_nested_table_boxes,
+    merge_table_cells_into_tables,
     CLASS_MAP, ARTIFACT_TYPES, ARTIFACT_CLASS_INDICES,
 )
 
 
-class TestCollapseNestedTableBoxes(unittest.TestCase):
-    """Operators boxed the whole table AND each cell as 'table'. The collapse
-    must keep the outermost whole-table box and drop the nested cell fragments."""
+class TestMergeTableCells(unittest.TestCase):
+    """'table' is annotated as whole-table+cells, or as cells only. Merge must
+    produce ONE whole-table box per table (the union of the spatial cluster) —
+    fixing both cases without any manual drawing."""
 
     def _z(self, x, y, w, h):
         return {'bounds': {'x': x, 'y': y, 'w': w, 'h': h}}
 
-    def test_drops_cells_keeps_whole_table(self):
-        whole = self._z(70, 98, 470, 338)          # whole table (Kim p191 style)
-        cells = [self._z(250 + i * 8, 120, 6, 8) for i in range(20)]  # tiny cells inside
-        kept = collapse_nested_table_boxes([whole] + cells)
-        self.assertEqual(kept, [whole], 'only the outermost table box should survive')
+    def test_whole_plus_cells_merge_to_whole_box(self):
+        whole = self._z(70, 98, 470, 338)                              # Kim p191 style
+        cells = [self._z(250 + i * 8, 120, 6, 8) for i in range(20)]   # cells inside
+        merged = merge_table_cells_into_tables([whole] + cells)
+        self.assertEqual(len(merged), 1)
+        b = merged[0]['bounds']
+        # Union equals the whole-table box (the cells sit inside it).
+        self.assertAlmostEqual(b['x'], 70);  self.assertAlmostEqual(b['y'], 98)
+        self.assertAlmostEqual(b['w'], 470); self.assertAlmostEqual(b['h'], 338)
 
-    def test_keeps_two_separate_tables(self):
-        t1 = self._z(50, 50, 200, 150)
-        t2 = self._z(300, 50, 200, 150)           # side-by-side, non-overlapping
-        kept = collapse_nested_table_boxes([t1, t2])
-        self.assertEqual(len(kept), 2)
+    def test_cells_only_synthesise_one_table(self):
+        # Nikitopoulos / Patton style: a grid of adjacent cells, NO enclosing box.
+        cells = [self._z(100 + c * 40, 200 + r * 12, 38, 10)
+                 for r in range(4) for c in range(3)]
+        merged = merge_table_cells_into_tables(cells)
+        self.assertEqual(len(merged), 1, 'adjacent cells form one whole-table box')
+        b = merged[0]['bounds']
+        self.assertAlmostEqual(b['x'], 100); self.assertAlmostEqual(b['y'], 200)
+        self.assertAlmostEqual(b['w'], 118); self.assertAlmostEqual(b['h'], 46)
+
+    def test_two_separate_tables_stay_separate(self):
+        t1 = self._z(50, 50, 150, 120)
+        t2 = self._z(400, 50, 150, 120)            # far apart → distinct clusters
+        merged = merge_table_cells_into_tables([t1, t2])
+        self.assertEqual(len(merged), 2)
 
     def test_supports_width_height_keys(self):
-        whole = {'bounds': {'x': 0, 'y': 0, 'width': 400, 'height': 300}}
-        cell = {'bounds': {'x': 10, 'y': 10, 'width': 20, 'height': 10}}
-        kept = collapse_nested_table_boxes([whole, cell])
-        self.assertEqual(kept, [whole])
+        a = {'bounds': {'x': 0, 'y': 0, 'width': 100, 'height': 50}}
+        b = {'bounds': {'x': 10, 'y': 10, 'width': 20, 'height': 10}}
+        merged = merge_table_cells_into_tables([a, b])
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged[0]['bounds']['w'], 100)
 
-    def test_single_box_unchanged(self):
-        whole = self._z(10, 10, 100, 100)
-        self.assertEqual(collapse_nested_table_boxes([whole]), [whole])
+    def test_single_box(self):
+        merged = merge_table_cells_into_tables([self._z(10, 10, 100, 100)])
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged[0]['bounds']['w'], 100)
 
 
 class TestBboxToYolo(unittest.TestCase):
