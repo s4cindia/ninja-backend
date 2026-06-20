@@ -17,6 +17,14 @@ CLASS_MAP = {
 ARTIFACT_TYPES = {'header', 'footer'}
 ARTIFACT_CLASS_INDICES = {CLASS_MAP['header'], CLASS_MAP['footer']}
 
+# Classes that must be EVALUABLE — present in val AND test, not merely trainable.
+# The publisher-stratified split sends every doc from a 1-2-doc publisher to
+# train, so a class concentrated in small publishers (notably formula) can be
+# absent from val/test and therefore impossible to measure. A coverage-repair
+# pass in stratified_split() relocates the minimum number of carrier docs to fix
+# this while keeping the largest carrier in train.
+EVAL_REQUIRED_CLASSES = (CLASS_MAP['formula'], CLASS_MAP['table'])  # 10, 2
+
 
 def resolve_label(zone: dict) -> str | None:
     """Return the zone label ONLY if a human operator verified it.
@@ -109,11 +117,64 @@ def bbox_to_yolo(
     return (cx, cy, w, h)
 
 
+def _class_doc_counts(documents: list[dict], class_idx: int) -> dict[str, int]:
+    """{documentId: number of non-rejected, human-verified zones whose resolved
+    class index == class_idx}. Used to find which docs 'carry' a rare class."""
+    counts: dict[str, int] = {}
+    for doc in documents:
+        n = 0
+        for z in doc.get('zones', []):
+            if z.get('decision') == 'REJECTED':
+                continue
+            label = resolve_label(z)
+            if label is None:
+                continue
+            if resolve_class_index(label) == class_idx:
+                n += 1
+        counts[doc['documentId']] = n
+    return counts
+
+
+def _ensure_class_in_eval_splits(
+    documents: list[dict],
+    splits: dict[str, str],
+    class_idx: int,
+    eval_min: int = 30,
+) -> None:
+    """Guarantee a class appears in BOTH val and test (when the data allows),
+    without stripping it from train. Mutates `splits` in place.
+
+    Relocates the minimum number of 'carrier' docs (those containing the class)
+    out of train, always keeping the single largest carrier in train so the
+    training signal is preserved. A no-op when the class is already present in
+    val/test, or when there are too few carriers to populate all three splits."""
+    counts = _class_doc_counts(documents, class_idx)
+    carriers = [doc_id for doc_id, n in counts.items() if n > 0]
+    if len(carriers) < 3:
+        return  # too few carriers to populate train+val+test; leave as-is
+
+    def carriers_in(split_name: str) -> list[str]:
+        return [c for c in carriers if splits.get(c) == split_name]
+
+    for target in ('val', 'test'):
+        if carriers_in(target):
+            continue  # class already evaluable in this split
+        train_carriers = carriers_in('train')
+        if len(train_carriers) <= 1:
+            return  # keep >=1 carrier in train; don't strip the training signal
+        largest = max(train_carriers, key=lambda c: counts[c])
+        candidates = [c for c in train_carriers if c != largest]
+        substantial = [c for c in candidates if counts[c] >= eval_min]
+        pool = substantial if substantial else candidates
+        mover = min(pool, key=lambda c: counts[c])  # smallest eligible carrier
+        splits[mover] = target
+
+
 def stratified_split(
     documents: list[dict],
     ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
 ) -> dict[str, str]:
-    """Stratified split by publisher.
+    """Stratified split by publisher, with a rare-class coverage-repair pass.
     Returns {documentId: 'train'|'val'|'test'}"""
     by_publisher: dict[str, list] = {}
     for doc in documents:
@@ -141,12 +202,88 @@ def stratified_split(
             else:
                 splits[doc_id] = 'test'
 
+    # Repair pass: ensure rare-but-required classes (formula, table) are present
+    # in val AND test, not just train. Without this, formula — concentrated in
+    # 1-2-doc publishers — stays train-only and cannot be measured.
+    for class_idx in EVAL_REQUIRED_CLASSES:
+        _ensure_class_in_eval_splits(documents, splits, class_idx)
+
     return splits
+
+
+def _bounds_xywh(zone: dict) -> tuple[float, float, float, float]:
+    b = zone.get('bounds') or {}
+    x = float(b.get('x', 0) or 0)
+    y = float(b.get('y', 0) or 0)
+    w = float(b.get('w', b.get('width', 0)) or 0)
+    h = float(b.get('h', b.get('height', 0)) or 0)
+    return x, y, w, h
+
+
+def merge_table_cells_into_tables(
+    table_zones: list[dict],
+    gap: float = 20.0,
+) -> list[dict]:
+    """Cluster the 'table' boxes on a page by spatial proximity and return ONE
+    synthesised whole-table box (the union) per cluster.
+
+    Operators annotated tables inconsistently: in several documents the whole
+    table is boxed AND every cell/row is ALSO boxed as 'table'; in others the
+    table is boxed ONLY as cells (no enclosing box). Both produce dozens of tiny
+    fragments that look identical to paragraph text, so the detector misses 89%
+    of test tables. Merging fixes both cases without any manual drawing:
+
+    - whole-table-box + cells → the cells overlap the whole box → one cluster →
+      union = the whole-table box.
+    - cells only (e.g. Nikitopoulos, Patton) → the cells of a table are adjacent
+      → one cluster per table → union = a synthesised whole-table box.
+
+    Two boxes join the same cluster when their rectangles, expanded by `gap`
+    points on every side, overlap (connected components). Each returned dict has
+    only `bounds` — that's all the export's bbox writer needs.
+    """
+    boxes = [_bounds_xywh(z) for z in table_zones]
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def near(a, b) -> bool:
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+        # NOT separated on either axis once each box is grown by `gap`.
+        return not (
+            ax - gap > bx + bw or bx - gap > ax + aw
+            or ay - gap > by + bh or by - gap > ay + ah
+        )
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if near(boxes[i], boxes[j]):
+                parent[find(i)] = find(j)
+
+    clusters: dict[int, list[tuple[float, float, float, float]]] = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(boxes[i])
+
+    merged: list[dict] = []
+    for group in clusters.values():
+        x0 = min(b[0] for b in group)
+        y0 = min(b[1] for b in group)
+        x1 = max(b[0] + b[2] for b in group)
+        y1 = max(b[1] + b[3] for b in group)
+        merged.append({'bounds': {'x': x0, 'y': y0, 'w': x1 - x0, 'h': y1 - y0}})
+    return merged
 
 
 def export_corpus(
     documents: list[dict],
     output_dir: str,
+    collapse_table_cells: bool = False,
 ) -> dict:
     """
     Export corpus to YOLO training format.
@@ -177,6 +314,10 @@ def export_corpus(
     # them lets the ML team spot annotation-vocabulary drift before retraining.
     unknown_labels: dict[str, int] = {}
     split_sizes = {'train': 0, 'val': 0, 'test': 0}
+    # Per-split per-class instance counts — proves rare classes (formula, table)
+    # actually reach val/test, the whole point of the corpus expansion.
+    split_class_counts: dict[str, dict[int, int]] = {'train': {}, 'val': {}, 'test': {}}
+    collapsed_table_cells = 0  # nested per-cell 'table' boxes dropped (when enabled)
 
     for doc in documents:
         raw_id   = doc['documentId']
@@ -210,6 +351,18 @@ def export_corpus(
                 if cls_idx in ARTIFACT_CLASS_INDICES:
                     continue  # Headers/footers are artefacts, not training content
                 content_zones.append((z, cls_idx))
+
+            # Optional table normalisation: merge per-cell 'table' fragments into
+            # one synthesised whole-table box per table (annotation-quality fix).
+            if collapse_table_cells:
+                table_idx = CLASS_MAP['table']
+                tbls = [z for z, c in content_zones if c == table_idx]
+                if len(tbls) > 1:
+                    merged = merge_table_cells_into_tables(tbls)
+                    non_table = [(z, c) for z, c in content_zones if c != table_idx]
+                    content_zones = non_table + [(mz, table_idx) for mz in merged]
+                    collapsed_table_cells += len(tbls) - len(merged)
+
             if not content_zones:
                 # Check if skip is because no zones had human review
                 has_any_human = any(z.get('operatorLabel') for z in page_zones)
@@ -259,6 +412,9 @@ def export_corpus(
                     f"{cls_idx} {cx:.6f} {cy:.6f}"
                     f" {bw:.6f} {bh:.6f}"
                 )
+                split_class_counts[split][cls_idx] = (
+                    split_class_counts[split].get(cls_idx, 0) + 1
+                )
 
             if lines:
                 with open(lbl_path, 'w') as f:
@@ -292,5 +448,7 @@ def export_corpus(
         'skippedNoHumanReview': skipped_no_human_review,
         'unknownLabels': unknown_labels,
         'splitSizes':   split_sizes,
+        'splitClassCounts': split_class_counts,
+        'collapsedTableCells': collapsed_table_cells,
         'datasetYaml':  str(out / 'dataset.yaml'),
     }

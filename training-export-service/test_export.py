@@ -2,8 +2,56 @@ import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
     bbox_to_yolo, stratified_split, resolve_label, resolve_class_index,
+    merge_table_cells_into_tables,
     CLASS_MAP, ARTIFACT_TYPES, ARTIFACT_CLASS_INDICES,
 )
+
+
+class TestMergeTableCells(unittest.TestCase):
+    """'table' is annotated as whole-table+cells, or as cells only. Merge must
+    produce ONE whole-table box per table (the union of the spatial cluster) —
+    fixing both cases without any manual drawing."""
+
+    def _z(self, x, y, w, h):
+        return {'bounds': {'x': x, 'y': y, 'w': w, 'h': h}}
+
+    def test_whole_plus_cells_merge_to_whole_box(self):
+        whole = self._z(70, 98, 470, 338)                              # Kim p191 style
+        cells = [self._z(250 + i * 8, 120, 6, 8) for i in range(20)]   # cells inside
+        merged = merge_table_cells_into_tables([whole] + cells)
+        self.assertEqual(len(merged), 1)
+        b = merged[0]['bounds']
+        # Union equals the whole-table box (the cells sit inside it).
+        self.assertAlmostEqual(b['x'], 70);  self.assertAlmostEqual(b['y'], 98)
+        self.assertAlmostEqual(b['w'], 470); self.assertAlmostEqual(b['h'], 338)
+
+    def test_cells_only_synthesise_one_table(self):
+        # Nikitopoulos / Patton style: a grid of adjacent cells, NO enclosing box.
+        cells = [self._z(100 + c * 40, 200 + r * 12, 38, 10)
+                 for r in range(4) for c in range(3)]
+        merged = merge_table_cells_into_tables(cells)
+        self.assertEqual(len(merged), 1, 'adjacent cells form one whole-table box')
+        b = merged[0]['bounds']
+        self.assertAlmostEqual(b['x'], 100); self.assertAlmostEqual(b['y'], 200)
+        self.assertAlmostEqual(b['w'], 118); self.assertAlmostEqual(b['h'], 46)
+
+    def test_two_separate_tables_stay_separate(self):
+        t1 = self._z(50, 50, 150, 120)
+        t2 = self._z(400, 50, 150, 120)            # far apart → distinct clusters
+        merged = merge_table_cells_into_tables([t1, t2])
+        self.assertEqual(len(merged), 2)
+
+    def test_supports_width_height_keys(self):
+        a = {'bounds': {'x': 0, 'y': 0, 'width': 100, 'height': 50}}
+        b = {'bounds': {'x': 10, 'y': 10, 'width': 20, 'height': 10}}
+        merged = merge_table_cells_into_tables([a, b])
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged[0]['bounds']['w'], 100)
+
+    def test_single_box(self):
+        merged = merge_table_cells_into_tables([self._z(10, 10, 100, 100)])
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged[0]['bounds']['w'], 100)
 
 
 class TestBboxToYolo(unittest.TestCase):
@@ -102,6 +150,67 @@ class TestStratifiedSplit(unittest.TestCase):
         # Should not raise — falls back to 'unknown'
         splits = stratified_split(docs)
         self.assertEqual(len(splits), 6)
+
+
+class TestRareClassCoverage(unittest.TestCase):
+    """The split must guarantee formula/table reach val AND test even when they
+    are concentrated in small (1-2-doc) publishers that the per-publisher split
+    would otherwise send entirely to train."""
+
+    def _formula_zones(self, n):
+        return [
+            {'pageNumber': 1, 'bounds': {'x': 0, 'y': 0, 'w': 10, 'h': 10},
+             'operatorLabel': 'formula'}
+            for _ in range(n)
+        ]
+
+    def test_formula_reaches_val_and_test_despite_small_publishers(self):
+        docs = [
+            # large publisher with no formula
+            *[{'documentId': f'big-{i}', 'publisher': 'BigPub', 'zones': []}
+              for i in range(8)],
+            # three single-doc publishers, each carrying formula -> per-publisher
+            # split would dump all three into train
+            *[{'documentId': f'solo-{j}', 'publisher': pub,
+               'zones': self._formula_zones(50)}
+              for j, pub in enumerate(['SoloA', 'SoloB', 'SoloC'])],
+        ]
+        splits = stratified_split(docs)
+        carrier_splits = {splits[f'solo-{j}'] for j in range(3)}
+        self.assertIn('train', carrier_splits, 'formula must stay in train')
+        self.assertIn('val', carrier_splits, 'formula must reach val')
+        self.assertIn('test', carrier_splits, 'formula must reach test')
+
+    def test_largest_carrier_kept_in_train(self):
+        docs = [
+            {'documentId': 'big', 'publisher': 'A', 'zones': self._formula_zones(500)},
+            {'documentId': 'mid', 'publisher': 'B', 'zones': self._formula_zones(200)},
+            {'documentId': 'small', 'publisher': 'C', 'zones': self._formula_zones(50)},
+        ]
+        splits = stratified_split(docs)
+        self.assertEqual(splits['big'], 'train', 'largest carrier should train')
+        self.assertEqual({splits['mid'], splits['small']}, {'val', 'test'})
+
+    def test_no_op_without_rare_carriers(self):
+        docs = [{'documentId': f'd{i}', 'publisher': 'P', 'zones': []}
+                for i in range(6)]
+        splits = stratified_split(docs)
+        self.assertEqual(len(splits), 6)
+        for v in splits.values():
+            self.assertIn(v, ('train', 'val', 'test'))
+
+    def test_too_few_carriers_left_untouched(self):
+        # Only 2 formula carriers — not enough for train+val+test; leave as-is.
+        docs = [
+            {'documentId': 'big', 'publisher': 'BigPub', 'zones': []}
+            for _ in range(1)
+        ] + [
+            {'documentId': 'f1', 'publisher': 'BigPub', 'zones': self._formula_zones(40)},
+            {'documentId': 'f2', 'publisher': 'BigPub', 'zones': self._formula_zones(40)},
+        ]
+        splits = stratified_split(docs)
+        # No crash; all assigned
+        self.assertEqual(len(splits), 3)
 
 
 class TestResolveLabel(unittest.TestCase):
