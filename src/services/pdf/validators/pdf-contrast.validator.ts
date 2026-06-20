@@ -168,6 +168,10 @@ export class PdfContrastValidator {
             `Text: "${str.substring(0, 50)}", ` +
             `fg=${this.rgbToHex(textColor)}, bg=${this.rgbToHex(bgColor)}, ratio=${ratio.toFixed(2)}:1`,
           pageNumber: page.pageNumber,
+          // Use UNSCALED PDF-point coords (not the canvas/RENDER_SCALE values above)
+          boundingBox: this.computeTextBoundingBox(
+            pdfX, pdfY, item.width, fontSize, page.width, page.height
+          ),
         });
       }
     }
@@ -221,6 +225,45 @@ export class PdfContrastValidator {
   }
 
   // ─── Public helpers (used by tests and AI analysis) ───────────────────────
+
+  /**
+   * Build a top-left-origin boundingBox (unscaled PDF points) for a text item.
+   *
+   * pdfjs text-item coordinates (transform[4]/[5]) are PDF user space with a
+   * BOTTOM-LEFT origin, where transform[5] is the text baseline. The canonical
+   * boundingBox uses a TOP-LEFT origin matching the text/structure extractors
+   * (text-extractor.service.ts: y = pageHeight - transform[5], height = fontSize).
+   * Deliberately uses PDF points — NOT the canvas/RENDER_SCALE values used for
+   * pixel sampling.
+   *
+   * Returns undefined when the text width or page size is unknown, so the box is
+   * only attached when every value is a real number.
+   */
+  computeTextBoundingBox(
+    pdfX: number,
+    pdfBaselineY: number,
+    itemWidth: number | undefined,
+    fontSize: number,
+    pageWidth: number,
+    pageHeight: number,
+  ): AuditIssue['boundingBox'] | undefined {
+    if (
+      !(typeof itemWidth === 'number' && itemWidth > 0) ||
+      !(fontSize > 0) ||
+      !(pageWidth > 0) ||
+      !(pageHeight > 0)
+    ) {
+      return undefined;
+    }
+    return {
+      x: pdfX,
+      y: pageHeight - pdfBaselineY,
+      width: itemWidth,
+      height: fontSize,
+      pageWidth,
+      pageHeight,
+    };
+  }
 
   calculateContrastRatio(color1: RgbColor, color2: RgbColor): number {
     const l1 = this.getLuminance(color1.r, color1.g, color1.b);

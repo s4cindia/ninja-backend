@@ -62,7 +62,12 @@ export interface AuditIssue {
   /** Testability designation from Matterhorn Protocol 1.1 */
   matterhornHow?: 'M' | 'H' | '--';
   triage?: IssueTriage;
-  /** Bounding box of the flagged element in PDF page coordinates (bottom-left origin). */
+  /**
+   * Bounding box of the flagged element, in unscaled PDF points with a
+   * TOP-LEFT origin (y grows downward) — the same convention produced by the
+   * image/table/link extractors. Validators emitting this must convert any
+   * bottom-left (raw PDF user-space / pdfjs) coordinates before populating it.
+   */
   boundingBox?: { x: number; y: number; width: number; height: number; pageWidth: number; pageHeight: number };
 }
 
