@@ -31,7 +31,7 @@ class PdfFormValidator {
     for (const page of parsed.pages) {
       totalFields += page.formFields.length;
       for (const field of page.formFields) {
-        const issue = this.checkField(field, page.pageNumber);
+        const issue = this.checkField(field, page.pageNumber, page.width, page.height);
         if (issue) issues.push(issue);
       }
     }
@@ -45,9 +45,15 @@ class PdfFormValidator {
     return issues;
   }
 
-  private checkField(field: PdfFormField, pageNumber: number): AuditIssue | null {
+  private checkField(
+    field: PdfFormField,
+    pageNumber: number,
+    pageWidth: number,
+    pageHeight: number
+  ): AuditIssue | null {
     const label = (field.label ?? '').trim();
     const name = (field.name ?? '').trim();
+    const boundingBox = this.buildBoundingBox(field, pageWidth, pageHeight);
 
     const hasNoLabel = !label;
     const hasGenericLabel = label
@@ -73,6 +79,7 @@ class PdfFormValidator {
           'or set a descriptive field name in the authoring tool.',
         context: `Field name: "${name || '(unnamed)'}", Type: ${field.type}`,
         pageNumber,
+        boundingBox,
       };
     }
 
@@ -92,6 +99,7 @@ class PdfFormValidator {
           'The tooltip provides the accessible name read by screen readers.',
         context: `Field name: "${name}", Type: ${field.type}`,
         pageNumber,
+        boundingBox,
       };
     }
 
@@ -111,10 +119,42 @@ class PdfFormValidator {
           '(e.g., "Enter your full legal name" instead of "Field1").',
         context: `Field name: "${name}", Tooltip: "${label}", Type: ${field.type}`,
         pageNumber,
+        boundingBox,
       };
     }
 
     return null;
+  }
+
+  /**
+   * Build a top-left-origin boundingBox from a form field's position.
+   *
+   * field.position comes from the pdfjs annotation rect [x0,y0,x1,y1], which is
+   * in PDF user space with a BOTTOM-LEFT origin (position.y is the bottom edge).
+   * The canonical boundingBox uses a TOP-LEFT origin, so flip y:
+   *   topLeftY = pageHeight - (position.y + position.height)
+   *
+   * Returns undefined when the field has no real geometry (some widget types
+   * report a zero-area rect) or the page size is unknown — so boundingBox stays
+   * optional and is only attached when all values are real numbers.
+   */
+  private buildBoundingBox(
+    field: PdfFormField,
+    pageWidth: number,
+    pageHeight: number
+  ): AuditIssue['boundingBox'] | undefined {
+    const { x, y, width, height } = field.position;
+    if (!(width > 0) || !(height > 0) || !(pageHeight > 0) || !(pageWidth > 0)) {
+      return undefined;
+    }
+    return {
+      x,
+      y: pageHeight - (y + height),
+      width,
+      height,
+      pageWidth,
+      pageHeight,
+    };
   }
 }
 
