@@ -27,6 +27,10 @@ class PdfBookmarkValidator {
   name = 'PdfBookmarkValidator';
   private issueCounter = 0;
 
+  // No boundingBox by design: bookmark issues are non-spatial. They derive from
+  // the document outline (PDFOutlineItem = title + destination page + children),
+  // which points to a page but has no on-page rectangle to highlight.
+
   async validate(parsed: PdfParseResult): Promise<AuditIssue[]> {
     logger.info('[PdfBookmarkValidator] Starting bookmark validation...');
     this.issueCounter = 0;
