@@ -536,6 +536,12 @@ class PdfSupplementalValidator {
     return undefined;
   }
 
+  // NOTE: No boundingBox is emitted by this validator. Every supplemental
+  // condition is sourced from document-level objects with no on-page rectangle —
+  // the catalog (/OCProperties, /Names, /AcroForm), the encryption dictionary,
+  // page /Resources entries, or structure-tree Note nodes (PdfStructureNode has
+  // no geometry). These issues are non-spatial by design; fabricating coordinates
+  // would be incorrect.
   private createIssue(opts: {
     code: string;
     matterhornCheckpoint: string;

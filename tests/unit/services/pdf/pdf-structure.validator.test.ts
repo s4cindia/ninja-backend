@@ -449,6 +449,107 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('boundingBox coverage', () => {
+    it('attaches a boundingBox to table issues from table.position + page size', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: true,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        tables: [
+          {
+            id: 'table_p1_0',
+            pageNumber: 1,
+            position: { x: 50, y: 100, width: 500, height: 200 },
+            rowCount: 5,
+            columnCount: 3,
+            hasHeaderRow: false,
+            hasHeaderColumn: false,
+            hasSummary: false,
+            cells: [],
+            issues: ['Table has no header cells (TH). Add row or column headers.'],
+            isAccessible: false,
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const expectedBox = { x: 50, y: 100, width: 500, height: 200, pageWidth: 612, pageHeight: 792 };
+
+      const inaccessible = result.issues.find(i => i.code === 'TABLE-INACCESSIBLE');
+      expect(inaccessible?.boundingBox).toEqual(expectedBox);
+
+      const accessibility = result.issues.find(i => i.code === 'TABLE-ACCESSIBILITY');
+      expect(accessibility?.boundingBox).toEqual(expectedBox);
+    });
+
+    it('does not attach a boundingBox to heading issues (no per-element geometry)', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: false,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        headingIssues: [
+          {
+            type: 'missing-h1',
+            severity: 'major' as const,
+            description: 'Document has no H1 heading',
+            location: 'Document',
+            wcagCriterion: '1.3.1',
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const heading = result.issues.find(i => i.code === 'MATTERHORN-14-003');
+      expect(heading).toBeDefined();
+      expect(heading?.boundingBox).toBeUndefined();
+    });
+
+    it('does not attach a boundingBox to list issues (ListInfo has no width/height)', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: true,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        lists: [
+          {
+            id: 'list_p1_0',
+            pageNumber: 1,
+            type: 'unordered',
+            itemCount: 5,
+            items: [],
+            position: { x: 50, y: 100 },
+            isProperlyTagged: false,
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const list = result.issues.find(i => i.code === 'LIST-IMPROPER-MARKUP');
+      expect(list).toBeDefined();
+      expect(list?.boundingBox).toBeUndefined();
+    });
+  });
+
   describe('summary calculation', () => {
     it('should correctly calculate issue summary', async () => {
       const mockParsedPdf = createMockParsedPdf({
@@ -505,6 +606,15 @@ function createMockParsedPdf(options: {
         hasAcroForm: false,
       },
       outline: [],
+      pages: Array.from({ length: 10 }, (_, i) => ({
+        pageNumber: i + 1,
+        width: 612,
+        height: 792,
+        tags: [],
+        images: [],
+        links: [],
+        annotations: [],
+      })),
     },
     pdfLibDoc: {} as ParsedPDF['pdfLibDoc'],
     pdfjsDoc: {} as ParsedPDF['pdfjsDoc'],
