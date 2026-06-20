@@ -96,11 +96,17 @@ class PDFStructureValidator {
 
     logger.info('[PDFStructureValidator] Running structure validations...');
 
+    // Page-dimension lookup (width/height at scale=1 in PDF points) for
+    // attaching boundingBox to issues whose element carries real geometry.
+    const pageDims = new Map(
+      (parsedPdf.structure.pages ?? []).map(p => [p.pageNumber, { width: p.width, height: p.height }])
+    );
+
     // Validate document structure
     issues.push(...this.validateDocumentStructure(structure, parsedPdf));
 
     // Validate content structure
-    issues.push(...this.validateContentStructure(structure));
+    issues.push(...this.validateContentStructure(structure, pageDims));
 
     // Calculate summary
     const summary = this.calculateSummary(issues);
@@ -387,14 +393,18 @@ class PDFStructureValidator {
    * @param structure - Analyzed document structure
    * @returns Array of issues
    */
-  private validateContentStructure(structure: DocumentStructure): AuditIssue[] {
+  private validateContentStructure(
+    structure: DocumentStructure,
+    pageDims: Map<number, { width: number; height: number }>
+  ): AuditIssue[] {
     const issues: AuditIssue[] = [];
 
-    // Validate lists
+    // Validate lists — ListInfo.position only exposes {x,y} (no width/height),
+    // so list issues intentionally carry no boundingBox (cannot fabricate size).
     issues.push(...this.validateLists(structure.lists, structure.isTaggedPDF));
 
-    // Validate tables
-    issues.push(...this.validateTables(structure.tables));
+    // Validate tables — TableInfo.position has full {x,y,width,height} geometry.
+    issues.push(...this.validateTables(structure.tables, pageDims));
 
     return issues;
   }
@@ -449,10 +459,25 @@ class PDFStructureValidator {
    * @param tables - Table information
    * @returns Array of issues
    */
-  private validateTables(tables: DocumentStructure['tables']): AuditIssue[] {
+  private validateTables(
+    tables: DocumentStructure['tables'],
+    pageDims: Map<number, { width: number; height: number }>
+  ): AuditIssue[] {
     const issues: AuditIssue[] = [];
 
     for (const table of tables) {
+      // TableInfo.position is top-left origin, unscaled PDF points — same
+      // convention as the alt-text/table/link extractors.
+      const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
+      const boundingBox = {
+        x: table.position.x,
+        y: table.position.y,
+        width: table.position.width,
+        height: table.position.height,
+        pageWidth: pageSize.width,
+        pageHeight: pageSize.height,
+      };
+
       // Check for accessibility issues identified by structure analyzer
       for (const tableIssue of table.issues) {
         issues.push(this.createIssue({
@@ -465,6 +490,7 @@ class PDFStructureValidator {
           suggestion: 'Ensure table has proper structure with Table, TR, TH, and TD tags. Add headers to identify row/column relationships.',
           category: 'tables',
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       }
 
@@ -494,6 +520,7 @@ class PDFStructureValidator {
           suggestion: 'Add TH (header) tags to identify row and column headers. For complex tables, add a summary describing the table structure.',
           category: 'tables',
           pageNumber: table.pageNumber,
+          boundingBox,
         }));
       }
     }
