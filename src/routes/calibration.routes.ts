@@ -243,8 +243,10 @@ router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Respons
 
     let nextCursor: string | undefined;
     if (zones.length > limit) {
-      const extra = zones.pop()!;
-      nextCursor = extra.id;
+      // Resume AFTER the last returned zone, not the popped look-ahead sentinel
+      // (which the next page's `skip: 1` would drop).
+      zones.pop();
+      nextCursor = zones[zones.length - 1]?.id;
     }
 
     return res.json({ success: true, data: { zones, nextCursor } });
@@ -293,7 +295,9 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
       where,
       take: take + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
-      orderBy: { uploadedAt: 'desc' },
+      // id is the unique tiebreaker — without it, cursor paging across docs that
+      // share an uploadedAt (many do) can skip or duplicate rows at boundaries.
+      orderBy: [{ uploadedAt: 'desc' }, { id: 'desc' }],
       include: {
         bootstrapJobs: {
           orderBy: { createdAt: 'desc' },
@@ -313,8 +317,11 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
 
     let nextCursor: string | null = null;
     if (documents.length > take) {
-      const extra = documents.pop()!;
-      nextCursor = extra.id;
+      // Resume AFTER the last returned doc. Using the look-ahead sentinel's id
+      // as the cursor would make the next page's `skip: 1` skip that doc — which
+      // dropped the page-boundary doc entirely (e.g. Acharya at rank 26 of 26).
+      documents.pop();
+      nextCursor = documents[documents.length - 1]?.id ?? null;
     }
 
     // Enrich with annotation progress for docs that have a completed run
