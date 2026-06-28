@@ -257,7 +257,11 @@ router.get('/runs/:runId/zones', authenticate, async (req: Request, res: Respons
 });
 
 const corpusDocsQuerySchema = z.object({
-  limit: z.coerce.number().default(20),
+  // The Bootstrap Console Document Queue has no pagination control and sends no
+  // limit, so the default must cover the whole corpus or older docs (oldest
+  // uploadedAt) silently fall off page 1 and become unreachable. Default to the
+  // 100 cap; revisit (add real pagination) if the corpus grows past ~100.
+  limit: z.coerce.number().default(100),
   cursor: z.string().optional(),
   publisher: z.string().optional(),
   contentType: z.string().optional(),
@@ -296,6 +300,11 @@ router.get('/corpus-docs', authenticate, async (req: Request, res: Response) => 
           take: 1,
         },
         calibrationRuns: {
+          // Only the real annotation run drives the queue row (status, Review/
+          // Reopen target, polling). Without this, a later non-calibration run
+          // (e.g. PIKE_PDF_SPIKE) becomes calibrationRuns[0] and shadows the
+          // CALIBRATION run, breaking the row — as it did for Acharya.
+          where: { type: 'CALIBRATION' },
           orderBy: { runDate: 'desc' },
           take: 1,
         },
