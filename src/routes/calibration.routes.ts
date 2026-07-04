@@ -93,6 +93,7 @@ router.post('/run', authenticate, async (req: Request, res: Response) => {
 
 const runsQuerySchema = z.object({
   documentId: z.string().optional(),
+  type: z.string().optional(),
   limit: z.coerce.number().optional(),
   fromDate: z.string().datetime({ offset: true }).optional(),
   toDate: z.string().datetime({ offset: true }).optional(),
@@ -113,12 +114,15 @@ router.get('/runs', authenticate, async (req: Request, res: Response) => {
       });
     }
 
-    const { documentId, limit, fromDate, toDate } = parsed.data;
+    const { documentId, type, limit, fromDate, toDate } = parsed.data;
     const take = Math.min(limit || 20, 100);
 
     const where: Record<string, unknown> = {};
     if (documentId) {
       where.documentId = documentId;
+    }
+    if (type) {
+      where.type = type;
     }
     if (fromDate) {
       where.runDate = { ...((where.runDate as Record<string, unknown>) || {}), gte: new Date(fromDate) };
@@ -132,6 +136,7 @@ router.get('/runs', authenticate, async (req: Request, res: Response) => {
       select: {
         id: true,
         documentId: true,
+        type: true,
         runDate: true,
         completedAt: true,
         durationMs: true,
