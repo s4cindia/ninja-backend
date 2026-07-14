@@ -162,6 +162,7 @@ const bulkRejectSchema = z.object({
 router.post('/zones/bulk-reject', authenticate, async (req: Request, res: Response) => {
   try {
     const operatorId = req.user!.id;
+    const tenantId = req.user!.tenantId;
     const parsed = bulkRejectSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(422).json({
@@ -171,10 +172,13 @@ router.post('/zones/bulk-reject', authenticate, async (req: Request, res: Respon
     }
     const { zoneIds, filter, correctionReason } = parsed.data;
 
-    // Explicit ids win; otherwise reject all still-active zones matching the filter.
+    // Explicit ids win; otherwise reject all still-active zones matching the
+    // filter. Always scope to the caller's tenant so one tenant can't reject
+    // another tenant's zones by id.
     const where: Prisma.ZoneWhereInput = zoneIds && zoneIds.length > 0
-      ? { id: { in: zoneIds } }
+      ? { tenantId, id: { in: zoneIds } }
       : {
+          tenantId,
           calibrationRunId: filter!.calibrationRunId,
           ...(filter!.pageNumber != null ? { pageNumber: filter!.pageNumber } : {}),
           ...(filter!.operatorLabel
