@@ -1,7 +1,8 @@
 import sys, os, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from export import (
-    bbox_to_yolo, stratified_split, resolve_label, resolve_class_index,
+    bbox_to_yolo, stratified_split, pinned_page_split,
+    resolve_label, resolve_class_index,
     merge_table_cells_into_tables,
     CLASS_MAP, ARTIFACT_TYPES, ARTIFACT_CLASS_INDICES,
 )
@@ -313,6 +314,49 @@ class TestConstants(unittest.TestCase):
     def test_artifact_types_in_class_map(self):
         for t in ARTIFACT_TYPES:
             self.assertIn(t, CLASS_MAP)
+
+
+class TestPinnedPageSplit(unittest.TestCase):
+    """The production split (export_corpus) is per-PAGE and PINNED. It must:
+    (1) be deterministic — a (doc, page) always maps to the same split, so
+        re-annotation never reshuffles pages and successive model runs stay
+        directly comparable; and
+    (2) spread every document's pages across train/val/test, so a formula style
+        concentrated in a single document (e.g. Nikitopoulos) is seen in training
+        AND evaluated — the failure the doc-level split caused (v6 test formula
+        ~0.004 → v7 0.737 once styles reached both train and test)."""
+
+    def test_returns_valid_split(self):
+        for p in range(1, 50):
+            self.assertIn(pinned_page_split('doc', p), ('train', 'val', 'test'))
+
+    def test_deterministic_and_pinned(self):
+        # Same (doc, page) -> same split on every call (no per-process salt).
+        for p in (1, 7, 42, 999):
+            self.assertEqual(
+                pinned_page_split('math-olszewski', p),
+                pinned_page_split('math-olszewski', p),
+            )
+
+    def test_document_pages_reach_all_splits(self):
+        # A single document with enough pages contributes to train AND val AND
+        # test — the core guarantee the doc-level split could not make.
+        seen = {pinned_page_split('nikitopoulos', p) for p in range(1, 200)}
+        self.assertEqual(seen, {'train', 'val', 'test'})
+
+    def test_ratios_approximately_80_10_10(self):
+        from collections import Counter
+        c = Counter(pinned_page_split('d', p) for p in range(1, 5001))
+        n = sum(c.values())
+        self.assertAlmostEqual(c['train'] / n, 0.80, delta=0.03)
+        self.assertAlmostEqual(c['val'] / n, 0.10, delta=0.02)
+        self.assertAlmostEqual(c['test'] / n, 0.10, delta=0.02)
+
+    def test_distinct_docs_are_independent(self):
+        # The same page number across different docs must not collapse to one
+        # split (otherwise the hash isn't mixing the doc id in).
+        buckets = {pinned_page_split(f'doc-{i}', 1) for i in range(50)}
+        self.assertGreater(len(buckets), 1)
 
 
 if __name__ == '__main__':

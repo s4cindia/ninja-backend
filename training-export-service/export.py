@@ -1,4 +1,4 @@
-import os, json, re, zipfile, math, tempfile
+import os, json, re, zipfile, math, tempfile, hashlib
 from pathlib import Path
 from typing import Optional
 from PIL import Image
@@ -211,6 +211,36 @@ def stratified_split(
     return splits
 
 
+def pinned_page_split(
+    doc_id: str,
+    page_num: int,
+    ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
+) -> str:
+    """Deterministic, PINNED, page-level train/val/test assignment.
+
+    Why page-level (not the doc-level `stratified_split` above): formula styles
+    are each concentrated in a SINGLE document (one Olszewski, one Nikitopoulos,
+    one Weir, ...), so any doc-level split sends a whole style to exactly one
+    split. When that split is test (e.g. Nikitopoulos), the model never trains on
+    the style and scores ~0 on it however well the data is annotated (observed in
+    v6: val formula 0.27 but test formula 0.004). Splitting by PAGE puts ~80/10/10
+    of EVERY document's pages into train/val/test, so every publisher/formula
+    style is seen in training AND evaluated in val+test.
+
+    Why hashed (not random or index-based): the split must be PINNED — the same
+    (doc, page) must map to the same split on every run so re-annotation never
+    shuffles pages between splits and successive model versions stay directly
+    comparable. Python's built-in hash() is salted per-process (PYTHONHASHSEED),
+    so we use md5 for a stable, reproducible bucket."""
+    h = hashlib.md5(f"{doc_id}:{page_num}".encode('utf-8')).hexdigest()
+    bucket = (int(h[:8], 16) % 1000) / 1000.0  # stable value in [0.000, 0.999]
+    if bucket < ratios[0]:
+        return 'train'
+    if bucket < ratios[0] + ratios[1]:
+        return 'val'
+    return 'test'
+
+
 def _bounds_xywh(zone: dict) -> tuple[float, float, float, float]:
     b = zone.get('bounds') or {}
     x = float(b.get('x', 0) or 0)
@@ -304,7 +334,8 @@ def export_corpus(
         (out / 'images' / split).mkdir(parents=True, exist_ok=True)
         (out / 'labels' / split).mkdir(parents=True, exist_ok=True)
 
-    splits = stratified_split(documents)
+    # Pinned page-level split (see pinned_page_split): assigned per PAGE inside the
+    # loop below, not per document, so every doc's style reaches all three splits.
     total_images = 0
     total_labels = 0
     skipped_pages = 0
@@ -323,7 +354,6 @@ def export_corpus(
         raw_id   = doc['documentId']
         doc_id   = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_id)
         pdf_path = doc['pdfPath']
-        split    = splits.get(raw_id, 'train')
         zones    = doc.get('zones', [])
 
         # Group zones by page
@@ -333,6 +363,7 @@ def export_corpus(
             by_page.setdefault(pn, []).append(z)
 
         for page_num, page_zones in by_page.items():
+            split = pinned_page_split(raw_id, page_num)
             # Only include zones with human-verified labels.
             # Skip rejected, unreviewed, artefact, and unknown-label zones.
             # Each retained zone carries its resolved class index so the bbox
