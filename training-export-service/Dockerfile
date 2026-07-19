@@ -9,10 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY export.py main.py ./
+COPY export.py main.py run_export.py ./
 
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
-    && chown -R appuser:appuser /app
+    && mkdir -p /work \
+    && chown -R appuser:appuser /app /work
 
 EXPOSE 8082
 
