@@ -6,7 +6,10 @@ export type CanonicalZoneType =
   | 'caption'
   | 'footnote'
   | 'header'
-  | 'footer';
+  | 'footer'
+  | 'list-item'
+  | 'toci'
+  | 'formula';
 
 export interface BBox {
   x: number;

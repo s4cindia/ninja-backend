@@ -25,7 +25,13 @@ describe('mapDoclingLabel', () => {
     ['footnote', 'footnote'],
     ['page_header', 'header'],
     ['page_footer', 'footer'],
-    ['list_item', 'paragraph'],
+    // Widened taxonomy (F1): these no longer collapse to paragraph
+    ['list_item', 'list-item'],
+    ['formula', 'formula'],
+    ['document_index', 'toci'],
+    // Still paragraph — no dedicated class
+    ['code', 'paragraph'],
+    ['reference', 'paragraph'],
   ] as const)('maps "%s" → "%s"', (label, expected) => {
     expect(mapDoclingLabel(label)).toBe(expected);
   });

@@ -19,6 +19,9 @@ const ALL_ZONE_TYPES: CanonicalZoneType[] = [
   'footnote',
   'header',
   'footer',
+  'list-item',
+  'toci',
+  'formula',
 ];
 
 export function calculateMAP(

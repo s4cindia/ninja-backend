@@ -90,7 +90,7 @@ describe('evaluation.service', () => {
     expect(result.fineTunedOverallMAP).toBe(0.80);
     expect(result.baseOverallMAP).toBe(0.74);
     expect(result.holdReason).toBeUndefined();
-    expect(result.perClassDeltas).toHaveLength(8);
+    expect(result.perClassDeltas).toHaveLength(11);
   });
 
   // Test 2 — HOLD: below threshold
