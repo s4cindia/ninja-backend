@@ -25,7 +25,10 @@ const ecs = new ECSClient({ region });
 
 const CLUSTER = process.env.YOLO_ECS_CLUSTER ?? 'ninja-cluster';
 const SERVICE = process.env.YOLO_ECS_SERVICE ?? 'ninja-zone-detector-service';
-const READY_TIMEOUT_MS = Number(process.env.YOLO_READY_TIMEOUT_MS ?? 6 * 60 * 1000); // GPU cold start
+// Cold start = GPU instance provisioning + image pull + model load; observed at
+// ~6-7 min end-to-end, so allow generous headroom (a too-short timeout throws
+// YOLO_SCALE_TIMEOUT while the service is still coming up).
+const READY_TIMEOUT_MS = Number(process.env.YOLO_READY_TIMEOUT_MS ?? 10 * 60 * 1000);
 const POLL_MS = Number(process.env.YOLO_READY_POLL_MS ?? 10_000);
 const IDLE_MS = Number(process.env.YOLO_IDLE_MS ?? 10 * 60 * 1000);
 
