@@ -1,0 +1,6 @@
+# torch, ultralytics, pillow, numpy come from the ultralytics base image.
+fastapi
+uvicorn[standard]
+boto3
+pdf2image
+pikepdf
