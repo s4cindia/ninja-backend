@@ -87,22 +87,27 @@ def download_from_s3(s3_uri: str) -> str:
 
 
 def _resolve_weights_uri() -> str:
-    """Weights S3 URI: prefer the SSM promotion parameter, fall back to env."""
+    """Resolve the weights S3 URI.
+
+    MODEL_WEIGHTS_S3 (explicit) WINS when set — it's reachable from any subnet via
+    the S3 VPC gateway endpoint. SSM (the promotion contract evaluation.service
+    writes) is the fallback: reaching it in-VPC needs an SSM interface endpoint
+    (the GPU subnet has no NAT), so we don't block startup on it. Preferring the
+    env var also avoids a slow SSM connect-timeout on cold start.
+    """
     env_uri = os.environ.get("MODEL_WEIGHTS_S3")
-    try:
-        import boto3
-        ssm = boto3.client("ssm", region_name=REGION)
-        val = ssm.get_parameter(Name=WEIGHTS_SSM_PARAM)["Parameter"]["Value"]
-        if val:
-            logger.info(f"Weights from SSM {WEIGHTS_SSM_PARAM}: {val}")
-            return val
-    except Exception as e:
-        logger.warning(f"SSM weights lookup failed ({e}); falling back to MODEL_WEIGHTS_S3")
-    if not env_uri:
+    if env_uri:
+        logger.info(f"Weights from MODEL_WEIGHTS_S3: {env_uri}")
+        return env_uri
+    import boto3
+    ssm = boto3.client("ssm", region_name=REGION)
+    val = ssm.get_parameter(Name=WEIGHTS_SSM_PARAM)["Parameter"]["Value"]
+    if not val:
         raise RuntimeError(
-            f"No weights: SSM {WEIGHTS_SSM_PARAM} unset/unreadable and MODEL_WEIGHTS_S3 not provided"
+            f"SSM {WEIGHTS_SSM_PARAM} is empty and MODEL_WEIGHTS_S3 not set"
         )
-    return env_uri
+    logger.info(f"Weights from SSM {WEIGHTS_SSM_PARAM}: {val}")
+    return val
 
 
 def _load_model():
