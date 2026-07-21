@@ -49,6 +49,10 @@ CONF = float(os.environ.get("CONF", "0.25"))               # detection confidenc
 WEIGHTS_SSM_PARAM = os.environ.get(
     "WEIGHTS_SSM_PARAM", "/ninja/zone-extractor/model-weights-path"
 )
+# boto3 clients need an explicit region — in the ECS container neither the
+# AWS_REGION env var nor IMDS reliably supplies one, which fails the SSM/S3
+# weights load at startup. Pass region_name explicitly.
+REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "ap-south-1"
 
 S3_URI_PATTERN = re.compile(r"^s3://([^/]+)/(.+)$")
 app = FastAPI(title="Ninja Zone Detector", version="1.0.0")
@@ -60,7 +64,7 @@ def get_s3_client():
     global _s3_client
     if _s3_client is None:
         import boto3
-        _s3_client = boto3.client("s3")
+        _s3_client = boto3.client("s3", region_name=REGION)
     return _s3_client
 
 
@@ -87,7 +91,7 @@ def _resolve_weights_uri() -> str:
     env_uri = os.environ.get("MODEL_WEIGHTS_S3")
     try:
         import boto3
-        ssm = boto3.client("ssm")
+        ssm = boto3.client("ssm", region_name=REGION)
         val = ssm.get_parameter(Name=WEIGHTS_SSM_PARAM)["Parameter"]["Value"]
         if val:
             logger.info(f"Weights from SSM {WEIGHTS_SSM_PARAM}: {val}")
@@ -223,7 +227,11 @@ class DetectRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "loaded" if MODEL is not None else "failed"}
+    # Real readiness probe: fail (503) when the model didn't load, so the ECS /
+    # container health check reflects actual readiness instead of just "process up".
+    if MODEL is None:
+        raise HTTPException(status_code=503, detail="model not loaded")
+    return {"status": "ok", "model": "loaded"}
 
 
 @app.post("/detect")
