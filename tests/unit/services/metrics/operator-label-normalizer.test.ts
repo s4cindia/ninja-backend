@@ -33,17 +33,20 @@ describe('normalizeOperatorLabel', () => {
     expect(normalizeOperatorLabel('footnote')).toBe('footnote');
     expect(normalizeOperatorLabel('header')).toBe('header');
     expect(normalizeOperatorLabel('footer')).toBe('footer');
+    expect(normalizeOperatorLabel('list-item')).toBe('list-item');
+    expect(normalizeOperatorLabel('toci')).toBe('toci');
+    expect(normalizeOperatorLabel('formula')).toBe('formula');
   });
 
   describe('Convention A: PDF-tag-name uppercase (Boyd-Hamill, Flanagan)', () => {
-    it('LI → paragraph', () => {
-      expect(normalizeOperatorLabel('LI')).toBe('paragraph');
+    it('LI → list-item', () => {
+      expect(normalizeOperatorLabel('LI')).toBe('list-item');
     });
     it('HDR → header', () => {
       expect(normalizeOperatorLabel('HDR')).toBe('header');
     });
-    it('TOCI → paragraph', () => {
-      expect(normalizeOperatorLabel('TOCI')).toBe('paragraph');
+    it('TOCI → toci', () => {
+      expect(normalizeOperatorLabel('TOCI')).toBe('toci');
     });
     it('FTR → footer', () => {
       expect(normalizeOperatorLabel('FTR')).toBe('footer');
@@ -56,14 +59,17 @@ describe('normalizeOperatorLabel', () => {
         expect(normalizeOperatorLabel(h)).toBe('section-header');
       }
     });
-    it('list-item → paragraph', () => {
-      expect(normalizeOperatorLabel('list-item')).toBe('paragraph');
-      expect(normalizeOperatorLabel('list_item')).toBe('paragraph');
+    it('list-item → list-item', () => {
+      expect(normalizeOperatorLabel('list-item')).toBe('list-item');
+      expect(normalizeOperatorLabel('list_item')).toBe('list-item');
     });
-    it('toci (any case) → paragraph', () => {
-      expect(normalizeOperatorLabel('toci')).toBe('paragraph');
-      expect(normalizeOperatorLabel('TOCI')).toBe('paragraph');
-      expect(normalizeOperatorLabel('TocI')).toBe('paragraph');
+    it('toci (any case) → toci', () => {
+      expect(normalizeOperatorLabel('toci')).toBe('toci');
+      expect(normalizeOperatorLabel('TOCI')).toBe('toci');
+      expect(normalizeOperatorLabel('TocI')).toBe('toci');
+    });
+    it('formula → formula', () => {
+      expect(normalizeOperatorLabel('formula')).toBe('formula');
     });
   });
 
@@ -76,7 +82,7 @@ describe('normalizeOperatorLabel', () => {
     });
     it('trims surrounding whitespace', () => {
       expect(normalizeOperatorLabel('  table  ')).toBe('table');
-      expect(normalizeOperatorLabel('\tLI\n')).toBe('paragraph');
+      expect(normalizeOperatorLabel('\tLI\n')).toBe('list-item');
     });
   });
 
@@ -119,7 +125,7 @@ describe('normalizeWithHeadingLevel', () => {
   it('passes through non-heading canonical types with no headingLevel', () => {
     expect(normalizeWithHeadingLevel('paragraph')).toEqual({ canonical: 'paragraph' });
     expect(normalizeWithHeadingLevel('table')).toEqual({ canonical: 'table' });
-    expect(normalizeWithHeadingLevel('LI')).toEqual({ canonical: 'paragraph' });
+    expect(normalizeWithHeadingLevel('LI')).toEqual({ canonical: 'list-item' });
   });
 
   it('extracts headingLevel from h1..h6 (any case)', () => {

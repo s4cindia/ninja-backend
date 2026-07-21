@@ -87,8 +87,8 @@ describe('mapPdfxtLabel', () => {
     ['footnote', 'footnote'],
     ['header', 'header'],
     ['footer', 'footer'],
-    ['list', 'paragraph'],
-    ['list-item', 'paragraph'],
+    ['list', 'list-item'],
+    ['list-item', 'list-item'],
   ] as const)('maps "%s" → "%s"', (label, expected) => {
     expect(mapPdfxtLabel(label)).toBe(expected);
   });

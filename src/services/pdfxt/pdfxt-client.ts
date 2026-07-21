@@ -22,8 +22,8 @@ const PDFXT_LABEL_MAP: Record<string, CanonicalZoneType> = {
   'footnote': 'footnote',
   'header': 'header',
   'footer': 'footer',
-  'list': 'paragraph',
-  'list-item': 'paragraph',
+  'list': 'list-item',
+  'list-item': 'list-item',
 };
 
 export function mapPdfxtLabel(label: string): CanonicalZoneType {

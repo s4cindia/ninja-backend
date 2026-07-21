@@ -31,7 +31,7 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'BlockQuote': 'paragraph',
   'Code':       'paragraph',
   'BibEntry':   'paragraph',
-  'Formula':    'paragraph',
+  'Formula':    'formula',
   // ── Inline text (absorbed into parent block) ──────────
   'Span':       'paragraph',
   'Quote':      'paragraph',
@@ -80,13 +80,13 @@ const TAG_MAP: Record<string, CanonicalZoneType> = {
   'Header':     'header',
   'Footer':     'footer',
   // ── TOC ───────────────────────────────────────────────
-  'TOC':        'paragraph',
-  'TOCI':       'paragraph',
+  'TOC':        'toci',
+  'TOCI':       'toci',
   // ── Lists ─────────────────────────────────────────────
-  'L':          'paragraph',
-  'LI':         'paragraph',
-  'Lbl':        'paragraph',
-  'LBody':      'paragraph',
+  'L':          'list-item',
+  'LI':         'list-item',
+  'Lbl':        'list-item',
+  'LBody':      'list-item',
   // ── Annotations / links ───────────────────────────────
   'Annot':      'paragraph',
   'Link':       'paragraph',

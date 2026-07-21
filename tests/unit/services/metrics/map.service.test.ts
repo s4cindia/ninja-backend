@@ -9,6 +9,7 @@ import type { CanonicalZoneType } from '../../../../src/services/zone-extractor/
 const ALL_TYPES: CanonicalZoneType[] = [
   'paragraph', 'section-header', 'table', 'figure',
   'caption', 'footnote', 'header', 'footer',
+  'list-item', 'toci', 'formula',
 ];
 
 function makeGT(zoneType: CanonicalZoneType, idx: number): AnnotatedZone {
@@ -43,7 +44,7 @@ describe('calculateMAP', () => {
     const result = calculateMAP(gt, pred);
     expect(result.overallMAP).toBeCloseTo(1.0, 1);
     expect(result.insufficientDataWarnings).toHaveLength(0);
-    expect(result.perClass).toHaveLength(8);
+    expect(result.perClass).toHaveLength(11);
     expect(result.perClass.every((c) => !c.insufficientData)).toBe(true);
   });
 
@@ -84,7 +85,7 @@ describe('calculateMAP', () => {
     const result = calculateMAP(gt, pred);
     expect(result.overallMAP).toBe(0);
     expect(result.perClass.every((c) => c.insufficientData)).toBe(true);
-    expect(result.insufficientDataWarnings).toHaveLength(8);
+    expect(result.insufficientDataWarnings).toHaveLength(11);
   });
 
   it('zero ground truth → overallMAP = 0', () => {

@@ -8,6 +8,7 @@ const ssmClient = new SSMClient({
 const CLASS_NAMES = [
   'paragraph', 'section-header', 'table', 'figure',
   'caption', 'footnote', 'header', 'footer',
+  'list-item', 'toci', 'formula',
 ];
 
 export interface PerClassDelta {
