@@ -1,6 +1,7 @@
 import prisma, { Prisma } from '../../lib/prisma';
 import { detectWithDocling } from './docling-client';
 import { detectWithYolo } from './yolo-client';
+import { ensureYoloServiceUp, touchYoloIdleTimer } from './yolo-service-scaler';
 import { mapDoclingLabel } from './zone-type-mapper';
 import { mapYoloLabel } from './yolo-label-mapper';
 import type { DetectedZone } from './types';
@@ -32,6 +33,11 @@ export async function detectZones(
   logger.info(
     `[ZoneExtractor] Starting ${mode} detection for job ${bootstrapJobId}`,
   );
+
+  // The yolo service is scale-to-zero — bring it up on demand before calling it.
+  if (mode === 'yolo') {
+    await ensureYoloServiceUp();
+  }
 
   const response = mode === 'yolo'
     ? await detectWithYolo(pdfPath, bootstrapJobId)
@@ -69,6 +75,12 @@ export async function detectZones(
   logger.info(
     `[ZoneExtractor] Completed ${detected.length} zones for job ${bootstrapJobId} (${mode})`,
   );
+
+  // Re-arm the idle countdown so a batch of documents keeps the GPU warm, then
+  // the service scales back to 0 once detection stops.
+  if (mode === 'yolo') {
+    touchYoloIdleTimer();
+  }
 
   return detected.map((z) => ({
     pageNumber: z.pageNumber,

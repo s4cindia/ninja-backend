@@ -9,6 +9,9 @@ const detectBodySchema = z.object({
   pdfPath: z.string().min(1),
   bootstrapJobId: z.string().min(1),
   fileId: z.string().min(1),
+  // Detection source: 'docling' (default) or 'yolo' (the fine-tuned zone
+  // detector). The yolo service is scale-to-zero — bring it up before use.
+  mode: z.enum(['docling', 'yolo']).optional(),
 });
 
 // POST /api/v1/zone-extractor/detect
@@ -26,10 +29,10 @@ router.post('/detect', authenticate, async (req: Request, res: Response) => {
       });
     }
 
-    const { pdfPath, bootstrapJobId, fileId } = parsed.data;
+    const { pdfPath, bootstrapJobId, fileId, mode } = parsed.data;
     const tenantId = req.user!.tenantId;
 
-    const zones = await detectZones(pdfPath, bootstrapJobId, tenantId, fileId);
+    const zones = await detectZones(pdfPath, bootstrapJobId, tenantId, fileId, mode);
     return res.json({ success: true, data: zones });
   } catch (err) {
     const message = (err as Error).message ?? '';
@@ -50,6 +53,25 @@ router.post('/detect', authenticate, async (req: Request, res: Response) => {
       return res.status(422).json({
         success: false,
         error: { code: 'DOCLING_CLIENT_ERROR', details: message },
+      });
+    }
+
+    if (message.includes('YOLO_TIMEOUT')) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'YOLO_TIMEOUT', message },
+      });
+    }
+    if (message.includes('YOLO_SERVICE_ERROR')) {
+      return res.status(503).json({
+        success: false,
+        error: { code: 'YOLO_UNAVAILABLE', message },
+      });
+    }
+    if (message.includes('YOLO_CLIENT_ERROR')) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'YOLO_CLIENT_ERROR', details: message },
       });
     }
 
