@@ -20,6 +20,9 @@ export interface ZoneBand {
   /** device-space (bottom-left origin) vertical extent; yTop > yBottom. */
   yTop: number;
   yBottom: number;
+  /** device-space horizontal extent (X is not Y-flipped): xLeft ≤ xRight. */
+  xLeft: number;
+  xRight: number;
   /** PDF tag for the BDC (e.g. 'P', 'H1'); artifacts use 'Artifact' with no MCID. */
   tag: string;
   isArtifact?: boolean;
@@ -112,21 +115,40 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
   interface Unit { start: number; end: number; band: ZoneBand | null; }
   const units: Unit[] = [];
 
-  // graphics + text state (axis-aligned assumption: track scale d and translate f)
-  let ctm: { d: number; f: number } = { d: 1, f: 0 };
-  const ctmStack: Array<{ d: number; f: number }> = [];
+  // graphics + text state (axis-aligned assumption: track x/y scale + translate)
+  type Ctm = { a: number; d: number; e: number; f: number };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
+  const ctmStack: Ctm[] = [];
   let inText = false;
   let btStart = -1;
   let tld = 0;               // text leading (TL)
-  let tmF = 0;               // current text matrix f (baseline y, text space)
-  let firstShownY: number | null = null;
+  let tmE = 0;               // text matrix e (x, text space)
+  let tmF = 0;               // text matrix f (baseline y, text space)
+  let firstX: number | null = null;
+  let firstY: number | null = null;
   const operands: Token[] = [];
 
-  const deviceY = (textF: number): number => ctm.d * textF + ctm.f;
+  const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
+  const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
 
-  const bandFor = (y: number): ZoneBand | null => {
-    for (const b of bands) if (y <= b.yTop && y >= b.yBottom) return b;
-    return null;
+  // Full-bbox assignment: a text object's first-shown anchor (x, baseline y) must
+  // fall inside a zone's 2-D box; else the nearest zone within tolerance. The X test
+  // separates columns — baseline-Y alone can't tell a left-column line from a
+  // right-column line at the same height.
+  const NEAREST_TOL = 12;
+  const regionFor = (x: number, y: number): ZoneBand | null => {
+    for (const b of bands) {
+      if (x >= b.xLeft && x <= b.xRight && y <= b.yTop && y >= b.yBottom) return b;
+    }
+    let best: ZoneBand | null = null;
+    let bestDist = Infinity;
+    for (const b of bands) {
+      const dx = x < b.xLeft ? b.xLeft - x : x > b.xRight ? x - b.xRight : 0;
+      const dy = y > b.yTop ? y - b.yTop : y < b.yBottom ? b.yBottom - y : 0;
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist) { bestDist = dist; best = b; }
+    }
+    return bestDist <= NEAREST_TOL ? best : null;
   };
 
   for (let k = 0; k < tokens.length; k++) {
@@ -135,33 +157,40 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
     const op = tk.v;
     switch (op) {
       case 'q': ctmStack.push({ ...ctm }); break;
-      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { d: p.d, f: p.f }; break; }
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
       case 'cm': {
-        // a b c d e f cm — compose (axis-aligned): new d *= d, new f = d*f_old + f
+        // a b c d e f cm — compose (axis-aligned)
+        const a = num(operands[operands.length - 6]);
         const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
         const f = num(operands[operands.length - 1]);
-        ctm = { d: ctm.d * d, f: ctm.d * f + ctm.f };
+        ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
         break;
       }
-      case 'BT': inText = true; btStart = tk.start; tmF = 0; firstShownY = null; break;
+      case 'BT': inText = true; btStart = tk.start; tmE = 0; tmF = 0; firstX = null; firstY = null; break;
       case 'TL': tld = num(operands[operands.length - 1]); break;
       case 'Td': case 'TD': {
+        const tx = num(operands[operands.length - 2]);
         const ty = num(operands[operands.length - 1]);
         if (op === 'TD') tld = -ty;
+        tmE += tx;
         tmF += ty;
         break;
       }
-      case 'Tm': tmF = num(operands[operands.length - 1]); break;   // a b c d e f
+      case 'Tm':                                                   // a b c d e f
+        tmE = num(operands[operands.length - 2]);
+        tmF = num(operands[operands.length - 1]);
+        break;
       case 'T*': tmF -= tld; break;
       case 'Tj': case 'TJ': case "'": case '"': {
-        if (op === "'" || op === '"') tmF -= tld;   // these move to next line first
-        if (firstShownY === null) firstShownY = deviceY(tmF);
+        if (op === "'" || op === '"') tmF -= tld;   // these move to the next line first
+        if (firstY === null) { firstX = deviceX(tmE); firstY = deviceY(tmF); }
         break;
       }
       case 'ET': {
         if (inText) {
-          const y = firstShownY;
-          units.push({ start: btStart, end: tk.end, band: y === null ? null : bandFor(y) });
+          const band = firstY === null ? null : regionFor(firstX as number, firstY);
+          units.push({ start: btStart, end: tk.end, band });
         }
         inText = false; btStart = -1;
         break;
@@ -194,7 +223,7 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
   };
 
   // Text in no zone is still marked /Artifact — untagged content fails PDF/UA.
-  const ARTIFACT: ZoneBand = { zoneIndex: -1, tag: 'Artifact', isArtifact: true, yTop: 0, yBottom: 0 };
+  const ARTIFACT: ZoneBand = { zoneIndex: -1, tag: 'Artifact', isArtifact: true, yTop: 0, yBottom: 0, xLeft: 0, xRight: 0 };
   for (const u of units) {
     const band = u.band ?? ARTIFACT;
     if (run && run.band.zoneIndex === band.zoneIndex && !!run.band.isArtifact === !!band.isArtifact) {
