@@ -31,6 +31,7 @@ import {
   ensureYoloServiceUp,
   scaleYoloServiceDown,
   touchYoloIdleTimer,
+  isWithinWarmWindow,
   __clearYoloIdleTimerForTest,
 } from '../../../../src/services/zone-extractor/yolo-service-scaler';
 
@@ -119,5 +120,48 @@ describe('touchYoloIdleTimer', () => {
     expect(updateCalls()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(IDLE_MS / 2 + 100); // now past the reset window
     expect(updateCalls()).toHaveLength(1);
+  });
+});
+
+describe('isWithinWarmWindow (business-hours warm window, IST Mon-Fri)', () => {
+  const S = 'YOLO_WARM_START_HOUR_IST';
+  const E = 'YOLO_WARM_END_HOUR_IST';
+  afterEach(() => { delete process.env[S]; delete process.env[E]; });
+
+  it('is false when the window env is unset', () => {
+    expect(isWithinWarmWindow(new Date('2026-07-22T05:00:00Z'))).toBe(false); // Wed 10:30 IST
+  });
+
+  it('is true for a weekday time inside the window', () => {
+    process.env[S] = '9'; process.env[E] = '19';
+    expect(isWithinWarmWindow(new Date('2026-07-22T05:00:00Z'))).toBe(true);  // Wed 10:30 IST
+  });
+
+  it('honours the start (inclusive) and end (exclusive) boundaries', () => {
+    process.env[S] = '9'; process.env[E] = '19';
+    expect(isWithinWarmWindow(new Date('2026-07-22T03:30:00Z'))).toBe(true);  // 09:00 IST
+    expect(isWithinWarmWindow(new Date('2026-07-22T13:30:00Z'))).toBe(false); // 19:00 IST
+  });
+
+  it('is false outside the window on a weekday', () => {
+    process.env[S] = '9'; process.env[E] = '19';
+    expect(isWithinWarmWindow(new Date('2026-07-22T20:00:00Z'))).toBe(false); // Thu 01:30 IST
+  });
+
+  it('is false on the weekend even within the hours', () => {
+    process.env[S] = '9'; process.env[E] = '19';
+    expect(isWithinWarmWindow(new Date('2026-07-25T05:00:00Z'))).toBe(false); // Sat 10:30 IST
+  });
+});
+
+describe('scaleYoloServiceDown warm-window suppression', () => {
+  const S = 'YOLO_WARM_START_HOUR_IST';
+  const E = 'YOLO_WARM_END_HOUR_IST';
+  afterEach(() => { delete process.env[S]; delete process.env[E]; });
+
+  it('scales to 0 when no warm window is configured', async () => {
+    await scaleYoloServiceDown();
+    expect(updateCalls()).toHaveLength(1);
+    expect(updateCalls()[0][0].input.desiredCount).toBe(0);
   });
 });

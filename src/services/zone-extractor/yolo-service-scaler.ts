@@ -78,7 +78,35 @@ export async function ensureYoloServiceUp(): Promise<void> {
   );
 }
 
+// Business-hours warm window (IST, Mon-Fri). During it the idle scale-down is
+// suppressed, so a scheduled pre-warm (or the day's first request) keeps the GPU
+// warm all day and jobs never pay the cold start mid-window. Env is read per-call
+// so it can be toggled without a redeploy; unset (either bound) = no window, pure
+// on-demand. Off-hours behaviour is unchanged (scale up on demand, down when idle).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+export function isWithinWarmWindow(now: Date = new Date()): boolean {
+  const startEnv = process.env.YOLO_WARM_START_HOUR_IST;
+  const endEnv = process.env.YOLO_WARM_END_HOUR_IST;
+  if (!startEnv || !endEnv) return false;
+  const start = Number(startEnv);
+  const end = Number(endEnv);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  const ist = new Date(now.getTime() + IST_OFFSET_MS);
+  const day = ist.getUTCDay();   // 0=Sun..6=Sat on the IST-shifted clock
+  const hour = ist.getUTCHours();
+  if (day < 1 || day > 5) return false;   // weekdays only
+  return hour >= start && hour < end;
+}
+
 export async function scaleYoloServiceDown(): Promise<void> {
+  if (isWithinWarmWindow()) {
+    // Stay warm, and re-arm a re-check so the service self-cools shortly after the
+    // window closes even if no further request comes in — no external scheduler needed.
+    logger.info('[YoloScaler] within business-hours warm window — keeping zone-detector warm');
+    touchYoloIdleTimer();
+    return;
+  }
   logger.info('[YoloScaler] scaling zone-detector service to 0 (idle)');
   await setDesiredCount(0);
 }
