@@ -4,6 +4,12 @@ export const aiConfig = {
     clientSecret: process.env.ADOBE_PDF_SERVICES_CLIENT_SECRET || '',
     enabled: !!process.env.ADOBE_PDF_SERVICES_CLIENT_ID,
   },
+  // Seam C — the in-house detector-driven tagger. DEFAULT tagger for untagged PDFs
+  // (Adobe is the fallback). Enabled whenever the YOLO detector is reachable, unless
+  // explicitly turned off with SEAM_C_ENABLED=false.
+  seamC: {
+    enabled: process.env.SEAM_C_ENABLED !== 'false' && !!process.env.YOLO_SERVICE_URL,
+  },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
     model: 'gemini-2.0-flash',
