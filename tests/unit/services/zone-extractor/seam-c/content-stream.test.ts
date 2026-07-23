@@ -87,7 +87,7 @@ describe('tagContentStream', () => {
       { zoneIndex: 0, yTop: 999, yBottom: 900, tag: 'P' }, // matches neither line
     ]);
     expect(assignments).toEqual([]);
-    expect(content).toContain('/Artifact BDC');
+    expect(content).toContain('/Artifact BMC');
     expect(content).not.toContain('MCID');
   });
 
@@ -101,7 +101,7 @@ describe('tagContentStream', () => {
       { zoneIndex: 0, yTop: 165, yBottom: 140, tag: 'Artifact', isArtifact: true },
       { zoneIndex: 1, yTop: 135, yBottom: 100, tag: 'P' },
     ]);
-    expect(content).toContain('/Artifact BDC');
+    expect(content).toContain('/Artifact BMC');
     expect(content).toContain('/P <</MCID 0>> BDC');
     expect(assignments).toEqual([{ mcid: 0, zoneIndex: 1 }]);
   });

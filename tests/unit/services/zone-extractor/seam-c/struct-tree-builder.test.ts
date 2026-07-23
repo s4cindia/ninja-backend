@@ -82,6 +82,12 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     expect(firstLi.children![0].mcids).toEqual([3]);
   });
 
+  it('refuses a PDF that already has a /StructTreeRoot (no double-tagging)', async () => {
+    const doc = await PDFDocument.load(await makeUntaggedPdf());
+    buildStructTreeFromZones(doc, ZONES);                 // now tagged
+    expect(() => buildStructTreeFromZones(doc, ZONES)).toThrow(/ALREADY_TAGGED/);
+  });
+
   it('is a no-op for a PDF with no zones', async () => {
     const doc = await PDFDocument.load(await makeUntaggedPdf());
     const result = buildStructTreeFromZones(doc, []);

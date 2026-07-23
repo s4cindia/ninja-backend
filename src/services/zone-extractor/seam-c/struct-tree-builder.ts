@@ -51,6 +51,14 @@ function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | 
 export function buildStructTreeFromZones(doc: PDFDocument, zones: OrderableZone[]): BuildResult {
   if (zones.length === 0) return { elements: 0, mcids: 0, pages: 0 };
 
+  // Seam C only tags GENUINELY untagged PDFs. Running on a doc that already has a
+  // /StructTreeRoot (and existing MCID marked content) would create duplicate /
+  // nested MCIDs and two coexisting structure trees. The worker gates on
+  // `!isTagged`; this is the defensive backstop.
+  if (doc.catalog.get(PDFName.of('StructTreeRoot'))) {
+    throw new Error('SEAM_C_ALREADY_TAGGED: document already has a /StructTreeRoot');
+  }
+
   const ordered = synthesizeReadingOrder(zones);
   const tagged = tagOrderedZones(ordered);
   const forest = assembleHierarchy(tagged);
