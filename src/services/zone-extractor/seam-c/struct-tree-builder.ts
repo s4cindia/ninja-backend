@@ -93,6 +93,8 @@ export function buildStructTreeFromZones(doc: PDFDocument, zones: OrderableZone[
         zoneIndex: m.index,
         yTop: H - z.bbox.y,
         yBottom: H - (z.bbox.y + z.bbox.h),
+        xLeft: z.bbox.x,
+        xRight: z.bbox.x + z.bbox.w,
         tag: m.tag,
         isArtifact: m.isArtifact,
       };

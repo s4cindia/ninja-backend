@@ -50,8 +50,8 @@ describe('tokenize', () => {
 describe('tagContentStream', () => {
   // page height 200; two zones stacked. Line 1 baseline y=150, line 2 y=120.
   const bands: ZoneBand[] = [
-    { zoneIndex: 0, yTop: 165, yBottom: 140, tag: 'H1' },   // contains y=150
-    { zoneIndex: 1, yTop: 135, yBottom: 100, tag: 'P' },    // contains y=120
+    { zoneIndex: 0, yTop: 165, yBottom: 140, xLeft: 0, xRight: 1000, tag: 'H1' },   // contains y=150
+    { zoneIndex: 1, yTop: 135, yBottom: 100, xLeft: 0, xRight: 1000, tag: 'P' },    // contains y=120
   ];
 
   it('wraps each text object in its zone tag with a unique MCID', () => {
@@ -75,7 +75,7 @@ describe('tagContentStream', () => {
 
   it('merges consecutive same-zone text objects under one MCID', () => {
     // both lines fall in one wide band
-    const oneBand: ZoneBand[] = [{ zoneIndex: 0, yTop: 165, yBottom: 100, tag: 'P' }];
+    const oneBand: ZoneBand[] = [{ zoneIndex: 0, yTop: 165, yBottom: 100, xLeft: 0, xRight: 1000, tag: 'P' }];
     const { content, assignments } = tagContentStream(twoLineStream, oneBand);
     expect(assignments).toEqual([{ mcid: 0, zoneIndex: 0 }]);
     expect((content.match(/BDC/g) || []).length).toBe(1);
@@ -84,7 +84,7 @@ describe('tagContentStream', () => {
 
   it('marks text with no matching zone as Artifact (no MCID)', () => {
     const { content, assignments } = tagContentStream(twoLineStream, [
-      { zoneIndex: 0, yTop: 999, yBottom: 900, tag: 'P' }, // matches neither line
+      { zoneIndex: 0, yTop: 999, yBottom: 900, xLeft: 0, xRight: 1000, tag: 'P' }, // matches neither line
     ]);
     expect(assignments).toEqual([]);
     expect(content).toContain('/Artifact BMC');
@@ -98,11 +98,26 @@ describe('tagContentStream', () => {
 
   it('respects an artifact band (header/footer) with no MCID', () => {
     const { content, assignments } = tagContentStream(twoLineStream, [
-      { zoneIndex: 0, yTop: 165, yBottom: 140, tag: 'Artifact', isArtifact: true },
-      { zoneIndex: 1, yTop: 135, yBottom: 100, tag: 'P' },
+      { zoneIndex: 0, yTop: 165, yBottom: 140, xLeft: 0, xRight: 1000, tag: 'Artifact', isArtifact: true },
+      { zoneIndex: 1, yTop: 135, yBottom: 100, xLeft: 0, xRight: 1000, tag: 'P' },
     ]);
     expect(content).toContain('/Artifact BMC');
     expect(content).toContain('/P <</MCID 0>> BDC');
     expect(assignments).toEqual([{ mcid: 0, zoneIndex: 1 }]);
+  });
+
+  it('separates columns by X — two lines at the same Y go to different zones', () => {
+    // left line at x=50, right line at x=350, both baseline y=150
+    const twoCol = 'q BT 1 0 0 1 50 150 Tm <4C> Tj ET Q\nq BT 1 0 0 1 350 150 Tm <52> Tj ET Q\n';
+    const colBands: ZoneBand[] = [
+      { zoneIndex: 0, yTop: 160, yBottom: 140, xLeft: 30, xRight: 250, tag: 'P' },   // left column
+      { zoneIndex: 1, yTop: 160, yBottom: 140, xLeft: 300, xRight: 520, tag: 'P' },  // right column, same Y
+    ];
+    const { assignments } = tagContentStream(twoCol, colBands);
+    // baseline-Y alone would put both in zone 0; the X test splits them
+    expect(assignments).toEqual([
+      { mcid: 0, zoneIndex: 0 },
+      { mcid: 1, zoneIndex: 1 },
+    ]);
   });
 });
