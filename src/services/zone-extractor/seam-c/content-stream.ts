@@ -181,7 +181,9 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
   const closeRun = (): void => {
     if (!run) return;
     if (run.band.isArtifact) {
-      insertions.push({ offset: run.startOffset, text: `/Artifact BDC ` });
+      // BMC (not BDC): a bare tag with no property list. `/Artifact BDC` makes a
+      // validator look up /Artifact in /Properties → "Undefined property" (veraPDF).
+      insertions.push({ offset: run.startOffset, text: `/Artifact BMC ` });
     } else {
       insertions.push({ offset: run.startOffset, text: `/${run.band.tag} <</MCID ${mcid}>> BDC ` });
       assignments.push({ mcid, zoneIndex: run.band.zoneIndex });
