@@ -6,6 +6,7 @@ import { queueService } from '../../services/queue.service';
 import { pdfAuditService } from '../../services/pdf/pdf-audit.service';
 import { pdfParserService } from '../../services/pdf/pdf-parser.service';
 import { adobeAutoTagService } from '../../services/pdf/adobe-autotag.service';
+import { seamCTagService } from '../../services/pdf/seam-c-tag.service';
 import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
@@ -151,10 +152,12 @@ async function processPdfAccessibility(
   // ── 2. Adobe AutoTag if untagged [20–40%] ───────────────────────────────────
   let auditBuffer = fileBuffer;
   let autoTagMeta: Record<string, unknown> = {};
-  const shouldAutoTag = !isTagged && aiConfig.adobe.enabled;
+  // Seam C is the DEFAULT tagger; Adobe is the fallback. Tag any untagged PDF when
+  // at least one tagger is available.
+  const shouldAutoTag = !isTagged && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
 
   if (shouldAutoTag) {
-    logger.info(`[PDF Worker] PDF is untagged — running Adobe AutoTag for job ${dbJobId}`);
+    logger.info(`[PDF Worker] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
 
     // Record autoTagProgress start in job.input
     const ejStart = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
@@ -166,7 +169,26 @@ async function processPdfAccessibility(
     });
 
     try {
-      const autoTagResult = await adobeAutoTagService.tagPdf(fileBuffer, { generateReport: true, exportWord: true });
+      let autoTagResult: {
+        taggedPdfBuffer: Buffer;
+        reportBuffer: Buffer | null;
+        wordBuffer: Buffer | null;
+        elementCounts: unknown;
+        parsedFlags: unknown;
+      };
+      let taggerSource: 'seam-c' | 'adobe' = 'adobe';
+      if (aiConfig.seamC.enabled) {
+        try {
+          autoTagResult = await seamCTagService.tagPdf(fileBuffer, dbJobId);
+          taggerSource = 'seam-c';
+        } catch (seamErr) {
+          if (!aiConfig.adobe.enabled) throw seamErr;
+          logger.warn(`[PDF Worker] Seam C tagging failed, falling back to Adobe: ${seamErr instanceof Error ? seamErr.message : String(seamErr)}`);
+          autoTagResult = await adobeAutoTagService.tagPdf(fileBuffer, { generateReport: true, exportWord: true });
+        }
+      } else {
+        autoTagResult = await adobeAutoTagService.tagPdf(fileBuffer, { generateReport: true, exportWord: true });
+      }
       auditBuffer = autoTagResult.taggedPdfBuffer;
 
       // Save tagged PDF as remediated file + report XML + Word export
@@ -202,11 +224,12 @@ async function processPdfAccessibility(
 
       autoTagMeta = {
         autoTagStatus: 'complete',
+        taggerSource,
         hasTaggingReport: !!autoTagResult.reportBuffer,
         hasWordExport: !!autoTagResult.wordBuffer,
         autoTagElementCounts: autoTagResult.elementCounts,
       };
-      logger.info(`[PDF Worker] Adobe AutoTag complete for job ${dbJobId}`);
+      logger.info(`[PDF Worker] ${taggerSource} tagging complete for job ${dbJobId}`);
     } catch (tagErr) {
       logger.warn(`[PDF Worker] Adobe AutoTag failed (continuing with untagged): ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`);
 
@@ -227,8 +250,8 @@ async function processPdfAccessibility(
     }
   } else {
     autoTagMeta = { autoTagStatus: isTagged ? 'skipped' : 'skipped' };
-    if (isTagged) logger.info(`[PDF Worker] PDF is already tagged — skipping Adobe AutoTag for job ${dbJobId}`);
-    else logger.info(`[PDF Worker] Adobe not configured — skipping AutoTag for job ${dbJobId}`);
+    if (isTagged) logger.info(`[PDF Worker] PDF is already tagged — skipping tagging for job ${dbJobId}`);
+    else logger.info(`[PDF Worker] No tagger configured — skipping tagging for job ${dbJobId}`);
   }
 
   // Advance to audit start (40% if auto-tag ran, stays at 20% if skipped)
