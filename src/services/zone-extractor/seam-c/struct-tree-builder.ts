@@ -1,5 +1,5 @@
 import {
-  PDFDocument, PDFName, PDFNumber, PDFRef, PDFArray, PDFDict, PDFRawStream, PDFObject,
+  PDFDocument, PDFName, PDFNumber, PDFString, PDFRef, PDFArray, PDFDict, PDFRawStream, PDFObject,
   decodePDFRawStream,
 } from 'pdf-lib';
 import { synthesizeReadingOrder, type OrderableZone } from './reading-order';
@@ -48,7 +48,11 @@ function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | 
   return parts.join('\n');
 }
 
-export function buildStructTreeFromZones(doc: PDFDocument, zones: OrderableZone[]): BuildResult {
+export function buildStructTreeFromZones(
+  doc: PDFDocument,
+  zones: OrderableZone[],
+  lang = 'en-US',
+): BuildResult {
   if (zones.length === 0) return { elements: 0, mcids: 0, pages: 0 };
 
   // Seam C only tags GENUINELY untagged PDFs. Running on a doc that already has a
@@ -210,9 +214,14 @@ export function buildStructTreeFromZones(doc: PDFDocument, zones: OrderableZone[
   rootObj.set(PDFName.of('ParentTree'), parentTreeRef);
   rootObj.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(pages.length));
 
-  // ── catalog: /StructTreeRoot + /MarkInfo <</Marked true>>
+  // ── catalog: /StructTreeRoot + /MarkInfo + /Lang; /Tabs=S on every page.
+  // /Lang alone clears veraPDF 7.2-34 ("natural language cannot be determined")
+  // for all page text — the single biggest metadata win. /Tabs=S makes tab order
+  // follow structure (required on pages carrying annotations, 7.18.3).
   doc.catalog.set(PDFName.of('StructTreeRoot'), rootRef);
   doc.catalog.set(PDFName.of('MarkInfo'), doc.context.obj({ Marked: true }));
+  doc.catalog.set(PDFName.of('Lang'), PDFString.of(lang));
+  for (const page of pages) page.node.set(PDFName.of('Tabs'), PDFName.of('S'));
 
   return { elements: elemCount, mcids: mcidCount, pages: zonesByPage.size };
 }

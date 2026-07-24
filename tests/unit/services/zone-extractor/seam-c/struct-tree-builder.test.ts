@@ -50,6 +50,9 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     expect(catalog.get(PDFName.of('StructTreeRoot'))).toBeTruthy();
     const markInfo = reloaded.context.lookup(catalog.get(PDFName.of('MarkInfo'))) as PDFDict;
     expect(markInfo.get(PDFName.of('Marked'))).toBe(PDFBool.True);
+    // /Lang (clears veraPDF 7.2-34) and /Tabs=S on the page
+    expect(catalog.get(PDFName.of('Lang'))?.toString()).toContain('en-US');
+    expect(reloaded.getPage(0).node.get(PDFName.of('Tabs'))?.toString()).toBe('/S');
 
     // content stream carries MCID marked content
     const page = reloaded.getPage(0);
