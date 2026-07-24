@@ -71,6 +71,30 @@ describe('synthesizeReadingOrder', () => {
     expect(result.map((o) => o.readingOrder)).toEqual([0, 1]);
   });
 
+  it('reads a two-column page with aligned rows column-major, not row-major', () => {
+    // 4 rows; both columns have a zone at each Y. A naive row cut would interleave.
+    const L = [100, 150, 200, 250].map((y) => z(1, 50, y, 200, 30));
+    const R = [100, 150, 200, 250].map((y) => z(1, 320, y, 200, 30));
+    const scrambled = [R[1], L[3], L[0], R[3], L[1], R[0], R[2], L[2]];
+    expect(order(scrambled)).toEqual([...L, ...R]); // whole left column, then whole right
+  });
+
+  it('sequences a three-column page left-to-right, each column top-to-bottom', () => {
+    const c1 = [100, 150].map((y) => z(1, 50, y, 120, 30));
+    const c2 = [100, 150].map((y) => z(1, 210, y, 120, 30));
+    const c3 = [100, 150].map((y) => z(1, 370, y, 120, 30));
+    expect(order([c3[1], c1[0], c2[1], c1[1], c3[0], c2[0]]))
+      .toEqual([...c1, ...c2, ...c3]);
+  });
+
+  it('treats a mid-page full-width figure as a band break between column blocks', () => {
+    const top = [z(1, 50, 100, 200, 40), z(1, 320, 100, 200, 40)];       // 2-col block
+    const fig = z(1, 50, 200, 470, 90, 'figure');                        // spans both columns
+    const bot = [z(1, 50, 320, 200, 40), z(1, 320, 320, 200, 40)];       // 2-col block
+    expect(order([bot[1], top[0], fig, top[1], bot[0]]))
+      .toEqual([top[0], top[1], fig, bot[0], bot[1]]);
+  });
+
   it('assigns a contiguous global readingOrder index', () => {
     const zones = [
       z(1, 50, 200, 400, 40),
