@@ -120,4 +120,27 @@ describe('tagContentStream', () => {
       { mcid: 1, zoneIndex: 1 },
     ]);
   });
+
+  it('marks an image inside a figure zone as Figure, and a painted path as Artifact', () => {
+    // image drawn by `cm /Im0 Do` at center (100,440); a filled rect; a clip path
+    const stream = 'q 100 0 0 80 50 400 cm /Im0 Do Q\n50 50 200 100 re f\n10 10 30 30 re W n\n';
+    const bands: ZoneBand[] = [
+      { zoneIndex: 3, yTop: 480, yBottom: 400, xLeft: 40, xRight: 160, tag: 'Figure' },
+    ];
+    const { content, assignments } = tagContentStream(stream, bands);
+    expect(content).toContain('/Figure <</MCID 0>> BDC'); // image → Figure, bound to the figure zone
+    expect(content).toContain('/Im0 Do');
+    expect(assignments).toEqual([{ mcid: 0, zoneIndex: 3 }]);
+    expect((content.match(/BMC/g) || []).length).toBe(1); // only the painted fill; the clip (re W n) is not content
+  });
+
+  it('marks an image outside any figure zone as Artifact (no MCID)', () => {
+    const stream = 'q 100 0 0 80 50 400 cm /Im0 Do Q\n';
+    const { content, assignments } = tagContentStream(stream, [
+      { zoneIndex: 0, yTop: 480, yBottom: 400, xLeft: 40, xRight: 160, tag: 'P' }, // not a Figure
+    ]);
+    expect(assignments).toEqual([]);
+    expect(content).toContain('/Artifact BMC');
+    expect(content).toContain('/Im0 Do');
+  });
 });
