@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFBool, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFBool, PDFString, PDFArray, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { buildStructTreeFromZones } from '../../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import { serializeStructTreeAsync } from '../../../../../src/services/zone-extractor/struct-tree-serializer';
 import type { OrderableZone } from '../../../../../src/services/zone-extractor/seam-c/reading-order';
@@ -83,6 +83,31 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     const firstLi = list.children![0];
     expect((firstLi.children || []).map((c) => c.tag)).toEqual(['LBody']);
     expect(firstLi.children![0].mcids).toEqual([3]);
+  });
+
+  it('tags a Link annotation as a Link element with an OBJR and /Contents', async () => {
+    const doc = await PDFDocument.load(await makeUntaggedPdf());
+    const page = doc.getPage(0);
+    const linkRef = doc.context.register(doc.context.obj({
+      Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'),
+      Rect: doc.context.obj([50, 40, 150, 60]),
+      A: doc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('https://example.com') }),
+    }));
+    page.node.set(PDFName.of('Annots'), doc.context.obj([linkRef]));
+
+    buildStructTreeFromZones(doc, ZONES);
+    const tagged = await doc.save();
+
+    // a Link element now sits under the Document
+    const { tree } = await serializeStructTreeAsync(tagged as unknown as Parameters<typeof serializeStructTreeAsync>[0]);
+    expect((tree[0].children || []).map((c) => c.tag)).toContain('Link');
+
+    // the annotation gained a /Contents alt (the URI) and a /StructParent
+    const reloaded = await PDFDocument.load(tagged);
+    const annots = reloaded.context.lookup(reloaded.getPage(0).node.get(PDFName.of('Annots'))) as PDFArray;
+    const annot = reloaded.context.lookup(annots.get(0)) as PDFDict;
+    expect(annot.get(PDFName.of('Contents'))?.toString()).toContain('example.com');
+    expect(annot.get(PDFName.of('StructParent'))).toBeTruthy();
   });
 
   it('refuses a PDF that already has a /StructTreeRoot (no double-tagging)', async () => {

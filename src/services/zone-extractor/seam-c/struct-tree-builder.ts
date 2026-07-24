@@ -48,6 +48,17 @@ function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | 
   return parts.join('\n');
 }
 
+/** Alt description for a link: its URI action if present, else a generic label. */
+function linkDescription(doc: PDFDocument, annot: PDFDict): string {
+  const a = annot.get(PDFName.of('A'));
+  const action = a instanceof PDFRef ? doc.context.lookup(a) : a;
+  if (action instanceof PDFDict) {
+    const uri = action.get(PDFName.of('URI'));
+    if (uri instanceof PDFString) return uri.decodeText();
+  }
+  return 'Link';
+}
+
 export function buildStructTreeFromZones(
   doc: PDFDocument,
   zones: OrderableZone[],
@@ -201,6 +212,38 @@ export function buildStructTreeFromZones(
 
   const docKids: PDFRef[] = [];
   for (const node of forest) { const r = build(node, docRef); if (r) docKids.push(r); }
+
+  // ── Link annotations → a Link StructElem with an OBJR + a /Contents alt, wired
+  // into the ParentTree. Clears veraPDF 7.18.5-1 (annotation tagged as Link),
+  // 7.18.5-2 / 7.18.1-2 (link has an alternate description via /Contents).
+  let nextKey = pages.length;   // annotation /StructParent keys follow the page keys
+  const annotEntries: Array<{ key: number; ref: PDFRef }> = [];
+  pages.forEach((page) => {
+    const annotsRaw = page.node.get(PDFName.of('Annots'));
+    const annots = annotsRaw instanceof PDFRef ? doc.context.lookup(annotsRaw) : annotsRaw;
+    if (!(annots instanceof PDFArray)) return;
+    for (let i = 0; i < annots.size(); i++) {
+      const annotRef = annots.get(i);
+      if (!(annotRef instanceof PDFRef)) continue;
+      const annot = doc.context.lookup(annotRef);
+      if (!(annot instanceof PDFDict)) continue;
+      const subtype = annot.get(PDFName.of('Subtype'));
+      if (!(subtype instanceof PDFName) || subtype.decodeText() !== 'Link') continue;
+
+      if (!annot.get(PDFName.of('Contents'))) {
+        annot.set(PDFName.of('Contents'), PDFString.of(linkDescription(doc, annot)));
+      }
+      const link = makeElem('Link', docRef);
+      const objr = doc.context.obj({ Type: PDFName.of('OBJR'), Obj: annotRef, Pg: page.ref });
+      setKids(link.dict, [doc.context.register(objr)]);
+      docKids.push(link.ref);
+
+      const key = nextKey++;
+      annot.set(PDFName.of('StructParent'), PDFNumber.of(key));
+      annotEntries.push({ key, ref: link.ref });
+    }
+  });
+
   setKids(docObj, docKids);
 
   // ── /ParentTree number tree (flat Nums: [key, [refs...], ...])
@@ -209,10 +252,12 @@ export function buildStructTreeFromZones(
     const arr = slots.map((r) => (r ?? doc.context.obj({})) as PDFObject); // dense over MCIDs
     nums.push(PDFNumber.of(pageIdx), doc.context.obj(arr));
   }
+  // Annotation keys follow the page keys (ascending), each mapping to its Link elem.
+  for (const { key, ref } of annotEntries) nums.push(PDFNumber.of(key), ref);
   const parentTreeObj = doc.context.obj({ Nums: doc.context.obj(nums) });
   const parentTreeRef = doc.context.register(parentTreeObj);
   rootObj.set(PDFName.of('ParentTree'), parentTreeRef);
-  rootObj.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(pages.length));
+  rootObj.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(nextKey));
 
   // ── catalog: /StructTreeRoot + /MarkInfo + /Lang; /Tabs=S on every page.
   // /Lang alone clears veraPDF 7.2-34 ("natural language cannot be determined")
