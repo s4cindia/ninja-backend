@@ -126,6 +126,7 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
   let tmF = 0;               // text matrix f (baseline y, text space)
   let firstX: number | null = null;
   let firstY: number | null = null;
+  let pathStart: number | null = null;   // offset of the current path's first op
   const operands: Token[] = [];
 
   const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
@@ -149,6 +150,15 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
       if (dist < bestDist) { bestDist = dist; best = b; }
     }
     return bestDist <= NEAREST_TOL ? best : null;
+  };
+
+  // Images bind only to a FIGURE zone they sit inside; otherwise they're Artifacts.
+  const figureFor = (x: number, y: number): ZoneBand | null => {
+    for (const b of bands) {
+      if (b.tag === 'Figure' && !b.isArtifact &&
+          x >= b.xLeft && x <= b.xRight && y <= b.yTop && y >= b.yBottom) return b;
+    }
+    return null;
   };
 
   for (let k = 0; k < tokens.length; k++) {
@@ -195,6 +205,28 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
         inText = false; btStart = -1;
         break;
       }
+
+      // ── non-text content must also be marked, or it fails PDF/UA 7.1-3 ──
+      case 'Do': {
+        // XObject paint. Position = the unit square [0,1]² transformed by the CTM.
+        const band = figureFor(ctm.e + ctm.a / 2, ctm.f + ctm.d / 2); // Figure or (null →) Artifact
+        const start = operands.length ? operands[operands.length - 1].start : tk.start; // include the /Name
+        units.push({ start, end: tk.end, band });
+        break;
+      }
+      case 'sh': {                                         // shading fill → Artifact
+        const start = operands.length ? operands[operands.length - 1].start : tk.start;
+        units.push({ start, end: tk.end, band: null });
+        break;
+      }
+      case 'm': case 're': case 'l': case 'c': case 'v': case 'y': case 'h':
+        if (pathStart === null) pathStart = operands.length ? operands[0].start : tk.start;
+        break;
+      case 'f': case 'F': case 'f*': case 'S': case 's': case 'B': case 'B*': case 'b': case 'b*':
+        if (pathStart !== null) { units.push({ start: pathStart, end: tk.end, band: null }); pathStart = null; }
+        break;
+      case 'n': pathStart = null; break;                   // path used for clipping — not painted content
+
       default: break;
     }
     operands.length = 0;
