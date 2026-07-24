@@ -10,18 +10,19 @@ import type { BBox, CanonicalZoneType } from '../types';
 // Coordinate convention (matches DetectedZone.bbox): PDF points, TOP-LEFT origin,
 // {x, y, w, h}. So smaller `y` is higher on the page and comes first.
 //
-// Algorithm (band + column, an XY-cut approximation robust to the common cases):
+// Algorithm: recursive XY-cut (the standard for reading order).
 //   1. Group zones by page; pages ascend.
-//   2. Within a page, walk zones top-to-bottom. A "full-width" zone (title, wide
-//      table/figure spanning the text block) acts as a BAND SEPARATOR: it flushes
-//      the accumulated column zones above it, emits in place, and starts a new band.
-//   3. Each band's column zones are clustered by horizontal (x-interval) overlap,
-//      columns ordered left-to-right, and each column ordered top-to-bottom.
+//   2. Within a page, recursively cut the region: prefer a full-height VERTICAL
+//      whitespace gap (→ columns; read the left region fully before the right);
+//      else a full-width HORIZONTAL gap (→ rows; top before bottom); else the
+//      region is atomic and is ordered top-to-bottom, then left-to-right.
+//   3. A gap counts only if it exceeds max(minGapAbs, minGapFrac × extent), so
+//      line/paragraph spacing doesn't trigger a cut. A full-width element (title,
+//      wide table) blocks vertical gaps, forcing a horizontal cut around it.
 //   4. readingOrder is assigned globally, page-major.
 //
-// This is a Phase-1 prototype: correct on 1-col, n-col, and full-width-spanner
-// layouts (the shapes the Phase-0 spike checks). It does NOT yet handle wrapped
-// text flow around floats or rotated pages — Phase 2 refines against real MCIDs.
+// Vertical cuts take priority so multi-column pages read column-major, while
+// full-width spanners stay in place. Assumes axis-aligned content (no rotation).
 
 export interface OrderableZone {
   pageNumber: number;
@@ -37,15 +38,15 @@ export interface OrderedZone<T extends OrderableZone> {
 }
 
 export interface OrderConfig {
-  /** width ≥ fullWidthFrac × pageWidth ⇒ full-width band separator. */
-  fullWidthFrac: number;
-  /** min x-interval overlap (points) to group two zones into one column. */
-  columnOverlapTol: number;
+  /** a whitespace gap is a cut only if wider than this many points. */
+  minGapAbs: number;
+  /** …and wider than this fraction of the region's extent along that axis. */
+  minGapFrac: number;
 }
 
 export const DEFAULT_ORDER_CONFIG: OrderConfig = {
-  fullWidthFrac: 0.65,
-  columnOverlapTol: 12,
+  minGapAbs: 12,
+  minGapFrac: 0.04,
 };
 
 const byTopThenLeft = (a: OrderableZone, b: OrderableZone): number =>
@@ -78,75 +79,56 @@ export function synthesizeReadingOrder<T extends OrderableZone>(
 }
 
 function orderPage<T extends OrderableZone>(zones: T[], config: OrderConfig): T[] {
-  if (zones.length <= 1) return zones;
+  return xyCut(zones, config);
+}
 
-  const pageLeft = Math.min(...zones.map((z) => z.bbox.x));
-  const pageRight = Math.max(...zones.map((z) => z.bbox.x + z.bbox.w));
-  const pageWidth = pageRight - pageLeft || 1;
-  const isFullWidth = (z: T): boolean => z.bbox.w >= config.fullWidthFrac * pageWidth;
+interface Gap { pos: number; size: number; }
 
-  const sorted = [...zones].sort(byTopThenLeft);
-  const out: T[] = [];
-  let band: T[] = [];
-  const flush = (): void => {
-    if (band.length) {
-      out.push(...orderColumns(band, config));
-      band = [];
+/** Widest gap between the (projected) intervals; null if they fully overlap. */
+function widestGap(intervals: Array<[number, number]>): Gap | null {
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+  let maxEnd = sorted[0][1];
+  let best = 0;
+  let pos: number | null = null;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i][0] > maxEnd) {
+      const size = sorted[i][0] - maxEnd;
+      if (size > best) { best = size; pos = maxEnd + size / 2; }
     }
-  };
-
-  for (const z of sorted) {
-    if (isFullWidth(z)) {
-      flush();
-      out.push(z);
-    } else {
-      band.push(z);
-    }
+    maxEnd = Math.max(maxEnd, sorted[i][1]);
   }
-  flush();
-  return out;
-}
-
-interface Column<T> {
-  minX: number;
-  maxX: number;
-  zones: T[];
-}
-
-function orderColumns<T extends OrderableZone>(zones: T[], config: OrderConfig): T[] {
-  if (zones.length <= 1) return zones;
-  const columns = clusterColumns(zones, config.columnOverlapTol);
-  columns.sort((a, b) => a.minX - b.minX);
-  return columns.flatMap((c) => c.zones.sort(byTopThenLeft));
+  return pos === null ? null : { pos, size: best };
 }
 
 /**
- * Greedy x-interval clustering: each zone joins the existing column it overlaps
- * most (beyond `tol`), else opens a new column. Vertically-stacked zones share an
- * x-range and cluster together; side-by-side columns don't overlap and separate.
+ * Recursive XY-cut. A vertical whitespace gap (columns) is cut first so reading is
+ * column-major; a full-width element blocks vertical gaps and forces a horizontal
+ * cut (rows) around it. With no significant gap the region is atomic.
  */
-function clusterColumns<T extends OrderableZone>(zones: T[], tol: number): Column<T>[] {
-  const sorted = [...zones].sort((a, b) => a.bbox.x - b.bbox.x);
-  const columns: Column<T>[] = [];
-  for (const z of sorted) {
-    const zL = z.bbox.x;
-    const zR = z.bbox.x + z.bbox.w;
-    let best: Column<T> | null = null;
-    let bestOverlap = tol;
-    for (const c of columns) {
-      const overlap = Math.min(zR, c.maxX) - Math.max(zL, c.minX);
-      if (overlap > bestOverlap) {
-        bestOverlap = overlap;
-        best = c;
-      }
-    }
-    if (best) {
-      best.minX = Math.min(best.minX, zL);
-      best.maxX = Math.max(best.maxX, zR);
-      best.zones.push(z);
-    } else {
-      columns.push({ minX: zL, maxX: zR, zones: [z] });
-    }
+function xyCut<T extends OrderableZone>(zones: T[], config: OrderConfig): T[] {
+  if (zones.length <= 1) return zones;
+
+  const xs = zones.map((z) => [z.bbox.x, z.bbox.x + z.bbox.w] as [number, number]);
+  const ys = zones.map((z) => [z.bbox.y, z.bbox.y + z.bbox.h] as [number, number]);
+  const extentX = Math.max(...xs.map((i) => i[1])) - Math.min(...xs.map((i) => i[0]));
+  const extentY = Math.max(...ys.map((i) => i[1])) - Math.min(...ys.map((i) => i[0]));
+
+  const vGap = widestGap(xs);
+  if (vGap && vGap.size >= Math.max(config.minGapAbs, config.minGapFrac * extentX)) {
+    const left: T[] = [];
+    const right: T[] = [];
+    for (const z of zones) (z.bbox.x + z.bbox.w / 2 < vGap.pos ? left : right).push(z);
+    if (left.length && right.length) return [...xyCut(left, config), ...xyCut(right, config)];
   }
-  return columns;
+
+  const hGap = widestGap(ys);
+  if (hGap && hGap.size >= Math.max(config.minGapAbs, config.minGapFrac * extentY)) {
+    const top: T[] = [];
+    const bottom: T[] = [];
+    for (const z of zones) (z.bbox.y + z.bbox.h / 2 < hGap.pos ? top : bottom).push(z);
+    if (top.length && bottom.length) return [...xyCut(top, config), ...xyCut(bottom, config)];
+  }
+
+  // No usable cut → atomic region, ordered top-to-bottom then left-to-right.
+  return [...zones].sort(byTopThenLeft);
 }
