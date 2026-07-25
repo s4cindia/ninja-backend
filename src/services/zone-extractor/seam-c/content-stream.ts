@@ -7,13 +7,14 @@
 // unique MCID per contiguous same-zone run, and reports which MCID belongs to
 // which zone so the caller can point a StructElem's /K at it.
 //
-// Scope (Phase-2 spike — simple, single-column PDFs):
-//   · Assignment is by the text object's baseline Y falling inside a zone band.
-//     Single-column zones stack vertically, so Y alone is robust; X is ignored.
-//   · CTM and text matrices are assumed axis-aligned (no rotation/skew) — the
-//     common case. Rotated pages are out of scope for the spike.
-//   · Only text objects (BT…ET) are tagged. Non-text painting ops are left as-is
-//     (fine for text-first documents); a later pass marks images/paths.
+// Coverage:
+//   · Text objects (BT…ET) are assigned by their first-shown anchor (x, baseline y)
+//     to the enclosing zone's 2-D box (nearest within tolerance), so columns are
+//     separated by X, not just Y.
+//   · Non-text content is marked too, or it fails PDF/UA 7.1-3: images (`Do`) and
+//     inline images (`BI…EI`) → Figure (in a figure zone) or Artifact; painted paths
+//     and shadings → Artifact; clip paths (`W n`) are left unmarked.
+//   · Assumes axis-aligned CTM/text matrices (no rotation/skew) — the common case.
 
 export interface ZoneBand {
   zoneIndex: number;
@@ -217,6 +218,19 @@ export function tagContentStream(content: string, bands: ZoneBand[], startMcid =
       case 'sh': {                                         // shading fill → Artifact
         const start = operands.length ? operands[operands.length - 1].start : tk.start;
         units.push({ start, end: tk.end, band: null });
+        break;
+      }
+      case 'BI': {
+        // inline image: BI <dict> ID <binary> EI. The tokenizer can't parse the raw
+        // image bytes, so locate EI in the source and mark the whole span (Figure if
+        // in a figure zone, else Artifact), then skip the intervening tokens.
+        const idm = /\bID\b/.exec(content.slice(tk.end));
+        const from = idm ? tk.end + idm.index + 2 : tk.end;
+        const eim = /\sEI\b/.exec(content.slice(from));
+        const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+        const band = figureFor(ctm.e + ctm.a / 2, ctm.f + ctm.d / 2);
+        units.push({ start: tk.start, end: eiEnd, band });
+        while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;   // skip the binary
         break;
       }
       case 'm': case 're': case 'l': case 'c': case 'v': case 'y': case 'h':

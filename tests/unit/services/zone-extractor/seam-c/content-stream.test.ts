@@ -143,4 +143,16 @@ describe('tagContentStream', () => {
     expect(content).toContain('/Artifact BMC');
     expect(content).toContain('/Im0 Do');
   });
+
+  it('marks an inline image (BI…ID…EI) inside a figure zone as Figure', () => {
+    // inline image at CTM center (100,440); binary bytes between ID and EI
+    const stream = 'q 100 0 0 80 50 400 cm BI /W 2 /H 2 /CS /RGB /BPC 8 ID \x00\x01\x02\x03 EI Q\n';
+    const bands: ZoneBand[] = [
+      { zoneIndex: 2, yTop: 480, yBottom: 400, xLeft: 40, xRight: 160, tag: 'Figure' },
+    ];
+    const { content, assignments } = tagContentStream(stream, bands);
+    expect(assignments).toEqual([{ mcid: 0, zoneIndex: 2 }]); // whole BI…EI bound to the figure
+    expect(content).toContain('/Figure <</MCID 0>> BDC');
+    expect(content).toContain('EI'); // the inline image is preserved, binary skipped
+  });
 });
