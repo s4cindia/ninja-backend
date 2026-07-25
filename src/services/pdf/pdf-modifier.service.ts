@@ -5,7 +5,7 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
@@ -646,7 +646,17 @@ export class PdfModifierService {
         return pg && pg.toString() === pageRef.toString();
       });
 
+      // MCID-exact first: for a detector-tagged tree (Seam C), the image's XObject
+      // is bound to a specific MCID and the Figure's /K references that MCID — so we
+      // can hit the exact Figure instead of guessing by page position. Falls back to
+      // positional matching for trees without that binding (e.g. Adobe-tagged).
+      const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
+      const exact = xObjectName
+        ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName)
+        : null;
+
       let target: PDFDict | undefined =
+        exact ??
         figuresOnPage[targetIndex] ??
         figuresOnPage[0] ??
         figures[targetIndex] ??
@@ -679,6 +689,81 @@ export class PdfModifierService {
         description: 'Failed to set alt text',
         error: error instanceof Error ? error.message : String(error),
       };
+    }
+  }
+
+  /**
+   * MCID-exact figure match: find the MCID that marks `xObjectName`'s image on the
+   * page, then the Figure whose /K references that MCID. Returns null if the tree
+   * isn't MCID-bound (positional matching then applies).
+   */
+  private findFigureByImageMcid(
+    doc: PDFDocument,
+    figuresOnPage: PDFDict[],
+    targetPage: number,
+    xObjectName: string,
+  ): PDFDict | null {
+    const mcid = this.mcidForXObject(doc, targetPage, xObjectName);
+    if (mcid === null) return null;
+    const matchesMcid = (k: unknown): boolean => {
+      if (k instanceof PDFNumber) return k.asNumber() === mcid;
+      if (k instanceof PDFArray) {
+        for (let i = 0; i < k.size(); i++) {
+          const item = k.get(i);
+          if (item instanceof PDFNumber && item.asNumber() === mcid) return true;
+          if (item instanceof PDFDict) {
+            const m = item.get(PDFName.of('MCID'));
+            if (m instanceof PDFNumber && m.asNumber() === mcid) return true;
+          }
+        }
+      }
+      return false;
+    };
+    return figuresOnPage.find((fig) => matchesMcid(fig.get(PDFName.of('K')))) ?? null;
+  }
+
+  /** MCID of the marked-content sequence enclosing `/xObjectName Do` on the page. */
+  private mcidForXObject(doc: PDFDocument, targetPage: number, xObjectName: string): number | null {
+    const content = this.decodePageContent(doc, targetPage);
+    if (!content) return null;
+    // BDC(with MCID) | BMC | EMC | `/name Do` — walk in source order tracking the MCID stack.
+    const re = /<<\s*\/MCID\s+(\d+)\s*>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
+    const stack: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+      if (m[1] !== undefined) stack.push(Number(m[1]));       // BDC with /MCID
+      else if (m[2] !== undefined) {                          // `/name Do`
+        if (m[2] === xObjectName) {
+          for (let i = stack.length - 1; i >= 0; i--) if (stack[i] >= 0) return stack[i];
+          return null;
+        }
+      } else if (/BMC$/.test(m[0])) stack.push(-1);           // artifact BMC (no MCID)
+      else stack.pop();                                       // EMC
+    }
+    return null;
+  }
+
+  /** Decode a page's content stream(s) to a single string (latin1). */
+  private decodePageContent(doc: PDFDocument, targetPage: number): string | null {
+    try {
+      const page = doc.getPage(targetPage - 1);
+      const raw = page.node.get(PDFName.of('Contents'));
+      const resolve = (o: unknown): unknown => (o instanceof PDFRef ? doc.context.lookup(o) : o);
+      const c = resolve(raw);
+      const streams = c instanceof PDFArray
+        ? Array.from({ length: c.size() }, (_, i) => resolve(c.get(i)))
+        : [c];
+      let out = '';
+      for (const s of streams) {
+        let bytes: Uint8Array | null = null;
+        const anyS = s as { decode?: () => Uint8Array };
+        if (anyS && typeof anyS.decode === 'function') { try { bytes = anyS.decode(); } catch { /* */ } }
+        if (!bytes && s instanceof PDFRawStream) { try { bytes = decodePDFRawStream(s).decode(); } catch { /* */ } }
+        if (bytes) out += Buffer.from(bytes).toString('latin1');
+      }
+      return out;
+    } catch {
+      return null;
     }
   }
 
