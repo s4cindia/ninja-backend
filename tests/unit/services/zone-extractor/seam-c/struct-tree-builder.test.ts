@@ -53,6 +53,10 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     // /Lang (clears veraPDF 7.2-34) and /Tabs=S on the page
     expect(catalog.get(PDFName.of('Lang'))?.toString()).toContain('en-US');
     expect(reloaded.getPage(0).node.get(PDFName.of('Tabs'))?.toString()).toBe('/S');
+    // ViewerPreferences/DisplayDocTitle (7.1-10) and PDF/UA XMP metadata (5-1)
+    const vp = reloaded.context.lookup(catalog.get(PDFName.of('ViewerPreferences'))) as PDFDict;
+    expect(vp.get(PDFName.of('DisplayDocTitle'))).toBe(PDFBool.True);
+    expect(catalog.get(PDFName.of('Metadata'))).toBeTruthy();
 
     // content stream carries MCID marked content
     const page = reloaded.getPage(0);

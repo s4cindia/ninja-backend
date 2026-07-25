@@ -107,5 +107,13 @@ export function inferHeadingLevels(
     heightToLevel.set(h, level);
   }
 
-  return headers.map((h) => heightToLevel.get(h.bbox.h) as number);
+  // PDF/UA (7.4.2): the first heading must be H1 and levels must not skip in a
+  // descending sequence. Clamp each heading (in reading order) to ≤ previous+1.
+  let prev = 0;
+  return headers.map((h) => {
+    const raw = heightToLevel.get(h.bbox.h) as number;
+    const lvl = Math.max(1, Math.min(raw, prev + 1));
+    prev = lvl;
+    return lvl;
+  });
 }
