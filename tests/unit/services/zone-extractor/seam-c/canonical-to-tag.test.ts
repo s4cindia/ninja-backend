@@ -74,13 +74,17 @@ describe('inferHeadingLevels', () => {
     expect(levels).toEqual([1, 2, 3]);
   });
 
-  it('preserves input order when heights are scrambled', () => {
+  it('never skips a level in reading order and starts at H1', () => {
+    // heights in order [small, large, medium] would be [3,1,2] by height alone;
+    // the sequential clamp (first=H1, ≤prev+1) makes it [1,1,2] — no skips.
     const levels = inferHeadingLevels([
       { bbox: { x: 0, y: 0, w: 100, h: 12 } }, // smallest
       { bbox: { x: 0, y: 0, w: 100, h: 30 } }, // largest
       { bbox: { x: 0, y: 0, w: 100, h: 20 } }, // middle
     ]);
-    expect(levels).toEqual([3, 1, 2]);
+    expect(levels).toEqual([1, 1, 2]);
+    // no gap greater than +1 anywhere in the sequence
+    for (let i = 1; i < levels.length; i++) expect(levels[i] - levels[i - 1]).toBeLessThanOrEqual(1);
   });
 
   it('groups near-equal heights into one level', () => {

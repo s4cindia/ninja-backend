@@ -48,6 +48,32 @@ function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | 
   return parts.join('\n');
 }
 
+// PDF/UA-1 identifier, injected into (or as) the XMP metadata packet (veraPDF 5-1).
+const PDFUA_DESC =
+  '<rdf:Description rdf:about="" xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"><pdfuaid:part>1</pdfuaid:part></rdf:Description>';
+const MINIMAL_XMP =
+  '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>' +
+  '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+  PDFUA_DESC + '</rdf:RDF></x:xmpmeta><?xpacket end="w"?>';
+
+/** Declare the file as PDF/UA-1 in XMP — merging into existing metadata if present. */
+function setPdfUaIdentifier(doc: PDFDocument): void {
+  const existing = doc.catalog.get(PDFName.of('Metadata'));
+  const stream = existing instanceof PDFRef ? doc.context.lookup(existing) : existing;
+  let xmp: string | null = null;
+  if (stream instanceof PDFRawStream) {
+    try { xmp = Buffer.from(decodePDFRawStream(stream).decode()).toString('utf8'); } catch { /* */ }
+  }
+  if (xmp && xmp.includes('pdfuaid:part')) return;   // already declared
+  const next = xmp && xmp.includes('</rdf:RDF>')
+    ? xmp.replace('</rdf:RDF>', `${PDFUA_DESC}</rdf:RDF>`)
+    : MINIMAL_XMP;
+  const s = doc.context.flateStream(Buffer.from(next, 'utf8')) as PDFRawStream;
+  s.dict.set(PDFName.of('Type'), PDFName.of('Metadata'));
+  s.dict.set(PDFName.of('Subtype'), PDFName.of('XML'));
+  doc.catalog.set(PDFName.of('Metadata'), doc.context.register(s));
+}
+
 /** Alt description for a link: its URI action if present, else a generic label. */
 function linkDescription(doc: PDFDocument, annot: PDFDict): string {
   const a = annot.get(PDFName.of('A'));
@@ -267,6 +293,15 @@ export function buildStructTreeFromZones(
   doc.catalog.set(PDFName.of('MarkInfo'), doc.context.obj({ Marked: true }));
   doc.catalog.set(PDFName.of('Lang'), PDFString.of(lang));
   for (const page of pages) page.node.set(PDFName.of('Tabs'), PDFName.of('S'));
+
+  // /ViewerPreferences /DisplayDocTitle=true (7.1-10) — show the title, not the filename.
+  const vpRaw = doc.catalog.get(PDFName.of('ViewerPreferences'));
+  const vp = vpRaw instanceof PDFRef ? doc.context.lookup(vpRaw) : vpRaw;
+  if (vp instanceof PDFDict) vp.set(PDFName.of('DisplayDocTitle'), doc.context.obj(true));
+  else doc.catalog.set(PDFName.of('ViewerPreferences'), doc.context.obj({ DisplayDocTitle: true }));
+
+  // Declare PDF/UA-1 conformance in XMP (5-1).
+  setPdfUaIdentifier(doc);
 
   return { elements: elemCount, mcids: mcidCount, pages: zonesByPage.size };
 }
