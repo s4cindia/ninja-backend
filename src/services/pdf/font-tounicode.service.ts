@@ -18,7 +18,7 @@
 
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber } from 'pdf-lib';
 import { logger } from '../../lib/logger';
-import { WINANSI_CODE_TO_UNICODE, glyphNameToUnicode } from './font-encodings';
+import { baseEncodingTable, glyphNameToUnicode, isValidScalar } from './font-encodings';
 
 export interface ToUnicodeSynthesisResult {
   fontsProcessed: number;
@@ -77,21 +77,28 @@ class FontToUnicodeService {
    */
   private buildCodeMap(doc: PDFDocument, font: PDFDict, result: ToUnicodeSynthesisResult): Map<number, number> {
     const { baseName, differences } = this.readEncoding(doc, font);
-    const useWinAnsi = baseName === '/WinAnsiEncoding';
+    // Base code→Unicode table. When /Encoding is absent, a nonsymbolic simple
+    // font defaults to StandardEncoding; symbolic or unknown fonts have no
+    // knowable base encoding → codes without a /Differences override use PUA.
+    const base =
+      baseEncodingTable(baseName) ??
+      (baseName === undefined && this.isNonsymbolic(doc, font) ? baseEncodingTable('/StandardEncoding') : undefined);
 
     const map = new Map<number, number>();
     for (let code = 0; code <= 0xff; code++) {
       let cp: number | undefined;
 
-      // 1) /Differences glyph name wins for its code
-      const diffName = differences.get(code);
-      if (diffName) cp = glyphNameToUnicode(diffName);
+      if (differences.has(code)) {
+        // An explicit /Differences override is authoritative — never fall back
+        // to the base encoding, even when the glyph name can't be resolved.
+        cp = glyphNameToUnicode(differences.get(code)!);
+      } else if (base) {
+        const v = base[code];
+        if (v && isValidScalar(v)) cp = v;
+      }
 
-      // 2) base encoding (WinAnsi/CP1252) code → Unicode
-      if (cp === undefined && useWinAnsi) cp = WINANSI_CODE_TO_UNICODE[code];
-
-      // 3) PUA fallback — guarantees toUnicode != null for any glyph veraPDF sees
-      if (cp === undefined || cp === 0) {
+      // PUA fallback — guarantees toUnicode != null for any glyph veraPDF sees
+      if (cp === undefined || !isValidScalar(cp)) {
         cp = 0xe000 + code;
         result.puaFallback++;
       } else {
@@ -100,6 +107,19 @@ class FontToUnicodeService {
       map.set(code, cp);
     }
     return map;
+  }
+
+  /** True when the font's descriptor marks it Nonsymbolic (and not Symbolic). */
+  private isNonsymbolic(doc: PDFDocument, font: PDFDict): boolean {
+    const fdRaw = font.get(PDFName.of('FontDescriptor'));
+    const fd = fdRaw instanceof PDFRef ? doc.context.lookup(fdRaw) : fdRaw;
+    if (!(fd instanceof PDFDict)) return false; // unknown → treat as symbolic (safe: PUA)
+    const flags = fd.get(PDFName.of('Flags'));
+    if (!(flags instanceof PDFNumber)) return false;
+    const f = flags.asNumber();
+    const SYMBOLIC = 1 << 2; // bit 3
+    const NONSYMBOLIC = 1 << 5; // bit 6
+    return (f & NONSYMBOLIC) !== 0 && (f & SYMBOLIC) === 0;
   }
 
   /** Read a font's base encoding name and /Differences (code → glyph name). */
@@ -130,7 +150,14 @@ class FontToUnicodeService {
   /** Emit a CMap program mapping single-byte codes to UTF-16BE Unicode. */
   private buildCMapStream(map: Map<number, number>): string {
     const hex2 = (n: number): string => n.toString(16).padStart(2, '0');
-    const hex4 = (n: number): string => n.toString(16).padStart(4, '0');
+    // UTF-16BE: BMP as one code unit, astral (> U+FFFF) as a surrogate pair.
+    const utf16be = (cp: number): string => {
+      if (cp <= 0xffff) return cp.toString(16).padStart(4, '0');
+      const v = cp - 0x10000;
+      const hi = 0xd800 + (v >> 10);
+      const lo = 0xdc00 + (v & 0x3ff);
+      return hi.toString(16).padStart(4, '0') + lo.toString(16).padStart(4, '0');
+    };
     const entries = [...map.entries()].sort((a, b) => a[0] - b[0]);
 
     const lines: string[] = [
@@ -148,7 +175,7 @@ class FontToUnicodeService {
     for (let i = 0; i < entries.length; i += 100) {
       const chunk = entries.slice(i, i + 100);
       lines.push(`${chunk.length} beginbfchar`);
-      for (const [code, cp] of chunk) lines.push(`<${hex2(code)}> <${hex4(cp)}>`);
+      for (const [code, cp] of chunk) lines.push(`<${hex2(code)}> <${utf16be(cp)}>`);
       lines.push('endbfchar');
     }
     lines.push('endcmap', 'CMapName currentdict /CMap defineresource pop', 'end', 'end');

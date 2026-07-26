@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { fontToUnicodeService } from '../../../../src/services/pdf/font-tounicode.service';
-import { WINANSI_CODE_TO_UNICODE, glyphNameToUnicode } from '../../../../src/services/pdf/font-encodings';
+import { WINANSI_CODE_TO_UNICODE, glyphNameToUnicode, baseEncodingTable, isValidScalar } from '../../../../src/services/pdf/font-encodings';
 
 function decodeToUnicode(doc: PDFDocument, font: PDFDict): string {
   const ref = font.get(PDFName.of('ToUnicode'));
@@ -38,6 +38,17 @@ describe('font-encodings data', () => {
     expect(glyphNameToUnicode('u1D538')).toBe(0x1d538);
     expect(glyphNameToUnicode('one.oldstyle')).toBe(0x31); // suffix stripped
     expect(glyphNameToUnicode('braceex')).toBeUndefined(); // TeX name not in AGL → PUA
+    expect(glyphNameToUnicode('uniD800')).toBeUndefined(); // lone surrogate is not a scalar
+  });
+
+  it('exposes Standard/MacRoman base tables and validates scalars', () => {
+    expect(baseEncodingTable('/StandardEncoding')![0x27]).toBe(0x2019); // quoteright, not apostrophe
+    expect(baseEncodingTable('/StandardEncoding')![0x41]).toBe(0x41); // 'A'
+    expect(baseEncodingTable('/MacRomanEncoding')![0x80]).toBe(0xc4); // Ä
+    expect(baseEncodingTable('/MacExpertEncoding')).toBeUndefined(); // symbolic → PUA
+    expect(isValidScalar(0xd800)).toBe(false); // surrogate
+    expect(isValidScalar(0x110000)).toBe(false); // above range
+    expect(isValidScalar(0x1d538)).toBe(true); // astral is fine
   });
 });
 
@@ -62,6 +73,33 @@ describe('fontToUnicodeService.synthesizeToUnicode', () => {
     expect(cmap).toContain('<62> <0062>'); // 'b'
     // an unassigned WinAnsi code gets a PUA fallback (never left unmapped)
     expect(cmap).toContain('<81> <e081>');
+  });
+
+  it('honours /Differences precedence and emits astral codepoints as UTF-16BE surrogate pairs', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('AB', { x: 20, y: 100, size: 12, font });
+    const reloaded = await PDFDocument.load(await doc.save());
+
+    // Redefine code 65 → an astral glyph, code 66 → a name not in the AGL subset.
+    const fontDict = findFont(reloaded)!;
+    fontDict.set(
+      PDFName.of('Encoding'),
+      reloaded.context.obj({
+        BaseEncoding: PDFName.of('WinAnsiEncoding'),
+        Differences: reloaded.context.obj([65, PDFName.of('u1D538'), 66, PDFName.of('Omega')]),
+      }),
+    );
+
+    fontToUnicodeService.synthesizeToUnicode(reloaded);
+    const cmap = decodeToUnicode(reloaded, fontDict);
+
+    expect(cmap).toContain('<41> <d835dd38>'); // U+1D538 as a surrogate pair, not <1d538>
+    // code 66 was explicitly redefined to Omega (unresolved) — must NOT fall back
+    // to the WinAnsi base ('B' = <0042>); it gets a PUA value instead.
+    expect(cmap).toContain('<42> <e042>');
+    expect(cmap).not.toContain('<42> <0042>');
   });
 
   it('is idempotent — a font that already has /ToUnicode is skipped', async () => {
