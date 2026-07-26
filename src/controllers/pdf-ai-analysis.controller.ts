@@ -250,6 +250,8 @@ export class PdfAiAnalysisController {
           modification = await pdfModifierService.setAltText(doc, elementId, value);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value);
+        } else if (suggestionType === 'formula-actualtext') {
+          modification = await pdfModifierService.setActualText(doc, elementId, value);
         } else if (suggestionType === 'language') {
           modification = await pdfModifierService.addLanguage(doc, value);
         } else {
@@ -389,6 +391,8 @@ export class PdfAiAnalysisController {
             modification = await pdfModifierService.setAltText(doc, elementId, value!);
           } else if (suggestionType === 'table-summary') {
             modification = await pdfModifierService.setTableSummary(doc, elementId, value!);
+          } else if (suggestionType === 'formula-actualtext') {
+            modification = await pdfModifierService.setActualText(doc, elementId, value!);
           } else if (suggestionType === 'language') {
             modification = await pdfModifierService.addLanguage(doc, value!);
           } else {
