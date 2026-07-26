@@ -15,7 +15,7 @@
  * AI-analysis dispatch and the apply controller.
  */
 
-import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString } from 'pdf-lib';
+import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString } from 'pdf-lib';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { ParsedPDF } from '../pdf-parser.service';
 import { logger } from '../../../lib/logger';
@@ -104,7 +104,8 @@ class PdfFormulaValidator {
   private hasAlternate(elem: PDFDict): boolean {
     for (const key of ['ActualText', 'Alt'] as const) {
       const v = elem.get(PDFName.of(key));
-      if (v instanceof PDFString && v.decodeText().trim().length > 0) return true;
+      // Text values may be literal (PDFString) or hex-encoded (PDFHexString).
+      if ((v instanceof PDFString || v instanceof PDFHexString) && v.decodeText().trim().length > 0) return true;
     }
     return false;
   }

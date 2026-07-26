@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFArray, PDFRef, PDFHexString } from 'pdf-lib';
 import { pdfFormulaValidator } from '../../../../src/services/pdf/validators/pdf-formula.validator';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
@@ -49,6 +49,27 @@ describe('pdfFormulaValidator', () => {
     const after = await pdfFormulaValidator.validate(asParsed(doc));
     expect(after.issues).toHaveLength(0);
     expect(after.metadata.formulasWithAlternate).toBe(1);
+  });
+
+  it('treats a hex-encoded (PDFHexString) ActualText as a valid alternate', async () => {
+    const doc = await taggedWithFormula();
+    // set ActualText directly as a hex string (as some authoring tools do)
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const setHexOnFormula = (n: unknown): void => {
+      if (!(n instanceof PDFDict)) return;
+      if (n.get(PDFName.of('S'))?.toString() === '/Formula') {
+        n.set(PDFName.of('ActualText'), PDFHexString.fromText('E equals m c squared'));
+      }
+      const k = n.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) setHexOnFormula(doc.context.lookup(kid));
+    };
+    setHexOnFormula(root);
+
+    const res = await pdfFormulaValidator.validate(asParsed(doc));
+    expect(res.metadata.totalFormulas).toBe(1);
+    expect(res.metadata.formulasWithAlternate).toBe(1);
+    expect(res.issues).toHaveLength(0);
   });
 
   it('is a no-op on a PDF with no structure tree', async () => {

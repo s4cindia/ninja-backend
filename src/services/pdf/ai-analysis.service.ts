@@ -1348,11 +1348,21 @@ class AiAnalysisService {
       'No LaTeX, no markup, max ~200 characters.\n' +
       'Respond ONLY with JSON: {"latex":"...","actualText":"..."}';
 
-    const response = await geminiService.analyzeImage(base64, 'image/png', prompt, {
-      model: 'flash',
-      temperature: 0.2,
-      maxOutputTokens: 256,
-    });
+    let response;
+    try {
+      response = await geminiService.analyzeImage(base64, 'image/png', prompt, {
+        model: 'flash',
+        temperature: 0.2,
+        maxOutputTokens: 256,
+      });
+    } catch (err) {
+      logger.warn(
+        `[AiAnalysis] Formula ActualText draft failed on page ${issue.pageNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return null;
+    }
 
     const parsed = this.parseAiJson<{ latex?: string; actualText?: string }>(response.text);
     const actualText = parsed?.actualText?.trim();

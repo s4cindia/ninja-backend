@@ -60,4 +60,10 @@ describe('analyzeFormulaActualText', () => {
     expect(res).toBeNull();
     expect(spy).not.toHaveBeenCalled(); // no wasted vision call
   });
+
+  it('returns null (not a rejected promise) when the vision call throws', async () => {
+    vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
+    vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(new Error('429 rate limit'));
+    await expect(svc.analyzeFormulaActualText(ISSUE, {}, true)).resolves.toBeNull();
+  });
 });
