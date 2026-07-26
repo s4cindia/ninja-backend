@@ -20,6 +20,7 @@ import { pdfParserService } from './pdf-parser.service';
 import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator } from './validators/pdf-table.validator';
+import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
@@ -324,6 +325,22 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.error(`[PdfAudit] PdfAltTextValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfAltTextValidator', error: errorMessage });
           onValidatorComplete?.('Alt Text', 0, ++completedValidators, totalValidators, altTextStart);
+        }
+      }
+
+      // 2b. Formula Validator (struct-tree walk for /Formula without /ActualText).
+      // Runs alongside structure; a bonus sub-check, so it stays out of the
+      // progress total and reports through result.issues only.
+      if (willRunStructure) {
+        try {
+          logger.info(`[PdfAudit] Running PdfFormulaValidator...`);
+          const formulaResult = await pdfFormulaValidator.validate(parsed.parsedPdf);
+          result.issues.push(...formulaResult.issues);
+          logger.info(`[PdfAudit] PdfFormulaValidator found ${formulaResult.issues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFormulaValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFormulaValidator', error: errorMessage });
         }
       }
 

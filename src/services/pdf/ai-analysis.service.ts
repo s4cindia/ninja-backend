@@ -95,6 +95,7 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT']);
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -490,6 +491,11 @@ class AiAnalysisService {
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
+    }
+
+    if (FORMULA_ACTUALTEXT_CODES.has(code)) {
+      if (!issue.pageNumber || !parsed.parsedPdf || !issue.boundingBox) return null;
+      return this.analyzeFormulaActualText(issue, parsed.parsedPdf, parsed.isTagged);
     }
 
     return null;
@@ -1314,6 +1320,114 @@ class AiAnalysisService {
       mimeType: 'image/png',
       base64: pageBase64,
     };
+  }
+
+  /**
+   * Draft ActualText for a Formula element by rendering its region and asking
+   * the vision model for a spoken-math reading (plus LaTeX for the reviewer).
+   * The suggestion's `value` is the ActualText string; the apply controller
+   * resolves issue.element ("formula_p{page}_mc{mcid}") → setActualText.
+   */
+  private async analyzeFormulaActualText(
+    issue: AuditIssue,
+    parsedPdf: ParsedPDF,
+    isTagged: boolean
+  ): Promise<AiSuggestionResult | null> {
+    const region = issue.boundingBox;
+    if (!issue.pageNumber || !region) return null;
+
+    const base64 = await this.renderRegionToBase64(parsedPdf, issue.pageNumber, region);
+    if (!base64) return null;
+
+    const prompt =
+      'This image is a single mathematical formula or equation cropped from a PDF page.\n' +
+      'Provide:\n' +
+      '1. "latex": the formula transcribed as LaTeX.\n' +
+      '2. "actualText": a concise natural-language reading a screen reader should speak ' +
+      '(e.g. "E equals m c squared"; "the integral from a to b of f of x d x"). ' +
+      'No LaTeX, no markup, max ~200 characters.\n' +
+      'Respond ONLY with JSON: {"latex":"...","actualText":"..."}';
+
+    let response;
+    try {
+      response = await geminiService.analyzeImage(base64, 'image/png', prompt, {
+        model: 'flash',
+        temperature: 0.2,
+        maxOutputTokens: 256,
+      });
+    } catch (err) {
+      logger.warn(
+        `[AiAnalysis] Formula ActualText draft failed on page ${issue.pageNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      return null;
+    }
+
+    const parsed = this.parseAiJson<{ latex?: string; actualText?: string }>(response.text);
+    const actualText = parsed?.actualText?.trim();
+    if (!actualText) return null;
+
+    const latex = parsed?.latex?.trim();
+    // A tagged struct tree is required to write /ActualText; otherwise offer guidance only.
+    const applyMode: AiSuggestionResult['applyMode'] = isTagged ? 'apply-to-pdf' : 'guidance-only';
+
+    return {
+      suggestionType: 'formula-actualtext',
+      value: actualText,
+      guidance:
+        `Suggested reading (ActualText): "${actualText}"` +
+        (latex ? `\nLaTeX: ${latex}` : '') +
+        (isTagged ? '' : '\n(PDF is untagged — apply after tagging, or add ActualText in the authoring tool.)'),
+      confidence: 0.7,
+      rationale:
+        'AI-drafted spoken-math reading from the rendered formula region. Math is high-stakes — review before applying.',
+      model: 'gemini-flash',
+      applyMode,
+      requiresManualReview: true,
+      usage: response.usage
+        ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens }
+        : undefined,
+    };
+  }
+
+  /**
+   * Render a page region (top-left PDF-point boundingBox) to a cropped PNG
+   * base64. Renders the whole page at `scale`, then crops with a small pad so
+   * the model sees a little context around the formula.
+   */
+  private async renderRegionToBase64(
+    parsedPdf: ParsedPDF,
+    pageNumber: number,
+    region: { x: number; y: number; width: number; height: number },
+    scale = 2.0
+  ): Promise<string | null> {
+    try {
+      const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale });
+      const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
+      const fctx = full.getContext('2d');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await page.render({ canvas: full as any, canvasContext: fctx as any, viewport }).promise;
+
+      const pad = 4 * scale;
+      const sx = Math.max(0, Math.round(region.x * scale - pad));
+      const sy = Math.max(0, Math.round(region.y * scale - pad));
+      const sw = Math.min(full.width - sx, Math.round(region.width * scale + pad * 2));
+      const sh = Math.min(full.height - sy, Math.round(region.height * scale + pad * 2));
+      if (sw <= 0 || sh <= 0) return full.toBuffer('image/png').toString('base64');
+
+      const crop = createCanvas(sw, sh);
+      const cctx = crop.getContext('2d');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      cctx.drawImage(full as any, sx, sy, sw, sh, 0, 0, sw, sh);
+      return crop.toBuffer('image/png').toString('base64');
+    } catch (err) {
+      logger.warn(
+        `[AiAnalysis] Failed to render region on page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return null;
+    }
   }
 
   private async renderPageToBase64(parsedPdf: ParsedPDF, pageNumber: number): Promise<string | null> {

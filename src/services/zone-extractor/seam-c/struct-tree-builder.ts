@@ -194,6 +194,18 @@ export function buildStructTreeFromZones(
     dict.set(PDFName.of('K'), doc.context.obj(childRefs as PDFObject[]));
   };
 
+  // Record the element's region as an /A /Layout /BBox (device space, bottom-left)
+  // so a downstream step can crop it — e.g. render a Formula to send to math-OCR.
+  const setLayoutBBox = (dict: PDFDict, zone: OrderableZone): void => {
+    const pageIdx = pageByNumber.get(zone.pageNumber);
+    if (pageIdx === undefined) return;
+    const H = pages[pageIdx].getHeight();
+    const b = zone.bbox;
+    const a = doc.context.obj({ O: PDFName.of('Layout') });
+    a.set(PDFName.of('BBox'), doc.context.obj([b.x, H - (b.y + b.h), b.x + b.w, H - b.y].map((n) => PDFNumber.of(n))));
+    dict.set(PDFName.of('A'), a);
+  };
+
   // Recursively realize a forest node under `parentRef`; returns the created ref (or null for artifacts).
   const build = (node: StructNode, parentRef: PDFRef): PDFRef | null => {
     switch (node.kind) {
@@ -202,6 +214,7 @@ export function buildStructTreeFromZones(
       case 'block': {
         const { ref, dict } = makeElem(node.tag, parentRef);
         bindLeaf(ref, dict, node.zone);
+        if (node.tag === 'Figure' || node.tag === 'Formula') setLayoutBBox(dict, node.zone);
         return ref;
       }
       case 'table': {
@@ -209,6 +222,7 @@ export function buildStructTreeFromZones(
         const table = makeElem('Table', parentRef);
         const tr = makeElem('TR', table.ref);
         const td = makeElem('TD', tr.ref);
+        setLayoutBBox(table.dict, node.zone);
         bindLeaf(td.ref, td.dict, node.zone);
         setKids(tr.dict, [td.ref]);
         setKids(table.dict, [tr.ref]);
