@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFBool, PDFString, PDFArray, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFBool, PDFString, PDFArray, PDFRef, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { buildStructTreeFromZones } from '../../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import { serializeStructTreeAsync } from '../../../../../src/services/zone-extractor/struct-tree-serializer';
 import type { OrderableZone } from '../../../../../src/services/zone-extractor/seam-c/reading-order';
@@ -118,6 +118,25 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     const doc = await PDFDocument.load(await makeUntaggedPdf());
     buildStructTreeFromZones(doc, ZONES);                 // now tagged
     expect(() => buildStructTreeFromZones(doc, ZONES)).toThrow(/ALREADY_TAGGED/);
+  });
+
+  it('sets an /A /BBox on Figure elements (region for downstream crop/alt)', async () => {
+    const doc = await PDFDocument.load(await makeUntaggedPdf());
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 50, y: 100, w: 200, h: 80 }, zoneType: 'figure' }]);
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let figureBBox: unknown = null;
+    const walk = (n: unknown): void => {
+      if (!(n instanceof PDFDict)) return;
+      if (n.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const a = n.get(PDFName.of('A'));
+        if (a instanceof PDFDict) figureBBox = a.get(PDFName.of('BBox'));
+      }
+      const k = n.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureBBox).toBeInstanceOf(PDFArray); // device-space [x1 y1 x2 y2]
   });
 
   it('is a no-op for a PDF with no zones', async () => {
