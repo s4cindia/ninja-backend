@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFString, PDFDict, PDFArray, PDFRef, decodePDFRawStream, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFDict, PDFArray, PDFRef, StandardFonts, decodePDFRawStream, PDFRawStream } from 'pdf-lib';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import type { OrderableZone } from '../../../../src/services/zone-extractor/seam-c/reading-order';
@@ -56,5 +56,34 @@ describe('setAltText — MCID-exact figure targeting', () => {
     };
     walk(root);
     expect(figureAlt).toBe('A red apple on a table');
+  });
+
+  it('writes /ActualText onto a Formula element (MCID-exact)', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('E = mc2', { x: 100, y: 450, size: 14, font }); // baseline 450
+    const doc = await PDFDocument.load(await src.save());
+
+    // formula zone covering the text (device band [420,480] ∋ 450; x [80,320] ∋ 100)
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'formula' }]);
+
+    const res = await pdfModifierService.setActualText(doc, 'formula_p1_mc0', 'E equals m c squared');
+    expect(res.success).toBe(true);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let actual: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Formula') {
+        const a = node.get(PDFName.of('ActualText'));
+        if (a instanceof PDFString) actual = a.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(actual).toBe('E equals m c squared');
   });
 });
