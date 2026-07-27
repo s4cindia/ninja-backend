@@ -3,6 +3,7 @@ import { detectWithYolo } from '../zone-extractor/yolo-client';
 import { ensureYoloServiceUp, touchYoloIdleTimer } from '../zone-extractor/yolo-service-scaler';
 import { mapYoloLabel } from '../zone-extractor/yolo-label-mapper';
 import { buildStructTreeFromZones } from '../zone-extractor/seam-c/struct-tree-builder';
+import { fontToUnicodeService } from './font-tounicode.service';
 import type { OrderableZone } from '../zone-extractor/seam-c/reading-order';
 import { s3Service } from '../s3.service';
 import { config } from '../../config';
@@ -74,11 +75,18 @@ export class SeamCTagService {
     // 2 — build the /StructTreeRoot (throws SEAM_C_ALREADY_TAGGED if not untagged)
     const doc = await PDFDocument.load(pdfBuffer);
     const buildResult = buildStructTreeFromZones(doc, zones);
+
+    // 3 — synthesise /ToUnicode for fonts missing one (veraPDF 7.21.7). Best-effort,
+    // deterministic, and never wrong for standard text; math fonts fall to a PUA
+    // mapping whose real reading comes from the Formula /ActualText (rec #2).
+    const toUni = fontToUnicodeService.synthesizeToUnicode(doc);
+
     const taggedPdfBuffer = Buffer.from(await doc.save());
 
     logger.info(
       `[SeamC] job ${jobId}: tagged ${zones.length} zones → ${buildResult.elements} elements, ` +
-      `${buildResult.mcids} MCIDs across ${buildResult.pages} pages`,
+      `${buildResult.mcids} MCIDs across ${buildResult.pages} pages` +
+      (toUni.fontsProcessed > 0 ? `; +ToUnicode on ${toUni.fontsProcessed} font(s)` : ''),
     );
     return {
       taggedPdfBuffer,
