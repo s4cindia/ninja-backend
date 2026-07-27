@@ -49,6 +49,9 @@ describe('font-encodings data', () => {
     expect(isValidScalar(0xd800)).toBe(false); // surrogate
     expect(isValidScalar(0x110000)).toBe(false); // above range
     expect(isValidScalar(0x1d538)).toBe(true); // astral is fine
+    expect(isValidScalar(0)).toBe(true); // U+0000 is a valid scalar
+    expect(isValidScalar(1.5)).toBe(false); // non-integer
+    expect(glyphNameToUnicode('uni0000')).toBe(0); // resolves, no longer forced to PUA
   });
 });
 

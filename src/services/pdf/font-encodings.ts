@@ -77,9 +77,9 @@ export function baseEncodingTable(name: string | undefined): readonly number[] |
   }
 }
 
-/** A valid, mappable Unicode scalar (BMP or astral, excluding surrogates). */
+/** A valid Unicode scalar: an integer in [U+0000, U+10FFFF] that is not a surrogate. */
 export function isValidScalar(cp: number): boolean {
-  return cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
+  return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff);
 }
 
 // ── Compact Adobe Glyph List (names used by standard encodings/Differences) ──
