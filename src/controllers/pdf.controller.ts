@@ -897,6 +897,12 @@ export class PdfController {
             createdAt: job.createdAt,
             completedAt: job.completedAt,
             scanLevel: output?.scanLevel || 'basic', // Include scan level
+            taggerSource: output?.taggerSource ?? null,
+            autoTagStatus: output?.autoTagStatus ?? null,
+            autoTagError: output?.autoTagError ?? null,
+            hasTaggingReport: output?.hasTaggingReport ?? false,
+            hasWordExport: output?.hasWordExport ?? false,
+            autoTagElementCounts: output?.autoTagElementCounts ?? null,
             ...auditReport,
             matterhornSummary,
           },
