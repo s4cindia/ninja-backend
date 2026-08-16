@@ -538,6 +538,7 @@ export class PdfAiAnalysisController {
               output: {
                 ...latestOutput,
                 autoTagStatus: 'complete',
+                taggerSource: 'adobe',
                 hasTaggingReport: !!autoTagResult.reportBuffer,
                 hasWordExport: !!autoTagResult.wordBuffer,
                 autoTagElementCounts: autoTagResult.elementCounts,
@@ -578,6 +579,7 @@ export class PdfAiAnalysisController {
         data: {
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
+          taggerSource: output.taggerSource as string | undefined,
           hasTaggingReport: (output.hasTaggingReport as boolean | undefined) ?? false,
           hasWordExport: (output.hasWordExport as boolean | undefined) ?? false,
           elementCounts: output.autoTagElementCounts ?? null,
