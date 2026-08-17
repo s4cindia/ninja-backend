@@ -1035,8 +1035,19 @@ export class PdfController {
         },
       });
 
-      processPdfAuditInBackground(job.id, fileRecord).catch((error) => {
-        logger.error(`Background PDF audit failed for job ${job.id}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Route through the same BullMQ pipeline as direct-buffer uploads
+      // (auditFromBuffer) so both upload paths get identical processing —
+      // auto-tagging (Seam-C/Adobe), AI analysis, everything.
+      enqueuePdfAuditFromFile(job.id, fileRecord, tenantId, userId).catch(async (error) => {
+        logger.error(`[PDF] Failed to enqueue audit for job ${job.id} (fileId ${fileId}): ${error instanceof Error ? error.message : 'Unknown error'}`);
+        await prisma.job.update({
+          where: { id: job.id },
+          data: { status: 'FAILED', error: error instanceof Error ? error.message : 'Unknown error', completedAt: new Date() },
+        }).catch(() => {});
+        await prisma.file.update({
+          where: { id: fileRecord.id },
+          data: { status: FileStatus.ERROR },
+        }).catch(() => {});
       });
 
     } catch (error) {
@@ -1059,71 +1070,52 @@ export class PdfController {
   }
 }
 
-async function processPdfAuditInBackground(
+/**
+ * Loads a File record's bytes and hands them to the same BullMQ pipeline used
+ * by direct-buffer uploads (auditFromBuffer), so the two-step upload flow
+ * (upload → fileId → audit) gets identical processing to the one-shot buffer
+ * upload — auto-tagging, AI analysis, everything runs from one code path.
+ * Falls back to in-process handling if Redis/BullMQ isn't configured.
+ */
+async function enqueuePdfAuditFromFile(
   jobId: string,
-  file: { id: string; originalName: string; storageType: string; storagePath: string | null; path: string | null }
+  file: { id: string; originalName: string; storageType: string; storagePath: string | null; path: string | null },
+  tenantId: string,
+  userId: string
 ): Promise<void> {
-  try {
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { status: 'PROCESSING', startedAt: new Date() },
-    });
+  let fileBuffer: Buffer;
+  if (file.storageType === 'S3' && file.storagePath) {
+    logger.info(`[PDF] Fetching file from S3 for job ${jobId}: ${file.storagePath}`);
+    fileBuffer = await s3Service.getFileBuffer(file.storagePath);
+  } else if (file.path) {
+    logger.info(`[PDF] Reading file from local path for job ${jobId}: ${file.path}`);
+    fileBuffer = await fs.readFile(file.path);
+  } else {
+    throw new Error('No valid file path available (neither S3 nor local)');
+  }
 
-    // Get file buffer with proper null checks
-    let fileBuffer: Buffer;
-    if (file.storageType === 'S3' && file.storagePath) {
-      logger.info(`Background: Fetching PDF from S3: ${file.storagePath}`);
-      fileBuffer = await s3Service.getFileBuffer(file.storagePath);
-    } else if (file.path) {
-      logger.info(`Background: Reading PDF from local path: ${file.path}`);
-      fileBuffer = await fs.readFile(file.path);
-    } else {
-      throw new Error('No valid file path available (neither S3 nor local)');
-    }
+  await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
 
-    await fileStorageService.saveFile(jobId, file.originalName, fileBuffer);
-
-    const result = await pdfAuditService.runAuditFromBuffer(
-      fileBuffer,
-      jobId,
-      file.originalName
-    );
-
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'COMPLETED',
-        output: JSON.parse(JSON.stringify({
+  if (areQueuesAvailable()) {
+    const queue = getAccessibilityQueue();
+    await queue.add(
+      'pdf-audit',
+      {
+        type: JOB_TYPES.PDF_ACCESSIBILITY,
+        tenantId,
+        userId,
+        fileId: file.id,
+        options: {
+          dbJobId: jobId,
           fileName: file.originalName,
-          auditReport: result,
-          scanLevel: 'basic',
-        })) as Prisma.InputJsonObject,
-        completedAt: new Date(),
+        },
       },
-    });
-
-    await prisma.file.update({
-      where: { id: file.id },
-      data: { status: FileStatus.PROCESSED },
-    });
-
-    logger.info(`Background PDF audit completed for job ${jobId}`);
-  } catch (error) {
-    logger.error(`PDF audit processing failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        status: 'FAILED',
-        error: error instanceof Error ? error.message : 'Unknown error',
-        completedAt: new Date(),
-      },
-    }).catch(() => {});
-
-    await prisma.file.update({
-      where: { id: file.id },
-      data: { status: FileStatus.ERROR },
-    }).catch(() => {});
+      { jobId }
+    );
+    logger.info(`[PDF] Job ${jobId} (from fileId ${file.id}) enqueued for async audit`);
+  } else {
+    logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
+    await processAuditFromBufferBackground(jobId, fileBuffer, file.originalName, tenantId, userId, file.id);
   }
 }
 
@@ -1138,7 +1130,8 @@ async function processAuditFromBufferBackground(
   buffer: Buffer,
   fileName: string,
   tenantId: string,
-  userId: string
+  userId: string,
+  fileId?: string
 ): Promise<void> {
   // Atomically claim the job — only proceeds if status is still QUEUED.
   // Prevents double-processing if BullMQ worker also picks up the job.
@@ -1185,6 +1178,10 @@ async function processAuditFromBufferBackground(
       logger.warn(`[PDF] Failed to create AcrJob (non-fatal): ${acrErr instanceof Error ? acrErr.message : String(acrErr)}`);
     }
 
+    if (fileId) {
+      await prisma.file.update({ where: { id: fileId }, data: { status: FileStatus.PROCESSED } }).catch(() => {});
+    }
+
     logger.info(`[PDF] In-process background audit completed for job ${jobId}`);
   } catch (error) {
     logger.error(`[PDF] In-process background audit failed for job ${jobId}: ${error instanceof Error ? error.message : 'Unknown'}`);
@@ -1196,5 +1193,9 @@ async function processAuditFromBufferBackground(
         error: error instanceof Error ? error.message : 'Unknown error',
       },
     }).catch(() => {});
+
+    if (fileId) {
+      await prisma.file.update({ where: { id: fileId }, data: { status: FileStatus.ERROR } }).catch(() => {});
+    }
   }
 }

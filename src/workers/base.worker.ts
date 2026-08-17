@@ -3,6 +3,8 @@ import { isRedisConfigured } from '../lib/redis';
 import { getBullMQConnection, JobData, JobResult, QUEUE_PREFIX } from '../queues';
 import { queueService } from '../services/queue.service';
 import { logger } from '../lib/logger';
+import prisma from '../lib/prisma';
+import { FileStatus } from '@prisma/client';
 
 export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
 
@@ -50,6 +52,16 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
             output: result.data,
           });
 
+          // Jobs enqueued from a two-step upload (upload → fileId → audit,
+          // e.g. auditFromFileId) carry the originating File record's ID so
+          // its status tracks the job outcome, same as direct-buffer uploads.
+          if (job.data.fileId) {
+            await prisma.file.update({
+              where: { id: job.data.fileId },
+              data: { status: FileStatus.PROCESSED },
+            }).catch(() => {});
+          }
+
           logger.info(`Job ${jobId} completed successfully`);
           return result;
         } catch (error) {
@@ -59,6 +71,13 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
           await queueService.updateJobStatus(jobId, 'FAILED', {
             error: errorMessage,
           });
+
+          if (job.data.fileId) {
+            await prisma.file.update({
+              where: { id: job.data.fileId },
+              data: { status: FileStatus.ERROR },
+            }).catch(() => {});
+          }
 
           throw error;
         }
