@@ -46,6 +46,10 @@ describe('SeamCTagService.tagPdf', () => {
     expect(res.buildResult.elements).toBeGreaterThan(0);
     expect(res.buildResult.mcids).toBeGreaterThan(0);
 
+    // elementCounts is a real per-zone-type tally from the detector's own
+    // classification, keyed by canonical zone type (not Adobe's shape)
+    expect(res.elementCounts).toEqual({ 'section-header': 1, paragraph: 1 });
+
     // the returned buffer is a genuinely tagged PDF
     const reloaded = await PDFDocument.load(res.taggedPdfBuffer);
     expect(reloaded.catalog.get(PDFName.of('StructTreeRoot'))).toBeTruthy();
