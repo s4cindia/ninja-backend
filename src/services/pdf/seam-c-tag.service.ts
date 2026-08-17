@@ -17,14 +17,16 @@ import { logger } from '../../lib/logger';
 //
 // The detector reads from S3, so the buffer is staged to a temp key, detected, and
 // the temp object removed. Only `taggedPdfBuffer` is load-bearing downstream; the
-// report/word/elementCounts/parsedFlags fields exist purely to match Adobe's shape
-// (they are UI-only and Seam C leaves them null/empty).
+// report/word fields exist purely to match Adobe's shape (UI-only, Seam C leaves
+// them null). elementCounts is real — a per-zone-type tally from the detector's own
+// classification (paragraph/table/figure/etc.), keyed by the 11 canonical zone types
+// rather than Adobe's narrower {figures,tables,headings,paragraphs} shape.
 
 export interface SeamCTagResult {
   taggedPdfBuffer: Buffer;
   reportBuffer: null;
   wordBuffer: null;
-  elementCounts: null;
+  elementCounts: Record<string, number>;
   parsedFlags: never[];
   source: 'seam-c';
   buildResult: { elements: number; mcids: number; pages: number };
@@ -76,6 +78,11 @@ export class SeamCTagService {
     const doc = await PDFDocument.load(pdfBuffer);
     const buildResult = buildStructTreeFromZones(doc, zones);
 
+    const elementCounts = zones.reduce<Record<string, number>>((counts, zone) => {
+      counts[zone.zoneType] = (counts[zone.zoneType] ?? 0) + 1;
+      return counts;
+    }, {});
+
     // 3 — synthesise /ToUnicode for fonts missing one (veraPDF 7.21.7). Best-effort,
     // deterministic, and never wrong for standard text; math fonts fall to a PUA
     // mapping whose real reading comes from the Formula /ActualText (rec #2).
@@ -92,7 +99,7 @@ export class SeamCTagService {
       taggedPdfBuffer,
       reportBuffer: null,
       wordBuffer: null,
-      elementCounts: null,
+      elementCounts,
       parsedFlags: [],
       source: 'seam-c',
       buildResult,
