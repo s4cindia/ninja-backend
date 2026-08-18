@@ -274,7 +274,7 @@ export class PdfAiAnalysisController {
       });
 
       // Update status to applied
-      await prisma.aiAnalysis.update({
+      const updatedAnalysis = await prisma.aiAnalysis.update({
         where: { jobId_issueId: { jobId, issueId } },
         data: { status: 'applied', updatedAt: new Date() },
       });
@@ -283,7 +283,7 @@ export class PdfAiAnalysisController {
 
       res.json({
         success: true,
-        data: { modification, status: 'applied' },
+        data: { ...updatedAnalysis, modification },
       });
     } catch (error) {
       next(error);
