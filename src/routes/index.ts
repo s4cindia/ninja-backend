@@ -29,6 +29,7 @@ import batchRoutes from "./batch.routes";
 import citationRoutes from "../services/citation/citation.routes";
 import citationManagementRoutes from "./citation-management.routes";
 import pdfRemediationRoutes from "./pdf-remediation.routes";
+import remediationSessionRoutes from "./remediation-session.routes";
 import hitlRoutes from "./workflow/hitl.routes";
 import workflowRoutes from "./workflow.routes";
 import metricsRoutes from "./metrics.routes";
@@ -49,6 +50,7 @@ import trainingRoutes from "./training.routes";
 import mlMetricsRoutes from "./ml-metrics.routes";
 import adminCorpusRoutes from "./admin/corpus.routes";
 import adminUsersRoutes from "./admin/users.routes";
+import adminComparisonStudyRoutes from "./admin/comparison-study.routes";
 
 const router = Router();
 
@@ -137,6 +139,7 @@ router.use("/batch", batchRoutes);
 router.use("/citation", citationRoutes);
 router.use("/citation-management", citationManagementRoutes);
 router.use("/pdf", pdfRemediationRoutes);
+router.use("/pdf", remediationSessionRoutes);
 router.use("/workflows", workflowRoutes);
 router.use("/workflow/hitl", hitlRoutes);
 router.use("/metrics", metricsRoutes);
@@ -157,5 +160,6 @@ router.use("/training", trainingRoutes);
 router.use("/ml-metrics", mlMetricsRoutes);
 router.use("/admin", adminCorpusRoutes);
 router.use("/admin", adminUsersRoutes);
+router.use("/admin", adminComparisonStudyRoutes);
 
 export default router;

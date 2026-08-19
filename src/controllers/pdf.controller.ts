@@ -531,85 +531,13 @@ export class PdfController {
         });
       }
 
-      // Create job as QUEUED — audit runs asynchronously
-      const job = await prisma.job.create({
-        data: {
-          id: nanoid(),
-          tenantId,
-          userId,
-          type: 'PDF_ACCESSIBILITY',
-          status: 'QUEUED',
-          input: {
-            fileName: req.file.originalname,
-            mimeType: req.file.mimetype,
-            size: req.file.size,
-          },
-          updatedAt: new Date(),
-        },
-      });
-      jobId = job.id;
-
-      // Save to permanent storage immediately so the worker can load it on any retry
-      await fileStorageService.saveFile(jobId, req.file.originalname, req.file.buffer);
-
-      if (areQueuesAvailable()) {
-        // Enqueue to BullMQ — worker will pick up and process
-        const queue = getAccessibilityQueue();
-        await queue.add(
-          'pdf-audit',
-          {
-            type: JOB_TYPES.PDF_ACCESSIBILITY,
-            tenantId,
-            userId,
-            options: {
-              dbJobId: jobId,
-              fileName: req.file.originalname,
-            },
-          },
-          { jobId } // Use Prisma job ID as BullMQ job ID for unified tracking
-        );
-        logger.info(`[PDF] Job ${jobId} enqueued for async audit`);
-
-        // Fallback: if BullMQ's blocking connection silently hangs (Upstash TCP drop),
-        // jobs can sit in QUEUED forever. After 60s, process in-process as a safety net.
-        const fallbackJobId = jobId;
-        const fallbackFileName = req.file.originalname;
-        const fallbackTenantId = tenantId;
-        const fallbackUserId = userId;
-        setTimeout(async () => {
-          try {
-            const dbJob = await prisma.job.findUnique({
-              where: { id: fallbackJobId },
-              select: { status: true },
-            });
-            if (!dbJob || dbJob.status !== 'QUEUED') return; // BullMQ picked it up
-            logger.warn(`[PDF] Job ${fallbackJobId} still QUEUED after 60s — BullMQ worker may be stuck, falling back to in-process`);
-            const fileBuffer = await fileStorageService.getFile(fallbackJobId, fallbackFileName);
-            if (!fileBuffer) {
-              logger.error(`[PDF] Fallback failed: file not found in storage for job ${fallbackJobId}`);
-              return;
-            }
-            processAuditFromBufferBackground(fallbackJobId, fileBuffer, fallbackFileName, fallbackTenantId, fallbackUserId).catch(
-              (err: unknown) => logger.error(`[PDF] Fallback audit failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
-            );
-          } catch (err) {
-            logger.error(`[PDF] Fallback check failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
-          }
-        }, 60_000);
-      } else {
-        // Fallback: process in-process when Redis is not configured
-        logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
-        const buffer = req.file.buffer;
-        const fileName = req.file.originalname;
-        processAuditFromBufferBackground(jobId, buffer, fileName, tenantId, userId).catch(
-          (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
-        );
-      }
+      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId);
+      jobId = newJobId;
 
       return res.status(202).json({
         success: true,
         data: {
-          jobId: job.id,
+          jobId,
           status: 'QUEUED',
           message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
         },
@@ -1120,6 +1048,94 @@ async function enqueuePdfAuditFromFile(
 }
 
 export const pdfController = new PdfController();
+
+/**
+ * Creates a Job row, persists the file, and enqueues it on the same BullMQ
+ * pipeline as every other PDF upload path (auditFromBuffer, the two-step
+ * fileId flow, and now the Comparison Study trial registration). Extracted
+ * so a trial's Ninja side is a normal audit job — not a parallel path that
+ * could drift from this one (see PR #452).
+ */
+export async function createAndEnqueuePdfAuditJob(
+  file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  tenantId: string,
+  userId: string
+): Promise<{ jobId: string }> {
+  // Create job as QUEUED — audit runs asynchronously
+  const job = await prisma.job.create({
+    data: {
+      id: nanoid(),
+      tenantId,
+      userId,
+      type: 'PDF_ACCESSIBILITY',
+      status: 'QUEUED',
+      input: {
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+      },
+      updatedAt: new Date(),
+    },
+  });
+  const jobId = job.id;
+
+  // Save to permanent storage immediately so the worker can load it on any retry
+  await fileStorageService.saveFile(jobId, file.originalname, file.buffer);
+
+  if (areQueuesAvailable()) {
+    // Enqueue to BullMQ — worker will pick up and process
+    const queue = getAccessibilityQueue();
+    await queue.add(
+      'pdf-audit',
+      {
+        type: JOB_TYPES.PDF_ACCESSIBILITY,
+        tenantId,
+        userId,
+        options: {
+          dbJobId: jobId,
+          fileName: file.originalname,
+        },
+      },
+      { jobId } // Use Prisma job ID as BullMQ job ID for unified tracking
+    );
+    logger.info(`[PDF] Job ${jobId} enqueued for async audit`);
+
+    // Fallback: if BullMQ's blocking connection silently hangs (Upstash TCP drop),
+    // jobs can sit in QUEUED forever. After 60s, process in-process as a safety net.
+    const fallbackJobId = jobId;
+    const fallbackFileName = file.originalname;
+    const fallbackTenantId = tenantId;
+    const fallbackUserId = userId;
+    setTimeout(async () => {
+      try {
+        const dbJob = await prisma.job.findUnique({
+          where: { id: fallbackJobId },
+          select: { status: true },
+        });
+        if (!dbJob || dbJob.status !== 'QUEUED') return; // BullMQ picked it up
+        logger.warn(`[PDF] Job ${fallbackJobId} still QUEUED after 60s — BullMQ worker may be stuck, falling back to in-process`);
+        const fileBuffer = await fileStorageService.getFile(fallbackJobId, fallbackFileName);
+        if (!fileBuffer) {
+          logger.error(`[PDF] Fallback failed: file not found in storage for job ${fallbackJobId}`);
+          return;
+        }
+        processAuditFromBufferBackground(fallbackJobId, fileBuffer, fallbackFileName, fallbackTenantId, fallbackUserId).catch(
+          (err: unknown) => logger.error(`[PDF] Fallback audit failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+        );
+      } catch (err) {
+        logger.error(`[PDF] Fallback check failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+    }, 60_000);
+  } else {
+    // Fallback: process in-process when Redis is not configured
+    logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
+    processAuditFromBufferBackground(jobId, file.buffer, file.originalname, tenantId, userId).catch(
+      (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+    );
+  }
+
+  return { jobId };
+}
 
 /**
  * In-process fallback for when Redis/BullMQ is not available.
