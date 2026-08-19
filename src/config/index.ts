@@ -18,6 +18,7 @@ export interface Config {
   s3Region: string;
   awsAccessKeyId: string | null;
   awsSecretAccessKey: string | null;
+  ninjaGpuBlendedCostPerDocUsd: number | null;
   features: {
     enableWebSocket: boolean;
     emitAllTransitions: boolean;
@@ -42,6 +43,12 @@ export const config: Config = {
   s3Region: process.env.S3_REGION || 'ap-south-1',
   awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || null,
   awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || null,
+  // Blended $/doc GPU cost for Seam-C's on-demand zone detector, refreshed
+  // periodically by scripts/estimate-gpu-blended-rate.js from [YoloScaler]
+  // CloudWatch logs. Null until that's run at least once.
+  ninjaGpuBlendedCostPerDocUsd: process.env.NINJA_GPU_BLENDED_COST_PER_DOC_USD
+    ? parseFloat(process.env.NINJA_GPU_BLENDED_COST_PER_DOC_USD)
+    : null,
   features: {
     enableWebSocket: process.env.ENABLE_WEBSOCKET !== 'false', // Default: enabled (can disable with ENABLE_WEBSOCKET=false)
     emitAllTransitions: process.env.WS_EMIT_ALL !== 'false', // Default: enabled
