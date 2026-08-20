@@ -15,6 +15,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
     comparisonTrial: {
       create: vi.fn(),
       update: vi.fn(),
+      delete: vi.fn(),
       findMany: vi.fn(),
       findUnique: vi.fn(),
       findUniqueOrThrow: vi.fn(),
@@ -56,11 +57,13 @@ vi.mock('../../../../src/config', () => ({
   },
 }));
 
+import { Prisma } from '@prisma/client';
 import prisma from '../../../../src/lib/prisma';
 import { s3Service } from '../../../../src/services/s3.service';
 import { createAndEnqueuePdfAuditJob } from '../../../../src/controllers/pdf.controller';
 import {
   registerTrial,
+  deleteTrial,
   getTrialReport,
   getAggregateReport,
 } from '../../../../src/services/comparison-study/comparison-study.service';
@@ -68,6 +71,7 @@ import {
 const mockPrisma = prisma as unknown as {
   comparisonTrial: {
     create: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
     findUniqueOrThrow: ReturnType<typeof vi.fn>;
   };
@@ -198,6 +202,31 @@ describe('comparison-study.service', () => {
       expect(aggregate.avgPdfxtTimeMs).toBe(40 * 60_000);
       // speedup = avg pdfxt time / avg ninja time = 40 / 15
       expect(aggregate.estimatedSpeedup).toBeCloseTo(40 / 15, 2);
+    });
+  });
+
+  describe('deleteTrial', () => {
+    it('deletes the trial and returns true', async () => {
+      mockPrisma.comparisonTrial.delete.mockResolvedValue({ id: 'trial-1' });
+
+      await expect(deleteTrial('trial-1')).resolves.toBe(true);
+      expect(mockPrisma.comparisonTrial.delete).toHaveBeenCalledWith({ where: { id: 'trial-1' } });
+    });
+
+    it('returns false when the trial does not exist (P2025)', async () => {
+      const err = new Prisma.PrismaClientKnownRequestError('Record not found', {
+        code: 'P2025',
+        clientVersion: '5.22.0',
+      });
+      mockPrisma.comparisonTrial.delete.mockRejectedValueOnce(err);
+
+      await expect(deleteTrial('missing-trial')).resolves.toBe(false);
+    });
+
+    it('rethrows non-P2025 errors', async () => {
+      mockPrisma.comparisonTrial.delete.mockRejectedValueOnce(new Error('connection lost'));
+
+      await expect(deleteTrial('trial-1')).rejects.toThrow('connection lost');
     });
   });
 });

@@ -14,6 +14,7 @@ import {
   registerTrial,
   listTrials,
   getTrial,
+  deleteTrial,
   logPdfxtData,
   validateTrial,
   getTrialReport,
@@ -133,6 +134,21 @@ router.get('/comparison-study/trials/:id', authenticate, async (req: Request, re
       return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Trial not found' } });
     }
     return res.json({ success: true, data: trial });
+  } catch (err) {
+    return internalError(res, err);
+  }
+});
+
+// DELETE /api/v1/admin/comparison-study/trials/:id
+router.delete('/comparison-study/trials/:id', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const deleted = await deleteTrial(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Trial not found' } });
+    }
+    return res.json({ success: true, data: { id: req.params.id } });
   } catch (err) {
     return internalError(res, err);
   }

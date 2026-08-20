@@ -16,7 +16,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ComparisonTrial } from '@prisma/client';
+import { ComparisonTrial, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { config } from '../../config';
@@ -120,6 +120,26 @@ export async function getTrial(id: string): Promise<
     where: { id },
     include: { job: { select: { id: true, status: true, output: true } } },
   });
+}
+
+/**
+ * Delete a trial — e.g. a dry-run used to smoke-test the workflow itself,
+ * rather than a real validation trial on a fresh document. Only removes
+ * the ComparisonTrial row: the underlying Ninja Job (and its own audit/
+ * remediation data) is untouched, since it's a normal job independent of
+ * this study. Returns false if the trial doesn't exist rather than throwing,
+ * so a repeat/late delete request is a no-op instead of an error.
+ */
+export async function deleteTrial(id: string): Promise<boolean> {
+  try {
+    await prisma.comparisonTrial.delete({ where: { id } });
+    return true;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+      return false;
+    }
+    throw err;
+  }
 }
 
 /** Log the operator's pdfxt-side result: stopwatch time, page count, cost, and the output file's S3 key. */
