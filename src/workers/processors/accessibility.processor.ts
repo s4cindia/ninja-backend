@@ -154,10 +154,24 @@ async function processPdfAccessibility(
   let autoTagMeta: Record<string, unknown> = {};
   // Seam C is the DEFAULT tagger; Adobe is the fallback. Tag any untagged PDF when
   // at least one tagger is available.
-  const shouldAutoTag = !isTagged && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
+  //
+  // forceAutoTag bypasses the isTagged check. It exists for Comparison Study
+  // trials specifically: the /MarkInfo /Marked flag isTagged relies on only
+  // means a PDF *claims* structure — plenty of real documents set it while
+  // having minimal/poor tagging. Skipping re-tagging on that basis is a
+  // reasonable default for regular uploads (avoids clobbering genuinely good
+  // existing structure), but it silently defeats a trial's whole purpose:
+  // measuring what Ninja's pipeline actually produces against pdfxt on the
+  // same starting document.
+  const forceAutoTag = Boolean(options?.forceAutoTag);
+  const shouldAutoTag = (forceAutoTag || !isTagged) && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
 
   if (shouldAutoTag) {
-    logger.info(`[PDF Worker] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
+    if (isTagged && forceAutoTag) {
+      logger.info(`[PDF Worker] PDF is already tagged, but forceAutoTag is set — tagging anyway (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
+    } else {
+      logger.info(`[PDF Worker] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
+    }
 
     // Record autoTagProgress start in job.input
     const ejStart = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });

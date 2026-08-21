@@ -1059,7 +1059,8 @@ export const pdfController = new PdfController();
 export async function createAndEnqueuePdfAuditJob(
   file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
   tenantId: string,
-  userId: string
+  userId: string,
+  jobOptions?: { forceAutoTag?: boolean }
 ): Promise<{ jobId: string }> {
   // Create job as QUEUED — audit runs asynchronously
   const job = await prisma.job.create({
@@ -1094,6 +1095,7 @@ export async function createAndEnqueuePdfAuditJob(
         options: {
           dbJobId: jobId,
           fileName: file.originalname,
+          ...(jobOptions?.forceAutoTag ? { forceAutoTag: true } : {}),
         },
       },
       { jobId } // Use Prisma job ID as BullMQ job ID for unified tracking
