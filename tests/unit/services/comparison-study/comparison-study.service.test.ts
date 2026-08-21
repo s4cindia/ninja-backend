@@ -110,6 +110,7 @@ describe('comparison-study.service', () => {
         expect.objectContaining({ originalname: 'sample.pdf', buffer }),
         'tenant-1',
         'user-1',
+        { forceAutoTag: true },
       );
       expect(mockPrisma.comparisonTrial.create).toHaveBeenCalledWith(
         expect.objectContaining({

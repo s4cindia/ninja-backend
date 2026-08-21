@@ -71,6 +71,12 @@ export async function registerTrial(input: {
     },
     input.tenantId,
     input.userId,
+    // A trial exists to measure what Ninja's pipeline actually produces
+    // against pdfxt on the same document — skipping Seam-C because the
+    // source PDF's /MarkInfo /Marked flag happens to be set (which says
+    // nothing about whether the existing tagging is any good) would
+    // silently defeat that comparison.
+    { forceAutoTag: true },
   );
 
   const trial = await prisma.comparisonTrial.create({
