@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripPgUnsafeChars } from '../../../src/utils/pg-text';
+import { stripPgUnsafeChars, stripPgUnsafeCharsDeep } from '../../../src/utils/pg-text';
 
 const NUL = String.fromCharCode(0);
 
@@ -38,5 +38,37 @@ describe('stripPgUnsafeChars', () => {
   it('returns null when the string is empty after stripping', () => {
     expect(stripPgUnsafeChars(NUL + NUL)).toBeNull();
     expect(stripPgUnsafeChars('')).toBeNull();
+  });
+});
+
+describe('stripPgUnsafeCharsDeep', () => {
+  it('strips a NUL buried inside a nested audit-report-shaped object', () => {
+    const report = {
+      score: 0,
+      issues: [
+        { code: 'ALT-TEXT-MISSING', message: `Formula on page 3${NUL} has no alt text` },
+        { code: 'HEADING-SKIP', message: 'clean message' },
+      ],
+      matterhornSummary: { categories: [{ name: `Tables${NUL}`, checkpoints: [] }] },
+    };
+
+    const cleaned = stripPgUnsafeCharsDeep(report);
+
+    expect(cleaned.issues[0].message).toBe('Formula on page 3 has no alt text');
+    expect(cleaned.matterhornSummary.categories[0].name).toBe('Tables');
+    expect(JSON.stringify(cleaned).indexOf(NUL)).toBe(-1);
+  });
+
+  it('leaves non-string leaves (numbers, booleans, null) unchanged', () => {
+    const input = { score: 0, passed: false, note: null, count: 42 };
+    expect(stripPgUnsafeCharsDeep(input)).toEqual(input);
+  });
+
+  it('handles arrays of primitives directly', () => {
+    expect(stripPgUnsafeCharsDeep([`a${NUL}b`, 'c', 3])).toEqual(['ab', 'c', 3]);
+  });
+
+  it('handles a bare string the same as stripPgUnsafeChars', () => {
+    expect(stripPgUnsafeCharsDeep(`x${NUL}y`)).toBe('xy');
   });
 });

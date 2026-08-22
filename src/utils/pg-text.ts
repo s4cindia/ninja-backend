@@ -31,3 +31,32 @@ export function stripPgUnsafeChars(
 
   return cleaned.length > 0 ? cleaned : null;
 }
+
+/**
+ * Recursively apply stripPgUnsafeChars to every string leaf in an
+ * arbitrarily-nested JSON-like value (objects, arrays, or a bare string).
+ * Non-string leaves (numbers, booleans, null) pass through unchanged.
+ *
+ * For a large structured value being written to a jsonb column as a
+ * single unit — e.g. a full audit report — sanitizing at the individual
+ * extraction call site isn't enough coverage on its own: any string
+ * anywhere in the tree (an issue message, an ActualText value, a table
+ * cell) can carry a stray NUL byte and abort the entire write. This is
+ * the defense-in-depth backstop for that case.
+ */
+export function stripPgUnsafeCharsDeep<T>(value: T): T {
+  if (typeof value === 'string') {
+    return (stripPgUnsafeChars(value) ?? '') as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripPgUnsafeCharsDeep(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      result[key] = stripPgUnsafeCharsDeep(val);
+    }
+    return result as T;
+  }
+  return value;
+}
