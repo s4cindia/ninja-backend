@@ -579,6 +579,7 @@ export class PdfAiAnalysisController {
         data: {
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
+          skipReason: output.autoTagSkipReason as string | undefined,
           taggerSource: output.taggerSource as string | undefined,
           hasTaggingReport: (output.hasTaggingReport as boolean | undefined) ?? false,
           hasWordExport: (output.hasWordExport as boolean | undefined) ?? false,

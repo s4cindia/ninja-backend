@@ -245,25 +245,40 @@ async function processPdfAccessibility(
       };
       logger.info(`[PDF Worker] ${taggerSource} tagging complete for job ${dbJobId}`);
     } catch (tagErr) {
-      logger.warn(`[PDF Worker] Adobe AutoTag failed (continuing with untagged): ${tagErr instanceof Error ? tagErr.message : String(tagErr)}`);
+      const errMessage = tagErr instanceof Error ? tagErr.message : String(tagErr);
+      // Seam C's own struct-tree-builder refuses to run on a document that
+      // already has a real /StructTreeRoot (see struct-tree-builder.ts) —
+      // re-tagging it would produce duplicate/conflicting MCIDs. That's not
+      // a failure: it's the same "don't clobber genuinely good existing
+      // structure" outcome as the isTagged pre-check below, just discovered
+      // one step later because forceAutoTag (Comparison Study trials) makes
+      // the worker attempt tagging instead of pre-emptively skipping it.
+      const alreadyTagged = errMessage.startsWith('SEAM_C_ALREADY_TAGGED');
 
-      // Record failure in job.input
+      if (alreadyTagged) {
+        logger.info(`[PDF Worker] Document already has real structure — proceeding with audit of existing tagging for job ${dbJobId}`);
+      } else {
+        logger.warn(`[PDF Worker] Adobe AutoTag failed (continuing with untagged): ${errMessage}`);
+      }
+
+      // Record outcome in job.input
       const ejFail = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
       const eiFail = ejFail?.input && typeof ejFail.input === 'object' && !Array.isArray(ejFail.input)
         ? ejFail.input as Record<string, unknown> : {};
       const prevFail = eiFail.autoTagProgress as Record<string, unknown> ?? {};
       await prisma.job.update({
         where: { id: dbJobId },
-        data: { input: { ...eiFail, autoTagProgress: { ...prevFail, completedAt: new Date().toISOString(), status: 'failed' } } as Prisma.InputJsonObject },
+        data: { input: { ...eiFail, autoTagProgress: { ...prevFail, completedAt: new Date().toISOString(), status: alreadyTagged ? 'skipped' : 'failed' } } as Prisma.InputJsonObject },
       });
 
-      autoTagMeta = {
-        autoTagStatus: 'failed',
-        autoTagError: tagErr instanceof Error ? tagErr.message : String(tagErr),
-      };
+      autoTagMeta = alreadyTagged
+        ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged' }
+        : { autoTagStatus: 'failed', autoTagError: errMessage };
     }
   } else {
-    autoTagMeta = { autoTagStatus: isTagged ? 'skipped' : 'skipped' };
+    autoTagMeta = isTagged
+      ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged' }
+      : { autoTagStatus: 'skipped', autoTagSkipReason: 'no-tagger-configured' };
     if (isTagged) logger.info(`[PDF Worker] PDF is already tagged — skipping tagging for job ${dbJobId}`);
     else logger.info(`[PDF Worker] No tagger configured — skipping tagging for job ${dbJobId}`);
   }
