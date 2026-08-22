@@ -114,7 +114,7 @@ class AiAnalysisService {
     jobId: string,
     tenantId: string,
     sessionOverrides?: Partial<AiRemediationConfig>
-  ): Promise<{ analyzed: number; skipped: number }> {
+  ): Promise<{ analyzed: number; skipped: number; serviceDegraded?: boolean; serviceError?: string | null }> {
     this.analyzingJobs.add(jobId);
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
@@ -302,6 +302,7 @@ class AiAnalysisService {
       })));
 
       // Compute costs and persist token stats to job output (non-fatal)
+      const geminiStatus = geminiService.getCircuitStatus();
       try {
         const geminiPricing = getModelPricing(aiConfig.gemini.model);
         const geminiCostUsd =
@@ -325,6 +326,10 @@ class AiAnalysisService {
           totalTokens: statsAcc.geminiPrompt + statsAcc.geminiCompletion + statsAcc.claudePrompt + statsAcc.claudeCompletion,
           totalCostUsd: Math.round((geminiCostUsd + claudeCostUsd) * 1_000_000) / 1_000_000,
           analyzedAt: new Date().toISOString(),
+          // Distinguishes "few issues needed AI help" from "AI service was unreachable" —
+          // both look identical in the analyzed/skipped counts alone.
+          serviceStatus: geminiStatus.open ? ('degraded' as const) : ('ok' as const),
+          serviceError: geminiStatus.reason,
         };
 
         const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
@@ -338,8 +343,14 @@ class AiAnalysisService {
         logger.warn(`[AiAnalysis] Failed to save token stats for job ${jobId} (non-fatal): ${statsErr instanceof Error ? statsErr.message : String(statsErr)}`);
       }
 
-      logger.info(`[AiAnalysis] Job ${jobId} complete: ${analyzed} analyzed, ${skipped} skipped`);
-      return { analyzed, skipped };
+      if (geminiStatus.open) {
+        logger.error(
+          `[AiAnalysis] Job ${jobId} complete: ${analyzed} analyzed, ${skipped} skipped — AI SERVICE DEGRADED: ${geminiStatus.reason}`
+        );
+      } else {
+        logger.info(`[AiAnalysis] Job ${jobId} complete: ${analyzed} analyzed, ${skipped} skipped`);
+      }
+      return { analyzed, skipped, serviceDegraded: geminiStatus.open, serviceError: geminiStatus.reason };
     } finally {
       this.analyzingJobs.delete(jobId);
       if (parsed?.parsedPdf) {

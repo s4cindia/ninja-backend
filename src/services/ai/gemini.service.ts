@@ -27,6 +27,48 @@ export interface GeminiOptions {
 class GeminiService {
   private client: GoogleGenerativeAI | null = null;
 
+  // Circuit breaker — after a non-retryable failure (invalid/missing API key, quota
+  // exceeded), short-circuits further calls for a cooldown window instead of letting
+  // every issue in a job (there can be hundreds) each redo the same doomed network call.
+  private static readonly CIRCUIT_COOLDOWN_MS = 60_000;
+  private circuitOpenUntil = 0;
+  private circuitReason: string | null = null;
+
+  private isInfrastructureError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes('api key') ||
+      msg.includes('api_key') ||
+      msg.includes('not configured') ||
+      msg.includes('invalid') ||
+      msg.includes('not found') ||
+      msg.includes('quota') ||
+      msg.includes('exceeded')
+    );
+  }
+
+  private isCircuitOpen(): boolean {
+    return Date.now() < this.circuitOpenUntil;
+  }
+
+  private tripCircuit(reason: string): void {
+    const wasOpen = this.isCircuitOpen();
+    this.circuitOpenUntil = Date.now() + GeminiService.CIRCUIT_COOLDOWN_MS;
+    this.circuitReason = reason;
+    if (!wasOpen) {
+      logger.error(
+        `[Gemini] Circuit breaker OPEN — pausing all Gemini calls for ${GeminiService.CIRCUIT_COOLDOWN_MS / 1000}s: ${reason}`
+      );
+    }
+  }
+
+  /** Current AI service health, for callers that want to surface degraded status (e.g. job stats). */
+  getCircuitStatus(): { open: boolean; reason: string | null } {
+    const open = this.isCircuitOpen();
+    return { open, reason: open ? this.circuitReason : null };
+  }
+
   private getClient(): GoogleGenerativeAI {
     if (!this.client) {
       if (!aiConfig.gemini.apiKey) {
@@ -79,27 +121,23 @@ class GeminiService {
     operation: () => Promise<T>,
     retries = aiConfig.gemini.maxRetries
   ): Promise<T> {
+    if (this.isCircuitOpen()) {
+      throw new Error(`GEMINI_SERVICE_UNAVAILABLE: ${this.circuitReason}`);
+    }
+
     let lastError: Error | undefined;
-    
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         return await operation();
       } catch (error) {
         lastError = error as Error;
-        
-        if (error instanceof Error) {
-          const msg = error.message.toLowerCase();
-          if (msg.includes('api key') || 
-              msg.includes('api_key') ||
-              msg.includes('not configured') ||
-              msg.includes('invalid') ||
-              msg.includes('not found') ||
-              msg.includes('quota') ||
-              msg.includes('exceeded')) {
-            throw error;
-          }
+
+        if (this.isInfrastructureError(error)) {
+          this.tripCircuit(lastError.message);
+          throw error;
         }
-        
+
         if (attempt < retries) {
           const delay = aiConfig.gemini.retryDelay * Math.pow(2, attempt);
           logger.warn(`Gemini API error, retrying in ${delay}ms (attempt ${attempt + 1}/${retries})...`);
@@ -107,7 +145,7 @@ class GeminiService {
         }
       }
     }
-    
+
     throw lastError || new Error('Unknown error in Gemini API call');
   }
 
