@@ -13,6 +13,7 @@ import {
   JobType,
 } from '../queues';
 import { AppError } from '../utils/app-error';
+import { stripPgUnsafeChars, stripPgUnsafeCharsDeep } from '../utils/pg-text';
 import { ErrorCodes } from '../utils/error-codes';
 import { logger } from '../lib/logger';
 
@@ -203,11 +204,15 @@ export class QueueService {
     }
 
     if (data?.output) {
-      updateData.output = data.output as Prisma.InputJsonValue;
+      // Defense-in-depth: a single stray glyph anywhere in a large audit
+      // report (pdfjs emits U+0000 for unmapped glyphs, common in
+      // STEM/CID-font PDFs) would otherwise abort this entire write —
+      // see utils/pg-text.ts.
+      updateData.output = stripPgUnsafeCharsDeep(data.output) as Prisma.InputJsonValue;
     }
 
     if (data?.error) {
-      updateData.error = data.error;
+      updateData.error = stripPgUnsafeChars(data.error) ?? data.error;
     }
 
     // Use updateMany to gracefully handle non-existent jobs (e.g., StyleValidationJob uses different table)
