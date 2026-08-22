@@ -430,8 +430,14 @@ async function processPdfAccessibility(
   const aiStartedAt = new Date().toISOString();
   setTimeout(() => {
     aiAnalysisService.analyzeJob(dbJobId, tenantId)
-      .then(({ analyzed, skipped }) => {
-        logger.info(`[PDF Worker] AI Analysis for job ${dbJobId}: ${analyzed} analyzed, ${skipped} skipped`);
+      .then(({ analyzed, skipped, serviceDegraded, serviceError }) => {
+        if (serviceDegraded) {
+          logger.error(
+            `[PDF Worker] AI Analysis for job ${dbJobId}: ${analyzed} analyzed, ${skipped} skipped — AI SERVICE DEGRADED: ${serviceError}`
+          );
+        } else {
+          logger.info(`[PDF Worker] AI Analysis for job ${dbJobId}: ${analyzed} analyzed, ${skipped} skipped`);
+        }
         // Estimate token usage: ~700 tokens per analyzed issue (Gemini Flash + Claude Haiku mix)
         const tokensUsed = analyzed * 700;
         const estimatedCostUsd = parseFloat((tokensUsed * 0.000000375).toFixed(4));
