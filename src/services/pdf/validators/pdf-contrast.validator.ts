@@ -18,7 +18,7 @@ import { PdfParseResult } from '../pdf-comprehensive-parser.service';
 /**
  * RGB color representation
  */
-interface RgbColor {
+export interface RgbColor {
   r: number;
   g: number;
   b: number;
@@ -33,6 +33,17 @@ const MAX_PAGES_CONTRAST = 50;
 const MAX_ISSUES_PER_PAGE = 20;
 // Spatial grid cell size in canvas pixels (avoid duplicate issues for nearby text)
 const GRID_CELL_PX = 80;
+// Fraction of the text bounding box's pixels averaged to estimate ink color.
+// The box spans the full font-size height (ascender to baseline), but actual
+// glyph-ink coverage within it is typically far below that — measured at ~6%
+// for regular-weight 14pt text. A wide percentile like the previous 0.3
+// dilutes the average with background/anti-aliased pixels: true black 14pt
+// text sampled as ~#a3a3a3 (2.5:1) instead of near-black (~21:1), a false
+// positive severe enough to misflag ordinary body text as failing contrast.
+// 0.05 stays consistently close to the true ink color across regular/bold
+// and 9-28pt text tested, without introducing false negatives — genuinely
+// low-contrast text (e.g. true #999999) still measures as failing either way.
+const DARK_SAMPLE_PERCENTILE = 0.05;
 
 /**
  * PDF Contrast Validator
@@ -185,9 +196,11 @@ export class PdfContrastValidator {
     return issues;
   }
 
-  // ─── Pixel sampling helpers ────────────────────────────────────────────────
+  // ─── Pixel sampling helpers (public — reused by color-contrast-verification.ts
+  // to re-sample a region after a fix is applied, using the exact same
+  // sampling this validator uses to detect issues in the first place) ────────
 
-  private sampleAverage(
+  sampleAverage(
     data: Uint8ClampedArray,
     x: number, y: number, w: number, h: number,
     cw: number, ch: number
@@ -203,8 +216,8 @@ export class PdfContrastValidator {
     return n > 0 ? { r: r / n, g: g / n, b: b / n } : null;
   }
 
-  /** Returns the average color of the darkest 30% of pixels (estimates text color). */
-  private sampleDark(
+  /** Returns the average color of the darkest DARK_SAMPLE_PERCENTILE of pixels (estimates text ink color). */
+  sampleDark(
     data: Uint8ClampedArray,
     x: number, y: number, w: number, h: number,
     cw: number, ch: number
@@ -221,7 +234,7 @@ export class PdfContrastValidator {
 
     if (pixels.length === 0) return null;
     pixels.sort((a, b) => a.lum - b.lum);
-    const take = Math.max(1, Math.floor(pixels.length * 0.3));
+    const take = Math.max(1, Math.floor(pixels.length * DARK_SAMPLE_PERCENTILE));
     const subset = pixels.slice(0, take);
     return {
       r: subset.reduce((s, v) => s + v.r, 0) / take,
