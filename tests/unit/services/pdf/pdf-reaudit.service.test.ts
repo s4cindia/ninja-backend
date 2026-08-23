@@ -373,6 +373,33 @@ describe('PdfReauditService', () => {
       expect(result.error).toContain('No audit report found');
     });
 
+    it('re-audits at the comprehensive scan level (not the basic default)', async () => {
+      // Regression coverage: reauditAndCompare must not rely on
+      // runAuditFromBuffer's own default ('basic'), which excludes 'contrast'
+      // and several other validators — a fix whose validator isn't in 'basic'
+      // would always misreport as resolved, since the validator that could
+      // catch a lingering problem would never re-run.
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport,
+        jobId: `${mockJobId}-reaudit`,
+        issues: [],
+      });
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledWith(
+        mockBuffer,
+        `${mockJobId}-reaudit`,
+        mockFileName,
+        'comprehensive'
+      );
+    });
+
     it('should handle re-audit failure gracefully', async () => {
       vi.mocked(prisma.job.findUnique).mockResolvedValue({
         id: mockJobId,
