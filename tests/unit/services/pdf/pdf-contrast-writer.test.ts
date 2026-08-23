@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
-import { spliceColorWrap, spliceColorReplace, pdfContrastWriterService } from '../../../../src/services/pdf/pdf-contrast-writer.service';
+import { spliceColorFix, pdfContrastWriterService } from '../../../../src/services/pdf/pdf-contrast-writer.service';
 import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
@@ -16,49 +16,37 @@ vi.mock('../../../../src/services/pdf/color-contrast-verification', async (impor
   return { ...actual, verifyContrastInRegion: vi.fn(actual.verifyContrastInRegion) };
 });
 
-describe('spliceColorWrap', () => {
-  it('wraps the exact byte range in q/rg/Q without touching anything outside it', () => {
-    const content = 'BEFORE q BT 1 0 0 1 50 150 Tm <41> Tj ET Q AFTER';
-    const start = content.indexOf('BT');
-    const end = content.indexOf('ET') + 'ET'.length;
-
-    const result = spliceColorWrap(content, start, end, [0.2, 0.3, 0.4]);
-
-    expect(result).toBe(
-      'BEFORE q q\n0.2 0.3 0.4 rg\nBT 1 0 0 1 50 150 Tm <41> Tj ET\nQ\n Q AFTER'
-    );
-    expect(result.startsWith('BEFORE q ')).toBe(true);
-    expect(result.endsWith(' Q AFTER')).toBe(true);
-  });
-
-  it('preserves the wrapped content byte-for-byte', () => {
-    const content = 'xBT foo bar ETy';
-    const result = spliceColorWrap(content, 1, 14, [0, 0, 0]);
-    expect(result).toContain('BT foo bar ET');
-  });
-});
-
-describe('spliceColorReplace', () => {
-  it('replaces exactly the operator span, leaving everything else untouched', () => {
+describe('spliceColorFix', () => {
+  it('replaces an internal fill-color op inline and restores the original color right after the run', () => {
     const content = 'BT\n0.6 0.6 0.6 rg\n/F1 14 Tf\n<41> Tj\nET';
-    const start = content.indexOf('0.6 0.6 0.6 rg');
-    const end = start + '0.6 0.6 0.6 rg'.length;
+    const opStart = content.indexOf('0.6 0.6 0.6 rg');
+    const opEnd = opStart + '0.6 0.6 0.6 rg'.length;
+    const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
 
-    const result = spliceColorReplace(content, start, end, [0, 0, 0]);
+    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0], [0.6, 0.6, 0.6]);
 
-    expect(result).toBe('BT\n0 0 0 rg\n/F1 14 Tf\n<41> Tj\nET');
+    expect(result).toBe('BT\n0 0 0 rg\n/F1 14 Tf\n<41> Tj\n\n0.6 0.6 0.6 rg\nET');
   });
 
-  it('does not add any wrapping — the replacement is inline', () => {
-    const content = 'BT 0.5 0.5 0.5 rg <41> Tj ET';
-    const start = content.indexOf('0.5 0.5 0.5 rg');
-    const end = start + '0.5 0.5 0.5 rg'.length;
+  it('inserts a new op before the run and a restore op after when there is no internal op', () => {
+    const content = 'BT <41> Tj ET';
+    const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
 
-    const result = spliceColorReplace(content, start, end, [1, 1, 1]);
+    const result = spliceColorFix(content, run, undefined, [1, 1, 1], [0, 0, 0]);
 
-    expect(result).toBe('BT 1 1 1 rg <41> Tj ET');
-    expect(result).not.toContain('q\n');
-    expect(result).not.toContain('\nQ');
+    expect(result).toBe('BT\n1 1 1 rg\n <41> Tj \n0 0 0 rg\nET');
+  });
+
+  it('does not touch content before the run or after the restore point', () => {
+    const content = 'BEFORE BT 0.6 0.6 0.6 rg <41> Tj ET AFTER';
+    const opStart = content.indexOf('0.6 0.6 0.6 rg');
+    const opEnd = opStart + '0.6 0.6 0.6 rg'.length;
+    const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
+
+    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0], [0.6, 0.6, 0.6]);
+
+    expect(result.startsWith('BEFORE BT 0 0 0 rg ')).toBe(true);
+    expect(result.endsWith('ET AFTER')).toBe(true);
   });
 });
 
