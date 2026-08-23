@@ -485,6 +485,7 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
+      logger.info(`[AiAnalysis][DEBUG3] dispatch issue=${issue.id} config.colorContrastMode=${config.colorContrastMode} hasBoundingBox=${!!issue.boundingBox} pageNumber=${issue.pageNumber} hasContrastData=${!!issue.contrastData}`);
       return this.analyzeColorContrast(issue, parsed, config.colorContrastMode);
     }
 
@@ -1076,6 +1077,7 @@ class AiAnalysisService {
 
     if (mode === 'apply-to-pdf') {
       const fixConfidence = this.locateColorContrastFix(issue, parsed);
+      logger.info(`[AiAnalysis][DEBUG2] issue=${issue.id} mode=${mode} fixConfidence=${fixConfidence}`);
       if (fixConfidence !== null) {
         const corrected = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio);
         return {
