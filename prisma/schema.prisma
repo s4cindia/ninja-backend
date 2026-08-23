@@ -1930,7 +1930,7 @@ model AiAnalysis {
   issueId              String
   /// 'alt-text' | 'alt-text-improve' | 'table-summary' | 'table-headers' | 'table-layout'
   /// | 'list-classify' | 'reading-order' | 'heading' | 'language'
-  /// | 'color-contrast' | 'link-text' | 'form-field' | 'bookmark'
+  /// | 'color-contrast' | 'color-contrast-fix' | 'link-text' | 'form-field' | 'bookmark'
   suggestionType       String
   /// The fix value to write into the PDF (alt text string, summary, lang code, etc.)
   value                String?  @db.Text
