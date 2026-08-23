@@ -87,13 +87,22 @@ class PdfReauditService {
       logger.info(`[PdfReaudit] Original audit had ${originalIssues.length} issues`);
 
       // Step 2: Run fresh audit on remediated PDF
+      // Always 'comprehensive' — this fire-and-forget background pass is what
+      // produces the resolved/remaining/regressions counts a user sees after
+      // applying fixes, so it must run every validator a fix could touch.
+      // runAuditFromBuffer's own default ('basic') excludes 'contrast' (and
+      // headings/reading-order/lists/language/links/forms/bookmarks); a fix
+      // whose validator isn't in 'basic' would always misreport as "resolved"
+      // regardless of whether it actually worked, since the validator that
+      // would catch a lingering problem never re-runs.
       logger.info(`[PdfReaudit] Running fresh audit on remediated PDF...`);
       let reauditReport;
       try {
         reauditReport = await pdfAuditService.runAuditFromBuffer(
           remediatedPdfBuffer,
           `${jobId}-reaudit`,
-          fileName
+          fileName,
+          'comprehensive'
         );
       } catch (auditError) {
         logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
