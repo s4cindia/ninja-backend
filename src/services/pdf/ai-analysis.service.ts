@@ -244,8 +244,13 @@ class AiAnalysisService {
             }
           }
 
-          // requiresManualReview results are always saved regardless of confidence threshold
-          if (!suggestion || (!suggestion.requiresManualReview && suggestion.confidence < config.confidenceThreshold)) {
+          // Every real suggestion is saved regardless of confidence. A low-confidence AI
+          // answer, visibly badged as such (IssueCard already color-tiers by confidence and
+          // renders alt-text as an editable draft), is strictly more useful to a reviewer
+          // than silent disappearance — which looked identical to "AI never analyzed this."
+          // confidenceThreshold remains a valid tenant setting elsewhere; it's just no
+          // longer used to decide whether a result gets stored.
+          if (!suggestion) {
             skipped++;
             return;
           }
