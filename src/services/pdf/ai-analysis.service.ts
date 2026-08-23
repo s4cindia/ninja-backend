@@ -24,6 +24,9 @@ import { AuditIssue } from '../audit/base-audit.service';
 import type { PdfParseResult, PdfPage } from './pdf-comprehensive-parser.service';
 import type { TableInfo } from './structure-analyzer.service';
 import type { ParsedPDF } from './pdf-parser.service';
+import { decodePageContent } from './pdf-content-stream-io';
+import { locateTextRun } from './contrast-content-stream';
+import { computeCompliantColor } from './color-contrast-correction';
 
 // ─── Config Types ──────────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ export interface AiRemediationConfig {
   altTextMode: 'apply-to-pdf' | 'guidance-only';
   listMode: 'auto-resolve-decorative' | 'guidance-only';
   languageMode: 'apply-to-pdf' | 'guidance-only';
-  colorContrastMode: 'guidance-only' | 'disabled';
+  colorContrastMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
   linkTextMode: 'guidance-only' | 'disabled';
   formFieldMode: 'guidance-only' | 'disabled';
   bookmarkMode: 'guidance-only' | 'disabled';
@@ -255,12 +258,16 @@ class AiAnalysisService {
             return;
           }
 
-          // Auto-resolve if high confidence and tenant allows it
+          // Auto-resolve if high confidence and tenant allows it — color-contrast-fix
+          // is excluded regardless of tenant settings: it's the only suggestion type
+          // that writes into a content stream rather than structure tags/metadata, and
+          // the initial rollout always requires an explicit human Approve/Apply click.
           let effectiveApplyMode = suggestion.applyMode;
           if (
             config.autoApplyHighConfidence &&
             suggestion.confidence >= 0.90 &&
-            suggestion.applyMode === 'apply-to-pdf'
+            suggestion.applyMode === 'apply-to-pdf' &&
+            suggestion.suggestionType !== 'color-contrast-fix'
           ) {
             effectiveApplyMode = 'apply-to-pdf';
           }
@@ -477,7 +484,7 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
-      return this.analyzeColorContrast(issue);
+      return this.analyzeColorContrast(issue, parsed, config.colorContrastMode);
     }
 
     if (LINK_CODES.has(code)) {
@@ -1034,16 +1041,55 @@ class AiAnalysisService {
     }
   }
 
+  // Auto-apply eligibility bar for color-contrast-fix — matches the independent
+  // floor pdf-contrast-writer.service.ts enforces at apply time. Duplicated
+  // deliberately (not imported from the writer) so this suggestion-time check
+  // and that apply-time check are each self-contained; both must agree the fix
+  // is safe, neither trusts the other to have checked.
+  private static readonly MIN_CONTRAST_FIX_CONFIDENCE = 0.80;
+
   /**
    * Color contrast is measured deterministically at audit time (PdfContrastValidator
    * samples rendered pixels and computes the real WCAG relative-luminance ratio) — no
    * AI call needed here. This just turns that already-computed measurement into a
    * suggestion. Confidence reflects the sampling heuristics (text/background pixel
    * estimation), not the contrast math itself, which is exact given the sampled colors.
+   *
+   * When `mode` is 'apply-to-pdf', dry-runs the same content-stream correlation
+   * pdf-contrast-writer.service.ts uses at apply time (no PDF is modified here) to
+   * decide whether this issue is eligible for a real fix suggestion rather than
+   * guidance-only. Falls through to guidance-only whenever eligibility can't be
+   * confidently established — this never blocks the (already-shipped) guidance path.
    */
-  private analyzeColorContrast(issue: AuditIssue): AiSuggestionResult | null {
+  private analyzeColorContrast(
+    issue: AuditIssue,
+    parsed: PdfParseResult,
+    mode: 'guidance-only' | 'apply-to-pdf'
+  ): AiSuggestionResult | null {
     const cd = issue.contrastData;
     if (!cd) return null;
+
+    const rationale =
+      `Measured directly from rendered pixels using the WCAG relative-luminance formula: ` +
+      `${cd.foreground} on ${cd.background} = ${cd.ratio}:1, required ${cd.requiredRatio}:1.`;
+
+    if (mode === 'apply-to-pdf') {
+      const fixConfidence = this.locateColorContrastFix(issue, parsed);
+      if (fixConfidence !== null) {
+        const corrected = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio);
+        return {
+          suggestionType: 'color-contrast-fix',
+          value: corrected.color,
+          guidance:
+            `Text color will be changed from ${cd.foreground} to ${corrected.color} ` +
+            `to reach ${corrected.appliedRatio}:1 (required ${cd.requiredRatio}:1).`,
+          confidence: Math.min(0.95, fixConfidence),
+          rationale,
+          model: 'rule-based',
+          applyMode: 'apply-to-pdf',
+        };
+      }
+    }
 
     return {
       suggestionType: 'color-contrast',
@@ -1052,12 +1098,34 @@ class AiAnalysisService {
         `(currently ${cd.ratio}:1). Darken the text color or lighten the background — ` +
         `measured foreground ${cd.foreground} on background ${cd.background}.`,
       confidence: 0.95,
-      rationale:
-        `Measured directly from rendered pixels using the WCAG relative-luminance formula: ` +
-        `${cd.foreground} on ${cd.background} = ${cd.ratio}:1, required ${cd.requiredRatio}:1.`,
+      rationale,
       model: 'rule-based',
       applyMode: 'guidance-only',
     };
+  }
+
+  /**
+   * Dry-run correlation for color-contrast-fix eligibility — same steps
+   * pdf-contrast-writer.service.ts performs at apply time, without writing
+   * anything. Returns the correlation confidence when eligible, else null.
+   */
+  private locateColorContrastFix(issue: AuditIssue, parsed: PdfParseResult): number | null {
+    if (!issue.pageNumber || !issue.boundingBox) return null;
+
+    const page = parsed.pages[issue.pageNumber - 1];
+    if (!page || page.rotation !== 0) return null;
+
+    const pdfLibDoc = parsed.parsedPdf?.pdfLibDoc;
+    if (!pdfLibDoc) return null;
+
+    const content = decodePageContent(pdfLibDoc, issue.pageNumber);
+    if (content === null) return null;
+
+    const target = { x: issue.boundingBox.x, baselineY: issue.boundingBox.pageHeight - issue.boundingBox.y };
+    const match = locateTextRun(content, target);
+    if (!match || match.ambiguous || match.confidence < AiAnalysisService.MIN_CONTRAST_FIX_CONFIDENCE) return null;
+
+    return match.confidence;
   }
 
   private async analyzeLinkText(
