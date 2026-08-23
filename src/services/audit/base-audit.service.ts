@@ -69,6 +69,18 @@ export interface AuditIssue {
    * bottom-left (raw PDF user-space / pdfjs) coordinates before populating it.
    */
   boundingBox?: { x: number; y: number; width: number; height: number; pageWidth: number; pageHeight: number };
+  /**
+   * Deterministic pixel-measured contrast data — populated only by PdfContrastValidator
+   * for COLOR-CONTRAST issues. Lets downstream consumers (AI analysis) reuse the
+   * already-computed measurement instead of re-estimating contrast visually.
+   */
+  contrastData?: {
+    foreground: string;
+    background: string;
+    ratio: number;
+    requiredRatio: number;
+    isLargeText: boolean;
+  };
 }
 
 /**

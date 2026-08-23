@@ -99,6 +99,7 @@ export class PdfContrastValidator {
 
     // Get text items (position + dimensions in PDF space)
     const textContent = await pdfjsPage.getTextContent();
+    const styles = textContent.styles as Record<string, { fontFamily?: string }> | undefined;
     const [va, vb, vc, vd, ve, vf] = viewport.transform;
 
     const issues: AuditIssue[] = [];
@@ -109,7 +110,7 @@ export class PdfContrastValidator {
 
       // TextItem (not TextMarkedContent which has no str field)
       if (!('str' in rawItem)) continue;
-      const item = rawItem as { str: string; transform: number[]; width?: number; height?: number };
+      const item = rawItem as { str: string; transform: number[]; width?: number; height?: number; fontName?: string };
 
       const str = item.str ?? '';
       if (str.trim().length < 3) continue;
@@ -143,9 +144,7 @@ export class PdfContrastValidator {
       const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
       if (!textColor) continue;
 
-      const isBold = str === str.toUpperCase() && str.length < 5
-        ? false
-        : false; // font-name bold detection not available from text content
+      const isBold = this.detectBold(item.fontName ? styles?.[item.fontName]?.fontFamily : undefined);
       const isLarge = this.isLargeText(fontSize, isBold);
       const threshold = isLarge ? 3.0 : 4.5;
       const ratio = this.calculateContrastRatio(textColor, bgColor);
@@ -172,6 +171,13 @@ export class PdfContrastValidator {
           boundingBox: this.computeTextBoundingBox(
             pdfX, pdfY, item.width, fontSize, page.width, page.height
           ),
+          contrastData: {
+            foreground: this.rgbToHex(textColor),
+            background: this.rgbToHex(bgColor),
+            ratio: Math.round(ratio * 100) / 100,
+            requiredRatio: threshold,
+            isLargeText: isLarge,
+          },
         });
       }
     }
@@ -271,6 +277,16 @@ export class PdfContrastValidator {
     const lighter = Math.max(l1, l2);
     const darker = Math.min(l1, l2);
     return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  /**
+   * Heuristic: pdf.js derives fontFamily from the embedded font's actual PostScript
+   * name when it can't map to a generic family, so a genuinely bold-named font often
+   * surfaces "Bold" there. Not exhaustive (synthetic/visual bolding without a
+   * bold-named font resource won't be caught), but real signal — not always false.
+   */
+  detectBold(fontFamily: string | undefined): boolean {
+    return /bold/i.test(fontFamily ?? '');
   }
 
   getLuminance(r: number, g: number, b: number): number {

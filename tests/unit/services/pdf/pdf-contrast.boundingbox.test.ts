@@ -42,3 +42,18 @@ describe('PdfContrastValidator.computeTextBoundingBox', () => {
     expect(validator.computeTextBoundingBox(100, 700, 80, 12, 0, 0)).toBeUndefined();
   });
 });
+
+describe('PdfContrastValidator.detectBold', () => {
+  const validator = new PdfContrastValidator();
+
+  it('detects "Bold" in a pdf.js-derived font family name, case-insensitively', () => {
+    expect(validator.detectBold('Arial-BoldMT')).toBe(true);
+    expect(validator.detectBold('helvetica-bold')).toBe(true);
+  });
+
+  it('returns false for non-bold or missing font family info', () => {
+    expect(validator.detectBold('ArialMT')).toBe(false);
+    expect(validator.detectBold(undefined)).toBe(false);
+    expect(validator.detectBold('')).toBe(false);
+  });
+});
