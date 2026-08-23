@@ -12,7 +12,9 @@ export const aiConfig = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
-    model: 'gemini-2.0-flash',
+    // gemini-2.0-flash was retired by Google (404 NOT_FOUND) — gemini-3.6-flash is
+    // the current suggested replacement per the API's own error message.
+    model: 'gemini-3.6-flash',
     modelPro: 'gemini-2.5-pro',
     maxRetries: 3,
     retryDelay: 1000,

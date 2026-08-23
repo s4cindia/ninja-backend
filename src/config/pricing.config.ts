@@ -29,13 +29,22 @@ export const aiPricing = {
     output: 5.00,
     cached: 0.3125,
   },
+  // Promotional pricing through Dec 31, 2026 (source: ai.google.dev/gemini-api/docs/pricing).
+  'gemini-3.6-flash': {
+    input: 0.75,
+    output: 3.75,
+    cached: 0.075,
+  },
 } as const;
 
 export type SupportedModel = keyof typeof aiPricing;
 
 export function getModelPricing(model: string): { input: number; output: number; cached: number } {
   const normalizedModel = model.toLowerCase();
-  
+
+  if (normalizedModel.includes('3.6-flash')) {
+    return aiPricing['gemini-3.6-flash'];
+  }
   if (normalizedModel.includes('2.5-pro')) {
     return aiPricing['gemini-2.5-pro'];
   }
@@ -57,6 +66,6 @@ export function getModelPricing(model: string): { input: number; output: number;
   if (normalizedModel.includes('pro')) {
     return aiPricing['gemini-2.5-pro'];
   }
-  
-  return aiPricing['gemini-2.0-flash'];
+
+  return aiPricing['gemini-3.6-flash'];
 }

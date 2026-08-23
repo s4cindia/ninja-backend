@@ -599,7 +599,7 @@ router.post('/runs/:runId/ai-annotate', authenticate, authorize('ADMIN', 'USER')
     const aiRun = await prisma.aiAnnotationRun.create({
       data: {
         calibrationRunId: runId,
-        model: parsed.data.model ?? 'gemini-2.0-flash',
+        model: parsed.data.model ?? 'gemini-3.6-flash',
         promptVersion: PROMPT_VERSION,
         confidenceThreshold: parsed.data.confidenceThreshold ?? 0.95,
         dryRun: parsed.data.dryRun ?? false,
