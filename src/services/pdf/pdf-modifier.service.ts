@@ -5,11 +5,12 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { logger } from '../../lib/logger';
+import { decodePageContent as decodePageContentShared } from './pdf-content-stream-io';
 
 // Minimal valid XMP skeleton with pdfuaid and dc namespaces pre-declared
 const MINIMAL_XMP_TEMPLATE = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
@@ -731,26 +732,7 @@ export class PdfModifierService {
 
   /** Decode a page's content stream(s) to a single string (latin1). */
   private decodePageContent(doc: PDFDocument, targetPage: number): string | null {
-    try {
-      const page = doc.getPage(targetPage - 1);
-      const raw = page.node.get(PDFName.of('Contents'));
-      const resolve = (o: unknown): unknown => (o instanceof PDFRef ? doc.context.lookup(o) : o);
-      const c = resolve(raw);
-      const streams = c instanceof PDFArray
-        ? Array.from({ length: c.size() }, (_, i) => resolve(c.get(i)))
-        : [c];
-      let out = '';
-      for (const s of streams) {
-        let bytes: Uint8Array | null = null;
-        const anyS = s as { decode?: () => Uint8Array };
-        if (anyS && typeof anyS.decode === 'function') { try { bytes = anyS.decode(); } catch { /* */ } }
-        if (!bytes && s instanceof PDFRawStream) { try { bytes = decodePDFRawStream(s).decode(); } catch { /* */ } }
-        if (bytes) out += Buffer.from(bytes).toString('latin1');
-      }
-      return out;
-    } catch {
-      return null;
-    }
+    return decodePageContentShared(doc, targetPage);
   }
 
   /** True if a StructElem's /K references the given MCID (bare number, array, or MCR dict). */
