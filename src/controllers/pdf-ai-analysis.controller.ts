@@ -244,7 +244,7 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
       } else if (suggestionType === 'color-contrast-fix') {
-        const result = pdfContrastWriterService.fixColorContrast(doc, originalIssue);
+        const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
       } else {
         // Value-based operations
@@ -392,7 +392,7 @@ export class PdfAiAnalysisController {
           } else if (suggestionType === 'pdfua-identifier') {
             modification = await pdfModifierService.writePdfUaIdentifier(doc);
           } else if (suggestionType === 'color-contrast-fix') {
-            const result = pdfContrastWriterService.fixColorContrast(doc, originalIssue);
+            const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
             modification = { success: result.success, description: result.after, error: result.error };
           } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
             modification = await pdfModifierService.setAltText(doc, elementId, value!);

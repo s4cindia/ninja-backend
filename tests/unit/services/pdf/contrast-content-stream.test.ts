@@ -83,6 +83,35 @@ q BT 1 0 0 1 50 148 Tm <42> Tj ET Q
     expect(match!.confidence).toBeGreaterThan(0);
   });
 
+  it('reports the internal fill-color operator span when exactly one exists', () => {
+    const match = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
+    expect(match!.internalFillColorOp).toBeTruthy();
+    const { start, end } = match!.internalFillColorOp!;
+    expect(twoLineStream.slice(start, end)).toBe('0 0 0 rg');
+  });
+
+  it('leaves internalFillColorOp undefined when there is no internal fill color at all', () => {
+    // Color set entirely outside BT…ET — nothing inside to conflict with a wrap.
+    const outerColorStream = `0.2 0.3 0.4 rg\nq BT 1 0 0 1 50 150 Tm <41> Tj ET Q\n`;
+    const match = locateTextRun(outerColorStream, { x: 50, baselineY: 150 });
+    expect(match).toBeTruthy();
+    expect(match!.internalFillColorOp).toBeUndefined();
+  });
+
+  it('leaves internalFillColorOp undefined when the unit is ambiguous (mixed color)', () => {
+    const mixedColorStream = `q BT 0 0 0 rg 1 0 0 1 50 150 Tm <41> Tj 1 0 0 rg <42> Tj ET Q\n`;
+    const match = locateTextRun(mixedColorStream, { x: 50, baselineY: 150 });
+    expect(match!.internalFillColorOp).toBeUndefined();
+  });
+
+  it('ignores stroke-color operators (RG) — only fill color (rg) affects Tj rendering', () => {
+    // Sets stroke color (RG) but no fill color at all — should behave like
+    // the zero-internal-fill-op case, not be mistaken for a fill-color op.
+    const strokeOnlyStream = `q BT 0 0 0 RG 1 0 0 1 50 150 Tm <41> Tj ET Q\n`;
+    const match = locateTextRun(strokeOnlyStream, { x: 50, baselineY: 150 });
+    expect(match!.internalFillColorOp).toBeUndefined();
+  });
+
   it('respects a custom tolerance', () => {
     // 8pt off — within the default 12pt tolerance but outside a tighter 5pt one.
     expect(locateTextRun(twoLineStream, { x: 50, baselineY: 142 })).toBeTruthy();

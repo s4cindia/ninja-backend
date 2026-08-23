@@ -21,6 +21,8 @@
 
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 
+type Token = ReturnType<typeof tokenize>[number];
+
 export interface TextRunMatch {
   /** Byte offset of the unit's `BT`. */
   start: number;
@@ -28,8 +30,22 @@ export interface TextRunMatch {
   end: number;
   /** 0-1. Reflects match distance and, when true, is reduced for ambiguity — never a claim about fix correctness beyond "this is the right span". */
   confidence: number;
-  /** True when a near-equally-close runner-up unit exists, or the unit's color changes mid-object. */
+  /** True when a near-equally-close runner-up unit exists, or the unit's fill color changes mid-object. */
   ambiguous: boolean;
+  /**
+   * Byte range of the single internal fill-color operator (operands through
+   * the operator keyword) within [start,end), when exactly one exists.
+   *
+   * pdf-lib (and most authoring tools) emit a fill-color op *inside* BT…ET,
+   * immediately after BT — e.g. `BT\n0.6 0.6 0.6 rg\n...\nTj\n...\nET`. An
+   * outer q/<color>/Q wrap around the whole unit is silently overridden by
+   * this internal op before Tj ever executes, making the wrap a no-op on
+   * real text. When present, the writer must replace this span directly
+   * instead of (or as well as) wrapping. Undefined when zero internal fill
+   * ops exist (nothing to conflict with — wrapping is safe and sufficient).
+   * Always undefined when `ambiguous` is true from a mixed-color unit.
+   */
+  internalFillColorOp?: { start: number; end: number };
 }
 
 interface TextUnit {
@@ -56,11 +72,11 @@ const AMBIGUITY_MARGIN = 4;
 // A CONFIDENCE step subtracted when a match is otherwise usable but ambiguous.
 const AMBIGUITY_PENALTY = 0.2;
 
-// Fill-color operators (any colorspace). A unit containing more than one of
-// these sets color more than once mid-object — wrapping the whole unit in a
-// single corrected color would silently override an internal color change
-// the flagged text run never actually had.
-const COLOR_OPS = new Set(['rg', 'RG', 'g', 'G', 'k', 'K', 'sc', 'SC', 'scn', 'SCN']);
+// Fill-color operators only (lowercase — sets the color Tj actually renders
+// with under the default, near-universal fill text-rendering mode). Stroke
+// operators (RG/G/K/SC/SCN, uppercase) are deliberately excluded: they don't
+// affect Tj's rendered fill color and are noise for this purpose.
+const FILL_COLOR_OPS = new Set(['rg', 'g', 'k', 'sc', 'scn']);
 
 function confidenceForDistance(dist: number): number {
   for (const tier of CONFIDENCE_TIERS) {
@@ -69,9 +85,41 @@ function confidenceForDistance(dist: number): number {
   return 0;
 }
 
+/**
+ * Finds every fill-color operator within [rangeStart, rangeEnd), returning
+ * each one's full span (its operand tokens through the operator keyword).
+ * Mirrors tagContentStream's operand-accumulation pattern: non-operator
+ * tokens accumulate as pending operands; every operator (color or not)
+ * resets the accumulator, so only the operands immediately preceding a
+ * given color op are attributed to it.
+ */
+function findFillColorOps(
+  tokens: Token[],
+  rangeStart: number,
+  rangeEnd: number
+): Array<{ start: number; end: number }> {
+  const ops: Array<{ start: number; end: number }> = [];
+  let pendingStart: number | null = null;
+
+  for (const tk of tokens) {
+    if (tk.start < rangeStart) continue;
+    if (tk.start >= rangeEnd) break;
+
+    if (tk.t !== 'op') {
+      if (pendingStart === null) pendingStart = tk.start;
+      continue;
+    }
+    if (FILL_COLOR_OPS.has(tk.v)) {
+      ops.push({ start: pendingStart ?? tk.start, end: tk.end });
+    }
+    pendingStart = null;
+  }
+
+  return ops;
+}
+
 /** Walks the tokenized content stream, collecting every BT…ET unit's byte range and first-shown-text device-space anchor. */
-function findTextUnits(content: string): TextUnit[] {
-  const tokens = tokenize(content);
+function findTextUnits(tokens: Token[]): TextUnit[] {
   const units: TextUnit[] = [];
 
   type Ctm = { a: number; d: number; e: number; f: number };
@@ -147,7 +195,8 @@ export function locateTextRun(
   target: { x: number; baselineY: number },
   tolerancePt = 12
 ): TextRunMatch | null {
-  const units = findTextUnits(content);
+  const tokens = tokenize(content);
+  const units = findTextUnits(tokens);
 
   const candidates = units
     .filter((u): u is TextUnit & { anchorX: number; anchorY: number } => u.anchorX !== null && u.anchorY !== null)
@@ -161,14 +210,19 @@ export function locateTextRun(
   const runnerUp = candidates[1];
   const proximityAmbiguous = !!runnerUp && (runnerUp.dist - best.dist) <= AMBIGUITY_MARGIN;
 
-  const colorOpCount = tokenize(content.slice(best.start, best.end))
-    .filter(t => t.t === 'op' && COLOR_OPS.has(t.v)).length;
-  const mixedColor = colorOpCount > 1;
+  const fillOps = findFillColorOps(tokens, best.start, best.end);
+  const mixedColor = fillOps.length > 1;
 
   const ambiguous = proximityAmbiguous || mixedColor;
   let confidence = confidenceForDistance(best.dist);
   if (proximityAmbiguous) confidence = Math.max(0, confidence - AMBIGUITY_PENALTY);
   if (mixedColor) confidence = 0;
 
-  return { start: best.start, end: best.end, confidence, ambiguous };
+  return {
+    start: best.start,
+    end: best.end,
+    confidence,
+    ambiguous,
+    internalFillColorOp: fillOps.length === 1 ? fillOps[0] : undefined,
+  };
 }
