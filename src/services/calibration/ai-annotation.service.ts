@@ -160,7 +160,7 @@ export async function runAiAnnotation(
 ): Promise<AiAnnotationResult> {
   const startTime = Date.now();
   const confThreshold = options.confidenceThreshold ?? 0.97;
-  const modelName = options.model ?? 'gemini-2.0-flash';
+  const modelName = options.model ?? 'gemini-3.6-flash';
 
   // 1. Use pre-created AI annotation run or create one
   const aiRun = options.aiRunId
