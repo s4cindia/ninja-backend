@@ -477,8 +477,7 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
-      if (!issue.pageNumber || !parsed.parsedPdf) return null;
-      return this.analyzeColorContrast(issue, parsed.parsedPdf, pageRenderCache);
+      return this.analyzeColorContrast(issue);
     }
 
     if (LINK_CODES.has(code)) {
@@ -1035,64 +1034,30 @@ class AiAnalysisService {
     }
   }
 
-  private async analyzeColorContrast(
-    issue: AuditIssue,
-    parsedPdf: ParsedPDF,
-    pageRenderCache: Map<number, Promise<string | null>>
-  ): Promise<AiSuggestionResult | null> {
-    const pageNum = issue.pageNumber!;
+  /**
+   * Color contrast is measured deterministically at audit time (PdfContrastValidator
+   * samples rendered pixels and computes the real WCAG relative-luminance ratio) — no
+   * AI call needed here. This just turns that already-computed measurement into a
+   * suggestion. Confidence reflects the sampling heuristics (text/background pixel
+   * estimation), not the contrast math itself, which is exact given the sampled colors.
+   */
+  private analyzeColorContrast(issue: AuditIssue): AiSuggestionResult | null {
+    const cd = issue.contrastData;
+    if (!cd) return null;
 
-    if (!pageRenderCache.has(pageNum)) {
-      pageRenderCache.set(pageNum, this.renderPageToBase64(parsedPdf, pageNum));
-    }
-    const base64 = await pageRenderCache.get(pageNum)!;
-    if (!base64) return null;
-
-    const prompt =
-      'You are an accessibility expert. Examine this PDF page image for color contrast issues. ' +
-      'Identify text where contrast appears insufficient (below 4.5:1 normal, 3:1 large text). ' +
-      'Respond ONLY with JSON:\n' +
-      '{"issues":[{"description":"string","location":"string","estimatedRatio":"string","severity":"string"}],' +
-      '"overallConfidence":0.0-1.0,"guidance":"fix instruction"}';
-
-    try {
-      const response = await geminiService.analyzeImage(base64, 'image/png', prompt, {
-        model: 'flash',
-        maxOutputTokens: 1024,
-      });
-      const data = this.parseAiJson<{
-        issues: Array<{
-          description: string;
-          location: string;
-          estimatedRatio: string;
-          severity: string;
-        }>;
-        overallConfidence: number;
-        guidance: string;
-      }>(response.text);
-      if (!data) return null;
-
-      const issueDesc = data.issues
-        .slice(0, 2)
-        .map(i => `${i.description} (~${i.estimatedRatio} at ${i.location})`)
-        .join('; ');
-
-      return {
-        suggestionType: 'color-contrast',
-        guidance:
-          data.guidance ||
-          issueDesc ||
-          'Low contrast detected. Fix in authoring tool by increasing foreground/background color difference.',
-        confidence: data.overallConfidence,
-        rationale: `Detected ${data.issues.length} contrast issue(s) on page ${pageNum}`,
-        model: 'gemini-flash',
-        applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
-      };
-    } catch (err) {
-      logger.warn(`[AiAnalysis] analyzeColorContrast failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
+    return {
+      suggestionType: 'color-contrast',
+      guidance:
+        `Increase contrast to at least ${cd.requiredRatio}:1 for ${cd.isLargeText ? 'large' : 'normal'} text ` +
+        `(currently ${cd.ratio}:1). Darken the text color or lighten the background — ` +
+        `measured foreground ${cd.foreground} on background ${cd.background}.`,
+      confidence: 0.95,
+      rationale:
+        `Measured directly from rendered pixels using the WCAG relative-luminance formula: ` +
+        `${cd.foreground} on ${cd.background} = ${cd.ratio}:1, required ${cd.requiredRatio}:1.`,
+      model: 'rule-based',
+      applyMode: 'guidance-only',
+    };
   }
 
   private async analyzeLinkText(
