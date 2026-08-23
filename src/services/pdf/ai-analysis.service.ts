@@ -141,6 +141,7 @@ class AiAnalysisService {
     // Build effective config from tenant settings + session overrides
     const tenantSettings = await this.getTenantConfig(tenantId);
     const config: AiRemediationConfig = { ...DEFAULT_CONFIG, ...tenantSettings, ...sessionOverrides };
+    logger.info(`[AiAnalysis][DEBUG] sessionOverrides=${JSON.stringify(sessionOverrides)} tenantSettings.colorContrastMode=${tenantSettings.colorContrastMode} effective.colorContrastMode=${config.colorContrastMode}`);
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
     const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
