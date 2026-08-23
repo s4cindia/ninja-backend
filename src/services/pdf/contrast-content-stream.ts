@@ -1,7 +1,11 @@
-// Locates the content-stream byte range of a specific text object (BT…ET),
-// given the device-space anchor point of the text a color-contrast issue was
-// flagged against. Read-only — this only finds a byte range; Phase B2 does
-// the actual rewrite.
+// Locates the content-stream byte range of a specific text *run* — the
+// sequence of consecutive text-showing operators (Tj/TJ/'/") between one
+// positioning op (Td/TD/Tm/T*) and the next — given the device-space anchor
+// point of the text a color-contrast issue was flagged against. A `BT…ET`
+// text object commonly holds many such runs (one per line of a paragraph);
+// anchoring to the whole object rather than the individual run would only
+// ever find the first line. Read-only — this only finds a byte range; the
+// writer does the actual rewrite.
 //
 // Reuses `tokenize()` from the Seam C content-stream tagger (proven, tested,
 // exported for this purpose) but implements its own CTM/text-matrix walker
@@ -24,26 +28,25 @@ import { tokenize } from '../zone-extractor/seam-c/content-stream';
 type Token = ReturnType<typeof tokenize>[number];
 
 export interface TextRunMatch {
-  /** Byte offset of the unit's `BT`. */
+  /** Byte offset where this run begins (right after the positioning op that placed it, or right after `BT` for the object's first run). */
   start: number;
-  /** Byte offset immediately after the unit's `ET`. */
+  /** Byte offset where this run ends (right before the next positioning op, or right before `ET`). */
   end: number;
   /** 0-1. Reflects match distance and, when true, is reduced for ambiguity — never a claim about fix correctness beyond "this is the right span". */
   confidence: number;
-  /** True when a near-equally-close runner-up unit exists, or the unit's fill color changes mid-object. */
+  /** True when a near-equally-close runner-up run exists, or the run's fill color changes mid-run. */
   ambiguous: boolean;
   /**
    * Byte range of the single internal fill-color operator (operands through
    * the operator keyword) within [start,end), when exactly one exists.
    *
-   * pdf-lib (and most authoring tools) emit a fill-color op *inside* BT…ET,
-   * immediately after BT — e.g. `BT\n0.6 0.6 0.6 rg\n...\nTj\n...\nET`. An
-   * outer q/<color>/Q wrap around the whole unit is silently overridden by
-   * this internal op before Tj ever executes, making the wrap a no-op on
-   * real text. When present, the writer must replace this span directly
-   * instead of (or as well as) wrapping. Undefined when zero internal fill
-   * ops exist (nothing to conflict with — wrapping is safe and sufficient).
-   * Always undefined when `ambiguous` is true from a mixed-color unit.
+   * A run commonly carries its own dedicated color op right before its show
+   * op (e.g. pdf-lib emits `BT\n0.6 0.6 0.6 rg\n...\nTj\n...\nET` for a
+   * single-line text object — the whole object is one run, and this is that
+   * run's op). Undefined when zero internal fill ops exist, meaning the
+   * run's color is inherited from outside its own span (an earlier sibling
+   * run in the same text object, or state from before `BT`). Always
+   * undefined when `ambiguous` is true from a mixed-color run.
    */
   internalFillColorOp?: { start: number; end: number };
 }
@@ -118,24 +121,40 @@ function findFillColorOps(
   return ops;
 }
 
-/** Walks the tokenized content stream, collecting every BT…ET unit's byte range and first-shown-text device-space anchor. */
+/**
+ * Walks the tokenized content stream, collecting one unit per text *run* —
+ * the span of consecutive show ops (Tj/TJ/'/") between one positioning op
+ * (Td/TD/Tm/T*, or `BT` for the object's first run) and the next. A run's
+ * anchor is the device-space position in effect when its first show op
+ * fires. Ends a run (and starts the next) on every positioning op and on
+ * `ET`; a bare color-setting op does not end a run — it's expected to sit
+ * inside a run's own span (see `internalFillColorOp` on TextRunMatch).
+ */
 function findTextUnits(tokens: Token[]): TextUnit[] {
   const units: TextUnit[] = [];
 
   type Ctm = { a: number; d: number; e: number; f: number };
   let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
   const ctmStack: Ctm[] = [];
-  let inText = false;
-  let btStart = -1;
   let tld = 0;
   let tmE = 0;
   let tmF = 0;
-  let firstX: number | null = null;
-  let firstY: number | null = null;
   const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
+
+  let runStart = -1;
+  let runHasShow = false;
+  let runAnchorX: number | null = null;
+  let runAnchorY: number | null = null;
 
   const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
   const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
+
+  const flushRun = (endPos: number): void => {
+    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY });
+    runHasShow = false;
+    runAnchorX = null;
+    runAnchorY = null;
+  };
 
   for (const tk of tokens) {
     if (tk.t !== 'op') { operands.push(tk); continue; }
@@ -151,9 +170,14 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
         break;
       }
-      case 'BT': inText = true; btStart = tk.start; tmE = 0; tmF = 0; firstX = null; firstY = null; break;
+      case 'BT': tmE = 0; tmF = 0; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; break;
       case 'TL': tld = num(operands[operands.length - 1]); break;
+      // A positioning op only ends the current run if a show op has already
+      // fired since it began — otherwise this is still the run's lead-in
+      // (e.g. a color op followed by a Tm, both before the first Tj) and
+      // must stay part of the same run's span, not get cut off from it.
       case 'Td': case 'TD': {
+        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
         const tx = num(operands[operands.length - 2]);
         const ty = num(operands[operands.length - 1]);
         if (op === 'TD') tld = -ty;
@@ -162,20 +186,20 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         break;
       }
       case 'Tm':
+        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
         tmE = num(operands[operands.length - 2]);
         tmF = num(operands[operands.length - 1]);
         break;
-      case 'T*': tmF -= tld; break;
+      case 'T*':
+        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
+        tmF -= tld;
+        break;
       case 'Tj': case 'TJ': case "'": case '"': {
         if (op === "'" || op === '"') tmF -= tld;
-        if (firstY === null) { firstX = deviceX(tmE); firstY = deviceY(tmF); }
+        if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runHasShow = true; }
         break;
       }
-      case 'ET': {
-        if (inText) units.push({ start: btStart, end: tk.end, anchorX: firstX, anchorY: firstY });
-        inText = false; btStart = -1;
-        break;
-      }
+      case 'ET': flushRun(tk.start); break;
       default: break;
     }
     operands.length = 0;
@@ -185,10 +209,10 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
 }
 
 /**
- * Finds the BT…ET unit whose first-shown text anchor is closest to `target`,
- * within `tolerancePt`. Returns null if nothing is close enough. Flags
- * `ambiguous` (and reduces confidence) when a near-equally-close runner-up
- * exists, or the matched unit sets its fill color more than once internally.
+ * Finds the text run whose anchor is closest to `target`, within
+ * `tolerancePt`. Returns null if nothing is close enough. Flags `ambiguous`
+ * (and reduces confidence) when a near-equally-close runner-up run exists,
+ * or the matched run sets its fill color more than once internally.
  */
 export function locateTextRun(
   content: string,

@@ -5,28 +5,30 @@
  * B1: content-stream text-run correlation — both already shipped). This is
  * the actual write: recolors the located text run's fill color.
  *
- * Two distinct write strategies, chosen by what Phase B1's correlation found:
+ * A `BT…ET` text object commonly holds many runs (one per line of a
+ * paragraph, each preceded by its own `Td`/`T*`/`Tm`). Phase B1 correlates
+ * against the individual run, not the whole object — so a run's span often
+ * sits *inside* a text object rather than spanning it. That rules out
+ * wrapping the run in `q/<color>/Q`: `q`/`Q` are not legal inside `BT…ET`
+ * (PDF32000-1:2008 Annex A) at all, whole-object or not. Instead this always
+ * does the same two things, regardless of whether the run carries its own
+ * color op:
  *
- * 1. **Internal fill-color operator present (the common case)** — pdf-lib,
- *    and most authoring tools, emit the fill color *inside* BT…ET, right
- *    after BT (e.g. `BT\n0.6 0.6 0.6 rg\n...\nTj\n...\nET`). An outer
- *    q/<color>/Q wrap around the whole unit is silently overridden by this
- *    internal op before Tj ever executes — confirmed the hard way via a real
- *    audit→apply→re-audit round trip that showed zero effect on the
- *    rendered color despite the write "succeeding". So when Phase B1 finds
- *    exactly one internal fill op, this replaces that operator's span
- *    directly (its operands through the operator keyword) with the
- *    corrected color — no wrap needed, and no risk of it being overridden.
+ * 1. **Apply** — if Phase B1 found exactly one internal fill-color op within
+ *    the run's own span (the common case — a dedicated op right before the
+ *    run's show op), replace that operator's value directly. Otherwise
+ *    (color inherited from outside the run) insert a new fill-color op right
+ *    before the run's start.
+ * 2. **Restore** — insert a fill-color op for the run's *original* measured
+ *    color (`contrastData.foreground` — already known, since that's what the
+ *    validator sampled) right after the run's end. Fill-color state persists
+ *    across positioning ops, so without this, any sibling run later in the
+ *    same text object that inherits color from before ours would pick up
+ *    our correction too. This restore undoes that leak regardless of where
+ *    the color state actually originated.
  *
- * 2. **No internal fill-color operator** — color is inherited from outside
- *    the unit. Here the q/Q wrap (spliceColorWrap) is correct and
- *    sufficient: `q`/`Q` are not legal *inside* BT…ET (PDF32000-1:2008
- *    Annex A), so wrapping the whole unit is the only spec-legal, leak-proof
- *    construct — `Q` restores prior color state unconditionally, so nothing
- *    outside the wrapped span is ever affected.
- *
- * (Two or more internal fill ops is genuinely ambiguous — Phase B1 already
- * refuses to match in that case.)
+ * (Two or more internal fill ops within the run's own span is genuinely
+ * ambiguous — Phase B1 already refuses to match in that case.)
  *
  * Always emits plain `rg` (DeviceRGB) regardless of the original color
  * operator's colorspace — the correction target itself comes from sampled
@@ -86,41 +88,36 @@ function hexToUnitRgb(hex: string): [number, number, number] {
 }
 
 /**
- * Pure string splice — wraps content[start,end) in `q\n<r> <g> <b> rg\n` /
- * `\nQ\n`. Exported separately from fixColorContrast so the splice-offset
- * logic is testable without a pdf-lib document.
+ * Pure string splice implementing the class doc comment's apply+restore
+ * strategy for one run. `run` is the run's own [start,end) span;
+ * `internalOp`, when present, is Phase B1's located fill-color op within
+ * that span (undefined when the run has none of its own). Always inserts a
+ * restore op for `originalColor` right after the run — see class doc
+ * comment for why. Splices are applied right-to-left (restore first, then
+ * apply) so the apply-side offsets stay valid regardless of the restore
+ * insertion's length.
  */
-export function spliceColorWrap(
+export function spliceColorFix(
   content: string,
-  start: number,
-  end: number,
-  rgb: [number, number, number]
+  run: { start: number; end: number },
+  internalOp: { start: number; end: number } | undefined,
+  newColor: [number, number, number],
+  originalColor: [number, number, number]
 ): string {
-  const [r, g, b] = rgb;
-  return (
-    content.slice(0, start) +
-    `q\n${r} ${g} ${b} rg\n` +
-    content.slice(start, end) +
-    `\nQ\n` +
-    content.slice(end)
-  );
-}
+  const [nr, ng, nb] = newColor;
+  const [or_, og, ob] = originalColor;
 
-/**
- * Pure string splice — replaces content[start,end) (an existing fill-color
- * operator's full span) with a new `<r> <g> <b> rg` operator. Used instead
- * of spliceColorWrap when the text run sets its own fill color internally
- * (see class doc comment) — directly replacing it is what actually changes
- * the rendered color; wrapping around it would not.
- */
-export function spliceColorReplace(
-  content: string,
-  start: number,
-  end: number,
-  rgb: [number, number, number]
-): string {
-  const [r, g, b] = rgb;
-  return content.slice(0, start) + `${r} ${g} ${b} rg` + content.slice(end);
+  // Leading/trailing \n on every inserted snippet — unlike an operator-span
+  // replacement (which reuses whitespace already surrounding the original
+  // token), an insertion lands between two tokens that may not have any
+  // separator of their own (e.g. right after `BT`), so it must bring both.
+  let out = content.slice(0, run.end) + `\n${or_} ${og} ${ob} rg\n` + content.slice(run.end);
+
+  out = internalOp
+    ? out.slice(0, internalOp.start) + `${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)
+    : out.slice(0, run.start) + `\n${nr} ${ng} ${nb} rg\n` + out.slice(run.start);
+
+  return out;
 }
 
 export class PdfContrastWriterService {
@@ -177,11 +174,9 @@ export class PdfContrastWriterService {
       };
     }
 
+    const originalRgb = hexToUnitRgb(cd.foreground);
     const applyColor = (hex: string): void => {
-      const rgb = hexToUnitRgb(hex);
-      const rewritten = match.internalFillColorOp
-        ? spliceColorReplace(content, match.internalFillColorOp.start, match.internalFillColorOp.end, rgb)
-        : spliceColorWrap(content, match.start, match.end, rgb);
+      const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);
     };
     const verify = async (): Promise<{ ratio: number; passes: boolean } | null> => {

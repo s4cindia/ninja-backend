@@ -117,4 +117,53 @@ q BT 1 0 0 1 50 148 Tm <42> Tj ET Q
     expect(locateTextRun(twoLineStream, { x: 50, baselineY: 142 })).toBeTruthy();
     expect(locateTextRun(twoLineStream, { x: 50, baselineY: 142 }, 5)).toBeNull();
   });
+
+  // Real-world regression: a genuine pilot PDF put multiple lines of a
+  // paragraph in one BT…ET block (one Tm + repeated T* moves), sharing a
+  // single color op right after BT. Correlating against the whole block —
+  // which is what shipped originally — only ever finds the first line;
+  // every contrast issue on a later line in the block silently fails to
+  // correlate. This is the fixture that would have caught it.
+  const multiLineBlock = `BT
+0 0 0 rg
+/F1 12 Tf
+24 TL
+1 0 0 1 50 700 Tm
+<4C696E6531> Tj
+T*
+<4C696E6532> Tj
+T*
+<4C696E6533> Tj
+ET
+`;
+
+  it('correlates to the second line of a multi-line BT block, not just the first', () => {
+    const match = locateTextRun(multiLineBlock, { x: 50, baselineY: 676 });
+    expect(match).toBeTruthy();
+    expect(match!.ambiguous).toBe(false);
+    const span = multiLineBlock.slice(match!.start, match!.end);
+    expect(span).toContain('<4C696E6532> Tj');
+    expect(span).not.toContain('<4C696E6531> Tj');
+    expect(span).not.toContain('<4C696E6533> Tj');
+  });
+
+  it('correlates to the third line of a multi-line BT block', () => {
+    const match = locateTextRun(multiLineBlock, { x: 50, baselineY: 652 });
+    expect(match).toBeTruthy();
+    const span = multiLineBlock.slice(match!.start, match!.end);
+    expect(span).toContain('<4C696E6533> Tj');
+    expect(span).not.toContain('<4C696E6531> Tj');
+    expect(span).not.toContain('<4C696E6532> Tj');
+  });
+
+  it('attributes the block-level color op only to the first line — later lines correctly show no internal op of their own', () => {
+    const first = locateTextRun(multiLineBlock, { x: 50, baselineY: 700 });
+    const second = locateTextRun(multiLineBlock, { x: 50, baselineY: 676 });
+    const third = locateTextRun(multiLineBlock, { x: 50, baselineY: 652 });
+
+    expect(first!.internalFillColorOp).toBeTruthy();
+    expect(multiLineBlock.slice(first!.internalFillColorOp!.start, first!.internalFillColorOp!.end)).toBe('0 0 0 rg');
+    expect(second!.internalFillColorOp).toBeUndefined();
+    expect(third!.internalFillColorOp).toBeUndefined();
+  });
 });
