@@ -591,6 +591,8 @@ export class PdfAiAnalysisController {
           hasTaggingReport: (output.hasTaggingReport as boolean | undefined) ?? false,
           hasWordExport: (output.hasWordExport as boolean | undefined) ?? false,
           elementCounts: output.autoTagElementCounts ?? null,
+          structureTreeCompleteness: output.structureTreeCompleteness ?? null,
+          retagOutcome: output.retagOutcome ?? null,
           adobeFlags: (autoTagProgress.adobeFlags as unknown[] | undefined) ?? [],
           postRemediationStatus: output.postRemediationStatus as string | undefined,
           postRemediationAudit: output.postRemediationAudit as Record<string, unknown> | undefined,

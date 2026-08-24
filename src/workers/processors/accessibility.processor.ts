@@ -11,6 +11,7 @@ import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
 import { checkStructureTreeCompleteness } from '../../services/pdf/structure-tree-completeness';
+import { prepareDocumentForRetag } from '../../services/pdf/strip-marked-content';
 import { fileStorageService } from '../../services/storage/file-storage.service';
 import { aiConfig } from '../../config/ai.config';
 import prisma from '../../lib/prisma';
@@ -214,7 +215,13 @@ async function processPdfAccessibility(
       data: { input: { ...eiStart, autoTagProgress: { startedAt: new Date().toISOString(), status: 'running' } } as Prisma.InputJsonObject },
     });
 
-    try {
+    // Tags `bufferToTag` with whichever service is available and persists a
+    // successful result exactly like a normal tagging pass — sets
+    // auditBuffer/autoTagMeta and the job.input progress record. Shared by
+    // the primary attempt and the strip-and-retag path below (see
+    // alreadyTagged handling) so a successful retag is indistinguishable
+    // from a normal first-time tag, bookkeeping-wise.
+    const tagAndPersist = async (bufferToTag: Buffer): Promise<void> => {
       let autoTagResult: {
         taggedPdfBuffer: Buffer;
         reportBuffer: Buffer | null;
@@ -225,15 +232,15 @@ async function processPdfAccessibility(
       let taggerSource: 'seam-c' | 'adobe' = 'adobe';
       if (aiConfig.seamC.enabled) {
         try {
-          autoTagResult = await seamCTagService.tagPdf(fileBuffer, dbJobId);
+          autoTagResult = await seamCTagService.tagPdf(bufferToTag, dbJobId);
           taggerSource = 'seam-c';
         } catch (seamErr) {
           if (!aiConfig.adobe.enabled) throw seamErr;
           logger.warn(`[PDF Worker] Seam C tagging failed, falling back to Adobe: ${seamErr instanceof Error ? seamErr.message : String(seamErr)}`);
-          autoTagResult = await adobeAutoTagService.tagPdf(fileBuffer, { generateReport: true, exportWord: true });
+          autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
         }
       } else {
-        autoTagResult = await adobeAutoTagService.tagPdf(fileBuffer, { generateReport: true, exportWord: true });
+        autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
       }
       auditBuffer = autoTagResult.taggedPdfBuffer;
 
@@ -276,6 +283,10 @@ async function processPdfAccessibility(
         autoTagElementCounts: autoTagResult.elementCounts,
       };
       logger.info(`[PDF Worker] ${taggerSource} tagging complete for job ${dbJobId}`);
+    };
+
+    try {
+      await tagAndPersist(fileBuffer);
     } catch (tagErr) {
       const errMessage = tagErr instanceof Error ? tagErr.message : String(tagErr);
       // Seam C's own struct-tree-builder refuses to run on a document that
@@ -287,25 +298,62 @@ async function processPdfAccessibility(
       // the worker attempt tagging instead of pre-emptively skipping it.
       const alreadyTagged = errMessage.startsWith('SEAM_C_ALREADY_TAGGED');
 
+      let completenessMeta: Record<string, unknown> = {};
+      let retagSucceeded = false;
+
       if (alreadyTagged) {
-        logger.info(`[PDF Worker] Document already has real structure — proceeding with audit of existing tagging for job ${dbJobId}`);
+        completenessMeta = await logStructureCompleteness(fileBuffer, dbJobId);
+        const completeness = completenessMeta.structureTreeCompleteness as { isEmptyShell: boolean } | undefined;
+
+        // Bundled with forceAutoTag rather than a separate flag: forceAutoTag
+        // is already scoped to Comparison Study trials only (the safety
+        // boundary), and prepareDocumentForRetag's own all-or-nothing bail
+        // plus this try/catch's fallback mean a failed attempt here can
+        // never leave the document worse off than just using the existing
+        // (empty-shell) structure — only better or unchanged.
+        if (completeness?.isEmptyShell && forceAutoTag) {
+          logger.info(`[PDF Worker] Existing structure is an empty shell and forceAutoTag is set — attempting strip-and-retag for job ${dbJobId}`);
+          try {
+            const doc = await PDFDocument.load(fileBuffer);
+            const prepResult = prepareDocumentForRetag(doc);
+            if (prepResult.success) {
+              const strippedBuffer = Buffer.from(await doc.save());
+              await tagAndPersist(strippedBuffer);
+              autoTagMeta = { ...autoTagMeta, retagOutcome: 'success', ...completenessMeta };
+              logger.info(`[PDF Worker] Strip-and-retag succeeded for job ${dbJobId} (${prepResult.pagesStripped}/${prepResult.totalPages} pages stripped)`);
+              retagSucceeded = true;
+            } else {
+              logger.warn(`[PDF Worker] Strip-and-retag aborted for job ${dbJobId} — page ${prepResult.bailedOnPage ?? 'n/a'} could not be safely stripped; using existing structure as-is`);
+              completenessMeta = { ...completenessMeta, retagOutcome: 'failed-strip-bailed' };
+            }
+          } catch (retagErr) {
+            logger.warn(`[PDF Worker] Strip-and-retag failed for job ${dbJobId} (falling back to existing structure): ${retagErr instanceof Error ? retagErr.message : String(retagErr)}`);
+            completenessMeta = { ...completenessMeta, retagOutcome: 'failed-retag-error' };
+          }
+        }
+
+        if (!retagSucceeded) {
+          logger.info(`[PDF Worker] Document already has real structure — proceeding with audit of existing tagging for job ${dbJobId}`);
+        }
       } else {
         logger.warn(`[PDF Worker] Adobe AutoTag failed (continuing with untagged): ${errMessage}`);
       }
 
-      // Record outcome in job.input
-      const ejFail = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-      const eiFail = ejFail?.input && typeof ejFail.input === 'object' && !Array.isArray(ejFail.input)
-        ? ejFail.input as Record<string, unknown> : {};
-      const prevFail = eiFail.autoTagProgress as Record<string, unknown> ?? {};
-      await prisma.job.update({
-        where: { id: dbJobId },
-        data: { input: { ...eiFail, autoTagProgress: { ...prevFail, completedAt: new Date().toISOString(), status: alreadyTagged ? 'skipped' : 'failed' } } as Prisma.InputJsonObject },
-      });
+      if (!retagSucceeded) {
+        // Record outcome in job.input
+        const ejFail = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+        const eiFail = ejFail?.input && typeof ejFail.input === 'object' && !Array.isArray(ejFail.input)
+          ? ejFail.input as Record<string, unknown> : {};
+        const prevFail = eiFail.autoTagProgress as Record<string, unknown> ?? {};
+        await prisma.job.update({
+          where: { id: dbJobId },
+          data: { input: { ...eiFail, autoTagProgress: { ...prevFail, completedAt: new Date().toISOString(), status: alreadyTagged ? 'skipped' : 'failed' } } as Prisma.InputJsonObject },
+        });
 
-      autoTagMeta = alreadyTagged
-        ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...(await logStructureCompleteness(fileBuffer, dbJobId)) }
-        : { autoTagStatus: 'failed', autoTagError: errMessage };
+        autoTagMeta = alreadyTagged
+          ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...completenessMeta }
+          : { autoTagStatus: 'failed', autoTagError: errMessage };
+      }
     }
   } else {
     autoTagMeta = isTagged
