@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
+import { aiAnalysisService, buildSuggestionCacheKey } from '../../../../src/services/pdf/ai-analysis.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 
@@ -134,5 +134,45 @@ describe('analyzeColorContrast — apply-to-pdf eligibility (Phase B3)', () => {
     const res = svc.analyzeColorContrast(contrastIssue(), parsed, 'guidance-only');
     expect(res.suggestionType).toBe('color-contrast');
     expect(res.applyMode).toBe('guidance-only');
+  });
+});
+
+describe('buildSuggestionCacheKey', () => {
+  // Real-world regression: a pilot PDF with several independent low-contrast
+  // text runs on one page came back 100% guidance-only under apply-to-pdf
+  // mode. Root cause was here, not in the correlator — two distinct
+  // COLOR-CONTRAST issues on the same page collapsed onto the same
+  // suggestion-cache key (page-level, like reading-order/tables), so only
+  // the page's first issue ever got a real correlation check; every other
+  // issue on that page silently inherited its (possibly failed) result.
+  it('gives two distinct contrast issues on the same page distinct keys', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'contrast-a', pageNumber: 5 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'contrast-b', pageNumber: 5 };
+    expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
+  });
+
+  it('gives the same contrast issue the same key on repeat calls (still cacheable per-issue)', () => {
+    const issue: AuditIssue = { ...BASE_ISSUE, id: 'contrast-a', pageNumber: 5 };
+    expect(buildSuggestionCacheKey(issue)).toBe(buildSuggestionCacheKey({ ...issue }));
+  });
+
+  it('still shares one key across a whole page for genuinely page-level codes', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'ro-a', code: 'READING-ORDER-SUSPECT', pageNumber: 5 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'ro-b', code: 'READING-ORDER-SUSPECT', pageNumber: 5 };
+    expect(buildSuggestionCacheKey(a)).toBe(buildSuggestionCacheKey(b));
+  });
+
+  it('still shares one key across the whole document for document-level codes', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'h-a', code: 'HEADING-SKIP', pageNumber: 2 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'h-b', code: 'HEADING-SKIP', pageNumber: 9 };
+    expect(buildSuggestionCacheKey(a)).toBe(buildSuggestionCacheKey(b));
+  });
+
+  it('still keys element-level codes by element, not page', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'alt-a', code: 'MATTERHORN-13-001', pageNumber: 5, element: 'img-1' };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'alt-b', code: 'MATTERHORN-13-001', pageNumber: 5, element: 'img-2' };
+    const c: AuditIssue = { ...BASE_ISSUE, id: 'alt-c', code: 'MATTERHORN-13-001', pageNumber: 5, element: 'img-1' };
+    expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
+    expect(buildSuggestionCacheKey(a)).toBe(buildSuggestionCacheKey(c));
   });
 });

@@ -98,6 +98,35 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+
+// Document-level codes always produce the same result for the whole document,
+// so the suggestion cache below keys them by code alone.
+const DOC_LEVEL_CODES = new Set([
+  'HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001',
+  'MATTERHORN-11-001', 'LANGUAGE-MISSING',
+  'BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT',
+]);
+
+/**
+ * Suggestion-cache key for one issue — avoids duplicate AI calls for the
+ * same (code, element/page) pair. Element/page-level codes are keyed by
+ * (code, element or pageNumber) — correct when one fix genuinely covers
+ * everything on that page (e.g. one AI call for "the reading order on this
+ * page"). Color-contrast doesn't fit that model: a page can carry several
+ * independent low-contrast text runs, each needing its own correlation
+ * against its own bounding box — sharing a page-level key would let the
+ * first issue's (possibly failed) correlation silently stand in for every
+ * other issue on that page. Found via a real pilot document where every
+ * contrast issue but the page's first came back guidance-only despite
+ * apply-to-pdf mode. Exported for direct unit testing — analyzeJob's own
+ * dependencies (storage, Prisma, AI clients) make it impractical to test
+ * this in-place.
+ */
+export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'id'>): string {
+  if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
+  if (CONTRAST_CODES.has(issue.code)) return `${issue.code}:${issue.id}`;
+  return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
+}
 const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT']);
 
 // ─── Service ─────────────────────────────────────────────────────────────────
@@ -141,7 +170,6 @@ class AiAnalysisService {
     // Build effective config from tenant settings + session overrides
     const tenantSettings = await this.getTenantConfig(tenantId);
     const config: AiRemediationConfig = { ...DEFAULT_CONFIG, ...tenantSettings, ...sessionOverrides };
-    logger.info(`[AiAnalysis][DEBUG] sessionOverrides=${JSON.stringify(sessionOverrides)} tenantSettings.colorContrastMode=${tenantSettings.colorContrastMode} effective.colorContrastMode=${config.colorContrastMode}`);
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
     const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
@@ -189,14 +217,7 @@ class AiAnalysisService {
       // Page render cache — stores Promises to avoid duplicate renders under concurrency
       const pageRenderCache = new Map<number, Promise<string | null>>();
 
-      // Suggestion cache — avoids duplicate AI calls for the same (code, element/page) pair.
-      // Document-level codes always produce the same result for the whole document,
-      // so they are keyed by code alone. Element/page-level codes include the element id.
-      const DOC_LEVEL_CODES = new Set([
-        'HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001',
-        'MATTERHORN-11-001', 'LANGUAGE-MISSING',
-        'BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT',
-      ]);
+      // Suggestion cache — see buildSuggestionCacheKey for the keying rules.
       const suggestionCache = new Map<string, Promise<AiSuggestionResult | null>>();
 
       // Capture as non-null const — parseBuffer succeeded so parsed is guaranteed non-null here
@@ -214,11 +235,7 @@ class AiAnalysisService {
 
       await Promise.all(issues.map(issue => limit(async () => {
         try {
-          // Build cache key: document-level codes share one result across all instances;
-          // element/page-level codes are keyed by (code, element or pageNumber).
-          const cacheKey = DOC_LEVEL_CODES.has(issue.code)
-            ? issue.code
-            : `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
+          const cacheKey = buildSuggestionCacheKey(issue);
 
           let suggestionPromise = suggestionCache.get(cacheKey);
           if (!suggestionPromise) {
@@ -485,7 +502,6 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
-      logger.info(`[AiAnalysis][DEBUG3] dispatch issue=${issue.id} config.colorContrastMode=${config.colorContrastMode} hasBoundingBox=${!!issue.boundingBox} pageNumber=${issue.pageNumber} hasContrastData=${!!issue.contrastData}`);
       return this.analyzeColorContrast(issue, parsed, config.colorContrastMode);
     }
 
@@ -1077,7 +1093,6 @@ class AiAnalysisService {
 
     if (mode === 'apply-to-pdf') {
       const fixConfidence = this.locateColorContrastFix(issue, parsed);
-      logger.info(`[AiAnalysis][DEBUG2] issue=${issue.id} mode=${mode} fixConfidence=${fixConfidence}`);
       if (fixConfidence !== null) {
         const corrected = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio);
         return {
