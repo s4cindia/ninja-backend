@@ -10,10 +10,42 @@ import { seamCTagService } from '../../services/pdf/seam-c-tag.service';
 import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
+import { checkStructureTreeCompleteness } from '../../services/pdf/structure-tree-completeness';
 import { fileStorageService } from '../../services/storage/file-storage.service';
 import { aiConfig } from '../../config/ai.config';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+
+// ─── Structure tree completeness (Stage 1) ───────────────────────────────────
+
+/**
+ * Runs when the worker is about to trust an existing structure tree instead
+ * of tagging (either the isTagged pre-check skipped tagging outright, or
+ * Seam C's own SEAM_C_ALREADY_TAGGED backstop refused to run). Both of
+ * those gates only check that /StructTreeRoot exists — this measures
+ * whether it's actually worth trusting. Read-only; never affects control
+ * flow, only what gets logged and recorded on the job. Failures here are
+ * non-fatal — a completeness check that itself breaks shouldn't block the
+ * pipeline it's just observing.
+ */
+async function logStructureCompleteness(buffer: Buffer, dbJobId: string): Promise<Record<string, unknown>> {
+  try {
+    const doc = await PDFDocument.load(buffer);
+    const completeness = checkStructureTreeCompleteness(doc);
+    if (!completeness) return {};
+    if (completeness.isEmptyShell) {
+      logger.warn(
+        `[PDF Worker] Existing structure tree for job ${dbJobId} is an empty shell — ` +
+        `${completeness.totalElements} element(s), 0 semantically tagged (no Figure/P/H/Table/etc). ` +
+        `Writers that need a real content-typed element (e.g. alt-text) will find nothing to attach to.`
+      );
+    }
+    return { structureTreeCompleteness: completeness };
+  } catch (err) {
+    logger.warn(`[PDF Worker] Structure tree completeness check failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    return {};
+  }
+}
 
 // ─── Language utilities (Step 8) ─────────────────────────────────────────────
 
@@ -272,12 +304,12 @@ async function processPdfAccessibility(
       });
 
       autoTagMeta = alreadyTagged
-        ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged' }
+        ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...(await logStructureCompleteness(fileBuffer, dbJobId)) }
         : { autoTagStatus: 'failed', autoTagError: errMessage };
     }
   } else {
     autoTagMeta = isTagged
-      ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged' }
+      ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...(await logStructureCompleteness(fileBuffer, dbJobId)) }
       : { autoTagStatus: 'skipped', autoTagSkipReason: 'no-tagger-configured' };
     if (isTagged) logger.info(`[PDF Worker] PDF is already tagged — skipping tagging for job ${dbJobId}`);
     else logger.info(`[PDF Worker] No tagger configured — skipping tagging for job ${dbJobId}`);
