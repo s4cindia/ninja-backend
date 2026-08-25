@@ -451,6 +451,10 @@ export class PdfAiAnalysisController {
               data: {
                 output: {
                   ...latestOutput,
+                  // The fresh audit (score, matterhornSummary, issues) must replace
+                  // the stale pre-fix one — otherwise the results page keeps showing
+                  // the original numbers forever, no matter how many fixes land.
+                  ...(comparison.success && comparison.reauditReport ? { auditReport: comparison.reauditReport } : {}),
                   postRemediationStatus: 'complete',
                   postRemediationAudit: {
                     runAt: new Date().toISOString(),
@@ -459,7 +463,7 @@ export class PdfAiAnalysisController {
                     regressions: regressionCount,
                     resolutionRate,
                   },
-                } as Prisma.InputJsonObject,
+                } as unknown as Prisma.InputJsonObject,
               },
             });
             logger.info(`[ApplyAll] Post-remediation re-audit complete for job ${jobId}: ${resolvedCount} resolved, ${regressionCount} regressions`);

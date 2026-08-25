@@ -159,6 +159,7 @@ class PdfReauditService {
         comparison,
         metrics,
         remediatedFileUrl,
+        reauditReport,
       };
 
       logger.info(`[PdfReaudit] Re-audit complete for job ${jobId}`);

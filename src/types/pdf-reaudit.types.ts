@@ -5,7 +5,7 @@
  * Implements Phase 3 BE-T1 requirements for before/after comparison.
  */
 
-import { AuditIssue } from '../services/audit/base-audit.service';
+import { AuditIssue, AuditReport } from '../services/audit/base-audit.service';
 
 /**
  * Result of re-auditing and comparing a remediated PDF
@@ -19,6 +19,8 @@ export interface ReauditComparisonResult {
   comparison: IssueComparison;
   metrics: SuccessMetrics;
   remediatedFileUrl?: string;
+  /** The fresh audit report the comparison was computed from — callers should persist this as the job's new auditReport so score/Matterhorn/issues reflect the current document, not just the diff counts. Absent on failure. */
+  reauditReport?: AuditReport;
   error?: string;
 }
 

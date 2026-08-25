@@ -339,6 +339,12 @@ describe('PdfReauditService', () => {
       expect(result.metrics.resolutionRate).toBe(70);
       expect(result.metrics.criticalResolved).toBe(1); // 2 critical - 1 remaining = 1 resolved
       expect(result.metrics.criticalRemaining).toBe(1);
+
+      // The fresh report must be returned so callers can persist it as the
+      // job's new auditReport — otherwise score/Matterhorn/issues would
+      // stay stuck at the pre-remediation values forever.
+      expect(result.reauditReport).toBe(reauditReport);
+      expect(result.reauditReport?.issues).toBe(newIssues);
     });
 
     it('should handle job not found error', async () => {
@@ -355,6 +361,7 @@ describe('PdfReauditService', () => {
       expect(result.comparison.resolved.length).toBe(0);
       expect(result.comparison.remaining.length).toBe(0);
       expect(result.comparison.regressions.length).toBe(0);
+      expect(result.reauditReport).toBeUndefined();
     });
 
     it('should handle missing audit report error', async () => {
