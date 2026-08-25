@@ -648,24 +648,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     return report;
   }
 
-  /**
-   * Fraction (0-1) of the document's pages affected by a set of issues.
-   * Issues without a pageNumber are document-level concerns (e.g. a
-   * missing title) — those affect the whole document when any exist,
-   * rather than a countable subset of pages.
-   */
-  private calculateAffectedPageRatio(issues: AuditIssue[], pageCount: number): number {
-    const pageNumbers = issues
-      .map(i => i.pageNumber)
-      .filter((p): p is number => typeof p === 'number');
-
-    if (pageNumbers.length === 0) {
-      return issues.length > 0 ? 1 : 0;
-    }
-
-    const uniquePages = new Set(pageNumbers).size;
-    return Math.min(1, uniquePages / Math.max(1, pageCount));
-  }
+  // calculateAffectedPageRatio is inherited from BaseAuditService (shared
+  // with calculateScore's density-based deduction — see base-audit.service.ts).
 
   /**
    * Generate Matterhorn Protocol results from validation issues
