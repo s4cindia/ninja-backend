@@ -103,6 +103,8 @@ export interface ScoreBreakdown {
   };
   totalDeduction: number;
   maxScore: number;
+  /** Present only when a size hint was supplied — how the raw per-issue deduction was scaled down for document size. */
+  normalizedBy?: { pageCount: number; scaleFactor: number };
 }
 
 /**
@@ -229,9 +231,19 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
    * - Minor: 1 point
    *
    * @param issues - Array of audit issues
+   * @param sizeHint - Optional document size (page count) to normalize the
+   *   deduction against. Without it, behaves exactly as before: a flat
+   *   per-issue deduction that floors at 0 with as few as ~7 critical
+   *   issues, regardless of document size. A 1000-issue document and a
+   *   1100-issue document both read as "0" either way, which makes the
+   *   score useless as a remediation-progress indicator on any real-world
+   *   document with substantial content. With a page count, the raw
+   *   deduction is divided by max(1, pageCount / 10) — 10 pages is the
+   *   implicit size this flat formula was originally tuned for, so
+   *   documents at or under that size see no change in behavior.
    * @returns Score breakdown with deductions
    */
-  protected calculateScore(issues: AuditIssue[]): ScoreBreakdown {
+  protected calculateScore(issues: AuditIssue[], sizeHint?: { pageCount?: number }): ScoreBreakdown {
     const weights = {
       critical: 15,
       serious: 8,
@@ -246,11 +258,14 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       minor: issues.filter(i => i.severity === 'minor').length,
     };
 
+    const pageCount = sizeHint?.pageCount;
+    const scaleFactor = pageCount && pageCount > 0 ? Math.max(1, pageCount / 10) : 1;
+
     const deductions = {
-      critical: { count: counts.critical, points: counts.critical * weights.critical },
-      serious: { count: counts.serious, points: counts.serious * weights.serious },
-      moderate: { count: counts.moderate, points: counts.moderate * weights.moderate },
-      minor: { count: counts.minor, points: counts.minor * weights.minor },
+      critical: { count: counts.critical, points: (counts.critical * weights.critical) / scaleFactor },
+      serious: { count: counts.serious, points: (counts.serious * weights.serious) / scaleFactor },
+      moderate: { count: counts.moderate, points: (counts.moderate * weights.moderate) / scaleFactor },
+      minor: { count: counts.minor, points: (counts.minor * weights.minor) / scaleFactor },
     };
 
     const totalDeduction =
@@ -259,12 +274,13 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       deductions.moderate.points +
       deductions.minor.points;
 
-    const score = Math.max(0, 100 - totalDeduction);
+    const score = Math.max(0, Math.round(100 - totalDeduction));
 
     logger.info(`[BaseAudit] Score calculation:`, {
       score,
       counts,
       totalDeduction,
+      scaleFactor,
     });
 
     return {
@@ -274,6 +290,7 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       deductions,
       totalDeduction,
       maxScore: 100,
+      ...(pageCount && pageCount > 0 ? { normalizedBy: { pageCount, scaleFactor } } : {}),
     };
   }
 

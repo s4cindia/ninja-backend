@@ -40,6 +40,14 @@ export interface MatterhornCheckResult {
   failureCount: number;
   description: string;
   wcagMapping?: string[];
+  /**
+   * Fraction (0-1) of pages affected by this checkpoint's issues. For
+   * document-level concerns (no page-attributable issues, e.g. a missing
+   * document title) this is 1 when failed and 0 when passed — the whole
+   * document is in scope either way. Undefined only for legacy/test
+   * results built without it.
+   */
+  affectedPageRatio?: number;
 }
 
 /**
@@ -531,7 +539,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     }
 
     // Generate Matterhorn results from structure issues
-    result.matterhornResults = this.generateMatterhornResults(result);
+    result.matterhornResults = this.generateMatterhornResults(result, parsed.metadata.pageCount || 1);
 
     // Deduplicate combined issues
     result.issues = this.deduplicateIssues(result.issues);
@@ -578,7 +586,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       }
     }
 
-    const scoreBreakdown = this.calculateScore(finalIssues);
+    const scoreBreakdown = this.calculateScore(finalIssues, { pageCount: parsed?.metadata.pageCount });
     const wcagMappings = this.mapToWcag(finalIssues);
     const summary = this.calculateSummary(finalIssues);
 
@@ -586,10 +594,17 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     // reflects the suppressed TOC-as-Table issues, not the raw pre-triage count.
     // Use ID-based matching so structure issues with TABLE-* codes aren't miscounted.
     const tableIssueIds = new Set(validation.tableIssues.map(i => i.id));
-    const triagedTableCount = finalIssues.filter(i => tableIssueIds.has(i.id)).length;
+    const triagedTableIssues = finalIssues.filter(i => tableIssueIds.has(i.id));
+    const triagedTableCount = triagedTableIssues.length;
+    const reportPageCount = parsed?.metadata.pageCount || 1;
     const adjustedMatterhornResults = validation.matterhornResults.map(r =>
       r.checkpointId === '11'
-        ? { ...r, failureCount: triagedTableCount, passed: triagedTableCount === 0 }
+        ? {
+            ...r,
+            failureCount: triagedTableCount,
+            passed: triagedTableCount === 0,
+            affectedPageRatio: this.calculateAffectedPageRatio(triagedTableIssues, reportPageCount),
+          }
         : r
     );
     const matterhornSummary = this.generateMatterhornSummary(adjustedMatterhornResults);
@@ -634,14 +649,34 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
   }
 
   /**
+   * Fraction (0-1) of the document's pages affected by a set of issues.
+   * Issues without a pageNumber are document-level concerns (e.g. a
+   * missing title) — those affect the whole document when any exist,
+   * rather than a countable subset of pages.
+   */
+  private calculateAffectedPageRatio(issues: AuditIssue[], pageCount: number): number {
+    const pageNumbers = issues
+      .map(i => i.pageNumber)
+      .filter((p): p is number => typeof p === 'number');
+
+    if (pageNumbers.length === 0) {
+      return issues.length > 0 ? 1 : 0;
+    }
+
+    const uniquePages = new Set(pageNumbers).size;
+    return Math.min(1, uniquePages / Math.max(1, pageCount));
+  }
+
+  /**
    * Generate Matterhorn Protocol results from validation issues
    *
    * Maps validation issues to Matterhorn checkpoints
    *
    * @param validation - Validation result
+   * @param pageCount - Total pages in the document, for affectedPageRatio
    * @returns Matterhorn check results
    */
-  private generateMatterhornResults(validation: PdfValidationResult): MatterhornCheckResult[] {
+  private generateMatterhornResults(validation: PdfValidationResult, pageCount: number): MatterhornCheckResult[] {
     const results: MatterhornCheckResult[] = [];
 
     // Matterhorn 01: Tagged PDF
@@ -655,6 +690,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: untaggedIssues.length,
       description: isTagged ? 'Document is tagged' : 'Document is not tagged',
       wcagMapping: ['1.3.1', '4.1.2'],
+      affectedPageRatio: this.calculateAffectedPageRatio(untaggedIssues, pageCount),
     });
 
     // Matterhorn 07: Document metadata
@@ -666,6 +702,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: titleIssues.length,
       description: hasTitle ? 'Document has a title' : 'Document title is missing',
       wcagMapping: ['2.4.2'],
+      affectedPageRatio: this.calculateAffectedPageRatio(titleIssues, pageCount),
     });
 
     // Matterhorn 16: Natural language
@@ -677,6 +714,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: languageIssues.length,
       description: hasLanguage ? 'Natural language is specified' : 'Natural language is not specified',
       wcagMapping: ['3.1.1'],
+      affectedPageRatio: this.calculateAffectedPageRatio(languageIssues, pageCount),
     });
 
     // Matterhorn 11: Tables
@@ -687,6 +725,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: validation.tableIssues.length,
       description: tablesStructured ? 'Tables are properly structured' : 'Tables lack proper structure',
       wcagMapping: ['1.3.1'],
+      affectedPageRatio: this.calculateAffectedPageRatio(validation.tableIssues, pageCount),
     });
 
     // Matterhorn 06: Heading hierarchy (structure issues)
@@ -700,6 +739,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: headingIssues.length,
       description: hasProperHeadings ? 'Heading hierarchy is proper' : 'Heading hierarchy issues detected',
       wcagMapping: ['1.3.1', '2.4.6'],
+      affectedPageRatio: this.calculateAffectedPageRatio(headingIssues, pageCount),
     });
 
     // Matterhorn 09: Reading order (structure issues)
@@ -713,6 +753,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: readingOrderIssues.length,
       description: hasLogicalOrder ? 'Reading order is logical' : 'Reading order issues detected',
       wcagMapping: ['1.3.2'],
+      affectedPageRatio: this.calculateAffectedPageRatio(readingOrderIssues, pageCount),
     });
 
     // Matterhorn 13: Alternative text
@@ -723,6 +764,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: validation.altTextIssues.length,
       description: hasAltText ? 'All images have alternative text' : 'Images missing alternative text',
       wcagMapping: ['1.1.1'],
+      affectedPageRatio: this.calculateAffectedPageRatio(validation.altTextIssues, pageCount),
     });
 
     // Matterhorn 04: Lists (structure issues)
@@ -736,6 +778,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       failureCount: listIssues.length,
       description: hasProperLists ? 'Lists are properly tagged' : 'List structure issues detected',
       wcagMapping: ['1.3.1'],
+      affectedPageRatio: this.calculateAffectedPageRatio(listIssues, pageCount),
     });
 
     return results;
@@ -820,6 +863,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         issueCount: number;
         details: string;
         wcagMapping?: string[];
+        /** 0-100: fraction of pages clean of this checkpoint's issues. Complements `status`, which stays strict (any issue = failed) as a clear "fully clean" signal. */
+        completionRatio: number;
       }>;
     }>();
 
@@ -835,6 +880,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       }
 
       const category = categoriesMap.get(categoryId)!;
+      const affectedPageRatio = result.affectedPageRatio ?? (result.passed ? 0 : 1);
       category.checkpoints.push({
         id: `${categoryId}-${String(category.checkpoints.length + 1).padStart(3, '0')}`,
         description: result.description,
@@ -842,6 +888,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         issueCount: result.failureCount,
         details: getCheckpointDetails(result),
         wcagMapping: result.wcagMapping,
+        completionRatio: Math.round((1 - affectedPageRatio) * 100),
       });
     });
 
@@ -849,11 +896,24 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     const passed = results.filter(r => r.passed).length;
     const failed = results.filter(r => !r.passed).length;
 
+    // Zero-tolerance pass/fail (above) can't distinguish "1 issue in 1700
+    // list items" from "1700 broken list items" — both read as "failed"
+    // identically. weightedCompliance instead averages how much of the
+    // document is actually clean per checkpoint, so it moves incrementally
+    // as issues get fixed instead of staying pinned until a category hits
+    // exactly zero issues.
+    const weightedCompliance = results.length > 0
+      ? Math.round(
+          (results.reduce((sum, r) => sum + (1 - (r.affectedPageRatio ?? (r.passed ? 0 : 1))), 0) / results.length) * 100
+        )
+      : 100;
+
     return {
       totalCheckpoints: results.length,
       passed,
       failed,
       notApplicable: 0,
+      weightedCompliance,
       categories,
     };
   }
