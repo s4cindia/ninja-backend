@@ -103,8 +103,11 @@ export interface ScoreBreakdown {
   };
   totalDeduction: number;
   maxScore: number;
-  /** Present only when a size hint was supplied — how the raw per-issue deduction was scaled down for document size. */
-  normalizedBy?: { pageCount: number; scaleFactor: number };
+  /** Present only when a size hint was supplied — the per-severity affected-page ratios the deduction was computed from. */
+  normalizedBy?: {
+    pageCount: number;
+    affectedPageRatios: { critical: number; serious: number; moderate: number; minor: number };
+  };
 }
 
 /**
@@ -222,6 +225,25 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
   }
 
   /**
+   * Fraction (0-1) of a document's pages affected by a set of issues.
+   * Issues without a pageNumber are document-level concerns (e.g. a
+   * missing title) — those affect the whole document when any exist,
+   * rather than a countable subset of pages.
+   */
+  protected calculateAffectedPageRatio(issues: AuditIssue[], pageCount: number): number {
+    const pageNumbers = issues
+      .map(i => i.pageNumber)
+      .filter((p): p is number => typeof p === 'number');
+
+    if (pageNumbers.length === 0) {
+      return issues.length > 0 ? 1 : 0;
+    }
+
+    const uniquePages = new Set(pageNumbers).size;
+    return Math.min(1, uniquePages / Math.max(1, pageCount));
+  }
+
+  /**
    * Calculate accessibility score with weighted deductions
    *
    * Uses standard weights:
@@ -231,16 +253,20 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
    * - Minor: 1 point
    *
    * @param issues - Array of audit issues
-   * @param sizeHint - Optional document size (page count) to normalize the
-   *   deduction against. Without it, behaves exactly as before: a flat
-   *   per-issue deduction that floors at 0 with as few as ~7 critical
-   *   issues, regardless of document size. A 1000-issue document and a
-   *   1100-issue document both read as "0" either way, which makes the
-   *   score useless as a remediation-progress indicator on any real-world
-   *   document with substantial content. With a page count, the raw
-   *   deduction is divided by max(1, pageCount / 10) — 10 pages is the
-   *   implicit size this flat formula was originally tuned for, so
-   *   documents at or under that size see no change in behavior.
+   * @param sizeHint - Optional document size (page count). Without it,
+   *   deduction is a flat count × weight per severity — floors at 0 with
+   *   as few as ~7 critical issues regardless of document size, which
+   *   makes the score useless as a remediation-progress indicator on any
+   *   real-world document with substantial content. With a page count,
+   *   each severity's deduction is instead driven by what FRACTION of
+   *   pages contain an issue of that severity (affectedPageRatio × weight
+   *   × 10), not the raw count — a document where 5 critical issues sit
+   *   on the same page is treated as less broken than one where 5 critical
+   *   issues are spread across 5 different pages, and the deduction stays
+   *   naturally bounded regardless of how many issues accumulate. The ×10
+   *   multiplier is calibrated so "1 critical issue affecting 1 of 10
+   *   pages" (the flat formula's original small-document intuition) still
+   *   deducts 15 points either way.
    * @returns Score breakdown with deductions
    */
   protected calculateScore(issues: AuditIssue[], sizeHint?: { pageCount?: number }): ScoreBreakdown {
@@ -251,21 +277,40 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       minor: 1,
     };
 
+    const bySeverity = {
+      critical: issues.filter(i => i.severity === 'critical'),
+      serious: issues.filter(i => i.severity === 'serious'),
+      moderate: issues.filter(i => i.severity === 'moderate'),
+      minor: issues.filter(i => i.severity === 'minor'),
+    };
+
     const counts = {
-      critical: issues.filter(i => i.severity === 'critical').length,
-      serious: issues.filter(i => i.severity === 'serious').length,
-      moderate: issues.filter(i => i.severity === 'moderate').length,
-      minor: issues.filter(i => i.severity === 'minor').length,
+      critical: bySeverity.critical.length,
+      serious: bySeverity.serious.length,
+      moderate: bySeverity.moderate.length,
+      minor: bySeverity.minor.length,
     };
 
     const pageCount = sizeHint?.pageCount;
-    const scaleFactor = pageCount && pageCount > 0 ? Math.max(1, pageCount / 10) : 1;
+    const useDensity = !!pageCount && pageCount > 0;
+
+    const affectedPageRatios = {
+      critical: useDensity ? this.calculateAffectedPageRatio(bySeverity.critical, pageCount!) : 0,
+      serious: useDensity ? this.calculateAffectedPageRatio(bySeverity.serious, pageCount!) : 0,
+      moderate: useDensity ? this.calculateAffectedPageRatio(bySeverity.moderate, pageCount!) : 0,
+      minor: useDensity ? this.calculateAffectedPageRatio(bySeverity.minor, pageCount!) : 0,
+    };
+
+    const pointsFor = (severity: keyof typeof weights): number =>
+      useDensity
+        ? affectedPageRatios[severity] * weights[severity] * 10
+        : counts[severity] * weights[severity];
 
     const deductions = {
-      critical: { count: counts.critical, points: (counts.critical * weights.critical) / scaleFactor },
-      serious: { count: counts.serious, points: (counts.serious * weights.serious) / scaleFactor },
-      moderate: { count: counts.moderate, points: (counts.moderate * weights.moderate) / scaleFactor },
-      minor: { count: counts.minor, points: (counts.minor * weights.minor) / scaleFactor },
+      critical: { count: counts.critical, points: pointsFor('critical') },
+      serious: { count: counts.serious, points: pointsFor('serious') },
+      moderate: { count: counts.moderate, points: pointsFor('moderate') },
+      minor: { count: counts.minor, points: pointsFor('minor') },
     };
 
     const totalDeduction =
@@ -280,7 +325,8 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       score,
       counts,
       totalDeduction,
-      scaleFactor,
+      useDensity,
+      affectedPageRatios: useDensity ? affectedPageRatios : undefined,
     });
 
     return {
@@ -290,7 +336,7 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       deductions,
       totalDeduction,
       maxScore: 100,
-      ...(pageCount && pageCount > 0 ? { normalizedBy: { pageCount, scaleFactor } } : {}),
+      ...(useDensity ? { normalizedBy: { pageCount: pageCount!, affectedPageRatios } } : {}),
     };
   }
 
