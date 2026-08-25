@@ -1253,6 +1253,10 @@ export class PdfRemediationController {
         data: {
           output: {
             ...((job.output as Record<string, unknown> | null) ?? {}),
+            // The fresh audit (score, matterhornSummary, issues) must replace the
+            // stale prior one — otherwise the results page keeps showing whatever
+            // was there before this re-audit, regardless of what actually changed.
+            ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
             reauditComparison: comparisonResult,
             lastReauditAt: new Date().toISOString(),
           } as unknown as Prisma.InputJsonObject,
@@ -1278,6 +1282,106 @@ export class PdfRemediationController {
       });
     } catch (error) {
       logger.error('Failed to re-audit PDF', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to re-audit PDF',
+          details: null,
+        },
+      });
+    }
+  }
+
+  /**
+   * Re-run the audit against the job's current server-side file — the
+   * remediated version if one exists, otherwise the original. No upload
+   * needed. Unlike reauditPdf (which compares an externally-uploaded file
+   * against the original), this is for "did my applied fixes actually
+   * change the score/Matterhorn numbers" directly from the results page.
+   * POST /api/v1/pdf/:jobId/remediation/re-audit-current
+   */
+  async reauditCurrentFile(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: null },
+        });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'JOB_NOT_FOUND', message: 'Job not found or access denied', details: null },
+        });
+      }
+
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: { code: 'INVALID_JOB_TYPE', message: 'Job is not a PDF accessibility audit', details: null },
+        });
+      }
+
+      const input = job.input as { fileName?: string };
+      const fileName = input?.fileName || 'document.pdf';
+
+      const buffer = (await fileStorageService.getRemediatedFile(jobId, fileName))
+        ?? (await fileStorageService.getFile(jobId, fileName));
+
+      if (!buffer) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'FILE_NOT_FOUND', message: 'No stored PDF found for this job', details: null },
+        });
+      }
+
+      logger.info(`[Re-Audit] Re-running audit against current stored file for job ${jobId}`);
+
+      const comparisonResult = await pdfReauditService.reauditAndCompare(jobId, buffer, fileName);
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...((job.output as Record<string, unknown> | null) ?? {}),
+            ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
+            reauditComparison: comparisonResult,
+            lastReauditAt: new Date().toISOString(),
+          } as unknown as Prisma.InputJsonObject,
+          updatedAt: new Date(),
+        },
+      });
+
+      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+        resolvedCount: comparisonResult.metrics.resolvedCount,
+        remainingCount: comparisonResult.metrics.remainingCount,
+        regressionCount: comparisonResult.metrics.regressionCount,
+        resolutionRate: comparisonResult.metrics.resolutionRate,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: comparisonResult,
+        error: { code: null, message: null, details: null },
+      });
+    } catch (error) {
+      logger.error('Failed to re-audit current PDF', {
         error: error instanceof Error ? error.message : 'Unknown error',
         jobId: req.params.jobId,
       });

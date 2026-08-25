@@ -185,4 +185,19 @@ router.post(
   (req, res) => pdfRemediationController.reauditPdf(req as AuthenticatedRequestWithFile, res)
 );
 
+/**
+ * POST /api/v1/pdf/:jobId/remediation/re-audit-current
+ * Re-run the audit against the job's current server-side file (remediated
+ * if one exists, otherwise the original) — no upload needed.
+ *
+ * @param jobId - PDF audit job ID
+ * @returns Comparison of before/after results, with the fresh audit report persisted
+ */
+router.post(
+  '/:jobId/remediation/re-audit-current',
+  authenticate,
+  authorizeJob,
+  (req, res) => pdfRemediationController.reauditCurrentFile(req, res)
+);
+
 export default router;
