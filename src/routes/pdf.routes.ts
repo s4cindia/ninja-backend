@@ -172,11 +172,18 @@ router.get(
       }
 
       const fileName = (job.input as { fileName?: string })?.fileName || 'document.pdf';
-      const filePath = await fileStorageService.getFilePath(jobId, fileName);
+      const buffer = await fileStorageService.getFile(jobId, fileName);
+
+      if (!buffer) {
+        return res.status(404).json({
+          success: false,
+          error: 'File not found',
+        });
+      }
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
-      res.sendFile(filePath);
+      res.send(buffer);
     } catch (error) {
       next(error);
     }
