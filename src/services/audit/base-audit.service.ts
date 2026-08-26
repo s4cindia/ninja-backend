@@ -225,10 +225,26 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
   }
 
   /**
-   * Fraction (0-1) of a document's pages affected by a set of issues.
+   * Continuous (0-1) measure of a document's "badness" for a set of
+   * issues. Each page's own contribution saturates smoothly with its own
+   * issue count — count / (count + PAGE_SATURATION) — rather than
+   * snapping straight to 1 the instant it has any issue at all. That
+   * matters for documents where a severity is spread across nearly every
+   * page (e.g. missing alt-text on formulas throughout a math textbook):
+   * a purely binary "does this page have ≥1 issue" measure can only move
+   * once a page is fixed *completely*, so fixing some of a page's issues
+   * without fully clearing it was invisible to the ratio. This version
+   * gives partial credit for that — a page going from 20 issues to 10 is
+   * real, visible progress, not nothing.
+   *
+   * PAGE_SATURATION=3 means a page needs a handful of issues before it's
+   * considered "mostly bad" on its own (3 issues → 0.5 contribution, 12 →
+   * 0.8) — a single issue on a page isn't treated as equivalent to a page
+   * that's riddled with them.
+   *
    * Issues without a pageNumber are document-level concerns (e.g. a
-   * missing title) — those affect the whole document when any exist,
-   * rather than a countable subset of pages.
+   * missing title) — those affect the whole document when any exist, since
+   * there's no partial-title concept to give continuous credit for.
    */
   protected calculateAffectedPageRatio(issues: AuditIssue[], pageCount: number): number {
     const pageNumbers = issues
@@ -239,8 +255,19 @@ export abstract class BaseAuditService<TParseResult, TValidationResult> {
       return issues.length > 0 ? 1 : 0;
     }
 
-    const uniquePages = new Set(pageNumbers).size;
-    return Math.min(1, uniquePages / Math.max(1, pageCount));
+    const PAGE_SATURATION = 3;
+
+    const countsByPage = new Map<number, number>();
+    for (const p of pageNumbers) {
+      countsByPage.set(p, (countsByPage.get(p) ?? 0) + 1);
+    }
+
+    let totalContribution = 0;
+    for (const count of countsByPage.values()) {
+      totalContribution += count / (count + PAGE_SATURATION);
+    }
+
+    return Math.min(1, totalContribution / Math.max(1, pageCount));
   }
 
   /**
