@@ -13,6 +13,17 @@ import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { logger } from '../../../lib/logger';
 
 /**
+ * Issue code for a /Table-tagged region redirected to a formula-category
+ * suggestion because its shape/lack of headers, combined with the same
+ * page having confirmed genuine /Formula content, makes it far more
+ * likely to be a matrix/equation than real tabular data. Deliberately
+ * distinct from pdf-formula.validator.ts's FORMULA-MISSING-ACTUALTEXT —
+ * this is a heuristic redirect, not a genuine structure-tree finding —
+ * but ai-analysis.service.ts opts it into the same AI-drafting path.
+ */
+export const TABLE_LIKELY_FORMULA_CODE = 'TABLE-LIKELY-FORMULA-MISSING-ACTUALTEXT';
+
+/**
  * Table validation result
  */
 export interface TableValidationResult {
@@ -31,6 +42,8 @@ export interface TableValidationResult {
     tablesWithSummary: number;
     layoutTables: number;
     dataTables: number;
+    /** Tables redirected to a formula suggestion instead of a table issue — see TABLE_LIKELY_FORMULA_CODE. */
+    redirectedToFormula: number;
   };
 }
 
@@ -76,9 +89,16 @@ class PDFTableValidator {
    * Validate PDF tables from parsed PDF
    *
    * @param parsedPdf - Parsed PDF document
+   * @param confirmedFormulaPages - Page numbers where pdf-formula.validator.ts
+   *   found a genuine /Formula element. Used as a corroboration signal: a
+   *   /Table-tagged region on one of these pages, with no header structure
+   *   and an implausible aspect ratio, is redirected to a formula
+   *   suggestion instead of a table issue. Requires the formula validator
+   *   to have already run against the same document (pdf-audit.service.ts
+   *   runs it before this one, specifically so this set is populated).
    * @returns Validation result with issues
    */
-  async validate(parsedPdf: ParsedPDF): Promise<TableValidationResult> {
+  async validate(parsedPdf: ParsedPDF, confirmedFormulaPages: ReadonlySet<number> = new Set()): Promise<TableValidationResult> {
     this.issueCounter = 0;
     const issues: AuditIssue[] = [];
 
@@ -99,11 +119,19 @@ class PDFTableValidator {
     // Validate each table
     let layoutTableCount = 0;
     let dataTableCount = 0;
+    let redirectedToFormulaCount = 0;
 
     for (const table of structure.tables) {
+      const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
+
+      if (this.isLikelyMisclassifiedFormula(table, confirmedFormulaPages)) {
+        redirectedToFormulaCount++;
+        issues.push(this.buildRedirectedFormulaIssue(table, pageSize));
+        continue;
+      }
+
       // Detect if this is a layout table
       const layoutDetection = this.detectLayoutTable(table);
-      const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
 
       if (layoutDetection.isLayoutTable) {
         layoutTableCount++;
@@ -124,6 +152,7 @@ class PDFTableValidator {
       tablesWithSummary: structure.tables.filter(t => t.hasSummary || (t.caption && t.caption.trim().length > 0)).length,
       layoutTables: layoutTableCount,
       dataTables: dataTableCount,
+      redirectedToFormula: redirectedToFormulaCount,
     };
 
     logger.info(`[PDFTableValidator] Validation complete - ${issues.length} issues found`);
@@ -133,6 +162,70 @@ class PDFTableValidator {
       summary,
       metadata,
     };
+  }
+
+  /**
+   * A /Table-tagged region is more likely a misclassified matrix/equation
+   * than real tabular data when ALL of these hold:
+   *  - the same page has a confirmed genuine /Formula element (the
+   *    corroboration signal — without it, an oddly-shaped-but-real small
+   *    table would otherwise get flagged too);
+   *  - it has no header row or column at all (real data tables almost
+   *    always have some header; matrices/vectors never do); and
+   *  - its aspect ratio is implausible for a real table (e.g. 3 rows by
+   *    20 columns) rather than merely unusual.
+   *
+   * This is a heuristic, not a certainty — see TABLE_LIKELY_FORMULA_CODE's
+   * doc comment. Verified against real evidence (Math_Olszewski_PDF.pdf's
+   * 16 misclassified regions, all on pages with confirmed formula content,
+   * all header-less); the aspect-ratio bound is intentionally conservative
+   * (>=3) to avoid flagging ordinary small data tables that just happen to
+   * share a page with an unrelated formula.
+   */
+  private isLikelyMisclassifiedFormula(table: TableInfo, confirmedFormulaPages: ReadonlySet<number>): boolean {
+    if (!confirmedFormulaPages.has(table.pageNumber)) return false;
+    if (table.hasHeaderRow || table.hasHeaderColumn) return false;
+
+    const larger = Math.max(table.rowCount, table.columnCount);
+    const smaller = Math.max(1, Math.min(table.rowCount, table.columnCount));
+    const aspectRatio = larger / smaller;
+    return aspectRatio >= 3;
+  }
+
+  /**
+   * Build a formula-category suggestion for a table region redirected by
+   * isLikelyMisclassifiedFormula, instead of a table issue. Guidance-only
+   * is enforced downstream in ai-analysis.service.ts regardless of the
+   * document's tagged state — see TABLE_LIKELY_FORMULA_CODE's doc comment
+   * for why this can't safely go through the same apply-to-pdf path as a
+   * genuine /Formula finding yet.
+   */
+  private buildRedirectedFormulaIssue(
+    table: TableInfo,
+    pageSize: { width: number; height: number }
+  ): AuditIssue {
+    return this.createIssue({
+      source: 'pdf-table',
+      severity: 'serious',
+      code: TABLE_LIKELY_FORMULA_CODE,
+      message: `Region on page ${table.pageNumber} tagged as a Table (${table.rowCount}x${table.columnCount}, no headers) is likely a matrix or equation missing a text alternative`,
+      wcagCriteria: ['1.1.1'],
+      location: `Page ${table.pageNumber}, Table ${table.id}`,
+      suggestion:
+        'This region\'s shape and lack of header structure suggest it\'s a mathematical expression tagged as a Table, not real tabular data. AI can draft a spoken-math reading (ActualText) — review carefully, as the underlying classification is a heuristic, not a certainty.',
+      category: 'formula',
+      element: `table-as-formula_p${table.pageNumber}_${table.id}`,
+      pageNumber: table.pageNumber,
+      matterhornHow: 'M',
+      boundingBox: {
+        x: table.position.x,
+        y: table.position.y,
+        width: table.position.width,
+        height: table.position.height,
+        pageWidth: pageSize.width,
+        pageHeight: pageSize.height,
+      },
+    });
   }
 
   /**

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { geminiService } from '../../../../src/services/ai/gemini.service';
+import { TABLE_LIKELY_FORMULA_CODE } from '../../../../src/services/pdf/validators/pdf-table.validator';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
 // analyzeFormulaActualText / renderRegionToBase64 are private; exercise via cast.
@@ -65,5 +66,18 @@ describe('analyzeFormulaActualText', () => {
     vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
     vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(new Error('429 rate limit'));
     await expect(svc.analyzeFormulaActualText(ISSUE, {}, true)).resolves.toBeNull();
+  });
+
+  it('stays guidance-only, lower-confidence for a table-redirected issue even on a tagged PDF', async () => {
+    vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"actualText":"x squared plus one"}');
+
+    const redirectedIssue: AuditIssue = { ...ISSUE, code: TABLE_LIKELY_FORMULA_CODE };
+    const res = await svc.analyzeFormulaActualText(redirectedIssue, {}, true);
+
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.confidence).toBe(0.5);
+    expect(res.guidance).toContain('tagged as a Table, not a Formula');
+    expect(res.rationale).toContain('heuristically redirected from a table classification');
   });
 });

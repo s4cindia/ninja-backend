@@ -376,7 +376,16 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         const tablesStart = new Date();
         try {
           logger.info(`[PdfAudit] Running PdfTableValidator...`);
-          const tableResult = await pdfTableValidator.validate(parsed.parsedPdf);
+          // Confirmed formula pages corroborate the table validator's
+          // misclassified-table-region heuristic — relies on the Formula
+          // validator (step 2b, above) having already run and populated
+          // result.issues before this step.
+          const confirmedFormulaPages = new Set<number>(
+            result.issues
+              .filter(i => i.source === 'pdf-formula' && typeof i.pageNumber === 'number')
+              .map(i => i.pageNumber as number)
+          );
+          const tableResult = await pdfTableValidator.validate(parsed.parsedPdf, confirmedFormulaPages);
           result.tableIssues.push(...tableResult.issues);
           result.issues.push(...tableResult.issues);
           logger.info(`[PdfAudit] PdfTableValidator found ${tableResult.issues.length} issues`);
