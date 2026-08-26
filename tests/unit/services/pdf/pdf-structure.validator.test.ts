@@ -279,89 +279,13 @@ describe('PDFStructureValidator', () => {
     });
   });
 
-  describe('table validation', () => {
-    it('should identify table without headers', async () => {
-      const mockParsedPdf = createMockParsedPdf({
-        isTagged: true,
-        hasLanguage: true,
-        hasTitle: true,
-      });
-
-      const mockStructure = createMockStructure({
-        isTaggedPDF: true,
-        hasProperHeadingHierarchy: true,
-        hasDocumentLanguage: true,
-        hasLogicalReadingOrder: true,
-        tables: [
-          {
-            id: 'table_p1_0',
-            pageNumber: 1,
-            position: { x: 50, y: 100, width: 500, height: 200 },
-            rowCount: 5,
-            columnCount: 3,
-            hasHeaderRow: false,
-            hasHeaderColumn: false,
-            hasSummary: false,
-            cells: [],
-            issues: ['Table has no header cells (TH). Add row or column headers.'],
-            isAccessible: false,
-          },
-        ],
-      });
-
-      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
-      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
-      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
-
-      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
-
-      const tableIssue = result.issues.find(i => i.code === 'TABLE-INACCESSIBLE');
-      expect(tableIssue).toBeDefined();
-      expect(tableIssue?.severity).toBe('serious');
-      expect(tableIssue?.message).toContain('missing header cells');
-      expect(tableIssue?.location).toContain('Page 1');
-    });
-
-    it('should identify complex table without summary', async () => {
-      const mockParsedPdf = createMockParsedPdf({
-        isTagged: true,
-        hasLanguage: true,
-        hasTitle: true,
-      });
-
-      const mockStructure = createMockStructure({
-        isTaggedPDF: true,
-        hasProperHeadingHierarchy: true,
-        hasDocumentLanguage: true,
-        hasLogicalReadingOrder: true,
-        tables: [
-          {
-            id: 'table_p2_0',
-            pageNumber: 2,
-            position: { x: 50, y: 100, width: 500, height: 300 },
-            rowCount: 10,
-            columnCount: 5,
-            hasHeaderRow: true,
-            hasHeaderColumn: false,
-            hasSummary: false,
-            cells: [],
-            issues: ['Complex table should have a summary describing its structure.'],
-            isAccessible: false,
-          },
-        ],
-      });
-
-      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
-      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
-      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
-
-      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
-
-      const tableIssue = result.issues.find(i => i.message.includes('complex table without summary'));
-      expect(tableIssue).toBeDefined();
-      expect(tableIssue?.severity).toBe('serious');
-    });
-  });
+  // Table validation was removed from this validator — pdf-table.validator.ts
+  // is now the sole source of table issues (see that validator's own tests).
+  // This validator used to independently re-derive TABLE-ACCESSIBILITY/
+  // TABLE-INACCESSIBLE from the same structureAnalyzerService table data,
+  // which double-reported every real table issue since the two validators'
+  // differing source/code/message meant the shared dedup pass never
+  // recognized them as the same underlying problem.
 
   describe('list validation', () => {
     it('should identify lists in untagged PDF', async () => {
@@ -450,44 +374,8 @@ describe('PDFStructureValidator', () => {
   });
 
   describe('boundingBox coverage', () => {
-    it('attaches a boundingBox to table issues from table.position + page size', async () => {
-      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
-      const mockStructure = createMockStructure({
-        isTaggedPDF: true,
-        hasProperHeadingHierarchy: true,
-        hasDocumentLanguage: true,
-        hasLogicalReadingOrder: true,
-        tables: [
-          {
-            id: 'table_p1_0',
-            pageNumber: 1,
-            position: { x: 50, y: 100, width: 500, height: 200 },
-            rowCount: 5,
-            columnCount: 3,
-            hasHeaderRow: false,
-            hasHeaderColumn: false,
-            hasSummary: false,
-            cells: [],
-            issues: ['Table has no header cells (TH). Add row or column headers.'],
-            isAccessible: false,
-          },
-        ],
-      });
-
-      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
-      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
-      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
-
-      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
-
-      const expectedBox = { x: 50, y: 100, width: 500, height: 200, pageWidth: 612, pageHeight: 792 };
-
-      const inaccessible = result.issues.find(i => i.code === 'TABLE-INACCESSIBLE');
-      expect(inaccessible?.boundingBox).toEqual(expectedBox);
-
-      const accessibility = result.issues.find(i => i.code === 'TABLE-ACCESSIBILITY');
-      expect(accessibility?.boundingBox).toEqual(expectedBox);
-    });
+    // Table boundingBox coverage now lives entirely in pdf-table.validator.ts's
+    // own tests — this validator no longer emits table issues at all.
 
     it('does not attach a boundingBox to heading issues (no per-element geometry)', async () => {
       const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });

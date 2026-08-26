@@ -96,17 +96,11 @@ class PDFStructureValidator {
 
     logger.info('[PDFStructureValidator] Running structure validations...');
 
-    // Page-dimension lookup (width/height at scale=1 in PDF points) for
-    // attaching boundingBox to issues whose element carries real geometry.
-    const pageDims = new Map(
-      (parsedPdf.structure.pages ?? []).map(p => [p.pageNumber, { width: p.width, height: p.height }])
-    );
-
     // Validate document structure
     issues.push(...this.validateDocumentStructure(structure, parsedPdf));
 
     // Validate content structure
-    issues.push(...this.validateContentStructure(structure, pageDims));
+    issues.push(...this.validateContentStructure(structure));
 
     // Calculate summary
     const summary = this.calculateSummary(issues);
@@ -387,24 +381,25 @@ class PDFStructureValidator {
    *
    * Checks:
    * - List markup
-   * - Table structure
    * - Figure elements
+   *
+   * Table structure is intentionally NOT validated here — pdf-table.validator.ts
+   * is the sole owner of table issues (see its own doc comment). This validator
+   * used to also emit TABLE-ACCESSIBILITY/TABLE-INACCESSIBLE from the same
+   * underlying structureAnalyzerService table data, which meant every table
+   * issue was independently double-reported by two validators with no way for
+   * the shared dedup pass to recognize them as the same underlying problem
+   * (different source/code/message per validator).
    *
    * @param structure - Analyzed document structure
    * @returns Array of issues
    */
-  private validateContentStructure(
-    structure: DocumentStructure,
-    pageDims: Map<number, { width: number; height: number }>
-  ): AuditIssue[] {
+  private validateContentStructure(structure: DocumentStructure): AuditIssue[] {
     const issues: AuditIssue[] = [];
 
     // Validate lists — ListInfo.position only exposes {x,y} (no width/height),
     // so list issues intentionally carry no boundingBox (cannot fabricate size).
     issues.push(...this.validateLists(structure.lists, structure.isTaggedPDF));
-
-    // Validate tables — TableInfo.position has full {x,y,width,height} geometry.
-    issues.push(...this.validateTables(structure.tables, pageDims));
 
     return issues;
   }
@@ -446,81 +441,6 @@ class PDFStructureValidator {
           suggestion: 'Ensure list is marked with proper tags: L (list), LI (list item), Lbl (label), LBody (body).',
           category: 'lists',
           pageNumber: list.pageNumber,
-        }));
-      }
-    }
-
-    return issues;
-  }
-
-  /**
-   * Validate table structure
-   *
-   * @param tables - Table information
-   * @returns Array of issues
-   */
-  private validateTables(
-    tables: DocumentStructure['tables'],
-    pageDims: Map<number, { width: number; height: number }>
-  ): AuditIssue[] {
-    const issues: AuditIssue[] = [];
-
-    for (const table of tables) {
-      // TableInfo.position is top-left origin, unscaled PDF points — same
-      // convention as the alt-text/table/link extractors.
-      const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
-      const boundingBox = {
-        x: table.position.x,
-        y: table.position.y,
-        width: table.position.width,
-        height: table.position.height,
-        pageWidth: pageSize.width,
-        pageHeight: pageSize.height,
-      };
-
-      // Check for accessibility issues identified by structure analyzer
-      for (const tableIssue of table.issues) {
-        issues.push(this.createIssue({
-          source: 'pdf-structure',
-          severity: 'serious',
-          code: 'TABLE-ACCESSIBILITY',
-          message: tableIssue,
-          wcagCriteria: ['1.3.1'],
-          location: `Page ${table.pageNumber}, Table ${table.id}`,
-          suggestion: 'Ensure table has proper structure with Table, TR, TH, and TD tags. Add headers to identify row/column relationships.',
-          category: 'tables',
-          pageNumber: table.pageNumber,
-          boundingBox,
-        }));
-      }
-
-      // Check if table is not accessible
-      if (!table.isAccessible) {
-        const specificIssues: string[] = [];
-
-        if (!table.hasHeaderRow && !table.hasHeaderColumn) {
-          specificIssues.push('missing header cells');
-        }
-
-        if (table.rowCount > 5 && !table.hasSummary) {
-          specificIssues.push('complex table without summary');
-        }
-
-        if (specificIssues.length === 0) {
-          specificIssues.push('accessibility issues');
-        }
-
-        issues.push(this.createIssue({
-          source: 'pdf-structure',
-          severity: 'serious',
-          code: 'TABLE-INACCESSIBLE',
-          message: `Table on page ${table.pageNumber} has ${specificIssues.join(' and ')}`,
-          wcagCriteria: ['1.3.1'],
-          location: `Page ${table.pageNumber}, Table ${table.id}`,
-          suggestion: 'Add TH (header) tags to identify row and column headers. For complex tables, add a summary describing the table structure.',
-          category: 'tables',
-          pageNumber: table.pageNumber,
-          boundingBox,
         }));
       }
     }
