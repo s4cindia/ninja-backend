@@ -68,16 +68,31 @@ describe('analyzeFormulaActualText', () => {
     await expect(svc.analyzeFormulaActualText(ISSUE, {}, true)).resolves.toBeNull();
   });
 
-  it('stays guidance-only, lower-confidence for a table-redirected issue even on a tagged PDF', async () => {
+  it('allows apply-to-pdf but stays lower-confidence for a table-redirected issue on a tagged PDF', async () => {
     vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
     gemini('{"actualText":"x squared plus one"}');
 
     const redirectedIssue: AuditIssue = { ...ISSUE, code: TABLE_LIKELY_FORMULA_CODE };
     const res = await svc.analyzeFormulaActualText(redirectedIssue, {}, true);
 
-    expect(res.applyMode).toBe('guidance-only');
+    // Now that pdfModifierService.setActualText's write path is hardened
+    // (elementTypes override, no silent wrong-element fallback), a
+    // redirected suggestion is applicable like a genuine formula one —
+    // still flagged distinctly via confidence/guidance for the reviewer.
+    expect(res.applyMode).toBe('apply-to-pdf');
     expect(res.confidence).toBe(0.5);
     expect(res.guidance).toContain('tagged as a Table, not a Formula');
     expect(res.rationale).toContain('heuristically redirected from a table classification');
+  });
+
+  it('stays guidance-only for a table-redirected issue on an untagged PDF', async () => {
+    vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"actualText":"x squared plus one"}');
+
+    const redirectedIssue: AuditIssue = { ...ISSUE, code: TABLE_LIKELY_FORMULA_CODE };
+    const res = await svc.analyzeFormulaActualText(redirectedIssue, {}, false);
+
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.confidence).toBe(0.5);
   });
 });

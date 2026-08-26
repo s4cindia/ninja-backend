@@ -264,4 +264,58 @@ describe('setAltText — MCID-exact figure targeting', () => {
     walk(root);
     expect(actual).toBe('a red apple on a table');
   });
+
+  it('resolves a Table element positionally (by index, not MCID) when several share a page', async () => {
+    // Table elements are containers — buildStructTreeFromZones binds the MCID
+    // on the nested TD leaf, not the Table itself, so Table can only be
+    // targeted by structureElementIndex (formula_p{page}_{index} format),
+    // the same way pdf-formula.validator.ts falls back to a positional id
+    // for MCID-less Formula elements. This is what the table-as-formula
+    // redirect (pdf-table.validator.ts) relies on to become apply-to-pdf.
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('1   2', { x: 100, y: 450, size: 12, font });
+    page.drawText('5   6', { x: 100, y: 200, size: 12, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [
+      { pageNumber: 1, bbox: { x: 80, y: 430, w: 200, h: 40 }, zoneType: 'table' },
+      { pageNumber: 1, bbox: { x: 80, y: 180, w: 200, h: 40 }, zoneType: 'table' },
+    ]);
+
+    // struct-tree-builder.ts doesn't stamp /Pg on the Table container itself
+    // (only its TD leaf) — real-world tagged PDFs from other authoring tools
+    // typically do, so stamp it here to model that realistically.
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const pageRef = doc.getPage(0).ref;
+    const tableDicts: PDFDict[] = [];
+    const collectTables = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Table') {
+        node.set(PDFName.of('Pg'), pageRef);
+        tableDicts.push(node);
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) collectTables(doc.context.lookup(kid));
+    };
+    collectTables(root);
+    expect(tableDicts.length).toBe(2);
+
+    const res = await pdfModifierService.setActualText(
+      doc,
+      'table-as-formula_p1_1',
+      'the sum from five to six',
+      new Set(['Table', 'table']),
+    );
+    expect(res.success).toBe(true);
+
+    const actualOf = (d: PDFDict): string => {
+      const a = d.get(PDFName.of('ActualText'));
+      return a instanceof PDFString ? a.decodeText() : 'None';
+    };
+    expect(actualOf(tableDicts[0])).toBe('None');
+    expect(actualOf(tableDicts[1])).toBe('the sum from five to six');
+  });
 });

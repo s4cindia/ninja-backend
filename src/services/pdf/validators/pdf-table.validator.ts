@@ -181,10 +181,18 @@ class PDFTableValidator {
    * all header-less); the aspect-ratio bound is intentionally conservative
    * (>=3) to avoid flagging ordinary small data tables that just happen to
    * share a page with an unrelated formula.
+   *
+   * Also requires structureElementIndex to be set — without it there's no
+   * way to re-locate the exact /Table StructElem at apply time, so this
+   * table falls back to normal table validation instead of a suggestion
+   * with a dead-end element id. In practice this only excludes untagged
+   * PDFs (which never reach here: confirmedFormulaPages is always empty
+   * without a structure tree to find genuine Formula elements in).
    */
   private isLikelyMisclassifiedFormula(table: TableInfo, confirmedFormulaPages: ReadonlySet<number>): boolean {
     if (!confirmedFormulaPages.has(table.pageNumber)) return false;
     if (table.hasHeaderRow || table.hasHeaderColumn) return false;
+    if (table.structureElementIndex === undefined) return false;
 
     const larger = Math.max(table.rowCount, table.columnCount);
     const smaller = Math.max(1, Math.min(table.rowCount, table.columnCount));
@@ -194,11 +202,16 @@ class PDFTableValidator {
 
   /**
    * Build a formula-category suggestion for a table region redirected by
-   * isLikelyMisclassifiedFormula, instead of a table issue. Guidance-only
-   * is enforced downstream in ai-analysis.service.ts regardless of the
-   * document's tagged state — see TABLE_LIKELY_FORMULA_CODE's doc comment
-   * for why this can't safely go through the same apply-to-pdf path as a
-   * genuine /Formula finding yet.
+   * isLikelyMisclassifiedFormula, instead of a table issue.
+   *
+   * The element id encodes structureElementIndex in the same
+   * "formula_p{page}_{index}" positional format pdf-formula.validator.ts
+   * uses for MCID-less formulas, so pdfModifierService.setActualText's
+   * existing positional matching resolves it — Table elements are
+   * containers with no MCID of their own, so exact MCID matching (used for
+   * genuine Formula leaves) doesn't apply here. The caller must also pass
+   * elementTypes: {'Table','table'} since this isn't a real /Formula
+   * element; see ai-analysis.service.ts / pdf-ai-analysis.controller.ts.
    */
   private buildRedirectedFormulaIssue(
     table: TableInfo,
@@ -214,7 +227,7 @@ class PDFTableValidator {
       suggestion:
         'This region\'s shape and lack of header structure suggest it\'s a mathematical expression tagged as a Table, not real tabular data. AI can draft a spoken-math reading (ActualText) — review carefully, as the underlying classification is a heuristic, not a certainty.',
       category: 'formula',
-      element: `table-as-formula_p${table.pageNumber}_${table.id}`,
+      element: `table-as-formula_p${table.pageNumber}_${table.structureElementIndex}`,
       pageNumber: table.pageNumber,
       matterhornHow: 'M',
       boundingBox: {

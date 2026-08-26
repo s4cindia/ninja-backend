@@ -397,7 +397,7 @@ describe('PDFTableValidator', () => {
       expect(redirected?.category).toBe('formula');
       expect(redirected?.severity).toBe('serious');
       expect(redirected?.pageNumber).toBe(9);
-      expect(redirected?.element).toBe('table-as-formula_p9_table_p9_0');
+      expect(redirected?.element).toBe('table-as-formula_p9_0');
       expect(redirected?.boundingBox).toEqual({ x: 50, y: 100, width: 500, height: 300, pageWidth: 612, pageHeight: 792 });
       // Must not also emit a normal table issue for the same region
       expect(result.issues.filter(i => i.pageNumber === 9)).toHaveLength(1);
@@ -462,6 +462,23 @@ describe('PDFTableValidator', () => {
 
       expect(result.metadata.redirectedToFormula).toBe(0);
     });
+
+    it('does not redirect when structureElementIndex is missing, even if every other signal matches', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const unmatched: TableInfo = { ...createMockTable(9, 0, 3, 20, false, false, false), structureElementIndex: undefined };
+      const mockStructure = createMockStructure([unmatched]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      // Without a resolvable structureElementIndex, applying the suggestion
+      // would have no way to re-locate the /Table StructElem — must fall
+      // back to normal table validation instead of a dead-end suggestion.
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+    });
   });
 });
 
@@ -502,7 +519,8 @@ function createMockTable(
   hasHeaderRow: boolean,
   hasHeaderColumn: boolean,
   hasSummary: boolean,
-  issues: string[] = []
+  issues: string[] = [],
+  structureElementIndex: number | undefined = index
 ): TableInfo {
   return {
     id: `table_p${pageNumber}_${index}`,
@@ -518,6 +536,8 @@ function createMockTable(
     cells: [],
     issues,
     isAccessible: hasHeaderRow || hasHeaderColumn,
+    structureMatched: true,
+    structureElementIndex,
   };
 }
 

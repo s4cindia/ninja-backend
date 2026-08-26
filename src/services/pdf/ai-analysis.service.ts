@@ -1441,15 +1441,15 @@ class AiAnalysisService {
     if (!actualText) return null;
 
     const latex = parsed?.latex?.trim();
-    // A redirected table-as-formula region isn't a genuine /Formula structure
-    // element — pdfModifierService.setActualText can't safely target it yet
-    // (it searches specifically for /Formula-tagged elements), so this stays
-    // guidance-only regardless of the document's tagged state until that
-    // write path is extended. See TABLE_LIKELY_FORMULA_CODE's doc comment.
+    // A redirected table-as-formula region is tagged /Table, not /Formula, in
+    // the structure tree — pdfModifierService.setActualText now (as of the
+    // write-path hardening) accepts an elementTypes override to target Table
+    // elements positionally by structureElementIndex instead of MCID. The
+    // apply-controller branches on issue.code to supply that override; see
+    // TABLE_LIKELY_FORMULA_CODE's doc comment and pdf-ai-analysis.controller.ts.
     const isRedirectedFromTable = issue.code === TABLE_LIKELY_FORMULA_CODE;
     // A tagged struct tree is required to write /ActualText; otherwise offer guidance only.
-    const applyMode: AiSuggestionResult['applyMode'] =
-      isTagged && !isRedirectedFromTable ? 'apply-to-pdf' : 'guidance-only';
+    const applyMode: AiSuggestionResult['applyMode'] = isTagged ? 'apply-to-pdf' : 'guidance-only';
 
     return {
       suggestionType: 'formula-actualtext',

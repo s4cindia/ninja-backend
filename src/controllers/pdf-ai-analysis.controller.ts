@@ -18,6 +18,7 @@ import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../services/pdf/pdf-structure-writer.service';
 import { pdfContrastWriterService } from '../services/pdf/pdf-contrast-writer.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
+import { TABLE_LIKELY_FORMULA_CODE } from '../services/pdf/validators/pdf-table.validator';
 import type { AuditIssue } from '../services/audit/base-audit.service';
 import { aiConfig } from '../config/ai.config';
 
@@ -255,7 +256,12 @@ export class PdfAiAnalysisController {
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value);
         } else if (suggestionType === 'formula-actualtext') {
-          modification = await pdfModifierService.setActualText(doc, elementId, value);
+          // A table region redirected to a formula suggestion is tagged
+          // /Table, not /Formula — see TABLE_LIKELY_FORMULA_CODE's doc comment.
+          const elementTypes = originalIssue.code === TABLE_LIKELY_FORMULA_CODE
+            ? new Set(['Table', 'table'])
+            : undefined;
+          modification = await pdfModifierService.setActualText(doc, elementId, value, elementTypes);
         } else if (suggestionType === 'language') {
           modification = await pdfModifierService.addLanguage(doc, value);
         } else {
@@ -399,7 +405,10 @@ export class PdfAiAnalysisController {
           } else if (suggestionType === 'table-summary') {
             modification = await pdfModifierService.setTableSummary(doc, elementId, value!);
           } else if (suggestionType === 'formula-actualtext') {
-            modification = await pdfModifierService.setActualText(doc, elementId, value!);
+            const elementTypes = originalIssue.code === TABLE_LIKELY_FORMULA_CODE
+              ? new Set(['Table', 'table'])
+              : undefined;
+            modification = await pdfModifierService.setActualText(doc, elementId, value!, elementTypes);
           } else if (suggestionType === 'language') {
             modification = await pdfModifierService.addLanguage(doc, value!);
           } else {
