@@ -19,7 +19,7 @@ import {
 import { pdfParserService } from './pdf-parser.service';
 import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
-import { pdfTableValidator } from './validators/pdf-table.validator';
+import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -386,10 +386,15 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
               .map(i => i.pageNumber as number)
           );
           const tableResult = await pdfTableValidator.validate(parsed.parsedPdf, confirmedFormulaPages);
-          result.tableIssues.push(...tableResult.issues);
-          result.issues.push(...tableResult.issues);
-          logger.info(`[PdfAudit] PdfTableValidator found ${tableResult.issues.length} issues`);
-          onValidatorComplete?.('Tables', tableResult.issues.length, ++completedValidators, totalValidators, tablesStart);
+          // A table-as-formula redirect and a genuine Formula finding can
+          // describe the same visual content when a PDF's structure tree
+          // double-tags one region — reconcile before merging so the user
+          // doesn't see two suggestions for one piece of content.
+          const reconciledTableIssues = this.reconcileFormulaTableOverlap(tableResult.issues, result.issues);
+          result.tableIssues.push(...reconciledTableIssues);
+          result.issues.push(...reconciledTableIssues);
+          logger.info(`[PdfAudit] PdfTableValidator found ${reconciledTableIssues.length} issues`);
+          onValidatorComplete?.('Tables', reconciledTableIssues.length, ++completedValidators, totalValidators, tablesStart);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfTableValidator failed:`, error);
@@ -561,6 +566,81 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     );
 
     return result;
+  }
+
+  /**
+   * Drop a table-as-formula redirect (pdf-table.validator.ts's
+   * TABLE_LIKELY_FORMULA_CODE) when it substantially overlaps a genuine
+   * FORMULA-MISSING-ACTUALTEXT finding on the same page.
+   *
+   * Both validators can independently flag the same visual content when a
+   * PDF's structure tree double-tags one region — e.g. an equation wrapped
+   * in both a /Formula element and a nearby/enclosing /Table element with
+   * near-identical bounding boxes. Without this, the user would see two
+   * "draft ActualText" suggestions for what is visually one piece of
+   * content, potentially applying both to two different structure
+   * elements. The genuine structure-tree finding always wins; the
+   * heuristic redirect is dropped, not merged, since it carries no
+   * information the genuine finding doesn't already have.
+   *
+   * Deliberately keyed on bounding-box overlap rather than source+code+
+   * message (deduplicateIssues' key) — the two issues have different
+   * source, code, and message by design, so the generic dedup pass can
+   * never catch this on its own (the same gap PR #485 fixed for duplicate
+   * table issues).
+   */
+  private reconcileFormulaTableOverlap(
+    tableIssues: AuditIssue[],
+    existingIssues: AuditIssue[]
+  ): AuditIssue[] {
+    const genuineFormulas = existingIssues.filter(
+      (i) => i.source === 'pdf-formula' && i.code === 'FORMULA-MISSING-ACTUALTEXT' && i.boundingBox
+    );
+    if (genuineFormulas.length === 0) return tableIssues;
+
+    let droppedCount = 0;
+    const reconciled = tableIssues.filter((issue) => {
+      if (issue.code !== TABLE_LIKELY_FORMULA_CODE || !issue.boundingBox) return true;
+
+      const overlapsGenuineFormula = genuineFormulas.some(
+        (formula) =>
+          formula.pageNumber === issue.pageNumber &&
+          this.boundingBoxOverlapRatio(formula.boundingBox!, issue.boundingBox!) >= 0.5
+      );
+      if (overlapsGenuineFormula) droppedCount++;
+      return !overlapsGenuineFormula;
+    });
+
+    if (droppedCount > 0) {
+      logger.info(
+        `[PdfAudit] Reconciliation: dropped ${droppedCount} table-as-formula redirect(s) overlapping a genuine Formula finding`
+      );
+    }
+    return reconciled;
+  }
+
+  /**
+   * Overlap of two boundingBoxes as a fraction of the SMALLER box's area
+   * (not IoU/union) — the two validators produce differently-scaled boxes
+   * for the same content (a tight Formula crop vs. a looser detected-table
+   * region), so union-based IoU would understate genuine overlap. A ratio
+   * of 1 means the smaller box sits entirely inside the larger one.
+   */
+  private boundingBoxOverlapRatio(
+    a: NonNullable<AuditIssue['boundingBox']>,
+    b: NonNullable<AuditIssue['boundingBox']>
+  ): number {
+    const ix1 = Math.max(a.x, b.x);
+    const iy1 = Math.max(a.y, b.y);
+    const ix2 = Math.min(a.x + a.width, b.x + b.width);
+    const iy2 = Math.min(a.y + a.height, b.y + b.height);
+    const intersectionWidth = Math.max(0, ix2 - ix1);
+    const intersectionHeight = Math.max(0, iy2 - iy1);
+    const intersectionArea = intersectionWidth * intersectionHeight;
+    if (intersectionArea <= 0) return 0;
+
+    const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+    return smallerArea > 0 ? intersectionArea / smallerArea : 0;
   }
 
   /**
