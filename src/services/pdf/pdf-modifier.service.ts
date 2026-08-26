@@ -753,46 +753,65 @@ export class PdfModifierService {
   }
 
   /**
-   * Set /ActualText on a Formula element in the PDF structure tree — e.g. a LaTeX
-   * or plain-text rendering of a math expression, which screen readers announce.
-   * Matches by formulaId "formula_p{page}_mc{mcid}" (MCID-exact) or
-   * "formula_p{page}_{index}" (positional fallback).
+   * Set /ActualText on a structure element in the PDF — e.g. a LaTeX or
+   * plain-text rendering of a math expression, which screen readers announce.
+   * Matches by elementId "formula_p{page}_mc{mcid}" (MCID-exact) or
+   * "formula_p{page}_{index}" (positional, for elements with no MCID).
+   *
+   * `elementTypes` defaults to Formula elements but can be widened — e.g. a
+   * table region heuristically redirected to a formula suggestion is still
+   * tagged /Table in the structure tree, so applying its suggestion means
+   * searching Table elements instead. See TABLE_LIKELY_FORMULA_CODE.
+   *
+   * Deliberately does not fall back across pages or to a different index
+   * when the requested match isn't found — an unresolved id fails the
+   * modification rather than silently writing ActualText onto the wrong
+   * element.
    */
   async setActualText(
     doc: PDFDocument,
-    formulaId: string,
+    elementId: string,
     actualText: string,
+    elementTypes: Set<string> = new Set(['Formula', 'formula']),
   ): Promise<ModificationResult> {
     try {
       const structTreeRoot = this.getStructTreeRoot(doc);
       if (!structTreeRoot) {
         return { success: false, description: 'No structure tree', error: 'PDF has no tagged structure tree — ActualText cannot be applied programmatically' };
       }
-      const mc = formulaId.match(/formula_p(\d+)_mc(\d+)/);
-      const idx = formulaId.match(/formula_p(\d+)_(\d+)/);
-      const targetPage = mc ? parseInt(mc[1], 10) : idx ? parseInt(idx[1], 10) : 1;
-      const targetIndex = idx ? parseInt(idx[2], 10) : 0;
+      const mc = elementId.match(/formula_p(\d+)_mc(\d+)/);
+      const idx = mc ? null : elementId.match(/formula_p(\d+)_(\d+)/);
+      if (!mc && !idx) {
+        return { success: false, description: 'Unrecognized element id', error: `"${elementId}" does not match the expected formula_p{page}_mc{mcid} or formula_p{page}_{index} format` };
+      }
+      const targetPage = mc ? parseInt(mc[1], 10) : parseInt(idx![1], 10);
 
-      const formulas = this.findStructureElementsByType(structTreeRoot, new Set(['Formula', 'formula']), doc.context);
-      if (formulas.length === 0) {
-        return { success: false, description: 'No Formula elements in structure tree', error: 'The PDF structure tree has no Formula elements' };
+      const typeLabel = [...elementTypes].join('/');
+      const elements = this.findStructureElementsByType(structTreeRoot, elementTypes, doc.context);
+      if (elements.length === 0) {
+        return { success: false, description: `No ${typeLabel} elements in structure tree`, error: `The PDF structure tree has no ${typeLabel} elements` };
       }
       const pageRef = doc.getPage(targetPage - 1).ref;
-      const formulasOnPage = formulas.filter((f) => {
+      const elementsOnPage = elements.filter((f) => {
         const pg = f.get(PDFName.of('Pg'));
         return pg && pg.toString() === pageRef.toString();
       });
 
-      const exact = mc ? formulasOnPage.find((f) => this.structElemHasMcid(f, Number(mc[2]))) : undefined;
-      const target = exact ?? formulasOnPage[targetIndex] ?? formulasOnPage[0] ?? formulas[targetIndex] ?? formulas[0];
+      const target = mc
+        ? elementsOnPage.find((f) => this.structElemHasMcid(f, Number(mc[2])))
+        : elementsOnPage[parseInt(idx![2], 10)];
       if (!target) {
-        return { success: false, description: 'Formula element not found', error: `No Formula element for ${formulaId}` };
+        return {
+          success: false,
+          description: 'Target element not found',
+          error: `No matching ${typeLabel} element for ${elementId} on page ${targetPage} — refusing to guess a different element`,
+        };
       }
       const prev = target.get(PDFName.of('ActualText'));
       const before = prev instanceof PDFString ? prev.decodeText() : 'None';
       target.set(PDFName.of('ActualText'), PDFString.of(actualText));
-      logger.info(`[PdfModifier] Set ActualText on Formula (${formulaId})`);
-      return { success: true, description: `Set ActualText on Formula element (${formulaId})`, pageNumber: targetPage, before, after: actualText };
+      logger.info(`[PdfModifier] Set ActualText (${elementId})`);
+      return { success: true, description: `Set ActualText on element (${elementId})`, pageNumber: targetPage, before, after: actualText };
     } catch (error) {
       return { success: false, description: 'Failed to set ActualText', error: error instanceof Error ? error.message : String(error) };
     }
