@@ -23,6 +23,7 @@ import { pdfParserService } from './pdf-parser.service';
 import { AuditIssue } from '../audit/base-audit.service';
 import type { PdfParseResult, PdfPage } from './pdf-comprehensive-parser.service';
 import type { TableInfo } from './structure-analyzer.service';
+import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
 import { decodePageContent } from './pdf-content-stream-io';
 import { locateTextRun } from './contrast-content-stream';
@@ -127,7 +128,11 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
   if (CONTRAST_CODES.has(issue.code)) return `${issue.code}:${issue.id}`;
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
 }
-const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT']);
+// TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
+// in pdf-table.validator.ts) — routed through the same AI-drafting path as
+// a genuine formula finding, but analyzeFormulaActualText forces it to stay
+// guidance-only regardless of the document's tagged state.
+const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT', TABLE_LIKELY_FORMULA_CODE]);
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -1436,8 +1441,15 @@ class AiAnalysisService {
     if (!actualText) return null;
 
     const latex = parsed?.latex?.trim();
+    // A redirected table-as-formula region isn't a genuine /Formula structure
+    // element — pdfModifierService.setActualText can't safely target it yet
+    // (it searches specifically for /Formula-tagged elements), so this stays
+    // guidance-only regardless of the document's tagged state until that
+    // write path is extended. See TABLE_LIKELY_FORMULA_CODE's doc comment.
+    const isRedirectedFromTable = issue.code === TABLE_LIKELY_FORMULA_CODE;
     // A tagged struct tree is required to write /ActualText; otherwise offer guidance only.
-    const applyMode: AiSuggestionResult['applyMode'] = isTagged ? 'apply-to-pdf' : 'guidance-only';
+    const applyMode: AiSuggestionResult['applyMode'] =
+      isTagged && !isRedirectedFromTable ? 'apply-to-pdf' : 'guidance-only';
 
     return {
       suggestionType: 'formula-actualtext',
@@ -1445,10 +1457,13 @@ class AiAnalysisService {
       guidance:
         `Suggested reading (ActualText): "${actualText}"` +
         (latex ? `\nLaTeX: ${latex}` : '') +
-        (isTagged ? '' : '\n(PDF is untagged — apply after tagging, or add ActualText in the authoring tool.)'),
-      confidence: 0.7,
-      rationale:
-        'AI-drafted spoken-math reading from the rendered formula region. Math is high-stakes — review before applying.',
+        (isRedirectedFromTable
+          ? '\n(This region was tagged as a Table, not a Formula — review carefully before using elsewhere.)'
+          : isTagged ? '' : '\n(PDF is untagged — apply after tagging, or add ActualText in the authoring tool.)'),
+      confidence: isRedirectedFromTable ? 0.5 : 0.7,
+      rationale: isRedirectedFromTable
+        ? 'AI-drafted spoken-math reading from a region heuristically redirected from a table classification — both the "this is a formula" classification and the reading itself need human review before relying on it.'
+        : 'AI-drafted spoken-math reading from the rendered formula region. Math is high-stakes — review before applying.',
       model: 'gemini-flash',
       applyMode,
       requiresManualReview: true,

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { pdfTableValidator } from '../../../../src/services/pdf/validators/pdf-table.validator';
+import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from '../../../../src/services/pdf/validators/pdf-table.validator';
 import { structureAnalyzerService, DocumentStructure, TableInfo } from '../../../../src/services/pdf/structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 
@@ -373,6 +373,94 @@ describe('PDFTableValidator', () => {
       for (const issue of result.issues) {
         expect(issue.message).toMatch(/\d+×\d+/); // Contains "NxN" pattern
       }
+    });
+  });
+
+  describe('formula misclassification redirect', () => {
+    it('redirects a header-less, implausibly-shaped table on a confirmed-formula page', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const mockStructure = createMockStructure([
+        createMockTable(9, 0, 3, 20, false, false, false), // 3x20, no headers — matches real evidence
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(1);
+      expect(result.metadata.dataTables).toBe(0);
+      expect(result.metadata.layoutTables).toBe(0);
+
+      const redirected = result.issues.find(i => i.code === TABLE_LIKELY_FORMULA_CODE);
+      expect(redirected).toBeDefined();
+      expect(redirected?.category).toBe('formula');
+      expect(redirected?.severity).toBe('serious');
+      expect(redirected?.pageNumber).toBe(9);
+      expect(redirected?.element).toBe('table-as-formula_p9_table_p9_0');
+      expect(redirected?.boundingBox).toEqual({ x: 50, y: 100, width: 500, height: 300, pageWidth: 612, pageHeight: 792 });
+      // Must not also emit a normal table issue for the same region
+      expect(result.issues.filter(i => i.pageNumber === 9)).toHaveLength(1);
+    });
+
+    it('does not redirect when the page has no confirmed formula content', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const mockStructure = createMockStructure([
+        createMockTable(9, 0, 3, 20, false, false, false),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      // No confirmed formula pages at all — same shape, different corroboration.
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set());
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+    });
+
+    it('does not redirect a table that has header structure, even on a confirmed-formula page', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const mockStructure = createMockStructure([
+        createMockTable(9, 0, 3, 20, true, false, false), // has a header row
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+    });
+
+    it('does not redirect a plausibly-shaped table, even header-less on a confirmed-formula page', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const mockStructure = createMockStructure([
+        createMockTable(9, 0, 6, 8, false, false, false), // 6x8 — ordinary aspect ratio
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+    });
+
+    it('defaults to no redirects at all when confirmedFormulaPages is omitted (backward compatible)', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const mockStructure = createMockStructure([
+        createMockTable(9, 0, 3, 20, false, false, false),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf);
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
     });
   });
 });
