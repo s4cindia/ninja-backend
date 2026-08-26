@@ -53,6 +53,15 @@ export interface TableInfo {
   isAccessible: boolean;
   /** True when this table was matched to a /Table structure tree element */
   structureMatched?: boolean;
+  /**
+   * 0-based index among /Table structure elements on this page, in
+   * document order — set only when structureMatched. Lets a later
+   * apply-time step re-locate the exact same StructElem positionally
+   * (pdfModifierService.setActualText's elementsOnPage[index] matching),
+   * since Table elements are containers with no MCID of their own to
+   * match by, unlike Formula/Figure leaves.
+   */
+  structureElementIndex?: number;
 }
 
 export interface ListInfo {
@@ -543,6 +552,11 @@ class StructureAnalyzerService {
     }
     
     const globalQueue = [...tables];
+    // Counts /Table structure elements per page, in the same pre-order
+    // document-tree walk that pdfModifierService.findStructureElementsByType
+    // uses — so the stamped index reliably identifies "the Nth /Table
+    // element on this page" for positional re-targeting at apply time.
+    const perPageTableIndex = new Map<number, number>();
 
     try {
       const catalog = parsedPdf.pdfLibDoc.context.lookup(
@@ -554,7 +568,7 @@ class StructureAnalyzerService {
         if (structTreeRootRef) {
           const structTreeRoot = parsedPdf.pdfLibDoc.context.lookup(structTreeRootRef);
           if (structTreeRoot instanceof PDFDict) {
-            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue);
+            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
           }
         }
       }
@@ -568,7 +582,8 @@ class StructureAnalyzerService {
     pdfDoc: PDFDocument,
     pageMap: Map<string, number>,
     unmatchedTableQueues: Map<number, TableInfo[]>,
-    globalQueue: TableInfo[]
+    globalQueue: TableInfo[],
+    perPageTableIndex: Map<number, number>
   ): Promise<void> {
     try {
       const typeRef = node.get(PDFName.of('S'));
@@ -576,21 +591,27 @@ class StructureAnalyzerService {
 
       if (type === '/Table') {
         const pageNumber = this.resolvePageNumber(node, pdfDoc, 1, pageMap);
-        
+        // Stamp the index before consuming — every /Table element on the
+        // page counts, matched or not, to mirror findStructureElementsByType.
+        const elementIndex = perPageTableIndex.get(pageNumber) ?? 0;
+        perPageTableIndex.set(pageNumber, elementIndex + 1);
+
         const matchingTable = this.consumeNextTable(pageNumber, unmatchedTableQueues, globalQueue);
-        
+
         if (matchingTable) {
+          matchingTable.structureElementIndex = elementIndex;
+
           const summaryRef = node.get(PDFName.of('Summary'));
           if (summaryRef instanceof PDFString) {
             matchingTable.hasSummary = true;
             matchingTable.summary = summaryRef.decodeText();
           }
-          
+
           const captionRef = node.get(PDFName.of('Caption'));
           if (captionRef instanceof PDFString) {
             matchingTable.caption = captionRef.decodeText();
           }
-          
+
           await this.checkTableHeaders(node, pdfDoc, matchingTable);
         }
       }
@@ -600,11 +621,11 @@ class StructureAnalyzerService {
         for (let i = 0; i < kids.size(); i++) {
           const kid = kids.get(i);
           if (kid instanceof PDFDict) {
-            await this.findTaggedTables(kid, pdfDoc, pageMap, unmatchedTableQueues, globalQueue);
+            await this.findTaggedTables(kid, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
           } else {
             const resolved = pdfDoc.context.lookup(kid);
             if (resolved instanceof PDFDict) {
-              await this.findTaggedTables(resolved, pdfDoc, pageMap, unmatchedTableQueues, globalQueue);
+              await this.findTaggedTables(resolved, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
             }
           }
         }
