@@ -13,7 +13,6 @@ import { AuditIssue, IssueTriage } from '../../audit/base-audit.service';
 import { imageExtractorService, ImageInfo } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
-import { responseParserService } from '../../ai/response-parser.service';
 import { logger } from '../../../lib/logger';
 
 // Gemini-side schema (forces valid JSON matching this shape — no markdown
@@ -457,24 +456,19 @@ Respond ONLY with valid JSON in this exact format:
   "suggestedAltText": "your suggestion here"
 }`;
 
-    const response = await geminiService.analyzeImage(
-      image.base64,
-      image.mimeType,
-      prompt,
-      {
-        model: 'flash',
-        temperature: 0.3,
-        maxOutputTokens: 300,
-        responseSchema: ASSESS_ALT_TEXT_SCHEMA,
-      }
-    );
-
     try {
-      const result = responseParserService.parse(response.text, AssessAltTextResult);
-      return {
-        matchesContent: result.matchesContent,
-        suggestedAltText: result.suggestedAltText,
-      };
+      // responseSchema alone doesn't guarantee compliance — retry with a
+      // correction prompt (same image re-attached) on a parse miss rather
+      // than giving up after one attempt.
+      const { data } = await geminiService.analyzeImageWithSchema(
+        image.base64,
+        image.mimeType,
+        prompt,
+        AssessAltTextResult,
+        { model: 'flash', temperature: 0.3, maxOutputTokens: 300, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
+        { maxRetries: 2 }
+      );
+      return { matchesContent: data.matchesContent, suggestedAltText: data.suggestedAltText };
     } catch (error) {
       logger.error('[PDFAltTextValidator] Failed to parse AI assessment response:', error);
       throw error;
@@ -504,19 +498,22 @@ Respond with JSON only:
 }`;
 
     try {
-      const response = await geminiService.analyzeImage(
+      // responseSchema alone doesn't guarantee compliance — retry with a
+      // correction prompt (same image re-attached) on a parse miss rather
+      // than giving up after one attempt.
+      const { data } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
-        { model: 'flash', temperature: 0.2, maxOutputTokens: 300, responseSchema: CLASSIFY_IMAGE_SCHEMA }
+        ClassifyImageResult,
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 300, responseSchema: CLASSIFY_IMAGE_SCHEMA },
+        { maxRetries: 2 }
       );
 
-      const result = responseParserService.parse(response.text, ClassifyImageResult);
-
       return {
-        isDecorative: result.isDecorative,
-        altText: result.altText.trim().substring(0, 125),
-        confidence: Math.min(1, Math.max(0, result.confidence)),
+        isDecorative: data.isDecorative,
+        altText: data.altText.trim().substring(0, 125),
+        confidence: Math.min(1, Math.max(0, data.confidence)),
       };
     } catch (err) {
       logger.warn(`[PDFAltTextValidator] AI classification failed for image ${image.id}: ${err instanceof Error ? err.message : String(err)}`);

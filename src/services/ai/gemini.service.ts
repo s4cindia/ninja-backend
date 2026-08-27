@@ -269,6 +269,32 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
     });
   }
 
+  /**
+   * Vision analog of generateWithSchema: analyzes an image, validates the
+   * response against a Zod schema, and retries with a correction prompt
+   * (re-attaching the same image) if the model doesn't comply. A
+   * responseSchema alone isn't a full guarantee — the model can still emit
+   * a conversational preamble ("Here is the...") instead of pure JSON on
+   * some calls even with responseMimeType: 'application/json' set — this
+   * gives failures on a real image a second (and third) chance instead of
+   * falling back to a low-confidence default on the very first miss.
+   */
+  async analyzeImageWithSchema<T>(
+    imageBase64: string,
+    mimeType: string,
+    prompt: string,
+    schema: ZodSchema<T>,
+    options: GeminiOptions = {},
+    parseOptions: { maxRetries?: number; correctionPrompt?: string } = {}
+  ): Promise<{ data: T; usage?: GeminiResponse['usage']; attempts: number }> {
+    return responseParserService.parseWithRetryUsing(
+      (currentPrompt) => this.analyzeImage(imageBase64, mimeType, currentPrompt, options),
+      prompt,
+      schema,
+      parseOptions
+    );
+  }
+
   async chat(
     messages: Array<{ role: 'user' | 'model'; content: string }>,
     options: GeminiOptions = {}
