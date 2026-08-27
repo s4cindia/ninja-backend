@@ -390,7 +390,10 @@ class ImageExtractorService {
     }
     
     const actualText = node.get(PDFName.of('ActualText'));
-    if (!info.altText) {
+    // Only fall back to ActualText when /Alt is absent entirely. An explicit
+    // empty /Alt ("") is a deliberate decorative marker and must be preserved,
+    // not silently overwritten by a (possibly stale) non-empty /ActualText.
+    if (info.altText === undefined) {
       if (actualText instanceof PDFString) {
         info.altText = actualText.decodeText();
       } else if (actualText instanceof PDFHexString) {
