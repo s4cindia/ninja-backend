@@ -117,7 +117,9 @@ class ImageExtractorService {
         for (const img of pageImages.images) {
           imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
 
-          if (img.isDecorative) {
+          if (img.isDecorative || img.altText === '') {
+            // An explicit empty /Alt is the PDF/UA-compliant decorative marker,
+            // distinct from no /Alt entry at all (img.altText === undefined).
             decorativeImages++;
           } else if (img.altText) {
             imagesWithAltText++;
@@ -388,7 +390,10 @@ class ImageExtractorService {
     }
     
     const actualText = node.get(PDFName.of('ActualText'));
-    if (!info.altText) {
+    // Only fall back to ActualText when /Alt is absent entirely. An explicit
+    // empty /Alt ("") is a deliberate decorative marker and must be preserved,
+    // not silently overwritten by a (possibly stale) non-empty /ActualText.
+    if (info.altText === undefined) {
       if (actualText instanceof PDFString) {
         info.altText = actualText.decodeText();
       } else if (actualText instanceof PDFHexString) {

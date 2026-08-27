@@ -101,6 +101,27 @@ describe('PDFAltTextValidator', () => {
       expect(result.metadata.decorativeImages).toBe(1);
     });
 
+    it('should not re-flag an image with an explicitly empty alt text ("") as missing alt text', async () => {
+      // Regression: an empty /Alt is the PDF/UA-compliant way to mark an image
+      // decorative (e.g. after applying the alt-text-decorative AI suggestion),
+      // distinct from no /Alt entry at all (altText === undefined). Before this
+      // fix, `!image.altText` treated both the same, so the re-audit kept
+      // flagging MATTERHORN-13-001 even after a correct empty-alt fix was applied.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, '', false), // Explicitly empty alt text, not decorative-flagged
+        createMockImage(1, 1, 'Important chart', false),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', false);
+
+      expect(result.issues.find(i => i.code === 'MATTERHORN-13-001')).toBeUndefined();
+    });
+
     it('should identify moderate issue for alt text that is too short', async () => {
       const mockParsedPdf = createMockParsedPdf();
       const mockDocImages = createMockDocumentImages([
