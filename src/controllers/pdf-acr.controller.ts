@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
+import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { pdfAcrGeneratorService, ProductInfo } from '../services/pdf/acr-generator.service';
 import type { AuditReport } from '../services/audit/base-audit.service';
@@ -68,6 +70,30 @@ class PdfAcrController {
       const acrReport = await pdfAcrGeneratorService.generateAcr(auditReport, productInfo);
 
       logger.info(`[PdfAcrController] ACR generated for job ${job.id}: ${acrReport.wcagResults.length} criteria`);
+
+      // Tracked for the guided-remediation checklist's step 6 gate — best-effort,
+      // never fails the report itself if the write doesn't land. Re-fetches
+      // the job immediately before writing rather than reusing the `output`
+      // snapshot from earlier in this request — a concurrent write elsewhere
+      // (a PAC generation, a background re-audit) could otherwise be silently
+      // erased by this one replacing the whole output JSON blob with a stale
+      // copy.
+      try {
+        const latestJob = await prisma.job.findUnique({ where: { id: job.id } });
+        const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            output: {
+              ...latestOutput,
+              acrGenerated: true,
+              acrGeneratedAt: new Date().toISOString(),
+            } as Prisma.InputJsonObject,
+          },
+        });
+      } catch (err) {
+        logger.warn(`[PdfAcrController] Failed to record acrGenerated for job ${job.id} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       res.json({ success: true, data: acrReport });
     } catch (error) {

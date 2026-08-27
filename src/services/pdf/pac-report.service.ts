@@ -12,6 +12,7 @@
  * Matterhorn Coverage Plan — Step 5
  */
 
+import { Prisma } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import {
@@ -180,11 +181,36 @@ class PacReportService {
     );
 
     const summary = this.buildSummary(checkpoints);
+    const generatedAt = new Date().toISOString();
+
+    // Tracked for the guided-remediation checklist's step 6 gate — best-effort,
+    // never fails the report itself if the write doesn't land. Re-fetches the
+    // job immediately before writing rather than reusing the `output`
+    // snapshot loaded at the top of this method — a concurrent write
+    // elsewhere (an ACR generation, a background re-audit) could otherwise
+    // be silently erased by this one replacing the whole output JSON blob
+    // with a stale copy.
+    try {
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...latestOutput,
+            pacReportGenerated: true,
+            pacReportGeneratedAt: generatedAt,
+          } as Prisma.InputJsonObject,
+        },
+      });
+    } catch (err) {
+      logger.warn(`[PacReport] Failed to record pacReportGenerated for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     return {
       jobId,
       fileName,
-      generatedAt: new Date().toISOString(),
+      generatedAt,
       ninjaVersion: process.env.npm_package_version ?? '1.0.0',
       isTagged,
       summary,
