@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { z } from 'zod';
 
 const generateContentMock = vi.fn();
 const getGenerativeModelMock = vi.fn().mockReturnValue({ generateContent: generateContentMock });
@@ -142,5 +143,46 @@ describe('GeminiService structured output (responseSchema)', () => {
     const { generationConfig } = getGenerativeModelMock.mock.calls[0][0];
     expect(generationConfig.responseMimeType).toBeUndefined();
     expect(generationConfig.responseSchema).toBeUndefined();
+  });
+});
+
+describe('GeminiService.analyzeImageWithSchema (retry on malformed response)', () => {
+  let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
+  const schema = z.object({ isDecorative: z.boolean(), altText: z.string(), confidence: z.number() });
+
+  beforeEach(async () => {
+    vi.resetModules();
+    generateContentMock.mockReset();
+    getGenerativeModelMock.mockClear();
+    getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
+    ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
+  });
+
+  it('retries with a correction prompt when the first response is not valid JSON, and succeeds on the second', async () => {
+    generateContentMock
+      .mockResolvedValueOnce(mockResponse('Here is the analysis: {"isDecorative": false, "altText"'))
+      .mockResolvedValueOnce(mockResponse('{"isDecorative": false, "altText": "A red apple", "confidence": 0.85}'));
+
+    const result = await geminiService.analyzeImageWithSchema(
+      'base64data', 'image/png', 'Analyze this image', schema, { model: 'flash' }
+    );
+
+    expect(result.data).toEqual({ isDecorative: false, altText: 'A red apple', confidence: 0.85 });
+    expect(result.attempts).toBe(2);
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+    // The retry attaches a correction prompt referencing the failure, not the bare original prompt again.
+    const secondCallArgs = generateContentMock.mock.calls[1][0];
+    expect(secondCallArgs[0]).toContain('Analyze this image');
+    expect(secondCallArgs[0]).not.toBe('Analyze this image');
+  });
+
+  it('throws after exhausting retries when every response stays malformed', async () => {
+    generateContentMock.mockResolvedValue(mockResponse('Here is the analysis, no JSON at all'));
+
+    await expect(
+      geminiService.analyzeImageWithSchema('base64data', 'image/png', 'Analyze this image', schema, { model: 'flash' }, { maxRetries: 2 })
+    ).rejects.toThrow();
+
+    expect(generateContentMock).toHaveBeenCalledTimes(3); // initial attempt + 2 retries
   });
 });

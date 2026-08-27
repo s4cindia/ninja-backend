@@ -172,14 +172,15 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
-      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
-        text: '{"isDecorative": false, "altText": "A colorful bar chart showing quarterly revenue growth", "confidence": 0.9}',
+      vi.mocked(geminiService.analyzeImageWithSchema).mockResolvedValue({
+        data: { isDecorative: false, altText: 'A colorful bar chart showing quarterly revenue growth', confidence: 0.9 },
         usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
+        attempts: 1,
       });
 
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
-      expect(geminiService.analyzeImage).toHaveBeenCalled();
+      expect(geminiService.analyzeImageWithSchema).toHaveBeenCalled();
       expect(result.issues[0].suggestion).toContain('AI-generated alt text');
       expect(result.issues[0].suggestion).toContain('bar chart');
     });
@@ -193,17 +194,18 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
-      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
-        text: JSON.stringify({
+      vi.mocked(geminiService.analyzeImageWithSchema).mockResolvedValue({
+        data: {
           matchesContent: false,
           suggestedAltText: 'Bar chart showing quarterly revenue growth from Q1 to Q4 2024',
-        }),
+        },
         usage: { promptTokens: 150, completionTokens: 30, totalTokens: 180 },
+        attempts: 1,
       });
 
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
-      expect(geminiService.analyzeImage).toHaveBeenCalled();
+      expect(geminiService.analyzeImageWithSchema).toHaveBeenCalled();
       expect(result.summary.moderate).toBeGreaterThan(0);
 
       const qualityIssue = result.issues.find(i => i.code === 'ALT-TEXT-QUALITY');
@@ -221,7 +223,8 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
-      vi.mocked(geminiService.analyzeImage).mockRejectedValue(new Error('API error'));
+      // Represents every retry attempt inside analyzeImageWithSchema being exhausted.
+      vi.mocked(geminiService.analyzeImageWithSchema).mockRejectedValue(new Error('API error'));
 
       // Should not throw, but continue validation without AI
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
@@ -240,21 +243,24 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
-      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
-        text: '{"isDecorative": false, "altText": "A chart", "confidence": 0.9}',
+      vi.mocked(geminiService.analyzeImageWithSchema).mockResolvedValue({
+        data: { isDecorative: false, altText: 'A chart', confidence: 0.9 },
+        attempts: 1,
       });
 
       await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
-      expect(geminiService.analyzeImage).toHaveBeenCalledWith(
+      expect(geminiService.analyzeImageWithSchema).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
         expect.any(String),
-        expect.objectContaining({ responseSchema: expect.any(Object) })
+        expect.any(Object),
+        expect.objectContaining({ responseSchema: expect.any(Object) }),
+        expect.any(Object)
       );
     });
 
-    it('falls back to a safe default when the AI response is well-formed JSON but the wrong shape', async () => {
+    it('falls back to a safe default when analyzeImageWithSchema exhausts its retries', async () => {
       const mockParsedPdf = createMockParsedPdf();
       const mockDocImages = createMockDocumentImages([
         createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
@@ -263,12 +269,13 @@ describe('PDFAltTextValidator', () => {
       vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
       vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
       vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
-      // Valid JSON, but wrong types — matchesContent/confidence as strings instead
-      // of the expected boolean/number. Must fail schema validation and fall back
-      // rather than silently coercing (e.g. `=== true` on a string) or crashing.
-      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
-        text: '{"isDecorative": "not-a-boolean", "altText": 42, "confidence": "high"}',
-      });
+      // Simulates every retry inside analyzeImageWithSchema still failing schema
+      // validation (e.g. the model kept returning non-JSON text) — the real
+      // schema-rejection behavior is exercised at the gemini.service.ts level;
+      // here we only need the validator to fall back safely rather than crash.
+      vi.mocked(geminiService.analyzeImageWithSchema).mockRejectedValue(
+        new Error('Invalid JSON response: Unexpected token \'H\', "Here is th"... is not valid JSON')
+      );
 
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 

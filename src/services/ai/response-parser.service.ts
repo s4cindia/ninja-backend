@@ -56,18 +56,38 @@ class ResponseParserService {
     options: GeminiOptions = {},
     parseOptions: ParseOptions = {}
   ): Promise<{ data: T; usage?: GeminiResponse['usage']; attempts: number }> {
+    return this.parseWithRetryUsing(
+      (currentPrompt) => geminiService.generateText(currentPrompt, options),
+      prompt,
+      schema,
+      parseOptions
+    );
+  }
+
+  /**
+   * Same retry-with-correction-prompt loop as parseWithRetry, but with "how
+   * to call the model" injected — lets a vision call (which needs the image
+   * re-attached on every attempt, not just the text prompt) share this logic
+   * instead of duplicating it. See GeminiService.analyzeImageWithSchema.
+   */
+  async parseWithRetryUsing<T>(
+    callModel: (prompt: string) => Promise<GeminiResponse>,
+    prompt: string,
+    schema: ZodSchema<T>,
+    parseOptions: ParseOptions = {}
+  ): Promise<{ data: T; usage?: GeminiResponse['usage']; attempts: number }> {
     const maxRetries = parseOptions.maxRetries ?? 2;
     let lastError: Error | undefined;
     let totalUsage: GeminiResponse['usage'] | undefined;
-    
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const currentPrompt = attempt === 0 
-          ? prompt 
+        const currentPrompt = attempt === 0
+          ? prompt
           : this.buildCorrectionPrompt(prompt, lastError?.message || 'Invalid response', parseOptions.correctionPrompt);
-        
-        const response = await geminiService.generateText(currentPrompt, options);
-        
+
+        const response = await callModel(currentPrompt);
+
         if (response.usage) {
           if (totalUsage) {
             totalUsage.promptTokens += response.usage.promptTokens;
@@ -77,14 +97,14 @@ class ResponseParserService {
             totalUsage = { ...response.usage };
           }
         }
-        
+
         const data = this.parse(response.text, schema);
         return { data, usage: totalUsage, attempts: attempt + 1 };
       } catch (error) {
         lastError = error as Error;
       }
     }
-    
+
     throw lastError || AppError.internal('Failed to parse response after retries');
   }
 
