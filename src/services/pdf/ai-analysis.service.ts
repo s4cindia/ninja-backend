@@ -128,6 +128,32 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
   if (CONTRAST_CODES.has(issue.code)) return `${issue.code}:${issue.id}`;
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
 }
+
+/**
+ * Decides the status to persist for a re-analyzed suggestion. A row already
+ * marked 'applied' means a fix was actually written into the PDF — re-running
+ * AI analysis must not silently revert that to pending/approved just because
+ * the suggestion was recomputed. Only reset it when the newly computed
+ * suggestion actually differs from what's stored (new suggestionType or
+ * value), since that means whatever was applied before is now stale and
+ * needs a fresh operator decision. Exported for direct unit testing —
+ * analyzeJob's own dependencies (storage, Prisma, AI clients) make it
+ * impractical to test this in-place.
+ */
+export function resolveSuggestionStatus(
+  existing: { status: string; suggestionType: string; value: string | null } | null,
+  suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
+  effectiveApplyMode: AiSuggestionResult['applyMode']
+): string {
+  const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
+  if (!existing || existing.status !== 'applied') return defaultStatus;
+
+  const unchanged =
+    existing.suggestionType === suggestion.suggestionType &&
+    existing.value === (suggestion.value ?? null);
+
+  return unchanged ? 'applied' : defaultStatus;
+}
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -300,6 +326,14 @@ class AiAnalysisService {
             effectiveApplyMode = 'apply-to-pdf';
           }
 
+          // Look up the current row so a re-analysis doesn't silently revert an
+          // already-applied fix's status just because the suggestion was recomputed.
+          const existing = await prisma.aiAnalysis.findUnique({
+            where: { jobId_issueId: { jobId, issueId: issue.id } },
+            select: { status: true, suggestionType: true, value: true },
+          });
+          const status = resolveSuggestionStatus(existing, suggestion, effectiveApplyMode);
+
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
             create: {
@@ -312,7 +346,7 @@ class AiAnalysisService {
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
-              status: effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending',
+              status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
               updatedAt: new Date(),
             },
@@ -324,7 +358,7 @@ class AiAnalysisService {
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
-              status: effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending',
+              status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
               updatedAt: new Date(),
             },
