@@ -128,6 +128,73 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
   if (CONTRAST_CODES.has(issue.code)) return `${issue.code}:${issue.id}`;
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
 }
+
+/**
+ * Stable identity for "the same underlying finding," independent of
+ * issue.id — which is BaseAuditService.issueCounter, a per-audit sequential
+ * counter reset to 0 and reassigned from scratch on every audit run.
+ * applyAll's internal re-audit replaces the whole audit report, so a
+ * still-open finding can inherit the id an already-fixed finding used to
+ * have. element (img_p{page}_{index}_{name}, table_p{page}_{index}) is
+ * durable across a re-audit since accessibility fixes don't reorder/remove
+ * the underlying image/table XObjects. Contrast issues have no element —
+ * boundingBox position substitutes, since a fix recolors text without
+ * moving it. Doc-level codes have neither, but by design only ever produce
+ * one issue per document (see buildSuggestionCacheKey above), so code alone
+ * is unambiguous. Used by resolveSuggestionStatus to gate 'applied'
+ * preservation; exported for direct unit testing alongside it.
+ */
+export function buildIssueFingerprint(
+  issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'boundingBox'>
+): string {
+  if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
+  if (CONTRAST_CODES.has(issue.code) && issue.boundingBox) {
+    const { x, y } = issue.boundingBox;
+    return `${issue.code}:${issue.pageNumber ?? ''}:${Math.round(x)}:${Math.round(y)}`;
+  }
+  return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
+}
+
+/**
+ * Decides the status to persist for a re-analyzed suggestion. A row already
+ * marked 'applied' means a fix was actually written into the PDF — re-running
+ * AI analysis must not silently revert that to pending/approved just because
+ * the suggestion was recomputed. Only reset it when the newly computed
+ * suggestion actually differs from what's stored (new suggestionType, value,
+ * or the underlying finding itself per issueFingerprint — see
+ * buildIssueFingerprint above), since that means whatever was applied before
+ * is now stale and needs a fresh operator decision. Exported for direct unit
+ * testing — analyzeJob's own dependencies (storage, Prisma, AI clients) make
+ * it impractical to test this in-place.
+ *
+ * Also requires a genuine (non-null) matching value before preserving
+ * 'applied' — not just a matching suggestionType + fingerprint. Value-less,
+ * rule-based suggestion types (table-header-fix, heading-fix,
+ * alt-text-decorative, etc.) compute identically regardless of which element
+ * they're about, so without this, two distinct issues sharing a doc-level
+ * fingerprint (or, before issueFingerprint existed, a reused issueId) could
+ * still spuriously match. A real value (a specific alt-text string, hex
+ * color, summary) makes a same-type collision far less likely, and a null
+ * existing.issueFingerprint (a pre-migration row) never matches a freshly
+ * computed one, so old rows safely fall through once before self-healing.
+ */
+export function resolveSuggestionStatus(
+  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null } | null,
+  suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
+  issueFingerprint: string,
+  effectiveApplyMode: AiSuggestionResult['applyMode']
+): string {
+  const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
+  if (!existing || existing.status !== 'applied') return defaultStatus;
+
+  const unchanged =
+    existing.issueFingerprint === issueFingerprint &&
+    existing.suggestionType === suggestion.suggestionType &&
+    existing.value != null &&
+    existing.value === suggestion.value;
+
+  return unchanged ? 'applied' : defaultStatus;
+}
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -300,6 +367,42 @@ class AiAnalysisService {
             effectiveApplyMode = 'apply-to-pdf';
           }
 
+          // Look up the current row so a re-analysis doesn't silently revert an
+          // already-applied fix's status just because the suggestion was recomputed.
+          // Not transactional: a concurrent applySuggestion landing between this read
+          // and the upsert below could still get overwritten. Accepted for now — no
+          // worse than the pre-existing behavior (which always overwrote 'applied'
+          // unconditionally), and applying a fix while a full re-analysis is mid-run
+          // on that exact same issue is a narrow window. Worth an atomic conditional
+          // write if it turns out to matter in practice.
+          const issueFingerprint = buildIssueFingerprint(issue);
+          let existing = await prisma.aiAnalysis.findUnique({
+            where: { jobId_issueId: { jobId, issueId: issue.id } },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
+          });
+          // Fallback: issue.id can be stale even for THIS issue. An intervening
+          // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
+          // id from scratch, so a genuinely unchanged finding can be reassigned a
+          // new id whenever an earlier finding in emission order disappears (gets
+          // fixed/removed). Its own prior row then sits orphaned under the old id
+          // and is never found by an id-keyed lookup again. If the row found by the
+          // current id doesn't match this issue's fingerprint (or no row exists at
+          // that id), search this job for this issue's own row by fingerprint
+          // instead — without this, the fingerprint check above only prevents
+          // wrongly *preserving* status; it can't prevent wrongly *losing* it.
+          if (!existing || existing.issueFingerprint !== issueFingerprint) {
+            const byFingerprint = await prisma.aiAnalysis.findFirst({
+              where: { jobId, issueFingerprint },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
+              // Stale rows can accumulate under successive old ids sharing this
+              // fingerprint across repeated re-audits — take the most recently
+              // written one, not an arbitrary one.
+              orderBy: { updatedAt: 'desc' },
+            });
+            if (byFingerprint) existing = byFingerprint;
+          }
+          const status = resolveSuggestionStatus(existing, suggestion, issueFingerprint, effectiveApplyMode);
+
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
             create: {
@@ -312,8 +415,9 @@ class AiAnalysisService {
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
-              status: effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending',
+              status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
+              issueFingerprint,
               updatedAt: new Date(),
             },
             update: {
@@ -324,8 +428,9 @@ class AiAnalysisService {
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
-              status: effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending',
+              status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
+              issueFingerprint,
               updatedAt: new Date(),
             },
           });
