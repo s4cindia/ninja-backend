@@ -184,13 +184,20 @@ class PacReportService {
     const generatedAt = new Date().toISOString();
 
     // Tracked for the guided-remediation checklist's step 6 gate — best-effort,
-    // never fails the report itself if the write doesn't land.
+    // never fails the report itself if the write doesn't land. Re-fetches the
+    // job immediately before writing rather than reusing the `output`
+    // snapshot loaded at the top of this method — a concurrent write
+    // elsewhere (an ACR generation, a background re-audit) could otherwise
+    // be silently erased by this one replacing the whole output JSON blob
+    // with a stale copy.
     try {
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
       await prisma.job.update({
         where: { id: jobId },
         data: {
           output: {
-            ...(output ?? {}),
+            ...latestOutput,
             pacReportGenerated: true,
             pacReportGeneratedAt: generatedAt,
           } as Prisma.InputJsonObject,

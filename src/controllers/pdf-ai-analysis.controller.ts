@@ -202,7 +202,6 @@ export class PdfAiAnalysisController {
         where: { jobId, applyMode: 'guidance-only', status: 'pending' },
       });
 
-      const currentOutput = (job.output ?? {}) as Record<string, unknown>;
       const guidanceAcknowledgment = {
         note: parsed.data.note,
         remainingCount,
@@ -210,9 +209,18 @@ export class PdfAiAnalysisController {
         acknowledgedBy: req.user.id,
       };
 
+      // Re-fetch immediately before writing rather than trusting req.job (a
+      // snapshot from when authorizeJob ran) — a concurrent write elsewhere
+      // (e.g. analyzeJob persisting aiAnalysisStats) could otherwise be
+      // silently erased by this one replacing the whole output JSON blob
+      // with a stale copy. Same pattern as the stats-save in
+      // ai-analysis.service.ts's analyzeJob.
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+
       await prisma.job.update({
         where: { id: jobId },
-        data: { output: { ...currentOutput, guidanceAcknowledgment } as Prisma.InputJsonObject },
+        data: { output: { ...latestOutput, guidanceAcknowledgment } as Prisma.InputJsonObject },
       });
 
       res.json({ success: true, data: guidanceAcknowledgment });
