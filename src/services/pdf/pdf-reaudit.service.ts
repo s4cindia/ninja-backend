@@ -5,6 +5,7 @@
  * Phase 3 BE-T1: Re-audit service and before/after comparison logic.
  */
 
+import { Prisma } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
 import { pdfAuditService } from './pdf-audit.service';
@@ -98,11 +99,28 @@ class PdfReauditService {
       logger.info(`[PdfReaudit] Running fresh audit on remediated PDF...`);
       let reauditReport;
       try {
+        // Same progress-callback mechanism the initial audit already uses
+        // (accessibility.processor.ts) — surfaces "X of Y pages" / "X of Y
+        // validators" via job.output.postRemediationProgress, polled through
+        // the existing GET /jobs/:id endpoint, instead of this fire-and-forget
+        // pass running with no visible progress at all.
+        const onProgress = (currentPage: number, totalPages: number) => {
+          void this.updateReauditProgress(jobId, { currentPage, totalPages });
+        };
+        const onValidatorComplete = (label: string, _issuesFound: number, completed: number, total: number) => {
+          void this.updateReauditProgress(jobId, { completedValidators: completed, totalValidators: total, currentValidator: label });
+        };
+
+        await this.updateReauditProgress(jobId, { currentPage: 0, totalPages: 0, completedValidators: 0, totalValidators: 0 });
+
         reauditReport = await pdfAuditService.runAuditFromBuffer(
           remediatedPdfBuffer,
           `${jobId}-reaudit`,
           fileName,
-          'comprehensive'
+          'comprehensive',
+          undefined,
+          onProgress,
+          onValidatorComplete
         );
       } catch (auditError) {
         logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
@@ -377,6 +395,41 @@ class PdfReauditService {
         minor: { resolved: 0, remaining: 0 },
       },
     };
+  }
+
+  /**
+   * Merge a partial progress update into job.output.postRemediationProgress
+   * so the frontend can poll GET /jobs/:id for "X of Y pages" / "X of Y
+   * validators" during this fire-and-forget re-audit pass, the same way it
+   * already polls job.input.validatorProgress during the initial audit.
+   * Best-effort — a failed progress write must never fail the re-audit itself.
+   */
+  private async updateReauditProgress(
+    jobId: string,
+    partial: {
+      currentPage?: number;
+      totalPages?: number;
+      completedValidators?: number;
+      totalValidators?: number;
+      currentValidator?: string;
+    }
+  ): Promise<void> {
+    try {
+      const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } });
+      const output = (job?.output ?? {}) as Record<string, unknown>;
+      const prevProgress = (output.postRemediationProgress ?? {}) as Record<string, unknown>;
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...output,
+            postRemediationProgress: { ...prevProgress, ...partial, updatedAt: new Date().toISOString() },
+          } as Prisma.InputJsonObject,
+        },
+      });
+    } catch (err) {
+      logger.warn(`[PdfReaudit] Failed to update progress for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

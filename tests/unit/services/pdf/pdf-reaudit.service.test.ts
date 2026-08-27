@@ -19,6 +19,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     job: {
       findUnique: vi.fn(),
+      update: vi.fn(),
     },
   },
 }));
@@ -403,7 +404,42 @@ describe('PdfReauditService', () => {
         mockBuffer,
         `${mockJobId}-reaudit`,
         mockFileName,
-        'comprehensive'
+        'comprehensive',
+        undefined,
+        expect.any(Function),
+        expect.any(Function)
+      );
+    });
+
+    it('writes page and validator progress into job.output.postRemediationProgress as the re-audit runs', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      // Simulate runAuditFromBuffer actually driving the progress callbacks
+      // mid-run, the way the real implementation does.
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockImplementation(
+        async (_buffer, _jobId, _fileName, _scanLevel, _customValidators, onProgress, onValidatorComplete) => {
+          onProgress?.(207, 414);
+          onValidatorComplete?.('Tables', 39, 4, 8);
+          return { ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: [] };
+        }
+      );
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      const progressWrites = vi.mocked(prisma.job.update).mock.calls
+        .map(([args]) => (args.data as any).output?.postRemediationProgress)
+        .filter(Boolean);
+
+      expect(progressWrites).toContainEqual(
+        expect.objectContaining({ currentPage: 207, totalPages: 414 })
+      );
+      expect(progressWrites).toContainEqual(
+        expect.objectContaining({ completedValidators: 4, totalValidators: 8, currentValidator: 'Tables' })
       );
     });
 
