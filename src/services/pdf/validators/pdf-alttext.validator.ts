@@ -211,6 +211,14 @@ class PDFAltTextValidator {
       return issues;
     }
 
+    // An explicitly empty /Alt ("") is the PDF/UA-compliant way to mark an image as
+    // decorative without a full Artifact structural conversion — distinct from no /Alt
+    // entry at all (image.altText === undefined). Treat it as already resolved, the
+    // same as isDecorative above, rather than re-flagging it as missing alt text.
+    if (image.altText === '') {
+      return issues;
+    }
+
     // Check if image has alt text
     if (!image.altText) {
       let suggestion: string;

@@ -117,7 +117,9 @@ class ImageExtractorService {
         for (const img of pageImages.images) {
           imageFormats[img.format] = (imageFormats[img.format] || 0) + 1;
 
-          if (img.isDecorative) {
+          if (img.isDecorative || img.altText === '') {
+            // An explicit empty /Alt is the PDF/UA-compliant decorative marker,
+            // distinct from no /Alt entry at all (img.altText === undefined).
             decorativeImages++;
           } else if (img.altText) {
             imagesWithAltText++;
