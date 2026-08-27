@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const generateContentMock = vi.fn();
+const getGenerativeModelMock = vi.fn().mockReturnValue({ generateContent: generateContentMock });
 
 vi.mock('@google/generative-ai', () => ({
   // Must be a real `function` (not an arrow fn) — it's invoked with `new`, and arrow
   // functions cannot be constructors.
   GoogleGenerativeAI: vi.fn().mockImplementation(function () {
     return {
-      getGenerativeModel: vi.fn().mockReturnValue({
-        generateContent: generateContentMock,
-      }),
+      getGenerativeModel: getGenerativeModelMock,
     };
   }),
+  SchemaType: { OBJECT: 'OBJECT', STRING: 'STRING', BOOLEAN: 'BOOLEAN', NUMBER: 'NUMBER' },
 }));
 
 vi.mock('../../../../src/utils/rate-limiter', () => ({
@@ -49,6 +49,8 @@ describe('GeminiService circuit breaker', () => {
   beforeEach(async () => {
     vi.resetModules();
     generateContentMock.mockReset();
+    getGenerativeModelMock.mockClear();
+    getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
     ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
   });
 
@@ -103,5 +105,42 @@ describe('GeminiService circuit breaker', () => {
     expect(result.text).toBe('recovered');
     expect(geminiService.getCircuitStatus().open).toBe(false);
     expect(generateContentMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('GeminiService structured output (responseSchema)', () => {
+  let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    generateContentMock.mockReset();
+    getGenerativeModelMock.mockClear();
+    getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
+    ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
+  });
+
+  it('sets responseMimeType and responseSchema on generationConfig when a schema is passed', async () => {
+    generateContentMock.mockResolvedValue(mockResponse('{"ok":true}'));
+    const schema = { type: 'OBJECT', properties: { ok: { type: 'BOOLEAN' } }, required: ['ok'] };
+
+    await geminiService.analyzeImage('base64data', 'image/png', 'prompt', {
+      model: 'flash',
+      responseSchema: schema as never,
+    });
+
+    expect(getGenerativeModelMock).toHaveBeenCalledTimes(1);
+    const { generationConfig } = getGenerativeModelMock.mock.calls[0][0];
+    expect(generationConfig.responseMimeType).toBe('application/json');
+    expect(generationConfig.responseSchema).toEqual(schema);
+  });
+
+  it('omits responseMimeType/responseSchema entirely when no schema is passed (unaffected callers)', async () => {
+    generateContentMock.mockResolvedValue(mockResponse('plain text'));
+
+    await geminiService.generateText('prompt', { model: 'flash' });
+
+    const { generationConfig } = getGenerativeModelMock.mock.calls[0][0];
+    expect(generationConfig.responseMimeType).toBeUndefined();
+    expect(generationConfig.responseSchema).toBeUndefined();
   });
 });

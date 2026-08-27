@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, GenerativeModel, GenerationConfig, Content } from '@google/generative-ai';
+import { GoogleGenerativeAI, GenerativeModel, GenerationConfig, Content, Schema } from '@google/generative-ai';
 import { ZodSchema } from 'zod';
 import { aiConfig } from '../../config/ai.config';
 import { AppError } from '../../utils/app-error';
@@ -22,6 +22,13 @@ export interface GeminiOptions {
   temperature?: number;
   maxOutputTokens?: number;
   systemInstruction?: string;
+  /**
+   * Forces the model to emit JSON matching this schema instead of free text
+   * (sets responseMimeType: 'application/json' automatically) — eliminates
+   * markdown-fence, preamble, and mid-JSON-truncation parsing failures at
+   * the source, rather than handling them after the fact.
+   */
+  responseSchema?: Schema;
 }
 
 class GeminiService {
@@ -90,6 +97,9 @@ class GeminiService {
       topP: aiConfig.defaults.topP,
       topK: aiConfig.defaults.topK,
       maxOutputTokens: options.maxOutputTokens ?? aiConfig.defaults.maxOutputTokens,
+      ...(options.responseSchema
+        ? { responseMimeType: 'application/json', responseSchema: options.responseSchema }
+        : {}),
     };
 
     return client.getGenerativeModel({

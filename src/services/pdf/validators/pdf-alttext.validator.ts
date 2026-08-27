@@ -7,11 +7,47 @@
  * Maps issues to WCAG 1.1.1 and Matterhorn Protocol checkpoints.
  */
 
+import { z } from 'zod';
+import { SchemaType, Schema } from '@google/generative-ai';
 import { AuditIssue, IssueTriage } from '../../audit/base-audit.service';
 import { imageExtractorService, ImageInfo } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
+import { responseParserService } from '../../ai/response-parser.service';
 import { logger } from '../../../lib/logger';
+
+// Gemini-side schema (forces valid JSON matching this shape — no markdown
+// fences, no preamble, no truncated-before-closing-brace responses) plus a
+// Zod schema to validate what comes back. Two layers: the model is
+// constrained at generation time, and the response is still verified on
+// receipt rather than trusted blindly.
+const ASSESS_ALT_TEXT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    matchesContent: { type: SchemaType.BOOLEAN },
+    suggestedAltText: { type: SchemaType.STRING },
+  },
+  required: ['matchesContent', 'suggestedAltText'],
+};
+const AssessAltTextResult = z.object({
+  matchesContent: z.boolean(),
+  suggestedAltText: z.string(),
+});
+
+const CLASSIFY_IMAGE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    isDecorative: { type: SchemaType.BOOLEAN },
+    altText: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+  },
+  required: ['isDecorative', 'altText', 'confidence'],
+};
+const ClassifyImageResult = z.object({
+  isDecorative: z.boolean(),
+  altText: z.string(),
+  confidence: z.number(),
+});
 
 /**
  * Alt text quality assessment result
@@ -428,22 +464,16 @@ Respond ONLY with valid JSON in this exact format:
       {
         model: 'flash',
         temperature: 0.3,
-        maxOutputTokens: 256,
+        maxOutputTokens: 300,
+        responseSchema: ASSESS_ALT_TEXT_SCHEMA,
       }
     );
 
     try {
-      // Extract JSON from response
-      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error('No JSON found in response');
-      }
-
-      const result = JSON.parse(jsonMatch[0]);
-
+      const result = responseParserService.parse(response.text, AssessAltTextResult);
       return {
-        matchesContent: result.matchesContent === true,
-        suggestedAltText: result.suggestedAltText || '',
+        matchesContent: result.matchesContent,
+        suggestedAltText: result.suggestedAltText,
       };
     } catch (error) {
       logger.error('[PDFAltTextValidator] Failed to parse AI assessment response:', error);
@@ -478,24 +508,15 @@ Respond with JSON only:
         image.base64!,
         image.mimeType,
         prompt,
-        { model: 'flash', temperature: 0.2, maxOutputTokens: 128 }
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 300, responseSchema: CLASSIFY_IMAGE_SCHEMA }
       );
 
-      const jsonMatch = response.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON in response');
-
-      const result = JSON.parse(jsonMatch[0]) as {
-        isDecorative?: unknown;
-        altText?: unknown;
-        confidence?: unknown;
-      };
+      const result = responseParserService.parse(response.text, ClassifyImageResult);
 
       return {
-        isDecorative: result.isDecorative === true,
-        altText: typeof result.altText === 'string' ? result.altText.trim().substring(0, 125) : '',
-        confidence: typeof result.confidence === 'number'
-          ? Math.min(1, Math.max(0, result.confidence))
-          : 0.7,
+        isDecorative: result.isDecorative,
+        altText: result.altText.trim().substring(0, 125),
+        confidence: Math.min(1, Math.max(0, result.confidence)),
       };
     } catch (err) {
       logger.warn(`[PDFAltTextValidator] AI classification failed for image ${image.id}: ${err instanceof Error ? err.message : String(err)}`);

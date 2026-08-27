@@ -230,6 +230,58 @@ describe('PDFAltTextValidator', () => {
       // Should still identify quality issues without AI (length-based checks)
       expect(result.summary.moderate).toBeGreaterThan(0);
     });
+
+    it('requests structured JSON output (responseSchema) from Gemini for classification', async () => {
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
+        text: '{"isDecorative": false, "altText": "A chart", "confidence": 0.9}',
+      });
+
+      await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
+
+      expect(geminiService.analyzeImage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ responseSchema: expect.any(Object) })
+      );
+    });
+
+    it('falls back to a safe default when the AI response is well-formed JSON but the wrong shape', async () => {
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+      // Valid JSON, but wrong types — matchesContent/confidence as strings instead
+      // of the expected boolean/number. Must fail schema validation and fall back
+      // rather than silently coercing (e.g. `=== true` on a string) or crashing.
+      vi.mocked(geminiService.analyzeImage).mockResolvedValue({
+        text: '{"isDecorative": "not-a-boolean", "altText": 42, "confidence": "high"}',
+      });
+
+      const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
+
+      expect(result).toBeDefined();
+      // No crash — schema validation rejects the mistyped fields and the
+      // classifier falls back to its safe default (isDecorative: false,
+      // altText: '', confidence: 0.5) rather than silently coercing bad
+      // types (e.g. a truthy non-boolean string) or throwing.
+      const noAltTextIssue = result.issues.find(i => i.code === 'MATTERHORN-13-001');
+      expect(noAltTextIssue).toBeDefined();
+      expect(noAltTextIssue?.suggestion).toBe('AI-generated alt text: ""');
+      expect(noAltTextIssue?.triage?.confidence).toBe(0.5);
+    });
   });
 
   describe('severity classification', () => {
