@@ -634,7 +634,11 @@ class AiAnalysisService {
         completionTokens: (classification?.usage?.completionTokens ?? 0) + (response.usage?.completionTokens ?? 0),
       };
 
-      if (data.isDecorative) {
+      // Strict `=== true` — parseAiJson does a bare JSON.parse cast with no runtime
+      // validation, so a malformed response like `"isDecorative":"false"` (a string)
+      // would otherwise be truthy and clear real alt text on a meaningful image, now
+      // that the decorative path can reach apply-to-pdf instead of always guidance-only.
+      if (data.isDecorative === true) {
         // No `value` — nothing to show in an editable box. Applying writes a
         // hardcoded empty string directly (see pdf-ai-analysis.controller.ts),
         // not this row's value, since '' is falsy and would otherwise trip the

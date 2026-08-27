@@ -75,4 +75,18 @@ describe('analyzeAltText — decorative branch applyMode', () => {
     expect(res.value).toBe('A red apple');
     expect(res.applyMode).toBe('apply-to-pdf');
   });
+
+  it('does not treat a malformed string "false" as decorative (regression: parseAiJson has no runtime validation)', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
+    vi.spyOn(geminiService, 'analyzeImage').mockResolvedValue({
+      // A non-boolean isDecorative would otherwise be truthy and wrongly
+      // clear real alt text once this path can reach apply-to-pdf.
+      text: '{"isDecorative":"false","altText":"A red apple","confidence":0.9,"rationale":"Informative photo"}',
+      usage: { promptTokens: 20, completionTokens: 10 },
+    } as never);
+
+    const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf');
+    expect(res.suggestionType).toBe('alt-text');
+    expect(res.value).toBe('A red apple');
+  });
 });
