@@ -139,6 +139,18 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
  * needs a fresh operator decision. Exported for direct unit testing —
  * analyzeJob's own dependencies (storage, Prisma, AI clients) make it
  * impractical to test this in-place.
+ *
+ * Requires a genuine (non-null) matching value before preserving 'applied' —
+ * not just a matching suggestionType. issueId is a per-audit sequential
+ * counter (BaseAuditService.issueCounter), not a stable fingerprint: applyAll
+ * triggers a full re-audit that regenerates every issue's id from scratch, so
+ * a still-open finding can inherit the id an already-fixed finding used to
+ * have. Value-less, rule-based suggestion types (table-header-fix,
+ * heading-fix, alt-text-decorative, etc.) compute identically regardless of
+ * which element they're about, so matching on suggestionType alone would
+ * transfer 'applied' onto a genuinely different, still-unfixed issue that
+ * happened to inherit the old id. A real value (a specific alt-text string,
+ * hex color, summary) makes that collision far less likely.
  */
 export function resolveSuggestionStatus(
   existing: { status: string; suggestionType: string; value: string | null } | null,
@@ -150,7 +162,8 @@ export function resolveSuggestionStatus(
 
   const unchanged =
     existing.suggestionType === suggestion.suggestionType &&
-    existing.value === (suggestion.value ?? null);
+    existing.value != null &&
+    existing.value === suggestion.value;
 
   return unchanged ? 'applied' : defaultStatus;
 }
@@ -328,6 +341,12 @@ class AiAnalysisService {
 
           // Look up the current row so a re-analysis doesn't silently revert an
           // already-applied fix's status just because the suggestion was recomputed.
+          // Not transactional: a concurrent applySuggestion landing between this read
+          // and the upsert below could still get overwritten. Accepted for now — no
+          // worse than the pre-existing behavior (which always overwrote 'applied'
+          // unconditionally), and applying a fix while a full re-analysis is mid-run
+          // on that exact same issue is a narrow window. Worth an atomic conditional
+          // write if it turns out to matter in practice.
           const existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
             select: { status: true, suggestionType: true, value: true },

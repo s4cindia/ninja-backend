@@ -43,11 +43,24 @@ describe('resolveSuggestionStatus', () => {
     expect(resolveSuggestionStatus(null, suggestion, 'auto-resolve')).toBe('approved');
   });
 
-  it('treats a value-less suggestion (undefined) as matching a stored null value', () => {
-    // Prisma stores an absent `value` as null; AiSuggestionResult.value is undefined
-    // when absent — these must compare as equal, not as a spurious "changed".
+  it('never preserves "applied" for a value-less suggestion, even when suggestionType matches', () => {
+    // Regression: issueId is a per-audit sequential counter (BaseAuditService),
+    // not a stable fingerprint — applyAll's internal re-audit regenerates every
+    // issue's id from scratch, so a still-open finding can inherit the id an
+    // already-fixed finding used to have. Value-less, rule-based suggestions
+    // (table-header-fix, heading-fix, alt-text-decorative, ...) compute
+    // identically regardless of which element they're about, so matching on
+    // suggestionType alone would wrongly transfer 'applied' onto a genuinely
+    // different, still-unfixed issue. Must always reset to the default instead.
     const existing = { status: 'applied', suggestionType: 'heading-fix', value: null };
     const suggestion = { suggestionType: 'heading-fix', value: undefined };
+
+    expect(resolveSuggestionStatus(existing, suggestion, 'apply-to-pdf')).toBe('pending');
+  });
+
+  it('preserves "applied" for a genuine, matching non-null value', () => {
+    const existing = { status: 'applied', suggestionType: 'color-contrast-fix', value: '#1a1a1a' };
+    const suggestion = { suggestionType: 'color-contrast-fix', value: '#1a1a1a' };
 
     expect(resolveSuggestionStatus(existing, suggestion, 'apply-to-pdf')).toBe('applied');
   });
