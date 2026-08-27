@@ -1945,6 +1945,14 @@ model AiAnalysis {
   /// 'pending' | 'approved' | 'rejected' | 'applied'
   status               String   @default("pending")
   requiresManualReview Boolean  @default(false)
+  /// Stable identity for the underlying finding (code + element/page, or
+  /// code + rounded position for contrast issues) -- independent of issueId,
+  /// which is a per-audit sequential counter that gets reassigned whenever
+  /// applyAll's internal re-audit replaces the audit report. Nullable:
+  /// existing rows predate this column and simply won't match on their next
+  /// re-analysis (identical to the prior unconditional-reset behavior -- not
+  /// a regression), then self-heal once repopulated.
+  issueFingerprint     String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

@@ -130,37 +130,65 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
 }
 
 /**
+ * Stable identity for "the same underlying finding," independent of
+ * issue.id — which is BaseAuditService.issueCounter, a per-audit sequential
+ * counter reset to 0 and reassigned from scratch on every audit run.
+ * applyAll's internal re-audit replaces the whole audit report, so a
+ * still-open finding can inherit the id an already-fixed finding used to
+ * have. element (img_p{page}_{index}_{name}, table_p{page}_{index}) is
+ * durable across a re-audit since accessibility fixes don't reorder/remove
+ * the underlying image/table XObjects. Contrast issues have no element —
+ * boundingBox position substitutes, since a fix recolors text without
+ * moving it. Doc-level codes have neither, but by design only ever produce
+ * one issue per document (see buildSuggestionCacheKey above), so code alone
+ * is unambiguous. Used by resolveSuggestionStatus to gate 'applied'
+ * preservation; exported for direct unit testing alongside it.
+ */
+export function buildIssueFingerprint(
+  issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'boundingBox'>
+): string {
+  if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
+  if (CONTRAST_CODES.has(issue.code) && issue.boundingBox) {
+    const { x, y } = issue.boundingBox;
+    return `${issue.code}:${issue.pageNumber ?? ''}:${Math.round(x)}:${Math.round(y)}`;
+  }
+  return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
+}
+
+/**
  * Decides the status to persist for a re-analyzed suggestion. A row already
  * marked 'applied' means a fix was actually written into the PDF — re-running
  * AI analysis must not silently revert that to pending/approved just because
  * the suggestion was recomputed. Only reset it when the newly computed
- * suggestion actually differs from what's stored (new suggestionType or
- * value), since that means whatever was applied before is now stale and
- * needs a fresh operator decision. Exported for direct unit testing —
- * analyzeJob's own dependencies (storage, Prisma, AI clients) make it
- * impractical to test this in-place.
+ * suggestion actually differs from what's stored (new suggestionType, value,
+ * or the underlying finding itself per issueFingerprint — see
+ * buildIssueFingerprint above), since that means whatever was applied before
+ * is now stale and needs a fresh operator decision. Exported for direct unit
+ * testing — analyzeJob's own dependencies (storage, Prisma, AI clients) make
+ * it impractical to test this in-place.
  *
- * Requires a genuine (non-null) matching value before preserving 'applied' —
- * not just a matching suggestionType. issueId is a per-audit sequential
- * counter (BaseAuditService.issueCounter), not a stable fingerprint: applyAll
- * triggers a full re-audit that regenerates every issue's id from scratch, so
- * a still-open finding can inherit the id an already-fixed finding used to
- * have. Value-less, rule-based suggestion types (table-header-fix,
- * heading-fix, alt-text-decorative, etc.) compute identically regardless of
- * which element they're about, so matching on suggestionType alone would
- * transfer 'applied' onto a genuinely different, still-unfixed issue that
- * happened to inherit the old id. A real value (a specific alt-text string,
- * hex color, summary) makes that collision far less likely.
+ * Also requires a genuine (non-null) matching value before preserving
+ * 'applied' — not just a matching suggestionType + fingerprint. Value-less,
+ * rule-based suggestion types (table-header-fix, heading-fix,
+ * alt-text-decorative, etc.) compute identically regardless of which element
+ * they're about, so without this, two distinct issues sharing a doc-level
+ * fingerprint (or, before issueFingerprint existed, a reused issueId) could
+ * still spuriously match. A real value (a specific alt-text string, hex
+ * color, summary) makes a same-type collision far less likely, and a null
+ * existing.issueFingerprint (a pre-migration row) never matches a freshly
+ * computed one, so old rows safely fall through once before self-healing.
  */
 export function resolveSuggestionStatus(
-  existing: { status: string; suggestionType: string; value: string | null } | null,
+  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null } | null,
   suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
+  issueFingerprint: string,
   effectiveApplyMode: AiSuggestionResult['applyMode']
 ): string {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
   if (!existing || existing.status !== 'applied') return defaultStatus;
 
   const unchanged =
+    existing.issueFingerprint === issueFingerprint &&
     existing.suggestionType === suggestion.suggestionType &&
     existing.value != null &&
     existing.value === suggestion.value;
@@ -347,11 +375,12 @@ class AiAnalysisService {
           // unconditionally), and applying a fix while a full re-analysis is mid-run
           // on that exact same issue is a narrow window. Worth an atomic conditional
           // write if it turns out to matter in practice.
+          const issueFingerprint = buildIssueFingerprint(issue);
           const existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
           });
-          const status = resolveSuggestionStatus(existing, suggestion, effectiveApplyMode);
+          const status = resolveSuggestionStatus(existing, suggestion, issueFingerprint, effectiveApplyMode);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -367,6 +396,7 @@ class AiAnalysisService {
               applyMode: effectiveApplyMode,
               status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
+              issueFingerprint,
               updatedAt: new Date(),
             },
             update: {
@@ -379,6 +409,7 @@ class AiAnalysisService {
               applyMode: effectiveApplyMode,
               status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
+              issueFingerprint,
               updatedAt: new Date(),
             },
           });
