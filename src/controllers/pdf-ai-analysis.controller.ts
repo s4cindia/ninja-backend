@@ -609,6 +609,7 @@ export class PdfAiAnalysisController {
           adobeFlags: (autoTagProgress.adobeFlags as unknown[] | undefined) ?? [],
           postRemediationStatus: output.postRemediationStatus as string | undefined,
           postRemediationAudit: output.postRemediationAudit as Record<string, unknown> | undefined,
+          postRemediationProgress: output.postRemediationProgress as Record<string, unknown> | undefined,
         },
       });
     } catch (error) {
