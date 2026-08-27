@@ -376,10 +376,31 @@ class AiAnalysisService {
           // on that exact same issue is a narrow window. Worth an atomic conditional
           // write if it turns out to matter in practice.
           const issueFingerprint = buildIssueFingerprint(issue);
-          const existing = await prisma.aiAnalysis.findUnique({
+          let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
             select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
           });
+          // Fallback: issue.id can be stale even for THIS issue. An intervening
+          // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
+          // id from scratch, so a genuinely unchanged finding can be reassigned a
+          // new id whenever an earlier finding in emission order disappears (gets
+          // fixed/removed). Its own prior row then sits orphaned under the old id
+          // and is never found by an id-keyed lookup again. If the row found by the
+          // current id doesn't match this issue's fingerprint (or no row exists at
+          // that id), search this job for this issue's own row by fingerprint
+          // instead — without this, the fingerprint check above only prevents
+          // wrongly *preserving* status; it can't prevent wrongly *losing* it.
+          if (!existing || existing.issueFingerprint !== issueFingerprint) {
+            const byFingerprint = await prisma.aiAnalysis.findFirst({
+              where: { jobId, issueFingerprint },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
+              // Stale rows can accumulate under successive old ids sharing this
+              // fingerprint across repeated re-audits — take the most recently
+              // written one, not an arbitrary one.
+              orderBy: { updatedAt: 'desc' },
+            });
+            if (byFingerprint) existing = byFingerprint;
+          }
           const status = resolveSuggestionStatus(existing, suggestion, issueFingerprint, effectiveApplyMode);
 
           await prisma.aiAnalysis.upsert({
