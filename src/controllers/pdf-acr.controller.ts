@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
+import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { pdfAcrGeneratorService, ProductInfo } from '../services/pdf/acr-generator.service';
 import type { AuditReport } from '../services/audit/base-audit.service';
@@ -68,6 +70,23 @@ class PdfAcrController {
       const acrReport = await pdfAcrGeneratorService.generateAcr(auditReport, productInfo);
 
       logger.info(`[PdfAcrController] ACR generated for job ${job.id}: ${acrReport.wcagResults.length} criteria`);
+
+      // Tracked for the guided-remediation checklist's step 6 gate — best-effort,
+      // never fails the report itself if the write doesn't land.
+      try {
+        await prisma.job.update({
+          where: { id: job.id },
+          data: {
+            output: {
+              ...(output ?? {}),
+              acrGenerated: true,
+              acrGeneratedAt: new Date().toISOString(),
+            } as Prisma.InputJsonObject,
+          },
+        });
+      } catch (err) {
+        logger.warn(`[PdfAcrController] Failed to record acrGenerated for job ${job.id} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       res.json({ success: true, data: acrReport });
     } catch (error) {

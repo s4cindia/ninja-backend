@@ -95,6 +95,19 @@ router.post(
 );
 
 /**
+ * POST /pdf/:jobId/ai-analysis/guidance-acknowledgment
+ * Record the operator's acknowledgment of remaining guidance-only items.
+ * Must be declared BEFORE /:issueId routes to avoid ambiguity.
+ * Body: { note: string }
+ */
+router.post(
+  '/:jobId/ai-analysis/guidance-acknowledgment',
+  authenticate,
+  authorizeJob,
+  pdfAiAnalysisController.acknowledgeGuidance.bind(pdfAiAnalysisController)
+);
+
+/**
  * PATCH /pdf/:jobId/ai-analysis/:issueId
  * Update suggestion status (approved | rejected).
  */

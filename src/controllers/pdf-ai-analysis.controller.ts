@@ -45,6 +45,10 @@ const updateStatusSchema = z.object({
   status: z.enum(['approved', 'rejected']),
 });
 
+const acknowledgeGuidanceSchema = z.object({
+  note: z.string().trim().min(1),
+});
+
 // ─── Controller ──────────────────────────────────────────────────────────────
 
 export class PdfAiAnalysisController {
@@ -131,6 +135,7 @@ export class PdfAiAnalysisController {
           analyzed,
           status,
           stats,
+          guidanceAcknowledgment: (output.guidanceAcknowledgment as Record<string, unknown> | undefined) ?? null,
         },
       });
     } catch (error) {
@@ -168,6 +173,49 @@ export class PdfAiAnalysisController {
       });
 
       res.json({ success: true, data: updated });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /pdf/:jobId/ai-analysis/guidance-acknowledgment
+   * Records the operator's acknowledgment that guidance-only suggestions are
+   * being left for manual/out-of-tool resolution, with a required note —
+   * part of the guided-remediation checklist's step 4 gate.
+   */
+  async acknowledgeGuidance(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const job = req.job!;
+      const jobId = job.id;
+
+      const parsed = acknowledgeGuidanceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw AppError.badRequest('Invalid request body: ' + parsed.error.message);
+      }
+
+      // Computed server-side rather than trusted from the client, so the
+      // recorded count always reflects what's actually still pending.
+      const remainingCount = await prisma.aiAnalysis.count({
+        where: { jobId, applyMode: 'guidance-only', status: 'pending' },
+      });
+
+      const currentOutput = (job.output ?? {}) as Record<string, unknown>;
+      const guidanceAcknowledgment = {
+        note: parsed.data.note,
+        remainingCount,
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedBy: req.user.id,
+      };
+
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { output: { ...currentOutput, guidanceAcknowledgment } as Prisma.InputJsonObject },
+      });
+
+      res.json({ success: true, data: guidanceAcknowledgment });
     } catch (error) {
       next(error);
     }
@@ -602,9 +650,19 @@ export class PdfAiAnalysisController {
       const output = (job.output ?? {}) as Record<string, unknown>;
       const input = (job.input ?? {}) as Record<string, unknown>;
       const autoTagProgress = (input.autoTagProgress ?? {}) as Record<string, unknown>;
+
+      // Lets the guided-remediation checklist know whether this job is part of
+      // the pdfxt comparison study (and, if so, which trial to validate) —
+      // jobs created via the plain upload flow have no linked trial at all.
+      const comparisonTrial = await prisma.comparisonTrial.findFirst({
+        where: { ninjaJobId: job.id },
+        select: { id: true },
+      });
+
       res.json({
         success: true,
         data: {
+          comparisonTrialId: comparisonTrial?.id ?? null,
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
           skipReason: output.autoTagSkipReason as string | undefined,
