@@ -247,6 +247,10 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'color-contrast-fix') {
         const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'alt-text-decorative') {
+        // Hardcoded '' rather than the stored value — '' is falsy and would
+        // otherwise trip the "no value to apply" guard below for no reason.
+        modification = await pdfModifierService.setAltText(doc, elementId, '');
       } else {
         // Value-based operations
         if (!value) throw AppError.badRequest('This suggestion has no value to apply');
@@ -352,7 +356,7 @@ export class PdfAiAnalysisController {
       const issueById = new Map(auditIssues.map(i => [i.id, i]));
 
       // Structure writer types are algorithmic — they don't require a value field
-      const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix']);
+      const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
       let applied = 0;
       let failed = 0;
@@ -400,6 +404,10 @@ export class PdfAiAnalysisController {
           } else if (suggestionType === 'color-contrast-fix') {
             const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
             modification = { success: result.success, description: result.after, error: result.error };
+          } else if (suggestionType === 'alt-text-decorative') {
+            // Hardcoded '' rather than the stored value — see the identical
+            // branch in applySuggestion above for why.
+            modification = await pdfModifierService.setAltText(doc, elementId, '');
           } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
             modification = await pdfModifierService.setAltText(doc, elementId, value!);
           } else if (suggestionType === 'table-summary') {

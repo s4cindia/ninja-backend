@@ -285,12 +285,17 @@ class AiAnalysisService {
           // is excluded regardless of tenant settings: it's the only suggestion type
           // that writes into a content stream rather than structure tags/metadata, and
           // the initial rollout always requires an explicit human Approve/Apply click.
+          // alt-text-decorative is excluded too: a false-positive "decorative" call
+          // silently makes real content permanently invisible to screen readers — a
+          // worse failure mode than most other auto-apply mistakes — so it also always
+          // requires an explicit human click regardless of tenant auto-apply settings.
           let effectiveApplyMode = suggestion.applyMode;
           if (
             config.autoApplyHighConfidence &&
             suggestion.confidence >= 0.90 &&
             suggestion.applyMode === 'apply-to-pdf' &&
-            suggestion.suggestionType !== 'color-contrast-fix'
+            suggestion.suggestionType !== 'color-contrast-fix' &&
+            suggestion.suggestionType !== 'alt-text-decorative'
           ) {
             effectiveApplyMode = 'apply-to-pdf';
           }
@@ -630,13 +635,20 @@ class AiAnalysisService {
       };
 
       if (data.isDecorative) {
+        // No `value` — nothing to show in an editable box. Applying writes a
+        // hardcoded empty string directly (see pdf-ai-analysis.controller.ts),
+        // not this row's value, since '' is falsy and would otherwise trip the
+        // "no value to apply" guards shared with real value-based suggestions.
         return {
           suggestionType: 'alt-text-decorative',
-          guidance: 'This image appears decorative. Mark it as an artifact in the PDF structure.',
+          guidance:
+            mode === 'guidance-only'
+              ? 'This image appears decorative — set alt="" in the authoring tool to suppress screen reader announcement.'
+              : 'This image appears decorative — alt text will be cleared to suppress screen reader announcement.',
           confidence: data.confidence,
           rationale: data.rationale,
           model: 'gemini-flash',
-          applyMode: 'guidance-only',
+          applyMode: mode,
           usage,
         };
       }
