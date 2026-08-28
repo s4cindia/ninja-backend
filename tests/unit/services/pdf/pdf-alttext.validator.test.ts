@@ -227,6 +227,16 @@ describe('PDFAltTextValidator', () => {
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
       expect(geminiService.analyzeImageWithSchema).toHaveBeenCalled();
+      // Regression: quality-assessment calls also need the 600-token budget
+      // (was 300 — see the classification test above for why).
+      expect(geminiService.analyzeImageWithSchema).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ maxOutputTokens: 600 }),
+        expect.any(Object)
+      );
       expect(result.summary.moderate).toBeGreaterThan(0);
 
       const qualityIssue = result.issues.find(i => i.code === 'ALT-TEXT-QUALITY');
@@ -277,6 +287,36 @@ describe('PDFAltTextValidator', () => {
         expect.any(String),
         expect.any(Object),
         expect.objectContaining({ responseSchema: expect.any(Object) }),
+        expect.any(Object)
+      );
+    });
+
+    it('requests a 600-token budget for classification (regression: 300 was too tight)', async () => {
+      // A real trial showed the model frequently prefixing responses with an
+      // unwanted preamble ("Here is the analysis...") that, combined with a
+      // 300-token budget, truncated the JSON mid-string — and since retries
+      // reuse the same budget, the same truncation recurred on every attempt.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+      vi.mocked(geminiService.analyzeImageWithSchema).mockResolvedValue({
+        data: { isDecorative: false, altText: 'A chart', confidence: 0.9 },
+        attempts: 1,
+      });
+
+      await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
+
+      expect(geminiService.analyzeImageWithSchema).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.any(Object),
+        expect.objectContaining({ maxOutputTokens: 600 }),
         expect.any(Object)
       );
     });
