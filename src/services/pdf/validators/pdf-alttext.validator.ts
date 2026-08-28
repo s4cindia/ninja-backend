@@ -458,7 +458,8 @@ Tasks:
    - Is concise and clear
    - Focuses on what's important for understanding the content
 
-Respond ONLY with valid JSON in this exact format:
+Respond with ONLY the raw JSON object below — no preamble, no explanation, no
+markdown code fences. Your response must start with "{" and contain nothing else:
 {
   "matchesContent": true or false,
   "suggestedAltText": "your suggestion here"
@@ -467,13 +468,22 @@ Respond ONLY with valid JSON in this exact format:
     try {
       // responseSchema alone doesn't guarantee compliance — retry with a
       // correction prompt (same image re-attached) on a parse miss rather
-      // than giving up after one attempt.
+      // than giving up after one attempt. maxOutputTokens raised 300 -> 600:
+      // the model would often prefix responses with an unwanted "Here is
+      // the analysis..." preamble despite instructions, and at 300 tokens
+      // that preamble frequently ate enough of the budget to truncate the
+      // JSON itself mid-string (seen live as sustained "Unexpected end of
+      // JSON input" / "Here is th"-prefixed parse failures on a real trial).
+      // Since maxOutputTokens is fixed per call and reused unchanged on
+      // every retry attempt, a too-tight budget made retries just as likely
+      // to truncate as the first attempt — a stronger-worded retry prompt
+      // alone can't fix a budget problem.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64,
         image.mimeType,
         prompt,
         AssessAltTextResult,
-        { model: 'flash', temperature: 0.3, maxOutputTokens: 300, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
+        { model: 'flash', temperature: 0.3, maxOutputTokens: 600, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
         { maxRetries: 2 }
       );
       return { matchesContent: data.matchesContent, suggestedAltText: data.suggestedAltText };
@@ -498,7 +508,8 @@ Tasks:
 1. Is this image decorative? (ornamental borders, horizontal rules, background textures, and page decorations with no information content are decorative; treat logos and brand marks as informative unless surrounding text already conveys the same information)
 2. If not decorative, write concise alt text in 1-2 sentences (max 125 characters).
 
-Respond with JSON only:
+Respond with ONLY the raw JSON object below — no preamble, no explanation, no
+markdown code fences. Your response must start with "{" and contain nothing else:
 {
   "isDecorative": true|false,
   "altText": "description here, or empty string if decorative",
@@ -508,13 +519,14 @@ Respond with JSON only:
     try {
       // responseSchema alone doesn't guarantee compliance — retry with a
       // correction prompt (same image re-attached) on a parse miss rather
-      // than giving up after one attempt.
+      // than giving up after one attempt. maxOutputTokens raised 300 -> 600 —
+      // see the matching comment in assessAltTextWithAI above for why.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
         ClassifyImageResult,
-        { model: 'flash', temperature: 0.2, maxOutputTokens: 300, responseSchema: CLASSIFY_IMAGE_SCHEMA },
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 600, responseSchema: CLASSIFY_IMAGE_SCHEMA },
         { maxRetries: 2 }
       );
 
