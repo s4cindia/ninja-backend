@@ -1245,12 +1245,25 @@ export class PdfRemediationController {
         req.file.originalname
       );
 
-      // Persist the uploaded (manually-fixed) buffer as the job's new canonical
-      // remediated file — without this, the audit report gets refreshed but
-      // ACR/PAC generation, future re-audits, and AI re-analysis all keep
-      // reading the OLD file back out of storage, silently ignoring the fix
-      // this endpoint was just asked to verify.
-      const remediatedPath = await fileStorageService.saveRemediatedFile(jobId, req.file.originalname, buffer);
+      // Only a genuinely successful re-audit gets to overwrite the canonical
+      // file and report verification complete. reauditAndCompare can resolve
+      // with success: false (e.g. a magic-valid but otherwise malformed PDF)
+      // instead of throwing -- treating that as a completed verification
+      // would both discard the previous good remediated file and falsely
+      // tell the checklist the fix landed, with misleading zero-valued
+      // metrics to back it up.
+      let remediatedPath: string | undefined;
+      if (comparisonResult.success) {
+        // Save under the job's own canonical filename, not the upload's --
+        // reauditCurrentFile and AI re-analysis look the file up later by
+        // the job's original fileName (falling back to 'document.pdf'), so
+        // storing it under whatever the operator happened to name their
+        // local copy (e.g. "manually-fixed.pdf") would make it unreachable
+        // to every downstream consumer.
+        const jobInput = job.input as { fileName?: string } | null;
+        const canonicalFileName = jobInput?.fileName || 'document.pdf';
+        remediatedPath = await fileStorageService.saveRemediatedFile(jobId, canonicalFileName, buffer);
+      }
 
       // Update job output with comparison data
       // Type assertion needed because Prisma's InputJsonValue is strict,
@@ -1266,20 +1279,24 @@ export class PdfRemediationController {
             ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
             reauditComparison: comparisonResult,
             lastReauditAt: new Date().toISOString(),
-            remediatedFileUrl: remediatedPath,
             // Same shape as applyAll's automatic post-remediation re-audit
             // (pdf-ai-analysis.controller.ts) -- the guided-remediation
             // checklist's re-audit steps key off these fields regardless of
             // whether the re-audit was triggered automatically or, as here,
-            // by uploading a manually-fixed PDF.
-            postRemediationStatus: 'complete',
-            postRemediationAudit: {
-              runAt: new Date().toISOString(),
-              resolved: comparisonResult.metrics.resolvedCount,
-              remaining: comparisonResult.metrics.remainingCount,
-              regressions: comparisonResult.metrics.regressionCount,
-              resolutionRate: comparisonResult.metrics.resolutionRate,
-            },
+            // by uploading a manually-fixed PDF. Only written on success --
+            // see the comment above remediatedPath for why a failed
+            // verification must not claim completion.
+            ...(comparisonResult.success ? {
+              remediatedFileUrl: remediatedPath,
+              postRemediationStatus: 'complete',
+              postRemediationAudit: {
+                runAt: new Date().toISOString(),
+                resolved: comparisonResult.metrics.resolvedCount,
+                remaining: comparisonResult.metrics.remainingCount,
+                regressions: comparisonResult.metrics.regressionCount,
+                resolutionRate: comparisonResult.metrics.resolutionRate,
+              },
+            } : {}),
           } as unknown as Prisma.InputJsonObject,
           updatedAt: new Date(),
         },
