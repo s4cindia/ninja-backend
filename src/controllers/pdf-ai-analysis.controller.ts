@@ -49,6 +49,11 @@ const acknowledgeGuidanceSchema = z.object({
   note: z.string().trim().min(1),
 });
 
+const logManualRemediationTimeSchema = z.object({
+  minutes: z.number().positive(),
+  note: z.string().trim().optional(),
+});
+
 // ─── Controller ──────────────────────────────────────────────────────────────
 
 export class PdfAiAnalysisController {
@@ -224,6 +229,104 @@ export class PdfAiAnalysisController {
       });
 
       res.json({ success: true, data: guidanceAcknowledgment });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /pdf/:jobId/manual-remediation-time
+   * Logs self-reported time spent on manual out-of-app remediation (e.g.
+   * Acrobat Pro) for guidance-only items Ninja can't auto-fix — invisible to
+   * the automatic RemediationSession timer, which only tracks time active on
+   * Ninja's own pages. Accumulates across multiple calls (multiple sessions
+   * are expected), independent of the guidance-acknowledgment flow so it
+   * still works when an operator manually resolves every guidance item
+   * rather than acknowledging-and-skipping the rest.
+   */
+  async logManualRemediationTime(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const job = req.job!;
+      const jobId = job.id;
+
+      const parsed = logManualRemediationTimeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw AppError.badRequest('Invalid request body: ' + parsed.error.message);
+      }
+      const { minutes, note } = parsed.data;
+
+      const entry = {
+        minutes,
+        note,
+        loggedAt: new Date().toISOString(),
+        loggedBy: req.user.id,
+      };
+
+      // Unlike the single-value output flags elsewhere in this controller
+      // (guidance-acknowledgment, acrGenerated, pacReportGenerated), this
+      // field is an appended log of discrete entries — a lost update here
+      // doesn't just cause a harmless redundant recompute, it silently
+      // deletes a real logged time entry with no way to recover it. That's
+      // a materially worse failure mode for exactly the kind of thing this
+      // feature exists to capture accurately, so a plain re-fetch-before-write
+      // (which only narrows the race) isn't good enough here — this uses a
+      // Serializable transaction with retry-on-conflict so a concurrent
+      // append (double-submit, two tabs) can never overwrite the other.
+      let totalMs = 0;
+      let log: unknown[] = [];
+      const MAX_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          ({ totalMs, log } = await prisma.$transaction(
+            async (tx) => {
+              const latestJob = await tx.job.findUnique({ where: { id: jobId } });
+              const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+              const existingLog = Array.isArray(latestOutput.manualRemediationLog)
+                ? (latestOutput.manualRemediationLog as Array<{ minutes: number }>)
+                : [];
+              const nextLog = [...existingLog, entry];
+              // Derived from the log on every write rather than tracked
+              // separately, so the total can never drift out of sync with
+              // its entries.
+              const nextTotalMs = Math.round(nextLog.reduce((sum, e) => sum + e.minutes, 0) * 60000);
+
+              await tx.job.update({
+                where: { id: jobId },
+                data: {
+                  output: {
+                    ...latestOutput,
+                    manualRemediationLog: nextLog,
+                    manualRemediationMs: nextTotalMs,
+                  } as Prisma.InputJsonObject,
+                },
+              });
+
+              return { totalMs: nextTotalMs, log: nextLog };
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+          ));
+          break;
+        } catch (err) {
+          const isSerializationConflict =
+            err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034';
+          if (!isSerializationConflict || attempt === MAX_ATTEMPTS) throw err;
+        }
+      }
+
+      // Atomic increment — race-free at the DB level, no read-modify-write
+      // needed for this single numeric column (unlike the JSON output above).
+      // Skipped entirely for jobs with no linked comparison trial.
+      const trial = await prisma.comparisonTrial.findFirst({ where: { ninjaJobId: jobId }, select: { id: true } });
+      if (trial) {
+        await prisma.comparisonTrial.update({
+          where: { id: trial.id },
+          data: { ninjaManualTimeMs: { increment: Math.round(minutes * 60000) } },
+        });
+      }
+
+      res.json({ success: true, data: { totalMinutes: totalMs / 60000, log } });
     } catch (error) {
       next(error);
     }
@@ -671,6 +774,7 @@ export class PdfAiAnalysisController {
         success: true,
         data: {
           comparisonTrialId: comparisonTrial?.id ?? null,
+          manualRemediationMs: (output.manualRemediationMs as number | undefined) ?? 0,
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
           skipReason: output.autoTagSkipReason as string | undefined,

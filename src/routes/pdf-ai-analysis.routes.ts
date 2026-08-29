@@ -108,6 +108,20 @@ router.post(
 );
 
 /**
+ * POST /pdf/:jobId/manual-remediation-time
+ * Log self-reported time spent on manual out-of-app remediation (e.g.
+ * Acrobat Pro). Accumulates across calls; independent of the guidance
+ * checklist step so it works regardless of how that step gets completed.
+ * Body: { minutes: number, note?: string }
+ */
+router.post(
+  '/:jobId/manual-remediation-time',
+  authenticate,
+  authorizeJob,
+  pdfAiAnalysisController.logManualRemediationTime.bind(pdfAiAnalysisController)
+);
+
+/**
  * PATCH /pdf/:jobId/ai-analysis/:issueId
  * Update suggestion status (approved | rejected).
  */
