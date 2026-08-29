@@ -1258,7 +1258,7 @@ export class PdfRemediationController {
       }
       const cycleNumber = lock.cycleNumber!;
       const cycleStartedAt = new Date();
-      const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
+      const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
 
       try {
         // Run re-audit and comparison
@@ -1369,9 +1369,26 @@ export class PdfRemediationController {
             details: null,
           },
         });
+      } catch (err) {
+        // reauditAndCompare, file storage, or the job.output write can throw
+        // outright (not just resolve with success: false) -- without this,
+        // that path skips logEvent entirely and the history log silently
+        // omits an exceptional failure even though it's presented as a log
+        // of every completed-or-failed action.
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'reaudit',
+          source: 'reaudit_pdf_upload',
+          status: 'failed',
+          errorMessage: err instanceof Error ? err.message : String(err),
+          triggeredBy: req.user!.id,
+          startedAt: cycleStartedAt,
+        });
+        throw err;
       } finally {
         remediationCycleLockService.stopHeartbeat(heartbeat);
-        await remediationCycleLockService.releaseLock(jobId);
+        await remediationCycleLockService.releaseLock(jobId, cycleNumber);
       }
     } catch (error) {
       logger.error('Failed to re-audit PDF', {
@@ -1462,7 +1479,7 @@ export class PdfRemediationController {
       }
       const cycleNumber = lock.cycleNumber!;
       const cycleStartedAt = new Date();
-      const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
+      const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
 
       try {
         logger.info(`[Re-Audit] Re-running audit against current stored file for job ${jobId}`);
@@ -1529,9 +1546,24 @@ export class PdfRemediationController {
           data: comparisonResult,
           error: { code: null, message: null, details: null },
         });
+      } catch (err) {
+        // See the identical fix/comment in reauditPdf above -- an exception
+        // here (not just a resolved success: false) must still leave a
+        // failed history record behind.
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'reaudit',
+          source: 'reaudit_current_file',
+          status: 'failed',
+          errorMessage: err instanceof Error ? err.message : String(err),
+          triggeredBy: req.user!.id,
+          startedAt: cycleStartedAt,
+        });
+        throw err;
       } finally {
         remediationCycleLockService.stopHeartbeat(heartbeat);
-        await remediationCycleLockService.releaseLock(jobId);
+        await remediationCycleLockService.releaseLock(jobId, cycleNumber);
       }
     } catch (error) {
       logger.error('Failed to re-audit current PDF', {

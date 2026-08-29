@@ -4,8 +4,12 @@
  * Focus areas:
  * - acquireLock reflects the atomic updateMany's count (1 = acquired, 0 = rejected)
  * - a rejected acquire reports the current holder's lockedAt/lockedBy/source
- * - getLockStatus treats a lock older than the staleness threshold as not-in-progress
- * - releaseLock/touchLock never throw even if the underlying update fails
+ * - getLockStatus treats a lock older than the staleness threshold as not-in-progress,
+ *   including at the exact boundary
+ * - releaseLock/touchLock are conditioned on the acquired cycleNumber (ownership
+ *   token), so a stale cycle that resumes late cannot clear or refresh a newer
+ *   cycle's lock -- and never throw even if the underlying update fails
+ * - startHeartbeat renews the lock on each tick until stopped
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -13,7 +17,6 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     job: {
       updateMany: vi.fn(),
-      update: vi.fn(),
       findUnique: vi.fn(),
     },
   },
@@ -25,7 +28,6 @@ import { remediationCycleLockService } from '../../../../src/services/pdf/remedi
 const mockPrisma = prisma as unknown as {
   job: {
     updateMany: ReturnType<typeof vi.fn>;
-    update: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
   };
 };
@@ -36,6 +38,7 @@ describe('remediation-cycle-lock.service', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   describe('acquireLock', () => {
@@ -130,16 +133,40 @@ describe('remediation-cycle-lock.service', () => {
 
       expect(status.inProgress).toBe(false);
     });
+
+    it('treats a lock just under the 20-minute threshold as in progress', async () => {
+      mockPrisma.job.findUnique.mockResolvedValue({
+        remediationCycleLockedAt: new Date(Date.now() - 19 * 60 * 1000),
+        remediationCycleLockedBy: 'user-1',
+        remediationCycleSource: 'apply_all',
+      });
+
+      const status = await remediationCycleLockService.getLockStatus('job-1');
+
+      expect(status.inProgress).toBe(true);
+    });
+
+    it('treats a lock just over the 20-minute threshold as not in progress (eligible for takeover)', async () => {
+      mockPrisma.job.findUnique.mockResolvedValue({
+        remediationCycleLockedAt: new Date(Date.now() - 21 * 60 * 1000),
+        remediationCycleLockedBy: 'user-1',
+        remediationCycleSource: 'apply_all',
+      });
+
+      const status = await remediationCycleLockService.getLockStatus('job-1');
+
+      expect(status.inProgress).toBe(false);
+    });
   });
 
-  describe('releaseLock / touchLock', () => {
-    it('releaseLock clears the lock columns', async () => {
-      mockPrisma.job.update.mockResolvedValue({});
+  describe('releaseLock / touchLock ownership', () => {
+    it('releaseLock clears the lock columns only for the matching cycleNumber', async () => {
+      mockPrisma.job.updateMany.mockResolvedValue({ count: 1 });
 
-      await remediationCycleLockService.releaseLock('job-1');
+      await remediationCycleLockService.releaseLock('job-1', 5);
 
-      expect(mockPrisma.job.update).toHaveBeenCalledWith({
-        where: { id: 'job-1' },
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', remediationCycleCounter: 5 },
         data: {
           remediationCycleLockedAt: null,
           remediationCycleLockedBy: null,
@@ -148,16 +175,60 @@ describe('remediation-cycle-lock.service', () => {
       });
     });
 
-    it('releaseLock does not throw when the update fails (self-heals via staleness timeout)', async () => {
-      mockPrisma.job.update.mockRejectedValue(new Error('db down'));
+    it('touchLock renews lockedAt only for the matching cycleNumber', async () => {
+      mockPrisma.job.updateMany.mockResolvedValue({ count: 1 });
 
-      await expect(remediationCycleLockService.releaseLock('job-1')).resolves.toBeUndefined();
+      await remediationCycleLockService.touchLock('job-1', 5);
+
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', remediationCycleCounter: 5 },
+        data: { remediationCycleLockedAt: expect.any(Date) },
+      });
+    });
+
+    it('releaseLock is a no-op (affects 0 rows) when a newer cycle already holds the lock', async () => {
+      // Simulates the stale-takeover scenario: this call's cycleNumber (5) no
+      // longer matches the row's current counter (6, from a newer acquire),
+      // so Prisma's WHERE clause matches nothing -- the newer cycle's lock
+      // survives untouched.
+      mockPrisma.job.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(remediationCycleLockService.releaseLock('job-1', 5)).resolves.toBeUndefined();
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', remediationCycleCounter: 5 },
+        data: expect.any(Object),
+      });
+    });
+
+    it('releaseLock does not throw when the update fails (self-heals via staleness timeout)', async () => {
+      mockPrisma.job.updateMany.mockRejectedValue(new Error('db down'));
+
+      await expect(remediationCycleLockService.releaseLock('job-1', 1)).resolves.toBeUndefined();
     });
 
     it('touchLock does not throw when the update fails', async () => {
-      mockPrisma.job.update.mockRejectedValue(new Error('db down'));
+      mockPrisma.job.updateMany.mockRejectedValue(new Error('db down'));
 
-      await expect(remediationCycleLockService.touchLock('job-1')).resolves.toBeUndefined();
+      await expect(remediationCycleLockService.touchLock('job-1', 1)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('startHeartbeat / stopHeartbeat', () => {
+    it('renews the lock on each interval tick until stopped', async () => {
+      vi.useFakeTimers();
+      mockPrisma.job.updateMany.mockResolvedValue({ count: 1 });
+
+      const handle = remediationCycleLockService.startHeartbeat('job-1', 7, 1000);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledTimes(3);
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', remediationCycleCounter: 7 },
+        data: { remediationCycleLockedAt: expect.any(Date) },
+      });
+
+      remediationCycleLockService.stopHeartbeat(handle);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(mockPrisma.job.updateMany).toHaveBeenCalledTimes(3);
     });
   });
 });

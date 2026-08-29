@@ -24,6 +24,7 @@ import { logger } from '../../lib/logger';
 
 export type RemediationCycleSource =
   | 'apply_all'
+  | 'apply_single'
   | 'reaudit_pdf_upload'
   | 'reaudit_current_file'
   | 'analyze_job';
@@ -105,12 +106,24 @@ class RemediationCycleLockService {
     };
   }
 
-  /** Non-fatal: a failed release is bounded by the staleness timeout, which
-   * is this mechanism's own designed safety net for exactly this case. */
-  async releaseLock(jobId: string): Promise<void> {
+  /**
+   * Releases the lock only if `cycleNumber` still matches the row's current
+   * remediationCycleCounter -- i.e. only if the caller is still the actual
+   * owner. Without this check, a cycle whose lock was reclaimed via
+   * staleness recovery (its heartbeat missed enough ticks, or it was truly
+   * abandoned) could finish late and unconditionally clear a NEWER cycle's
+   * lock out from under it, letting a third cycle start while the second is
+   * still running -- exactly the overwrite behavior this service exists to
+   * prevent. cycleNumber is the token returned by acquireLock; every caller
+   * must pass the value it was given at acquisition time.
+   *
+   * Non-fatal: a failed/no-op release is bounded by the staleness timeout,
+   * which is this mechanism's own designed safety net for exactly this case.
+   */
+  async releaseLock(jobId: string, cycleNumber: number): Promise<void> {
     await prisma.job
-      .update({
-        where: { id: jobId },
+      .updateMany({
+        where: { id: jobId, remediationCycleCounter: cycleNumber },
         data: {
           remediationCycleLockedAt: null,
           remediationCycleLockedBy: null,
@@ -127,14 +140,19 @@ class RemediationCycleLockService {
   /** Re-stamps lockedAt to "now" for a lock this process still legitimately
    * holds. Keeps a long-running cycle (large-PDF re-audit, big-batch AI
    * analysis) from crossing the staleness threshold and being reclaimed by
-   * another request while still genuinely in progress. Non-fatal: a missed
-   * tick only makes this cycle eligible for staleness-based takeover
-   * slightly early, a far smaller risk than the race this exists to close.
+   * another request while still genuinely in progress. Conditioned on
+   * `cycleNumber` for the same ownership reason as releaseLock -- a stale
+   * cycle's own heartbeat must not keep re-stamping a newer cycle's lock
+   * after that lock has already been reclaimed, or the newer cycle's
+   * staleness accounting would be silently driven by the old one. Non-fatal:
+   * a missed tick only makes this cycle eligible for staleness-based
+   * takeover slightly early, a far smaller risk than the race this exists
+   * to close.
    */
-  async touchLock(jobId: string): Promise<void> {
+  async touchLock(jobId: string, cycleNumber: number): Promise<void> {
     await prisma.job
-      .update({
-        where: { id: jobId },
+      .updateMany({
+        where: { id: jobId, remediationCycleCounter: cycleNumber },
         data: { remediationCycleLockedAt: new Date() },
       })
       .catch((err) => {
@@ -144,9 +162,13 @@ class RemediationCycleLockService {
       });
   }
 
-  startHeartbeat(jobId: string, intervalMs: number = DEFAULT_HEARTBEAT_INTERVAL_MS): NodeJS.Timeout {
+  startHeartbeat(
+    jobId: string,
+    cycleNumber: number,
+    intervalMs: number = DEFAULT_HEARTBEAT_INTERVAL_MS
+  ): NodeJS.Timeout {
     return setInterval(() => {
-      void this.touchLock(jobId);
+      void this.touchLock(jobId, cycleNumber);
     }, intervalMs);
   }
 

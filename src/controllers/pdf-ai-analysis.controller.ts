@@ -98,7 +98,7 @@ export class PdfAiAnalysisController {
       }
       const cycleNumber = lock.cycleNumber!;
       const cycleStartedAt = new Date();
-      const heartbeat = remediationCycleLockService.startHeartbeat(job.id);
+      const heartbeat = remediationCycleLockService.startHeartbeat(job.id, cycleNumber);
 
       // Fire-and-forget — client polls GET endpoint for results
       aiAnalysisService
@@ -133,7 +133,7 @@ export class PdfAiAnalysisController {
         })
         .finally(() => {
           remediationCycleLockService.stopHeartbeat(heartbeat);
-          void remediationCycleLockService.releaseLock(job.id);
+          void remediationCycleLockService.releaseLock(job.id, cycleNumber);
         });
 
       res.status(202).json({
@@ -382,6 +382,9 @@ export class PdfAiAnalysisController {
    * Apply a single approved AI suggestion to the PDF.
    */
   async applySuggestion(req: Request, res: Response, next: NextFunction): Promise<void> {
+    let lockAcquired = false;
+    let cycleNumberForFinally: number | undefined;
+    const jobIdForFinally = req.job?.id;
     try {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
 
@@ -389,21 +392,26 @@ export class PdfAiAnalysisController {
       const { issueId } = req.params;
       const jobId = job.id;
 
-      // Single-issue apply doesn't hold the full remediation-cycle lock
-      // (operators legitimately fire many of these back-to-back; serializing
-      // them against a multi-minute AI-analysis hold would break normal
-      // checklist workflows) — but it must still be rejected while a bulk
-      // apply/re-audit/AI-analysis cycle is in flight, since applying a
-      // single fix mid-cycle is exactly the kind of interleaving that
-      // produced non-monotonic "Applied" counts before this lock existed.
-      const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
-      if (lockStatus.inProgress) {
+      // Single-issue apply acquires the lock too (briefly -- released at the
+      // end of this request, no heartbeat needed since it's fast), rather
+      // than just checking status: a check-then-write here has the same
+      // TOCTOU gap the lock exists to close -- two single applies, or a
+      // single apply racing a bulk cycle's acquisition, could both pass a
+      // read-only check and then modify/save the same PDF concurrently.
+      // Acquiring still lets operators fire many single applies back-to-back
+      // (each acquires and releases in turn) without blocking on a
+      // multi-minute AI-analysis hold, since only one is ever actually
+      // in flight at a time.
+      const lock = await remediationCycleLockService.acquireLock(jobId, req.user.id, 'apply_single');
+      if (!lock.acquired) {
         throw AppError.conflict(
           'A remediation cycle is currently in progress for this job. Wait for it to finish before applying more fixes.',
           'REMEDIATION_CYCLE_IN_PROGRESS',
-          { lockedAt: lockStatus.lockedAt, lockedBy: lockStatus.lockedBy, source: lockStatus.source }
+          { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source }
         );
       }
+      lockAcquired = true;
+      cycleNumberForFinally = lock.cycleNumber!;
 
       const analysis = await prisma.aiAnalysis.findUnique({
         where: { jobId_issueId: { jobId, issueId } },
@@ -526,6 +534,10 @@ export class PdfAiAnalysisController {
       });
     } catch (error) {
       next(error);
+    } finally {
+      if (lockAcquired && jobIdForFinally && cycleNumberForFinally !== undefined) {
+        await remediationCycleLockService.releaseLock(jobIdForFinally, cycleNumberForFinally);
+      }
     }
   }
 
@@ -536,9 +548,14 @@ export class PdfAiAnalysisController {
   async applyAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     // lockAcquired guards the finally below: without it, a request that gets
     // rejected with 409 (never actually acquired the lock) would release the
-    // OTHER, legitimate cycle's lock out from under it.
+    // OTHER, legitimate cycle's lock out from under it. cycleNumberForFinally
+    // and heartbeatForFinally are set once the lock is acquired so the outer
+    // finally can stop/release on every early-return/thrown-error path; the
+    // success path below hands both off to the fire-and-forget re-audit chain.
     let lockAcquired = false;
     let lockHandedOff = false;
+    let cycleNumberForFinally: number | undefined;
+    let heartbeatForFinally: NodeJS.Timeout | undefined;
     const jobIdForFinally = req.job?.id;
     try {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
@@ -562,7 +579,17 @@ export class PdfAiAnalysisController {
       }
       lockAcquired = true;
       const cycleNumber = lock.cycleNumber!;
+      cycleNumberForFinally = cycleNumber;
       const cycleStartedAt = new Date();
+      // Started immediately after acquisition, not right before the
+      // fire-and-forget re-audit dispatch below -- the synchronous
+      // per-issue apply loop that follows can itself take minutes for a
+      // large batch, and without a heartbeat running for that whole span a
+      // slow loop could cross the staleness threshold and let another
+      // request reclaim the lock while this one is still actively modifying
+      // the PDF.
+      const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
+      heartbeatForFinally = heartbeat;
 
       const includePending = req.query.includePending === 'true';
       const statusFilter = includePending
@@ -719,9 +746,9 @@ export class PdfAiAnalysisController {
         });
 
         // Hand the lock off to the fire-and-forget chain below — it (not
-        // this synchronous request) now owns releasing it.
+        // this synchronous request) now owns stopping the heartbeat and
+        // releasing the lock (both already started/acquired above).
         lockHandedOff = true;
-        const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
 
         // Fire-and-forget: re-audit after saves complete
         pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName)
@@ -789,7 +816,7 @@ export class PdfAiAnalysisController {
           })
           .finally(() => {
             remediationCycleLockService.stopHeartbeat(heartbeat);
-            void remediationCycleLockService.releaseLock(jobId);
+            void remediationCycleLockService.releaseLock(jobId, cycleNumber);
           });
       } else {
         // approved.length > 0 but every suggestion failed to apply — no PDF
@@ -818,7 +845,8 @@ export class PdfAiAnalysisController {
       next(error);
     } finally {
       if (lockAcquired && !lockHandedOff && jobIdForFinally) {
-        await remediationCycleLockService.releaseLock(jobIdForFinally);
+        if (heartbeatForFinally) remediationCycleLockService.stopHeartbeat(heartbeatForFinally);
+        await remediationCycleLockService.releaseLock(jobIdForFinally, cycleNumberForFinally!);
       }
     }
   }

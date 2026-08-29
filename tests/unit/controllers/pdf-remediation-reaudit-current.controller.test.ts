@@ -224,7 +224,7 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
     expect((updateCall.data.output as any).postRemediationStatus).toBeUndefined();
   });
 
-  it('releases the lock even when the re-audit throws', async () => {
+  it('releases the lock (conditioned on its own cycleNumber) and logs a failed event when the re-audit throws', async () => {
     vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', type: 'PDF_ACCESSIBILITY', input: { fileName: 'doc.pdf' }, output: {} } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
     mockLockAcquired({});
@@ -235,10 +235,16 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
     await pdfRemediationController.reauditCurrentFile(makeReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(500);
-    // releaseLock -> prisma.job.update clearing the lock columns
-    expect(prisma.job.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'job-1' },
+    // releaseLock -> prisma.job.updateMany clearing the lock columns, scoped
+    // to the cycleNumber this request acquired (1, per mockLockAcquired).
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'job-1', remediationCycleCounter: 1 },
       data: expect.objectContaining({ remediationCycleLockedAt: null }),
+    }));
+    // An exception (not just a resolved success: false) must still leave a
+    // failed history record behind.
+    expect(prisma.remediationCycleEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'reaudit', status: 'failed', errorMessage: 'boom' }),
     }));
   });
 });
