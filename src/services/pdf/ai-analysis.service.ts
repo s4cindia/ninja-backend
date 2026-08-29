@@ -234,6 +234,26 @@ class AiAnalysisService {
     const issues = (auditReport?.issues as AuditIssue[] | undefined) ?? [];
     const fileName = (output?.fileName as string | undefined) ?? 'document.pdf';
 
+    // Prune AiAnalysis rows for issues that no longer exist in the current
+    // audit -- e.g. one genuinely fixed via a manually-uploaded, re-verified
+    // PDF (pdf-remediation.controller.ts's reauditPdf) or via applyAll's
+    // automatic re-audit. issueId is a per-audit sequential counter, not a
+    // stable identity (see buildIssueFingerprint's doc comment), and nothing
+    // else ever deletes AiAnalysis rows -- without this, a resolved issue's
+    // row lingers forever, permanently over-counting "guidance only"/etc.
+    // regardless of how many times the document is actually re-verified.
+    // Runs before the issues.length === 0 early return below (and before the
+    // dispatch loop) so a document resolved down to zero issues is pruned
+    // too, and so a still-existing issue's row is always protected: its
+    // fingerprint is in currentFingerprints by construction, independent of
+    // anything the loop below computes. issueFingerprint: null (pre-migration
+    // rows) is never touched, same "let it self-heal" precedent as
+    // resolveSuggestionStatus.
+    const currentFingerprints = [...new Set(issues.map(buildIssueFingerprint))];
+    await prisma.aiAnalysis.deleteMany({
+      where: { jobId, issueFingerprint: { not: null, notIn: currentFingerprints } },
+    });
+
     if (issues.length === 0) {
       logger.info(`[AiAnalysis] No issues found for job ${jobId}`);
       return { analyzed: 0, skipped: 0 };

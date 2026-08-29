@@ -1245,6 +1245,13 @@ export class PdfRemediationController {
         req.file.originalname
       );
 
+      // Persist the uploaded (manually-fixed) buffer as the job's new canonical
+      // remediated file — without this, the audit report gets refreshed but
+      // ACR/PAC generation, future re-audits, and AI re-analysis all keep
+      // reading the OLD file back out of storage, silently ignoring the fix
+      // this endpoint was just asked to verify.
+      const remediatedPath = await fileStorageService.saveRemediatedFile(jobId, req.file.originalname, buffer);
+
       // Update job output with comparison data
       // Type assertion needed because Prisma's InputJsonValue is strict,
       // but the data is valid JSON that Prisma will serialize correctly
@@ -1259,6 +1266,20 @@ export class PdfRemediationController {
             ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
             reauditComparison: comparisonResult,
             lastReauditAt: new Date().toISOString(),
+            remediatedFileUrl: remediatedPath,
+            // Same shape as applyAll's automatic post-remediation re-audit
+            // (pdf-ai-analysis.controller.ts) -- the guided-remediation
+            // checklist's re-audit steps key off these fields regardless of
+            // whether the re-audit was triggered automatically or, as here,
+            // by uploading a manually-fixed PDF.
+            postRemediationStatus: 'complete',
+            postRemediationAudit: {
+              runAt: new Date().toISOString(),
+              resolved: comparisonResult.metrics.resolvedCount,
+              remaining: comparisonResult.metrics.remainingCount,
+              regressions: comparisonResult.metrics.regressionCount,
+              resolutionRate: comparisonResult.metrics.resolutionRate,
+            },
           } as unknown as Prisma.InputJsonObject,
           updatedAt: new Date(),
         },
