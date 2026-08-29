@@ -775,6 +775,12 @@ export class PdfAiAnalysisController {
         data: {
           comparisonTrialId: comparisonTrial?.id ?? null,
           manualRemediationMs: (output.manualRemediationMs as number | undefined) ?? 0,
+          // Timestamp of the most recent manual-remediation-time entry, if any —
+          // lets the checklist tell "manual work happened after the last
+          // re-audit" apart from "no manual work has been logged at all".
+          manualRemediationLastLoggedAt: Array.isArray(output.manualRemediationLog) && output.manualRemediationLog.length > 0
+            ? ((output.manualRemediationLog as Array<{ loggedAt: string }>).at(-1)?.loggedAt ?? null)
+            : null,
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
           skipReason: output.autoTagSkipReason as string | undefined,
