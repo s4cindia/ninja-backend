@@ -778,8 +778,14 @@ export class PdfAiAnalysisController {
           // Timestamp of the most recent manual-remediation-time entry, if any —
           // lets the checklist tell "manual work happened after the last
           // re-audit" apart from "no manual work has been logged at all".
+          // Takes the max loggedAt across all entries rather than the last
+          // array position: loggedAt is generated before the serializable
+          // transaction that appends it, so under concurrent submissions a
+          // retried (earlier-timestamped) request can still land after a
+          // faster (later-timestamped) one in array order.
           manualRemediationLastLoggedAt: Array.isArray(output.manualRemediationLog) && output.manualRemediationLog.length > 0
-            ? ((output.manualRemediationLog as Array<{ loggedAt: string }>).at(-1)?.loggedAt ?? null)
+            ? (output.manualRemediationLog as Array<{ loggedAt: string }>)
+                .reduce((latest, e) => (e.loggedAt > latest ? e.loggedAt : latest), '')
             : null,
           status: (output.autoTagStatus as string | undefined) ?? 'unknown',
           error: output.autoTagError as string | undefined,
