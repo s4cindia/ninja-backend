@@ -15,18 +15,22 @@ export class AppError extends Error {
   public isOperational: boolean;
   /** Optional machine-readable error code */
   public code?: string;
+  /** Optional structured context for API consumers (e.g. lock-conflict details) */
+  public details?: unknown;
 
   /**
    * Creates a new AppError instance.
    * @param message - Human-readable error message
    * @param statusCode - HTTP status code (4xx for client, 5xx for server errors)
    * @param code - Optional machine-readable error code for API consumers
+   * @param details - Optional structured context for API consumers
    */
-  constructor(message: string, statusCode: number, code?: string) {
+  constructor(message: string, statusCode: number, code?: string, details?: unknown) {
     super(message);
     this.statusCode = statusCode;
     this.isOperational = true;
     this.code = code;
+    this.details = details;
 
     Error.captureStackTrace(this, this.constructor);
   }
@@ -71,9 +75,10 @@ export class AppError extends Error {
    * Creates a 409 Conflict error.
    * @param message - Error message describing the conflict
    * @param code - Optional error code
+   * @param details - Optional structured context (e.g. lock-conflict details)
    */
-  static conflict(message: string, code?: string): AppError {
-    return new AppError(message, 409, code || 'CONFLICT');
+  static conflict(message: string, code?: string, details?: unknown): AppError {
+    return new AppError(message, 409, code || 'CONFLICT', details);
   }
 
   /**

@@ -21,6 +21,8 @@ import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { TABLE_LIKELY_FORMULA_CODE } from '../services/pdf/validators/pdf-table.validator';
 import type { AuditIssue } from '../services/audit/base-audit.service';
 import { aiConfig } from '../config/ai.config';
+import { remediationCycleLockService } from '../services/pdf/remediation-cycle-lock.service';
+import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 
@@ -81,16 +83,57 @@ export class PdfAiAnalysisController {
       const auditReport = output.auditReport as Record<string, unknown> | undefined;
       const issues = (auditReport?.issues as unknown[]) ?? [];
 
+      // AI analysis holds the remediation-cycle lock for its full run
+      // (can be minutes for documents with many issues) so it can never
+      // interleave with an in-flight apply-fixes/re-audit cycle on the
+      // same job — that interleaving is what produced non-monotonic
+      // "Applied" counts and stale summaries in practice.
+      const lock = await remediationCycleLockService.acquireLock(job.id, req.user.id, 'analyze_job');
+      if (!lock.acquired) {
+        throw AppError.conflict(
+          'Another remediation cycle is already in progress for this job. Wait for it to finish before re-running AI analysis.',
+          'REMEDIATION_CYCLE_IN_PROGRESS',
+          { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source }
+        );
+      }
+      const cycleNumber = lock.cycleNumber!;
+      const cycleStartedAt = new Date();
+      const heartbeat = remediationCycleLockService.startHeartbeat(job.id);
+
       // Fire-and-forget — client polls GET endpoint for results
       aiAnalysisService
         .analyzeJob(job.id, tenantId, overrides)
-        .then(({ analyzed, skipped }) => {
+        .then(async ({ analyzed, skipped }) => {
           logger.info(`[AI Analysis] Job ${job.id} complete: ${analyzed} analyzed, ${skipped} skipped`);
+          await remediationCycleHistoryService.logEvent({
+            jobId: job.id,
+            cycleNumber,
+            action: 'ai_analysis',
+            source: 'analyze_job',
+            status: 'completed',
+            appliedCount: analyzed,
+            failedCount: skipped,
+            triggeredBy: req.user!.id,
+            startedAt: cycleStartedAt,
+          });
         })
-        .catch((err: unknown) => {
-          logger.error(
-            `[AI Analysis] Job ${job.id} failed: ${err instanceof Error ? err.message : String(err)}`
-          );
+        .catch(async (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.error(`[AI Analysis] Job ${job.id} failed: ${message}`);
+          await remediationCycleHistoryService.logEvent({
+            jobId: job.id,
+            cycleNumber,
+            action: 'ai_analysis',
+            source: 'analyze_job',
+            status: 'failed',
+            errorMessage: message,
+            triggeredBy: req.user!.id,
+            startedAt: cycleStartedAt,
+          });
+        })
+        .finally(() => {
+          remediationCycleLockService.stopHeartbeat(heartbeat);
+          void remediationCycleLockService.releaseLock(job.id);
         });
 
       res.status(202).json({
@@ -124,14 +167,16 @@ export class PdfAiAnalysisController {
       const analyzed = suggestions.length;
       const output = (req.job!.output ?? {}) as Record<string, unknown>;
       const stats = (output.aiAnalysisStats as Record<string, unknown> | undefined) ?? null;
-      // 'pending'    → AI hasn't started yet (no stats written, not in analysing set)
-      // 'processing' → currently running
+      // 'pending'    → AI hasn't started yet (no stats written, lock not held for this job)
+      // 'processing' → currently running (remediation-cycle lock held with source 'analyze_job')
       // 'complete'   → aiAnalysisStats written to job.output (source of truth)
-      const status = aiAnalysisService.isAnalyzing(jobId)
-        ? 'processing'
-        : stats
-          ? 'complete'
-          : 'pending';
+      const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
+      const status =
+        lockStatus.inProgress && lockStatus.source === 'analyze_job'
+          ? 'processing'
+          : stats
+            ? 'complete'
+            : 'pending';
 
       res.json({
         success: true,
@@ -344,6 +389,22 @@ export class PdfAiAnalysisController {
       const { issueId } = req.params;
       const jobId = job.id;
 
+      // Single-issue apply doesn't hold the full remediation-cycle lock
+      // (operators legitimately fire many of these back-to-back; serializing
+      // them against a multi-minute AI-analysis hold would break normal
+      // checklist workflows) — but it must still be rejected while a bulk
+      // apply/re-audit/AI-analysis cycle is in flight, since applying a
+      // single fix mid-cycle is exactly the kind of interleaving that
+      // produced non-monotonic "Applied" counts before this lock existed.
+      const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
+      if (lockStatus.inProgress) {
+        throw AppError.conflict(
+          'A remediation cycle is currently in progress for this job. Wait for it to finish before applying more fixes.',
+          'REMEDIATION_CYCLE_IN_PROGRESS',
+          { lockedAt: lockStatus.lockedAt, lockedBy: lockStatus.lockedBy, source: lockStatus.source }
+        );
+      }
+
       const analysis = await prisma.aiAnalysis.findUnique({
         where: { jobId_issueId: { jobId, issueId } },
       });
@@ -440,7 +501,12 @@ export class PdfAiAnalysisController {
       // Save modified PDF and record path so download endpoint can find it
       const modifiedBuffer = await pdfModifierService.savePDF(doc);
       const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
-      const currentOutput = (job.output ?? {}) as Record<string, unknown>;
+      // Re-fetch immediately before writing rather than reusing the
+      // top-of-request job.output snapshot, matching the idiom already used
+      // by acknowledgeGuidance in this file — narrows the window for this
+      // write to clobber anything else that touched job.output meanwhile.
+      const latestJobForWrite = await prisma.job.findUnique({ where: { id: jobId } });
+      const currentOutput = (latestJobForWrite?.output ?? {}) as Record<string, unknown>;
       await prisma.job.update({
         where: { id: jobId },
         data: { output: { ...currentOutput, remediatedFileUrl: savedPath } as Prisma.InputJsonObject },
@@ -468,11 +534,35 @@ export class PdfAiAnalysisController {
    * Apply all approved apply-to-pdf suggestions in a single PDF pass.
    */
   async applyAll(req: Request, res: Response, next: NextFunction): Promise<void> {
+    // lockAcquired guards the finally below: without it, a request that gets
+    // rejected with 409 (never actually acquired the lock) would release the
+    // OTHER, legitimate cycle's lock out from under it.
+    let lockAcquired = false;
+    let lockHandedOff = false;
+    const jobIdForFinally = req.job?.id;
     try {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
 
       const job = req.job!;
       const jobId = job.id;
+
+      // Acquire the remediation-cycle lock before doing anything else: this
+      // is the entry point that produced the original bug (a false-timeout
+      // "Network Error" retry starting a second apply+re-audit cycle while
+      // the first was still finishing, with whichever write landed last
+      // silently winning). Held through the fire-and-forget re-audit below,
+      // not just this synchronous portion.
+      const lock = await remediationCycleLockService.acquireLock(jobId, req.user.id, 'apply_all');
+      if (!lock.acquired) {
+        throw AppError.conflict(
+          'Another remediation cycle is already in progress for this job. Wait for it to finish before applying fixes again.',
+          'REMEDIATION_CYCLE_IN_PROGRESS',
+          { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source }
+        );
+      }
+      lockAcquired = true;
+      const cycleNumber = lock.cycleNumber!;
+      const cycleStartedAt = new Date();
 
       const includePending = req.query.includePending === 'true';
       const statusFilter = includePending
@@ -616,6 +706,23 @@ export class PdfAiAnalysisController {
           data: { output: { ...currentOutput, remediatedFileUrl: savedPath, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },
         });
 
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'apply_fixes',
+          source: 'apply_all',
+          status: 'completed',
+          appliedCount: applied,
+          failedCount: failed,
+          triggeredBy: req.user.id,
+          startedAt: cycleStartedAt,
+        });
+
+        // Hand the lock off to the fire-and-forget chain below — it (not
+        // this synchronous request) now owns releasing it.
+        lockHandedOff = true;
+        const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
+
         // Fire-and-forget: re-audit after saves complete
         pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName)
           .then(async (comparison) => {
@@ -643,9 +750,24 @@ export class PdfAiAnalysisController {
               },
             });
             logger.info(`[ApplyAll] Post-remediation re-audit complete for job ${jobId}: ${resolvedCount} resolved, ${regressionCount} regressions`);
+            await remediationCycleHistoryService.logEvent({
+              jobId,
+              cycleNumber,
+              action: 'reaudit',
+              source: 'apply_all',
+              status: comparison.success ? 'completed' : 'failed',
+              resolvedCount,
+              remainingCount,
+              regressionCount,
+              resolutionRate,
+              errorMessage: comparison.success ? undefined : comparison.error,
+              triggeredBy: req.user!.id,
+              startedAt: cycleStartedAt,
+            });
           })
           .catch(async (err) => {
-            logger.warn(`[ApplyAll] Post-remediation re-audit failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn(`[ApplyAll] Post-remediation re-audit failed (non-fatal): ${message}`);
             try {
               const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
               const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
@@ -654,7 +776,36 @@ export class PdfAiAnalysisController {
                 data: { output: { ...latestOutput, postRemediationStatus: 'failed' } as Prisma.InputJsonObject },
               });
             } catch { /* non-fatal — status update failure should not surface */ }
+            await remediationCycleHistoryService.logEvent({
+              jobId,
+              cycleNumber,
+              action: 'reaudit',
+              source: 'apply_all',
+              status: 'failed',
+              errorMessage: message,
+              triggeredBy: req.user!.id,
+              startedAt: cycleStartedAt,
+            });
+          })
+          .finally(() => {
+            remediationCycleLockService.stopHeartbeat(heartbeat);
+            void remediationCycleLockService.releaseLock(jobId);
           });
+      } else {
+        // approved.length > 0 but every suggestion failed to apply — no PDF
+        // was saved and no re-audit was started, so this cycle is already
+        // complete; the outer finally below releases the lock immediately.
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'apply_fixes',
+          source: 'apply_all',
+          status: 'failed',
+          appliedCount: applied,
+          failedCount: failed,
+          triggeredBy: req.user.id,
+          startedAt: cycleStartedAt,
+        });
       }
 
       logger.info(`[AI Analysis] apply-all for job ${jobId}: ${applied} applied, ${failed} failed`);
@@ -665,6 +816,10 @@ export class PdfAiAnalysisController {
       });
     } catch (error) {
       next(error);
+    } finally {
+      if (lockAcquired && !lockHandedOff && jobIdForFinally) {
+        await remediationCycleLockService.releaseLock(jobIdForFinally);
+      }
     }
   }
 
@@ -770,9 +925,19 @@ export class PdfAiAnalysisController {
         select: { id: true },
       });
 
+      // Lets the checklist gate its action buttons on server state instead
+      // of client-side in-flight tracking -- a client-side flag reset by a
+      // spurious network error (e.g. a CloudFront timeout on a long-running
+      // apply-all) can no longer make a retry look safe when it isn't.
+      const lockStatus = await remediationCycleLockService.getLockStatus(job.id);
+
       res.json({
         success: true,
         data: {
+          remediationCycleInProgress: lockStatus.inProgress,
+          remediationCycleLockedAt: lockStatus.lockedAt ?? null,
+          remediationCycleLockedBy: lockStatus.lockedBy ?? null,
+          remediationCycleSource: lockStatus.source ?? null,
           comparisonTrialId: comparisonTrial?.id ?? null,
           manualRemediationMs: (output.manualRemediationMs as number | undefined) ?? 0,
           // Timestamp of the most recent manual-remediation-time entry, if any —

@@ -23,6 +23,8 @@ import {
   extractWcagLevel,
   extractSeverity,
 } from '../services/comparison';
+import { remediationCycleLockService } from '../services/pdf/remediation-cycle-lock.service';
+import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -1233,91 +1235,144 @@ export class PdfRemediationController {
         });
       }
 
-      // Run re-audit and comparison
-      logger.info(`[Re-Audit] Starting for job ${jobId}`, {
-        fileName: req.file.originalname,
-        fileSize: buffer.length,
-      });
-
-      const comparisonResult = await pdfReauditService.reauditAndCompare(
+      // Acquire the remediation-cycle lock before starting the (potentially
+      // multi-minute) re-audit -- prevents this upload-based verification
+      // from interleaving with an in-flight apply-fixes/re-audit/AI-analysis
+      // cycle on the same job, which previously produced job.output writes
+      // with no ordering guarantee.
+      const lock = await remediationCycleLockService.acquireLock(
         jobId,
-        buffer,
-        req.file.originalname
+        req.user!.id,
+        'reaudit_pdf_upload'
       );
-
-      // Only a genuinely successful re-audit gets to overwrite the canonical
-      // file and report verification complete. reauditAndCompare can resolve
-      // with success: false (e.g. a magic-valid but otherwise malformed PDF)
-      // instead of throwing -- treating that as a completed verification
-      // would both discard the previous good remediated file and falsely
-      // tell the checklist the fix landed, with misleading zero-valued
-      // metrics to back it up.
-      let remediatedPath: string | undefined;
-      if (comparisonResult.success) {
-        // Save under the job's own canonical filename, not the upload's --
-        // reauditCurrentFile and AI re-analysis look the file up later by
-        // the job's original fileName (falling back to 'document.pdf'), so
-        // storing it under whatever the operator happened to name their
-        // local copy (e.g. "manually-fixed.pdf") would make it unreachable
-        // to every downstream consumer.
-        const jobInput = job.input as { fileName?: string } | null;
-        const canonicalFileName = jobInput?.fileName || 'document.pdf';
-        remediatedPath = await fileStorageService.saveRemediatedFile(jobId, canonicalFileName, buffer);
+      if (!lock.acquired) {
+        return res.status(409).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'REMEDIATION_CYCLE_IN_PROGRESS',
+            message: 'Another remediation cycle is already in progress for this job.',
+            details: { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source },
+          },
+        });
       }
+      const cycleNumber = lock.cycleNumber!;
+      const cycleStartedAt = new Date();
+      const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
 
-      // Update job output with comparison data
-      // Type assertion needed because Prisma's InputJsonValue is strict,
-      // but the data is valid JSON that Prisma will serialize correctly
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          output: {
-            ...((job.output as Record<string, unknown> | null) ?? {}),
-            // The fresh audit (score, matterhornSummary, issues) must replace the
-            // stale prior one — otherwise the results page keeps showing whatever
-            // was there before this re-audit, regardless of what actually changed.
-            ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
-            reauditComparison: comparisonResult,
-            lastReauditAt: new Date().toISOString(),
-            // Same shape as applyAll's automatic post-remediation re-audit
-            // (pdf-ai-analysis.controller.ts) -- the guided-remediation
-            // checklist's re-audit steps key off these fields regardless of
-            // whether the re-audit was triggered automatically or, as here,
-            // by uploading a manually-fixed PDF. Only written on success --
-            // see the comment above remediatedPath for why a failed
-            // verification must not claim completion.
-            ...(comparisonResult.success ? {
-              remediatedFileUrl: remediatedPath,
-              postRemediationStatus: 'complete',
-              postRemediationAudit: {
-                runAt: new Date().toISOString(),
-                resolved: comparisonResult.metrics.resolvedCount,
-                remaining: comparisonResult.metrics.remainingCount,
-                regressions: comparisonResult.metrics.regressionCount,
-                resolutionRate: comparisonResult.metrics.resolutionRate,
-              },
-            } : {}),
-          } as unknown as Prisma.InputJsonObject,
-          updatedAt: new Date(),
-        },
-      });
+      try {
+        // Run re-audit and comparison
+        logger.info(`[Re-Audit] Starting for job ${jobId}`, {
+          fileName: req.file.originalname,
+          fileSize: buffer.length,
+        });
 
-      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
-        resolvedCount: comparisonResult.metrics.resolvedCount,
-        remainingCount: comparisonResult.metrics.remainingCount,
-        regressionCount: comparisonResult.metrics.regressionCount,
-        resolutionRate: comparisonResult.metrics.resolutionRate,
-      });
+        const comparisonResult = await pdfReauditService.reauditAndCompare(
+          jobId,
+          buffer,
+          req.file.originalname
+        );
 
-      return res.status(200).json({
-        success: true,
-        data: comparisonResult,
-        error: {
-          code: null,
-          message: null,
-          details: null,
-        },
-      });
+        // Only a genuinely successful re-audit gets to overwrite the canonical
+        // file and report verification complete. reauditAndCompare can resolve
+        // with success: false (e.g. a magic-valid but otherwise malformed PDF)
+        // instead of throwing -- treating that as a completed verification
+        // would both discard the previous good remediated file and falsely
+        // tell the checklist the fix landed, with misleading zero-valued
+        // metrics to back it up.
+        let remediatedPath: string | undefined;
+        if (comparisonResult.success) {
+          // Save under the job's own canonical filename, not the upload's --
+          // reauditCurrentFile and AI re-analysis look the file up later by
+          // the job's original fileName (falling back to 'document.pdf'), so
+          // storing it under whatever the operator happened to name their
+          // local copy (e.g. "manually-fixed.pdf") would make it unreachable
+          // to every downstream consumer.
+          const jobInput = job.input as { fileName?: string } | null;
+          const canonicalFileName = jobInput?.fileName || 'document.pdf';
+          remediatedPath = await fileStorageService.saveRemediatedFile(jobId, canonicalFileName, buffer);
+        }
+
+        // Re-fetch immediately before writing rather than reusing the
+        // pre-audit `job` snapshot: reauditAndCompare's own mid-flight
+        // progress writes (postRemediationProgress) land on the live row
+        // while this call is awaited, and spreading the stale snapshot here
+        // would silently discard them.
+        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+        const latestOutput = (latestJob?.output as Record<string, unknown> | null) ?? {};
+
+        // Update job output with comparison data
+        // Type assertion needed because Prisma's InputJsonValue is strict,
+        // but the data is valid JSON that Prisma will serialize correctly
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...latestOutput,
+              // The fresh audit (score, matterhornSummary, issues) must replace the
+              // stale prior one — otherwise the results page keeps showing whatever
+              // was there before this re-audit, regardless of what actually changed.
+              ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
+              reauditComparison: comparisonResult,
+              lastReauditAt: new Date().toISOString(),
+              // Same shape as applyAll's automatic post-remediation re-audit
+              // (pdf-ai-analysis.controller.ts) -- the guided-remediation
+              // checklist's re-audit steps key off these fields regardless of
+              // whether the re-audit was triggered automatically or, as here,
+              // by uploading a manually-fixed PDF. Only written on success --
+              // see the comment above remediatedPath for why a failed
+              // verification must not claim completion.
+              ...(comparisonResult.success ? {
+                remediatedFileUrl: remediatedPath,
+                postRemediationStatus: 'complete',
+                postRemediationAudit: {
+                  runAt: new Date().toISOString(),
+                  resolved: comparisonResult.metrics.resolvedCount,
+                  remaining: comparisonResult.metrics.remainingCount,
+                  regressions: comparisonResult.metrics.regressionCount,
+                  resolutionRate: comparisonResult.metrics.resolutionRate,
+                },
+              } : {}),
+            } as unknown as Prisma.InputJsonObject,
+            updatedAt: new Date(),
+          },
+        });
+
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'reaudit',
+          source: 'reaudit_pdf_upload',
+          status: comparisonResult.success ? 'completed' : 'failed',
+          resolvedCount: comparisonResult.metrics.resolvedCount,
+          remainingCount: comparisonResult.metrics.remainingCount,
+          regressionCount: comparisonResult.metrics.regressionCount,
+          resolutionRate: comparisonResult.metrics.resolutionRate,
+          errorMessage: comparisonResult.success ? undefined : comparisonResult.error,
+          triggeredBy: req.user!.id,
+          startedAt: cycleStartedAt,
+        });
+
+        logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+          resolvedCount: comparisonResult.metrics.resolvedCount,
+          remainingCount: comparisonResult.metrics.remainingCount,
+          regressionCount: comparisonResult.metrics.regressionCount,
+          resolutionRate: comparisonResult.metrics.resolutionRate,
+        });
+
+        return res.status(200).json({
+          success: true,
+          data: comparisonResult,
+          error: {
+            code: null,
+            message: null,
+            details: null,
+          },
+        });
+      } finally {
+        remediationCycleLockService.stopHeartbeat(heartbeat);
+        await remediationCycleLockService.releaseLock(jobId);
+      }
     } catch (error) {
       logger.error('Failed to re-audit PDF', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1389,35 +1444,95 @@ export class PdfRemediationController {
         });
       }
 
-      logger.info(`[Re-Audit] Re-running audit against current stored file for job ${jobId}`);
+      const lock = await remediationCycleLockService.acquireLock(
+        jobId,
+        req.user!.id,
+        'reaudit_current_file'
+      );
+      if (!lock.acquired) {
+        return res.status(409).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'REMEDIATION_CYCLE_IN_PROGRESS',
+            message: 'Another remediation cycle is already in progress for this job.',
+            details: { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source },
+          },
+        });
+      }
+      const cycleNumber = lock.cycleNumber!;
+      const cycleStartedAt = new Date();
+      const heartbeat = remediationCycleLockService.startHeartbeat(jobId);
 
-      const comparisonResult = await pdfReauditService.reauditAndCompare(jobId, buffer, fileName);
+      try {
+        logger.info(`[Re-Audit] Re-running audit against current stored file for job ${jobId}`);
 
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          output: {
-            ...((job.output as Record<string, unknown> | null) ?? {}),
-            ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
-            reauditComparison: comparisonResult,
-            lastReauditAt: new Date().toISOString(),
-          } as unknown as Prisma.InputJsonObject,
-          updatedAt: new Date(),
-        },
-      });
+        const comparisonResult = await pdfReauditService.reauditAndCompare(jobId, buffer, fileName);
 
-      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
-        resolvedCount: comparisonResult.metrics.resolvedCount,
-        remainingCount: comparisonResult.metrics.remainingCount,
-        regressionCount: comparisonResult.metrics.regressionCount,
-        resolutionRate: comparisonResult.metrics.resolutionRate,
-      });
+        // Re-fetch immediately before writing rather than reusing the
+        // pre-audit `job` snapshot -- see the identical fix/comment in
+        // reauditPdf above for why.
+        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+        const latestOutput = (latestJob?.output as Record<string, unknown> | null) ?? {};
 
-      return res.status(200).json({
-        success: true,
-        data: comparisonResult,
-        error: { code: null, message: null, details: null },
-      });
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...latestOutput,
+              ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
+              reauditComparison: comparisonResult,
+              lastReauditAt: new Date().toISOString(),
+              // Matches reauditPdf/applyAll's shape on success so the
+              // guided-remediation checklist and the remediation-cycle
+              // history log see a consistent set of fields regardless of
+              // which of the three re-audit entry points ran.
+              ...(comparisonResult.success ? {
+                postRemediationStatus: 'complete',
+                postRemediationAudit: {
+                  runAt: new Date().toISOString(),
+                  resolved: comparisonResult.metrics.resolvedCount,
+                  remaining: comparisonResult.metrics.remainingCount,
+                  regressions: comparisonResult.metrics.regressionCount,
+                  resolutionRate: comparisonResult.metrics.resolutionRate,
+                },
+              } : {}),
+            } as unknown as Prisma.InputJsonObject,
+            updatedAt: new Date(),
+          },
+        });
+
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber,
+          action: 'reaudit',
+          source: 'reaudit_current_file',
+          status: comparisonResult.success ? 'completed' : 'failed',
+          resolvedCount: comparisonResult.metrics.resolvedCount,
+          remainingCount: comparisonResult.metrics.remainingCount,
+          regressionCount: comparisonResult.metrics.regressionCount,
+          resolutionRate: comparisonResult.metrics.resolutionRate,
+          errorMessage: comparisonResult.success ? undefined : comparisonResult.error,
+          triggeredBy: req.user!.id,
+          startedAt: cycleStartedAt,
+        });
+
+        logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+          resolvedCount: comparisonResult.metrics.resolvedCount,
+          remainingCount: comparisonResult.metrics.remainingCount,
+          regressionCount: comparisonResult.metrics.regressionCount,
+          resolutionRate: comparisonResult.metrics.resolutionRate,
+        });
+
+        return res.status(200).json({
+          success: true,
+          data: comparisonResult,
+          error: { code: null, message: null, details: null },
+        });
+      } finally {
+        remediationCycleLockService.stopHeartbeat(heartbeat);
+        await remediationCycleLockService.releaseLock(jobId);
+      }
     } catch (error) {
       logger.error('Failed to re-audit current PDF', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1430,6 +1545,68 @@ export class PdfRemediationController {
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to re-audit PDF',
+          details: null,
+        },
+      });
+    }
+  }
+
+  /**
+   * List the append-only remediation-cycle history for a job, grouped into
+   * "Run N" buckets by cycleNumber -- lets the guided-remediation checklist
+   * show what happened across repeated apply-fixes/re-audit/re-analyze
+   * loops instead of a single overwritten summary.
+   * GET /api/v1/pdf/:jobId/remediation/history
+   */
+  async getRemediationHistory(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: null },
+        });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'JOB_NOT_FOUND', message: 'Job not found or access denied', details: null },
+        });
+      }
+
+      const events = await remediationCycleHistoryService.listForJob(jobId);
+      const cycles = new Map<number, typeof events>();
+      for (const event of events) {
+        if (!cycles.has(event.cycleNumber)) cycles.set(event.cycleNumber, []);
+        cycles.get(event.cycleNumber)!.push(event);
+      }
+      const runs = [...cycles.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([cycleNumber, cycleEvents]) => ({ cycleNumber, events: cycleEvents }));
+
+      return res.status(200).json({
+        success: true,
+        data: { runs },
+        error: { code: null, message: null, details: null },
+      });
+    } catch (error) {
+      logger.error('Failed to fetch remediation history', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch remediation history',
           details: null,
         },
       });

@@ -124,14 +124,29 @@ model Job {
   batchSourceJobIds String[]  @default([])
   isBatchAcr        Boolean   @default(false)
 
-  validationResults   ValidationResult[]
-  artifacts           Artifact[]
-  remediationChanges  RemediationChange[]
-  comparisonReport    ComparisonReport?
-  editorialDocument   EditorialDocument?
-  issueDismissals     IssueDismissal[]
-  comparisonTrial     ComparisonTrial?
-  remediationSessions RemediationSession[]
+  // Remediation-cycle concurrency lock -- prevents two overlapping "apply
+  // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
+  // interleaving their job.output writes with no ordering guarantee (the
+  // last write to land would otherwise silently win regardless of which
+  // cycle represented more real progress). Acquired via an atomic
+  // updateMany compare-and-swap -- see remediation-cycle-lock.service.ts.
+  // remediationCycleSource records which of the four cycle-starting
+  // entry points currently holds the lock. Paired with the append-only
+  // RemediationCycleEvent history log below.
+  remediationCycleLockedAt DateTime?
+  remediationCycleLockedBy String?
+  remediationCycleSource   String?
+  remediationCycleCounter  Int       @default(0)
+
+  validationResults      ValidationResult[]
+  artifacts              Artifact[]
+  remediationChanges     RemediationChange[]
+  comparisonReport       ComparisonReport?
+  editorialDocument      EditorialDocument?
+  issueDismissals        IssueDismissal[]
+  comparisonTrial        ComparisonTrial?
+  remediationSessions    RemediationSession[]
+  remediationCycleEvents RemediationCycleEvent[]
 
   @@index([tenantId])
   @@index([status])
@@ -2295,6 +2310,37 @@ model RemediationSession {
 
   @@index([jobId])
   @@index([operatorId])
+}
+
+/// Append-only history log of every completed (or failed) remediation-cycle
+/// action -- apply-fixes, re-audit, or AI re-analysis -- keyed by
+/// cycleNumber so the guided-remediation checklist can group entries into
+/// "Run 1 / Run 2 / ..." (see GET /pdf/:jobId/remediation/history). One row
+/// per action; multiple actions can share a cycleNumber when they happened
+/// under the same remediation-cycle lock hold (e.g. apply-all's own
+/// automatic re-audit shares its caller's cycleNumber). Unlike
+/// RemediationChange's changeNumber, cycleNumber is deliberately NOT unique
+/// per row here -- several actions legitimately share one cycle.
+model RemediationCycleEvent {
+  id              String   @id @default(uuid())
+  jobId           String
+  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  cycleNumber     Int
+  action          String // 'apply_fixes' | 'reaudit' | 'ai_analysis'
+  source          String // 'apply_all' | 'reaudit_pdf_upload' | 'reaudit_current_file' | 'analyze_job'
+  status          String // 'completed' | 'failed'
+  appliedCount    Int?
+  failedCount     Int?
+  resolvedCount   Int?
+  remainingCount  Int?
+  regressionCount Int?
+  resolutionRate  Float?
+  errorMessage    String?
+  triggeredBy     String?
+  startedAt       DateTime
+  completedAt     DateTime @default(now())
+
+  @@index([jobId, cycleNumber])
 }
 
 model TrainingRun {
