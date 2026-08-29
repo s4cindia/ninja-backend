@@ -264,29 +264,56 @@ export class PdfAiAnalysisController {
         loggedBy: req.user.id,
       };
 
-      // Re-fetch immediately before writing — same rationale as
-      // acknowledgeGuidance above (narrows, doesn't eliminate, the race
-      // against a concurrent output write elsewhere).
-      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
-      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
-      const existingLog = Array.isArray(latestOutput.manualRemediationLog)
-        ? (latestOutput.manualRemediationLog as Array<{ minutes: number }>)
-        : [];
-      const log = [...existingLog, entry];
-      // Derived from the log on every write rather than tracked separately,
-      // so the total can never drift out of sync with its entries.
-      const totalMs = Math.round(log.reduce((sum, e) => sum + e.minutes, 0) * 60000);
+      // Unlike the single-value output flags elsewhere in this controller
+      // (guidance-acknowledgment, acrGenerated, pacReportGenerated), this
+      // field is an appended log of discrete entries — a lost update here
+      // doesn't just cause a harmless redundant recompute, it silently
+      // deletes a real logged time entry with no way to recover it. That's
+      // a materially worse failure mode for exactly the kind of thing this
+      // feature exists to capture accurately, so a plain re-fetch-before-write
+      // (which only narrows the race) isn't good enough here — this uses a
+      // Serializable transaction with retry-on-conflict so a concurrent
+      // append (double-submit, two tabs) can never overwrite the other.
+      let totalMs = 0;
+      let log: unknown[] = [];
+      const MAX_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          ({ totalMs, log } = await prisma.$transaction(
+            async (tx) => {
+              const latestJob = await tx.job.findUnique({ where: { id: jobId } });
+              const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+              const existingLog = Array.isArray(latestOutput.manualRemediationLog)
+                ? (latestOutput.manualRemediationLog as Array<{ minutes: number }>)
+                : [];
+              const nextLog = [...existingLog, entry];
+              // Derived from the log on every write rather than tracked
+              // separately, so the total can never drift out of sync with
+              // its entries.
+              const nextTotalMs = Math.round(nextLog.reduce((sum, e) => sum + e.minutes, 0) * 60000);
 
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          output: {
-            ...latestOutput,
-            manualRemediationLog: log,
-            manualRemediationMs: totalMs,
-          } as Prisma.InputJsonObject,
-        },
-      });
+              await tx.job.update({
+                where: { id: jobId },
+                data: {
+                  output: {
+                    ...latestOutput,
+                    manualRemediationLog: nextLog,
+                    manualRemediationMs: nextTotalMs,
+                  } as Prisma.InputJsonObject,
+                },
+              });
+
+              return { totalMs: nextTotalMs, log: nextLog };
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+          ));
+          break;
+        } catch (err) {
+          const isSerializationConflict =
+            err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034';
+          if (!isSerializationConflict || attempt === MAX_ATTEMPTS) throw err;
+        }
+      }
 
       // Atomic increment — race-free at the DB level, no read-modify-write
       // needed for this single numeric column (unlike the JSON output above).
