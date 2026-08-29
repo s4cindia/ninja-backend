@@ -204,13 +204,6 @@ const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT', TABLE_LI
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 class AiAnalysisService {
-  /** Tracks jobs currently being analyzed — used by getAnalysisStatus() to return 'processing' immediately after trigger */
-  private readonly analyzingJobs = new Set<string>();
-
-  isAnalyzing(jobId: string): boolean {
-    return this.analyzingJobs.has(jobId);
-  }
-
   /**
    * Analyze all eligible issues for a completed audit job and store AI suggestions.
    */
@@ -219,7 +212,6 @@ class AiAnalysisService {
     tenantId: string,
     sessionOverrides?: Partial<AiRemediationConfig>
   ): Promise<{ analyzed: number; skipped: number; serviceDegraded?: boolean; serviceError?: string | null }> {
-    this.analyzingJobs.add(jobId);
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
     // Load job and verify it's completed
@@ -244,9 +236,7 @@ class AiAnalysisService {
       // Nothing currently exists for this job, so every stored suggestion is
       // stale (see the post-loop pruning comment below for why this matters
       // at all) -- best-effort/non-fatal, matching the aiAnalysisStats save
-      // pattern later in this function; analyzingJobs cleanup is a known,
-      // pre-existing gap on this early-return path (and the "not completed"
-      // throw above), left alone here rather than folded into this fix.
+      // pattern later in this function.
       await prisma.aiAnalysis.deleteMany({ where: { jobId } }).catch((err) => {
         logger.warn(`[AiAnalysis] Failed to prune stale suggestions for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -483,9 +473,7 @@ class AiAnalysisService {
       // fingerprint-based matching could never identify as stale at all.
       // Non-fatal (logged, not thrown) so a prune failure doesn't discard an
       // otherwise-successful analysis pass's results; placed inside this
-      // try so a failure still reaches the existing finally below (unlike a
-      // pre-loop placement, which would run before analyzingJobs cleanup is
-      // reachable at all).
+      // try so a failure still reaches the existing finally below.
       await prisma.aiAnalysis.deleteMany({
         where: { jobId, issueId: { notIn: [...currentIssueIds] } },
       }).catch((err) => {
@@ -543,7 +531,6 @@ class AiAnalysisService {
       }
       return { analyzed, skipped, serviceDegraded: geminiStatus.open, serviceError: geminiStatus.reason };
     } finally {
-      this.analyzingJobs.delete(jobId);
       if (parsed?.parsedPdf) {
         await pdfParserService.close(parsed.parsedPdf).catch(() => {});
       }

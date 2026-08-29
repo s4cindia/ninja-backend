@@ -200,4 +200,20 @@ router.post(
   (req, res) => pdfRemediationController.reauditCurrentFile(req, res)
 );
 
+/**
+ * GET /api/v1/pdf/:jobId/remediation/history
+ * Append-only remediation-cycle history, grouped into "Run N" buckets by
+ * cycleNumber — apply-fixes, re-audit, and AI-re-analysis events across
+ * repeated checklist loops.
+ *
+ * @param jobId - PDF audit job ID
+ * @returns { runs: [{ cycleNumber, events }] }, ascending by cycleNumber
+ */
+router.get(
+  '/:jobId/remediation/history',
+  authenticate,
+  authorizeJob,
+  (req, res) => pdfRemediationController.getRemediationHistory(req, res)
+);
+
 export default router;

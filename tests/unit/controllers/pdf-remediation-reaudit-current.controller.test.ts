@@ -7,6 +7,12 @@
  * job.output.auditReport. This is what makes "re-run audit" actually
  * show updated score/Matterhorn/issues instead of the stale pre-fix
  * numbers (see pdf-reaudit.service.test.ts for the underlying fix).
+ *
+ * Also covers the remediation-cycle lock: this endpoint must reject with
+ * 409 while another apply-fixes/re-audit/AI-analysis cycle is in flight on
+ * the same job, and must re-fetch job.output immediately before its final
+ * write (not reuse the pre-audit findFirst snapshot) so it doesn't clobber
+ * pdf-reaudit.service's own mid-flight progress writes.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -20,7 +26,10 @@ import { AuditReport } from '../../../src/services/audit/base-audit.service';
 import { ReauditComparisonResult } from '../../../src/types/pdf-reaudit.types';
 
 vi.mock('../../../src/lib/prisma', () => ({
-  default: { job: { findFirst: vi.fn(), update: vi.fn() } },
+  default: {
+    job: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    remediationCycleEvent: { create: vi.fn(), findMany: vi.fn() },
+  },
 }));
 vi.mock('../../../src/services/storage/file-storage.service');
 vi.mock('../../../src/services/pdf/pdf-reaudit.service');
@@ -38,7 +47,7 @@ function makeRes(): Response {
 function makeReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRequest {
   return {
     params: { jobId: 'job-1' },
-    user: { tenantId: 'tenant-1' },
+    user: { id: 'user-1', tenantId: 'tenant-1' },
     ...overrides,
   } as unknown as AuthenticatedRequest;
 }
@@ -52,6 +61,22 @@ function emptyMetrics(): ReauditComparisonResult['metrics'] {
       moderate: { resolved: 0, remaining: 0 }, minor: { resolved: 0, remaining: 0 },
     },
   };
+}
+
+/** Mocks a successful lock acquisition (updateMany affects 1 row) and makes
+ * job.findUnique — used both by the lock's cycleNumber readback and by the
+ * controller's re-fetch-before-write — return the given output. */
+function mockLockAcquired(output: Record<string, unknown> = {}) {
+  vi.mocked(prisma.job.updateMany).mockResolvedValue({ count: 1 } as any);
+  vi.mocked(prisma.job.findUnique).mockResolvedValue({
+    id: 'job-1',
+    output,
+    remediationCycleCounter: 1,
+    remediationCycleLockedAt: new Date(),
+    remediationCycleLockedBy: 'user-1',
+    remediationCycleSource: 'reaudit_current_file',
+  } as any);
+  vi.mocked(prisma.remediationCycleEvent.create).mockResolvedValue({} as any);
 }
 
 describe('PdfRemediationController.reauditCurrentFile', () => {
@@ -93,10 +118,32 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
     }));
   });
 
+  it('returns 409 when a remediation cycle is already in progress for this job', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', type: 'PDF_ACCESSIBILITY', input: { fileName: 'doc.pdf' }, output: {} } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
+    vi.mocked(prisma.job.updateMany).mockResolvedValue({ count: 0 } as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      remediationCycleLockedAt: new Date(),
+      remediationCycleLockedBy: 'other-user',
+      remediationCycleSource: 'apply_all',
+    } as any);
+
+    const res = makeRes();
+    await pdfRemediationController.reauditCurrentFile(makeReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: false,
+      error: expect.objectContaining({ code: 'REMEDIATION_CYCLE_IN_PROGRESS' }),
+    }));
+    expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
+  });
+
   it('prefers the remediated file over the original when both exist', async () => {
     vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', type: 'PDF_ACCESSIBILITY', input: { fileName: 'doc.pdf' }, output: {} } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
     vi.mocked(fileStorageService.getFile).mockResolvedValue(Buffer.from('original'));
+    mockLockAcquired({});
     vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
       success: true, jobId: 'job-1', originalAuditId: 'job-1', reauditId: 'job-1-reaudit', fileName: 'doc.pdf',
       comparison: { resolved: [], remaining: [], regressions: [] }, metrics: emptyMetrics(),
@@ -114,6 +161,7 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
     vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', type: 'PDF_ACCESSIBILITY', input: { fileName: 'doc.pdf' }, output: {} } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(null);
     vi.mocked(fileStorageService.getFile).mockResolvedValue(Buffer.from('original'));
+    mockLockAcquired({});
     vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
       success: true, jobId: 'job-1', originalAuditId: 'job-1', reauditId: 'job-1-reaudit', fileName: 'doc.pdf',
       comparison: { resolved: [], remaining: [], regressions: [] }, metrics: emptyMetrics(),
@@ -133,6 +181,7 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
       output: { auditReport: { score: 0 } },
     } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
+    mockLockAcquired({ auditReport: { score: 0 } });
     vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
       success: true, jobId: 'job-1', originalAuditId: 'job-1', reauditId: 'job-1-reaudit', fileName: 'doc.pdf',
       comparison: { resolved: [], remaining: [], regressions: [] }, metrics: emptyMetrics(),
@@ -145,6 +194,9 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
 
     const updateCall = vi.mocked(prisma.job.update).mock.calls[0][0];
     expect((updateCall.data.output as any).auditReport).toBe(freshReport);
+    // Success path also sets postRemediationStatus/postRemediationAudit,
+    // matching applyAll/reauditPdf's shape.
+    expect((updateCall.data.output as any).postRemediationStatus).toBe('complete');
   });
 
   it('does not overwrite auditReport when the re-audit itself fails', async () => {
@@ -154,6 +206,9 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
       output: { auditReport: staleReport },
     } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
+    // The controller re-fetches via findUnique immediately before its final
+    // write -- it must see the same stale output the pre-audit findFirst saw.
+    mockLockAcquired({ auditReport: staleReport });
     vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
       success: false, jobId: 'job-1', originalAuditId: 'job-1', reauditId: '', fileName: 'doc.pdf',
       comparison: { resolved: [], remaining: [], regressions: [] }, metrics: emptyMetrics(),
@@ -166,5 +221,30 @@ describe('PdfRemediationController.reauditCurrentFile', () => {
 
     const updateCall = vi.mocked(prisma.job.update).mock.calls[0][0];
     expect((updateCall.data.output as any).auditReport).toBe(staleReport);
+    expect((updateCall.data.output as any).postRemediationStatus).toBeUndefined();
+  });
+
+  it('releases the lock (conditioned on its own cycleNumber) and logs a failed event when the re-audit throws', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', type: 'PDF_ACCESSIBILITY', input: { fileName: 'doc.pdf' }, output: {} } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('remediated'));
+    mockLockAcquired({});
+    vi.mocked(pdfReauditService.reauditAndCompare).mockRejectedValue(new Error('boom'));
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+
+    const res = makeRes();
+    await pdfRemediationController.reauditCurrentFile(makeReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    // releaseLock -> prisma.job.updateMany clearing the lock columns, scoped
+    // to the cycleNumber this request acquired (1, per mockLockAcquired).
+    expect(prisma.job.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'job-1', remediationCycleCounter: 1 },
+      data: expect.objectContaining({ remediationCycleLockedAt: null }),
+    }));
+    // An exception (not just a resolved success: false) must still leave a
+    // failed history record behind.
+    expect(prisma.remediationCycleEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'reaudit', status: 'failed', errorMessage: 'boom' }),
+    }));
   });
 });
