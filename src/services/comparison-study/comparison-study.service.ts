@@ -228,6 +228,8 @@ export interface TrialReport {
   pageCount: number | null;
   ninja: {
     activeMs: number | null;
+    /** Self-reported manual out-of-app time (e.g. Acrobat Pro) — invisible to activeMs. */
+    manualTimeMs: number | null;
     costUsd: number | null;
     pacFailureCount: number | null;
     pagesPerHour: number | null;
@@ -270,6 +272,7 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
     pageCount,
     ninja: {
       activeMs: trial.ninjaActiveMs,
+      manualTimeMs: trial.ninjaManualTimeMs,
       costUsd: ninjaCostUsd,
       pacFailureCount: ninjaPacFailures,
       pagesPerHour: pagesPerHour(pageCount, trial.ninjaActiveMs),
@@ -287,6 +290,7 @@ export interface AggregateReport {
   trialCount: number;
   validatedCount: number;
   avgNinjaActiveMs: number | null;
+  avgNinjaManualTimeMs: number | null;
   avgPdfxtTimeMs: number | null;
   estimatedSpeedup: number | null;
   avgNinjaPacFailures: number | null;
@@ -308,14 +312,17 @@ export async function getAggregateReport(): Promise<AggregateReport> {
   const reports = await Promise.all(validated.map((t) => getTrialReport(t.id)));
 
   const ninjaTimes = reports.map((r) => r.ninja.activeMs).filter((v): v is number => v != null);
+  const ninjaManualTimes = reports.map((r) => r.ninja.manualTimeMs).filter((v): v is number => v != null);
   const pdfxtTimes = reports.map((r) => r.pdfxt.timeMs).filter((v): v is number => v != null);
   const avgNinjaActiveMs = average(ninjaTimes);
+  const avgNinjaManualTimeMs = average(ninjaManualTimes);
   const avgPdfxtTimeMs = average(pdfxtTimes);
 
   return {
     trialCount: trials.length,
     validatedCount: validated.length,
     avgNinjaActiveMs,
+    avgNinjaManualTimeMs,
     avgPdfxtTimeMs,
     estimatedSpeedup:
       avgNinjaActiveMs && avgPdfxtTimeMs ? Math.round((avgPdfxtTimeMs / avgNinjaActiveMs) * 100) / 100 : null,

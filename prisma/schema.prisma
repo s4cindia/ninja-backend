@@ -2248,6 +2248,11 @@ model ComparisonTrial {
   ninjaJobId      String? @unique
   job             Job?    @relation(fields: [ninjaJobId], references: [id])
   ninjaActiveMs   Int?
+  /// Self-reported time (ms) spent on manual out-of-app remediation (e.g.
+  /// Acrobat Pro) for guidance-only items Ninja can't auto-fix -- invisible
+  /// to ninjaActiveMs, which only tracks time active on Ninja's own pages.
+  /// Accumulated via POST /pdf/:jobId/manual-remediation-time.
+  ninjaManualTimeMs Int?    @default(0)
   ninjaGpuCostUsd Float?
   ninjaPacResult  Json?
 
