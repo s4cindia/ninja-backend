@@ -13,6 +13,7 @@ import { AuditIssue, IssueTriage } from '../../audit/base-audit.service';
 import { imageExtractorService, ImageInfo } from '../image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
+import { GeminiBlockedResponseError } from '../../ai/gemini-errors';
 import { logger } from '../../../lib/logger';
 
 // Gemini-side schema (forces valid JSON matching this shape — no markdown
@@ -226,21 +227,34 @@ class PDFAltTextValidator {
 
       if (useAI && image.base64) {
         const classified = await this.classifyAndGenerateAltText(image);
-        triage = {
-          disposition: classified.isDecorative ? 'auto-resolved' : 'ai-drafted',
-          method: 'vision',
-          confidence: classified.confidence,
-          autoFix: {
-            description: classified.isDecorative
-              ? 'Image appears decorative — mark alt="" to suppress screen reader announcement'
-              : 'AI-generated alt text — review and approve before applying',
-            value: classified.isDecorative ? '' : classified.altText,
-            requiresApproval: !classified.isDecorative,
-          },
-        };
-        suggestion = classified.isDecorative
-          ? 'Image appears decorative — set alt="" in the authoring tool'
-          : `AI-generated alt text: "${classified.altText}"`;
+        if (classified.blocked) {
+          // Content flagged by Gemini's safety filter -- no classification
+          // or draft text exists at all, so present this honestly as a
+          // manual-review item rather than the misleading
+          // "AI-generated alt text: \"\"" the generic fallback would produce.
+          triage = {
+            disposition: 'manual',
+            method: 'vision',
+            confidence: 0,
+          };
+          suggestion = 'AI could not generate alt text for this image — content was flagged by an automated safety filter. Manual review required.';
+        } else {
+          triage = {
+            disposition: classified.isDecorative ? 'auto-resolved' : 'ai-drafted',
+            method: 'vision',
+            confidence: classified.confidence,
+            autoFix: {
+              description: classified.isDecorative
+                ? 'Image appears decorative — mark alt="" to suppress screen reader announcement'
+                : 'AI-generated alt text — review and approve before applying',
+              value: classified.isDecorative ? '' : classified.altText,
+              requiresApproval: !classified.isDecorative,
+            },
+          };
+          suggestion = classified.isDecorative
+            ? 'Image appears decorative — set alt="" in the authoring tool'
+            : `AI-generated alt text: "${classified.altText}"`;
+        }
       } else {
         suggestion = 'Add descriptive alternative text to the image. Alt text should convey the same information as the image.';
       }
@@ -416,8 +430,20 @@ class PDFAltTextValidator {
           issues.push('does not accurately describe image content');
         }
       } catch (error) {
-        logger.warn(`[PDFAltTextValidator] AI assessment failed for image ${image.id}:`, error);
-        // Continue without AI assessment
+        if (error instanceof GeminiBlockedResponseError) {
+          // A durable, non-retryable signal (content flagged by Gemini's
+          // safety filter) -- unlike a generic/transient failure, silently
+          // continuing here would let an image whose alt text can never be
+          // AI-verified pass through with no issue at all whenever the
+          // existing alt text otherwise happens to pass the basic heuristic
+          // checks above. Surface it as an explicit issue instead.
+          logger.warn(`[PDFAltTextValidator] AI assessment blocked by safety filter for image ${image.id} (finishReason: ${error.finishReason})`);
+          issues.push('AI could not verify this image — content was flagged by an automated safety filter');
+          suggestedAltText = 'Manual review required: automated content verification was blocked for this image. Confirm the existing alt text accurately describes its content.';
+        } else {
+          logger.warn(`[PDFAltTextValidator] AI assessment failed for image ${image.id}:`, error);
+          // Continue without AI assessment
+        }
       }
     }
 
@@ -501,6 +527,11 @@ markdown code fences. Your response must start with "{" and contain nothing else
     isDecorative: boolean;
     altText: string;
     confidence: number;
+    /** True when Gemini's safety filter blocked this request -- distinguishes
+     * a durable "AI cannot process this image" outcome from the generic
+     * fallback below, which the caller renders as a legitimate manual-review
+     * signal instead of a fake auto-drafted result. */
+    blocked?: boolean;
   }> {
     const prompt = `Analyze this image from a PDF document.
 
@@ -536,6 +567,14 @@ markdown code fences. Your response must start with "{" and contain nothing else
         confidence: Math.min(1, Math.max(0, data.confidence)),
       };
     } catch (err) {
+      if (err instanceof GeminiBlockedResponseError) {
+        logger.warn(`[PDFAltTextValidator] AI classification blocked by safety filter for image ${image.id} (finishReason: ${err.finishReason})`);
+        // Genuine confidence here is zero -- there is no classification at
+        // all, unlike the generic-failure fallback below (which keeps its
+        // existing 0.5 "we don't know" value). The caller uses `blocked` to
+        // present this honestly instead of as a fake auto-drafted result.
+        return { isDecorative: false, altText: '', confidence: 0, blocked: true };
+      }
       logger.warn(`[PDFAltTextValidator] AI classification failed for image ${image.id}: ${err instanceof Error ? err.message : String(err)}`);
       return { isDecorative: false, altText: '', confidence: 0.5 };
     }
