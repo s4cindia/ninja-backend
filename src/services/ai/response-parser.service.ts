@@ -1,6 +1,12 @@
 import { ZodSchema, ZodError } from 'zod';
 import { geminiService, GeminiOptions, GeminiResponse } from './gemini.service';
 import { AppError } from '../../utils/app-error';
+import { logger } from '../../lib/logger';
+
+/** Cap on how much of a raw failing response gets logged -- enough to
+ * diagnose a real parse failure without one pathological response
+ * bloating a single log line. */
+const MAX_LOGGED_RESPONSE_CHARS = 4000;
 
 export interface ParseResult<T> {
   success: boolean;
@@ -78,6 +84,7 @@ class ResponseParserService {
   ): Promise<{ data: T; usage?: GeminiResponse['usage']; attempts: number }> {
     const maxRetries = parseOptions.maxRetries ?? 2;
     let lastError: Error | undefined;
+    let lastResponseText: string | undefined;
     let totalUsage: GeminiResponse['usage'] | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -87,6 +94,7 @@ class ResponseParserService {
           : this.buildCorrectionPrompt(prompt, lastError?.message || 'Invalid response', parseOptions.correctionPrompt);
 
         const response = await callModel(currentPrompt);
+        lastResponseText = response.text;
 
         if (response.usage) {
           if (totalUsage) {
@@ -104,6 +112,22 @@ class ResponseParserService {
         lastError = error as Error;
       }
     }
+
+    // Diagnostic-only: every attempt (the original call plus maxRetries
+    // correction-prompt retries) failed to produce parseable/schema-valid
+    // JSON. Logging the actual raw response text here -- not just the
+    // parse error -- is what lets a real occurrence be diagnosed instead of
+    // reasoned about from the error message alone (e.g. distinguishing a
+    // genuine model-side truncation/malformed response from a gap in our
+    // own JSON-repair heuristics).
+    logger.error(
+      `[ResponseParser] Exhausted ${maxRetries + 1} attempt(s) parsing AI response: ${lastError?.message}`,
+      {
+        rawResponse: lastResponseText?.slice(0, MAX_LOGGED_RESPONSE_CHARS),
+        rawResponseLength: lastResponseText?.length,
+        truncatedForLog: (lastResponseText?.length ?? 0) > MAX_LOGGED_RESPONSE_CHARS,
+      }
+    );
 
     throw lastError || AppError.internal('Failed to parse response after retries');
   }

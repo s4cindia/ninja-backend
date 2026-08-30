@@ -13,9 +13,10 @@
  * SyntaxErrors at low string positions (not truncation, which fails near
  * the end of a long response).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { responseParserService } from '../../../../src/services/ai/response-parser.service';
+import { logger } from '../../../../src/lib/logger';
 
 const ASSESSMENT_SCHEMA = z.object({
   matchesContent: z.boolean(),
@@ -23,6 +24,57 @@ const ASSESSMENT_SCHEMA = z.object({
 });
 
 describe('response-parser.service', () => {
+  describe('parseWithRetryUsing -- diagnostic logging on exhausted retries', () => {
+    beforeEach(() => {
+      vi.spyOn(logger, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('logs the raw response text once all attempts are exhausted', async () => {
+      const rawText = 'not valid json at all';
+      const callModel = vi.fn().mockResolvedValue({ text: rawText });
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow();
+
+      expect(callModel).toHaveBeenCalledTimes(2); // initial + 1 retry
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Exhausted 2 attempt(s)'),
+        expect.objectContaining({ rawResponse: rawText, rawResponseLength: rawText.length, truncatedForLog: false })
+      );
+    });
+
+    it('does not log when a retry eventually succeeds', async () => {
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'not valid json' })
+        .mockResolvedValueOnce({ text: JSON.stringify({ matchesContent: true, suggestedAltText: 'A red apple' }) });
+
+      const result = await responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, {
+        maxRetries: 1,
+      });
+
+      expect(result.data).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('truncates an oversized raw response in the logged metadata', async () => {
+      const rawText = 'x'.repeat(5000);
+      const callModel = vi.fn().mockResolvedValue({ text: rawText });
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow();
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { rawResponse: string }).rawResponse.length).toBe(4000);
+      expect((meta as { rawResponseLength: number }).rawResponseLength).toBe(5000);
+      expect((meta as { truncatedForLog: boolean }).truncatedForLog).toBe(true);
+    });
+  });
   describe('fixCommonJsonIssues -- string-boundary safety (regression)', () => {
     it('does not corrupt a string value containing a bare "word:" label', () => {
       const raw = JSON.stringify({
