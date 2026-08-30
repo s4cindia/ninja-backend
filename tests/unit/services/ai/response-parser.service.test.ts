@@ -59,6 +59,34 @@ describe('response-parser.service', () => {
       expect(excerptAroundErrorPosition).not.toContain(suffix);
     });
 
+    it('logs finishReason alongside the excerpt -- distinguishes a genuine model-side cutoff (e.g. SAFETY) from a repair-heuristic gap', async () => {
+      const callModel = vi.fn().mockResolvedValue({
+        text: '{"matchesContent":true,"suggestedAltText":"cut off mid',
+        finishReason: 'SAFETY',
+      });
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow();
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBe('SAFETY');
+    });
+
+    it('does not attach a stale finishReason from an earlier attempt to a later transport-error failure', async () => {
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'some malformed { json', finishReason: 'MAX_TOKENS' })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow('rate limit exceeded');
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBeUndefined();
+    });
+
     it('does not log when a retry eventually succeeds', async () => {
       const callModel = vi
         .fn()

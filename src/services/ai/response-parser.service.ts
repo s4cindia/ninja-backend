@@ -80,6 +80,7 @@ class ResponseParserService {
     const maxRetries = parseOptions.maxRetries ?? 2;
     let lastError: Error | undefined;
     let lastResponseText: string | undefined;
+    let lastFinishReason: string | undefined;
     let totalUsage: GeminiResponse['usage'] | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -90,6 +91,7 @@ class ResponseParserService {
       // response from an earlier attempt attached to a DIFFERENT attempt's
       // error in the final diagnostic log below.
       lastResponseText = undefined;
+      lastFinishReason = undefined;
 
       try {
         const currentPrompt = attempt === 0
@@ -98,6 +100,7 @@ class ResponseParserService {
 
         const response = await callModel(currentPrompt);
         lastResponseText = response.text;
+        lastFinishReason = response.finishReason;
 
         if (response.usage) {
           if (totalUsage) {
@@ -118,9 +121,17 @@ class ResponseParserService {
 
     // Diagnostic-only: every attempt (the original call plus maxRetries
     // correction-prompt retries) failed to produce parseable/schema-valid
-    // JSON. `lastResponseText` (if the final attempt got far enough to
-    // return a response at all) pairs with `lastError` from that SAME
-    // attempt -- see the reset above.
+    // JSON. `lastResponseText`/`lastFinishReason` (if the final attempt got
+    // far enough to return a response at all) pair with `lastError` from
+    // that SAME attempt -- see the reset above.
+    //
+    // finishReason (e.g. STOP, MAX_TOKENS, SAFETY, RECITATION) is what
+    // actually distinguishes a genuine model-side truncation/safety-filter
+    // cutoff from a gap in our own JSON-repair heuristics -- confirmed in
+    // production that some "Unterminated string" failures have
+    // responseLength exactly equal to the error position (the response
+    // ends abruptly, mid-string, with no closing quote at all), which looks
+    // like a hard cutoff rather than malformed-but-complete output.
     //
     // Deliberately logs a small excerpt around the JSON parser's own
     // reported character position, not the full response: this text comes
@@ -145,9 +156,11 @@ class ResponseParserService {
 
     logger.error(
       `[ResponseParser] Exhausted ${maxRetries + 1} attempt(s) parsing AI response: ${lastError?.message}`,
-      excerpt !== undefined
-        ? { excerptAroundErrorPosition: excerpt, responseLength: lastResponseText?.length }
-        : { responseLength: lastResponseText?.length }
+      {
+        ...(excerpt !== undefined ? { excerptAroundErrorPosition: excerpt } : {}),
+        responseLength: lastResponseText?.length,
+        finishReason: lastFinishReason,
+      }
     );
 
     throw lastError || AppError.internal('Failed to parse response after retries');
