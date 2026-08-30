@@ -36,7 +36,17 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
-export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'error';
+/** A round that applies nothing still counts toward the round/cost ceilings
+ * (analyzeJob still runs, still spends tokens) without making any progress --
+ * e.g. every approved suggestion this round hit an unhandled suggestionType
+ * or a missing value and applyApprovedSuggestions left it sitting at
+ * 'approved' rather than resolving it. Left unchecked, the loop would keep
+ * re-analyzing and re-approving the same stuck suggestion every round until
+ * the round/cost ceiling silently absorbs the blame. Stopping distinctly
+ * after this many consecutive no-progress rounds surfaces the real cause. */
+const STALL_ROUND_LIMIT = 2;
+
+export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error';
 
 class AutoRemediationLoopService {
   /**
@@ -58,15 +68,28 @@ class AutoRemediationLoopService {
     }
 
     const jobId = trial.ninjaJobId;
-    const job = await prisma.job.findUnique({ where: { id: jobId } });
-    if (!job) {
-      logger.warn(`[AutoRemediationLoop] Job ${jobId} not found for trial ${trialId}`);
-      return;
-    }
+    let job;
+    let lock;
+    try {
+      job = await prisma.job.findUnique({ where: { id: jobId } });
+      if (!job) {
+        logger.warn(`[AutoRemediationLoop] Job ${jobId} not found for trial ${trialId}`);
+        return;
+      }
 
-    const lock = await remediationCycleLockService.acquireLock(jobId, AUTO_MODE_ACTOR, 'auto_loop');
-    if (!lock.acquired) {
-      logger.warn(`[AutoRemediationLoop] Could not acquire remediation lock for job ${jobId} -- another cycle is already in progress`);
+      lock = await remediationCycleLockService.acquireLock(jobId, AUTO_MODE_ACTOR, 'auto_loop');
+      if (!lock.acquired) {
+        logger.warn(`[AutoRemediationLoop] Could not acquire remediation lock for job ${jobId} -- another cycle is already in progress`);
+        return;
+      }
+    } catch (err) {
+      // Nothing has been marked "running" yet at this point (no lock held),
+      // so there's no lock to release and no in-progress run to mark as
+      // errored -- just log. The /auto-mode/start caller also attaches its
+      // own rejection handler as a second line of defense.
+      logger.error(
+        `[AutoRemediationLoop] Failed to start auto loop for trial ${trialId} (job ${jobId}): ${err instanceof Error ? err.message : String(err)}`
+      );
       return;
     }
     const cycleNumber = lock.cycleNumber!;
@@ -89,6 +112,7 @@ class AutoRemediationLoopService {
     let stopReason: AutoStopReason = 'converged';
     let roundsCompleted = 0;
     let costSpentUsd = 0;
+    let consecutiveStalls = 0;
 
     try {
       while (true) {
@@ -113,7 +137,7 @@ class AutoRemediationLoopService {
           break;
         }
 
-        await this.runRound(jobId, cycleNumber, job.tenantId);
+        const roundApplied = await this.runRound(jobId, cycleNumber, job.tenantId);
         roundsCompleted++;
 
         const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
@@ -126,6 +150,20 @@ class AutoRemediationLoopService {
           where: { id: trialId },
           data: { autoRoundsCompleted: roundsCompleted, autoCostSpentUsd: costSpentUsd },
         });
+
+        // A round that applied nothing still consumed a round and Gemini
+        // tokens without making progress -- stop distinctly rather than
+        // let the round/cost ceiling silently absorb the real cause (see
+        // STALL_ROUND_LIMIT's doc comment above).
+        if (roundApplied === 0) {
+          consecutiveStalls++;
+          if (consecutiveStalls >= STALL_ROUND_LIMIT) {
+            stopReason = 'stalled';
+            break;
+          }
+        } else {
+          consecutiveStalls = 0;
+        }
 
         const remaining = await prisma.aiAnalysis.count({
           where: {
@@ -174,10 +212,12 @@ class AutoRemediationLoopService {
     }
   }
 
-  /** One analyze -> auto-approve -> apply -> re-audit pass. Throws on a
-   * genuine failure in any step -- the caller's loop treats that as a
-   * terminal 'error' stop rather than retrying indefinitely. */
-  private async runRound(jobId: string, cycleNumber: number, tenantId: string): Promise<void> {
+  /** One analyze -> auto-approve -> apply -> re-audit pass. Returns the
+   * number of suggestions actually applied this round (0 signals a stall to
+   * the caller). Throws on a genuine failure in any step -- the caller's
+   * loop treats that as a terminal 'error' stop rather than retrying
+   * indefinitely. */
+  private async runRound(jobId: string, cycleNumber: number, tenantId: string): Promise<number> {
     const roundStartedAt = new Date();
     await aiAnalysisService.analyzeJob(jobId, tenantId);
     await remediationCycleHistoryService.logEvent({
@@ -202,7 +242,7 @@ class AutoRemediationLoopService {
 
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     if (result.applied === 0 || !result.modifiedBuffer || !result.fileName) {
-      return;
+      return result.applied;
     }
 
     const comparison = await pdfReauditService.reauditAndCompare(jobId, result.modifiedBuffer, result.fileName);
@@ -246,6 +286,8 @@ class AutoRemediationLoopService {
     if (!comparison.success) {
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
+
+    return result.applied;
   }
 }
 

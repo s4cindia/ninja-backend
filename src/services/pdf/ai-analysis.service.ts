@@ -1924,7 +1924,14 @@ class AiAnalysisService {
     const modifiedBuffer = await pdfModifierService.savePDF(doc);
     const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
 
-    const currentOutput = (job.output ?? {}) as Record<string, unknown>;
+    // Re-fetch immediately before this write rather than reusing the job
+    // snapshot from the top of this method -- the apply loop above can run
+    // long enough for another writer to have touched job.output in the
+    // meantime, and reusing a stale snapshot here would silently clobber it
+    // (same reasoning as the re-fetch-before-write pattern used elsewhere
+    // for job.output persistence).
+    const latestJobForOutput = await prisma.job.findUnique({ where: { id: jobId } });
+    const currentOutput = (latestJobForOutput?.output ?? job.output ?? {}) as Record<string, unknown>;
     await prisma.job.update({
       where: { id: jobId },
       data: { output: { ...currentOutput, remediatedFileUrl: savedPath, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },

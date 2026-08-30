@@ -75,6 +75,7 @@ const mockPrisma = prisma as unknown as {
     update: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
+    findUnique: ReturnType<typeof vi.fn>;
     findUniqueOrThrow: ReturnType<typeof vi.fn>;
   };
 };
@@ -235,7 +236,7 @@ describe('comparison-study.service', () => {
 
   describe('updateAutoModeConfig', () => {
     it('updates mode/round-limit/cost-limit fields that were provided', async () => {
-      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
       mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1', mode: 'auto' });
 
       await updateAutoModeConfig('trial-1', { mode: 'auto', autoMaxRounds: 5, autoCostLimitUsd: 3.5 });
@@ -247,7 +248,7 @@ describe('comparison-study.service', () => {
     });
 
     it('omits fields that were not provided from the update payload', async () => {
-      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
       mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1' });
 
       await updateAutoModeConfig('trial-1', { autoMaxRounds: 5 });
@@ -259,14 +260,14 @@ describe('comparison-study.service', () => {
     });
 
     it('rejects changing mode while a run is in progress', async () => {
-      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: 'running' });
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: 'running' });
 
       await expect(updateAutoModeConfig('trial-1', { mode: 'manual' })).rejects.toMatchObject({ statusCode: 409 });
       expect(mockPrisma.comparisonTrial.update).not.toHaveBeenCalled();
     });
 
     it('allows updating round/cost limits while running, as long as mode itself is unchanged', async () => {
-      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: 'running' });
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: 'running' });
       mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1' });
 
       await updateAutoModeConfig('trial-1', { mode: 'auto', autoCostLimitUsd: 5 });
@@ -275,6 +276,13 @@ describe('comparison-study.service', () => {
         where: { id: 'trial-1' },
         data: { mode: 'auto', autoCostLimitUsd: 5 },
       });
+    });
+
+    it('throws a 404 AppError (not a raw Prisma error) when the trial does not exist', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue(null);
+
+      await expect(updateAutoModeConfig('missing-trial', { mode: 'auto' })).rejects.toMatchObject({ statusCode: 404 });
+      expect(mockPrisma.comparisonTrial.update).not.toHaveBeenCalled();
     });
   });
 });

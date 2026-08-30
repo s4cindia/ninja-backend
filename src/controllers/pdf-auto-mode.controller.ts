@@ -9,6 +9,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../lib/prisma';
+import { logger } from '../lib/logger';
 import { AppError } from '../utils/app-error';
 import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
 
@@ -34,12 +35,20 @@ export class PdfAutoModeController {
         throw AppError.conflict('Auto mode is already running for this trial.', 'AUTO_MODE_ALREADY_RUNNING');
       }
 
-      // Fire-and-forget -- client polls the status endpoint below.
-      void autoRemediationLoopService.startAutoLoop(trial.id);
+      // Fire-and-forget -- client polls the status endpoint below. Attach a
+      // rejection handler explicitly: startAutoLoop is expected to catch its
+      // own errors internally, but a setup failure before that point (e.g. a
+      // DB blip on the very first lookup) would otherwise be an unhandled
+      // promise rejection.
+      autoRemediationLoopService.startAutoLoop(trial.id).catch((err) => {
+        logger.error(
+          `[PdfAutoMode] Unexpected error starting auto loop for trial ${trial.id}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      });
 
       res.status(202).json({
         success: true,
-        data: { status: 'running', message: 'Auto-remediation loop started. Poll GET /pdf/:jobId/auto-mode/status for progress.' },
+        data: { status: 'running', message: 'Auto-remediation loop started. Poll GET /api/v1/pdf/:jobId/auto-mode/status for progress.' },
       });
     } catch (error) {
       next(error);

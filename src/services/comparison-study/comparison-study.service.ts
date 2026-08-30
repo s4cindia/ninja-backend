@@ -182,7 +182,10 @@ export async function updateAutoModeConfig(
   id: string,
   input: { mode?: 'manual' | 'auto'; autoMaxRounds?: number; autoCostLimitUsd?: number },
 ): Promise<ComparisonTrial> {
-  const trial = await prisma.comparisonTrial.findUniqueOrThrow({ where: { id } });
+  const trial = await prisma.comparisonTrial.findUnique({ where: { id } });
+  if (!trial) {
+    throw AppError.notFound('Trial not found');
+  }
 
   if (input.mode !== undefined && input.mode !== trial.mode && trial.autoStatus === 'running') {
     throw AppError.conflict(
