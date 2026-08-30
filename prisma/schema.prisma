@@ -1960,6 +1960,9 @@ model AiAnalysis {
   /// 'pending' | 'approved' | 'rejected' | 'applied'
   status               String   @default("pending")
   requiresManualReview Boolean  @default(false)
+  /// 'operator' | 'auto-mode' -- who/what set status to 'approved'. Null for
+  /// rows never approved (still pending/rejected) or predating this column.
+  approvedBy           String?
   /// Stable identity for the underlying finding (code + element/page, or
   /// code + rounded position for contrast issues) -- independent of issueId,
   /// which is a per-audit sequential counter that gets reassigned whenever
@@ -2276,6 +2279,24 @@ model ComparisonTrial {
   pdfxtPageCount Int?
   pdfxtCostUsd   Float?
   pdfxtPacResult Json?
+
+  /// 'manual' (operator drives every round, default) | 'auto' (backend loops
+  /// analyze->approve->apply->reaudit on its own until convergence or a limit).
+  mode                String  @default("manual")
+  autoMaxRounds       Int     @default(10)
+  autoCostLimitUsd    Float   @default(2.0)
+  autoRoundsCompleted Int     @default(0)
+  /// Cumulative Gemini cost across all rounds of the current/last auto run --
+  /// Job.output.aiAnalysisStats is overwritten per analysis round, not
+  /// cumulative, so the running total has to live here instead.
+  autoCostSpentUsd    Float   @default(0)
+  /// 'running' | 'stopped'; null if auto mode has never been started.
+  autoStatus          String?
+  /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'error'
+  autoStopReason      String?
+  /// Cooperative cancellation flag -- checked at the top of each round, never
+  /// mid-round, so a stop request never leaves a round half-applied.
+  autoStopRequested   Boolean @default(false)
 
   status    String   @default("registered") // registered -> ninja_complete -> pdfxt_logged -> validated -> reported
   createdAt DateTime @default(now())

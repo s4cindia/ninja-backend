@@ -219,7 +219,11 @@ export class PdfAiAnalysisController {
 
       const updated = await prisma.aiAnalysis.update({
         where: { jobId_issueId: { jobId, issueId } },
-        data: { status: parsed.data.status, updatedAt: new Date() },
+        data: {
+          status: parsed.data.status,
+          approvedBy: parsed.data.status === 'approved' ? 'operator' : existing.approvedBy,
+          updatedAt: new Date(),
+        },
       });
 
       res.json({ success: true, data: updated });
@@ -592,20 +596,10 @@ export class PdfAiAnalysisController {
       heartbeatForFinally = heartbeat;
 
       const includePending = req.query.includePending === 'true';
-      const statusFilter = includePending
-        ? { in: ['approved', 'pending'] as string[] }
-        : ('approved' as const);
+      const { applied, failed, errors, modifiedBuffer, fileName } =
+        await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, req.user.id, 'apply_all', { includePending });
 
-      const approved = await prisma.aiAnalysis.findMany({
-        where: {
-          jobId,
-          status: statusFilter,
-          applyMode: 'apply-to-pdf',
-        },
-        orderBy: { createdAt: 'asc' },
-      });
-
-      if (approved.length === 0) {
+      if (applied === 0 && failed === 0) {
         res.json({
           success: true,
           data: { applied: 0, failed: 0, message: 'No approved or pending suggestions to apply' },
@@ -613,138 +607,8 @@ export class PdfAiAnalysisController {
         return;
       }
 
-      // Load PDF once
-      const output = (job.output ?? {}) as Record<string, unknown>;
-      const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
-
-      let pdfBuffer = await fileStorageService.getRemediatedFile(jobId, fileName).catch(() => null);
-      if (!pdfBuffer) {
-        pdfBuffer = await fileStorageService.getFile(jobId, fileName);
-      }
-      if (!pdfBuffer) throw AppError.notFound('PDF file not found in storage');
-
-      const doc = await pdfModifierService.loadPDF(pdfBuffer);
-
-      // Build element-ID and issue-object lookup from original audit report
-      const auditReport = (output.auditReport ?? {}) as Record<string, unknown>;
-      const auditIssues = (auditReport.issues ?? []) as AuditIssue[];
-      const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
-      const issueById = new Map(auditIssues.map(i => [i.id, i]));
-
-      // Structure writer types are algorithmic — they don't require a value field
-      const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
-
-      let applied = 0;
-      let failed = 0;
-      const errors: Array<{ issueId: string; suggestionType: string; reason: string }> = [];
-
-      for (const analysis of approved) {
-        const { suggestionType, value, issueId } = analysis;
-
-        // Skip value-less non-structure-writer suggestions
-        if (!value && !STRUCTURE_WRITER_TYPES.has(suggestionType)) {
-          failed++;
-          errors.push({ issueId, suggestionType, reason: 'No value and not a structure-writer type' });
-          continue;
-        }
-
-        try {
-          let modification;
-          const elementId = elementById.get(issueId) ?? issueId;
-          const originalIssue = issueById.get(issueId) ?? ({ id: issueId } as AuditIssue);
-
-          if (suggestionType === 'heading-fix') {
-            const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [originalIssue]);
-            const r = results[0];
-            modification = { success: r.success, description: r.after, error: r.error };
-          } else if (suggestionType === 'list-fix') {
-            const results = pdfStructureWriterService.rewrapListItems(doc, [originalIssue]);
-            const r = results[0];
-            modification = { success: r.success, description: r.after, error: r.error };
-          } else if (suggestionType === 'table-header-fix') {
-            const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
-            const r = results[0];
-            modification = { success: r.success, description: r.after, error: r.error };
-          } else if (suggestionType === 'bookmark-generate') {
-            const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
-            modification = {
-              success: result.generated > 0,
-              description: `Generated ${result.generated} bookmark(s)`,
-              error: result.generated === 0 ? 'No headings found' : undefined,
-            };
-          } else if (suggestionType === 'heading-multiple-h1-fix') {
-            const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
-            modification = { success: result.success, description: result.after, error: result.error };
-          } else if (suggestionType === 'pdfua-identifier') {
-            modification = await pdfModifierService.writePdfUaIdentifier(doc);
-          } else if (suggestionType === 'color-contrast-fix') {
-            const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
-            modification = { success: result.success, description: result.after, error: result.error };
-          } else if (suggestionType === 'alt-text-decorative') {
-            // Hardcoded '' rather than the stored value — see the identical
-            // branch in applySuggestion above for why.
-            modification = await pdfModifierService.setAltText(doc, elementId, '');
-          } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
-            modification = await pdfModifierService.setAltText(doc, elementId, value!);
-          } else if (suggestionType === 'table-summary') {
-            modification = await pdfModifierService.setTableSummary(doc, elementId, value!);
-          } else if (suggestionType === 'formula-actualtext') {
-            const elementTypes = originalIssue.code === TABLE_LIKELY_FORMULA_CODE
-              ? new Set(['Table', 'table'])
-              : undefined;
-            modification = await pdfModifierService.setActualText(doc, elementId, value!, elementTypes);
-          } else if (suggestionType === 'language') {
-            modification = await pdfModifierService.addLanguage(doc, value!);
-          } else {
-            failed++;
-            errors.push({ issueId, suggestionType, reason: `Unhandled suggestion type: ${suggestionType}` });
-            continue;
-          }
-
-          if (modification.success) {
-            applied++;
-            await prisma.aiAnalysis.update({
-              where: { jobId_issueId: { jobId, issueId } },
-              data: { status: 'applied', updatedAt: new Date() },
-            });
-          } else {
-            failed++;
-            const reason = modification.error ?? 'Unknown error';
-            errors.push({ issueId, suggestionType, reason });
-            logger.warn(`[AI Analysis] apply-all: failed to apply ${suggestionType} for ${issueId}: ${reason}`);
-          }
-        } catch (err) {
-          failed++;
-          const reason = err instanceof Error ? err.message : String(err);
-          errors.push({ issueId: analysis.issueId, suggestionType, reason });
-          logger.warn(`[AI Analysis] apply-all: error for ${analysis.issueId}: ${reason}`);
-        }
-      }
-
       // Save modified PDF once regardless of partial failures
-      if (applied > 0) {
-        const modifiedBuffer = await pdfModifierService.savePDF(doc);
-        const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
-
-        // Record remediatedFileUrl + set postRemediationStatus = 'pending' so download endpoint and ACR button can gate on it
-        const currentOutput = (job.output ?? {}) as Record<string, unknown>;
-        await prisma.job.update({
-          where: { id: jobId },
-          data: { output: { ...currentOutput, remediatedFileUrl: savedPath, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },
-        });
-
-        await remediationCycleHistoryService.logEvent({
-          jobId,
-          cycleNumber,
-          action: 'apply_fixes',
-          source: 'apply_all',
-          status: 'completed',
-          appliedCount: applied,
-          failedCount: failed,
-          triggeredBy: req.user.id,
-          startedAt: cycleStartedAt,
-        });
-
+      if (applied > 0 && modifiedBuffer && fileName) {
         // Hand the lock off to the fire-and-forget chain below — it (not
         // this synchronous request) now owns stopping the heartbeat and
         // releasing the lock (both already started/acquired above).
@@ -818,22 +682,12 @@ export class PdfAiAnalysisController {
             remediationCycleLockService.stopHeartbeat(heartbeat);
             void remediationCycleLockService.releaseLock(jobId, cycleNumber);
           });
-      } else {
-        // approved.length > 0 but every suggestion failed to apply — no PDF
-        // was saved and no re-audit was started, so this cycle is already
-        // complete; the outer finally below releases the lock immediately.
-        await remediationCycleHistoryService.logEvent({
-          jobId,
-          cycleNumber,
-          action: 'apply_fixes',
-          source: 'apply_all',
-          status: 'failed',
-          appliedCount: applied,
-          failedCount: failed,
-          triggeredBy: req.user.id,
-          startedAt: cycleStartedAt,
-        });
       }
+      // else: applied === 0 but failed > 0 (every suggestion failed to
+      // apply) — aiAnalysisService.applyApprovedSuggestions already logged
+      // the 'apply_fixes'/'failed' history event itself; no PDF was saved
+      // and no re-audit was started, so the outer finally below releases
+      // the lock immediately.
 
       logger.info(`[AI Analysis] apply-all for job ${jobId}: ${applied} applied, ${failed} failed`);
 

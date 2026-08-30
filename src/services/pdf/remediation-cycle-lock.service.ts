@@ -27,7 +27,8 @@ export type RemediationCycleSource =
   | 'apply_single'
   | 'reaudit_pdf_upload'
   | 'reaudit_current_file'
-  | 'analyze_job';
+  | 'analyze_job'
+  | 'auto_loop';
 
 /** Lock ttl for automatic staleness-based recovery from a crashed worker.
  * Paired with a heartbeat (see startHeartbeat) so a legitimately long-running

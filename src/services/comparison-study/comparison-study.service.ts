@@ -24,6 +24,7 @@ import { s3Client, s3Service } from '../s3.service';
 import { fileStorageService } from '../storage/file-storage.service';
 import { veraPdfService, VeraPdfFailure } from '../pdf/verapdf.service';
 import { createAndEnqueuePdfAuditJob } from '../../controllers/pdf.controller';
+import { AppError } from '../../utils/app-error';
 
 const COMPARISON_STUDY_PREFIX = 'comparison-study/';
 
@@ -166,6 +167,36 @@ export async function logPdfxtData(
       ...(input.pdfxtPageCount !== undefined && { pdfxtPageCount: input.pdfxtPageCount }),
       ...(input.pdfxtCostUsd !== undefined && { pdfxtCostUsd: input.pdfxtCostUsd }),
       status: 'pdfxt_logged',
+    },
+  });
+}
+
+/**
+ * Update a trial's auto-remediation-mode configuration (manual/auto toggle,
+ * round-count and cumulative Gemini $ cost ceilings). Rejects changing
+ * `mode` while a run is already in progress -- switching a trial out of
+ * auto mode mid-run would orphan the loop's own state machine, which reads
+ * `mode`/ceilings fresh from this row on every round.
+ */
+export async function updateAutoModeConfig(
+  id: string,
+  input: { mode?: 'manual' | 'auto'; autoMaxRounds?: number; autoCostLimitUsd?: number },
+): Promise<ComparisonTrial> {
+  const trial = await prisma.comparisonTrial.findUniqueOrThrow({ where: { id } });
+
+  if (input.mode !== undefined && input.mode !== trial.mode && trial.autoStatus === 'running') {
+    throw AppError.conflict(
+      'Cannot change mode while an auto-remediation run is in progress. Stop it first.',
+      'AUTO_MODE_RUNNING',
+    );
+  }
+
+  return prisma.comparisonTrial.update({
+    where: { id },
+    data: {
+      ...(input.mode !== undefined && { mode: input.mode }),
+      ...(input.autoMaxRounds !== undefined && { autoMaxRounds: input.autoMaxRounds }),
+      ...(input.autoCostLimitUsd !== undefined && { autoCostLimitUsd: input.autoCostLimitUsd }),
     },
   });
 }

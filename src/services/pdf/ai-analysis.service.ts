@@ -18,6 +18,11 @@ import { GeminiBlockedResponseError } from '../ai/gemini-errors';
 import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { fileStorageService } from '../storage/file-storage.service';
+import { pdfModifierService } from './pdf-modifier.service';
+import { pdfStructureWriterService } from './pdf-structure-writer.service';
+import { pdfContrastWriterService } from './pdf-contrast-writer.service';
+import { remediationCycleHistoryService } from './remediation-cycle-history.service';
+import { AppError } from '../../utils/app-error';
 import { pdfComprehensiveParserService } from './pdf-comprehensive-parser.service';
 import { imageExtractorService, ImageInfo } from './image-extractor.service';
 import { pdfParserService } from './pdf-parser.service';
@@ -76,6 +81,15 @@ interface AiSuggestionResult {
   applyMode: 'apply-to-pdf' | 'guidance-only' | 'auto-resolve';
   requiresManualReview?: boolean;
   usage?: { promptTokens: number; completionTokens: number };
+}
+
+export interface ApplyApprovedSuggestionsResult {
+  applied: number;
+  failed: number;
+  errors: Array<{ issueId: string; suggestionType: string; reason: string }>;
+  /** Only set when applied > 0 -- the caller (controller or auto-loop) owns re-audit. */
+  modifiedBuffer?: Buffer;
+  fileName?: string;
 }
 
 // Image types that always require a subject matter expert regardless of complexity
@@ -1751,6 +1765,184 @@ class AiAnalysisService {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * Applies every eligible `applyMode: 'apply-to-pdf'` suggestion to the
+   * job's PDF and saves the result. Extracted from
+   * pdf-ai-analysis.controller.ts's applyAll so the auto-remediation loop can
+   * drive the same apply logic without going through that endpoint's own
+   * lock acquisition (the caller already holds the remediation-cycle lock
+   * for jobId under cycleNumber -- this method does not acquire or release
+   * it). Re-audit is deliberately left to the caller: applyAll fires it
+   * fire-and-forget to keep the HTTP response fast, while the auto-loop
+   * awaits it synchronously to decide whether to run another round -- that
+   * divergence can't live inside one shared method.
+   */
+  async applyApprovedSuggestions(
+    jobId: string,
+    cycleNumber: number,
+    triggeredBy: string,
+    source: 'apply_all' | 'auto_loop',
+    options: { includePending?: boolean } = {}
+  ): Promise<ApplyApprovedSuggestionsResult> {
+    const cycleStartedAt = new Date();
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) throw AppError.notFound('Job not found');
+
+    const statusFilter = options.includePending
+      ? { in: ['approved', 'pending'] as string[] }
+      : ('approved' as const);
+
+    const approved = await prisma.aiAnalysis.findMany({
+      where: { jobId, status: statusFilter, applyMode: 'apply-to-pdf' },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (approved.length === 0) {
+      return { applied: 0, failed: 0, errors: [] };
+    }
+
+    const output = (job.output ?? {}) as Record<string, unknown>;
+    const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
+
+    let pdfBuffer = await fileStorageService.getRemediatedFile(jobId, fileName).catch(() => null);
+    if (!pdfBuffer) {
+      pdfBuffer = await fileStorageService.getFile(jobId, fileName);
+    }
+    if (!pdfBuffer) throw AppError.notFound('PDF file not found in storage');
+
+    const doc = await pdfModifierService.loadPDF(pdfBuffer);
+
+    const auditReport = (output.auditReport ?? {}) as Record<string, unknown>;
+    const auditIssues = (auditReport.issues ?? []) as AuditIssue[];
+    const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
+    const issueById = new Map(auditIssues.map(i => [i.id, i]));
+
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+
+    let applied = 0;
+    let failed = 0;
+    const errors: Array<{ issueId: string; suggestionType: string; reason: string }> = [];
+
+    for (const analysis of approved) {
+      const { suggestionType, value, issueId } = analysis;
+
+      if (!value && !STRUCTURE_WRITER_TYPES.has(suggestionType)) {
+        failed++;
+        errors.push({ issueId, suggestionType, reason: 'No value and not a structure-writer type' });
+        continue;
+      }
+
+      try {
+        let modification;
+        const elementId = elementById.get(issueId) ?? issueId;
+        const originalIssue = issueById.get(issueId) ?? ({ id: issueId } as AuditIssue);
+
+        if (suggestionType === 'heading-fix') {
+          const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'list-fix') {
+          const results = pdfStructureWriterService.rewrapListItems(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-header-fix') {
+          const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'bookmark-generate') {
+          const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
+          modification = {
+            success: result.generated > 0,
+            description: `Generated ${result.generated} bookmark(s)`,
+            error: result.generated === 0 ? 'No headings found' : undefined,
+          };
+        } else if (suggestionType === 'heading-multiple-h1-fix') {
+          const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'pdfua-identifier') {
+          modification = await pdfModifierService.writePdfUaIdentifier(doc);
+        } else if (suggestionType === 'color-contrast-fix') {
+          const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'alt-text-decorative') {
+          // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
+          modification = await pdfModifierService.setAltText(doc, elementId, '');
+        } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
+          modification = await pdfModifierService.setAltText(doc, elementId, value!);
+        } else if (suggestionType === 'table-summary') {
+          modification = await pdfModifierService.setTableSummary(doc, elementId, value!);
+        } else if (suggestionType === 'formula-actualtext') {
+          const elementTypes = originalIssue.code === TABLE_LIKELY_FORMULA_CODE
+            ? new Set(['Table', 'table'])
+            : undefined;
+          modification = await pdfModifierService.setActualText(doc, elementId, value!, elementTypes);
+        } else if (suggestionType === 'language') {
+          modification = await pdfModifierService.addLanguage(doc, value!);
+        } else {
+          failed++;
+          errors.push({ issueId, suggestionType, reason: `Unhandled suggestion type: ${suggestionType}` });
+          continue;
+        }
+
+        if (modification.success) {
+          applied++;
+          await prisma.aiAnalysis.update({
+            where: { jobId_issueId: { jobId, issueId } },
+            data: { status: 'applied', updatedAt: new Date() },
+          });
+        } else {
+          failed++;
+          const reason = modification.error ?? 'Unknown error';
+          errors.push({ issueId, suggestionType, reason });
+          logger.warn(`[AiAnalysis] applyApprovedSuggestions: failed to apply ${suggestionType} for ${issueId}: ${reason}`);
+        }
+      } catch (err) {
+        failed++;
+        const reason = err instanceof Error ? err.message : String(err);
+        errors.push({ issueId: analysis.issueId, suggestionType, reason });
+        logger.warn(`[AiAnalysis] applyApprovedSuggestions: error for ${analysis.issueId}: ${reason}`);
+      }
+    }
+
+    if (applied === 0) {
+      await remediationCycleHistoryService.logEvent({
+        jobId,
+        cycleNumber,
+        action: 'apply_fixes',
+        source,
+        status: 'failed',
+        appliedCount: applied,
+        failedCount: failed,
+        triggeredBy,
+        startedAt: cycleStartedAt,
+      });
+      return { applied, failed, errors };
+    }
+
+    const modifiedBuffer = await pdfModifierService.savePDF(doc);
+    const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
+
+    const currentOutput = (job.output ?? {}) as Record<string, unknown>;
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { output: { ...currentOutput, remediatedFileUrl: savedPath, postRemediationStatus: 'pending' } as Prisma.InputJsonObject },
+    });
+
+    await remediationCycleHistoryService.logEvent({
+      jobId,
+      cycleNumber,
+      action: 'apply_fixes',
+      source,
+      status: 'completed',
+      appliedCount: applied,
+      failedCount: failed,
+      triggeredBy,
+      startedAt: cycleStartedAt,
+    });
+
+    return { applied, failed, errors, modifiedBuffer, fileName };
   }
 }
 
