@@ -3,11 +3,6 @@ import { geminiService, GeminiOptions, GeminiResponse } from './gemini.service';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
 
-/** Cap on how much of a raw failing response gets logged -- enough to
- * diagnose a real parse failure without one pathological response
- * bloating a single log line. */
-const MAX_LOGGED_RESPONSE_CHARS = 4000;
-
 export interface ParseResult<T> {
   success: boolean;
   data?: T;
@@ -88,6 +83,14 @@ class ResponseParserService {
     let totalUsage: GeminiResponse['usage'] | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Cleared at the top of every attempt (not just on success) so a
+      // later attempt's callModel() throwing before assignment -- e.g. a
+      // transport/rate-limit error, distinct from the model actually
+      // responding with something unparseable -- can never leave a STALE
+      // response from an earlier attempt attached to a DIFFERENT attempt's
+      // error in the final diagnostic log below.
+      lastResponseText = undefined;
+
       try {
         const currentPrompt = attempt === 0
           ? prompt
@@ -115,18 +118,36 @@ class ResponseParserService {
 
     // Diagnostic-only: every attempt (the original call plus maxRetries
     // correction-prompt retries) failed to produce parseable/schema-valid
-    // JSON. Logging the actual raw response text here -- not just the
-    // parse error -- is what lets a real occurrence be diagnosed instead of
-    // reasoned about from the error message alone (e.g. distinguishing a
-    // genuine model-side truncation/malformed response from a gap in our
-    // own JSON-repair heuristics).
+    // JSON. `lastResponseText` (if the final attempt got far enough to
+    // return a response at all) pairs with `lastError` from that SAME
+    // attempt -- see the reset above.
+    //
+    // Deliberately logs a small excerpt around the JSON parser's own
+    // reported character position, not the full response: this text comes
+    // from arbitrary user-uploaded documents (e.g. an image description
+    // extracted from a PDF), so dumping the whole thing into general
+    // application logs -- which don't carry the same access/retention
+    // controls as the documents themselves -- is its own problem
+    // independent of debugging convenience. A ~80-char window centered on
+    // where JSON.parse actually broke is enough to tell a genuine
+    // model-side truncation/malformed response apart from a gap in our own
+    // JSON-repair heuristics, without logging unrelated content around it.
+    // Schema-validation failures (AppError from Zod, not a JSON syntax
+    // error) already describe the problem structurally and get no excerpt.
+    const positionMatch = lastError?.message.match(/position (\d+)/);
+    const excerptWindow = 40;
+    const excerpt = positionMatch && lastResponseText
+      ? lastResponseText.slice(
+          Math.max(0, Number(positionMatch[1]) - excerptWindow),
+          Math.min(lastResponseText.length, Number(positionMatch[1]) + excerptWindow)
+        )
+      : undefined;
+
     logger.error(
       `[ResponseParser] Exhausted ${maxRetries + 1} attempt(s) parsing AI response: ${lastError?.message}`,
-      {
-        rawResponse: lastResponseText?.slice(0, MAX_LOGGED_RESPONSE_CHARS),
-        rawResponseLength: lastResponseText?.length,
-        truncatedForLog: (lastResponseText?.length ?? 0) > MAX_LOGGED_RESPONSE_CHARS,
-      }
+      excerpt !== undefined
+        ? { excerptAroundErrorPosition: excerpt, responseLength: lastResponseText?.length }
+        : { responseLength: lastResponseText?.length }
     );
 
     throw lastError || AppError.internal('Failed to parse response after retries');

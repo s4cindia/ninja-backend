@@ -32,8 +32,13 @@ describe('response-parser.service', () => {
       vi.restoreAllMocks();
     });
 
-    it('logs the raw response text once all attempts are exhausted', async () => {
-      const rawText = 'not valid json at all';
+    it('logs a small excerpt centered on the JSON parser\'s reported error position, not the full response', async () => {
+      // The response is long on both sides of the actual break so a
+      // "logs the whole thing" regression would be obvious: only a ~80-char
+      // window around the error position should appear, not the full text.
+      const prefix = 'A'.repeat(200);
+      const suffix = 'B'.repeat(200);
+      const rawText = `${prefix}{not valid json}${suffix}`;
       const callModel = vi.fn().mockResolvedValue({ text: rawText });
 
       await expect(
@@ -41,10 +46,17 @@ describe('response-parser.service', () => {
       ).rejects.toThrow();
 
       expect(callModel).toHaveBeenCalledTimes(2); // initial + 1 retry
-      expect(logger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Exhausted 2 attempt(s)'),
-        expect.objectContaining({ rawResponse: rawText, rawResponseLength: rawText.length, truncatedForLog: false })
-      );
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      const { excerptAroundErrorPosition, responseLength } = meta as {
+        excerptAroundErrorPosition: string;
+        responseLength: number;
+      };
+      expect(responseLength).toBe(rawText.length);
+      expect(excerptAroundErrorPosition.length).toBeLessThan(rawText.length);
+      expect(excerptAroundErrorPosition.length).toBeLessThanOrEqual(80);
+      // Never logs the full padding on either side -- only a window near the break.
+      expect(excerptAroundErrorPosition).not.toContain(prefix);
+      expect(excerptAroundErrorPosition).not.toContain(suffix);
     });
 
     it('does not log when a retry eventually succeeds', async () => {
@@ -61,18 +73,37 @@ describe('response-parser.service', () => {
       expect(logger.error).not.toHaveBeenCalled();
     });
 
-    it('truncates an oversized raw response in the logged metadata', async () => {
-      const rawText = 'x'.repeat(5000);
-      const callModel = vi.fn().mockResolvedValue({ text: rawText });
+    it('does not attach a stale response excerpt from an earlier attempt to a later transport-error failure', async () => {
+      // Regression for a gap CodeRabbit caught: attempt 1 gets a real (if
+      // unparseable) response; attempt 2's callModel() itself throws (e.g. a
+      // network/rate-limit error) before returning any text. The final log
+      // must reflect attempt 2's failure without silently reusing attempt
+      // 1's leftover text as if it belonged to the same failure.
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'some malformed { json' })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow('rate limit exceeded');
+
+      const [message, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect(message).toContain('rate limit exceeded');
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
+      expect((meta as { responseLength?: number }).responseLength).toBeUndefined();
+    });
+
+    it('logs no excerpt for a schema-validation failure (no JSON syntax error, nothing to excerpt)', async () => {
+      const callModel = vi.fn().mockResolvedValue({ text: JSON.stringify({ matchesContent: true }) }); // missing suggestedAltText
 
       await expect(
         responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
       ).rejects.toThrow();
 
-      const [, meta] = vi.mocked(logger.error).mock.calls[0];
-      expect((meta as { rawResponse: string }).rawResponse.length).toBe(4000);
-      expect((meta as { rawResponseLength: number }).rawResponseLength).toBe(5000);
-      expect((meta as { truncatedForLog: boolean }).truncatedForLog).toBe(true);
+      const [message, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect(message).toContain('Schema validation failed');
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
     });
   });
   describe('fixCommonJsonIssues -- string-boundary safety (regression)', () => {
