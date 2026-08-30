@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { responseParserService } from '../../../../src/services/ai/response-parser.service';
 import { logger } from '../../../../src/lib/logger';
+import { GeminiBlockedResponseError } from '../../../../src/services/ai/gemini-errors';
 
 const ASSESSMENT_SCHEMA = z.object({
   matchesContent: z.boolean(),
@@ -85,6 +86,25 @@ describe('response-parser.service', () => {
 
       const [, meta] = vi.mocked(logger.error).mock.calls[0];
       expect((meta as { finishReason?: string }).finishReason).toBeUndefined();
+    });
+
+    it('recovers finishReason from a GeminiBlockedResponseError when callModel itself throws (SAFETY/RECITATION/LANGUAGE)', async () => {
+      // The @google/generative-ai SDK's response.text() throws instead of
+      // returning for a blocked candidate, so callModel() never resolves
+      // with a GeminiResponse at all in this case -- lastFinishReason has
+      // to come from the thrown error itself. See GeminiBlockedResponseError.
+      const callModel = vi
+        .fn()
+        .mockRejectedValue(new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow('Candidate was blocked due to SAFETY');
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBe('SAFETY');
+      // No JSON syntax position to anchor on -- correctly gets no excerpt.
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
     });
 
     it('does not log when a retry eventually succeeds', async () => {

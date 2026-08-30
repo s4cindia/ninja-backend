@@ -2,6 +2,7 @@ import { ZodSchema, ZodError } from 'zod';
 import { geminiService, GeminiOptions, GeminiResponse } from './gemini.service';
 import { AppError } from '../../utils/app-error';
 import { logger } from '../../lib/logger';
+import { GeminiBlockedResponseError } from './gemini-errors';
 
 export interface ParseResult<T> {
   success: boolean;
@@ -116,6 +117,14 @@ class ResponseParserService {
         return { data, usage: totalUsage, attempts: attempt + 1 };
       } catch (error) {
         lastError = error as Error;
+        // callModel() itself can throw GeminiBlockedResponseError (from a
+        // SAFETY/RECITATION/LANGUAGE-blocked candidate) before ever
+        // returning a GeminiResponse -- lastFinishReason above only covers
+        // the case where callModel resolved. This is the one other place
+        // a finish reason for this attempt can come from.
+        if (error instanceof GeminiBlockedResponseError) {
+          lastFinishReason = error.finishReason;
+        }
       }
     }
 

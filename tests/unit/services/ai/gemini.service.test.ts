@@ -44,6 +44,22 @@ function mockResponse(text: string) {
   };
 }
 
+/** Mimics the real @google/generative-ai SDK: response.text() throws for a
+ * candidate whose finishReason is SAFETY/RECITATION/LANGUAGE, instead of
+ * returning -- rather than returning a candidates array a real GeminiService
+ * caller could still read finishReason from after the fact. */
+function mockBlockedResponse(finishReason: string) {
+  return {
+    response: {
+      text: () => {
+        throw new Error(`Candidate was blocked due to ${finishReason}`);
+      },
+      usageMetadata: undefined,
+      candidates: [{ finishReason }],
+    },
+  };
+}
+
 describe('GeminiService circuit breaker', () => {
   let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
 
@@ -184,5 +200,55 @@ describe('GeminiService.analyzeImageWithSchema (retry on malformed response)', (
     ).rejects.toThrow();
 
     expect(generateContentMock).toHaveBeenCalledTimes(3); // initial attempt + 2 retries
+  });
+});
+
+describe('GeminiService blocked-response finishReason recovery', () => {
+  let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    generateContentMock.mockReset();
+    getGenerativeModelMock.mockClear();
+    getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
+    ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
+  });
+
+  it('analyzeImage surfaces finishReason via GeminiBlockedResponseError when response.text() throws', async () => {
+    const { GeminiBlockedResponseError } = await import('../../../../src/services/ai/gemini-errors');
+    generateContentMock.mockResolvedValue(mockBlockedResponse('SAFETY'));
+
+    let caught: unknown;
+    try {
+      await geminiService.analyzeImage('base64data', 'image/png', 'prompt', { model: 'flash' });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(GeminiBlockedResponseError);
+    expect((caught as InstanceType<typeof GeminiBlockedResponseError>).finishReason).toBe('SAFETY');
+  });
+
+  it('generateText surfaces finishReason via GeminiBlockedResponseError when response.text() throws', async () => {
+    const { GeminiBlockedResponseError } = await import('../../../../src/services/ai/gemini-errors');
+    generateContentMock.mockResolvedValue(mockBlockedResponse('RECITATION'));
+
+    let caught: unknown;
+    try {
+      await geminiService.generateText('prompt', { model: 'flash' });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(GeminiBlockedResponseError);
+    expect((caught as InstanceType<typeof GeminiBlockedResponseError>).finishReason).toBe('RECITATION');
+  });
+
+  it('does not trip the circuit breaker for a blocked-content error (not an infrastructure failure)', async () => {
+    generateContentMock.mockResolvedValue(mockBlockedResponse('SAFETY'));
+
+    await expect(geminiService.generateText('prompt', { model: 'flash' })).rejects.toThrow();
+
+    expect(geminiService.getCircuitStatus().open).toBe(false);
   });
 });

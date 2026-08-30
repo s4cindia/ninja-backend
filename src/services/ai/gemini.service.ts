@@ -6,6 +6,7 @@ import { tokenCounterService, UsageRecord } from './token-counter.service';
 import { responseParserService } from './response-parser.service';
 import { logger } from '../../lib/logger';
 import { geminiRateLimiter } from '../../utils/rate-limiter';
+import { GeminiBlockedResponseError } from './gemini-errors';
 
 export interface GeminiResponse {
   text: string;
@@ -166,10 +167,22 @@ class GeminiService {
       const model = this.getModel(options);
       const result = await model.generateContent(prompt);
       const response = result.response;
-      
-      const text = response.text();
+
+      // Read before calling text() -- see GeminiBlockedResponseError's doc
+      // comment for why: text() itself throws instead of returning for a
+      // SAFETY/RECITATION/LANGUAGE-blocked candidate, which would otherwise
+      // make the finish reason unreachable for exactly the case that most
+      // needs it explained.
+      const finishReason = response.candidates?.[0]?.finishReason;
+      let text: string;
+      try {
+        text = response.text();
+      } catch (err) {
+        throw new GeminiBlockedResponseError(err instanceof Error ? err.message : String(err), finishReason);
+      }
+
       const usageMetadata = response.usageMetadata;
-      
+
       return {
         text,
         usage: usageMetadata ? {
@@ -177,7 +190,7 @@ class GeminiService {
           completionTokens: usageMetadata.candidatesTokenCount || 0,
           totalTokens: usageMetadata.totalTokenCount || 0,
         } : undefined,
-        finishReason: response.candidates?.[0]?.finishReason,
+        finishReason,
       };
     });
   }
@@ -256,15 +269,25 @@ IMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the J
       
       const result = await model.generateContent([prompt, imagePart]);
       const response = result.response;
-      
+
+      // Read before calling text() -- see generateText above / the
+      // GeminiBlockedResponseError doc comment for why.
+      const finishReason = response.candidates?.[0]?.finishReason;
+      let text: string;
+      try {
+        text = response.text();
+      } catch (err) {
+        throw new GeminiBlockedResponseError(err instanceof Error ? err.message : String(err), finishReason);
+      }
+
       return {
-        text: response.text(),
+        text,
         usage: response.usageMetadata ? {
           promptTokens: response.usageMetadata.promptTokenCount || 0,
           completionTokens: response.usageMetadata.candidatesTokenCount || 0,
           totalTokens: response.usageMetadata.totalTokenCount || 0,
         } : undefined,
-        finishReason: response.candidates?.[0]?.finishReason,
+        finishReason,
       };
     });
   }
