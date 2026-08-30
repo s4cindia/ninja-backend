@@ -826,6 +826,7 @@ class AiAnalysisService {
           model: 'gemini-flash',
           applyMode: 'guidance-only',
           requiresManualReview: true,
+          usage: classification?.usage,
         };
       }
       logger.warn(`[AiAnalysis] analyzeAltText failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -910,6 +911,7 @@ class AiAnalysisService {
           model: 'gemini-flash',
           applyMode: 'guidance-only',
           requiresManualReview: true,
+          usage: classification?.usage,
         };
       }
       logger.warn(`[AiAnalysis] analyzeAltTextImprovement failed: ${err instanceof Error ? err.message : String(err)}`);

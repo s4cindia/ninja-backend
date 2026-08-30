@@ -91,8 +91,12 @@ describe('analyzeAltText — decorative branch applyMode', () => {
     expect(res.value).toBe('A red apple');
   });
 
-  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the alt-text request', async () => {
-    vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
+  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the alt-text request, preserving classification token usage', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({
+      type: 'photo',
+      complexity: 'simple',
+      usage: { promptTokens: 15, completionTokens: 5 },
+    });
     vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(
       new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
     );
@@ -105,6 +109,7 @@ describe('analyzeAltText — decorative branch applyMode', () => {
     expect(res.confidence).toBe(0);
     expect(res.guidance).toContain('safety filter');
     expect(res.rationale).toContain('SAFETY');
+    expect(res.usage).toEqual({ promptTokens: 15, completionTokens: 5 });
   });
 
   it('still returns null (unchanged) when analyzeAltText hits a non-blocked, generic AI failure', async () => {
@@ -119,8 +124,12 @@ describe('analyzeAltText — decorative branch applyMode', () => {
 describe('analyzeAltTextImprovement — Gemini-blocked fallback', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the improvement request', async () => {
-    vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
+  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the improvement request, preserving classification token usage', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({
+      type: 'photo',
+      complexity: 'simple',
+      usage: { promptTokens: 15, completionTokens: 5 },
+    });
     vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(
       new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
     );
@@ -133,6 +142,7 @@ describe('analyzeAltTextImprovement — Gemini-blocked fallback', () => {
     expect(res.confidence).toBe(0);
     expect(res.guidance).toContain('safety filter');
     expect(res.rationale).toContain('SAFETY');
+    expect(res.usage).toEqual({ promptTokens: 15, completionTokens: 5 });
   });
 
   it('still returns null (unchanged) when analyzeAltTextImprovement hits a non-blocked, generic AI failure', async () => {
