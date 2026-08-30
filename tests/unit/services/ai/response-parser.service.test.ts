@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { responseParserService } from '../../../../src/services/ai/response-parser.service';
 import { logger } from '../../../../src/lib/logger';
+import { GeminiBlockedResponseError } from '../../../../src/services/ai/gemini-errors';
 
 const ASSESSMENT_SCHEMA = z.object({
   matchesContent: z.boolean(),
@@ -57,6 +58,53 @@ describe('response-parser.service', () => {
       // Never logs the full padding on either side -- only a window near the break.
       expect(excerptAroundErrorPosition).not.toContain(prefix);
       expect(excerptAroundErrorPosition).not.toContain(suffix);
+    });
+
+    it('logs finishReason alongside the excerpt -- distinguishes a genuine model-side cutoff (e.g. SAFETY) from a repair-heuristic gap', async () => {
+      const callModel = vi.fn().mockResolvedValue({
+        text: '{"matchesContent":true,"suggestedAltText":"cut off mid',
+        finishReason: 'SAFETY',
+      });
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow();
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBe('SAFETY');
+    });
+
+    it('does not attach a stale finishReason from an earlier attempt to a later transport-error failure', async () => {
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'some malformed { json', finishReason: 'MAX_TOKENS' })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow('rate limit exceeded');
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBeUndefined();
+    });
+
+    it('recovers finishReason from a GeminiBlockedResponseError when callModel itself throws (SAFETY/RECITATION/LANGUAGE)', async () => {
+      // The @google/generative-ai SDK's response.text() throws instead of
+      // returning for a blocked candidate, so callModel() never resolves
+      // with a GeminiResponse at all in this case -- lastFinishReason has
+      // to come from the thrown error itself. See GeminiBlockedResponseError.
+      const callModel = vi
+        .fn()
+        .mockRejectedValue(new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow('Candidate was blocked due to SAFETY');
+
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect((meta as { finishReason?: string }).finishReason).toBe('SAFETY');
+      // No JSON syntax position to anchor on -- correctly gets no excerpt.
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
     });
 
     it('does not log when a retry eventually succeeds', async () => {
