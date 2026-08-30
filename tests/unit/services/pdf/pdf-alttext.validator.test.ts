@@ -9,6 +9,7 @@ import { pdfAltTextValidator } from '../../../../src/services/pdf/validators/pdf
 import { imageExtractorService, DocumentImages, ImageInfo } from '../../../../src/services/pdf/image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 import { geminiService } from '../../../../src/services/ai/gemini.service';
+import { GeminiBlockedResponseError } from '../../../../src/services/ai/gemini-errors';
 
 // Mock dependencies
 vi.mock('../../../../src/services/pdf/image-extractor.service');
@@ -349,6 +350,63 @@ describe('PDFAltTextValidator', () => {
       expect(noAltTextIssue).toBeDefined();
       expect(noAltTextIssue?.suggestion).toBe('AI-generated alt text: ""');
       expect(noAltTextIssue?.triage?.confidence).toBe(0.5);
+    });
+
+    it('flags a missing-alt-text image as manual review (not a fake AI-drafted result) when Gemini blocks the classification request', async () => {
+      // Regression for a real, worse-than-silent gap: before this fix, ANY
+      // failure here (including a genuine safety-filter block) fell back to
+      // a fabricated "successful" classification (isDecorative: false,
+      // altText: ''), which the caller presented as the misleading
+      // suggestion 'AI-generated alt text: ""'. A GeminiBlockedResponseError
+      // specifically should now be surfaced honestly instead.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+      vi.mocked(geminiService.analyzeImageWithSchema).mockRejectedValue(
+        new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
+      );
+
+      const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
+
+      const noAltTextIssue = result.issues.find(i => i.code === 'MATTERHORN-13-001');
+      expect(noAltTextIssue).toBeDefined();
+      expect(noAltTextIssue?.suggestion).not.toBe('AI-generated alt text: ""');
+      expect(noAltTextIssue?.suggestion).toContain('safety filter');
+      expect(noAltTextIssue?.triage?.disposition).toBe('manual');
+      expect(noAltTextIssue?.triage?.confidence).toBe(0);
+      expect(noAltTextIssue?.triage?.autoFix).toBeUndefined();
+    });
+
+    it('flags an existing-alt-text image for manual review when Gemini blocks the quality-assessment request (instead of silently passing through)', async () => {
+      // Regression: before this fix, a blocked AI quality check silently
+      // continued -- if the pre-existing alt text otherwise passed the
+      // basic heuristic checks, NO issue was raised at all, so the operator
+      // never learned this image's alt text couldn't be verified.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        // Long enough / non-generic enough to pass every heuristic check on
+        // its own, so without this fix no issue would be raised at all.
+        createMockImageWithBase64(1, 0, 'A detailed chart showing sales growth over time', false, 'base64data', 'image/jpeg'),
+      ]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+      vi.mocked(geminiService.analyzeImageWithSchema).mockRejectedValue(
+        new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
+      );
+
+      const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
+
+      const qualityIssue = result.issues.find(i => i.code === 'ALT-TEXT-QUALITY');
+      expect(qualityIssue).toBeDefined();
+      expect(qualityIssue?.message).toContain('safety filter');
+      expect(qualityIssue?.suggestion).toContain('Manual review required');
     });
   });
 

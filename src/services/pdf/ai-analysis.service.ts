@@ -14,6 +14,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { geminiService } from '../ai/gemini.service';
+import { GeminiBlockedResponseError } from '../ai/gemini-errors';
 import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { fileStorageService } from '../storage/file-storage.service';
@@ -723,7 +724,7 @@ class AiAnalysisService {
   }
 
   private async analyzeAltText(
-    _issue: AuditIssue,
+    issue: AuditIssue,
     image: ImageInfo,
     mode: 'apply-to-pdf' | 'guidance-only'
   ): Promise<AiSuggestionResult | null> {
@@ -809,6 +810,25 @@ class AiAnalysisService {
         usage,
       };
     } catch (err) {
+      if (err instanceof GeminiBlockedResponseError) {
+        // A durable, non-retryable block (content flagged by Gemini's safety
+        // filter) -- unlike a generic failure, returning null here would
+        // silently drop this issue entirely (no AiAnalysis row at all,
+        // counted only as skipped++, indistinguishable from "no suggestion
+        // needed"). Reuses the same guidance-only shape as the
+        // needs-a-subject-matter-expert fallback above.
+        logger.warn(`[AiAnalysis] analyzeAltText blocked by safety filter for issue ${issue.id} (finishReason: ${err.finishReason})`);
+        return {
+          suggestionType: 'alt-text',
+          guidance: 'Automated alt-text generation was blocked by a content safety filter for this image. A subject matter expert should write the description manually.',
+          confidence: 0,
+          rationale: `Gemini blocked this request (finishReason: ${err.finishReason})`,
+          model: 'gemini-flash',
+          applyMode: 'guidance-only',
+          requiresManualReview: true,
+          usage: classification?.usage,
+        };
+      }
       logger.warn(`[AiAnalysis] analyzeAltText failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
@@ -881,6 +901,19 @@ class AiAnalysisService {
         usage,
       };
     } catch (err) {
+      if (err instanceof GeminiBlockedResponseError) {
+        logger.warn(`[AiAnalysis] analyzeAltTextImprovement blocked by safety filter for issue ${issue.id} (finishReason: ${err.finishReason})`);
+        return {
+          suggestionType: 'alt-text-improvement',
+          guidance: 'Automated alt-text improvement was blocked by a content safety filter for this image. A subject matter expert should review the description manually.',
+          confidence: 0,
+          rationale: `Gemini blocked this request (finishReason: ${err.finishReason})`,
+          model: 'gemini-flash',
+          applyMode: 'guidance-only',
+          requiresManualReview: true,
+          usage: classification?.usage,
+        };
+      }
       logger.warn(`[AiAnalysis] analyzeAltTextImprovement failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }

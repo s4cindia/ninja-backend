@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { geminiService } from '../../../../src/services/ai/gemini.service';
+import { GeminiBlockedResponseError } from '../../../../src/services/ai/gemini-errors';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { ImageInfo } from '../../../../src/services/pdf/image-extractor.service';
 
@@ -88,5 +89,67 @@ describe('analyzeAltText — decorative branch applyMode', () => {
     const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf');
     expect(res.suggestionType).toBe('alt-text');
     expect(res.value).toBe('A red apple');
+  });
+
+  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the alt-text request, preserving classification token usage', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({
+      type: 'photo',
+      complexity: 'simple',
+      usage: { promptTokens: 15, completionTokens: 5 },
+    });
+    vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(
+      new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
+    );
+
+    const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf');
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text');
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.requiresManualReview).toBe(true);
+    expect(res.confidence).toBe(0);
+    expect(res.guidance).toContain('safety filter');
+    expect(res.rationale).toContain('SAFETY');
+    expect(res.usage).toEqual({ promptTokens: 15, completionTokens: 5 });
+  });
+
+  it('still returns null (unchanged) when analyzeAltText hits a non-blocked, generic AI failure', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
+    vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(new Error('network timeout'));
+
+    const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf');
+    expect(res).toBeNull();
+  });
+});
+
+describe('analyzeAltTextImprovement — Gemini-blocked fallback', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the improvement request, preserving classification token usage', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({
+      type: 'photo',
+      complexity: 'simple',
+      usage: { promptTokens: 15, completionTokens: 5 },
+    });
+    vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(
+      new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY')
+    );
+
+    const res = await svc.analyzeAltTextImprovement(ISSUE, IMAGE, 'apply-to-pdf');
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-improvement');
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.requiresManualReview).toBe(true);
+    expect(res.confidence).toBe(0);
+    expect(res.guidance).toContain('safety filter');
+    expect(res.rationale).toContain('SAFETY');
+    expect(res.usage).toEqual({ promptTokens: 15, completionTokens: 5 });
+  });
+
+  it('still returns null (unchanged) when analyzeAltTextImprovement hits a non-blocked, generic AI failure', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
+    vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(new Error('network timeout'));
+
+    const res = await svc.analyzeAltTextImprovement(ISSUE, IMAGE, 'apply-to-pdf');
+    expect(res).toBeNull();
   });
 });
