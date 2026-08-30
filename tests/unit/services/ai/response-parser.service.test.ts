@@ -13,9 +13,10 @@
  * SyntaxErrors at low string positions (not truncation, which fails near
  * the end of a long response).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { responseParserService } from '../../../../src/services/ai/response-parser.service';
+import { logger } from '../../../../src/lib/logger';
 
 const ASSESSMENT_SCHEMA = z.object({
   matchesContent: z.boolean(),
@@ -23,6 +24,88 @@ const ASSESSMENT_SCHEMA = z.object({
 });
 
 describe('response-parser.service', () => {
+  describe('parseWithRetryUsing -- diagnostic logging on exhausted retries', () => {
+    beforeEach(() => {
+      vi.spyOn(logger, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('logs a small excerpt centered on the JSON parser\'s reported error position, not the full response', async () => {
+      // The response is long on both sides of the actual break so a
+      // "logs the whole thing" regression would be obvious: only a ~80-char
+      // window around the error position should appear, not the full text.
+      const prefix = 'A'.repeat(200);
+      const suffix = 'B'.repeat(200);
+      const rawText = `${prefix}{not valid json}${suffix}`;
+      const callModel = vi.fn().mockResolvedValue({ text: rawText });
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow();
+
+      expect(callModel).toHaveBeenCalledTimes(2); // initial + 1 retry
+      const [, meta] = vi.mocked(logger.error).mock.calls[0];
+      const { excerptAroundErrorPosition, responseLength } = meta as {
+        excerptAroundErrorPosition: string;
+        responseLength: number;
+      };
+      expect(responseLength).toBe(rawText.length);
+      expect(excerptAroundErrorPosition.length).toBeLessThan(rawText.length);
+      expect(excerptAroundErrorPosition.length).toBeLessThanOrEqual(80);
+      // Never logs the full padding on either side -- only a window near the break.
+      expect(excerptAroundErrorPosition).not.toContain(prefix);
+      expect(excerptAroundErrorPosition).not.toContain(suffix);
+    });
+
+    it('does not log when a retry eventually succeeds', async () => {
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'not valid json' })
+        .mockResolvedValueOnce({ text: JSON.stringify({ matchesContent: true, suggestedAltText: 'A red apple' }) });
+
+      const result = await responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, {
+        maxRetries: 1,
+      });
+
+      expect(result.data).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('does not attach a stale response excerpt from an earlier attempt to a later transport-error failure', async () => {
+      // Regression for a gap CodeRabbit caught: attempt 1 gets a real (if
+      // unparseable) response; attempt 2's callModel() itself throws (e.g. a
+      // network/rate-limit error) before returning any text. The final log
+      // must reflect attempt 2's failure without silently reusing attempt
+      // 1's leftover text as if it belonged to the same failure.
+      const callModel = vi
+        .fn()
+        .mockResolvedValueOnce({ text: 'some malformed { json' })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 1 })
+      ).rejects.toThrow('rate limit exceeded');
+
+      const [message, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect(message).toContain('rate limit exceeded');
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
+      expect((meta as { responseLength?: number }).responseLength).toBeUndefined();
+    });
+
+    it('logs no excerpt for a schema-validation failure (no JSON syntax error, nothing to excerpt)', async () => {
+      const callModel = vi.fn().mockResolvedValue({ text: JSON.stringify({ matchesContent: true }) }); // missing suggestedAltText
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 0 })
+      ).rejects.toThrow();
+
+      const [message, meta] = vi.mocked(logger.error).mock.calls[0];
+      expect(message).toContain('Schema validation failed');
+      expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
+    });
+  });
   describe('fixCommonJsonIssues -- string-boundary safety (regression)', () => {
     it('does not corrupt a string value containing a bare "word:" label', () => {
       const raw = JSON.stringify({
