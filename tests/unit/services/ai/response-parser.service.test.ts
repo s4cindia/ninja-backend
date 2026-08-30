@@ -110,5 +110,34 @@ describe('response-parser.service', () => {
 
       expect(result).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
     });
+
+    it('still strips a genuine /* */ block comment outside any string', () => {
+      const raw = '{"matchesContent": true, /* a block comment */ "suggestedAltText": "A red apple"}';
+
+      const result = responseParserService.parse(raw, ASSESSMENT_SCHEMA);
+
+      expect(result).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
+    });
+
+    it('strips a // comment that itself contains a quote character without corrupting subsequent strings', () => {
+      // Regression for a gap CodeRabbit caught in the first version of this
+      // fix: a naive "split on double quotes only" scanner misread the
+      // quote inside the comment as the start of a real JSON string,
+      // exempting "example.com" from comment-stripping and corrupting the
+      // result. Comment and string detection must share one scan.
+      const raw = '{"matchesContent": true, // see "example.com" for reference\n"suggestedAltText": "A red apple"}';
+
+      const result = responseParserService.parse(raw, ASSESSMENT_SCHEMA);
+
+      expect(result).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
+    });
+
+    it('strips a /* */ comment that itself contains a quote character without corrupting subsequent strings', () => {
+      const raw = '{"matchesContent": true, /* a "quoted" block comment */ "suggestedAltText": "A red apple"}';
+
+      const result = responseParserService.parse(raw, ASSESSMENT_SCHEMA);
+
+      expect(result).toEqual({ matchesContent: true, suggestedAltText: 'A red apple' });
+    });
   });
 });
