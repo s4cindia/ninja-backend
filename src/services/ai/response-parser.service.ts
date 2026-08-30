@@ -133,30 +133,127 @@ class ResponseParserService {
 
   cleanJsonResponse(json: string): string {
     let cleaned = json;
-    
+
     cleaned = this.fixCommonJsonIssues(cleaned);
-    
+
     return cleaned.trim();
   }
 
+  /**
+   * Applies a handful of regex-based repairs (unquoted keys, trailing
+   * commas, single-quoted values, undefined/NaN) for near-miss JSON that an
+   * LLM sometimes emits, plus strips // and /* *\/ comments. These are
+   * line/char-level, not JSON-aware, so they're only ever run on -- or, for
+   * comments, only ever recognized within -- text OUTSIDE double-quoted
+   * string literals. Confirmed in production that running them
+   * unconditionally corrupts otherwise-valid JSON whenever a generated
+   * string VALUE happens to contain ordinary text that looks like one of
+   * these patterns (e.g. an AI-written image description "Note: this chart
+   * shows..." looks identical to an unquoted object key, and "see
+   * http://example.com" looks identical to a "//" comment) -- see
+   * tokenizeJsonLikeText. Comment stripping and string-literal detection
+   * share one left-to-right scan (rather than each being its own
+   * regex/pass) specifically so a quote character inside a real comment
+   * (e.g. `// see "example.com"`) is never mistaken for the start of a JSON
+   * string, and a `//`/`/*` sequence inside a real string value is never
+   * mistaken for the start of a comment.
+   */
   fixCommonJsonIssues(json: string): string {
-    let fixed = json;
-    
+    return this.tokenizeJsonLikeText(json)
+      .map((segment) => {
+        if (segment.kind === 'string') return segment.value;
+        if (segment.kind === 'comment') return '';
+        return this.applyJsonRepairHeuristics(segment.value);
+      })
+      .join('');
+  }
+
+  private applyJsonRepairHeuristics(text: string): string {
+    let fixed = text;
+
     fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-    
-    fixed = fixed.replace(/\/\/.*$/gm, '');
-    fixed = fixed.replace(/\/\*[\s\S]*?\*\//g, '');
-    
+
     fixed = fixed.replace(/(['"])?([a-zA-Z_][a-zA-Z0-9_]*)\1?\s*:/g, '"$2":');
-    
+
     fixed = fixed.replace(/:(\s*)'([^']*)'/g, ':$1"$2"');
-    
+
     fixed = fixed.replace(/,(\s*),/g, ',$1');
-    
+
     fixed = fixed.replace(/:\s*undefined\b/g, ': null');
     fixed = fixed.replace(/:\s*NaN\b/g, ': null');
-    
+
     return fixed;
+  }
+
+  /**
+   * Scans `text` left to right and splits it into segments: double-quoted
+   * JSON string literals ('string', quotes included, contents passed
+   * through byte-for-byte untouched -- backslash-escapes like \" are
+   * respected and do not end the string), `//` and `/* *\/` comments
+   * ('comment', dropped entirely by the caller), and everything else
+   * ('plain', where the repair regexes are applied). String detection takes
+   * priority at each position: once a `"` is seen outside a string, the
+   * scanner consumes the whole literal atomically before considering
+   * whether subsequent characters start a comment, so a `//` or `/*` inside
+   * a real string value is never misread as a comment. Text with no
+   * double-quoted strings at all (e.g. fully single-quoted, non-standard
+   * JSON) comes back as a single 'plain' segment, matching the prior
+   * global-regex behavior for that case.
+   */
+  private tokenizeJsonLikeText(
+    text: string
+  ): Array<{ value: string; kind: 'string' | 'comment' | 'plain' }> {
+    const segments: Array<{ value: string; kind: 'string' | 'comment' | 'plain' }> = [];
+    let i = 0;
+    let start = 0;
+
+    const flushPlain = (end: number) => {
+      if (end > start) segments.push({ value: text.slice(start, end), kind: 'plain' });
+    };
+
+    while (i < text.length) {
+      const ch = text[i];
+      const next = text[i + 1];
+
+      if (ch === '"') {
+        flushPlain(i);
+        const stringStart = i;
+        i++;
+        while (i < text.length && text[i] !== '"') {
+          i += text[i] === '\\' ? 2 : 1;
+        }
+        i = Math.min(i + 1, text.length); // include the closing quote, if one was found
+        segments.push({ value: text.slice(stringStart, i), kind: 'string' });
+        start = i;
+        continue;
+      }
+
+      if (ch === '/' && next === '/') {
+        flushPlain(i);
+        const commentStart = i;
+        while (i < text.length && text[i] !== '\n') i++;
+        segments.push({ value: text.slice(commentStart, i), kind: 'comment' });
+        start = i;
+        continue;
+      }
+
+      if (ch === '/' && next === '*') {
+        flushPlain(i);
+        const commentStart = i;
+        i += 2;
+        while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+        i = Math.min(i + 2, text.length); // include the closing */, if one was found
+        segments.push({ value: text.slice(commentStart, i), kind: 'comment' });
+        start = i;
+        continue;
+      }
+
+      i++;
+    }
+
+    flushPlain(text.length);
+
+    return segments;
   }
 
   private buildCorrectionPrompt(originalPrompt: string, error: string, customCorrection?: string): string {
