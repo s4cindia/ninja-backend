@@ -9,6 +9,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/auth.middleware';
+import { AppError } from '../../utils/app-error';
 import {
   generateUploadUrl,
   registerTrial,
@@ -19,6 +20,7 @@ import {
   validateTrial,
   getTrialReport,
   getAggregateReport,
+  updateAutoModeConfig,
 } from '../../services/comparison-study/comparison-study.service';
 
 const router = Router();
@@ -177,6 +179,35 @@ router.patch('/comparison-study/trials/:id/pdfxt', authenticate, async (req: Req
     const trial = await logPdfxtData(req.params.id, parsed.data);
     return res.json({ success: true, data: trial });
   } catch (err) {
+    return internalError(res, err);
+  }
+});
+
+const autoModeConfigBodySchema = z.object({
+  mode: z.enum(['manual', 'auto']).optional(),
+  autoMaxRounds: z.number().int().positive().max(100).optional(),
+  autoCostLimitUsd: z.number().positive().max(1000).optional(),
+});
+
+// PATCH /api/v1/admin/comparison-study/trials/:id/auto-mode
+router.patch('/comparison-study/trials/:id/auto-mode', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const parsed = autoModeConfigBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: parsed.error.issues },
+      });
+    }
+
+    const trial = await updateAutoModeConfig(req.params.id, parsed.data);
+    return res.json({ success: true, data: trial });
+  } catch (err) {
+    if (err instanceof AppError) {
+      return res.status(err.statusCode).json({ success: false, error: { code: err.code, message: err.message } });
+    }
     return internalError(res, err);
   }
 });

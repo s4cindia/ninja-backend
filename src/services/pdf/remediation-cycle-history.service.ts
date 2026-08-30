@@ -15,8 +15,8 @@ import type { RemediationCycleEvent } from '@prisma/client';
 export interface LogCycleEventInput {
   jobId: string;
   cycleNumber: number;
-  action: 'apply_fixes' | 'reaudit' | 'ai_analysis';
-  source: 'apply_all' | 'reaudit_pdf_upload' | 'reaudit_current_file' | 'analyze_job';
+  action: 'apply_fixes' | 'reaudit' | 'ai_analysis' | 'auto_loop_summary';
+  source: 'apply_all' | 'reaudit_pdf_upload' | 'reaudit_current_file' | 'analyze_job' | 'auto_loop';
   status: 'completed' | 'failed';
   appliedCount?: number;
   failedCount?: number;
