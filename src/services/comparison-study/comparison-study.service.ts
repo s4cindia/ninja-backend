@@ -27,6 +27,10 @@ import { createAndEnqueuePdfAuditJob } from '../../controllers/pdf.controller';
 import { AppError } from '../../utils/app-error';
 
 const COMPARISON_STUDY_PREFIX = 'comparison-study/';
+// Comparison-study source PDFs can be large (tens of MB); 300s was too
+// short for a slow-connection upload to finish before the presigned URL
+// expired, causing S3 to reject the PUT with 403 partway through.
+const UPLOAD_URL_EXPIRY_SECONDS = 30 * 60;
 
 export interface PresignedUploadResult {
   uploadUrl: string;
@@ -42,8 +46,8 @@ export async function generateUploadUrl(
   const sanitised = filename.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
   const s3Key = `${COMPARISON_STUDY_PREFIX}${Date.now()}-${sanitised}`;
   const command = new PutObjectCommand({ Bucket: config.s3Bucket, Key: s3Key, ContentType: contentType });
-  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
-  return { uploadUrl, s3Key, expiresAt: new Date(Date.now() + 300_000).toISOString() };
+  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: UPLOAD_URL_EXPIRY_SECONDS });
+  return { uploadUrl, s3Key, expiresAt: new Date(Date.now() + UPLOAD_URL_EXPIRY_SECONDS * 1000).toISOString() };
 }
 
 /**

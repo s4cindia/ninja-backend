@@ -33,6 +33,10 @@ vi.mock('../../../../src/services/s3.service', () => ({
   },
 }));
 
+vi.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/signed-url')),
+}));
+
 vi.mock('../../../../src/services/storage/file-storage.service', () => ({
   fileStorageService: {
     downloadFile: vi.fn(),
@@ -58,6 +62,7 @@ vi.mock('../../../../src/config', () => ({
 }));
 
 import { Prisma } from '@prisma/client';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
 import { s3Service } from '../../../../src/services/s3.service';
 import { createAndEnqueuePdfAuditJob } from '../../../../src/controllers/pdf.controller';
@@ -67,6 +72,7 @@ import {
   getTrialReport,
   getAggregateReport,
   updateAutoModeConfig,
+  generateUploadUrl,
 } from '../../../../src/services/comparison-study/comparison-study.service';
 
 const mockPrisma = prisma as unknown as {
@@ -86,6 +92,18 @@ describe('comparison-study.service', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe('generateUploadUrl', () => {
+    it('signs the URL for 30 minutes, not the old 5-minute window a large PDF upload could outrun', async () => {
+      await generateUploadUrl('Altman_PDF.pdf');
+
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        { expiresIn: 30 * 60 }
+      );
+    });
   });
 
   describe('registerTrial', () => {
