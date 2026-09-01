@@ -83,10 +83,16 @@ function mockReauditSuccess() {
   } as any);
 }
 
+type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+
 /** A round that finds `actionableCount` suggestions, applies all of them
- * successfully, and re-audits cleanly. */
-function mockProductiveRound(actionableCount: number, costUsd = 0) {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+ * successfully, and re-audits cleanly. `colorContrastMode` is analyzeJob's
+ * own *resolved effective* mode (what reconciliation keys off), independent
+ * of whatever override the trial itself carries -- most tests don't care
+ * about it and leave it undefined, which triggers neither reconciliation
+ * branch, same as an effective 'apply-to-pdf'. */
+function mockProductiveRound(actionableCount: number, costUsd = 0, colorContrastMode?: ColorContrastMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(actionableCount);
   vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: actionableCount } as any);
   vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValueOnce({
@@ -105,9 +111,10 @@ function mockProductiveRound(actionableCount: number, costUsd = 0) {
 }
 
 /** A round whose fresh analysis finds nothing actionable at all -- the
- * genuine convergence signal; apply/reaudit are never reached. */
-function mockEmptyRound() {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0 } as any);
+ * genuine convergence signal; apply/reaudit are never reached. See
+ * mockProductiveRound's doc comment for what `colorContrastMode` means. */
+function mockEmptyRound(colorContrastMode?: ColorContrastMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
@@ -291,7 +298,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
   });
 
-  it('downgrades a stale pending/approved color-contrast-fix row when colorContrastMode is explicitly guidance-only (Codex finding)', async () => {
+  it('downgrades a stale pending/approved color-contrast-fix row when analyzeJob resolves guidance-only (Codex finding)', async () => {
     // A prior round (or a manual pass) left a color-contrast-fix row sitting
     // at applyMode 'apply-to-pdf'. analyzeJob only touches a row for an
     // issue it currently produces a suggestion for -- with colorContrastMode
@@ -304,7 +311,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
     mockLockAcquired();
     mockJobFound();
-    mockEmptyRound();
+    mockEmptyRound('guidance-only');
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
@@ -320,7 +327,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('deletes (not downgrades) a stale pending/approved color-contrast-fix row when colorContrastMode is disabled (CodeRabbit finding)', async () => {
+  it('deletes (not downgrades) a stale pending/approved color-contrast-fix row when analyzeJob resolves disabled (CodeRabbit finding)', async () => {
     // 'disabled' means fully suppressed -- downgrading to guidance-only
     // would still leave the row visible via GET /pdf/:jobId/ai-analysis and
     // counted toward the guidance-acknowledgment flow, contradicting what
@@ -330,7 +337,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
     mockLockAcquired();
     mockJobFound();
-    mockEmptyRound();
+    mockEmptyRound('disabled');
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
@@ -346,13 +353,13 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
   });
 
-  it('does not reconcile color-contrast-fix rows at all when colorContrastMode is apply-to-pdf or inherited (null)', async () => {
+  it('does not reconcile color-contrast-fix rows at all when analyzeJob resolves apply-to-pdf', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
       makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
     );
     mockLockAcquired();
     mockJobFound();
-    mockEmptyRound();
+    mockEmptyRound('apply-to-pdf');
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
@@ -360,6 +367,31 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: { applyMode: 'guidance-only' } })
     );
+  });
+
+  it('reconciles against analyzeJob\'s resolved effective mode, not the trial\'s raw override (Codex finding)', async () => {
+    // The trial itself has no explicit override (null -- inheriting tenant
+    // config), but the tenant's own aiRemediation.colorContrastMode happens
+    // to be 'disabled'. analyzeJob resolves that and reports it back;
+    // reconciliation must key off analyzeJob's *resolved* colorContrastMode
+    // (not the trial's raw autoColorContrastMode, which is merely null here)
+    // or a stale apply-to-pdf row from an earlier explicit override would
+    // survive an operator reverting back to "inherit".
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoColorContrastMode: null }) as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound('disabled');
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        status: { in: ['pending', 'approved'] },
+      },
+    });
   });
 
   it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {

@@ -252,10 +252,14 @@ class AutoRemediationLoopService {
     jobId: string,
     cycleNumber: number,
     tenantId: string,
-    colorContrastMode: ColorContrastMode | undefined,
+    colorContrastModeOverride: ColorContrastMode | undefined,
   ): Promise<{ actionableFound: number; applied: number }> {
     const roundStartedAt = new Date();
-    await aiAnalysisService.analyzeJob(jobId, tenantId, colorContrastMode !== undefined ? { colorContrastMode } : undefined);
+    const analysis = await aiAnalysisService.analyzeJob(
+      jobId,
+      tenantId,
+      colorContrastModeOverride !== undefined ? { colorContrastMode: colorContrastModeOverride } : undefined,
+    );
     await remediationCycleHistoryService.logEvent({
       jobId,
       cycleNumber,
@@ -267,20 +271,24 @@ class AutoRemediationLoopService {
     });
 
     // analyzeJob only touches an AiAnalysis row for an issue it currently
-    // produces a suggestion for -- when colorContrastMode isn't
-    // 'apply-to-pdf', color-contrast issues never go through that path at
-    // all this round, so a pending/approved color-contrast-fix row left over
-    // from an earlier round (or a manual pass) when the mode *was*
-    // 'apply-to-pdf' stays untouched. Left alone, the actionable-count/
-    // auto-approve queries below don't discriminate by suggestionType (only
-    // alt-text-decorative is excluded), so that stale row would still get
-    // auto-approved and applied -- silently overriding an operator switching
-    // colorContrastMode away from 'apply-to-pdf' mid-run. Only reconciles
-    // when the trial has an *explicit* override -- when it's undefined
-    // (inherit tenant/default config), the effective mode doesn't change
-    // between rounds, so there's nothing to reconcile, matching how auto
-    // mode behaved before this override existed at all.
-    if (colorContrastMode === 'guidance-only') {
+    // produces a suggestion for -- when the *effective* colorContrastMode
+    // (analysis.colorContrastMode -- resolved by analyzeJob itself from
+    // DEFAULT_CONFIG + tenant settings + this call's own override, so it's
+    // accurate even when colorContrastModeOverride above is undefined and
+    // the trial is inheriting a tenant-level setting) isn't 'apply-to-pdf',
+    // color-contrast issues never go through that path at all this round, so
+    // a pending/approved color-contrast-fix row left over from an earlier
+    // round (or a manual pass) when the mode *was* 'apply-to-pdf' stays
+    // untouched. Left alone, the actionable-count/auto-approve queries below
+    // don't discriminate by suggestionType (only alt-text-decorative is
+    // excluded), so that stale row would still get auto-approved and applied
+    // -- silently overriding an operator switching colorContrastMode away
+    // from 'apply-to-pdf', whether by an explicit override or by clearing
+    // one back to inheriting a tenant setting that isn't 'apply-to-pdf'
+    // either (Codex finding: reconciling against colorContrastModeOverride
+    // instead of the resolved effective mode missed exactly this transition).
+    const effectiveColorContrastMode = analysis.colorContrastMode;
+    if (effectiveColorContrastMode === 'guidance-only') {
       await prisma.aiAnalysis.updateMany({
         where: {
           jobId,
@@ -290,7 +298,7 @@ class AutoRemediationLoopService {
         },
         data: { applyMode: 'guidance-only' },
       });
-    } else if (colorContrastMode === 'disabled') {
+    } else if (effectiveColorContrastMode === 'disabled') {
       // 'disabled' means fully suppressed, not just "not auto-applied" --
       // downgrading to guidance-only would still leave the row visible via
       // GET /pdf/:jobId/ai-analysis and counted toward the guidance-
