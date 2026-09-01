@@ -86,31 +86,44 @@ export class PdfStructureWriterService {
    *
    * Calls visitor(node, ref) for every PDFDict encountered.
    * If visitor returns true, traversal stops immediately.
+   *
+   * Uses an explicit stack rather than recursion: a deeply-nested structure
+   * tree (long chains of indirect Sect/Div elements are common in
+   * real-world tagged PDFs) could otherwise exhaust the call stack.
    */
   private traverseStructTree(
     doc: PDFDocument,
     root: PDFDict,
     visitor: (node: PDFDict, ref: PDFRef | null) => boolean | void,
   ): void {
-    const visit = (node: PDFDict, ref: PDFRef | null): boolean => {
-      if (visitor(node, ref) === true) return true;
+    type Entry = { dict: PDFDict; ref: PDFRef | null };
+    const stack: Entry[] = [{ dict: root, ref: null }];
+
+    while (stack.length > 0) {
+      const { dict: node, ref } = stack.pop()!;
+      if (visitor(node, ref) === true) return;
 
       const kids = node.get(PDFName.of('K'));
-      const visitChild = (raw: PDFObject): boolean => {
+      const resolved: Entry[] = [];
+      const resolveChild = (raw: PDFObject): void => {
         const obj = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
-        return obj instanceof PDFDict ? visit(obj, raw instanceof PDFRef ? raw : null) : false;
+        if (obj instanceof PDFDict) {
+          resolved.push({ dict: obj, ref: raw instanceof PDFRef ? raw : null });
+        }
       };
       if (kids instanceof PDFArray) {
         for (const kid of kids.asArray()) {
-          if (visitChild(kid)) return true;
+          resolveChild(kid);
         }
       } else if (kids instanceof PDFRef || kids instanceof PDFDict) {
-        if (visitChild(kids as PDFObject)) return true;
+        resolveChild(kids as PDFObject);
       }
-      return false;
-    };
-
-    visit(root, null);
+      // Push in reverse so the first child is popped (and visited) first,
+      // preserving pre-order (document reading) order.
+      for (let i = resolved.length - 1; i >= 0; i--) {
+        stack.push(resolved[i]);
+      }
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════════

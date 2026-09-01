@@ -110,4 +110,28 @@ describe('pdf-structure-writer.service — traverseStructTree ordering', () => {
     expect(tagOf(doc, h4Ref)).toBe('H2');
     expect(tagOf(doc, h2Ref)).toBe('H2');
   });
+
+  it('does not overflow the call stack on a deeply-nested structure tree', async () => {
+    // A recursive pre-order DFS would blow Node's call stack on a real-world
+    // tagged PDF with a long chain of nested Sect/Div elements (common in
+    // deeply-nested TOCs/lists). traverseStructTree must use an explicit
+    // stack instead of recursion to stay safe at depth.
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const DEPTH = 20000;
+    let currentRef: PDFRef = doc.context.register(doc.context.obj({ S: PDFName.of('H1'), K: 0 }));
+    for (let i = 0; i < DEPTH; i++) {
+      currentRef = doc.context.register(
+        doc.context.obj({ S: PDFName.of('Sect'), K: doc.context.obj([currentRef]) })
+      );
+    }
+
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: currentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    expect(() => pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('deep-1')])).not.toThrow();
+  });
 });
