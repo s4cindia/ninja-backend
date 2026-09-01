@@ -128,19 +128,25 @@ const DOC_LEVEL_CODES = new Set([
  * same (code, element/page) pair. Element/page-level codes are keyed by
  * (code, element or pageNumber) — correct when one fix genuinely covers
  * everything on that page (e.g. one AI call for "the reading order on this
- * page"). Color-contrast doesn't fit that model: a page can carry several
- * independent low-contrast text runs, each needing its own correlation
- * against its own bounding box — sharing a page-level key would let the
- * first issue's (possibly failed) correlation silently stand in for every
- * other issue on that page. Found via a real pilot document where every
- * contrast issue but the page's first came back guidance-only despite
- * apply-to-pdf mode. Exported for direct unit testing — analyzeJob's own
+ * page"). Contrast, link, and form-field issues don't fit that model: a
+ * page can carry several independent ones (several low-contrast text runs;
+ * several non-descriptive links; several unlabeled fields), each needing
+ * its own AI call, and none of the three carry a stable `element` id to key
+ * on instead — sharing a page-level key would let the first issue's
+ * (possibly wrong, or simply unrelated) suggestion silently stand in for
+ * every other issue of that code on that page. Contrast: found via a real
+ * pilot document where every contrast issue but the page's first came back
+ * guidance-only despite apply-to-pdf mode. Link/form-field: found via
+ * PR #511 review — the same collision, just never triggered by contrast's
+ * own test coverage. Exported for direct unit testing — analyzeJob's own
  * dependencies (storage, Prisma, AI clients) make it impractical to test
  * this in-place.
  */
 export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'id'>): string {
   if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
-  if (CONTRAST_CODES.has(issue.code)) return `${issue.code}:${issue.id}`;
+  if (CONTRAST_CODES.has(issue.code) || LINK_CODES.has(issue.code) || FORM_CODES.has(issue.code)) {
+    return `${issue.code}:${issue.id}`;
+  }
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
 }
 

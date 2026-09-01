@@ -1031,10 +1031,14 @@ export class PdfModifierService {
   }
 
   /**
-   * Set a form field's tooltip (/TU) by matching its /T (name) against the
-   * field name pdf-form.validator.ts records verbatim in the issue's
-   * context — an exact, unambiguous key, unlike the positional matching
-   * setLinkAltText has to fall back to.
+   * Set a form field's tooltip (/TU) by matching its fully qualified /T
+   * (name) against the field name pdf-form.validator.ts records verbatim in
+   * the issue's context — an exact, unambiguous key, unlike the positional
+   * matching setLinkAltText has to fall back to. Recurses into hierarchical
+   * /Kids to build the qualified name (e.g. "person.email") the validator
+   * reports. Fields with no /T at all (context records the literal
+   * placeholder "(unnamed)") can't be matched by name and are reported as a
+   * clean failure rather than guessed at.
    */
   async setFormFieldTooltip(
     doc: PDFDocument,
@@ -1048,6 +1052,18 @@ export class PdfModifierService {
           success: false,
           description: 'Field name not available',
           error: 'Issue context has no "Field name" to match against',
+        };
+      }
+      // pdf-form.validator.ts writes the literal placeholder "(unnamed)" for
+      // a field with no /T at all -- there's no name to match on, and (unlike
+      // renameBookmark's empty-title case) an empty/absent /T isn't a safe
+      // unique match either, since multiple unnamed fields can coexist. Fail
+      // honestly rather than silently matching the wrong field.
+      if (fieldName === '(unnamed)') {
+        return {
+          success: false,
+          description: 'Field has no name to match against',
+          error: 'This field has no /T (name) at all, so it cannot be located by name — positional matching is not implemented for form fields',
         };
       }
 
@@ -1066,19 +1082,38 @@ export class PdfModifierService {
         return { success: false, description: 'No form fields', error: 'AcroForm has no /Fields' };
       }
 
-      let target: PDFDict | null = null;
-      for (let i = 0; i < fields.size(); i++) {
-        const fieldRef = fields.get(i);
-        const field = fieldRef instanceof PDFRef ? doc.context.lookup(fieldRef) : fieldRef;
-        if (!(field instanceof PDFDict)) continue;
-        const nameEntry = field.get(PDFName.of('T'));
-        const name =
-          nameEntry instanceof PDFString || nameEntry instanceof PDFHexString ? nameEntry.decodeText() : undefined;
-        if (name === fieldName) {
-          target = field;
-          break;
+      // Hierarchical AcroForms represent a field like "person.email" as a
+      // top-level /T "person" dict with a /Kids child /T "email" -- the
+      // fully qualified name (what pdf-form.validator.ts reports, matching
+      // pdf.js's own convention) only exists by joining parent and child
+      // partial names with '.'. Recurses into every /Kids array regardless
+      // of whether the kids are sub-fields or just widget appearances of a
+      // terminal field (an appearance-only kid has no /T, so it can only
+      // ever match by inheriting its parent's already-checked qualifiedName
+      // — harmless, not wrong, to still recurse into it).
+      const findByQualifiedName = (arr: PDFArray, parentName: string): PDFDict | null => {
+        for (let i = 0; i < arr.size(); i++) {
+          const ref = arr.get(i);
+          const field = ref instanceof PDFRef ? doc.context.lookup(ref) : ref;
+          if (!(field instanceof PDFDict)) continue;
+          const partialEntry = field.get(PDFName.of('T'));
+          const partial =
+            partialEntry instanceof PDFString || partialEntry instanceof PDFHexString
+              ? partialEntry.decodeText()
+              : undefined;
+          const qualifiedName = partial !== undefined ? (parentName ? `${parentName}.${partial}` : partial) : parentName;
+          if (qualifiedName && qualifiedName === fieldName) return field;
+
+          const kidsRaw = field.get(PDFName.of('Kids'));
+          const kids = kidsRaw instanceof PDFArray ? kidsRaw : kidsRaw ? doc.context.lookup(kidsRaw) : null;
+          if (kids instanceof PDFArray) {
+            const found = findByQualifiedName(kids, qualifiedName);
+            if (found) return found;
+          }
         }
-      }
+        return null;
+      };
+      const target = findByQualifiedName(fields, '');
 
       if (!target) {
         return {

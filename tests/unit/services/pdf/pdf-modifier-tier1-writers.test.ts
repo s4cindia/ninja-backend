@@ -170,7 +170,46 @@ describe('setFormFieldTooltip', () => {
 
     expect(result.success).toBe(true);
     const fieldDict = doc.context.lookup(fieldRef) as PDFDict;
-    expect((fieldDict.get(PDFName.of('TU')) as PDFString).decodeText()).toBe('Enter your email address');
+    expect((fieldDict.get(PDFName.of('TU')) as PDFHexString).decodeText()).toBe('Enter your email address');
+  });
+
+  it('finds a hierarchical field by its fully qualified name (Codex finding)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // Terminal "email" widget nested under a "person" parent field --
+    // pdf-form.validator.ts (via pdf.js) reports this as "person.email".
+    const emailRef = doc.context.register(doc.context.obj({ FT: PDFName.of('Tx'), T: PDFString.of('email') }));
+    const personRef = doc.context.register(
+      doc.context.obj({ T: PDFString.of('person'), Kids: doc.context.obj([emailRef]) })
+    );
+    const acroFormRef = doc.context.register(doc.context.obj({ Fields: doc.context.obj([personRef]) }));
+    doc.catalog.set(PDFName.of('AcroForm'), acroFormRef);
+
+    const issue = baseIssue({ context: 'Field name: "person.email", Type: text' });
+    const result = await pdfModifierService.setFormFieldTooltip(doc, issue, 'Enter your email address');
+
+    expect(result.success).toBe(true);
+    const emailDict = doc.context.lookup(emailRef) as PDFDict;
+    expect((emailDict.get(PDFName.of('TU')) as PDFHexString).decodeText()).toBe('Enter your email address');
+    // The parent itself must stay untouched.
+    expect((doc.context.lookup(personRef) as PDFDict).get(PDFName.of('TU'))).toBeUndefined();
+  });
+
+  it('fails cleanly for a field with no /T at all, rather than matching the wrong one (CodeRabbit/Codex finding)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const fieldRef = doc.context.register(doc.context.obj({ FT: PDFName.of('Tx') }));
+    const acroFormRef = doc.context.register(doc.context.obj({ Fields: doc.context.obj([fieldRef]) }));
+    doc.catalog.set(PDFName.of('AcroForm'), acroFormRef);
+
+    const issue = baseIssue({ context: 'Field name: "(unnamed)", Type: text' });
+    const result = await pdfModifierService.setFormFieldTooltip(doc, issue, 'text');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/no \/T|cannot be located/i);
+    expect((doc.context.lookup(fieldRef) as PDFDict).get(PDFName.of('TU'))).toBeUndefined();
   });
 
   it('fails gracefully when no field matches the name', async () => {

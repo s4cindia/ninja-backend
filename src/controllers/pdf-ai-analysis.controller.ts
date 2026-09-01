@@ -506,6 +506,12 @@ export class PdfAiAnalysisController {
           modification = await pdfModifierService.setActualText(doc, elementId, value, elementTypes);
         } else if (suggestionType === 'language') {
           modification = await pdfModifierService.addLanguage(doc, value);
+        } else if (suggestionType === 'link-text') {
+          modification = await pdfModifierService.setLinkAltText(doc, originalIssue, value);
+        } else if (suggestionType === 'form-field-label') {
+          modification = await pdfModifierService.setFormFieldTooltip(doc, originalIssue, value);
+        } else if (suggestionType === 'bookmark-title') {
+          modification = await pdfModifierService.renameBookmark(doc, originalIssue, value);
         } else {
           throw AppError.badRequest(`suggestionType "${suggestionType}" cannot be applied to PDF`);
         }
