@@ -6,14 +6,17 @@
  * that the remediation-cycle lock is always released regardless of how the
  * loop ends.
  *
- * Convergence is driven by `aiAnalysis.updateMany`'s returned count (how
- * many actionable, non-decorative apply-to-pdf suggestions THIS round's
- * fresh analysis found) -- checked *before* applying, not by re-querying
- * state after applying. A round that finds and fully resolves work must
- * still let a subsequent round's fresh analysis run against the resulting
- * re-audit before concluding convergence; several tests below pin exactly
- * that regression (a real bug caught live: the loop stopped after a single
- * successful round even though hundreds of issues remained unanalyzed).
+ * Convergence is driven by a count of 'pending' + 'approved' (non-decorative,
+ * apply-to-pdf) rows taken at the top of each round, before auto-approving
+ * or applying -- not by re-querying state after applying. Two distinct
+ * regressions are pinned here: (1) a round that finds and fully resolves
+ * work must still let a subsequent round's fresh analysis run against the
+ * resulting re-audit before concluding convergence (a real bug caught live:
+ * the loop stopped after a single successful round even though hundreds of
+ * issues remained unanalyzed); (2) counting only newly-flipped 'pending'
+ * rows would miss a leftover 'approved'-but-never-applied row from an
+ * earlier round's partial apply failure, wrongly reporting convergence with
+ * real unapplied work still outstanding.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -22,7 +25,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
     job: { findUnique: vi.fn(), update: vi.fn() },
-    aiAnalysis: { updateMany: vi.fn() },
+    aiAnalysis: { updateMany: vi.fn(), count: vi.fn() },
   },
 }));
 vi.mock('../../../../src/services/pdf/ai-analysis.service');
@@ -83,6 +86,7 @@ function mockReauditSuccess() {
  * successfully, and re-audits cleanly. */
 function mockProductiveRound(actionableCount: number, costUsd = 0) {
   vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+  vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(actionableCount);
   vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: actionableCount } as any);
   vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValueOnce({
     applied: actionableCount,
@@ -103,7 +107,7 @@ function mockProductiveRound(actionableCount: number, costUsd = 0) {
  * genuine convergence signal; apply/reaudit are never reached. */
 function mockEmptyRound() {
   vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0 } as any);
-  vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: 0 } as any);
+  vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
 describe('autoRemediationLoopService.startAutoLoop', () => {
@@ -182,14 +186,71 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     });
   });
 
-  it('excludes alt-text-decorative from the auto-approve/actionable-count query', async () => {
+  it('regression: does not converge while a leftover approved-but-unapplied row from a partial apply failure remains (CodeRabbit finding)', async () => {
+    // Round 1: 10 actionable, but only 8 apply -- 2 stay stuck at 'approved'
+    // (not a full stall since applied > 0, so this isn't caught by stall
+    // detection). Round 2: analyzeJob finds no *new* pending suggestions,
+    // but the actionable-count query (pending + approved) must still see
+    // the 2 leftover approved rows and refuse to converge -- counting only
+    // updateMany's newly-flipped-pending count would miss them entirely.
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
-    mockLockAcquired();
-    mockJobFound();
-    mockEmptyRound();
+    mockLockAcquired(7);
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1',
+      tenantId: 'tenant-1',
+      output: { aiAnalysisStats: { gemini: { estimatedCostUsd: 0 } } },
+    } as any);
+    vi.mocked(prisma.aiAnalysis.count)
+      .mockResolvedValueOnce(10) // round 1: 10 actionable
+      .mockResolvedValueOnce(2) // round 2: 2 leftover approved-but-unapplied remain
+      .mockResolvedValueOnce(0); // round 3: those 2 finally applied, now converged
+    vi.mocked(prisma.aiAnalysis.updateMany)
+      .mockResolvedValueOnce({ count: 10 } as any) // round 1: 10 pending -> approved
+      .mockResolvedValueOnce({ count: 0 } as any); // round 2: nothing new pending (the 2 are already 'approved')
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions)
+      .mockResolvedValueOnce({
+        applied: 8,
+        failed: 2,
+        errors: [{ issueId: 'a', suggestionType: 'heading-fix', reason: 'unhandled' }, { issueId: 'b', suggestionType: 'heading-fix', reason: 'unhandled' }],
+        modifiedBuffer: Buffer.from('pdf'),
+        fileName: 'doc.pdf',
+      })
+      .mockResolvedValueOnce({
+        applied: 2,
+        failed: 0,
+        errors: [],
+        modifiedBuffer: Buffer.from('pdf'),
+        fileName: 'doc.pdf',
+      });
+    mockReauditSuccess();
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
+    expect(aiAnalysisService.applyApprovedSuggestions).toHaveBeenCalledTimes(2);
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+    });
+  });
+
+  it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockProductiveRound(1, 0);
+    mockEmptyRound(); // let it converge right after, so there's exactly one round to inspect
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          suggestionType: { not: 'alt-text-decorative' },
+          status: { in: ['pending', 'approved'] },
+        }),
+      })
+    );
     expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ suggestionType: { not: 'alt-text-decorative' }, status: 'pending' }),
@@ -253,6 +314,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     // (e.g. an unhandled suggestionType) -- applyApprovedSuggestions leaves
     // it sitting at 'approved', so the suggestion count never reaches 0 on
     // its own; only the stall counter should end this.
+    vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
     vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
     vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {} } as any);
@@ -288,10 +350,10 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
         fileName: 'doc.pdf',
       });
     mockReauditSuccess();
-    vi.mocked(prisma.aiAnalysis.updateMany)
-      .mockResolvedValueOnce({ count: 1 } as any) // round 1: stalls
-      .mockResolvedValueOnce({ count: 1 } as any) // round 2: applies successfully
-      .mockResolvedValueOnce({ count: 0 } as any); // round 3: converged
+    vi.mocked(prisma.aiAnalysis.count)
+      .mockResolvedValueOnce(1) // round 1: stalls
+      .mockResolvedValueOnce(1) // round 2: applies successfully
+      .mockResolvedValueOnce(0); // round 3: converged
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 

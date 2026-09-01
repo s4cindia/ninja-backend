@@ -241,10 +241,29 @@ class AutoRemediationLoopService {
       startedAt: roundStartedAt,
     });
 
-    // updateMany's returned count doubles as "how many actionable,
-    // non-decorative apply-to-pdf suggestions this fresh analysis found" --
-    // avoids a separate SELECT COUNT for the same WHERE clause.
-    const autoApproved = await prisma.aiAnalysis.updateMany({
+    // Counts 'pending' AND 'approved' rows, not just this round's fresh
+    // 'pending' ones -- a row that got approved and then failed to apply in
+    // an earlier round (partial apply failure: some suggestions in that
+    // batch succeeded, so the round wasn't a full stall, but this one
+    // didn't) stays sitting at 'approved' with nothing forcing it back to
+    // 'pending'. Counting updateMany's return value alone would miss it and
+    // wrongly report convergence with real unapplied work still pending.
+    const actionableFound = await prisma.aiAnalysis.count({
+      where: {
+        jobId,
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+        suggestionType: { not: ALWAYS_MANUAL_SUGGESTION_TYPE },
+      },
+    });
+    if (actionableFound === 0) {
+      return { actionableFound: 0, applied: 0 };
+    }
+
+    // Only flips 'pending' -> 'approved'; any leftover 'approved' row from a
+    // prior round's partial failure is already eligible and picked up by
+    // applyApprovedSuggestions below without needing to be re-approved here.
+    await prisma.aiAnalysis.updateMany({
       where: {
         jobId,
         applyMode: 'apply-to-pdf',
@@ -253,10 +272,6 @@ class AutoRemediationLoopService {
       },
       data: { status: 'approved', approvedBy: AUTO_MODE_ACTOR },
     });
-    const actionableFound = autoApproved.count;
-    if (actionableFound === 0) {
-      return { actionableFound: 0, applied: 0 };
-    }
 
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     if (result.applied === 0 || !result.modifiedBuffer || !result.fileName) {
