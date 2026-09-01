@@ -906,20 +906,29 @@ export class PdfModifierService {
    * there's no stable element ID to key off of here -- pdf-link.validator.ts
    * never records a ref or MCID for a flagged link, only a page number and
    * bounding box -- so matching is purely positional, with no MCID fallback
-   * to disambiguate overlapping/adjacent links on a busy page. Sets
-   * /Contents on the Link annotation itself (ISO 32000-1 14.9.3) rather than
-   * a structure element's /Alt: this works whether or not the link is
-   * tagged, and is the mechanism veraPDF's own Matterhorn 28 checks for.
+   * to disambiguate overlapping/adjacent links on a busy page. Bounded by
+   * MAX_LINK_MATCH_DISTANCE_PT (rejects a match that isn't actually close --
+   * better to fail than write to an unrelated link) and a runner-up margin
+   * (rejects when a second candidate is nearly as close, rather than
+   * silently guessing between two plausible links). Sets /Contents on the
+   * Link annotation itself (ISO 32000-1 14.9.3) rather than a structure
+   * element's /Alt: this works whether or not the link is tagged, and is
+   * the mechanism veraPDF's own Matterhorn 28 checks for. /Contents is
+   * PDFHexString-encoded (not PDFString) so non-Latin/backslash/paren
+   * characters round-trip correctly -- matches renameBookmark's Title
+   * encoding below.
    *
    * @returns ModificationResult — success: false if the issue has no
-   *   boundingBox/pageNumber, the page has no /Annots, or no Link annotation
-   *   is found on it
+   *   boundingBox/pageNumber, the page has no /Annots, no Link annotation is
+   *   found on it, the closest one is too far away, or the match is ambiguous
    */
   async setLinkAltText(
     doc: PDFDocument,
     issue: AuditIssue,
     altText: string
   ): Promise<ModificationResult> {
+    const MAX_LINK_MATCH_DISTANCE_PT = 20;
+    const LINK_AMBIGUITY_MARGIN_PT = 10;
     try {
       const targetPage = issue.pageNumber;
       const bbox = issue.boundingBox;
@@ -950,6 +959,7 @@ export class PdfModifierService {
 
       let best: PDFDict | null = null;
       let bestDist = Infinity;
+      let secondBestDist = Infinity;
       for (let i = 0; i < annots.size(); i++) {
         const annotRef = annots.get(i);
         const annot = annotRef instanceof PDFRef ? doc.context.lookup(annotRef) : annotRef;
@@ -965,8 +975,11 @@ export class PdfModifierService {
         const [llx, lly, urx, ury] = coords;
         const dist = Math.hypot((llx + urx) / 2 - targetCenterX, (lly + ury) / 2 - targetCenterY);
         if (dist < bestDist) {
+          secondBestDist = bestDist;
           bestDist = dist;
           best = annot;
+        } else if (dist < secondBestDist) {
+          secondBestDist = dist;
         }
       }
 
@@ -977,10 +990,27 @@ export class PdfModifierService {
           error: `No Link annotation on page ${targetPage}`,
         };
       }
+      if (bestDist > MAX_LINK_MATCH_DISTANCE_PT) {
+        return {
+          success: false,
+          description: 'No Link annotation close enough to the flagged position',
+          error: `Closest Link annotation on page ${targetPage} is ${bestDist.toFixed(1)}pt away (max ${MAX_LINK_MATCH_DISTANCE_PT}pt) -- refusing to guess`,
+        };
+      }
+      if (secondBestDist - bestDist < LINK_AMBIGUITY_MARGIN_PT) {
+        return {
+          success: false,
+          description: 'Ambiguous link match',
+          error: `Multiple Link annotations near the flagged position on page ${targetPage} (closest ${bestDist.toFixed(1)}pt, runner-up ${secondBestDist.toFixed(1)}pt) -- refusing to guess`,
+        };
+      }
 
       const contentsEntry = best.get(PDFName.of('Contents'));
-      const before = contentsEntry instanceof PDFString ? contentsEntry.decodeText() : 'None';
-      best.set(PDFName.of('Contents'), PDFString.of(altText));
+      const before =
+        contentsEntry instanceof PDFString || contentsEntry instanceof PDFHexString
+          ? contentsEntry.decodeText()
+          : 'None';
+      best.set(PDFName.of('Contents'), PDFHexString.fromText(altText));
 
       logger.info(`[PdfModifier] Set link description on page ${targetPage} (positional match, ${bestDist.toFixed(1)}pt from target)`);
 
@@ -1059,8 +1089,11 @@ export class PdfModifierService {
       }
 
       const tuEntry = target.get(PDFName.of('TU'));
-      const before = tuEntry instanceof PDFString ? tuEntry.decodeText() : 'None';
-      target.set(PDFName.of('TU'), PDFString.of(tooltip));
+      const before =
+        tuEntry instanceof PDFString || tuEntry instanceof PDFHexString ? tuEntry.decodeText() : 'None';
+      // PDFHexString (not PDFString) so non-Latin/backslash/paren characters
+      // in the tooltip round-trip correctly -- see setLinkAltText's doc comment.
+      target.set(PDFName.of('TU'), PDFHexString.fromText(tooltip));
 
       logger.info(`[PdfModifier] Set tooltip on form field "${fieldName}"`);
 
@@ -1086,6 +1119,13 @@ export class PdfModifierService {
    * generateBookmarksFromHeadings in pdf-structure-writer.service.ts only
    * ever builds a brand-new tree from headings, it never reads an existing
    * one, so renaming needs its own traversal.
+   *
+   * Titles aren't a stable identity (the validator/issue carry no ref or
+   * occurrence index): when a title is duplicated -- exactly the case this
+   * suggestion type exists for, e.g. several generic "Section" bookmarks --
+   * multiple Outline items can match. Renaming the first depth-first hit in
+   * that case would silently rename the wrong bookmark, so this fails
+   * instead when the match isn't unique.
    */
   async renameBookmark(
     doc: PDFDocument,
@@ -1093,14 +1133,18 @@ export class PdfModifierService {
     newTitle: string
   ): Promise<ModificationResult> {
     try {
-      const oldTitle = issue.context?.match(/Bookmark title: "([^"]*)"/)?.[1];
-      if (oldTitle === undefined) {
+      const rawOldTitle = issue.context?.match(/Bookmark title: "([^"]*)"/)?.[1];
+      if (rawOldTitle === undefined) {
         return {
           success: false,
           description: 'Bookmark title not available',
           error: 'Issue context has no "Bookmark title" to match against',
         };
       }
+      // pdf-bookmark.validator.ts writes the literal placeholder "(empty)"
+      // into context for a genuinely empty title, not an empty string --
+      // map it back so an empty /Title can still be matched.
+      const oldTitle = rawOldTitle === '(empty)' ? '' : rawOldTitle;
 
       const outlinesRaw = doc.catalog.get(PDFName.of('Outlines'));
       const outlines = outlinesRaw instanceof PDFDict ? outlinesRaw : outlinesRaw ? doc.context.lookup(outlinesRaw) : null;
@@ -1113,47 +1157,51 @@ export class PdfModifierService {
         return t instanceof PDFHexString || t instanceof PDFString ? t.decodeText() : null;
       };
 
-      // Depth-first First -> Next walk. visited guards against a cycle in a
-      // malformed document — Outline trees are small, so this is cheap.
+      // Depth-first First -> Next walk collecting every match, not just the
+      // first -- visited guards against a cycle in a malformed document
+      // (Outline trees are small, so this is cheap).
       const visited = new Set<number>();
-      let target: PDFDict | null = null;
-      const visit = (raw: unknown): boolean => {
+      const matches: PDFDict[] = [];
+      const visit = (raw: unknown): void => {
         let item: unknown = raw;
         if (raw instanceof PDFRef) {
-          if (visited.has(raw.objectNumber)) return false;
+          if (visited.has(raw.objectNumber)) return;
           visited.add(raw.objectNumber);
           item = doc.context.lookup(raw);
         }
-        if (!(item instanceof PDFDict)) return false;
-        if (decodeTitle(item) === oldTitle) {
-          target = item;
-          return true;
-        }
+        if (!(item instanceof PDFDict)) return;
+        if (decodeTitle(item) === oldTitle) matches.push(item);
         const first = item.get(PDFName.of('First'));
-        if (first && visit(first)) return true;
+        if (first) visit(first);
         const next = item.get(PDFName.of('Next'));
-        if (next && visit(next)) return true;
-        return false;
+        if (next) visit(next);
       };
       const firstChild = outlines.get(PDFName.of('First'));
       if (firstChild) visit(firstChild);
 
-      if (!target) {
+      if (matches.length === 0) {
         return {
           success: false,
           description: 'Bookmark not found',
-          error: `No bookmark titled "${oldTitle}" in /Outlines`,
+          error: `No bookmark titled "${rawOldTitle}" in /Outlines`,
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          success: false,
+          description: 'Ambiguous bookmark match',
+          error: `${matches.length} bookmarks are titled "${rawOldTitle}" in /Outlines -- refusing to guess which one to rename`,
         };
       }
 
-      (target as PDFDict).set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
+      matches[0].set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
 
-      logger.info(`[PdfModifier] Renamed bookmark "${oldTitle}" -> "${newTitle}"`);
+      logger.info(`[PdfModifier] Renamed bookmark "${rawOldTitle}" -> "${newTitle}"`);
 
       return {
         success: true,
         description: `Renamed bookmark to "${newTitle}"`,
-        before: oldTitle,
+        before: rawOldTitle,
         after: newTitle,
       };
     } catch (error) {

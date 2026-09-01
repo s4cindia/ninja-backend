@@ -51,8 +51,8 @@ describe('setLinkAltText', () => {
     expect(result.success).toBe(true);
     const linkDict = doc.context.lookup(linkRef) as PDFDict;
     const contents = linkDict.get(PDFName.of('Contents'));
-    expect(contents).toBeInstanceOf(PDFString);
-    expect((contents as PDFString).decodeText()).toBe('Download the 2024 annual report');
+    expect(contents).toBeInstanceOf(PDFHexString);
+    expect((contents as PDFHexString).decodeText()).toBe('Download the 2024 annual report');
   });
 
   it('picks the closest Link annotation when several exist on the page', async () => {
@@ -77,8 +77,54 @@ describe('setLinkAltText', () => {
 
     const nearDict = doc.context.lookup(nearRef) as PDFDict;
     const farDict = doc.context.lookup(farRef) as PDFDict;
-    expect((nearDict.get(PDFName.of('Contents')) as PDFString).decodeText()).toBe('Visit our accessibility guide');
+    expect((nearDict.get(PDFName.of('Contents')) as PDFHexString).decodeText()).toBe('Visit our accessibility guide');
     expect(farDict.get(PDFName.of('Contents'))).toBeUndefined();
+  });
+
+  it('fails when the closest Link annotation is too far from the flagged position (CodeRabbit/Codex finding)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // 100pt away from the target center -- well past MAX_LINK_MATCH_DISTANCE_PT
+    const farRef = doc.context.register(
+      doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([0, 0, 20, 20]) })
+    );
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([farRef]));
+
+    const issue = baseIssue({
+      pageNumber: 1,
+      boundingBox: { x: 100, y: 180, width: 200, height: 20, pageWidth: 400, pageHeight: 600 },
+    });
+
+    const result = await pdfModifierService.setLinkAltText(doc, issue, 'text');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/too far|not close enough|away \(max/i);
+    expect((doc.context.lookup(farRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
+  });
+
+  it('fails when two Link annotations are ambiguously close to the flagged position (CodeRabbit/Codex finding)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // Both within a few points of the target center -- neither is clearly the right one.
+    const aRef = doc.context.register(
+      doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([100, 400, 300, 420]) })
+    );
+    const bRef = doc.context.register(
+      doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([103, 400, 303, 420]) })
+    );
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([aRef, bRef]));
+
+    const issue = baseIssue({
+      pageNumber: 1,
+      boundingBox: { x: 100, y: 180, width: 200, height: 20, pageWidth: 400, pageHeight: 600 },
+    });
+
+    const result = await pdfModifierService.setLinkAltText(doc, issue, 'text');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/ambiguous|multiple/i);
+    expect((doc.context.lookup(aRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
+    expect((doc.context.lookup(bRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
   });
 
   it('fails gracefully when the issue has no boundingBox', async () => {
@@ -244,5 +290,49 @@ describe('renameBookmark', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Outlines/);
+  });
+
+  it('refuses to rename when multiple bookmarks share the flagged title, rather than guessing the first match (CodeRabbit/Codex finding)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const firstRef: PDFRef = doc.context.register(doc.context.obj({ Title: PDFHexString.fromText('Section') }));
+    const secondRef = doc.context.register(
+      doc.context.obj({ Title: PDFHexString.fromText('Section'), Prev: firstRef })
+    );
+    (doc.context.lookup(firstRef) as PDFDict).set(PDFName.of('Next'), secondRef);
+    const outlinesRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('Outlines'), First: firstRef, Last: secondRef, Count: 2 })
+    );
+    doc.catalog.set(PDFName.of('Outlines'), outlinesRef);
+
+    const issue = baseIssue({ context: 'Bookmark title: "Section"' });
+    const result = await pdfModifierService.renameBookmark(doc, issue, 'Market Definitions');
+
+    expect(result.success).toBe(false);
+    expect(result.description).toMatch(/ambiguous/i);
+    expect((doc.context.lookup(firstRef) as PDFDict).get(PDFName.of('Title'))?.toString()).not.toContain(
+      'Market Definitions'
+    );
+  });
+
+  it('matches an empty-titled bookmark via the "(empty)" context placeholder pdf-bookmark.validator.ts writes', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const itemRef = doc.context.register(doc.context.obj({ Title: PDFHexString.fromText('') }));
+    const outlinesRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('Outlines'), First: itemRef, Last: itemRef, Count: 1 })
+    );
+    doc.catalog.set(PDFName.of('Outlines'), outlinesRef);
+
+    const issue = baseIssue({ context: 'Bookmark title: "(empty)"' });
+    const result = await pdfModifierService.renameBookmark(doc, issue, 'Chapter 3: Financial Risk Assessment');
+
+    expect(result.success).toBe(true);
+    const itemDict = doc.context.lookup(itemRef) as PDFDict;
+    expect((itemDict.get(PDFName.of('Title')) as PDFHexString).decodeText()).toBe(
+      'Chapter 3: Financial Risk Assessment'
+    );
   });
 });
