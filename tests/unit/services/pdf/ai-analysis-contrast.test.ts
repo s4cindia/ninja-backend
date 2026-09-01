@@ -175,4 +175,22 @@ describe('buildSuggestionCacheKey', () => {
     expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
     expect(buildSuggestionCacheKey(a)).toBe(buildSuggestionCacheKey(c));
   });
+
+  // Same collision as the contrast regression above, found in PR #511 review:
+  // link and form-field issues also carry no `element`, so two distinct
+  // generic links (or two distinct unlabeled fields) on the same page used
+  // to share a key -- the second one's suggestion silently inherited the
+  // first one's AI-drafted value, so approving both wrote the same text to
+  // two different links/fields.
+  it('gives two distinct link-text issues on the same page distinct keys', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'link-a', code: 'LINK-GENERIC-TEXT', pageNumber: 5 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'link-b', code: 'LINK-GENERIC-TEXT', pageNumber: 5 };
+    expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
+  });
+
+  it('gives two distinct form-field issues on the same page distinct keys', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'form-a', code: 'FORM-FIELD-NO-LABEL', pageNumber: 5 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'form-b', code: 'FORM-FIELD-NO-LABEL', pageNumber: 5 };
+    expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
+  });
 });

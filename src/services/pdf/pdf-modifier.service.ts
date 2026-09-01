@@ -5,12 +5,13 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFHexString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { logger } from '../../lib/logger';
 import { decodePageContent as decodePageContentShared } from './pdf-content-stream-io';
+import type { AuditIssue } from '../audit/base-audit.service';
 
 // Minimal valid XMP skeleton with pdfuaid and dc namespaces pre-declared
 const MINIMAL_XMP_TEMPLATE = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
@@ -894,6 +895,354 @@ export class PdfModifierService {
       return {
         success: false,
         description: 'Failed to set table summary',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Set an accessible description on the Link annotation whose /Rect is
+   * closest to the flagged link's position. Unlike setAltText/setTableSummary,
+   * there's no stable element ID to key off of here -- pdf-link.validator.ts
+   * never records a ref or MCID for a flagged link, only a page number and
+   * bounding box -- so matching is purely positional, with no MCID fallback
+   * to disambiguate overlapping/adjacent links on a busy page. Bounded by
+   * MAX_LINK_MATCH_DISTANCE_PT (rejects a match that isn't actually close --
+   * better to fail than write to an unrelated link) and a runner-up margin
+   * (rejects when a second candidate is nearly as close, rather than
+   * silently guessing between two plausible links). Sets /Contents on the
+   * Link annotation itself (ISO 32000-1 14.9.3) rather than a structure
+   * element's /Alt: this works whether or not the link is tagged, and is
+   * the mechanism veraPDF's own Matterhorn 28 checks for. /Contents is
+   * PDFHexString-encoded (not PDFString) so non-Latin/backslash/paren
+   * characters round-trip correctly -- matches renameBookmark's Title
+   * encoding below.
+   *
+   * @returns ModificationResult — success: false if the issue has no
+   *   boundingBox/pageNumber, the page has no /Annots, no Link annotation is
+   *   found on it, the closest one is too far away, or the match is ambiguous
+   */
+  async setLinkAltText(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    altText: string
+  ): Promise<ModificationResult> {
+    const MAX_LINK_MATCH_DISTANCE_PT = 20;
+    const LINK_AMBIGUITY_MARGIN_PT = 10;
+    try {
+      const targetPage = issue.pageNumber;
+      const bbox = issue.boundingBox;
+      if (!targetPage || !bbox) {
+        return {
+          success: false,
+          description: 'Link position not available',
+          error: 'Issue has no pageNumber/boundingBox to locate the link',
+        };
+      }
+
+      const page = doc.getPage(targetPage - 1);
+      const annotsRaw = page.node.get(PDFName.of('Annots'));
+      const annots = annotsRaw instanceof PDFArray ? annotsRaw : annotsRaw ? doc.context.lookup(annotsRaw) : null;
+      if (!(annots instanceof PDFArray)) {
+        return {
+          success: false,
+          description: 'No annotations on page',
+          error: `Page ${targetPage} has no /Annots`,
+        };
+      }
+
+      // boundingBox is top-left-origin (see AuditIssue's own doc comment);
+      // PDF /Rect is bottom-left-origin -- same y-flip idiom used for
+      // content-stream position matching in pdf-contrast-writer.service.ts.
+      const targetCenterX = bbox.x + bbox.width / 2;
+      const targetCenterY = bbox.pageHeight - (bbox.y + bbox.height / 2);
+
+      let best: PDFDict | null = null;
+      let bestDist = Infinity;
+      let secondBestDist = Infinity;
+      for (let i = 0; i < annots.size(); i++) {
+        const annotRef = annots.get(i);
+        const annot = annotRef instanceof PDFRef ? doc.context.lookup(annotRef) : annotRef;
+        if (!(annot instanceof PDFDict)) continue;
+        if (annot.get(PDFName.of('Subtype'))?.toString() !== '/Link') continue;
+
+        const rect = annot.get(PDFName.of('Rect'));
+        if (!(rect instanceof PDFArray) || rect.size() !== 4) continue;
+        const coords = [0, 1, 2, 3].map((idx) => {
+          const n = rect.get(idx);
+          return n instanceof PDFNumber ? n.asNumber() : 0;
+        });
+        const [llx, lly, urx, ury] = coords;
+        const dist = Math.hypot((llx + urx) / 2 - targetCenterX, (lly + ury) / 2 - targetCenterY);
+        if (dist < bestDist) {
+          secondBestDist = bestDist;
+          bestDist = dist;
+          best = annot;
+        } else if (dist < secondBestDist) {
+          secondBestDist = dist;
+        }
+      }
+
+      if (!best) {
+        return {
+          success: false,
+          description: 'No Link annotation found',
+          error: `No Link annotation on page ${targetPage}`,
+        };
+      }
+      if (bestDist > MAX_LINK_MATCH_DISTANCE_PT) {
+        return {
+          success: false,
+          description: 'No Link annotation close enough to the flagged position',
+          error: `Closest Link annotation on page ${targetPage} is ${bestDist.toFixed(1)}pt away (max ${MAX_LINK_MATCH_DISTANCE_PT}pt) -- refusing to guess`,
+        };
+      }
+      if (secondBestDist - bestDist < LINK_AMBIGUITY_MARGIN_PT) {
+        return {
+          success: false,
+          description: 'Ambiguous link match',
+          error: `Multiple Link annotations near the flagged position on page ${targetPage} (closest ${bestDist.toFixed(1)}pt, runner-up ${secondBestDist.toFixed(1)}pt) -- refusing to guess`,
+        };
+      }
+
+      const contentsEntry = best.get(PDFName.of('Contents'));
+      const before =
+        contentsEntry instanceof PDFString || contentsEntry instanceof PDFHexString
+          ? contentsEntry.decodeText()
+          : 'None';
+      best.set(PDFName.of('Contents'), PDFHexString.fromText(altText));
+
+      logger.info(`[PdfModifier] Set link description on page ${targetPage} (positional match, ${bestDist.toFixed(1)}pt from target)`);
+
+      return {
+        success: true,
+        description: `Set accessible description on link (page ${targetPage})`,
+        pageNumber: targetPage,
+        before,
+        after: altText,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to set link description',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Set a form field's tooltip (/TU) by matching its fully qualified /T
+   * (name) against the field name pdf-form.validator.ts records verbatim in
+   * the issue's context — an exact, unambiguous key, unlike the positional
+   * matching setLinkAltText has to fall back to. Recurses into hierarchical
+   * /Kids to build the qualified name (e.g. "person.email") the validator
+   * reports. Fields with no /T at all (context records the literal
+   * placeholder "(unnamed)") can't be matched by name and are reported as a
+   * clean failure rather than guessed at.
+   */
+  async setFormFieldTooltip(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    tooltip: string
+  ): Promise<ModificationResult> {
+    try {
+      const fieldName = issue.context?.match(/Field name: "([^"]+)"/)?.[1];
+      if (!fieldName) {
+        return {
+          success: false,
+          description: 'Field name not available',
+          error: 'Issue context has no "Field name" to match against',
+        };
+      }
+      // pdf-form.validator.ts writes the literal placeholder "(unnamed)" for
+      // a field with no /T at all -- there's no name to match on, and (unlike
+      // renameBookmark's empty-title case) an empty/absent /T isn't a safe
+      // unique match either, since multiple unnamed fields can coexist. Fail
+      // honestly rather than silently matching the wrong field.
+      if (fieldName === '(unnamed)') {
+        return {
+          success: false,
+          description: 'Field has no name to match against',
+          error: 'This field has no /T (name) at all, so it cannot be located by name — positional matching is not implemented for form fields',
+        };
+      }
+
+      const catalog = doc.context.lookup(doc.context.trailerInfo.Root);
+      if (!(catalog instanceof PDFDict)) {
+        return { success: false, description: 'No catalog', error: 'Document has no catalog' };
+      }
+      const acroFormRaw = catalog.get(PDFName.of('AcroForm'));
+      const acroForm = acroFormRaw instanceof PDFDict ? acroFormRaw : acroFormRaw ? doc.context.lookup(acroFormRaw) : null;
+      if (!(acroForm instanceof PDFDict)) {
+        return { success: false, description: 'No AcroForm', error: 'Document has no AcroForm dictionary' };
+      }
+      const fieldsRaw = acroForm.get(PDFName.of('Fields'));
+      const fields = fieldsRaw instanceof PDFArray ? fieldsRaw : fieldsRaw ? doc.context.lookup(fieldsRaw) : null;
+      if (!(fields instanceof PDFArray)) {
+        return { success: false, description: 'No form fields', error: 'AcroForm has no /Fields' };
+      }
+
+      // Hierarchical AcroForms represent a field like "person.email" as a
+      // top-level /T "person" dict with a /Kids child /T "email" -- the
+      // fully qualified name (what pdf-form.validator.ts reports, matching
+      // pdf.js's own convention) only exists by joining parent and child
+      // partial names with '.'. Recurses into every /Kids array regardless
+      // of whether the kids are sub-fields or just widget appearances of a
+      // terminal field (an appearance-only kid has no /T, so it can only
+      // ever match by inheriting its parent's already-checked qualifiedName
+      // — harmless, not wrong, to still recurse into it).
+      const findByQualifiedName = (arr: PDFArray, parentName: string): PDFDict | null => {
+        for (let i = 0; i < arr.size(); i++) {
+          const ref = arr.get(i);
+          const field = ref instanceof PDFRef ? doc.context.lookup(ref) : ref;
+          if (!(field instanceof PDFDict)) continue;
+          const partialEntry = field.get(PDFName.of('T'));
+          const partial =
+            partialEntry instanceof PDFString || partialEntry instanceof PDFHexString
+              ? partialEntry.decodeText()
+              : undefined;
+          const qualifiedName = partial !== undefined ? (parentName ? `${parentName}.${partial}` : partial) : parentName;
+          if (qualifiedName && qualifiedName === fieldName) return field;
+
+          const kidsRaw = field.get(PDFName.of('Kids'));
+          const kids = kidsRaw instanceof PDFArray ? kidsRaw : kidsRaw ? doc.context.lookup(kidsRaw) : null;
+          if (kids instanceof PDFArray) {
+            const found = findByQualifiedName(kids, qualifiedName);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const target = findByQualifiedName(fields, '');
+
+      if (!target) {
+        return {
+          success: false,
+          description: 'Form field not found',
+          error: `No field named "${fieldName}" in AcroForm/Fields`,
+        };
+      }
+
+      const tuEntry = target.get(PDFName.of('TU'));
+      const before =
+        tuEntry instanceof PDFString || tuEntry instanceof PDFHexString ? tuEntry.decodeText() : 'None';
+      // PDFHexString (not PDFString) so non-Latin/backslash/paren characters
+      // in the tooltip round-trip correctly -- see setLinkAltText's doc comment.
+      target.set(PDFName.of('TU'), PDFHexString.fromText(tooltip));
+
+      logger.info(`[PdfModifier] Set tooltip on form field "${fieldName}"`);
+
+      return {
+        success: true,
+        description: `Set tooltip on field "${fieldName}"`,
+        before,
+        after: tooltip,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to set form field tooltip',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Rename an existing bookmark (Outline item) by matching its current
+   * /Title against the title pdf-bookmark.validator.ts records verbatim in
+   * the issue's context. Walks the existing /Outlines First/Next chain —
+   * generateBookmarksFromHeadings in pdf-structure-writer.service.ts only
+   * ever builds a brand-new tree from headings, it never reads an existing
+   * one, so renaming needs its own traversal.
+   *
+   * Titles aren't a stable identity (the validator/issue carry no ref or
+   * occurrence index): when a title is duplicated -- exactly the case this
+   * suggestion type exists for, e.g. several generic "Section" bookmarks --
+   * multiple Outline items can match. Renaming the first depth-first hit in
+   * that case would silently rename the wrong bookmark, so this fails
+   * instead when the match isn't unique.
+   */
+  async renameBookmark(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    newTitle: string
+  ): Promise<ModificationResult> {
+    try {
+      const rawOldTitle = issue.context?.match(/Bookmark title: "([^"]*)"/)?.[1];
+      if (rawOldTitle === undefined) {
+        return {
+          success: false,
+          description: 'Bookmark title not available',
+          error: 'Issue context has no "Bookmark title" to match against',
+        };
+      }
+      // pdf-bookmark.validator.ts writes the literal placeholder "(empty)"
+      // into context for a genuinely empty title, not an empty string --
+      // map it back so an empty /Title can still be matched.
+      const oldTitle = rawOldTitle === '(empty)' ? '' : rawOldTitle;
+
+      const outlinesRaw = doc.catalog.get(PDFName.of('Outlines'));
+      const outlines = outlinesRaw instanceof PDFDict ? outlinesRaw : outlinesRaw ? doc.context.lookup(outlinesRaw) : null;
+      if (!(outlines instanceof PDFDict)) {
+        return { success: false, description: 'No outlines', error: 'Document has no /Outlines' };
+      }
+
+      const decodeTitle = (item: PDFDict): string | null => {
+        const t = item.get(PDFName.of('Title'));
+        return t instanceof PDFHexString || t instanceof PDFString ? t.decodeText() : null;
+      };
+
+      // Depth-first First -> Next walk collecting every match, not just the
+      // first -- visited guards against a cycle in a malformed document
+      // (Outline trees are small, so this is cheap).
+      const visited = new Set<number>();
+      const matches: PDFDict[] = [];
+      const visit = (raw: unknown): void => {
+        let item: unknown = raw;
+        if (raw instanceof PDFRef) {
+          if (visited.has(raw.objectNumber)) return;
+          visited.add(raw.objectNumber);
+          item = doc.context.lookup(raw);
+        }
+        if (!(item instanceof PDFDict)) return;
+        if (decodeTitle(item) === oldTitle) matches.push(item);
+        const first = item.get(PDFName.of('First'));
+        if (first) visit(first);
+        const next = item.get(PDFName.of('Next'));
+        if (next) visit(next);
+      };
+      const firstChild = outlines.get(PDFName.of('First'));
+      if (firstChild) visit(firstChild);
+
+      if (matches.length === 0) {
+        return {
+          success: false,
+          description: 'Bookmark not found',
+          error: `No bookmark titled "${rawOldTitle}" in /Outlines`,
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          success: false,
+          description: 'Ambiguous bookmark match',
+          error: `${matches.length} bookmarks are titled "${rawOldTitle}" in /Outlines -- refusing to guess which one to rename`,
+        };
+      }
+
+      matches[0].set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
+
+      logger.info(`[PdfModifier] Renamed bookmark "${rawOldTitle}" -> "${newTitle}"`);
+
+      return {
+        success: true,
+        description: `Renamed bookmark to "${newTitle}"`,
+        before: rawOldTitle,
+        after: newTitle,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to rename bookmark',
         error: error instanceof Error ? error.message : String(error),
       };
     }

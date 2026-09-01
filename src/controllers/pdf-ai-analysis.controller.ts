@@ -34,9 +34,9 @@ const triggerSchema = z.object({
       listMode: z.enum(['auto-resolve-decorative', 'guidance-only']).optional(),
       languageMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
       colorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
-      linkTextMode: z.enum(['guidance-only', 'disabled']).optional(),
-      formFieldMode: z.enum(['guidance-only', 'disabled']).optional(),
-      bookmarkMode: z.enum(['guidance-only', 'disabled']).optional(),
+      linkTextMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+      formFieldMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+      bookmarkMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
       confidenceThreshold: z.number().min(0.5).max(0.95).optional(),
       autoApplyHighConfidence: z.boolean().optional(),
     })
@@ -45,6 +45,11 @@ const triggerSchema = z.object({
 
 const updateStatusSchema = z.object({
   status: z.enum(['approved', 'rejected']),
+  // Lets an operator override the AI-drafted value before approving (e.g.
+  // edit a suggested link description/form-field tooltip/bookmark title) --
+  // applyApprovedSuggestions applies whatever is in `value` at approval
+  // time, so this needs no separate "apply" wiring.
+  value: z.string().trim().min(1).max(1000).optional(),
 });
 
 const acknowledgeGuidanceSchema = z.object({
@@ -222,6 +227,7 @@ export class PdfAiAnalysisController {
         data: {
           status: parsed.data.status,
           approvedBy: parsed.data.status === 'approved' ? 'operator' : existing.approvedBy,
+          ...(parsed.data.value !== undefined && { value: parsed.data.value }),
           updatedAt: new Date(),
         },
       });
@@ -500,6 +506,12 @@ export class PdfAiAnalysisController {
           modification = await pdfModifierService.setActualText(doc, elementId, value, elementTypes);
         } else if (suggestionType === 'language') {
           modification = await pdfModifierService.addLanguage(doc, value);
+        } else if (suggestionType === 'link-text') {
+          modification = await pdfModifierService.setLinkAltText(doc, originalIssue, value);
+        } else if (suggestionType === 'form-field-label') {
+          modification = await pdfModifierService.setFormFieldTooltip(doc, originalIssue, value);
+        } else if (suggestionType === 'bookmark-title') {
+          modification = await pdfModifierService.renameBookmark(doc, originalIssue, value);
         } else {
           throw AppError.badRequest(`suggestionType "${suggestionType}" cannot be applied to PDF`);
         }

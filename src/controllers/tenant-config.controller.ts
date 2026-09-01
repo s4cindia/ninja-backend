@@ -53,9 +53,9 @@ const aiRemediationConfigUpdateSchema = z.object({
   listMode: z.enum(['auto-resolve-decorative', 'guidance-only']).optional(),
   languageMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
   colorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
-  linkTextMode: z.enum(['guidance-only', 'disabled']).optional(),
-  formFieldMode: z.enum(['guidance-only', 'disabled']).optional(),
-  bookmarkMode: z.enum(['guidance-only', 'disabled']).optional(),
+  linkTextMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+  formFieldMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+  bookmarkMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
   confidenceThreshold: z.number().min(0.5).max(0.95).optional(),
   autoApplyHighConfidence: z.boolean().optional(),
 }).strict();
