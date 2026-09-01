@@ -90,6 +90,41 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     );
   });
 
+  it('dispatches the three Tier 1 manual-fix suggestion types to their writer methods with the (possibly operator-edited) value', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'link-1', suggestionType: 'link-text', value: 'Download the 2024 annual report' },
+      { issueId: 'form-1', suggestionType: 'form-field-label', value: 'Enter your email address' },
+      { issueId: 'bookmark-1', suggestionType: 'bookmark-title', value: 'Introduction to Market Structure' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.setLinkAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.setFormFieldTooltip).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.renameBookmark).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(result.applied).toBe(3);
+    expect(result.failed).toBe(0);
+    expect(pdfModifierService.setLinkAltText).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ id: 'link-1' }),
+      'Download the 2024 annual report'
+    );
+    expect(pdfModifierService.setFormFieldTooltip).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ id: 'form-1' }),
+      'Enter your email address'
+    );
+    expect(pdfModifierService.renameBookmark).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ id: 'bookmark-1' }),
+      'Introduction to Market Structure'
+    );
+  });
+
   it('reports failed and logs a failed history event when every eligible suggestion fails to apply, without saving a PDF', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },

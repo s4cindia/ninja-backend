@@ -5,12 +5,13 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFHexString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { logger } from '../../lib/logger';
 import { decodePageContent as decodePageContentShared } from './pdf-content-stream-io';
+import type { AuditIssue } from '../audit/base-audit.service';
 
 // Minimal valid XMP skeleton with pdfuaid and dc namespaces pre-declared
 const MINIMAL_XMP_TEMPLATE = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
@@ -894,6 +895,271 @@ export class PdfModifierService {
       return {
         success: false,
         description: 'Failed to set table summary',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Set an accessible description on the Link annotation whose /Rect is
+   * closest to the flagged link's position. Unlike setAltText/setTableSummary,
+   * there's no stable element ID to key off of here -- pdf-link.validator.ts
+   * never records a ref or MCID for a flagged link, only a page number and
+   * bounding box -- so matching is purely positional, with no MCID fallback
+   * to disambiguate overlapping/adjacent links on a busy page. Sets
+   * /Contents on the Link annotation itself (ISO 32000-1 14.9.3) rather than
+   * a structure element's /Alt: this works whether or not the link is
+   * tagged, and is the mechanism veraPDF's own Matterhorn 28 checks for.
+   *
+   * @returns ModificationResult — success: false if the issue has no
+   *   boundingBox/pageNumber, the page has no /Annots, or no Link annotation
+   *   is found on it
+   */
+  async setLinkAltText(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    altText: string
+  ): Promise<ModificationResult> {
+    try {
+      const targetPage = issue.pageNumber;
+      const bbox = issue.boundingBox;
+      if (!targetPage || !bbox) {
+        return {
+          success: false,
+          description: 'Link position not available',
+          error: 'Issue has no pageNumber/boundingBox to locate the link',
+        };
+      }
+
+      const page = doc.getPage(targetPage - 1);
+      const annotsRaw = page.node.get(PDFName.of('Annots'));
+      const annots = annotsRaw instanceof PDFArray ? annotsRaw : annotsRaw ? doc.context.lookup(annotsRaw) : null;
+      if (!(annots instanceof PDFArray)) {
+        return {
+          success: false,
+          description: 'No annotations on page',
+          error: `Page ${targetPage} has no /Annots`,
+        };
+      }
+
+      // boundingBox is top-left-origin (see AuditIssue's own doc comment);
+      // PDF /Rect is bottom-left-origin -- same y-flip idiom used for
+      // content-stream position matching in pdf-contrast-writer.service.ts.
+      const targetCenterX = bbox.x + bbox.width / 2;
+      const targetCenterY = bbox.pageHeight - (bbox.y + bbox.height / 2);
+
+      let best: PDFDict | null = null;
+      let bestDist = Infinity;
+      for (let i = 0; i < annots.size(); i++) {
+        const annotRef = annots.get(i);
+        const annot = annotRef instanceof PDFRef ? doc.context.lookup(annotRef) : annotRef;
+        if (!(annot instanceof PDFDict)) continue;
+        if (annot.get(PDFName.of('Subtype'))?.toString() !== '/Link') continue;
+
+        const rect = annot.get(PDFName.of('Rect'));
+        if (!(rect instanceof PDFArray) || rect.size() !== 4) continue;
+        const coords = [0, 1, 2, 3].map((idx) => {
+          const n = rect.get(idx);
+          return n instanceof PDFNumber ? n.asNumber() : 0;
+        });
+        const [llx, lly, urx, ury] = coords;
+        const dist = Math.hypot((llx + urx) / 2 - targetCenterX, (lly + ury) / 2 - targetCenterY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = annot;
+        }
+      }
+
+      if (!best) {
+        return {
+          success: false,
+          description: 'No Link annotation found',
+          error: `No Link annotation on page ${targetPage}`,
+        };
+      }
+
+      const contentsEntry = best.get(PDFName.of('Contents'));
+      const before = contentsEntry instanceof PDFString ? contentsEntry.decodeText() : 'None';
+      best.set(PDFName.of('Contents'), PDFString.of(altText));
+
+      logger.info(`[PdfModifier] Set link description on page ${targetPage} (positional match, ${bestDist.toFixed(1)}pt from target)`);
+
+      return {
+        success: true,
+        description: `Set accessible description on link (page ${targetPage})`,
+        pageNumber: targetPage,
+        before,
+        after: altText,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to set link description',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Set a form field's tooltip (/TU) by matching its /T (name) against the
+   * field name pdf-form.validator.ts records verbatim in the issue's
+   * context — an exact, unambiguous key, unlike the positional matching
+   * setLinkAltText has to fall back to.
+   */
+  async setFormFieldTooltip(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    tooltip: string
+  ): Promise<ModificationResult> {
+    try {
+      const fieldName = issue.context?.match(/Field name: "([^"]+)"/)?.[1];
+      if (!fieldName) {
+        return {
+          success: false,
+          description: 'Field name not available',
+          error: 'Issue context has no "Field name" to match against',
+        };
+      }
+
+      const catalog = doc.context.lookup(doc.context.trailerInfo.Root);
+      if (!(catalog instanceof PDFDict)) {
+        return { success: false, description: 'No catalog', error: 'Document has no catalog' };
+      }
+      const acroFormRaw = catalog.get(PDFName.of('AcroForm'));
+      const acroForm = acroFormRaw instanceof PDFDict ? acroFormRaw : acroFormRaw ? doc.context.lookup(acroFormRaw) : null;
+      if (!(acroForm instanceof PDFDict)) {
+        return { success: false, description: 'No AcroForm', error: 'Document has no AcroForm dictionary' };
+      }
+      const fieldsRaw = acroForm.get(PDFName.of('Fields'));
+      const fields = fieldsRaw instanceof PDFArray ? fieldsRaw : fieldsRaw ? doc.context.lookup(fieldsRaw) : null;
+      if (!(fields instanceof PDFArray)) {
+        return { success: false, description: 'No form fields', error: 'AcroForm has no /Fields' };
+      }
+
+      let target: PDFDict | null = null;
+      for (let i = 0; i < fields.size(); i++) {
+        const fieldRef = fields.get(i);
+        const field = fieldRef instanceof PDFRef ? doc.context.lookup(fieldRef) : fieldRef;
+        if (!(field instanceof PDFDict)) continue;
+        const nameEntry = field.get(PDFName.of('T'));
+        const name =
+          nameEntry instanceof PDFString || nameEntry instanceof PDFHexString ? nameEntry.decodeText() : undefined;
+        if (name === fieldName) {
+          target = field;
+          break;
+        }
+      }
+
+      if (!target) {
+        return {
+          success: false,
+          description: 'Form field not found',
+          error: `No field named "${fieldName}" in AcroForm/Fields`,
+        };
+      }
+
+      const tuEntry = target.get(PDFName.of('TU'));
+      const before = tuEntry instanceof PDFString ? tuEntry.decodeText() : 'None';
+      target.set(PDFName.of('TU'), PDFString.of(tooltip));
+
+      logger.info(`[PdfModifier] Set tooltip on form field "${fieldName}"`);
+
+      return {
+        success: true,
+        description: `Set tooltip on field "${fieldName}"`,
+        before,
+        after: tooltip,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to set form field tooltip',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Rename an existing bookmark (Outline item) by matching its current
+   * /Title against the title pdf-bookmark.validator.ts records verbatim in
+   * the issue's context. Walks the existing /Outlines First/Next chain —
+   * generateBookmarksFromHeadings in pdf-structure-writer.service.ts only
+   * ever builds a brand-new tree from headings, it never reads an existing
+   * one, so renaming needs its own traversal.
+   */
+  async renameBookmark(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    newTitle: string
+  ): Promise<ModificationResult> {
+    try {
+      const oldTitle = issue.context?.match(/Bookmark title: "([^"]*)"/)?.[1];
+      if (oldTitle === undefined) {
+        return {
+          success: false,
+          description: 'Bookmark title not available',
+          error: 'Issue context has no "Bookmark title" to match against',
+        };
+      }
+
+      const outlinesRaw = doc.catalog.get(PDFName.of('Outlines'));
+      const outlines = outlinesRaw instanceof PDFDict ? outlinesRaw : outlinesRaw ? doc.context.lookup(outlinesRaw) : null;
+      if (!(outlines instanceof PDFDict)) {
+        return { success: false, description: 'No outlines', error: 'Document has no /Outlines' };
+      }
+
+      const decodeTitle = (item: PDFDict): string | null => {
+        const t = item.get(PDFName.of('Title'));
+        return t instanceof PDFHexString || t instanceof PDFString ? t.decodeText() : null;
+      };
+
+      // Depth-first First -> Next walk. visited guards against a cycle in a
+      // malformed document — Outline trees are small, so this is cheap.
+      const visited = new Set<number>();
+      let target: PDFDict | null = null;
+      const visit = (raw: unknown): boolean => {
+        let item: unknown = raw;
+        if (raw instanceof PDFRef) {
+          if (visited.has(raw.objectNumber)) return false;
+          visited.add(raw.objectNumber);
+          item = doc.context.lookup(raw);
+        }
+        if (!(item instanceof PDFDict)) return false;
+        if (decodeTitle(item) === oldTitle) {
+          target = item;
+          return true;
+        }
+        const first = item.get(PDFName.of('First'));
+        if (first && visit(first)) return true;
+        const next = item.get(PDFName.of('Next'));
+        if (next && visit(next)) return true;
+        return false;
+      };
+      const firstChild = outlines.get(PDFName.of('First'));
+      if (firstChild) visit(firstChild);
+
+      if (!target) {
+        return {
+          success: false,
+          description: 'Bookmark not found',
+          error: `No bookmark titled "${oldTitle}" in /Outlines`,
+        };
+      }
+
+      (target as PDFDict).set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
+
+      logger.info(`[PdfModifier] Renamed bookmark "${oldTitle}" -> "${newTitle}"`);
+
+      return {
+        success: true,
+        description: `Renamed bookmark to "${newTitle}"`,
+        before: oldTitle,
+        after: newTitle,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        description: 'Failed to rename bookmark',
         error: error instanceof Error ? error.message : String(error),
       };
     }

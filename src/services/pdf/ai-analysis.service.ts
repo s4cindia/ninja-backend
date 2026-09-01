@@ -43,9 +43,9 @@ export interface AiRemediationConfig {
   listMode: 'auto-resolve-decorative' | 'guidance-only';
   languageMode: 'apply-to-pdf' | 'guidance-only';
   colorContrastMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
-  linkTextMode: 'guidance-only' | 'disabled';
-  formFieldMode: 'guidance-only' | 'disabled';
-  bookmarkMode: 'guidance-only' | 'disabled';
+  linkTextMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+  formFieldMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+  bookmarkMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
   confidenceThreshold: number;
   autoApplyHighConfidence: boolean;
 }
@@ -691,18 +691,18 @@ class AiAnalysisService {
     if (LINK_CODES.has(code)) {
       if (config.linkTextMode === 'disabled') return null;
       if (!page) return null;
-      return this.analyzeLinkText(issue, page);
+      return this.analyzeLinkText(issue, page, config.linkTextMode);
     }
 
     if (FORM_CODES.has(code)) {
       if (config.formFieldMode === 'disabled') return null;
       if (!page) return null;
-      return this.analyzeFormField(issue, page);
+      return this.analyzeFormField(issue, page, config.formFieldMode);
     }
 
     if (BOOKMARK_CODES.has(code)) {
       if (config.bookmarkMode === 'disabled') return null;
-      return this.analyzeBookmark(issue, parsed);
+      return this.analyzeBookmark(issue, parsed, config.bookmarkMode);
     }
 
     if (PDFUA_IDENTIFIER_CODES.has(code)) {
@@ -1374,7 +1374,8 @@ class AiAnalysisService {
 
   private async analyzeLinkText(
     issue: AuditIssue,
-    page: PdfPage
+    page: PdfPage,
+    mode: 'guidance-only' | 'apply-to-pdf'
   ): Promise<AiSuggestionResult | null> {
     const linkTextMatch = issue.context?.match(/Link text: "([^"]+)"/);
     const urlMatch = issue.context?.match(/URL: "([^"]+)"/);
@@ -1404,11 +1405,15 @@ class AiAnalysisService {
 
       return {
         suggestionType: 'link-text',
-        guidance: `Replace "${linkText || url}" with "${data.suggestedText}" in authoring tool`,
+        value: data.suggestedText,
+        guidance:
+          mode === 'apply-to-pdf'
+            ? `Sets the link's accessible description to "${data.suggestedText}" (visible text "${linkText || url}" is unchanged)`
+            : `Replace "${linkText || url}" with "${data.suggestedText}" in authoring tool`,
         confidence: data.confidence,
         rationale: data.rationale,
         model: 'gemini-flash',
-        applyMode: 'guidance-only',
+        applyMode: mode,
         usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
       };
     } catch (err) {
@@ -1419,7 +1424,8 @@ class AiAnalysisService {
 
   private async analyzeFormField(
     issue: AuditIssue,
-    page: PdfPage
+    page: PdfPage,
+    mode: 'guidance-only' | 'apply-to-pdf'
   ): Promise<AiSuggestionResult | null> {
     const fieldNameMatch = issue.context?.match(/Field name: "([^"]+)"/);
     const fieldTypeMatch = issue.context?.match(/Type: "([^"]+)"/);
@@ -1449,11 +1455,15 @@ class AiAnalysisService {
 
       return {
         suggestionType: 'form-field-label',
-        guidance: `Add tooltip "${data.suggestedLabel}" to field "${fieldName}" in Acrobat Pro: Form Edit mode → field properties → Tooltip`,
+        value: data.suggestedLabel,
+        guidance:
+          mode === 'apply-to-pdf'
+            ? `Sets field "${fieldName}"'s tooltip to "${data.suggestedLabel}"`
+            : `Add tooltip "${data.suggestedLabel}" to field "${fieldName}" in Acrobat Pro: Form Edit mode → field properties → Tooltip`,
         confidence: data.confidence,
         rationale: data.rationale,
         model: 'gemini-flash',
-        applyMode: 'guidance-only',
+        applyMode: mode,
         usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
       };
     } catch (err) {
@@ -1464,7 +1474,8 @@ class AiAnalysisService {
 
   private async analyzeBookmark(
     issue: AuditIssue,
-    parsed: PdfParseResult
+    parsed: PdfParseResult,
+    mode: 'guidance-only' | 'apply-to-pdf'
   ): Promise<AiSuggestionResult | null> {
     if (issue.code === 'BOOKMARK-GENERIC-TEXT') {
       const titleMatch = issue.context?.match(/Bookmark title: "([^"]*)"/);
@@ -1489,11 +1500,15 @@ class AiAnalysisService {
 
         return {
           suggestionType: 'bookmark-title',
-          guidance: `Rename bookmark "${bookmarkTitle}" to "${data.suggestedTitle}" in authoring tool`,
+          value: data.suggestedTitle,
+          guidance:
+            mode === 'apply-to-pdf'
+              ? `Renames bookmark "${bookmarkTitle}" to "${data.suggestedTitle}"`
+              : `Rename bookmark "${bookmarkTitle}" to "${data.suggestedTitle}" in authoring tool`,
           confidence: data.confidence,
           rationale: data.rationale,
           model: 'gemini-flash',
-          applyMode: 'guidance-only',
+          applyMode: mode,
           usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
         };
       } catch (err) {
@@ -1893,6 +1908,12 @@ class AiAnalysisService {
           modification = await pdfModifierService.setAltText(doc, elementId, value!);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value!);
+        } else if (suggestionType === 'link-text') {
+          modification = await pdfModifierService.setLinkAltText(doc, originalIssue, value!);
+        } else if (suggestionType === 'form-field-label') {
+          modification = await pdfModifierService.setFormFieldTooltip(doc, originalIssue, value!);
+        } else if (suggestionType === 'bookmark-title') {
+          modification = await pdfModifierService.renameBookmark(doc, originalIssue, value!);
         } else if (suggestionType === 'formula-actualtext') {
           const elementTypes = originalIssue.code === TABLE_LIKELY_FORMULA_CODE
             ? new Set(['Table', 'table'])
