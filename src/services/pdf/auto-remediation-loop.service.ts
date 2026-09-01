@@ -260,6 +260,28 @@ class AutoRemediationLoopService {
       startedAt: roundStartedAt,
     });
 
+    // analyzeJob only touches an AiAnalysis row for an issue it currently
+    // produces a suggestion for -- when colorContrastMode isn't
+    // 'apply-to-pdf', color-contrast issues never go through that path at
+    // all this round, so a pending/approved color-contrast-fix row left over
+    // from an earlier round (or a manual pass) when the mode *was*
+    // 'apply-to-pdf' stays untouched. Left alone, the actionable-count/
+    // auto-approve queries below don't discriminate by suggestionType (only
+    // alt-text-decorative is excluded), so that stale row would still get
+    // auto-approved and applied -- silently overriding an operator switching
+    // colorContrastMode away from 'apply-to-pdf' mid-run.
+    if (colorContrastMode !== 'apply-to-pdf') {
+      await prisma.aiAnalysis.updateMany({
+        where: {
+          jobId,
+          suggestionType: 'color-contrast-fix',
+          applyMode: 'apply-to-pdf',
+          status: { in: ['pending', 'approved'] },
+        },
+        data: { applyMode: 'guidance-only' },
+      });
+    }
+
     // Counts 'pending' AND 'approved' rows, not just this round's fresh
     // 'pending' ones -- a row that got approved and then failed to apply in
     // an earlier round (partial apply failure: some suggestions in that

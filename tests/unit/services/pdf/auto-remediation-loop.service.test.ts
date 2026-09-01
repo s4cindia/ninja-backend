@@ -194,7 +194,13 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     // but the actionable-count query (pending + approved) must still see
     // the 2 leftover approved rows and refuse to converge -- counting only
     // updateMany's newly-flipped-pending count would miss them entirely.
-    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    // autoColorContrastMode: 'apply-to-pdf' so the stale-color-contrast-row
+    // reconciliation (a separate concern, covered by its own tests below)
+    // never fires here, keeping the mockResolvedValueOnce sequence below
+    // paired 1:1 with the auto-approve updateMany calls this test cares about.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
     mockLockAcquired(7);
     vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
     vi.mocked(prisma.job.findUnique).mockResolvedValue({
@@ -268,6 +274,49 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
       colorContrastMode: 'guidance-only',
     });
+  });
+
+  it('downgrades a stale pending/approved color-contrast-fix row when colorContrastMode is not apply-to-pdf (Codex finding)', async () => {
+    // A prior round (or a manual pass) left a color-contrast-fix row sitting
+    // at applyMode 'apply-to-pdf'. analyzeJob only touches a row for an
+    // issue it currently produces a suggestion for -- with colorContrastMode
+    // now 'guidance-only', color-contrast issues never go through that path
+    // this round, so the stale row would otherwise still be picked up and
+    // applied by the actionable-count/auto-approve queries below, silently
+    // overriding the switch away from apply-to-pdf.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'guidance-only' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+      },
+      data: { applyMode: 'guidance-only' },
+    });
+  });
+
+  it('does not run the stale color-contrast-fix downgrade when colorContrastMode is apply-to-pdf', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { applyMode: 'guidance-only' } })
+    );
   });
 
   it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {
