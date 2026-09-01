@@ -188,7 +188,9 @@ export async function updateAutoModeConfig(
     mode?: 'manual' | 'auto';
     autoMaxRounds?: number;
     autoCostLimitUsd?: number;
-    autoColorContrastMode?: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+    // null explicitly reverts to "inherit tenant/default config" -- the
+    // same state every trial starts in (the column has no default).
+    autoColorContrastMode?: 'guidance-only' | 'disabled' | 'apply-to-pdf' | null;
   },
 ): Promise<ComparisonTrial> {
   const trial = await prisma.comparisonTrial.findUnique({ where: { id } });

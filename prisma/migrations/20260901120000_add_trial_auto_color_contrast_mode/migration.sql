@@ -1,10 +1,12 @@
--- AlterTable: add ComparisonTrial.autoColorContrastMode -- auto mode never
--- passed a colorContrastMode override to analyzeJob, so it always fell back
--- to the backend default ('guidance-only') even when an operator wanted
--- contrast fixes auto-applied during an auto-mode run. This column lets the
--- trial carry that override, read fresh each round like autoMaxRounds/
--- autoCostLimitUsd. Idempotent ADD COLUMN block so this migration is safe to
--- re-run against a hand-baselined database. Reverse with:
+-- AlterTable: add ComparisonTrial.autoColorContrastMode -- nullable, no
+-- default. Null means "not explicitly overridden for this trial's auto-mode
+-- run", so the effective config inherits the tenant's own
+-- aiRemediation.colorContrastMode setting (a real, operator-configurable
+-- value -- tenant-config.controller.ts) exactly as auto mode did before this
+-- column existed. A non-null default would unconditionally override that
+-- tenant setting for every trial, even ones nobody explicitly configured.
+-- Idempotent ADD COLUMN block so this migration is safe to re-run against a
+-- hand-baselined database. Reverse with:
 --   ALTER TABLE "ComparisonTrial" DROP COLUMN "autoColorContrastMode";
 
 DO $$ BEGIN
@@ -14,6 +16,6 @@ DO $$ BEGIN
       AND table_name = 'ComparisonTrial'
       AND column_name = 'autoColorContrastMode'
   ) THEN
-    ALTER TABLE "ComparisonTrial" ADD COLUMN "autoColorContrastMode" TEXT NOT NULL DEFAULT 'guidance-only';
+    ALTER TABLE "ComparisonTrial" ADD COLUMN "autoColorContrastMode" TEXT;
   END IF;
 END $$;

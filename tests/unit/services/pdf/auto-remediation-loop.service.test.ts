@@ -25,7 +25,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
     job: { findUnique: vi.fn(), update: vi.fn() },
-    aiAnalysis: { updateMany: vi.fn(), count: vi.fn() },
+    aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
   },
 }));
 vi.mock('../../../../src/services/pdf/ai-analysis.service');
@@ -50,7 +50,7 @@ function makeTrial(overrides: Record<string, unknown> = {}) {
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
     autoStopRequested: false,
-    autoColorContrastMode: 'guidance-only',
+    autoColorContrastMode: null,
     ...overrides,
   };
 }
@@ -261,7 +261,24 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     });
   });
 
-  it('falls back to guidance-only if the stored autoColorContrastMode is not one of the recognized values', async () => {
+  it('passes no override (inherits tenant/default config) when autoColorContrastMode is null -- the default for every trial', async () => {
+    // A trial nobody has explicitly configured must behave exactly as auto
+    // mode did before this override existed: no session override at all, so
+    // analyzeJob's own merge falls through to the tenant's own
+    // aiRemediation.colorContrastMode setting (a real, operator-configurable
+    // value) or the backend default. A non-null default here would silently
+    // clobber that tenant setting for every trial (CodeRabbit finding).
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoColorContrastMode: null }) as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+  });
+
+  it('treats an unrecognized stored autoColorContrastMode the same as null -- no override passed', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
       makeTrial({ autoColorContrastMode: 'not-a-real-mode' }) as any
     );
@@ -271,12 +288,10 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
-    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
-      colorContrastMode: 'guidance-only',
-    });
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
   });
 
-  it('downgrades a stale pending/approved color-contrast-fix row when colorContrastMode is not apply-to-pdf (Codex finding)', async () => {
+  it('downgrades a stale pending/approved color-contrast-fix row when colorContrastMode is explicitly guidance-only (Codex finding)', async () => {
     // A prior round (or a manual pass) left a color-contrast-fix row sitting
     // at applyMode 'apply-to-pdf'. analyzeJob only touches a row for an
     // issue it currently produces a suggestion for -- with colorContrastMode
@@ -302,9 +317,36 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       },
       data: { applyMode: 'guidance-only' },
     });
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('does not run the stale color-contrast-fix downgrade when colorContrastMode is apply-to-pdf', async () => {
+  it('deletes (not downgrades) a stale pending/approved color-contrast-fix row when colorContrastMode is disabled (CodeRabbit finding)', async () => {
+    // 'disabled' means fully suppressed -- downgrading to guidance-only
+    // would still leave the row visible via GET /pdf/:jobId/ai-analysis and
+    // counted toward the guidance-acknowledgment flow, contradicting what
+    // "disabled" is supposed to mean.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'disabled' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        status: { in: ['pending', 'approved'] },
+      },
+    });
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { applyMode: 'guidance-only' } })
+    );
+  });
+
+  it('does not reconcile color-contrast-fix rows at all when colorContrastMode is apply-to-pdf or inherited (null)', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
       makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
     );
@@ -314,6 +356,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
     await autoRemediationLoopService.startAutoLoop('trial-1');
 
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
     expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: { applyMode: 'guidance-only' } })
     );

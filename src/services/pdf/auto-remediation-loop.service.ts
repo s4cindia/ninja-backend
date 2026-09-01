@@ -36,17 +36,23 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
-type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+export type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 const VALID_COLOR_CONTRAST_MODES: ReadonlySet<string> = new Set(['guidance-only', 'disabled', 'apply-to-pdf']);
 
-/** ComparisonTrial.autoColorContrastMode is a plain (non-null) `string`
- * column, not a validated union at the DB layer -- falls back to
- * 'guidance-only' (matching AiRemediationConfig's own default) for any
- * value that isn't one of the three the API actually accepts, rather than
- * passing an unrecognized value through to analyzeJob's override, where an
- * unexpected value could silently fall into an unintended branch. */
-function resolveColorContrastMode(raw: string): ColorContrastMode {
-  return VALID_COLOR_CONTRAST_MODES.has(raw) ? (raw as ColorContrastMode) : 'guidance-only';
+/** ComparisonTrial.autoColorContrastMode is nullable with no default: null
+ * means "not explicitly overridden for this trial," which must inherit
+ * whatever analyzeJob would already resolve to without a session override
+ * (the tenant's own aiRemediation.colorContrastMode setting -- a real,
+ * operator-configurable value, see tenant-config.controller.ts -- or the
+ * backend default if the tenant hasn't set one either). Returns undefined in
+ * that case so the caller omits the override entirely, rather than forcing
+ * a value that could silently clobber tenant config. Also treats a stored
+ * value outside the three the API actually accepts (only reachable via
+ * direct DB tampering, since the PATCH endpoint validates against this same
+ * enum) as "not set," for the same reason. */
+export function resolveColorContrastMode(raw: string | null): ColorContrastMode | undefined {
+  if (raw === null) return undefined;
+  return VALID_COLOR_CONTRAST_MODES.has(raw) ? (raw as ColorContrastMode) : undefined;
 }
 
 /** A round that applies nothing still counts toward the round/cost ceilings
@@ -246,10 +252,10 @@ class AutoRemediationLoopService {
     jobId: string,
     cycleNumber: number,
     tenantId: string,
-    colorContrastMode: ColorContrastMode,
+    colorContrastMode: ColorContrastMode | undefined,
   ): Promise<{ actionableFound: number; applied: number }> {
     const roundStartedAt = new Date();
-    await aiAnalysisService.analyzeJob(jobId, tenantId, { colorContrastMode });
+    await aiAnalysisService.analyzeJob(jobId, tenantId, colorContrastMode !== undefined ? { colorContrastMode } : undefined);
     await remediationCycleHistoryService.logEvent({
       jobId,
       cycleNumber,
@@ -269,8 +275,12 @@ class AutoRemediationLoopService {
     // auto-approve queries below don't discriminate by suggestionType (only
     // alt-text-decorative is excluded), so that stale row would still get
     // auto-approved and applied -- silently overriding an operator switching
-    // colorContrastMode away from 'apply-to-pdf' mid-run.
-    if (colorContrastMode !== 'apply-to-pdf') {
+    // colorContrastMode away from 'apply-to-pdf' mid-run. Only reconciles
+    // when the trial has an *explicit* override -- when it's undefined
+    // (inherit tenant/default config), the effective mode doesn't change
+    // between rounds, so there's nothing to reconcile, matching how auto
+    // mode behaved before this override existed at all.
+    if (colorContrastMode === 'guidance-only') {
       await prisma.aiAnalysis.updateMany({
         where: {
           jobId,
@@ -279,6 +289,20 @@ class AutoRemediationLoopService {
           status: { in: ['pending', 'approved'] },
         },
         data: { applyMode: 'guidance-only' },
+      });
+    } else if (colorContrastMode === 'disabled') {
+      // 'disabled' means fully suppressed, not just "not auto-applied" --
+      // downgrading to guidance-only would still leave the row visible via
+      // GET /pdf/:jobId/ai-analysis and counted toward the guidance-
+      // acknowledgment flow, contradicting what "disabled" is supposed to
+      // mean. Delete outright instead, matching analyzeJob's own pruning
+      // semantics for an issue it no longer produces a suggestion for.
+      await prisma.aiAnalysis.deleteMany({
+        where: {
+          jobId,
+          suggestionType: 'color-contrast-fix',
+          status: { in: ['pending', 'approved'] },
+        },
       });
     }
 
