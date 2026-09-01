@@ -25,7 +25,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
     job: { findUnique: vi.fn(), update: vi.fn() },
-    aiAnalysis: { updateMany: vi.fn(), count: vi.fn() },
+    aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
   },
 }));
 vi.mock('../../../../src/services/pdf/ai-analysis.service');
@@ -50,6 +50,7 @@ function makeTrial(overrides: Record<string, unknown> = {}) {
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
     autoStopRequested: false,
+    autoColorContrastMode: null,
     ...overrides,
   };
 }
@@ -82,10 +83,16 @@ function mockReauditSuccess() {
   } as any);
 }
 
+type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+
 /** A round that finds `actionableCount` suggestions, applies all of them
- * successfully, and re-audits cleanly. */
-function mockProductiveRound(actionableCount: number, costUsd = 0) {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+ * successfully, and re-audits cleanly. `colorContrastMode` is analyzeJob's
+ * own *resolved effective* mode (what reconciliation keys off), independent
+ * of whatever override the trial itself carries -- most tests don't care
+ * about it and leave it undefined, which triggers neither reconciliation
+ * branch, same as an effective 'apply-to-pdf'. */
+function mockProductiveRound(actionableCount: number, costUsd = 0, colorContrastMode?: ColorContrastMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(actionableCount);
   vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: actionableCount } as any);
   vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValueOnce({
@@ -104,9 +111,10 @@ function mockProductiveRound(actionableCount: number, costUsd = 0) {
 }
 
 /** A round whose fresh analysis finds nothing actionable at all -- the
- * genuine convergence signal; apply/reaudit are never reached. */
-function mockEmptyRound() {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0 } as any);
+ * genuine convergence signal; apply/reaudit are never reached. See
+ * mockProductiveRound's doc comment for what `colorContrastMode` means. */
+function mockEmptyRound(colorContrastMode?: ColorContrastMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
@@ -193,7 +201,13 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     // but the actionable-count query (pending + approved) must still see
     // the 2 leftover approved rows and refuse to converge -- counting only
     // updateMany's newly-flipped-pending count would miss them entirely.
-    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    // autoColorContrastMode: 'apply-to-pdf' so the stale-color-contrast-row
+    // reconciliation (a separate concern, covered by its own tests below)
+    // never fires here, keeping the mockResolvedValueOnce sequence below
+    // paired 1:1 with the auto-approve updateMany calls this test cares about.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
     mockLockAcquired(7);
     vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
     vi.mocked(prisma.job.findUnique).mockResolvedValue({
@@ -232,6 +246,151 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+    });
+  });
+
+  it("passes the trial's autoColorContrastMode through to analyzeJob as a session override", async () => {
+    // Auto mode used to always call analyzeJob with no overrides at all, so
+    // contrast issues silently stayed guidance-only even when an operator
+    // set colorContrastMode to 'apply-to-pdf' via the manual-mode checkbox --
+    // that override never carried over into auto mode.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
+    mockLockAcquired();
+    mockProductiveRound(1, 0);
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
+      colorContrastMode: 'apply-to-pdf',
+    });
+  });
+
+  it('passes no override (inherits tenant/default config) when autoColorContrastMode is null -- the default for every trial', async () => {
+    // A trial nobody has explicitly configured must behave exactly as auto
+    // mode did before this override existed: no session override at all, so
+    // analyzeJob's own merge falls through to the tenant's own
+    // aiRemediation.colorContrastMode setting (a real, operator-configurable
+    // value) or the backend default. A non-null default here would silently
+    // clobber that tenant setting for every trial (CodeRabbit finding).
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoColorContrastMode: null }) as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+  });
+
+  it('treats an unrecognized stored autoColorContrastMode the same as null -- no override passed', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'not-a-real-mode' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+  });
+
+  it('downgrades a stale pending/approved color-contrast-fix row when analyzeJob resolves guidance-only (Codex finding)', async () => {
+    // A prior round (or a manual pass) left a color-contrast-fix row sitting
+    // at applyMode 'apply-to-pdf'. analyzeJob only touches a row for an
+    // issue it currently produces a suggestion for -- with colorContrastMode
+    // now 'guidance-only', color-contrast issues never go through that path
+    // this round, so the stale row would otherwise still be picked up and
+    // applied by the actionable-count/auto-approve queries below, silently
+    // overriding the switch away from apply-to-pdf.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'guidance-only' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound('guidance-only');
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+      },
+      data: { applyMode: 'guidance-only' },
+    });
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes (not downgrades) a stale pending/approved color-contrast-fix row when analyzeJob resolves disabled (CodeRabbit finding)', async () => {
+    // 'disabled' means fully suppressed -- downgrading to guidance-only
+    // would still leave the row visible via GET /pdf/:jobId/ai-analysis and
+    // counted toward the guidance-acknowledgment flow, contradicting what
+    // "disabled" is supposed to mean.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'disabled' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound('disabled');
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        status: { in: ['pending', 'approved'] },
+      },
+    });
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { applyMode: 'guidance-only' } })
+    );
+  });
+
+  it('does not reconcile color-contrast-fix rows at all when analyzeJob resolves apply-to-pdf', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound('apply-to-pdf');
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { applyMode: 'guidance-only' } })
+    );
+  });
+
+  it('reconciles against analyzeJob\'s resolved effective mode, not the trial\'s raw override (Codex finding)', async () => {
+    // The trial itself has no explicit override (null -- inheriting tenant
+    // config), but the tenant's own aiRemediation.colorContrastMode happens
+    // to be 'disabled'. analyzeJob resolves that and reports it back;
+    // reconciliation must key off analyzeJob's *resolved* colorContrastMode
+    // (not the trial's raw autoColorContrastMode, which is merely null here)
+    // or a stale apply-to-pdf row from an earlier explicit override would
+    // survive an operator reverting back to "inherit".
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoColorContrastMode: null }) as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound('disabled');
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'color-contrast-fix',
+        status: { in: ['pending', 'approved'] },
+      },
     });
   });
 

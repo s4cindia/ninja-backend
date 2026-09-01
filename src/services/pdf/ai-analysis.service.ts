@@ -226,7 +226,19 @@ class AiAnalysisService {
     jobId: string,
     tenantId: string,
     sessionOverrides?: Partial<AiRemediationConfig>
-  ): Promise<{ analyzed: number; skipped: number; serviceDegraded?: boolean; serviceError?: string | null }> {
+  ): Promise<{
+    analyzed: number;
+    skipped: number;
+    serviceDegraded?: boolean;
+    serviceError?: string | null;
+    /** The colorContrastMode this call actually resolved to (DEFAULT_CONFIG
+     * merged with tenant settings and sessionOverrides) -- callers that need
+     * to reconcile stale AiAnalysis rows against the *effective* mode (e.g.
+     * auto-remediation-loop.service.ts, which only sometimes passes an
+     * explicit sessionOverride) should use this rather than re-deriving it,
+     * since re-deriving it outside this method can't see tenant config. */
+    colorContrastMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+  }> {
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
     // Load job and verify it's completed
@@ -234,6 +246,12 @@ class AiAnalysisService {
     if (!job || job.status !== 'COMPLETED') {
       throw new Error(`Job ${jobId} is not completed (status: ${job?.status ?? 'not found'})`);
     }
+
+    // Build effective config from tenant settings + session overrides --
+    // computed before the zero-issues check below so that early return can
+    // still report the true effective colorContrastMode, not a guess.
+    const tenantSettings = await this.getTenantConfig(tenantId);
+    const config: AiRemediationConfig = { ...DEFAULT_CONFIG, ...tenantSettings, ...sessionOverrides };
 
     // Extract issues from job output
     const output = job.output as Record<string, unknown>;
@@ -255,12 +273,8 @@ class AiAnalysisService {
       await prisma.aiAnalysis.deleteMany({ where: { jobId } }).catch((err) => {
         logger.warn(`[AiAnalysis] Failed to prune stale suggestions for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
-      return { analyzed: 0, skipped: 0 };
+      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode };
     }
-
-    // Build effective config from tenant settings + session overrides
-    const tenantSettings = await this.getTenantConfig(tenantId);
-    const config: AiRemediationConfig = { ...DEFAULT_CONFIG, ...tenantSettings, ...sessionOverrides };
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
     const remediatedBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
@@ -544,7 +558,13 @@ class AiAnalysisService {
       } else {
         logger.info(`[AiAnalysis] Job ${jobId} complete: ${analyzed} analyzed, ${skipped} skipped`);
       }
-      return { analyzed, skipped, serviceDegraded: geminiStatus.open, serviceError: geminiStatus.reason };
+      return {
+        analyzed,
+        skipped,
+        serviceDegraded: geminiStatus.open,
+        serviceError: geminiStatus.reason,
+        colorContrastMode: config.colorContrastMode,
+      };
     } finally {
       if (parsed?.parsedPdf) {
         await pdfParserService.close(parsed.parsedPdf).catch(() => {});

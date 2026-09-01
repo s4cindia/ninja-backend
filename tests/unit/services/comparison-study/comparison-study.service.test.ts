@@ -265,6 +265,35 @@ describe('comparison-study.service', () => {
       });
     });
 
+    it('updates autoColorContrastMode when provided', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null });
+      mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1', autoColorContrastMode: 'apply-to-pdf' });
+
+      await updateAutoModeConfig('trial-1', { autoColorContrastMode: 'apply-to-pdf' });
+
+      expect(mockPrisma.comparisonTrial.update).toHaveBeenCalledWith({
+        where: { id: 'trial-1' },
+        data: { autoColorContrastMode: 'apply-to-pdf' },
+      });
+    });
+
+    it('accepts an explicit null to revert autoColorContrastMode back to "inherit tenant/default config"', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({
+        id: 'trial-1',
+        mode: 'auto',
+        autoStatus: null,
+        autoColorContrastMode: 'apply-to-pdf',
+      });
+      mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1', autoColorContrastMode: null });
+
+      await updateAutoModeConfig('trial-1', { autoColorContrastMode: null });
+
+      expect(mockPrisma.comparisonTrial.update).toHaveBeenCalledWith({
+        where: { id: 'trial-1' },
+        data: { autoColorContrastMode: null },
+      });
+    });
+
     it('omits fields that were not provided from the update payload', async () => {
       mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
       mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1' });

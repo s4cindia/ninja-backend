@@ -11,7 +11,7 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AppError } from '../utils/app-error';
-import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, resolveColorContrastMode } from '../services/pdf/auto-remediation-loop.service';
 
 export class PdfAutoModeController {
   /**
@@ -78,6 +78,11 @@ export class PdfAutoModeController {
           autoMaxRounds: trial.autoMaxRounds,
           autoCostSpentUsd: trial.autoCostSpentUsd,
           autoCostLimitUsd: trial.autoCostLimitUsd,
+          // null means "inherits tenant/default config" -- normalized
+          // through the same allowlist the loop itself uses, so a corrupted
+          // stored value (only reachable via direct DB tampering) reports as
+          // null rather than an unrecognized string.
+          autoColorContrastMode: resolveColorContrastMode(trial.autoColorContrastMode) ?? null,
         },
       });
     } catch (error) {

@@ -12,7 +12,15 @@ vi.mock('../../../src/lib/prisma', () => ({
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
   },
 }));
-vi.mock('../../../src/services/pdf/auto-remediation-loop.service');
+// resolveColorContrastMode is a pure function the controller uses to
+// normalize the status response -- keep the real implementation via
+// importOriginal so this test isn't duplicating its allowlist logic; only
+// autoRemediationLoopService itself (the class with I/O side effects) needs
+// mocking.
+vi.mock('../../../src/services/pdf/auto-remediation-loop.service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/services/pdf/auto-remediation-loop.service')>();
+  return { ...actual, autoRemediationLoopService: { startAutoLoop: vi.fn() } };
+});
 
 import prisma from '../../../src/lib/prisma';
 import { pdfAutoModeController } from '../../../src/controllers/pdf-auto-mode.controller';
@@ -100,6 +108,7 @@ describe('PdfAutoModeController', () => {
         autoMaxRounds: 10,
         autoCostSpentUsd: 0.42,
         autoCostLimitUsd: 2.0,
+        autoColorContrastMode: 'apply-to-pdf',
       } as any);
       const res = makeRes();
 
@@ -115,8 +124,29 @@ describe('PdfAutoModeController', () => {
           autoMaxRounds: 10,
           autoCostSpentUsd: 0.42,
           autoCostLimitUsd: 2.0,
+          autoColorContrastMode: 'apply-to-pdf',
         },
       });
+    });
+
+    it('reports null (inherited) for a null or unrecognized stored autoColorContrastMode, not the raw value (CodeRabbit finding)', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({
+        mode: 'auto',
+        autoStatus: 'running',
+        autoStopReason: null,
+        autoRoundsCompleted: 3,
+        autoMaxRounds: 10,
+        autoCostSpentUsd: 0.42,
+        autoCostLimitUsd: 2.0,
+        autoColorContrastMode: 'not-a-real-mode',
+      } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ autoColorContrastMode: null }) })
+      );
     });
   });
 

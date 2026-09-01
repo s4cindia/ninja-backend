@@ -2297,6 +2297,19 @@ model ComparisonTrial {
   /// Cooperative cancellation flag -- checked at the top of each round, never
   /// mid-round, so a stop request never leaves a round half-applied.
   autoStopRequested   Boolean @default(false)
+  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null (default) to
+  /// inherit the tenant's own aiRemediation.colorContrastMode setting (or
+  /// the backend default if the tenant hasn't set one either) -- exactly
+  /// what auto mode did before this column existed. Must stay nullable with
+  /// no default: Tenant.settings.aiRemediation.colorContrastMode is a real,
+  /// operator-configurable setting (tenant-config.controller.ts), and a
+  /// non-null default here would unconditionally override it for every
+  /// trial, even ones nobody explicitly configured. Only set when an
+  /// operator explicitly overrides contrast handling for this trial's
+  /// auto-mode run. Read fresh each round like autoMaxRounds/
+  /// autoCostLimitUsd, so it can be changed (or cleared back to null) mid-run
+  /// and takes effect starting the next round.
+  autoColorContrastMode String?
 
   status    String   @default("registered") // registered -> ninja_complete -> pdfxt_logged -> validated -> reported
   createdAt DateTime @default(now())
