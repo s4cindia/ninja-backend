@@ -137,7 +137,22 @@ class AutoRemediationLoopService {
           break;
         }
 
-        const roundApplied = await this.runRound(jobId, cycleNumber, job.tenantId);
+        const { actionableFound, applied } = await this.runRound(jobId, cycleNumber, job.tenantId);
+
+        // A fresh analysis pass (against whatever the *previous* round's
+        // re-audit just produced, or the original audit on round 1) found
+        // nothing left to auto-fix -- this is the real convergence signal.
+        // Checking here (right after analyzeJob, before spending a round on
+        // apply/reaudit) is deliberate: checking *after* applying this
+        // round's own suggestions would always look empty (everything this
+        // round found is now resolved) regardless of whether the fresh
+        // re-audit it's about to produce still has actionable work the next
+        // analysis pass hasn't looked at yet.
+        if (actionableFound === 0) {
+          stopReason = 'converged';
+          break;
+        }
+
         roundsCompleted++;
 
         const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
@@ -151,11 +166,12 @@ class AutoRemediationLoopService {
           data: { autoRoundsCompleted: roundsCompleted, autoCostSpentUsd: costSpentUsd },
         });
 
-        // A round that applied nothing still consumed a round and Gemini
-        // tokens without making progress -- stop distinctly rather than
-        // let the round/cost ceiling silently absorb the real cause (see
-        // STALL_ROUND_LIMIT's doc comment above).
-        if (roundApplied === 0) {
+        // A round that found actionable work but applied none of it still
+        // consumed a round and Gemini tokens without making progress (e.g.
+        // every candidate hit an unhandled suggestionType or missing value)
+        // -- stop distinctly rather than let the round/cost ceiling silently
+        // absorb the real cause (see STALL_ROUND_LIMIT's doc comment above).
+        if (applied === 0) {
           consecutiveStalls++;
           if (consecutiveStalls >= STALL_ROUND_LIMIT) {
             stopReason = 'stalled';
@@ -163,19 +179,6 @@ class AutoRemediationLoopService {
           }
         } else {
           consecutiveStalls = 0;
-        }
-
-        const remaining = await prisma.aiAnalysis.count({
-          where: {
-            jobId,
-            applyMode: 'apply-to-pdf',
-            status: { in: ['pending', 'approved'] },
-            suggestionType: { not: ALWAYS_MANUAL_SUGGESTION_TYPE },
-          },
-        });
-        if (remaining === 0) {
-          stopReason = 'converged';
-          break;
         }
       }
     } catch (err) {
@@ -212,12 +215,20 @@ class AutoRemediationLoopService {
     }
   }
 
-  /** One analyze -> auto-approve -> apply -> re-audit pass. Returns the
-   * number of suggestions actually applied this round (0 signals a stall to
-   * the caller). Throws on a genuine failure in any step -- the caller's
-   * loop treats that as a terminal 'error' stop rather than retrying
-   * indefinitely. */
-  private async runRound(jobId: string, cycleNumber: number, tenantId: string): Promise<number> {
+  /**
+   * One analyze -> [auto-approve -> apply -> re-audit] pass. The apply/
+   * reaudit steps are skipped entirely when the fresh analysis finds
+   * nothing actionable -- that's the caller's convergence signal, checked
+   * via `actionableFound` rather than post-apply state (see the call site's
+   * comment for why). Throws on a genuine failure in any step -- the
+   * caller's loop treats that as a terminal 'error' stop rather than
+   * retrying indefinitely.
+   */
+  private async runRound(
+    jobId: string,
+    cycleNumber: number,
+    tenantId: string
+  ): Promise<{ actionableFound: number; applied: number }> {
     const roundStartedAt = new Date();
     await aiAnalysisService.analyzeJob(jobId, tenantId);
     await remediationCycleHistoryService.logEvent({
@@ -230,6 +241,28 @@ class AutoRemediationLoopService {
       startedAt: roundStartedAt,
     });
 
+    // Counts 'pending' AND 'approved' rows, not just this round's fresh
+    // 'pending' ones -- a row that got approved and then failed to apply in
+    // an earlier round (partial apply failure: some suggestions in that
+    // batch succeeded, so the round wasn't a full stall, but this one
+    // didn't) stays sitting at 'approved' with nothing forcing it back to
+    // 'pending'. Counting updateMany's return value alone would miss it and
+    // wrongly report convergence with real unapplied work still pending.
+    const actionableFound = await prisma.aiAnalysis.count({
+      where: {
+        jobId,
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+        suggestionType: { not: ALWAYS_MANUAL_SUGGESTION_TYPE },
+      },
+    });
+    if (actionableFound === 0) {
+      return { actionableFound: 0, applied: 0 };
+    }
+
+    // Only flips 'pending' -> 'approved'; any leftover 'approved' row from a
+    // prior round's partial failure is already eligible and picked up by
+    // applyApprovedSuggestions below without needing to be re-approved here.
     await prisma.aiAnalysis.updateMany({
       where: {
         jobId,
@@ -242,9 +275,10 @@ class AutoRemediationLoopService {
 
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     if (result.applied === 0 || !result.modifiedBuffer || !result.fileName) {
-      return result.applied;
+      return { actionableFound, applied: result.applied };
     }
 
+    const reauditStartedAt = new Date();
     const comparison = await pdfReauditService.reauditAndCompare(jobId, result.modifiedBuffer, result.fileName);
     const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
     const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
@@ -280,14 +314,14 @@ class AutoRemediationLoopService {
       resolutionRate,
       errorMessage: comparison.success ? undefined : comparison.error,
       triggeredBy: AUTO_MODE_ACTOR,
-      startedAt: roundStartedAt,
+      startedAt: reauditStartedAt,
     });
 
     if (!comparison.success) {
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
 
-    return result.applied;
+    return { actionableFound, applied: result.applied };
   }
 }
 
