@@ -36,6 +36,19 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
+type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+const VALID_COLOR_CONTRAST_MODES: ReadonlySet<string> = new Set(['guidance-only', 'disabled', 'apply-to-pdf']);
+
+/** ComparisonTrial.autoColorContrastMode is a plain (non-null) `string`
+ * column, not a validated union at the DB layer -- falls back to
+ * 'guidance-only' (matching AiRemediationConfig's own default) for any
+ * value that isn't one of the three the API actually accepts, rather than
+ * passing an unrecognized value through to analyzeJob's override, where an
+ * unexpected value could silently fall into an unintended branch. */
+function resolveColorContrastMode(raw: string): ColorContrastMode {
+  return VALID_COLOR_CONTRAST_MODES.has(raw) ? (raw as ColorContrastMode) : 'guidance-only';
+}
+
 /** A round that applies nothing still counts toward the round/cost ceilings
  * (analyzeJob still runs, still spends tokens) without making any progress --
  * e.g. every approved suggestion this round hit an unhandled suggestionType
@@ -137,7 +150,12 @@ class AutoRemediationLoopService {
           break;
         }
 
-        const { actionableFound, applied } = await this.runRound(jobId, cycleNumber, job.tenantId);
+        const { actionableFound, applied } = await this.runRound(
+          jobId,
+          cycleNumber,
+          job.tenantId,
+          resolveColorContrastMode(current.autoColorContrastMode),
+        );
 
         // A fresh analysis pass (against whatever the *previous* round's
         // re-audit just produced, or the original audit on round 1) found
@@ -227,10 +245,11 @@ class AutoRemediationLoopService {
   private async runRound(
     jobId: string,
     cycleNumber: number,
-    tenantId: string
+    tenantId: string,
+    colorContrastMode: ColorContrastMode,
   ): Promise<{ actionableFound: number; applied: number }> {
     const roundStartedAt = new Date();
-    await aiAnalysisService.analyzeJob(jobId, tenantId);
+    await aiAnalysisService.analyzeJob(jobId, tenantId, { colorContrastMode });
     await remediationCycleHistoryService.logEvent({
       jobId,
       cycleNumber,

@@ -187,6 +187,7 @@ const autoModeConfigBodySchema = z.object({
   mode: z.enum(['manual', 'auto']).optional(),
   autoMaxRounds: z.number().int().positive().max(100).optional(),
   autoCostLimitUsd: z.number().positive().max(1000).optional(),
+  autoColorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
 });
 
 // PATCH /api/v1/admin/comparison-study/trials/:id/auto-mode

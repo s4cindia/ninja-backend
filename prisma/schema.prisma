@@ -2297,6 +2297,14 @@ model ComparisonTrial {
   /// Cooperative cancellation flag -- checked at the top of each round, never
   /// mid-round, so a stop request never leaves a round half-applied.
   autoStopRequested   Boolean @default(false)
+  /// 'guidance-only' (default, matches AiRemediationConfig's own default) |
+  /// 'disabled' | 'apply-to-pdf'. analyzeJob defaults color-contrast fixes to
+  /// guidance-only; auto mode never passed an override for it until this
+  /// field existed, so contrast issues silently never got auto-applied even
+  /// when the operator wanted them to. Read fresh each round like
+  /// autoMaxRounds/autoCostLimitUsd, so it can be changed mid-run and takes
+  /// effect starting the next round.
+  autoColorContrastMode String @default("guidance-only")
 
   status    String   @default("registered") // registered -> ninja_complete -> pdfxt_logged -> validated -> reported
   createdAt DateTime @default(now())

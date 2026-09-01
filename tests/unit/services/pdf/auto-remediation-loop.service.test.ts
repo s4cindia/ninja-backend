@@ -50,6 +50,7 @@ function makeTrial(overrides: Record<string, unknown> = {}) {
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
     autoStopRequested: false,
+    autoColorContrastMode: 'guidance-only',
     ...overrides,
   };
 }
@@ -232,6 +233,40 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+    });
+  });
+
+  it("passes the trial's autoColorContrastMode through to analyzeJob as a session override", async () => {
+    // Auto mode used to always call analyzeJob with no overrides at all, so
+    // contrast issues silently stayed guidance-only even when an operator
+    // set colorContrastMode to 'apply-to-pdf' via the manual-mode checkbox --
+    // that override never carried over into auto mode.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'apply-to-pdf' }) as any
+    );
+    mockLockAcquired();
+    mockProductiveRound(1, 0);
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
+      colorContrastMode: 'apply-to-pdf',
+    });
+  });
+
+  it('falls back to guidance-only if the stored autoColorContrastMode is not one of the recognized values', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoColorContrastMode: 'not-a-real-mode' }) as any
+    );
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
+      colorContrastMode: 'guidance-only',
     });
   });
 

@@ -265,6 +265,18 @@ describe('comparison-study.service', () => {
       });
     });
 
+    it('updates autoColorContrastMode when provided', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null });
+      mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1', autoColorContrastMode: 'apply-to-pdf' });
+
+      await updateAutoModeConfig('trial-1', { autoColorContrastMode: 'apply-to-pdf' });
+
+      expect(mockPrisma.comparisonTrial.update).toHaveBeenCalledWith({
+        where: { id: 'trial-1' },
+        data: { autoColorContrastMode: 'apply-to-pdf' },
+      });
+    });
+
     it('omits fields that were not provided from the update payload', async () => {
       mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1', mode: 'manual', autoStatus: null });
       mockPrisma.comparisonTrial.update.mockResolvedValue({ id: 'trial-1' });

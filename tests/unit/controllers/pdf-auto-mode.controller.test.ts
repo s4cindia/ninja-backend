@@ -100,6 +100,7 @@ describe('PdfAutoModeController', () => {
         autoMaxRounds: 10,
         autoCostSpentUsd: 0.42,
         autoCostLimitUsd: 2.0,
+        autoColorContrastMode: 'apply-to-pdf',
       } as any);
       const res = makeRes();
 
@@ -115,6 +116,7 @@ describe('PdfAutoModeController', () => {
           autoMaxRounds: 10,
           autoCostSpentUsd: 0.42,
           autoCostLimitUsd: 2.0,
+          autoColorContrastMode: 'apply-to-pdf',
         },
       });
     });

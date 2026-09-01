@@ -184,7 +184,12 @@ export async function logPdfxtData(
  */
 export async function updateAutoModeConfig(
   id: string,
-  input: { mode?: 'manual' | 'auto'; autoMaxRounds?: number; autoCostLimitUsd?: number },
+  input: {
+    mode?: 'manual' | 'auto';
+    autoMaxRounds?: number;
+    autoCostLimitUsd?: number;
+    autoColorContrastMode?: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+  },
 ): Promise<ComparisonTrial> {
   const trial = await prisma.comparisonTrial.findUnique({ where: { id } });
   if (!trial) {
@@ -204,6 +209,7 @@ export async function updateAutoModeConfig(
       ...(input.mode !== undefined && { mode: input.mode }),
       ...(input.autoMaxRounds !== undefined && { autoMaxRounds: input.autoMaxRounds }),
       ...(input.autoCostLimitUsd !== undefined && { autoCostLimitUsd: input.autoCostLimitUsd }),
+      ...(input.autoColorContrastMode !== undefined && { autoColorContrastMode: input.autoColorContrastMode }),
     },
   });
 }

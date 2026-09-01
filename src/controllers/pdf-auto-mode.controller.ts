@@ -78,6 +78,7 @@ export class PdfAutoModeController {
           autoMaxRounds: trial.autoMaxRounds,
           autoCostSpentUsd: trial.autoCostSpentUsd,
           autoCostLimitUsd: trial.autoCostLimitUsd,
+          autoColorContrastMode: trial.autoColorContrastMode,
         },
       });
     } catch (error) {
