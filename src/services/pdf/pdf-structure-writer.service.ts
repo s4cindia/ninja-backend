@@ -66,31 +66,62 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * BFS traversal of the structure tree.
+   * Pre-order depth-first traversal of the structure tree — i.e. document
+   * reading order: visit a node, then walk each of its children (and their
+   * full subtrees) before moving on to the next sibling.
+   *
+   * Was breadth-first (level-by-level) until this was found to be a real bug:
+   * every caller below either needs true reading order (fixHeadingHierarchy's
+   * "skip a level" detection, generateBookmarksFromHeadings's bookmark
+   * ordering, extractFirstH1Text's "first" H1) or is order-agnostic, so
+   * nothing depends on the old level-order behavior. BFS interleaves
+   * unrelated sections at the same tree depth — e.g. it would visit every
+   * chapter's top-level heading across an entire multi-section document
+   * before descending into any one chapter's own nested sub-headings —
+   * which silently desyncs a "previous heading level" walk like
+   * fixHeadingHierarchy's from the structurally-correct sequence the
+   * validator that raised the original issue uses to detect it, so a
+   * "successful" rename can land on the wrong element relative to reading
+   * order and never actually resolve the flagged issue.
+   *
    * Calls visitor(node, ref) for every PDFDict encountered.
    * If visitor returns true, traversal stops immediately.
+   *
+   * Uses an explicit stack rather than recursion: a deeply-nested structure
+   * tree (long chains of indirect Sect/Div elements are common in
+   * real-world tagged PDFs) could otherwise exhaust the call stack.
    */
   private traverseStructTree(
     doc: PDFDocument,
     root: PDFDict,
     visitor: (node: PDFDict, ref: PDFRef | null) => boolean | void,
   ): void {
-    const queue: Array<{ dict: PDFDict; ref: PDFRef | null }> = [{ dict: root, ref: null }];
-    while (queue.length > 0) {
-      const { dict: node, ref } = queue.shift()!;
+    type Entry = { dict: PDFDict; ref: PDFRef | null };
+    const stack: Entry[] = [{ dict: root, ref: null }];
+
+    while (stack.length > 0) {
+      const { dict: node, ref } = stack.pop()!;
       if (visitor(node, ref) === true) return;
 
       const kids = node.get(PDFName.of('K'));
-      const enqueue = (raw: PDFObject) => {
+      const resolved: Entry[] = [];
+      const resolveChild = (raw: PDFObject): void => {
         const obj = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
         if (obj instanceof PDFDict) {
-          queue.push({ dict: obj, ref: raw instanceof PDFRef ? raw : null });
+          resolved.push({ dict: obj, ref: raw instanceof PDFRef ? raw : null });
         }
       };
       if (kids instanceof PDFArray) {
-        kids.asArray().forEach(enqueue);
+        for (const kid of kids.asArray()) {
+          resolveChild(kid);
+        }
       } else if (kids instanceof PDFRef || kids instanceof PDFDict) {
-        enqueue(kids as PDFObject);
+        resolveChild(kids as PDFObject);
+      }
+      // Push in reverse so the first child is popped (and visited) first,
+      // preserving pre-order (document reading) order.
+      for (let i = resolved.length - 1; i >= 0; i--) {
+        stack.push(resolved[i]);
       }
     }
   }
@@ -341,7 +372,7 @@ export class PdfStructureWriterService {
       }));
     }
 
-    // Collect all Hn elements in BFS document order
+    // Collect all Hn elements in document (reading) order
     const headingRefs: Array<{ ref: PDFRef; level: number }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
@@ -382,7 +413,7 @@ export class PdfStructureWriterService {
    * logical hierarchy is preserved (e.g. H2 under a demoted H1 becomes H3).
    *
    * Algorithm:
-   *   1. Collect all Hn elements in BFS document order.
+   *   1. Collect all Hn elements in document (reading) order.
    *   2. For each H1 after the first:
    *      a. Rename it to H2.
    *      b. For every heading between it and the next H1 (exclusive), increment
@@ -395,7 +426,7 @@ export class PdfStructureWriterService {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
     }
 
-    // Collect all heading elements in BFS document order
+    // Collect all heading elements in document (reading) order
     const allHeadings: Array<{ ref: PDFRef; level: number }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
