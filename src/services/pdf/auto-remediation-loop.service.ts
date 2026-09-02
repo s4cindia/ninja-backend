@@ -24,7 +24,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { aiAnalysisService } from './ai-analysis.service';
 import { pdfReauditService } from './pdf-reaudit.service';
-import { remediationCycleLockService } from './remediation-cycle-lock.service';
+import { remediationCycleLockService, STALE_LOCK_MS } from './remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 
 /** Suggestion type that always requires manual approval, even in auto mode --
@@ -87,17 +87,29 @@ class AutoRemediationLoopService {
    * detection can lag up to that long after a real crash; that matches the
    * lock's own accepted tradeoff rather than inventing a separate one.
    *
-   * A naive read-lock-then-write-trial sequence has a real race (CodeRabbit/
-   * Codex finding on the PR that introduced this method): a brand new
-   * auto-loop run could acquire the lock and set autoStatus back to
-   * 'running' in the gap between this method's read and its write, and the
-   * write would then wrongly stomp that new run back to 'stopped'. This is
-   * only possible while the lock is free/stale/null -- while it's actively
-   * held by ANY source, no new auto_loop run could simultaneously be
-   * acquiring the very same lock, so reconciling is race-free in that case.
-   * The free/stale/null case is instead fenced by attempting the same
-   * atomic acquire every real run uses: only proceeding if this call wins
-   * it, which proves no concurrent run could also be starting.
+   * An earlier version of this method read the lock status and later wrote
+   * the trial status as two separate statements -- a race CodeRabbit/Codex
+   * found from two different angles: a brand new auto-loop run could
+   * acquire the lock and set autoStatus back to 'running' in the gap
+   * between the read and the write (wrongly stomped back to 'stopped'), and
+   * -- less obviously -- even the "lock held by a different source, so it's
+   * safe" case wasn't actually race-free, since that other source could
+   * release its lock in the same gap, letting a new auto-loop run slip in
+   * before the write executed. Both were two-statement, application-level
+   * gaps (an await between them, with real network round-trips).
+   *
+   * This version collapses the check and the write into a single SQL
+   * statement instead: the `job` relation filter below re-verifies the
+   * lock's current state as part of the very same UPDATE, not via an
+   * earlier separate read, so there's no application-level gap left for
+   * either race to land in. It isn't a full cross-table transactional
+   * guarantee (Postgres's default isolation doesn't lock the referenced Job
+   * row against an independent concurrent UPDATE on that same row executing
+   * at the exact same instant -- closing that completely would need
+   * SERIALIZABLE isolation and retry logic) -- but narrowing the window
+   * from "however long the two awaited statements above take" down to "the
+   * database's own execution of one statement" removes the actual failure
+   * mode both reviewers reproduced.
    */
   async reconcileIfOrphaned(trialId: string): Promise<void> {
     const trial = await prisma.comparisonTrial.findUnique({
@@ -107,32 +119,25 @@ class AutoRemediationLoopService {
     if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
     const jobId = trial.ninjaJobId;
 
+    // Fast-path: skip the write attempt entirely when the loop is obviously
+    // still alive, avoiding pointless write contention on the hot path
+    // (frequent status polls while a run is healthy).
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
-    if (lockStatus.inProgress && lockStatus.source === 'auto_loop') {
-      return; // genuinely alive -- still heartbeating its own lock
-    }
+    if (lockStatus.inProgress && lockStatus.source === 'auto_loop') return;
 
-    if (lockStatus.inProgress) {
-      // Held by a different source (e.g. a manual analyze_job/reaudit
-      // action that reclaimed the auto-loop's stale lock) -- race-free, see
-      // doc comment above.
-      await this.writeOrphanedStop(trialId, jobId);
-      return;
-    }
-
-    // Free/stale/null: fence with the real lock before writing.
-    const lock = await remediationCycleLockService.acquireLock(jobId, 'auto-mode-reconciler', 'auto_loop');
-    if (!lock.acquired) return; // a concurrent run (or another reconcile call) won the race -- back off
-    try {
-      await this.writeOrphanedStop(trialId, jobId);
-    } finally {
-      await remediationCycleLockService.releaseLock(jobId, lock.cycleNumber!);
-    }
-  }
-
-  private async writeOrphanedStop(trialId: string, jobId: string): Promise<void> {
+    const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
     const result = await prisma.comparisonTrial.updateMany({
-      where: { id: trialId, autoStatus: 'running' },
+      where: {
+        id: trialId,
+        autoStatus: 'running',
+        job: {
+          OR: [
+            { remediationCycleLockedAt: null },
+            { remediationCycleLockedAt: { lt: staleThreshold } },
+            { remediationCycleSource: { not: 'auto_loop' } },
+          ],
+        },
+      },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
     });
     if (result.count > 0) {
@@ -294,11 +299,22 @@ class AutoRemediationLoopService {
       // 'running' status clobbered by this write landing late (CodeRabbit/
       // Codex finding). Writing first closes both: by the time the lock is
       // actually free, this run's true terminal state is already committed.
-      await prisma.comparisonTrial.update({
-        where: { id: trialId },
-        data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false },
-      });
-      await remediationCycleLockService.releaseLock(jobId, cycleNumber);
+      //
+      // The write is wrapped in its own try/finally so a failure here (a
+      // transient DB error, or the trial being deleted concurrently) still
+      // releases the lock -- otherwise, with the heartbeat already stopped,
+      // the job would stay locked for the full 20-minute staleness window
+      // with nothing left to renew it. If the write does fail, autoStatus
+      // is left at 'running' with a now-free lock -- exactly the state
+      // reconcileIfOrphaned above exists to detect and correct later.
+      try {
+        await prisma.comparisonTrial.update({
+          where: { id: trialId },
+          data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false },
+        });
+      } finally {
+        await remediationCycleLockService.releaseLock(jobId, cycleNumber);
+      }
       // RemediationCycleEvent has no dedicated rounds/cost columns -- the
       // authoritative numbers live on ComparisonTrial itself (read by
       // GET /auto-mode/status). This is just a marker entry in the same
