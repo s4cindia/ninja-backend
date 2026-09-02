@@ -586,26 +586,55 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
 
-  it('leaves a genuinely still-running loop alone (lock still in progress)', async () => {
+  it('leaves a genuinely still-running loop alone (lock still held by auto_loop)', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
-    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true } as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true, source: 'auto_loop' } as any);
 
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
     expect(remediationCycleLockService.getLockStatus).toHaveBeenCalledWith('job-1');
+    expect(remediationCycleLockService.acquireLock).not.toHaveBeenCalled();
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
 
-  it("marks an orphaned run 'stopped'/'error' when its lock is no longer held (e.g. the process was killed mid-round by a deploy)", async () => {
+  it("reconciles directly (no acquire needed) when the lock is actively held by a DIFFERENT source (Codex finding: auto_loop is provably dead, a different source can't coexist with a live auto_loop lock)", async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
-    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true, source: 'analyze_job' } as any);
     vi.mocked(prisma.comparisonTrial.updateMany).mockResolvedValue({ count: 1 } as any);
 
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
+    expect(remediationCycleLockService.acquireLock).not.toHaveBeenCalled();
     expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
       where: { id: 'trial-1', autoStatus: 'running' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
     });
+  });
+
+  it("marks an orphaned run 'stopped'/'error' when its lock is free/stale, fencing the write with its own atomic acquire first (e.g. the process was killed mid-round by a deploy)", async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 11 } as any);
+    vi.mocked(prisma.comparisonTrial.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleLockService.acquireLock).toHaveBeenCalledWith('job-1', 'auto-mode-reconciler', 'auto_loop');
+    expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
+      where: { id: 'trial-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+    });
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 11);
+  });
+
+  it('backs off without writing when a concurrent run wins the fencing acquire first (CodeRabbit/Codex race finding)', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: false } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).not.toHaveBeenCalled();
   });
 });

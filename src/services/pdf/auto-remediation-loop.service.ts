@@ -77,15 +77,27 @@ class AutoRemediationLoopService {
    * Service's own lock (source 'auto_loop', heartbeat every 5 min, stale
    * after 20 -- see remediation-cycle-lock.service.ts) is the one liveness
    * signal a crashed run leaves behind: a genuinely-running loop is still
-   * heartbeating it, so if the lock reads as not-in-progress while
-   * autoStatus says 'running', nothing is actually driving this trial
-   * anymore and nothing else ever will reconcile it.
+   * heartbeating it, so if that lock isn't actively/freshly held by
+   * 'auto_loop', nothing is actually driving this trial anymore and nothing
+   * else ever will reconcile it.
    *
    * Safe to call before every start/status/stop request -- a no-op both
    * when the run is genuinely still in progress and when it's already
    * terminal. Reusing the lock's own 20-minute staleness window means
    * detection can lag up to that long after a real crash; that matches the
    * lock's own accepted tradeoff rather than inventing a separate one.
+   *
+   * A naive read-lock-then-write-trial sequence has a real race (CodeRabbit/
+   * Codex finding on the PR that introduced this method): a brand new
+   * auto-loop run could acquire the lock and set autoStatus back to
+   * 'running' in the gap between this method's read and its write, and the
+   * write would then wrongly stomp that new run back to 'stopped'. This is
+   * only possible while the lock is free/stale/null -- while it's actively
+   * held by ANY source, no new auto_loop run could simultaneously be
+   * acquiring the very same lock, so reconciling is race-free in that case.
+   * The free/stale/null case is instead fenced by attempting the same
+   * atomic acquire every real run uses: only proceeding if this call wins
+   * it, which proves no concurrent run could also be starting.
    */
   async reconcileIfOrphaned(trialId: string): Promise<void> {
     const trial = await prisma.comparisonTrial.findUnique({
@@ -93,17 +105,39 @@ class AutoRemediationLoopService {
       select: { autoStatus: true, ninjaJobId: true },
     });
     if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
+    const jobId = trial.ninjaJobId;
 
-    const lockStatus = await remediationCycleLockService.getLockStatus(trial.ninjaJobId);
-    if (lockStatus.inProgress) return;
+    const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
+    if (lockStatus.inProgress && lockStatus.source === 'auto_loop') {
+      return; // genuinely alive -- still heartbeating its own lock
+    }
 
+    if (lockStatus.inProgress) {
+      // Held by a different source (e.g. a manual analyze_job/reaudit
+      // action that reclaimed the auto-loop's stale lock) -- race-free, see
+      // doc comment above.
+      await this.writeOrphanedStop(trialId, jobId);
+      return;
+    }
+
+    // Free/stale/null: fence with the real lock before writing.
+    const lock = await remediationCycleLockService.acquireLock(jobId, 'auto-mode-reconciler', 'auto_loop');
+    if (!lock.acquired) return; // a concurrent run (or another reconcile call) won the race -- back off
+    try {
+      await this.writeOrphanedStop(trialId, jobId);
+    } finally {
+      await remediationCycleLockService.releaseLock(jobId, lock.cycleNumber!);
+    }
+  }
+
+  private async writeOrphanedStop(trialId: string, jobId: string): Promise<void> {
     const result = await prisma.comparisonTrial.updateMany({
       where: { id: trialId, autoStatus: 'running' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
     });
     if (result.count > 0) {
       logger.warn(
-        `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${trial.ninjaJobId}) -- its lock is no longer held, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
+        `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${jobId}) -- its lock is no longer held by an active auto-loop, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
       );
     }
   }
@@ -252,11 +286,19 @@ class AutoRemediationLoopService {
       );
     } finally {
       remediationCycleLockService.stopHeartbeat(heartbeat);
-      await remediationCycleLockService.releaseLock(jobId, cycleNumber);
+      // Terminal trial state is written BEFORE the lock is released (not
+      // after) -- otherwise there's a window where the lock reads as free
+      // while autoStatus still says 'running', during which a status/stop
+      // request could wrongly think this run was orphaned (reconcileIfOrphaned
+      // below), or a brand new run could start and then have ITS OWN
+      // 'running' status clobbered by this write landing late (CodeRabbit/
+      // Codex finding). Writing first closes both: by the time the lock is
+      // actually free, this run's true terminal state is already committed.
       await prisma.comparisonTrial.update({
         where: { id: trialId },
         data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false },
       });
+      await remediationCycleLockService.releaseLock(jobId, cycleNumber);
       // RemediationCycleEvent has no dedicated rounds/cost columns -- the
       // authoritative numbers live on ComparisonTrial itself (read by
       // GET /auto-mode/status). This is just a marker entry in the same
