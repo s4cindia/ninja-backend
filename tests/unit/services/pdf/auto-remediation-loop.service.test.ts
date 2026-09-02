@@ -21,11 +21,30 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// $transaction invokes its callback against a `tx` that shares the SAME
+// comparisonTrial.updateMany/$queryRaw mock functions as the top-level
+// client, matching the established pattern in
+// tests/unit/controllers/mark-complete.controller.test.ts -- so a test can
+// assert via prisma.comparisonTrial.updateMany regardless of whether the
+// real code called it through `tx` or directly. vi.hoisted is required here
+// (not just naming these `mock*`) since vi.mock's factory is hoisted above
+// regular top-level const declarations.
+const { mockComparisonTrialUpdateMany, mockQueryRaw } = vi.hoisted(() => ({
+  mockComparisonTrialUpdateMany: vi.fn(),
+  mockQueryRaw: vi.fn(),
+}));
+
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
-    comparisonTrial: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    comparisonTrial: { findUnique: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
     job: { findUnique: vi.fn(), update: vi.fn() },
     aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
+    $queryRaw: mockQueryRaw,
+    $transaction: (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        $queryRaw: mockQueryRaw,
+        comparisonTrial: { updateMany: mockComparisonTrialUpdateMany },
+      }),
   },
 }));
 vi.mock('../../../../src/services/pdf/ai-analysis.service');
@@ -610,58 +629,65 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
 
-  it('leaves a genuinely still-running loop alone (lock still held by auto_loop) -- fast-path skips the write attempt entirely', async () => {
+  it('leaves a genuinely still-running loop alone (lock actively held, any source) -- fast-path skips the transaction entirely', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
     vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true, source: 'auto_loop' } as any);
 
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
     expect(remediationCycleLockService.getLockStatus).toHaveBeenCalledWith('job-1');
+    expect(mockQueryRaw).not.toHaveBeenCalled();
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
 
-  // The write itself (not application-level branching) is what decides
-  // whether a row actually matches -- the job relation filter re-checks the
-  // lock's current state as part of the SAME statement, closing the
-  // check-then-write gap CodeRabbit/Codex found in an earlier, two-statement
-  // version (a brand new auto-loop run acquiring the lock in between could
-  // get wrongly stomped back to 'stopped', and -- less obviously -- even
-  // the "a different source holds it, so it's safe" case wasn't actually
-  // race-free, since that source could release its lock in the same gap).
-  // "different source holds it" and "free/stale" are consequently the same
-  // code path now (both just proceed past the fast-path check below into
-  // this same call), so one test covers both.
-  it('writes with a job-relation filter re-checking the lock is not actively held by auto_loop, regardless of whether it\'s free/stale or held by a different source', async () => {
+  it('leaves alone when the lock is held by a different source, e.g. a manual analyze_job action (Codex finding: reconciling here would let a client start a new run that then silently fails to acquire the still-valid lock)', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
-    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
-    vi.mocked(prisma.comparisonTrial.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true, source: 'analyze_job' } as any);
 
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("marks an orphaned run 'stopped'/'error' when the row-locked re-check confirms the lock is genuinely free", async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: null }]);
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(mockQueryRaw).toHaveBeenCalled();
     expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: 'trial-1',
-        autoStatus: 'running',
-        job: {
-          OR: [
-            { remediationCycleLockedAt: null },
-            { remediationCycleLockedAt: { lt: expect.any(Date) } },
-            { remediationCycleSource: { not: 'auto_loop' } },
-          ],
-        },
-      },
+      where: { id: 'trial-1', autoStatus: 'running' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
     });
   });
 
-  it('does not call acquireLock/releaseLock -- atomicity now comes from the single query, not a fenced acquire', async () => {
+  it("marks an orphaned run 'stopped'/'error' when the row-locked re-check confirms the lock is stale", async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
     vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
-    vi.mocked(prisma.comparisonTrial.updateMany).mockResolvedValue({ count: 1 } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
 
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
-    expect(remediationCycleLockService.acquireLock).not.toHaveBeenCalled();
-    expect(remediationCycleLockService.releaseLock).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
+      where: { id: 'trial-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+    });
+  });
+
+  it('backs off without writing when the row lock reveals a concurrent run acquired it while waiting (CodeRabbit/Codex race finding)', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    // By the time we won the FOR UPDATE row lock, a concurrent acquireLock
+    // had already landed a fresh (non-stale) timestamp.
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date() }]);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
 });

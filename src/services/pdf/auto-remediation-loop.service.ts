@@ -77,9 +77,8 @@ class AutoRemediationLoopService {
    * Service's own lock (source 'auto_loop', heartbeat every 5 min, stale
    * after 20 -- see remediation-cycle-lock.service.ts) is the one liveness
    * signal a crashed run leaves behind: a genuinely-running loop is still
-   * heartbeating it, so if that lock isn't actively/freshly held by
-   * 'auto_loop', nothing is actually driving this trial anymore and nothing
-   * else ever will reconcile it.
+   * heartbeating it, so if that lock is free or stale, nothing is actually
+   * driving this trial anymore and nothing else ever will reconcile it.
    *
    * Safe to call before every start/status/stop request -- a no-op both
    * when the run is genuinely still in progress and when it's already
@@ -87,29 +86,29 @@ class AutoRemediationLoopService {
    * detection can lag up to that long after a real crash; that matches the
    * lock's own accepted tradeoff rather than inventing a separate one.
    *
-   * An earlier version of this method read the lock status and later wrote
-   * the trial status as two separate statements -- a race CodeRabbit/Codex
-   * found from two different angles: a brand new auto-loop run could
-   * acquire the lock and set autoStatus back to 'running' in the gap
-   * between the read and the write (wrongly stomped back to 'stopped'), and
-   * -- less obviously -- even the "lock held by a different source, so it's
-   * safe" case wasn't actually race-free, since that other source could
-   * release its lock in the same gap, letting a new auto-loop run slip in
-   * before the write executed. Both were two-statement, application-level
-   * gaps (an await between them, with real network round-trips).
+   * Deliberately scoped to ONLY the free/stale case -- an earlier version
+   * also reconciled when the lock was actively held by a *different* source
+   * (e.g. a manual analyze_job action that had reclaimed the auto-loop's
+   * stale lock), reasoning that auto_loop was then provably dead. Codex
+   * found that this introduced a worse problem than it solved: a client
+   * seeing autoStatus flip to 'stopped' would reasonably start a new run,
+   * but that run's own acquireLock would then fail against the *other*
+   * source's still-valid lock, silently doing nothing despite the 202
+   * response. Leaving autoStatus at 'running' in that situation is
+   * cosmetically stale but never actionably wrong -- it corrects itself
+   * within the same bounded window once that other operation's own lock
+   * releases or goes stale.
    *
-   * This version collapses the check and the write into a single SQL
-   * statement instead: the `job` relation filter below re-verifies the
-   * lock's current state as part of the very same UPDATE, not via an
-   * earlier separate read, so there's no application-level gap left for
-   * either race to land in. It isn't a full cross-table transactional
-   * guarantee (Postgres's default isolation doesn't lock the referenced Job
-   * row against an independent concurrent UPDATE on that same row executing
-   * at the exact same instant -- closing that completely would need
-   * SERIALIZABLE isolation and retry logic) -- but narrowing the window
-   * from "however long the two awaited statements above take" down to "the
-   * database's own execution of one statement" removes the actual failure
-   * mode both reviewers reproduced.
+   * Two earlier attempts at fencing the free/stale write were both found
+   * racy (CodeRabbit/Codex): a plain read-then-write has an application-level
+   * gap a concurrent acquireLock can land in, and folding the check into the
+   * write's own WHERE clause (a relation filter reading Job) narrows that
+   * gap but still doesn't take a row lock on Job -- a concurrent acquireLock
+   * (itself a plain UPDATE) isn't blocked by a read-only subquery elsewhere.
+   * This version takes a real row lock instead: `SELECT ... FOR UPDATE`
+   * inside a transaction (same pattern as pdf-remediation.controller.ts's
+   * quick-fix endpoint) blocks any concurrent acquireLock attempt on this
+   * job until the transaction commits, so the two can never interleave.
    */
   async reconcileIfOrphaned(trialId: string): Promise<void> {
     const trial = await prisma.comparisonTrial.findUnique({
@@ -119,32 +118,31 @@ class AutoRemediationLoopService {
     if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
     const jobId = trial.ninjaJobId;
 
-    // Fast-path: skip the write attempt entirely when the loop is obviously
-    // still alive, avoiding pointless write contention on the hot path
+    // Fast-path: skip the transaction entirely when the loop is obviously
+    // still alive, avoiding pointless lock contention on the hot path
     // (frequent status polls while a run is healthy).
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
-    if (lockStatus.inProgress && lockStatus.source === 'auto_loop') return;
+    if (lockStatus.inProgress) return;
 
-    const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
-    const result = await prisma.comparisonTrial.updateMany({
-      where: {
-        id: trialId,
-        autoStatus: 'running',
-        job: {
-          OR: [
-            { remediationCycleLockedAt: null },
-            { remediationCycleLockedAt: { lt: staleThreshold } },
-            { remediationCycleSource: { not: 'auto_loop' } },
-          ],
-        },
-      },
-      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+    await prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
+        SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
+      `;
+      const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
+      const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
+      const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
+      if (!stillOrphaned) return; // a concurrent run acquired it while we were waiting for the row lock
+
+      const result = await tx.comparisonTrial.updateMany({
+        where: { id: trialId, autoStatus: 'running' },
+        data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+      });
+      if (result.count > 0) {
+        logger.warn(
+          `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${jobId}) -- its lock is free/stale, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
+        );
+      }
     });
-    if (result.count > 0) {
-      logger.warn(
-        `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${jobId}) -- its lock is no longer held by an active auto-loop, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
-      );
-    }
   }
 
   /**
