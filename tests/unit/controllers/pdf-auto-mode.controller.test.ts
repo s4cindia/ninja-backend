@@ -19,7 +19,10 @@ vi.mock('../../../src/lib/prisma', () => ({
 // mocking.
 vi.mock('../../../src/services/pdf/auto-remediation-loop.service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/services/pdf/auto-remediation-loop.service')>();
-  return { ...actual, autoRemediationLoopService: { startAutoLoop: vi.fn() } };
+  return {
+    ...actual,
+    autoRemediationLoopService: { startAutoLoop: vi.fn(), reconcileIfOrphaned: vi.fn().mockResolvedValue(undefined) },
+  };
 });
 
 import prisma from '../../../src/lib/prisma';
@@ -77,6 +80,21 @@ describe('PdfAutoModeController', () => {
       expect(autoRemediationLoopService.startAutoLoop).not.toHaveBeenCalled();
     });
 
+    it('reconciles an orphaned run (crashed process, e.g. a mid-deploy ECS drain) and allows a fresh start', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique)
+        .mockResolvedValueOnce({ id: 'trial-1', mode: 'auto', autoStatus: 'running' } as any)
+        .mockResolvedValueOnce({ id: 'trial-1', mode: 'auto', autoStatus: 'stopped', autoStopReason: 'error' } as any);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(makeReq(), res, next);
+
+      expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
+      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith('trial-1');
+      expect(res.status).toHaveBeenCalledWith(202);
+      expect(next).not.toHaveBeenCalled();
+    });
+
     it('kicks off the loop and responds 202 when eligible', async () => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null } as any);
       vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
@@ -129,6 +147,40 @@ describe('PdfAutoModeController', () => {
       });
     });
 
+    it('reconciles an orphaned run before reporting status', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique)
+        .mockResolvedValueOnce({
+          id: 'trial-1',
+          mode: 'auto',
+          autoStatus: 'running',
+          autoStopReason: null,
+          autoRoundsCompleted: 6,
+          autoMaxRounds: 10,
+          autoCostSpentUsd: 0.5,
+          autoCostLimitUsd: 2.0,
+          autoColorContrastMode: null,
+        } as any)
+        .mockResolvedValueOnce({
+          id: 'trial-1',
+          mode: 'auto',
+          autoStatus: 'stopped',
+          autoStopReason: 'error',
+          autoRoundsCompleted: 6,
+          autoMaxRounds: 10,
+          autoCostSpentUsd: 0.5,
+          autoCostLimitUsd: 2.0,
+          autoColorContrastMode: null,
+        } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ autoStatus: 'stopped', autoStopReason: 'error' }) })
+      );
+    });
+
     it('reports null (inherited) for a null or unrecognized stored autoColorContrastMode, not the raw value (CodeRabbit finding)', async () => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({
         mode: 'auto',
@@ -167,6 +219,21 @@ describe('PdfAutoModeController', () => {
 
       expect(prisma.comparisonTrial.update).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('reconciles an already-orphaned run and reports it as not running, without setting autoStopRequested', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique)
+        .mockResolvedValueOnce({ id: 'trial-1', autoStatus: 'running' } as any)
+        .mockResolvedValueOnce({ id: 'trial-1', autoStatus: 'stopped', autoStopReason: 'error' } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.stop(makeReq(), res, next);
+
+      expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
+      expect(prisma.comparisonTrial.update).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ message: expect.stringContaining('not currently running') }) })
+      );
     });
 
     it('sets autoStopRequested when auto mode is running', async () => {

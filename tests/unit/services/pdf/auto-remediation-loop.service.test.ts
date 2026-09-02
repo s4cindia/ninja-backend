@@ -23,7 +23,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
-    comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
+    comparisonTrial: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     job: { findUnique: vi.fn(), update: vi.fn() },
     aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
   },
@@ -556,6 +556,55 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 9);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+    });
+  });
+});
+
+describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('does nothing when the trial is not marked running', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'stopped' }) as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleLockService.getLockStatus).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the trial has no associated job', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoStatus: 'running', ninjaJobId: null }) as any
+    );
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleLockService.getLockStatus).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('leaves a genuinely still-running loop alone (lock still in progress)', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleLockService.getLockStatus).toHaveBeenCalledWith('job-1');
+    expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("marks an orphaned run 'stopped'/'error' when its lock is no longer held (e.g. the process was killed mid-round by a deploy)", async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    vi.mocked(prisma.comparisonTrial.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
+      where: { id: 'trial-1', autoStatus: 'running' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
     });
   });

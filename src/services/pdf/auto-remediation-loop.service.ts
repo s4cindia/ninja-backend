@@ -69,6 +69,46 @@ export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'man
 
 class AutoRemediationLoopService {
   /**
+   * Reconciles a trial whose autoStatus is stuck at 'running' because the
+   * process actually driving its loop died without reaching the `finally`
+   * block in startAutoLoop below -- e.g. an ECS deployment drained the task
+   * mid-round. autoStatus has no staleness recovery of its own; only that
+   * `finally` block ever flips it back to 'stopped'. remediationCycleLock
+   * Service's own lock (source 'auto_loop', heartbeat every 5 min, stale
+   * after 20 -- see remediation-cycle-lock.service.ts) is the one liveness
+   * signal a crashed run leaves behind: a genuinely-running loop is still
+   * heartbeating it, so if the lock reads as not-in-progress while
+   * autoStatus says 'running', nothing is actually driving this trial
+   * anymore and nothing else ever will reconcile it.
+   *
+   * Safe to call before every start/status/stop request -- a no-op both
+   * when the run is genuinely still in progress and when it's already
+   * terminal. Reusing the lock's own 20-minute staleness window means
+   * detection can lag up to that long after a real crash; that matches the
+   * lock's own accepted tradeoff rather than inventing a separate one.
+   */
+  async reconcileIfOrphaned(trialId: string): Promise<void> {
+    const trial = await prisma.comparisonTrial.findUnique({
+      where: { id: trialId },
+      select: { autoStatus: true, ninjaJobId: true },
+    });
+    if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
+
+    const lockStatus = await remediationCycleLockService.getLockStatus(trial.ninjaJobId);
+    if (lockStatus.inProgress) return;
+
+    const result = await prisma.comparisonTrial.updateMany({
+      where: { id: trialId, autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+    });
+    if (result.count > 0) {
+      logger.warn(
+        `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${trial.ninjaJobId}) -- its lock is no longer held, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
+      );
+    }
+  }
+
+  /**
    * Starts (or resumes) an auto-mode run for the given trial. Intended to be
    * called fire-and-forget from the /auto-mode/start endpoint; all progress
    * and the terminal result are persisted onto the ComparisonTrial row
