@@ -125,8 +125,8 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     const mockVerify = vi.mocked(verifyContrastInRegion);
     mockVerify.mockClear();
     mockVerify
-      .mockResolvedValueOnce({ ratio: 1.8, passes: false, foreground: '#aaaaaa', background: '#ffffff' })
-      .mockResolvedValueOnce({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff' });
+      .mockResolvedValueOnce({ ratio: 1.8, passes: false, foreground: '#aaaaaa', background: '#ffffff', uncertain: false })
+      .mockResolvedValueOnce({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
 
     const doc = await realPdfWithText(60, 450, 14, { bold: false });
     const originalReport = await pdfAuditService.runAuditFromBuffer(
@@ -159,12 +159,55 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
 
     if (!result.success) {
-      expect(result.error).toContain('did not verify');
+      // Either message is a valid "never claim success" outcome — an
+      // isolated large-text case like this should normally find a
+      // confidently flat nearby patch (the "did not verify" branch), but
+      // tolerate the "uncertain" branch too rather than pin exact rendering.
+      expect(result.error).toMatch(/did not verify|Could not confidently measure/);
       expect(result.after).toBe('unknown');
     }
     // If this environment's rendering happens to verify successfully, that's
     // fine too — the invariant under test is "never report success without
     // verification", not "this exact scenario must fail everywhere".
+  });
+
+  it('reverts the rewritten page content when verification ends as uncertain, instead of leaking an unverified color change', async () => {
+    // Found by a local `codex exec review` pass: applyColor() mutates the
+    // shared `doc` before verification even runs, and neither failure
+    // branch undid that mutation. Since AiAnalysisService.
+    // applyApprovedSuggestions() saves this same `doc` whenever any OTHER
+    // fix in the same batch succeeds, a fix reported as failed here would
+    // otherwise still leak its unverified color change into the final
+    // output.
+    //
+    // Also doubles as regression coverage for `uncertain` gating success
+    // even when the ratio nominally passes -- a deliberate policy, not
+    // just contamination handling: this same mechanism is what makes text
+    // over a genuinely non-uniform background (a photo, a gradient, where
+    // every nearby patch legitimately varies) permanently unable to
+    // auto-apply, trading away that automation coverage for never
+    // claiming a fix that isn't reliably measurable actually worked (a
+    // second review finding, addressed by documentation rather than a
+    // behavior change -- see the comment at the gating check itself).
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: false })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: true });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-uncertain-revert', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+    const beforeContent = decodePageContent(doc, 1)!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not confidently measure');
+    const afterContent = decodePageContent(doc, 1)!;
+    expect(afterContent).toBe(beforeContent); // reverted despite the mocked ratio nominally "passing"
   });
 
   it('fails gracefully when the issue has no contrastData', async () => {

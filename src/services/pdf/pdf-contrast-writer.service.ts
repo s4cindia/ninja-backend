@@ -179,34 +179,63 @@ export class PdfContrastWriterService {
       const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);
     };
-    const verify = async (): Promise<{ ratio: number; passes: boolean } | null> => {
+    const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean } | null> => {
       const buffer = Buffer.from(await doc.save());
-      return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio);
+      return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio, cd.background);
     };
 
     let appliedColor = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio).color;
     applyColor(appliedColor);
     let verification = await verify();
 
-    if (!verification || !verification.passes) {
+    // `uncertain` gates success here exactly like `!passes` does — an
+    // uncertain measurement whose averaged color happens to produce a
+    // passing ratio is still not a confirmed fix; it must not short-circuit
+    // past escalation (and, below, must not be reported as success).
+    //
+    // Deliberate tradeoff (found in review): text sitting on a genuinely
+    // non-uniform background (a photo, a gradient) will *always* measure
+    // uncertain — every nearby patch legitimately varies, not just the
+    // ones affected by adjacent-content contamination — so this makes
+    // such cases permanently unable to auto-apply, where the old plain-
+    // average approach could nominally "succeed" on one. That's accepted
+    // deliberately, not overlooked: this file's own header already states
+    // its governing principle ("every failure mode bails to success:
+    // false rather than guessing... stays conservative"), and a WCAG
+    // contrast ratio isn't well-defined against a genuinely busy image in
+    // the first place (real guidance calls for a solid backplate behind
+    // such text, not just a color tweak) — reporting "could not
+    // confidently verify, needs manual review" is more honest here than
+    // claiming a fix that isn't reliably measurable actually worked.
+    if (!verification || !verification.passes || verification.uncertain) {
       logger.info(
         `[ContrastWriter] Moderate correction (${appliedColor}) did not verify` +
-        `${verification ? ` (measured ${verification.ratio}:1)` : ''} — escalating to an extreme color for page ${pageNumber}`
+        `${verification ? ` (measured ${verification.ratio}:1${verification.uncertain ? ', uncertain background' : ''})` : ''} — escalating to an extreme color for page ${pageNumber}`
       );
       appliedColor = computeCompliantColor(cd.foreground, cd.background, EXTREME_TARGET_RATIO).color;
       applyColor(appliedColor);
       verification = await verify();
     }
 
-    if (!verification || !verification.passes) {
-      return {
-        issueId: issue.id,
-        success: false,
-        before,
-        after: 'unknown',
-        error: `Fix did not verify even after escalating to ${appliedColor} ` +
-          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`,
-      };
+    if (!verification || !verification.passes || verification.uncertain) {
+      // applyColor() above already mutated the shared `doc` (possibly
+      // twice, including the extreme escalation) -- since this is being
+      // reported as a failure, `doc` must not retain that unverified
+      // change. `content` is the pristine pre-fix page content decoded at
+      // the top of this method (applyColor always splices from it fresh,
+      // never from a prior write), so writing it back is a full revert.
+      // Without this, AiAnalysisService.applyApprovedSuggestions() saving
+      // this same `doc` -- which it does whenever any OTHER fix in the
+      // same batch succeeds -- would silently persist this "failed" color
+      // change into the final output anyway.
+      writePageContent(doc, pageNumber, content);
+      const error = verification?.uncertain
+        ? 'Could not confidently measure the background near this text (every nearby sampled region showed ' +
+          'meaningful color variation -- either adjacent contamination, or a genuinely non-uniform background ' +
+          'like a photo or gradient) — skipping rather than risking a false pass/fail; likely needs manual review'
+        : `Fix did not verify even after escalating to ${appliedColor} ` +
+          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`;
+      return { issueId: issue.id, success: false, before, after: 'unknown', error };
     }
 
     logger.info(

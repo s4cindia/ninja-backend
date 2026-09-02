@@ -45,6 +45,15 @@ const GRID_CELL_PX = 80;
 // low-contrast text (e.g. true #999999) still measures as failing either way.
 const DARK_SAMPLE_PERCENTILE = 0.05;
 
+// Used only by sampleBackgroundRobust (fix-verification path, not detection
+// above). Above this luminance-variance value, no candidate patch looked
+// confidently "flat" (background-like) — e.g. a 50/50 straddle of black
+// (lum 0) and white (lum 1) pixels has variance 0.25; real background
+// patches, even mildly textured ones, measured well under this in testing.
+// Lets color-contrast-verification.ts distinguish "genuinely failed to
+// verify" from "couldn't confidently measure the background here at all."
+export const FLAT_VARIANCE_THRESHOLD = 0.02;
+
 /**
  * PDF Contrast Validator
  *
@@ -240,6 +249,129 @@ export class PdfContrastValidator {
       r: subset.reduce((s, v) => s + v.r, 0) / take,
       g: subset.reduce((s, v) => s + v.g, 0) / take,
       b: subset.reduce((s, v) => s + v.b, 0) / take,
+    };
+  }
+
+  /**
+   * Background estimate used only by fix-verification (color-contrast-
+   * verification.ts) — sampleAverage's single fixed strip ("5px directly
+   * above the text bbox") assumes each line of text sits in isolation over
+   * its background. For densely-packed lines (tables, stacked lists,
+   * captions) that strip can land on a rule, cell fill, or the *previous*
+   * line's ink instead of true background: itemH is derived purely from
+   * font size, with no awareness of actual line spacing.
+   *
+   * Tries several candidate patches near the text, ordered nearest-to-
+   * farthest / most-to-least likely to share the flagged text's own
+   * surface — "directly above" and "to the right" are both immediately
+   * adjacent to the text (typically the same table cell/row), while
+   * "further above" deliberately skips past an entire line height and is
+   * the most likely of the three to land on a genuinely different row,
+   * cell, or card with its own fill.
+   *
+   * Selection is variance-first (true background is comparatively flat;
+   * a patch straddling glyph/rule/fill edges is not) but NOT variance-only
+   * — an earlier version of this method picked whichever candidate was
+   * flattest across all three regardless of position, which let a flat
+   * *wrong* surface win (e.g. a uniformly-white previous table row beating
+   * a uniformly-dark current cell fill, both variance ~0). When multiple
+   * candidates are confidently flat, `expectedBackground` — the caller's
+   * prior belief about what this text's background should be, typically
+   * the ratio detector's own original reading — breaks the tie in favor of
+   * whichever flat candidate actually matches it, rather than trusting
+   * flatness alone. Without a hint, the nearest-in-priority flat candidate
+   * wins (already the safer choice by position).
+   *
+   * Reproduced against a live document: a batch of ~40 apply-to-pdf
+   * color-contrast fixes failed verification at ratios as low as 1.1:1
+   * even after escalating to pure black text, consistent with the
+   * background sample having picked up a table cell fill/rule sitting
+   * just above the flagged row rather than the page's true background.
+   *
+   * KNOWN LIMITATION: `expectedBackground` only helps when it's actually
+   * trustworthy. For a *static* page element (a permanent fill/rule, as
+   * opposed to nearby text, which fixes recolor over the course of a
+   * batch), the same narrow strip fools detection identically to fix-time
+   * verification -- so the hint can itself already be the wrong (fill's)
+   * color, and this method has no way to know that from local pixel data
+   * alone. That specific case remains unresolved by this method; see the
+   * "KNOWN LIMITATION" test in color-contrast-verification.test.ts. It
+   * does not appear to be what the live document above actually hit,
+   * though (a static fill fooling detection would bias the caller's
+   * moderate/extreme color choice toward white, not black, which is what
+   * every one of those real failures used) -- more likely an adjacent
+   * line's own fix, applied earlier in the same batch, darkened what a
+   * later issue's fix-time verification sees relative to what analysis
+   * saw before that batch started. That case this method does handle:
+   * text contamination is inherently sparse/high-variance, not flat, so
+   * variance-based selection already routes around it, and the hint (a
+   * pre-batch reading) additionally out-votes a same-batch drift when
+   * multiple candidates do end up looking flat.
+   *
+   * Returns null only when no candidate patch has any in-bounds pixels.
+   */
+  sampleBackgroundRobust(
+    data: Uint8ClampedArray,
+    x: number, top: number, itemW: number, itemH: number,
+    cw: number, ch: number,
+    expectedBackground?: RgbColor
+  ): { color: RgbColor; variance: number } | null {
+    const candidates: Array<{ x: number; y: number; w: number; h: number }> = [
+      { x, y: top - 5, w: itemW, h: 5 },             // directly above (sampleAverage's original strip)
+      { x: x + itemW + 4, y: top, w: 6, h: itemH },  // to the right of the run, same vertical band
+      { x, y: top - itemH - 5, w: itemW, h: 5 },     // further above, past a plausible previous row — riskiest
+    ];
+
+    const samples = candidates
+      .map(c => this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch))
+      .filter((s): s is { color: RgbColor; variance: number } => s !== null);
+    if (samples.length === 0) return null;
+
+    const flat = samples.filter(s => s.variance <= FLAT_VARIANCE_THRESHOLD);
+    if (flat.length === 0) {
+      // Nothing confidently flat anywhere nearby — return the least-bad
+      // reading; the caller still flags this uncertain via the same
+      // variance threshold, it just needs *a* color to report a ratio for.
+      return samples.reduce((a, b) => (b.variance < a.variance ? b : a));
+    }
+    if (!expectedBackground) return flat[0]; // priority order above already favors the safer/nearer candidate
+
+    return flat.reduce((best, s) =>
+      this.colorDistanceSq(s.color, expectedBackground) < this.colorDistanceSq(best.color, expectedBackground)
+        ? s
+        : best
+    );
+  }
+
+  private colorDistanceSq(a: RgbColor, b: RgbColor): number {
+    return (a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2;
+  }
+
+  /** Average color plus luminance variance for one rectangular patch. Null if the patch has no in-bounds pixels. */
+  private sampleWithVariance(
+    data: Uint8ClampedArray,
+    x: number, y: number, w: number, h: number,
+    cw: number, ch: number
+  ): { color: RgbColor; variance: number } | null {
+    const pixels: Array<{ lum: number; r: number; g: number; b: number }> = [];
+    for (let py = Math.max(0, y); py < Math.min(y + h, ch); py++) {
+      for (let px = Math.max(0, x); px < Math.min(x + w, cw); px++) {
+        const i = (py * cw + px) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        pixels.push({ lum: this.getLuminance(r, g, b), r, g, b });
+      }
+    }
+    if (pixels.length === 0) return null;
+
+    const meanLum = pixels.reduce((s, p) => s + p.lum, 0) / pixels.length;
+    const variance = pixels.reduce((s, p) => s + (p.lum - meanLum) ** 2, 0) / pixels.length;
+    return {
+      color: {
+        r: pixels.reduce((s, p) => s + p.r, 0) / pixels.length,
+        g: pixels.reduce((s, p) => s + p.g, 0) / pixels.length,
+        b: pixels.reduce((s, p) => s + p.b, 0) / pixels.length,
+      },
+      variance,
     };
   }
 
