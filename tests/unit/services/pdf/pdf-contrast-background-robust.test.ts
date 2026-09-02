@@ -19,6 +19,14 @@
  * render) specifically so the contaminated-vs-flat geometry is exact and
  * reproducible, unlike the font-rendering-dependent real-PDF tests
  * elsewhere in this suite.
+ *
+ * Flatness alone isn't sufficient, though (a review finding on the first
+ * version of this method): a flat candidate on a *different* surface than
+ * the text's own (an adjacent table row/cell with its own fill) can beat a
+ * contaminated-but-correct one just by having lower variance. The
+ * `expectedBackground` hint parameter — the caller's prior belief about
+ * this text's true background, typically the issue's own originally-
+ * detected reading — disambiguates between multiple flat candidates.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -101,5 +109,54 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
     // Way off-canvas in every direction.
     const result = pdfContrastValidator.sampleBackgroundRobust(data, -1000, -1000, 20, 10, CW, CH);
     expect(result).toBeNull();
+  });
+
+  it('without a hint, picks the nearer flat candidate over a farther one even when both are equally flat', () => {
+    const data = makeWhiteCanvas();
+    const x = 5, top = 25, itemW = 20, itemH = 10;
+
+    // Leave "directly above" contaminated (as in the first test) so it's
+    // excluded, but make BOTH remaining candidates confidently flat with
+    // different solid colors -- "to the right" (nearer/same-band) is dark,
+    // "further above" (farther/riskier) is white.
+    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);
+    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);       // right of run: flat, dark
+    // "further above" left as the default white background: flat, white.
+
+    const robust = pdfContrastValidator.sampleBackgroundRobust(data, x, top, itemW, itemH, CW, CH);
+    expect(robust).toBeTruthy();
+    expect(robust!.color.r).toBeCloseTo(40, 0); // the nearer (right-of-run) candidate wins, not the farther white one
+  });
+
+  it('with a hint, prefers the flat candidate matching it over a nearer-but-mismatched flat candidate', () => {
+    const data = makeWhiteCanvas();
+    const x = 5, top = 25, itemW = 20, itemH = 10;
+
+    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);                     // directly above: contaminated, excluded
+    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);       // right of run: flat, dark (nearer)
+    // "further above" stays flat, white (farther).
+
+    // Hint says the true background should be white -- overrides the
+    // position-priority default (which would otherwise pick the nearer,
+    // dark, wrong-surface candidate — see the previous test).
+    const robust = pdfContrastValidator.sampleBackgroundRobust(
+      data, x, top, itemW, itemH, CW, CH, { r: 255, g: 255, b: 255 }
+    );
+    expect(robust).toBeTruthy();
+    expect(robust!.color.r).toBeGreaterThan(250);
+  });
+
+  it('with a hint matching the nearer candidate, still picks it (hint and position agree)', () => {
+    const data = makeWhiteCanvas();
+    const x = 5, top = 25, itemW = 20, itemH = 10;
+
+    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);
+    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);
+
+    const robust = pdfContrastValidator.sampleBackgroundRobust(
+      data, x, top, itemW, itemH, CW, CH, { r: 40, g: 40, b: 40 }
+    );
+    expect(robust).toBeTruthy();
+    expect(robust!.color.r).toBeCloseTo(40, 0);
   });
 });

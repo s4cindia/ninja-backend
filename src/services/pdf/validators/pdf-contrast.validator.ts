@@ -257,40 +257,74 @@ export class PdfContrastValidator {
    * verification.ts) — sampleAverage's single fixed strip ("5px directly
    * above the text bbox") assumes each line of text sits in isolation over
    * its background. For densely-packed lines (tables, stacked lists,
-   * captions) that strip can land on the *previous* line's ink instead of
-   * true background: itemH is derived purely from font size, with no
-   * awareness of actual line spacing.
+   * captions) that strip can land on a rule, cell fill, or the *previous*
+   * line's ink instead of true background: itemH is derived purely from
+   * font size, with no awareness of actual line spacing.
    *
-   * Tries several candidate patches near the text and returns whichever has
-   * the lowest pixel-luminance variance — true background is comparatively
-   * flat, while a patch straddling glyph edges has high local contrast, so
-   * variance is a much stronger "is this actually background" signal than
-   * position alone. Reproduced against a live document: a batch of ~40
-   * apply-to-pdf color-contrast fixes failed verification at ratios as low
-   * as 1.1:1 even after escalating to pure black text, consistent with the
-   * background sample having picked up an adjacent, not-yet-fixed line's
-   * dark text rather than the page's true background.
+   * Tries several candidate patches near the text, ordered nearest-to-
+   * farthest / most-to-least likely to share the flagged text's own
+   * surface — "directly above" and "to the right" are both immediately
+   * adjacent to the text (typically the same table cell/row), while
+   * "further above" deliberately skips past an entire line height and is
+   * the most likely of the three to land on a genuinely different row,
+   * cell, or card with its own fill.
+   *
+   * Selection is variance-first (true background is comparatively flat;
+   * a patch straddling glyph/rule/fill edges is not) but NOT variance-only
+   * — an earlier version of this method picked whichever candidate was
+   * flattest across all three regardless of position, which let a flat
+   * *wrong* surface win (e.g. a uniformly-white previous table row beating
+   * a uniformly-dark current cell fill, both variance ~0). When multiple
+   * candidates are confidently flat, `expectedBackground` — the caller's
+   * prior belief about what this text's background should be, typically
+   * the ratio detector's own original reading — breaks the tie in favor of
+   * whichever flat candidate actually matches it, rather than trusting
+   * flatness alone. Without a hint, the nearest-in-priority flat candidate
+   * wins (already the safer choice by position).
+   *
+   * Reproduced against a live document: a batch of ~40 apply-to-pdf
+   * color-contrast fixes failed verification at ratios as low as 1.1:1
+   * even after escalating to pure black text, consistent with the
+   * background sample having picked up a table cell fill/rule sitting
+   * just above the flagged row rather than the page's true background.
    *
    * Returns null only when no candidate patch has any in-bounds pixels.
    */
   sampleBackgroundRobust(
     data: Uint8ClampedArray,
     x: number, top: number, itemW: number, itemH: number,
-    cw: number, ch: number
+    cw: number, ch: number,
+    expectedBackground?: RgbColor
   ): { color: RgbColor; variance: number } | null {
     const candidates: Array<{ x: number; y: number; w: number; h: number }> = [
       { x, y: top - 5, w: itemW, h: 5 },             // directly above (sampleAverage's original strip)
-      { x, y: top - itemH - 5, w: itemW, h: 5 },     // further above, past a plausible previous line
       { x: x + itemW + 4, y: top, w: 6, h: itemH },  // to the right of the run, same vertical band
+      { x, y: top - itemH - 5, w: itemW, h: 5 },     // further above, past a plausible previous row — riskiest
     ];
 
-    let best: { color: RgbColor; variance: number } | null = null;
-    for (const c of candidates) {
-      const sample = this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch);
-      if (!sample) continue;
-      if (!best || sample.variance < best.variance) best = sample;
+    const samples = candidates
+      .map(c => this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch))
+      .filter((s): s is { color: RgbColor; variance: number } => s !== null);
+    if (samples.length === 0) return null;
+
+    const flat = samples.filter(s => s.variance <= FLAT_VARIANCE_THRESHOLD);
+    if (flat.length === 0) {
+      // Nothing confidently flat anywhere nearby — return the least-bad
+      // reading; the caller still flags this uncertain via the same
+      // variance threshold, it just needs *a* color to report a ratio for.
+      return samples.reduce((a, b) => (b.variance < a.variance ? b : a));
     }
-    return best;
+    if (!expectedBackground) return flat[0]; // priority order above already favors the safer/nearer candidate
+
+    return flat.reduce((best, s) =>
+      this.colorDistanceSq(s.color, expectedBackground) < this.colorDistanceSq(best.color, expectedBackground)
+        ? s
+        : best
+    );
+  }
+
+  private colorDistanceSq(a: RgbColor, b: RgbColor): number {
+    return (a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2;
   }
 
   /** Average color plus luminance variance for one rectangular patch. Null if the patch has no in-bounds pixels. */

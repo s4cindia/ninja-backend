@@ -181,24 +181,28 @@ export class PdfContrastWriterService {
     };
     const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean } | null> => {
       const buffer = Buffer.from(await doc.save());
-      return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio);
+      return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio, cd.background);
     };
 
     let appliedColor = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio).color;
     applyColor(appliedColor);
     let verification = await verify();
 
-    if (!verification || !verification.passes) {
+    // `uncertain` gates success here exactly like `!passes` does — an
+    // uncertain measurement whose averaged color happens to produce a
+    // passing ratio is still not a confirmed fix; it must not short-circuit
+    // past escalation (and, below, must not be reported as success).
+    if (!verification || !verification.passes || verification.uncertain) {
       logger.info(
         `[ContrastWriter] Moderate correction (${appliedColor}) did not verify` +
-        `${verification ? ` (measured ${verification.ratio}:1)` : ''} — escalating to an extreme color for page ${pageNumber}`
+        `${verification ? ` (measured ${verification.ratio}:1${verification.uncertain ? ', uncertain background' : ''})` : ''} — escalating to an extreme color for page ${pageNumber}`
       );
       appliedColor = computeCompliantColor(cd.foreground, cd.background, EXTREME_TARGET_RATIO).color;
       applyColor(appliedColor);
       verification = await verify();
     }
 
-    if (!verification || !verification.passes) {
+    if (!verification || !verification.passes || verification.uncertain) {
       const error = verification?.uncertain
         ? 'Could not confidently measure the background near this text (no nearby sampled region looked ' +
           'like flat background rather than adjacent content) — skipping rather than risking a false pass/fail'

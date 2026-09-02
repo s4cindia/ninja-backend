@@ -42,12 +42,18 @@ export interface ContrastVerificationResult {
  * within `boundingBox` (top-left-origin, unscaled PDF points — the same
  * convention PdfContrastValidator attaches to AuditIssue.boundingBox).
  * Returns null if the page/region can't be rendered or sampled.
+ *
+ * `expectedBackgroundHex`, when passed (typically the issue's own
+ * originally-detected `contrastData.background`), disambiguates which of
+ * several equally-flat nearby candidates is the text's actual background —
+ * see sampleBackgroundRobust for why flatness alone isn't sufficient.
  */
 export async function verifyContrastInRegion(
   buffer: Buffer,
   pageNumber: number,
   boundingBox: { x: number; y: number; width: number; height: number },
-  requiredRatio: number
+  requiredRatio: number,
+  expectedBackgroundHex?: string
 ): Promise<ContrastVerificationResult | null> {
   let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
   try {
@@ -74,7 +80,8 @@ export async function verifyContrastInRegion(
     const itemH = Math.max(6, Math.round(boundingBox.height * RENDER_SCALE));
     const top = canvasY - itemH;
 
-    const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch);
+    const expectedBackground = expectedBackgroundHex ? pdfContrastValidator.hexToRgb(expectedBackgroundHex) : undefined;
+    const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, expectedBackground);
     const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
     if (!bgSample || !fgColor) return null;
 
