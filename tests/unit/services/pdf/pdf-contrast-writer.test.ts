@@ -178,8 +178,17 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     // applyApprovedSuggestions() saves this same `doc` whenever any OTHER
     // fix in the same batch succeeds, a fix reported as failed here would
     // otherwise still leak its unverified color change into the final
-    // output. Also doubles as regression coverage for `uncertain` gating
-    // success even when the mocked ratio nominally passes.
+    // output.
+    //
+    // Also doubles as regression coverage for `uncertain` gating success
+    // even when the ratio nominally passes -- a deliberate policy, not
+    // just contamination handling: this same mechanism is what makes text
+    // over a genuinely non-uniform background (a photo, a gradient, where
+    // every nearby patch legitimately varies) permanently unable to
+    // auto-apply, trading away that automation coverage for never
+    // claiming a fix that isn't reliably measurable actually worked (a
+    // second review finding, addressed by documentation rather than a
+    // behavior change -- see the comment at the gating check itself).
     const mockVerify = vi.mocked(verifyContrastInRegion);
     mockVerify.mockClear();
     mockVerify

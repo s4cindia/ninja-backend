@@ -192,6 +192,21 @@ export class PdfContrastWriterService {
     // uncertain measurement whose averaged color happens to produce a
     // passing ratio is still not a confirmed fix; it must not short-circuit
     // past escalation (and, below, must not be reported as success).
+    //
+    // Deliberate tradeoff (found in review): text sitting on a genuinely
+    // non-uniform background (a photo, a gradient) will *always* measure
+    // uncertain — every nearby patch legitimately varies, not just the
+    // ones affected by adjacent-content contamination — so this makes
+    // such cases permanently unable to auto-apply, where the old plain-
+    // average approach could nominally "succeed" on one. That's accepted
+    // deliberately, not overlooked: this file's own header already states
+    // its governing principle ("every failure mode bails to success:
+    // false rather than guessing... stays conservative"), and a WCAG
+    // contrast ratio isn't well-defined against a genuinely busy image in
+    // the first place (real guidance calls for a solid backplate behind
+    // such text, not just a color tweak) — reporting "could not
+    // confidently verify, needs manual review" is more honest here than
+    // claiming a fix that isn't reliably measurable actually worked.
     if (!verification || !verification.passes || verification.uncertain) {
       logger.info(
         `[ContrastWriter] Moderate correction (${appliedColor}) did not verify` +
@@ -215,8 +230,9 @@ export class PdfContrastWriterService {
       // change into the final output anyway.
       writePageContent(doc, pageNumber, content);
       const error = verification?.uncertain
-        ? 'Could not confidently measure the background near this text (no nearby sampled region looked ' +
-          'like flat background rather than adjacent content) — skipping rather than risking a false pass/fail'
+        ? 'Could not confidently measure the background near this text (every nearby sampled region showed ' +
+          'meaningful color variation -- either adjacent contamination, or a genuinely non-uniform background ' +
+          'like a photo or gradient) — skipping rather than risking a false pass/fail; likely needs manual review'
         : `Fix did not verify even after escalating to ${appliedColor} ` +
           `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`;
       return { issueId: issue.id, success: false, before, after: 'unknown', error };
