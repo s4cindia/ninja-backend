@@ -288,6 +288,26 @@ export class PdfContrastValidator {
    * background sample having picked up a table cell fill/rule sitting
    * just above the flagged row rather than the page's true background.
    *
+   * KNOWN LIMITATION: `expectedBackground` only helps when it's actually
+   * trustworthy. For a *static* page element (a permanent fill/rule, as
+   * opposed to nearby text, which fixes recolor over the course of a
+   * batch), the same narrow strip fools detection identically to fix-time
+   * verification -- so the hint can itself already be the wrong (fill's)
+   * color, and this method has no way to know that from local pixel data
+   * alone. That specific case remains unresolved by this method; see the
+   * "KNOWN LIMITATION" test in color-contrast-verification.test.ts. It
+   * does not appear to be what the live document above actually hit,
+   * though (a static fill fooling detection would bias the caller's
+   * moderate/extreme color choice toward white, not black, which is what
+   * every one of those real failures used) -- more likely an adjacent
+   * line's own fix, applied earlier in the same batch, darkened what a
+   * later issue's fix-time verification sees relative to what analysis
+   * saw before that batch started. That case this method does handle:
+   * text contamination is inherently sparse/high-variance, not flat, so
+   * variance-based selection already routes around it, and the hint (a
+   * pre-batch reading) additionally out-votes a same-batch drift when
+   * multiple candidates do end up looking flat.
+   *
    * Returns null only when no candidate patch has any in-bounds pixels.
    */
   sampleBackgroundRobust(
