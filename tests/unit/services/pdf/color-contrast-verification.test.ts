@@ -49,4 +49,30 @@ describe('verifyContrastInRegion', () => {
     expect(lenient!.passes).toBe(true);
     expect(strict!.ratio).toBe(lenient!.ratio); // same measurement, different bar
   });
+
+  it('correctly verifies true-black text with a table-style fill just above it, instead of sampling the fill as "background"', async () => {
+    // Reproduces a real failure from a live auto-remediation trial: a
+    // batch of ~40 apply-to-pdf color-contrast fixes measured as low as
+    // 1.1-1.9:1 even after escalating to pure black text. Root cause: the
+    // background sample is a fixed 5px strip positioned exactly "itemH
+    // above the text bbox" with no awareness of what's actually there —
+    // confirmed here by reproducing the exact failing magnitude (ratio
+    // ~1.2:1, comfortably failing 4.5:1) with a dark fill positioned where
+    // a table cell's shading or border commonly sits, directly above a row
+    // of cell text. Same failure mode with a horizontal rule line instead
+    // of a fill (a table row divider) — not exercised as a second test
+    // here since the mechanism and fix are identical.
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 95, y: 460, width: 200, height: 10, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText('Low contrast text', { x: 100, y: 450, size: 14, color: rgb(0, 0, 0) }); // true black
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyContrastInRegion(buffer, 1, BOUNDING_BOX, 4.5);
+
+    expect(result).toBeTruthy();
+    expect(result!.uncertain).toBe(false);
+    expect(result!.passes).toBe(true);
+    expect(result!.ratio).toBeGreaterThan(15); // true black on true white, not contaminated by the fill above
+  });
 });

@@ -179,7 +179,7 @@ export class PdfContrastWriterService {
       const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);
     };
-    const verify = async (): Promise<{ ratio: number; passes: boolean } | null> => {
+    const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean } | null> => {
       const buffer = Buffer.from(await doc.save());
       return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio);
     };
@@ -199,14 +199,12 @@ export class PdfContrastWriterService {
     }
 
     if (!verification || !verification.passes) {
-      return {
-        issueId: issue.id,
-        success: false,
-        before,
-        after: 'unknown',
-        error: `Fix did not verify even after escalating to ${appliedColor} ` +
-          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`,
-      };
+      const error = verification?.uncertain
+        ? 'Could not confidently measure the background near this text (no nearby sampled region looked ' +
+          'like flat background rather than adjacent content) — skipping rather than risking a false pass/fail'
+        : `Fix did not verify even after escalating to ${appliedColor} ` +
+          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`;
+      return { issueId: issue.id, success: false, before, after: 'unknown', error };
     }
 
     logger.info(

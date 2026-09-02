@@ -125,8 +125,8 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     const mockVerify = vi.mocked(verifyContrastInRegion);
     mockVerify.mockClear();
     mockVerify
-      .mockResolvedValueOnce({ ratio: 1.8, passes: false, foreground: '#aaaaaa', background: '#ffffff' })
-      .mockResolvedValueOnce({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff' });
+      .mockResolvedValueOnce({ ratio: 1.8, passes: false, foreground: '#aaaaaa', background: '#ffffff', uncertain: false })
+      .mockResolvedValueOnce({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
 
     const doc = await realPdfWithText(60, 450, 14, { bold: false });
     const originalReport = await pdfAuditService.runAuditFromBuffer(
@@ -159,7 +159,11 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
 
     if (!result.success) {
-      expect(result.error).toContain('did not verify');
+      // Either message is a valid "never claim success" outcome — an
+      // isolated large-text case like this should normally find a
+      // confidently flat nearby patch (the "did not verify" branch), but
+      // tolerate the "uncertain" branch too rather than pin exact rendering.
+      expect(result.error).toMatch(/did not verify|Could not confidently measure/);
       expect(result.after).toBe('unknown');
     }
     // If this environment's rendering happens to verify successfully, that's

@@ -19,7 +19,7 @@
 
 import { createCanvas } from '@napi-rs/canvas';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { pdfContrastValidator, RgbColor } from './validators/pdf-contrast.validator';
+import { pdfContrastValidator, RgbColor, FLAT_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 
 // Must match PdfContrastValidator's own render scale — the sampled region
 // only lines up with the original detection if both render at the same scale.
@@ -30,6 +30,11 @@ export interface ContrastVerificationResult {
   passes: boolean;
   foreground: string;
   background: string;
+  // True when no candidate background patch near the text looked confidently
+  // flat (see sampleBackgroundRobust) — the ratio/passes above are still the
+  // best available estimate, but callers should treat a failing result as
+  // "couldn't reliably measure" rather than "genuinely fails contrast."
+  uncertain: boolean;
 }
 
 /**
@@ -69,16 +74,17 @@ export async function verifyContrastInRegion(
     const itemH = Math.max(6, Math.round(boundingBox.height * RENDER_SCALE));
     const top = canvasY - itemH;
 
-    const bgColor: RgbColor | null = pdfContrastValidator.sampleAverage(data, canvasX, top - 5, itemW, 5, cw, ch);
+    const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch);
     const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
-    if (!bgColor || !fgColor) return null;
+    if (!bgSample || !fgColor) return null;
 
-    const ratio = pdfContrastValidator.calculateContrastRatio(fgColor, bgColor);
+    const ratio = pdfContrastValidator.calculateContrastRatio(fgColor, bgSample.color);
     return {
       ratio: Math.round(ratio * 100) / 100,
       passes: ratio >= requiredRatio,
       foreground: pdfContrastValidator.rgbToHex(fgColor),
-      background: pdfContrastValidator.rgbToHex(bgColor),
+      background: pdfContrastValidator.rgbToHex(bgSample.color),
+      uncertain: bgSample.variance > FLAT_VARIANCE_THRESHOLD,
     };
   } catch {
     return null;
