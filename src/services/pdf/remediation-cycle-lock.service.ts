@@ -33,8 +33,12 @@ export type RemediationCycleSource =
 /** Lock ttl for automatic staleness-based recovery from a crashed worker.
  * Paired with a heartbeat (see startHeartbeat) so a legitimately long-running
  * cycle never crosses this threshold while still genuinely in progress --
- * this value only ever matters for a lock that was truly abandoned. */
-const STALE_LOCK_MS = 20 * 60 * 1000;
+ * this value only ever matters for a lock that was truly abandoned. Exported
+ * so callers that need to reason about lock staleness directly (e.g.
+ * auto-remediation-loop.service.ts's reconcileIfOrphaned, which checks it as
+ * part of a cross-table query rather than via getLockStatus) use the exact
+ * same threshold instead of risking silent drift from a duplicated value. */
+export const STALE_LOCK_MS = 20 * 60 * 1000;
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 

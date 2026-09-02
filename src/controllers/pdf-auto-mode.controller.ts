@@ -24,7 +24,7 @@ export class PdfAutoModeController {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
       const jobId = req.job!.id;
 
-      const trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
+      let trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
       if (!trial) {
         throw AppError.badRequest('This job has no associated comparison trial -- auto mode is only available for trial jobs.');
       }
@@ -32,7 +32,18 @@ export class PdfAutoModeController {
         throw AppError.badRequest('Trial is not in auto mode. Set mode to "auto" before starting.');
       }
       if (trial.autoStatus === 'running') {
-        throw AppError.conflict('Auto mode is already running for this trial.', 'AUTO_MODE_ALREADY_RUNNING');
+        // autoStatus can be stuck at 'running' from a crashed previous run
+        // (e.g. an ECS deploy drained the task mid-round) -- reconcile
+        // against the loop's own lock before treating this as a real
+        // conflict, so a genuinely-dead run doesn't block a fresh start.
+        await autoRemediationLoopService.reconcileIfOrphaned(trial.id);
+        trial = await prisma.comparisonTrial.findUnique({ where: { id: trial.id } });
+        if (trial?.autoStatus === 'running') {
+          throw AppError.conflict('Auto mode is already running for this trial.', 'AUTO_MODE_ALREADY_RUNNING');
+        }
+      }
+      if (!trial) {
+        throw AppError.notFound('Trial not found.');
       }
 
       // Fire-and-forget -- client polls the status endpoint below. Attach a
@@ -63,9 +74,13 @@ export class PdfAutoModeController {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
       const jobId = req.job!.id;
 
-      const trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
+      let trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
       if (!trial) {
         throw AppError.notFound('This job has no associated comparison trial.');
+      }
+      if (trial.autoStatus === 'running') {
+        await autoRemediationLoopService.reconcileIfOrphaned(trial.id);
+        trial = (await prisma.comparisonTrial.findUnique({ where: { id: trial.id } })) ?? trial;
       }
 
       res.json({
@@ -100,9 +115,14 @@ export class PdfAutoModeController {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
       const jobId = req.job!.id;
 
-      const trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
+      let trial = await prisma.comparisonTrial.findUnique({ where: { ninjaJobId: jobId } });
       if (!trial) {
         throw AppError.notFound('This job has no associated comparison trial.');
+      }
+
+      if (trial.autoStatus === 'running') {
+        await autoRemediationLoopService.reconcileIfOrphaned(trial.id);
+        trial = (await prisma.comparisonTrial.findUnique({ where: { id: trial.id } })) ?? trial;
       }
 
       if (trial.autoStatus !== 'running') {
