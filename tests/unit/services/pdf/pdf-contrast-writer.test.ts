@@ -171,6 +171,36 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     // verification", not "this exact scenario must fail everywhere".
   });
 
+  it('reverts the rewritten page content when verification ends as uncertain, instead of leaking an unverified color change', async () => {
+    // Found by a local `codex exec review` pass: applyColor() mutates the
+    // shared `doc` before verification even runs, and neither failure
+    // branch undid that mutation. Since AiAnalysisService.
+    // applyApprovedSuggestions() saves this same `doc` whenever any OTHER
+    // fix in the same batch succeeds, a fix reported as failed here would
+    // otherwise still leak its unverified color change into the final
+    // output. Also doubles as regression coverage for `uncertain` gating
+    // success even when the mocked ratio nominally passes.
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: false })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: true });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-uncertain-revert', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+    const beforeContent = decodePageContent(doc, 1)!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not confidently measure');
+    const afterContent = decodePageContent(doc, 1)!;
+    expect(afterContent).toBe(beforeContent); // reverted despite the mocked ratio nominally "passing"
+  });
+
   it('fails gracefully when the issue has no contrastData', async () => {
     const doc = await realPdfWithText(100, 450, 14);
     const result = await pdfContrastWriterService.fixColorContrast(doc, contrastIssue({ contrastData: undefined }));

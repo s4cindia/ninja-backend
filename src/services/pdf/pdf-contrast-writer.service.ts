@@ -203,6 +203,17 @@ export class PdfContrastWriterService {
     }
 
     if (!verification || !verification.passes || verification.uncertain) {
+      // applyColor() above already mutated the shared `doc` (possibly
+      // twice, including the extreme escalation) -- since this is being
+      // reported as a failure, `doc` must not retain that unverified
+      // change. `content` is the pristine pre-fix page content decoded at
+      // the top of this method (applyColor always splices from it fresh,
+      // never from a prior write), so writing it back is a full revert.
+      // Without this, AiAnalysisService.applyApprovedSuggestions() saving
+      // this same `doc` -- which it does whenever any OTHER fix in the
+      // same batch succeeds -- would silently persist this "failed" color
+      // change into the final output anyway.
+      writePageContent(doc, pageNumber, content);
       const error = verification?.uncertain
         ? 'Could not confidently measure the background near this text (no nearby sampled region looked ' +
           'like flat background rather than adjacent content) — skipping rather than risking a false pass/fail'
