@@ -14,6 +14,7 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { logger } from '../../../lib/logger';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { PdfParseResult } from '../pdf-comprehensive-parser.service';
+import { pdfConfig } from '../../../config/pdf.config';
 
 /**
  * RGB color representation
@@ -27,8 +28,6 @@ export interface RgbColor {
 
 // Render scale — 1.5x gives good resolution without excessive memory
 const RENDER_SCALE = 1.5;
-// Max pages to contrast-check per document (comprehensive scan only)
-const MAX_PAGES_CONTRAST = 50;
 // Max issues emitted per page (spatial deduplication also applied)
 const MAX_ISSUES_PER_PAGE = 20;
 // Spatial grid cell size in canvas pixels (avoid duplicate issues for nearby text)
@@ -87,10 +86,11 @@ export class PdfContrastValidator {
     this.issueCounter = 0;
 
     const issues: AuditIssue[] = [];
-    const pages = parsed.pages.slice(0, MAX_PAGES_CONTRAST);
+    const cap = pdfConfig.maxContrastPages;
+    const pages = cap > 0 ? parsed.pages.slice(0, cap) : parsed.pages;
 
-    if (parsed.pages.length > MAX_PAGES_CONTRAST) {
-      logger.warn(`[PdfContrastValidator] Large document — checking first ${MAX_PAGES_CONTRAST} of ${parsed.pages.length} pages`);
+    if (cap > 0 && parsed.pages.length > cap) {
+      logger.warn(`[PdfContrastValidator] MAX_CONTRAST_PAGES=${cap} — checking first ${cap} of ${parsed.pages.length} pages`);
     }
 
     for (const page of pages) {
