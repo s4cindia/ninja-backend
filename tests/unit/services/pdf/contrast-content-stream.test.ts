@@ -166,4 +166,125 @@ ET
     expect(second!.internalFillColorOp).toBeUndefined();
     expect(third!.internalFillColorOp).toBeUndefined();
   });
+
+  // Live-confirmed bug (real 805-page document): Td/TD/T* offsets are in
+  // text space and must be scaled by the current text matrix's own a/d
+  // before folding into the running device-space position. Every fixture
+  // above uses an identity-scale Tm (`1 0 0 1 e f Tm`), which never
+  // exercised this — the bug was invisible to all of them. A real TOC page
+  // in the pilot document used a ~19x Tm scale with plain Td continuations
+  // for every entry; 116 of 120 text units were Td-positioned, and every
+  // one missed the 12pt tolerance, with the miss distance growing linearly
+  // down the page (100+pt by the 11th line) because the unscaled error
+  // compounds with each further Td.
+  describe('non-identity text matrix scale (Td/TD/T* offset scaling)', () => {
+    it('scales a Td offset by the text matrix\'s own scale, not the raw text-space number', () => {
+      // Tm sets a 10x scale at device (50, 700). A Td of (0, -2) is 2 text-
+      // space units — at 10x scale, that is a 20pt device-space move, so the
+      // second line's true baseline is 680, not 698 (which unscaled Td would
+      // have produced).
+      const stream = `BT
+0 0 0 rg
+10 0 0 10 50 700 Tm
+<41> Tj
+0 -2 Td
+<42> Tj
+ET
+`;
+      // The old bug's (wrong, unscaled) prediction for the second line was
+      // 700 - 2 = 698 -- close enough to the FIRST line's own anchor (700)
+      // that it matches line 1, not line 2, at that position: proof the old
+      // code could never have correctly located a scaled continuation line.
+      const wrongUnscaledMatch = locateTextRun(stream, { x: 50, baselineY: 698 });
+      expect(wrongUnscaledMatch).toBeTruthy();
+      expect(stream.slice(wrongUnscaledMatch!.start, wrongUnscaledMatch!.end)).toContain('<41> Tj');
+
+      const correctMatch = locateTextRun(stream, { x: 50, baselineY: 680 });
+      expect(correctMatch).toBeTruthy();
+      expect(correctMatch!.ambiguous).toBe(false);
+      const span = stream.slice(correctMatch!.start, correctMatch!.end);
+      expect(span).toContain('<42> Tj');
+      expect(span).not.toContain('<41> Tj');
+    });
+
+    it('scales TD the same way, and its implicit TL update stays in text-space units', () => {
+      const stream = `BT
+0 0 0 rg
+10 0 0 10 50 700 Tm
+<41> Tj
+0 -2 TD
+<42> Tj
+T*
+<43> Tj
+ET
+`;
+      // TD's ty (-2) becomes both the Td-equivalent move AND the new TL
+      // (2, in text-space units) -- so the following T* must ALSO scale by
+      // the current 10x Tm, landing another 20pt down, not 2pt.
+      const line2 = locateTextRun(stream, { x: 50, baselineY: 680 });
+      expect(line2).toBeTruthy();
+      expect(stream.slice(line2!.start, line2!.end)).toContain('<42> Tj');
+
+      const line3 = locateTextRun(stream, { x: 50, baselineY: 660 });
+      expect(line3).toBeTruthy();
+      expect(stream.slice(line3!.start, line3!.end)).toContain('<43> Tj');
+    });
+
+    it('resets the tracked scale to identity on BT, so a later unscaled text object is unaffected by an earlier scaled one', () => {
+      const stream = `q BT 10 0 0 10 50 700 Tm <41> Tj ET Q
+q BT 1 0 0 1 50 600 Tm <42> Tj 0 -24 Td <43> Tj ET Q
+`;
+      // Second block is identity-scale (matches every other fixture in this
+      // file) -- its own Td should behave exactly as before this fix.
+      const match = locateTextRun(stream, { x: 50, baselineY: 576 });
+      expect(match).toBeTruthy();
+      expect(stream.slice(match!.start, match!.end)).toContain('<43> Tj');
+    });
+
+    it('tracks a scale change mid-object when Tm fires again (not just once at BT)', () => {
+      // First line at 10x scale, Tm resets to 5x scale, then a Td continues
+      // at the NEW scale -- the tracked a/d must follow the latest Tm, not
+      // whatever was set once at the start of the text object.
+      const stream = `BT
+0 0 0 rg
+10 0 0 10 50 700 Tm
+<41> Tj
+5 0 0 5 50 650 Tm
+<42> Tj
+0 -2 Td
+<43> Tj
+ET
+`;
+      const match = locateTextRun(stream, { x: 50, baselineY: 640 }); // 650 - (2 * 5)
+      expect(match).toBeTruthy();
+      expect(stream.slice(match!.start, match!.end)).toContain('<43> Tj');
+    });
+
+    it('preserves a literal zero scale component from Tm instead of defaulting it to 1', () => {
+      // Tm's "a" is 0 here (an out-of-scope rotated/degenerate matrix this
+      // module can't represent -- it only tracks the diagonal, never b/c).
+      // A Td's tx must then contribute nothing to the x position, not be
+      // treated as if unscaled -- CodeRabbit correctly flagged an earlier
+      // `|| 1` fallback here as silently inventing a scale the matrix
+      // doesn't have.
+      const stream = `BT
+0 0 0 rg
+0 1 -1 0 50 700 Tm
+<41> Tj
+20 0 Td
+<42> Tj
+ET
+`;
+      // Both show ops land at the exact same anchor (700) since tx's
+      // contribution is scaled by a=0 -- a same-point collision, which is
+      // exactly what locateTextRun's own ambiguity check exists to flag.
+      const match = locateTextRun(stream, { x: 50, baselineY: 700 });
+      expect(match).toBeTruthy();
+      expect(match!.ambiguous).toBe(true);
+
+      // No unit should ever land at x=70 (50 + unscaled tx=20) -- that
+      // would mean the old `|| 1` fallback treated the offset as unscaled.
+      expect(locateTextRun(stream, { x: 70, baselineY: 700 })).toBeNull();
+    });
+  });
 });

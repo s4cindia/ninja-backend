@@ -129,6 +129,25 @@ function findFillColorOps(
  * fires. Ends a run (and starts the next) on every positioning op and on
  * `ET`; a bare color-setting op does not end a run — it's expected to sit
  * inside a run's own span (see `internalFillColorOp` on TextRunMatch).
+ *
+ * Live-confirmed bug (real 805-page document): `Td`/`TD`'s tx/ty — and
+ * `T*`/`'`/`"`'s TL-derived offset — are expressed in *text space*, not
+ * device space (PDF32000-1:2008 §9.4.2). Per spec they must be transformed
+ * through the *current* text line matrix's own scale before being folded
+ * into the running device-space position; this previously accumulated them
+ * as raw, unscaled numbers. A line positioned via a fresh `Tm` (which sets
+ * an absolute device-space position via its own e/f directly) always
+ * anchored correctly; every subsequent `Td`-positioned continuation line
+ * within the same scaled text object was wrong, and the error compounded
+ * with each further `Td` — confirmed on a real TOC page where 116 of 120
+ * text units are `Td`-positioned: distance to the correct anchor grew
+ * roughly linearly down the page (115pt -> 535pt over 11 lines), so every
+ * one of them missed the 12pt tolerance and locateTextRun returned null.
+ * 42% of contrast issues document-wide failed to locate for this reason.
+ * Tracks only the line matrix's scale (tlmA, tlmD), matching this file's
+ * existing axis-aligned-only convention for the graphics-state CTM above —
+ * b/c (rotation/skew) are assumed zero throughout, same assumption content-
+ * stream.ts's caller-side rotation guard already depends on.
  */
 function findTextUnits(tokens: Token[]): TextUnit[] {
   const units: TextUnit[] = [];
@@ -139,6 +158,23 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   let tld = 0;
   let tmE = 0;
   let tmF = 0;
+  // Current text line matrix's own scale — set by Tm, reset by BT. Td/TD/T*
+  // offsets are in text space and must be scaled by these before they can
+  // be folded into tmE/tmF, which deviceX/deviceY treat as already in the
+  // same space Tm's own e/f are in (device space, since Tm replaces the
+  // whole matrix at once rather than accumulating relative to it).
+  //
+  // A literal 0 parsed from Tm is kept as-is, not defaulted to 1: a Tm with
+  // a genuinely zero a or d component means Td/TD/T* contribute nothing
+  // along that axis, and forcing it to 1 would silently invent a scale the
+  // matrix doesn't have. This only matters for a Tm this module can't
+  // represent anyway (b/c rotation/skew, always ignored here) leaking a
+  // collapsed diagonal through — in that case, multiple runs freezing onto
+  // the same anchor is caught by locateTextRun's own proximity-ambiguity
+  // check below, same safety net that already covers any other same-point
+  // collision.
+  let tlmA = 1;
+  let tlmD = 1;
   const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
 
   let runStart = -1;
@@ -170,7 +206,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
         break;
       }
-      case 'BT': tmE = 0; tmF = 0; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; break;
+      case 'BT': tmE = 0; tmF = 0; tlmA = 1; tlmD = 1; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; break;
       case 'TL': tld = num(operands[operands.length - 1]); break;
       // A positioning op only ends the current run if a show op has already
       // fired since it began — otherwise this is still the run's lead-in
@@ -181,21 +217,23 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         const tx = num(operands[operands.length - 2]);
         const ty = num(operands[operands.length - 1]);
         if (op === 'TD') tld = -ty;
-        tmE += tx;
-        tmF += ty;
+        tmE += tlmA * tx;
+        tmF += tlmD * ty;
         break;
       }
       case 'Tm':
         if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
+        tlmA = num(operands[operands.length - 6]);
+        tlmD = num(operands[operands.length - 3]);
         tmE = num(operands[operands.length - 2]);
         tmF = num(operands[operands.length - 1]);
         break;
       case 'T*':
         if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
-        tmF -= tld;
+        tmF -= tlmD * tld;
         break;
       case 'Tj': case 'TJ': case "'": case '"': {
-        if (op === "'" || op === '"') tmF -= tld;
+        if (op === "'" || op === '"') tmF -= tlmD * tld;
         if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runHasShow = true; }
         break;
       }
