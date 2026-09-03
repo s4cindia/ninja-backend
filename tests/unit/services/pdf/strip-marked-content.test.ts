@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
-import { stripMcidMarkedContent, prepareDocumentForRetag } from '../../../../src/services/pdf/strip-marked-content';
+import {
+  stripMcidMarkedContent,
+  prepareDocumentForRetag,
+  resolvePagePropertyMcidStates,
+} from '../../../../src/services/pdf/strip-marked-content';
 import { tokenize } from '../../../../src/services/zone-extractor/seam-c/content-stream';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 
@@ -54,13 +58,45 @@ describe('stripMcidMarkedContent', () => {
     expect(result.content).toContain('OUTER-AFTER');
   });
 
-  it('bails on the named-properties-resource BDC form, leaving content entirely unchanged', () => {
+  it('bails on the named-properties-resource BDC form when no property states are supplied', () => {
     const content = 'q /OC /MC0 BDC ARTWORK EMC Q /P <</MCID 0>> BDC MORE EMC';
     const result = stripMcidMarkedContent(content);
 
     expect(result.bailedOnUnsupportedForm).toBe(true);
     expect(result.removedCount).toBe(0);
     expect(result.content).toBe(content); // byte-for-byte unchanged
+  });
+
+  it('bails on the named-properties-resource BDC form when the property is absent from the supplied states', () => {
+    const content = 'q /P0 /MC0 BDC ARTWORK EMC Q';
+    // Map is non-empty but doesn't mention "MC0" -- must still bail, not
+    // silently default to "not tagged".
+    const result = stripMcidMarkedContent(content, new Map([['SomeOtherProp', 'not-mcid']]));
+
+    expect(result.bailedOnUnsupportedForm).toBe(true);
+    expect(result.content).toBe(content);
+  });
+
+  it('strips the named-properties-resource BDC form when the property is confirmed MCID-tagged', () => {
+    const content = 'q /Part /P0 BDC ARTWORK EMC Q';
+    const result = stripMcidMarkedContent(content, new Map([['P0', 'mcid']]));
+
+    expect(result.bailedOnUnsupportedForm).toBe(false);
+    expect(result.removedCount).toBe(1);
+    expect(result.content).not.toContain('BDC');
+    expect(result.content).not.toContain('EMC');
+    expect(result.content).toContain('ARTWORK');
+  });
+
+  it('preserves (without bailing or stripping) a named-properties BDC confirmed not MCID-tagged', () => {
+    // e.g. an /OC optional-content-group property -- a real, resolvable
+    // property that legitimately isn't a structure-tree MCID mark.
+    const content = 'q /OC /MC0 BDC ARTWORK EMC Q';
+    const result = stripMcidMarkedContent(content, new Map([['MC0', 'not-mcid']]));
+
+    expect(result.bailedOnUnsupportedForm).toBe(false);
+    expect(result.removedCount).toBe(0);
+    expect(result.content).toBe(content);
   });
 
   it('is a no-op on content with no marked content at all', () => {
@@ -126,7 +162,9 @@ describe('prepareDocumentForRetag', () => {
 
   it('is all-or-nothing: one page with an unsupported BDC form aborts the whole document unchanged', async () => {
     const doc = await buildTaggedDoc(3);
-    // Corrupt page 2 with a named-properties-resource BDC the stripper won't touch.
+    // Corrupt page 2 with a named-properties-resource BDC pointing at a
+    // property that was never registered in any /Resources /Properties
+    // dict -- unresolvable, so still bails even with the named-form support.
     const page2Content = decodePageContent(doc, 2)!;
     writePageContent(doc, 2, page2Content.replace('/Part <</MCID 0>> BDC', '/OC /MC0 BDC'));
 
@@ -141,6 +179,36 @@ describe('prepareDocumentForRetag', () => {
     expect(decodePageContent(doc, 1)).toContain('BDC');
   });
 
+  it('strips a page using the named-properties-resource BDC form when its property is registered as MCID-tagged', async () => {
+    // Live-confirmed bug (real 805-page document): page 2 used this exact
+    // form -- `/Tag /PropertyName BDC` indirecting through a real,
+    // registered /Resources /Properties entry -- and strip-and-retag bailed
+    // on it every round, so the isHeadingShell retag gate (PR #515)
+    // correctly *triggered* a retag attempt that could never succeed.
+    const doc = await buildTaggedDoc(3);
+
+    const propRef = doc.context.register(doc.context.obj({ MCID: 0 }));
+    const propertiesRef = doc.context.register(doc.context.obj({ P0: propRef }));
+    const resourcesRef = doc.context.register(doc.context.obj({ Properties: propertiesRef }));
+    const page2 = doc.getPage(1);
+    page2.node.set(PDFName.of('Resources'), resourcesRef);
+
+    const page2Content = decodePageContent(doc, 2)!;
+    writePageContent(doc, 2, page2Content.replace('/Part <</MCID 0>> BDC', '/Part /P0 BDC'));
+
+    const result = prepareDocumentForRetag(doc);
+
+    expect(result.success).toBe(true);
+    expect(result.pagesStripped).toBe(3);
+    expect(result.bailedOnPage).toBeNull();
+    expect(doc.catalog.get(PDFName.of('StructTreeRoot'))).toBeUndefined();
+    for (let i = 0; i < 3; i++) {
+      const after = decodePageContent(doc, i + 1)!;
+      expect(after).not.toContain('BDC');
+      expect(after).toContain('Tj');
+    }
+  });
+
   it('reports success: false with no changes when there is nothing to strip', async () => {
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -153,5 +221,33 @@ describe('prepareDocumentForRetag', () => {
     expect(result.pagesStripped).toBe(0);
     expect(result.bailedOnPage).toBeNull();
     expect(doc.catalog.get(PDFName.of('StructTreeRoot'))).toBeUndefined(); // never had one
+  });
+});
+
+describe('resolvePagePropertyMcidStates', () => {
+  it('returns an empty map when the page has no /Resources /Properties dict', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    expect(resolvePagePropertyMcidStates(doc, 1).size).toBe(0);
+  });
+
+  it('resolves each property to "mcid" or "not-mcid" based on whether its dict carries /MCID', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const mcidPropRef = doc.context.register(doc.context.obj({ MCID: 0 }));
+    const ocPropRef = doc.context.register(doc.context.obj({ Type: PDFName.of('OCG') }));
+    const propertiesRef = doc.context.register(
+      doc.context.obj({ P0: mcidPropRef, MC0: ocPropRef })
+    );
+    const resourcesRef = doc.context.register(doc.context.obj({ Properties: propertiesRef }));
+    doc.getPage(0).node.set(PDFName.of('Resources'), resourcesRef);
+
+    const states = resolvePagePropertyMcidStates(doc, 1);
+
+    expect(states.get('P0')).toBe('mcid');
+    expect(states.get('MC0')).toBe('not-mcid');
+    expect(states.get('NeverRegistered')).toBeUndefined();
   });
 });
