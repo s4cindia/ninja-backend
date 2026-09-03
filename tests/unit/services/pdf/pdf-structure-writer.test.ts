@@ -200,4 +200,26 @@ describe('pdf-structure-writer.service — fixHeadingHierarchy honest success re
     expect(results[0].after).toBe('No headings required renaming');
     expect(results[0].error).toBeUndefined();
   });
+
+  it('does not treat "H0" as a heading -- not a valid PDF/UA structure type', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const h0Ref = doc.context.register(doc.context.obj({ S: PDFName.of('H0'), K: 0 }));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([h0Ref]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    // Same "zero heading elements" honest-failure path as the Figure/P-only
+    // case above -- an "H0"-only tree has nothing fixHeadingHierarchy can
+    // treat as an Hn element to renumber.
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/no heading.*elements to fix/i);
+  });
 });

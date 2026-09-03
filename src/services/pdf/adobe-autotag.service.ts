@@ -73,7 +73,7 @@ function requireAsset(asset: Asset | undefined, label: string): Asset {
  * The Adobe AutoTag report is XLSX (not XML), so we count directly from the PDF structure tree
  * which is always present in Adobe-tagged output.
  */
-async function countStructureElements(taggedPdfBuffer: Buffer): Promise<AutoTagElementCounts> {
+export async function countStructureElements(taggedPdfBuffer: Buffer): Promise<AutoTagElementCounts> {
   const counts: AutoTagElementCounts = { figures: 0, tables: 0, headings: 0, paragraphs: 0, lists: 0 };
   try {
     const pdfDoc = await PDFDocument.load(taggedPdfBuffer, { ignoreEncryption: true });
@@ -94,7 +94,7 @@ async function countStructureElements(taggedPdfBuffer: Buffer): Promise<AutoTagE
         const tag = sTag.toString().replace(/^\//, '');
         if (tag === 'Figure') counts.figures++;
         else if (tag === 'Table') counts.tables++;
-        else if (/^H\d?$/.test(tag)) counts.headings++;
+        else if (/^H([1-9])?$/.test(tag)) counts.headings++; // bare "H" or H1-H9 -- "H0" is not a valid PDF/UA structure type
         else if (tag === 'P') counts.paragraphs++;
         else if (tag === 'L') counts.lists++;
       }

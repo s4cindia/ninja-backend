@@ -378,7 +378,7 @@ export class PdfStructureWriterService {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
-      const m = /^H(\d)$/.exec(sTag.toString().replace(/^\//, ''));
+      const m = /^H([1-9])$/.exec(sTag.toString().replace(/^\//, ''));
       if (m) headingRefs.push({ ref, level: parseInt(m[1], 10) });
     });
 
@@ -464,7 +464,7 @@ export class PdfStructureWriterService {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
-      const m = /^H(\d)$/.exec(sTag.toString().replace(/^\//, ''));
+      const m = /^H([1-9])$/.exec(sTag.toString().replace(/^\//, ''));
       if (m) allHeadings.push({ ref, level: parseInt(m[1], 10) });
     });
 
@@ -726,7 +726,7 @@ export class PdfStructureWriterService {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
       if (!sTag) return;
-      const m = /^H(\d)$/.exec(sTag);
+      const m = /^H([1-9])$/.exec(sTag);
       if (!m) return;
 
       const level = parseInt(m[1], 10);
