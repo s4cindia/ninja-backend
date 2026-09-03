@@ -27,13 +27,32 @@ import { PDFDocument, PDFDict, PDFName, PDFArray, PDFRef } from 'pdf-lib';
 // alt-text, table-header, or heading-structure writer can attach to.
 const GROUPING_ONLY_TYPES = new Set(['Document', 'Part', 'Div', 'Sect', 'Art', 'NonStruct', 'Private']);
 
+// Matches H1-H9 — pdf-lib's own PDFName round-trips heading tags as plain
+// "H<digit>" strings once the leading "/" is stripped, same convention
+// fixHeadingHierarchy uses to parse them.
+const HEADING_TYPE_RE = /^H\d$/;
+
 export interface StructureTreeCompleteness {
   /** Total structure elements found (any /S value, at any depth). */
   totalElements: number;
   /** Elements whose /S is a real content type, not a grouping-only container. */
   semanticElements: number;
+  /** Elements whose /S is H1-H9 (any heading level), at any depth. */
+  headingElements: number;
   /** True structure tree exists, but zero elements carry any semantic (non-grouping) tag. */
   isEmptyShell: boolean;
+  /**
+   * True structure tree exists with SOME semantic content (isEmptyShell is
+   * false) but carries zero heading tags anywhere. semanticElements lumps
+   * every content type together, so a tree can clear the isEmptyShell bar on
+   * a couple of Figure/P tags while having nothing fixHeadingHierarchy can
+   * attach to. Confirmed on a real pilot document: 11 semantic elements (1
+   * Figure, 10 P), 0 of any Hn type, across an 805-page book the heuristic
+   * detector found 143 H1s in by scanning visible text/font size directly —
+   * headings were simply never tagged, even though a handful of other
+   * content was.
+   */
+  isHeadingShell: boolean;
 }
 
 /**
@@ -52,6 +71,7 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
 
   let totalElements = 0;
   let semanticElements = 0;
+  let headingElements = 0;
   const visited = new Set<string>();
 
   function walk(node: unknown, depth: number): void {
@@ -70,8 +90,10 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
     if (node instanceof PDFDict) {
       const s = node.get(PDFName.of('S'));
       if (s) {
+        const type = s.toString().replace(/^\//, '');
         totalElements++;
-        if (!GROUPING_ONLY_TYPES.has(s.toString().replace(/^\//, ''))) semanticElements++;
+        if (!GROUPING_ONLY_TYPES.has(type)) semanticElements++;
+        if (HEADING_TYPE_RE.test(type)) headingElements++;
       }
       const kids = node.get(PDFName.of('K'));
       if (kids) walk(kids, depth + 1);
@@ -83,6 +105,8 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
   return {
     totalElements,
     semanticElements,
+    headingElements,
     isEmptyShell: totalElements > 0 && semanticElements === 0,
+    isHeadingShell: totalElements > 0 && headingElements === 0,
   };
 }
