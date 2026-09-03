@@ -167,9 +167,16 @@ export class PdfContrastValidator {
       if (usedCells.has(cellKey)) continue;
       usedCells.add(cellKey);
 
-      // Background: average of a 5px strip just above the text bbox
-      const bgColor = this.sampleAverage(data, canvasX, top - 5, itemW, 5, cw, ch);
-      if (!bgColor) continue;
+      // Background: same tiered/flat-variance search sampleBackgroundRobust
+      // already does for fix-verification (PR #513/#514) -- a single fixed
+      // 5px strip above the text lands squarely inside a solid-fill band on
+      // a genuinely static background, corrupting this reading (cd.background)
+      // at the source; no amount of improving the fix-time search can rescue
+      // a hint that's already wrong. No expectedBackground hint here (this
+      // *is* the first-ever reading; there's nothing prior to compare against).
+      const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch);
+      if (!bgSample) continue;
+      const bgColor = bgSample.color;
 
       // Text color: darkest 30th-percentile pixels within the text bbox
       const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
