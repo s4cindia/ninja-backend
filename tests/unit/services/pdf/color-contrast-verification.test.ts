@@ -84,6 +84,75 @@ describe('verifyContrastInRegion', () => {
     expect(result!.ratio).toBeGreaterThan(15); // true black on true white, not contaminated by the fill above
   });
 
+  it('given an accurate hint reaching beyond tier 1, escapes a band wide/tall enough to swallow tiers 0 AND 1', async () => {
+    // Re-running the earlier (tier-0/1-only) fix against a real document
+    // showed the actual failures didn't go away: ~40-50 apply-to-pdf
+    // color-contrast fixes still failed per round, at the same ~1.1-1.9:1
+    // magnitude as before that fix shipped. This band is sized to cover
+    // the text's own row (contaminating the "right of run" candidates at
+    // every tier -- a wide element is never escaped by moving sideways)
+    // and the space above it through tier 1, leaving tier 2 clear -- the
+    // class of contamination the wider search exists to reach past.
+    //
+    // The hint here ('#ffffff') is, like the first test in this file,
+    // deliberately accurate -- proving the algorithm correctly uses tier 2+
+    // when it has a trustworthy hint to check candidates against. See the
+    // KNOWN LIMITATION test directly below for why this fixture's *real*
+    // hint (from actually running detection against it) is not, in fact,
+    // trustworthy -- the honest, load-bearing finding of this round.
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 90, y: 450, width: 310, height: 35, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText('Low contrast text', { x: 100, y: 450, size: 14, color: rgb(0, 0, 0) }); // true black
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyContrastInRegion(buffer, 1, BOUNDING_BOX, 4.5, '#ffffff');
+
+    expect(result).toBeTruthy();
+    expect(result!.uncertain).toBe(false);
+    expect(result!.passes).toBe(true);
+    expect(result!.ratio).toBeGreaterThan(15); // found true white at tier 2+, not the band
+  });
+
+  it('KNOWN LIMITATION: the same wide band also fools detection, so its real hint cannot rescue it either -- widening the search alone does not fix this class of failure', async () => {
+    // The load-bearing finding from this round: a band wide/tall enough
+    // to swallow tiers 0-1 is, for the same reason as the narrower static
+    // fill documented above, ALSO wide enough to swallow detection's own
+    // tier-0-only strip -- confirmed here by running the real pipeline and
+    // getting contrastData.background === the band's own color, not white.
+    // Widening fix-time's search doesn't help when the hint it's handed is
+    // itself already wrong: the hint-based tie-break correctly prefers
+    // whichever flat candidate matches the (wrong) hint, which is the band
+    // itself, at any tier.
+    //
+    // This matters beyond just this fixture: it means the "recurring wide
+    // page-template element" hypothesis -- offered as the likely
+    // explanation for the live document's continued failures after the
+    // narrower hint fix shipped -- does NOT actually predict those
+    // failures resolving here either, once checked rigorously (both this
+    // fixture and the earlier static-fill one collapse into the same
+    // detection-is-equally-fooled limitation the moment a *static* element
+    // is involved). The real mechanism behind those live failures remains
+    // unconfirmed; this widened search is left in as a genuine, tested
+    // improvement for cases where the hint IS trustworthy and reaches
+    // beyond tier 1 (see the test above), not as a claimed fix for the
+    // specific live document.
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 90, y: 450, width: 310, height: 35, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText('Low contrast text', { x: 100, y: 450, size: 14, color: rgb(0.6, 0.6, 0.6) });
+    const buffer = Buffer.from(await src.save());
+
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, 'known-limitation-wide-band', 'test.pdf', 'custom', ['contrast']);
+    const issue = report.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+    expect(issue.contrastData!.background).not.toBe('#ffffff'); // detection itself was fooled by the band
+
+    const result = await verifyContrastInRegion(buffer, 1, issue.boundingBox!, 4.5, issue.contrastData!.background);
+
+    expect(result).toBeTruthy();
+    expect(result!.passes).toBe(false); // the fix (if attempted) would still fail here -- a known, accepted gap
+  });
+
   it('without a background hint, a same-band flat-but-wrong surface (the fill itself) can still win', async () => {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 600]);
