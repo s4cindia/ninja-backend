@@ -23,21 +23,65 @@
  * by contrast-content-stream.ts) rather than calling into any of that
  * module's own tagging logic.
  *
- * Scope: only strips the inline-property-dict form Seam C itself emits and
- * this document's own pre-existing tagging uses — `/Tag <</MCID n>> BDC`.
- * The other spec-legal form, `/Tag /PropertyName BDC` (indirecting through
- * the page's /Resources /Properties dictionary), is a different, unverified
- * code path — bails rather than guessing at it. Handles proper BDC/EMC
- * nesting (a stack, not a flat scan) even though the one real document this
- * was built against never nests, since nesting is spec-legal and getting
- * pairing wrong would be a correctness bug waiting to happen.
+ * Scope: strips the inline-property-dict form Seam C itself emits and this
+ * document's own pre-existing tagging uses — `/Tag <</MCID n>> BDC` — plus
+ * the other spec-legal form, `/Tag /PropertyName BDC`, indirecting through
+ * the page's /Resources /Properties dictionary, when that dictionary lets
+ * this module positively confirm the referenced property either does or
+ * doesn't carry /MCID (see resolvePagePropertyMcidStates). A property that
+ * can't be confirmed either way (dict missing, or this entry absent from
+ * it) is treated as unrecognized and bails, same as any other genuinely
+ * unsupported form — never guessed at. Handles proper BDC/EMC nesting (a
+ * stack, not a flat scan) even though the one real document this was
+ * originally built against never nests, since nesting is spec-legal and
+ * getting pairing wrong would be a correctness bug waiting to happen.
  */
 
-import { PDFDocument, PDFName } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFRef } from 'pdf-lib';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 
 type Token = ReturnType<typeof tokenize>[number];
+
+/** Whether a named /Resources /Properties entry is confirmed MCID-tagged, confirmed not, or couldn't be resolved at all. */
+export type PropertyMcidState = 'mcid' | 'not-mcid' | 'unknown';
+
+/**
+ * Resolves a page's /Resources /Properties dictionary into per-name MCID
+ * status, for the named-properties-resource BDC form (/Tag /PropertyName
+ * BDC). Absent entries (or an absent Properties/Resources dict entirely)
+ * simply don't appear in the returned map — callers must treat a missing
+ * key as 'unknown' (bail), not as "assume not tagged": an unresolvable
+ * property could just as easily be a genuinely MCID-tagged one this
+ * couldn't confirm, and silently leaving a real MCID-tagged region
+ * un-stripped risks the exact nested/conflicting-MCID-numbering bug this
+ * whole module exists to prevent (see module doc comment above) once Seam
+ * C wraps its own BDC/EMC around the same, still-tagged content.
+ */
+export function resolvePagePropertyMcidStates(doc: PDFDocument, pageNumber: number): Map<string, PropertyMcidState> {
+  const map = new Map<string, PropertyMcidState>();
+  try {
+    const page = doc.getPage(pageNumber - 1);
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw;
+    if (!(resources instanceof PDFDict)) return map;
+
+    const propsRaw = resources.get(PDFName.of('Properties'));
+    const props = propsRaw instanceof PDFRef ? doc.context.lookup(propsRaw) : propsRaw;
+    if (!(props instanceof PDFDict)) return map;
+
+    for (const [key, valueRaw] of props.entries()) {
+      const value = valueRaw instanceof PDFRef ? doc.context.lookup(valueRaw) : valueRaw;
+      const name = key instanceof PDFName ? key.decodeText() : String(key);
+      const hasMcid = value instanceof PDFDict && value.get(PDFName.of('MCID')) !== undefined;
+      map.set(name, hasMcid ? 'mcid' : 'not-mcid');
+    }
+  } catch {
+    // Non-fatal -- an empty map means every named-form BDC on this page is
+    // treated as 'unknown' (bail), same as if this function didn't exist.
+  }
+  return map;
+}
 
 export interface StripMarkedContentResult {
   content: string;
@@ -63,8 +107,16 @@ interface OpenMark {
 /**
  * Strips /MCID-tagged BDC…EMC pairs from a content stream, preserving
  * everything between them byte-for-byte. See module doc comment for scope.
+ *
+ * `propertyMcidStates` (from resolvePagePropertyMcidStates) resolves the
+ * named-properties-resource BDC form; omit it (or leave a given property
+ * name out of it) to always bail on that form, matching this function's
+ * original behavior.
  */
-export function stripMcidMarkedContent(content: string): StripMarkedContentResult {
+export function stripMcidMarkedContent(
+  content: string,
+  propertyMcidStates?: Map<string, PropertyMcidState>
+): StripMarkedContentResult {
   const tokens = tokenize(content);
   const stack: OpenMark[] = [];
   // [start, end) byte ranges to delete, applied right-to-left so earlier
@@ -104,9 +156,20 @@ export function stripMcidMarkedContent(content: string): StripMarkedContentResul
       }
 
       if (dictOpenIdx === -1) {
-        // Named-properties-resource form (or something else unexpected) — bail entirely.
-        bailedOnUnsupportedForm = true;
-        stack.push({ start: -1, end: tk.end, isMcidTagged: false });
+        // Possibly the named-properties-resource form: [...][name /Tag][name /PropertyName].
+        const propOperand = operands[operands.length - 1];
+        const tagOperand = operands[operands.length - 2];
+        const isNamedForm = propOperand?.t === 'name' && tagOperand?.t === 'name';
+        const propState = isNamedForm ? propertyMcidStates?.get(propOperand.v.replace(/^\//, '')) : undefined;
+
+        if (isNamedForm && propState && propState !== 'unknown') {
+          stack.push({ start: tagOperand.start, end: tk.end, isMcidTagged: propState === 'mcid' });
+        } else {
+          // Genuinely unrecognized form, or a named-form property that
+          // couldn't be confirmed either way — bail entirely rather than guess.
+          bailedOnUnsupportedForm = true;
+          stack.push({ start: -1, end: tk.end, isMcidTagged: false });
+        }
       } else {
         const hasMcid = operands
           .slice(dictOpenIdx + 1, dictCloseIdx)
@@ -180,7 +243,8 @@ export function prepareDocumentForRetag(doc: PDFDocument): PrepareForRetagResult
     const pageNumber = i + 1;
     const content = decodePageContent(doc, pageNumber);
     if (content === null) { perPage.push(null); continue; }
-    const result = stripMcidMarkedContent(content);
+    const propertyMcidStates = resolvePagePropertyMcidStates(doc, pageNumber);
+    const result = stripMcidMarkedContent(content, propertyMcidStates);
     if (result.bailedOnUnsupportedForm) {
       return { success: false, pagesStripped: 0, totalPages: pageCount, bailedOnPage: pageNumber };
     }
