@@ -201,4 +201,84 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
     expect(robust).toBeTruthy();
     expect(robust!.color.r).toBeCloseTo(40, 0);
   });
+
+  describe('cross-page recurrence (pageRecurrenceCounts)', () => {
+    // Mirrors the source's own quantization exactly (SIGNATURE_POSITION_GRID_PX=40,
+    // SIGNATURE_COLOR_BUCKET=24) -- buildSignature itself is private, so this
+    // recomputes the same signature a given candidate would produce.
+    function signatureFor(x: number, y: number, rgb: [number, number, number]): string {
+      const qx = Math.round(x / 40);
+      const qy = Math.round(y / 40);
+      const [qr, qg, qb] = rgb.map(c => Math.round(c / 24));
+      return `${qx},${qy}|${qr},${qg},${qb}`;
+    }
+
+    it('excludes a flat candidate whose signature has recurred on 3+ prior pages, even though it would otherwise win', () => {
+      const data = makeWhiteCanvas();
+      // Tier 0 "above" is flat and black -- would normally win outright
+      // (checked first, no contest against the plain-white "right" candidate).
+      // Painted at the candidate's FULL width (ITEM_W), not a partial
+      // sliver -- a half-painted strip would be high-variance (contaminated,
+      // like buildContaminatedScene() above), not flat, and would already
+      // be excluded by the pre-existing variance filter regardless of this
+      // test's actual point (recurrence-based exclusion of a GENUINELY flat candidate).
+      paintRect(data, X, TOP - 5, ITEM_W, 5, [0, 0, 0]);
+
+      const tier0AboveSignature = signatureFor(X, TOP - 5, [0, 0, 0]);
+      const recurrenceCounts = new Map([[tier0AboveSignature, 3]]); // recurred on 3 distinct prior pages
+
+      const robust = pdfContrastValidator.sampleBackgroundRobust(
+        data, X, TOP, ITEM_W, ITEM_H, CW, CH, undefined, recurrenceCounts
+      );
+      expect(robust).toBeTruthy();
+      // Falls through to the "right" candidate instead -- true (white) background.
+      expect(robust!.color.r).toBeGreaterThan(250);
+    });
+
+    it('does not exclude a flat candidate whose signature has recurred on fewer than the threshold', () => {
+      const data = makeWhiteCanvas();
+      paintRect(data, X, TOP - 5, ITEM_W, 5, [0, 0, 0]);
+
+      const tier0AboveSignature = signatureFor(X, TOP - 5, [0, 0, 0]);
+      const recurrenceCounts = new Map([[tier0AboveSignature, 2]]); // below SUSPECT_PAGE_THRESHOLD (3)
+
+      const robust = pdfContrastValidator.sampleBackgroundRobust(
+        data, X, TOP, ITEM_W, ITEM_H, CW, CH, undefined, recurrenceCounts
+      );
+      expect(robust).toBeTruthy();
+      // Still wins -- same as today's behavior, not yet excluded.
+      expect(robust!.color.r).toBeCloseTo(0, 0);
+    });
+
+    it('with no pageRecurrenceCounts supplied at all, behaves exactly as before (fix-verification\'s call site)', () => {
+      const data = makeWhiteCanvas();
+      paintRect(data, X, TOP - 5, ITEM_W, 5, [0, 0, 0]);
+
+      const robust = pdfContrastValidator.sampleBackgroundRobust(data, X, TOP, ITEM_W, ITEM_H, CW, CH);
+      expect(robust).toBeTruthy();
+      expect(robust!.color.r).toBeCloseTo(0, 0);
+    });
+
+    it('falls back to the least-bad reading (not null) when the only flat candidate is suspect-recurring and nothing else is flat', () => {
+      const data = makeWhiteCanvas();
+      // Blanket everything any tier could reach in noise (same technique as
+      // the "every candidate contaminated" test above) so nothing else
+      // qualifies as flat, then paint ONE genuinely flat patch inside that
+      // noisy area and mark it suspect -- confirming exclusion still applies
+      // even when it's the only flat-looking candidate, and the method
+      // still returns a result rather than null.
+      paintNoise(data, X - 10, TOP - 45, ITEM_W + 90, 100);
+      paintRect(data, X, TOP - 5, ITEM_W, 5, [0, 0, 0]); // flat (full candidate width), overwriting the noise there
+
+      const recurrenceCounts = new Map([[signatureFor(X, TOP - 5, [0, 0, 0]), 5]]);
+
+      const robust = pdfContrastValidator.sampleBackgroundRobust(
+        data, X, TOP, ITEM_W, ITEM_H, CW, CH, undefined, recurrenceCounts
+      );
+      // Still returns a result (the least-bad of the full sample set) rather
+      // than null -- this method never claims "no answer", only "uncertain".
+      expect(robust).toBeTruthy();
+      expect(robust!.variance).toBeGreaterThan(0.02); // correctly reads as uncertain, not confidently the excluded flat patch
+    });
+  });
 });

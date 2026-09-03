@@ -64,6 +64,24 @@ export const FLAT_VARIANCE_THRESHOLD = 0.02;
 // image) gets sampled and mistaken for this text's own background.
 const MAX_SEARCH_TIERS = 4;
 
+// Cross-page recurrence detection (detection only -- see buildSignature and
+// the backgroundSignatureCounts field). Position quantized to this many
+// canvas px so minor per-occurrence jitter (different text lengths shifting
+// a running head's own reference point slightly) still counts as the same
+// recurring element.
+const SIGNATURE_POSITION_GRID_PX = 40;
+// Color quantized to buckets this wide (0-255 scale) so anti-aliasing/JPEG
+// noise between occurrences of the same real element doesn't fragment the
+// signature into many near-identical-but-technically-distinct entries.
+const SIGNATURE_COLOR_BUCKET = 24;
+// A signature must recur on at least this many DISTINCT EARLIER pages
+// before a candidate carrying it is excluded as a suspected decorative/
+// page-template element rather than genuine background. An absolute count,
+// not a fraction of document length -- a genuine recurring template element
+// appears at roughly the same rate regardless of how long the document is.
+// Starting value, not empirically tuned against a real-document corpus yet.
+const SUSPECT_PAGE_THRESHOLD = 3;
+
 /**
  * PDF Contrast Validator
  *
@@ -75,6 +93,11 @@ export class PdfContrastValidator {
   static readonly IS_IMPLEMENTED = true;
 
   private issueCounter = 0;
+  // Cross-page recurrence tracking (see buildSignature/SUSPECT_PAGE_THRESHOLD
+  // above) -- signature -> number of DISTINCT prior pages it's been seen on.
+  // Reset per validate() call; incremented once per page (not per item) in
+  // validatePageContrast, after that page's items are fully processed.
+  private backgroundSignatureCounts = new Map<string, number>();
 
   async validate(parsed: PdfParseResult): Promise<AuditIssue[]> {
     if (!parsed.parsedPdf) {
@@ -84,6 +107,7 @@ export class PdfContrastValidator {
 
     logger.info('[PdfContrastValidator] Starting contrast validation...');
     this.issueCounter = 0;
+    this.backgroundSignatureCounts = new Map();
 
     const issues: AuditIssue[] = [];
     const cap = pdfConfig.maxContrastPages;
@@ -135,6 +159,11 @@ export class PdfContrastValidator {
 
     const issues: AuditIssue[] = [];
     const usedCells = new Set<string>();
+    // Distinct background signatures actually seen on THIS page -- folded
+    // into the cross-page backgroundSignatureCounts once, after this page's
+    // items are done, so a signature repeated across multiple items on the
+    // SAME page counts as one page-occurrence, not several.
+    const signaturesSeenThisPage = new Set<string>();
 
     for (const rawItem of textContent.items) {
       if (issues.length >= MAX_ISSUES_PER_PAGE) break;
@@ -174,9 +203,15 @@ export class PdfContrastValidator {
       // at the source; no amount of improving the fix-time search can rescue
       // a hint that's already wrong. No expectedBackground hint here (this
       // *is* the first-ever reading; there's nothing prior to compare against).
-      const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch);
+      // backgroundSignatureCounts (cross-page recurrence so far, from EARLIER
+      // pages only -- this page's own occurrences aren't folded in until
+      // after its loop finishes below) lets this exclude a candidate that's
+      // recurred at the same position/color on enough prior pages to look
+      // like a page-template element rather than genuine background.
+      const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, undefined, this.backgroundSignatureCounts);
       if (!bgSample) continue;
       const bgColor = bgSample.color;
+      signaturesSeenThisPage.add(bgSample.signature);
 
       // Text color: darkest 30th-percentile pixels within the text bbox
       const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
@@ -220,7 +255,31 @@ export class PdfContrastValidator {
       }
     }
 
+    // Fold this page's distinct background signatures into the persistent,
+    // cross-page count -- once per signature, regardless of how many items
+    // on this page shared it. Deliberately after this page's own items are
+    // fully processed (see the call site above): a signature only excludes
+    // a candidate once it's recurred on prior pages, never the current one.
+    for (const signature of signaturesSeenThisPage) {
+      this.backgroundSignatureCounts.set(signature, (this.backgroundSignatureCounts.get(signature) ?? 0) + 1);
+    }
+
     return issues;
+  }
+
+  /**
+   * Quantizes a background candidate's canvas position and sampled color
+   * into a coarse signature string, tolerant of minor rendering jitter
+   * between different occurrences of the same real page element (see
+   * SIGNATURE_POSITION_GRID_PX / SIGNATURE_COLOR_BUCKET above).
+   */
+  private buildSignature(x: number, y: number, color: RgbColor): string {
+    const qx = Math.round(x / SIGNATURE_POSITION_GRID_PX);
+    const qy = Math.round(y / SIGNATURE_POSITION_GRID_PX);
+    const qr = Math.round(color.r / SIGNATURE_COLOR_BUCKET);
+    const qg = Math.round(color.g / SIGNATURE_COLOR_BUCKET);
+    const qb = Math.round(color.b / SIGNATURE_COLOR_BUCKET);
+    return `${qx},${qy}|${qr},${qg},${qb}`;
   }
 
   // ─── Pixel sampling helpers (public — reused by color-contrast-verification.ts
@@ -337,13 +396,26 @@ export class PdfContrastValidator {
    * multiple candidates do end up looking flat.
    *
    * Returns null only when no candidate patch has any in-bounds pixels.
+   *
+   * `pageRecurrenceCounts`, when supplied (detection only -- see
+   * PdfContrastValidator.validatePageContrast/buildSignature; fix-
+   * verification never passes this, so its behavior is entirely unchanged),
+   * additionally excludes a flat candidate whose position+color signature
+   * has already recurred on SUSPECT_PAGE_THRESHOLD+ earlier pages -- a
+   * signal a single-page flatness/hint check can't see at all. Unlike
+   * flatness or a position/hint match, recurrence across many pages can't
+   * be produced by a legitimate one-off background (a table cell's own
+   * fill, say) that just happens to be small and flat -- only a genuinely
+   * repeating page element does that, which is exactly the KNOWN
+   * LIMITATION case above this fixes.
    */
   sampleBackgroundRobust(
     data: Uint8ClampedArray,
     x: number, top: number, itemW: number, itemH: number,
     cw: number, ch: number,
-    expectedBackground?: RgbColor
-  ): { color: RgbColor; variance: number } | null {
+    expectedBackground?: RgbColor,
+    pageRecurrenceCounts?: Map<string, number>
+  ): { color: RgbColor; variance: number; signature: string } | null {
     // Tier 0 keeps its original two-candidate order (above, then right) --
     // this is the well-reviewed PR #513 behavior for the common case and
     // stays unchanged. From tier 1 on, "above"/"below" are pushed BEFORE
@@ -366,16 +438,44 @@ export class PdfContrastValidator {
     }
 
     const samples = candidates
-      .map(c => this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch))
-      .filter((s): s is { color: RgbColor; variance: number } => s !== null);
+      .map(c => {
+        const s = this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch);
+        return s ? { ...s, signature: this.buildSignature(c.x, c.y, s.color) } : null;
+      })
+      .filter((s): s is { color: RgbColor; variance: number; signature: string } => s !== null);
     if (samples.length === 0) return null;
 
-    const flat = samples.filter(s => s.variance <= FLAT_VARIANCE_THRESHOLD);
+    const isSuspectRecurring = (signature: string): boolean =>
+      (pageRecurrenceCounts?.get(signature) ?? 0) >= SUSPECT_PAGE_THRESHOLD;
+
+    // Suspect-recurring candidates are excluded from consideration entirely
+    // -- not just from the "confidently flat" bucket, but from the "least-
+    // bad" fallback pool too. A flat-but-suspect candidate would otherwise
+    // still win the least-bad reduce on its (low, but untrustworthy)
+    // variance alone, silently defeating the whole exclusion. Only fall
+    // back to considering suspect candidates when literally nothing else
+    // was sampled at all (every candidate on every tier is suspect) --
+    // and even then, force the result to read as uncertain (see below),
+    // since we specifically know it isn't trustworthy.
+    const nonSuspect = samples.filter(s => !isSuspectRecurring(s.signature));
+    const everyCandidateSuspect = nonSuspect.length === 0;
+    const consideredPool = everyCandidateSuspect ? samples : nonSuspect;
+
+    const flat = consideredPool.filter(s => s.variance <= FLAT_VARIANCE_THRESHOLD);
     if (flat.length === 0) {
-      // Nothing confidently flat anywhere nearby — return the least-bad
-      // reading; the caller still flags this uncertain via the same
-      // variance threshold, it just needs *a* color to report a ratio for.
-      return samples.reduce((a, b) => (b.variance < a.variance ? b : a));
+      // Nothing confidently flat (and not suspected-recurring, unless every
+      // candidate is) anywhere nearby — return the least-bad reading; the
+      // caller still flags this uncertain via the same variance threshold,
+      // it just needs *a* color to report a ratio for.
+      const leastBad = consideredPool.reduce((a, b) => (b.variance < a.variance ? b : a));
+      if (everyCandidateSuspect && leastBad.variance <= FLAT_VARIANCE_THRESHOLD) {
+        // Every candidate is suspect AND this one happens to look flat --
+        // report it as uncertain regardless, rather than silently trusting
+        // a reading we specifically know is likely a recurring page-template
+        // element, not real background.
+        return { ...leastBad, variance: FLAT_VARIANCE_THRESHOLD + 0.001 };
+      }
+      return leastBad;
     }
     if (!expectedBackground) return flat[0]; // priority order above already favors the safer/nearer candidate
 
