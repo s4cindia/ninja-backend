@@ -40,6 +40,12 @@ async function logStructureCompleteness(buffer: Buffer, dbJobId: string): Promis
         `${completeness.totalElements} element(s), 0 semantically tagged (no Figure/P/H/Table/etc). ` +
         `Writers that need a real content-typed element (e.g. alt-text) will find nothing to attach to.`
       );
+    } else if (completeness.isHeadingShell) {
+      logger.warn(
+        `[PDF Worker] Existing structure tree for job ${dbJobId} has ${completeness.semanticElements} ` +
+        `semantic element(s) but 0 heading tags (H1-H9) — fixHeadingHierarchy will find nothing to ` +
+        `rename regardless of how many heading-skip issues detection reports.`
+      );
     }
     return { structureTreeCompleteness: completeness };
   } catch (err) {
@@ -303,16 +309,25 @@ async function processPdfAccessibility(
 
       if (alreadyTagged) {
         completenessMeta = await logStructureCompleteness(fileBuffer, dbJobId);
-        const completeness = completenessMeta.structureTreeCompleteness as { isEmptyShell: boolean } | undefined;
+        const completeness = completenessMeta.structureTreeCompleteness as
+          { isEmptyShell: boolean; isHeadingShell: boolean } | undefined;
 
         // Bundled with forceAutoTag rather than a separate flag: forceAutoTag
         // is already scoped to Comparison Study trials only (the safety
         // boundary), and prepareDocumentForRetag's own all-or-nothing bail
         // plus this try/catch's fallback mean a failed attempt here can
         // never leave the document worse off than just using the existing
-        // (empty-shell) structure — only better or unchanged.
-        if (completeness?.isEmptyShell && forceAutoTag) {
-          logger.info(`[PDF Worker] Existing structure is an empty shell and forceAutoTag is set — attempting strip-and-retag for job ${dbJobId}`);
+        // (empty-shell/heading-shell) structure — only better or unchanged.
+        //
+        // isHeadingShell alongside isEmptyShell: a tree can clear the
+        // isEmptyShell bar on a couple of Figure/P tags while carrying zero
+        // heading tags — semanticElements lumps every content type
+        // together, so it doesn't see that gap on its own. Without this,
+        // fixHeadingHierarchy silently has nothing to rename on a document
+        // whose heading-skip issues detection still reports every round.
+        if ((completeness?.isEmptyShell || completeness?.isHeadingShell) && forceAutoTag) {
+          const reason = completeness?.isEmptyShell ? 'an empty shell' : 'missing heading tags';
+          logger.info(`[PDF Worker] Existing structure is ${reason} and forceAutoTag is set — attempting strip-and-retag for job ${dbJobId}`);
           try {
             const doc = await PDFDocument.load(fileBuffer);
             const prepResult = prepareDocumentForRetag(doc);

@@ -49,7 +49,9 @@ describe('checkStructureTreeCompleteness', () => {
     expect(result).toBeTruthy();
     expect(result!.totalElements).toBe(5);
     expect(result!.semanticElements).toBe(3); // P, Figure, H1 — not the grouping-only Part or the Document wrapper
+    expect(result!.headingElements).toBe(1);
     expect(result!.isEmptyShell).toBe(false);
+    expect(result!.isHeadingShell).toBe(false);
   });
 
   it('does not flag isEmptyShell for a genuinely empty tree (nothing to judge yet)', async () => {
@@ -63,5 +65,74 @@ describe('checkStructureTreeCompleteness', () => {
     // technically qualifies, which is correct: a tree with only a bare /Document
     // node and no real content is exactly the "nothing to attach to" case too.
     expect(result!.isEmptyShell).toBe(true);
+  });
+
+  it('flags isHeadingShell when semantic content exists but zero heading elements', async () => {
+    // Real pilot case: an 805-page document whose structure tree had 11
+    // semantic elements (1 Figure, 10 P) — clearing isEmptyShell — but zero
+    // Hn tags anywhere, despite a heuristic content scan finding 143 H1s.
+    // semanticElements alone can't see this gap because it lumps every
+    // content type together.
+    const doc = await buildDocWithStructureTree(['P', 'P', 'P', 'Figure']);
+    const result = checkStructureTreeCompleteness(doc);
+
+    expect(result).toBeTruthy();
+    expect(result!.semanticElements).toBe(4);
+    expect(result!.headingElements).toBe(0);
+    expect(result!.isEmptyShell).toBe(false);
+    expect(result!.isHeadingShell).toBe(true);
+  });
+
+  it('counts multiple heading levels toward headingElements', async () => {
+    const doc = await buildDocWithStructureTree(['H1', 'H2', 'H6', 'P']);
+    const result = checkStructureTreeCompleteness(doc);
+
+    expect(result).toBeTruthy();
+    expect(result!.headingElements).toBe(3);
+    expect(result!.isHeadingShell).toBe(false);
+  });
+
+  it('does not flag isHeadingShell for a genuinely empty tree (no semantic content to judge yet)', async () => {
+    // Regression: isHeadingShell used to key off totalElements (like
+    // isEmptyShell does), so a bare /Document wrapper with no kids at all
+    // satisfied both flags simultaneously — not the intended "has content,
+    // but no headings" signal.
+    const doc = await buildDocWithStructureTree([]);
+    const result = checkStructureTreeCompleteness(doc);
+
+    expect(result).toBeTruthy();
+    expect(result!.isEmptyShell).toBe(true);
+    expect(result!.isHeadingShell).toBe(false);
+  });
+
+  it('does not count "H0" as a heading — not a valid PDF/UA structure type', async () => {
+    const doc = await buildDocWithStructureTree(['H0', 'P']);
+    const result = checkStructureTreeCompleteness(doc);
+
+    expect(result).toBeTruthy();
+    expect(result!.headingElements).toBe(0);
+    expect(result!.isHeadingShell).toBe(true);
+  });
+
+  it('resolves a custom /S type through /RoleMap before classifying it', async () => {
+    // A document that tags its headings under a custom role name (e.g. a
+    // publisher-specific "/Title") rather than the standard "/H1" directly —
+    // legal per PDF32000-1:2008 §14.7.4.3. Without RoleMap resolution these
+    // would be invisible to both GROUPING_ONLY_TYPES and HEADING_TYPE_RE.
+    const doc = await buildDocWithStructureTree(['Title', 'Caption', 'P']);
+    const structTreeRootRef = doc.catalog.get(PDFName.of('StructTreeRoot'))!;
+    const structTreeRoot = doc.context.lookup(structTreeRootRef);
+    if (!(structTreeRoot && 'set' in structTreeRoot)) throw new Error('expected a dict');
+    (structTreeRoot as import('pdf-lib').PDFDict).set(
+      PDFName.of('RoleMap'),
+      doc.context.obj({ Title: PDFName.of('H1'), Caption: PDFName.of('Figure') }),
+    );
+
+    const result = checkStructureTreeCompleteness(doc);
+
+    expect(result).toBeTruthy();
+    expect(result!.headingElements).toBe(1); // Title -> H1
+    expect(result!.semanticElements).toBe(3); // Title->H1, Caption->Figure, P — none grouping-only
+    expect(result!.isHeadingShell).toBe(false);
   });
 });

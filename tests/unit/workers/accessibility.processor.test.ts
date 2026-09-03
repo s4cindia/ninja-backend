@@ -55,12 +55,37 @@ async function buildUntaggedDoc(): Promise<Buffer> {
   return Buffer.from(await doc.save());
 }
 
-/** A document with a real StructTreeRoot but at least one semantic (/Figure) element. */
+/**
+ * A document with a real StructTreeRoot but at least one semantic (/Figure)
+ * element — and, deliberately, zero heading (/H1-9) elements. Named for what
+ * it was originally written to represent (semantic content clears the
+ * isEmptyShell bar), but that alone is no longer "genuinely tagged" from a
+ * heading-hierarchy standpoint — see isHeadingShell in
+ * structure-tree-completeness.ts and the test below that exercises exactly
+ * this gap.
+ */
 async function buildGenuinelyTaggedDoc(): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.addPage([400, 600]);
   const figRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), K: 0 }));
   const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: figRef }));
+  const rootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef }));
+  doc.catalog.set(PDFName.of('StructTreeRoot'), rootRef);
+  return Buffer.from(await doc.save());
+}
+
+/**
+ * A document with real semantic content AND at least one heading element —
+ * clears both isEmptyShell and isHeadingShell, so neither retag trigger
+ * should fire. This is the fixture that actually represents "nothing to
+ * fix here"; buildGenuinelyTaggedDoc above (Figure-only) does not.
+ */
+async function buildFullyTaggedDoc(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  doc.addPage([400, 600]);
+  const figRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), K: 0 }));
+  const h1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('H1'), K: 1 }));
+  const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([figRef, h1Ref]) }));
   const rootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef }));
   doc.catalog.set(PDFName.of('StructTreeRoot'), rootRef);
   return Buffer.from(await doc.save());
@@ -165,8 +190,8 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
     expect(result.data?.autoTagSkipReason).toBe('already-tagged');
   });
 
-  it('does not attempt a retag when the existing structure has real semantic content', async () => {
-    const originalBuffer = await buildGenuinelyTaggedDoc();
+  it('does not attempt a retag when the existing structure has real semantic content, including headings', async () => {
+    const originalBuffer = await buildFullyTaggedDoc();
     vi.mocked(fileStorageService.getFile).mockResolvedValue(originalBuffer);
     vi.mocked(pdfParserService.parseBuffer).mockResolvedValue({ structure: { metadata: { isTagged: true } } } as any);
     vi.mocked(seamCTagService.tagPdf).mockRejectedValue(new Error('SEAM_C_ALREADY_TAGGED: document already has a /StructTreeRoot'));
@@ -177,6 +202,28 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
     expect(result.data?.autoTagStatus).toBe('skipped');
     expect(result.data?.retagOutcome).toBeUndefined();
     expect((result.data?.structureTreeCompleteness as any)?.isEmptyShell).toBe(false);
+    expect((result.data?.structureTreeCompleteness as any)?.isHeadingShell).toBe(false);
+  });
+
+  it('attempts a retag when the existing structure has semantic content but zero heading tags', async () => {
+    // Real pilot case (see structure-tree-completeness.ts's isHeadingShell
+    // doc comment): a tree can clear isEmptyShell on a couple of Figure/P
+    // tags while carrying no Hn elements at all, which fixHeadingHierarchy
+    // can never fix regardless of how many heading-skip issues detection
+    // reports. This fixture has no real page content to strip, so the
+    // attempt bails the same way "falls back to the existing structure
+    // when there is nothing to strip" does — the point here is that a
+    // retag is attempted at all, not that it succeeds.
+    const originalBuffer = await buildGenuinelyTaggedDoc();
+    vi.mocked(fileStorageService.getFile).mockResolvedValue(originalBuffer);
+    vi.mocked(pdfParserService.parseBuffer).mockResolvedValue({ structure: { metadata: { isTagged: true } } } as any);
+    vi.mocked(seamCTagService.tagPdf).mockRejectedValue(new Error('SEAM_C_ALREADY_TAGGED: document already has a /StructTreeRoot'));
+
+    const result = await processAccessibilityJob(makeJob({ forceAutoTag: true }));
+
+    expect((result.data?.structureTreeCompleteness as any)?.isEmptyShell).toBe(false);
+    expect((result.data?.structureTreeCompleteness as any)?.isHeadingShell).toBe(true);
+    expect(result.data?.retagOutcome).toBe('failed-strip-bailed');
   });
 
   it('strips and retags when the existing structure is an empty shell and forceAutoTag is set', async () => {

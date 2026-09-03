@@ -382,6 +382,29 @@ export class PdfStructureWriterService {
       if (m) headingRefs.push({ ref, level: parseInt(m[1], 10) });
     });
 
+    // A structure tree with zero Hn elements means there is nothing this
+    // method can ever fix, no matter how many HEADING-SKIP issues detection
+    // reports — detection uses a separate text/font-size heuristic that
+    // scans visible content directly, entirely independent of the tag tree
+    // (see structure-tree-completeness.ts's isHeadingShell, which exists to
+    // catch and retag exactly this case upstream). Bailing to failure here
+    // too, rather than reporting success, is a deliberate second line of
+    // defense: it stays honest even if that upstream check didn't run, was
+    // bypassed, or the tree became heading-empty some other way. Reporting
+    // success on a 0-Hn tree previously meant every one of these issues got
+    // silently marked resolved every round on documents whose headings were
+    // simply never tagged in the first place.
+    if (headingRefs.length === 0) {
+      logger.info('[StructureWriter] fixHeadingHierarchy: 0 heading(s) renamed (0 Hn elements found in structure tree)');
+      return issues.map(i => ({
+        issueId: i.id,
+        success: false,
+        before: 'Heading hierarchy with skipped levels',
+        after: 'unknown',
+        error: 'Structure tree has no heading (H1-H9) elements to fix — likely a sparse/incomplete tagging pass',
+      }));
+    }
+
     let currentLevel = 0;
     let fixCount = 0;
     for (const h of headingRefs) {
@@ -396,7 +419,16 @@ export class PdfStructureWriterService {
       }
     }
 
-    logger.info(`[StructureWriter] fixHeadingHierarchy: ${fixCount} heading(s) renamed`);
+    // fixCount can legitimately be 0 here even though headingRefs.length > 0
+    // (this call's own document-wide pass found nothing left to fix) — every
+    // caller invokes this with a single-issue array and no per-issue
+    // correlation (see @param below), so a batch apply over many
+    // HEADING-SKIP issues calls this once per issue; the first call resolves
+    // every real skip in one pass, and every subsequent call in the same
+    // batch correctly finds the tree already normalized. That is still a
+    // genuine success (the hierarchy IS correct after this call), unlike the
+    // headingRefs.length === 0 case above.
+    logger.info(`[StructureWriter] fixHeadingHierarchy: ${fixCount} heading(s) renamed (${headingRefs.length} Hn elements in structure tree)`);
     return issues.map(i => ({
       issueId: i.id,
       success: true,

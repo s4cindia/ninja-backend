@@ -27,13 +27,75 @@ import { PDFDocument, PDFDict, PDFName, PDFArray, PDFRef } from 'pdf-lib';
 // alt-text, table-header, or heading-structure writer can attach to.
 const GROUPING_ONLY_TYPES = new Set(['Document', 'Part', 'Div', 'Sect', 'Art', 'NonStruct', 'Private']);
 
+// Matches H1-H9 — pdf-lib's own PDFName round-trips heading tags as plain
+// "H<digit>" strings once the leading "/" is stripped, same convention
+// fixHeadingHierarchy uses to parse them. "H0" is deliberately excluded: it
+// is not a valid PDF/UA structure type (H, H1-H6, informally H1-H9), unlike
+// the bare "/H" tag which this regex also correctly excludes (not a digit).
+const HEADING_TYPE_RE = /^H[1-9]$/;
+
 export interface StructureTreeCompleteness {
   /** Total structure elements found (any /S value, at any depth). */
   totalElements: number;
   /** Elements whose /S is a real content type, not a grouping-only container. */
   semanticElements: number;
+  /** Elements whose /S is H1-H9 (any heading level), at any depth. */
+  headingElements: number;
   /** True structure tree exists, but zero elements carry any semantic (non-grouping) tag. */
   isEmptyShell: boolean;
+  /**
+   * True structure tree exists with SOME semantic content (isEmptyShell is
+   * false) but carries zero heading tags anywhere. semanticElements lumps
+   * every content type together, so a tree can clear the isEmptyShell bar on
+   * a couple of Figure/P tags while having nothing fixHeadingHierarchy can
+   * attach to. Confirmed on a real pilot document: 11 semantic elements (1
+   * Figure, 10 P), 0 of any Hn type, across an 805-page book the heuristic
+   * detector found 143 H1s in by scanning visible text/font size directly —
+   * headings were simply never tagged, even though a handful of other
+   * content was.
+   *
+   * Mutually exclusive with isEmptyShell by construction (requires
+   * semanticElements > 0, which isEmptyShell requires to be 0).
+   *
+   * Same accepted tradeoff as isEmptyShell: a document that legitimately has
+   * no headings (e.g. a single-page flyer, or a P-only document with no
+   * section structure at all) will also read as isHeadingShell — there is
+   * no way to distinguish "headings exist but weren't tagged" from
+   * "headings genuinely don't exist" from the structure tree alone. The
+   * retag decision this feeds happens before the accessibility audit runs
+   * (accessibility.processor.ts), so no heuristic heading-detection signal
+   * is available yet to cross-check against; doing so would require
+   * reordering the pipeline (audit before retag), which is out of scope
+   * here. In practice this is low-risk because prepareDocumentForRetag's
+   * own all-or-nothing bail means a false-positive retag trigger can only
+   * ever leave the tree unchanged or better, never worse.
+   */
+  isHeadingShell: boolean;
+}
+
+/**
+ * Reads /StructTreeRoot's own /RoleMap, if any: a dict of custom tag name ->
+ * standard tag name (PDF32000-1:2008 §14.7.4.3). A document that tags its
+ * headings as a custom role (e.g. /Title -> /H1) would otherwise have them
+ * invisible to both GROUPING_ONLY_TYPES and HEADING_TYPE_RE, which only ever
+ * see the raw /S value. Small and duplicated locally rather than imported
+ * from tagged-pdf-extractor.ts's own buildRoleMap — that module belongs to
+ * an unrelated zone-extraction subsystem, and this file's own header already
+ * establishes the project's preference for keeping structure-tree-walking
+ * helpers isolated per-feature over cross-module coupling.
+ */
+function buildRoleMap(structTreeRoot: PDFDict, doc: PDFDocument): Map<string, string> {
+  const roleMap = new Map<string, string>();
+  const rmRaw = structTreeRoot.get(PDFName.of('RoleMap'));
+  const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
+  if (!(rm instanceof PDFDict)) return roleMap;
+
+  for (const [key, value] of rm.entries()) {
+    const customTag = key instanceof PDFName ? key.decodeText() : String(key);
+    const stdTag = value instanceof PDFName ? value.decodeText() : null;
+    if (stdTag) roleMap.set(customTag, stdTag);
+  }
+  return roleMap;
 }
 
 /**
@@ -50,8 +112,11 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
   const structTreeRoot = doc.context.lookup(structTreeRootRef);
   if (!(structTreeRoot instanceof PDFDict)) return null;
 
+  const roleMap = buildRoleMap(structTreeRoot, doc);
+
   let totalElements = 0;
   let semanticElements = 0;
+  let headingElements = 0;
   const visited = new Set<string>();
 
   function walk(node: unknown, depth: number): void {
@@ -70,8 +135,11 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
     if (node instanceof PDFDict) {
       const s = node.get(PDFName.of('S'));
       if (s) {
+        const rawType = s.toString().replace(/^\//, '');
+        const type = roleMap.get(rawType) ?? rawType;
         totalElements++;
-        if (!GROUPING_ONLY_TYPES.has(s.toString().replace(/^\//, ''))) semanticElements++;
+        if (!GROUPING_ONLY_TYPES.has(type)) semanticElements++;
+        if (HEADING_TYPE_RE.test(type)) headingElements++;
       }
       const kids = node.get(PDFName.of('K'));
       if (kids) walk(kids, depth + 1);
@@ -83,6 +151,8 @@ export function checkStructureTreeCompleteness(doc: PDFDocument): StructureTreeC
   return {
     totalElements,
     semanticElements,
+    headingElements,
     isEmptyShell: totalElements > 0 && semanticElements === 0,
+    isHeadingShell: semanticElements > 0 && headingElements === 0,
   };
 }

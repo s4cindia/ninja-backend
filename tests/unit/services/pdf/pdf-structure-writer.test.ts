@@ -135,3 +135,69 @@ describe('pdf-structure-writer.service — traverseStructTree ordering', () => {
     expect(() => pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('deep-1')])).not.toThrow();
   });
 });
+
+describe('pdf-structure-writer.service — fixHeadingHierarchy honest success reporting', () => {
+  /**
+   * Live-confirmed bug (real 805-page document): the structure tree can
+   * have a StructTreeRoot and even a handful of non-heading semantic
+   * elements (Figure, P) while carrying zero Hn tags anywhere — HEADING-SKIP
+   * detection uses a separate text/font-size heuristic that scans visible
+   * content directly, entirely independent of the tag tree, so it can flag
+   * dozens of skips this method has no way to ever act on. Previously this
+   * unconditionally returned success:true regardless, so every one of those
+   * issues got silently marked resolved every round with "0 heading(s)
+   * renamed" in the logs and no way to tell from the FixResult alone that
+   * nothing was ever actually fixable.
+   */
+  it('reports failure, not success, when the structure tree has zero heading elements', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // Same shape the real pilot document had: some semantic content
+    // (Figure, P), but no Hn tags anywhere.
+    const figRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), K: 0 }));
+    const pRef = doc.context.register(doc.context.obj({ S: PDFName.of('P'), K: 1 }));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([figRef, pRef]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1'), headingIssue('issue-2')]);
+
+    expect(results).toHaveLength(2);
+    for (const r of results) {
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/no heading.*elements to fix/i);
+    }
+  });
+
+  it('still reports success when the tree has headings but this call finds nothing left to rename', async () => {
+    // Every real call site invokes this with a single-issue array and no
+    // per-issue correlation — a batch apply over many HEADING-SKIP issues
+    // calls this once per issue, and the first call resolves every real
+    // skip in one document-wide pass. A later call in the same batch
+    // correctly finds fixCount 0 with headings present; that's a genuine
+    // success (the hierarchy IS correct), unlike the zero-Hn case above.
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const h1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('H1'), K: 0 }));
+    const h2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('H2'), K: 1 }));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([h1Ref, h2Ref]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toBe('No headings required renaming');
+    expect(results[0].error).toBeUndefined();
+  });
+});
