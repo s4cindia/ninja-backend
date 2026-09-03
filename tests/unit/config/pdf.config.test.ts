@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const ORIGINAL_ENV = process.env.MAX_AUDIT_PAGES;
+const ORIGINAL_CONTRAST_ENV = process.env.MAX_CONTRAST_PAGES;
 
 async function loadConfig(): Promise<typeof import('../../../src/config/pdf.config').pdfConfig> {
   vi.resetModules();
@@ -42,5 +43,41 @@ describe('pdfConfig.maxAuditPages', () => {
     process.env.MAX_AUDIT_PAGES = '0';
     const pdfConfig = await loadConfig();
     expect(pdfConfig.maxAuditPages).toBe(0);
+  });
+});
+
+/**
+ * pdfConfig.maxContrastPages
+ *
+ * Same silent-truncation issue as maxAuditPages above, found independently
+ * in PdfContrastValidator: a hardcoded MAX_PAGES_CONTRAST=50 constant capped
+ * contrast checking regardless of maxAuditPages, so raising the general
+ * audit cap alone did not restore contrast coverage on long documents.
+ */
+describe('pdfConfig.maxContrastPages', () => {
+  beforeEach(() => {
+    delete process.env.MAX_CONTRAST_PAGES;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_CONTRAST_ENV === undefined) delete process.env.MAX_CONTRAST_PAGES;
+    else process.env.MAX_CONTRAST_PAGES = ORIGINAL_CONTRAST_ENV;
+  });
+
+  it('defaults to 0 (uncapped) when MAX_CONTRAST_PAGES is not set', async () => {
+    const pdfConfig = await loadConfig();
+    expect(pdfConfig.maxContrastPages).toBe(0);
+  });
+
+  it('respects an explicit MAX_CONTRAST_PAGES override', async () => {
+    process.env.MAX_CONTRAST_PAGES = '75';
+    const pdfConfig = await loadConfig();
+    expect(pdfConfig.maxContrastPages).toBe(75);
+  });
+
+  it('an explicit 0 also means uncapped (not "0 pages")', async () => {
+    process.env.MAX_CONTRAST_PAGES = '0';
+    const pdfConfig = await loadConfig();
+    expect(pdfConfig.maxContrastPages).toBe(0);
   });
 });
