@@ -27,13 +27,27 @@
  * `expectedBackground` hint parameter — the caller's prior belief about
  * this text's true background, typically the issue's own originally-
  * detected reading — disambiguates between multiple flat candidates.
+ *
+ * A second real-world gap (found by re-running a live document after the
+ * hint fix shipped): the original 3 candidates are all within ~5-20px of
+ * the text. A *recurring page-template element* (a running head, a
+ * section-divider band) wider or taller than that contaminates every one
+ * of them, on every occurrence, leaving nothing for even an accurate hint
+ * to prefer. sampleBackgroundRobust now searches multiple tiers of
+ * increasing distance (see MAX_SEARCH_TIERS in the source) before giving
+ * up, specifically to escape that case.
  */
 
 import { describe, it, expect } from 'vitest';
 import { pdfContrastValidator } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
 
-const CW = 50;
-const CH = 45;
+// Sized comfortably to fit every tier's candidates (up to ~35px above/below,
+// ~65px to the right of a 20px-wide, 10px-tall text box at x=10/top=100)
+// with margin, so no candidate clips against a canvas edge and gets
+// silently excluded for reasons unrelated to what a test is checking.
+const CW = 120;
+const CH = 160;
+const X = 10, TOP = 100, ITEM_W = 20, ITEM_H = 10;
 
 function makeWhiteCanvas(): Uint8ClampedArray {
   const data = new Uint8ClampedArray(CW * CH * 4);
@@ -44,8 +58,22 @@ function makeWhiteCanvas(): Uint8ClampedArray {
 function paintRect(data: Uint8ClampedArray, x: number, y: number, w: number, h: number, rgb: [number, number, number]): void {
   for (let py = y; py < y + h; py++) {
     for (let px = x; px < x + w; px++) {
+      if (px < 0 || px >= CW || py < 0 || py >= CH) continue;
       const i = (py * CW + px) * 4;
       data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255;
+    }
+  }
+}
+
+/** Alternating-pixel checkerboard — guarantees high variance everywhere it's painted, without needing to mirror the source's exact per-tier candidate geometry. */
+function paintNoise(data: Uint8ClampedArray, x: number, y: number, w: number, h: number): void {
+  for (let py = y; py < y + h; py++) {
+    for (let px = x; px < x + w; px++) {
+      if (px < 0 || px >= CW || py < 0 || py >= CH) continue;
+      const i = (py * CW + px) * 4;
+      const dark = (px + py) % 2 === 0;
+      const v = dark ? 0 : 255;
+      data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
     }
   }
 }
@@ -60,14 +88,13 @@ function paintRect(data: Uint8ClampedArray, x: number, y: number, w: number, h: 
  */
 function buildContaminatedScene() {
   const data = makeWhiteCanvas();
-  const x = 5, top = 25, itemW = 20, itemH = 10;
 
   // "Directly above" candidate (top-5, 5px tall): half painted black,
   // simulating an adjacent line's glyph ink partially covering the strip.
-  paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);
+  paintRect(data, X, TOP - 5, 10, 5, [0, 0, 0]);
   // right half of that same strip stays white (default) — high variance.
 
-  return { data, x, top, itemW, itemH };
+  return { data, x: X, top: TOP, itemW: ITEM_W, itemH: ITEM_H };
 }
 
 describe('PdfContrastValidator.sampleBackgroundRobust', () => {
@@ -90,18 +117,36 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
     expect(robust!.variance).toBeLessThan(0.02); // FLAT_VARIANCE_THRESHOLD
   });
 
-  it('reports high variance (uncertain territory) when every nearby candidate is itself contaminated', () => {
+  it('reports high variance (uncertain territory) when EVERY candidate across every search tier is contaminated', () => {
     const data = makeWhiteCanvas();
-    const x = 5, top = 25, itemW = 20, itemH = 10;
+    // Blanket the entire area any tier could possibly sample -- above,
+    // below, and to the right, with generous margin -- in noise. Nothing
+    // anywhere nearby is flat, at any distance this method will try.
+    paintNoise(data, X - 10, TOP - 45, ITEM_W + 90, 100);
 
-    // Contaminate all three candidate regions this time.
-    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);              // directly above
-    paintRect(data, x, top - itemH - 5, 10, 5, [0, 0, 0]);      // further above
-    paintRect(data, x + itemW + 4, top, 3, itemH, [0, 0, 0]);   // right of the run
-
-    const robust = pdfContrastValidator.sampleBackgroundRobust(data, x, top, itemW, itemH, CW, CH);
+    const robust = pdfContrastValidator.sampleBackgroundRobust(data, X, TOP, ITEM_W, ITEM_H, CW, CH);
     expect(robust).toBeTruthy();
-    expect(robust!.variance).toBeGreaterThan(0.02); // FLAT_VARIANCE_THRESHOLD — no confidently flat candidate
+    expect(robust!.variance).toBeGreaterThan(0.02); // FLAT_VARIANCE_THRESHOLD — no confidently flat candidate anywhere
+  });
+
+  it('escapes a recurring-element-sized contamination that saturates the near tiers, by finding true background at a farther tier', () => {
+    // The real-world gap this widened search exists for: a page-template
+    // element (a running head / section-divider band) that's wider/taller
+    // than the original tight candidates, contaminating tier 0 AND tier 1
+    // on every occurrence. True background is only reachable by searching
+    // farther out than either of those.
+    const data = makeWhiteCanvas();
+    // Saturate every tier-0 and tier-1 candidate -- above, right, AND
+    // below (so the escape can't come from the trivially-untouched "below"
+    // direction; it has to actually reach tier 2). Tier 2+ stays untouched: true white.
+    paintNoise(data, X, TOP - 15, ITEM_W, 15);           // above: tiers 0-1
+    paintNoise(data, X + ITEM_W + 4, TOP, 16, ITEM_H);   // right: tiers 0-1
+    paintNoise(data, X, TOP + 15, ITEM_W, 5);            // below: tier 1
+
+    const robust = pdfContrastValidator.sampleBackgroundRobust(data, X, TOP, ITEM_W, ITEM_H, CW, CH);
+    expect(robust).toBeTruthy();
+    expect(robust!.variance).toBeLessThan(0.02); // found a confidently flat candidate...
+    expect(robust!.color.r).toBeGreaterThan(250); // ...and it's the true white, not a noisy near-tier reading
   });
 
   it('returns null only when no candidate patch has any in-bounds pixels', () => {
@@ -113,34 +158,32 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
 
   it('without a hint, picks the nearer flat candidate over a farther one even when both are equally flat', () => {
     const data = makeWhiteCanvas();
-    const x = 5, top = 25, itemW = 20, itemH = 10;
 
     // Leave "directly above" contaminated (as in the first test) so it's
     // excluded, but make BOTH remaining candidates confidently flat with
     // different solid colors -- "to the right" (nearer/same-band) is dark,
     // "further above" (farther/riskier) is white.
-    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);
-    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);       // right of run: flat, dark
-    // "further above" left as the default white background: flat, white.
+    paintRect(data, X, TOP - 5, 10, 5, [0, 0, 0]);
+    paintRect(data, X + ITEM_W + 4, TOP, 6, ITEM_H, [40, 40, 40]);       // right of run: flat, dark
+    // "further above" (tier 1) left as the default white background: flat, white.
 
-    const robust = pdfContrastValidator.sampleBackgroundRobust(data, x, top, itemW, itemH, CW, CH);
+    const robust = pdfContrastValidator.sampleBackgroundRobust(data, X, TOP, ITEM_W, ITEM_H, CW, CH);
     expect(robust).toBeTruthy();
     expect(robust!.color.r).toBeCloseTo(40, 0); // the nearer (right-of-run) candidate wins, not the farther white one
   });
 
   it('with a hint, prefers the flat candidate matching it over a nearer-but-mismatched flat candidate', () => {
     const data = makeWhiteCanvas();
-    const x = 5, top = 25, itemW = 20, itemH = 10;
 
-    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);                     // directly above: contaminated, excluded
-    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);       // right of run: flat, dark (nearer)
+    paintRect(data, X, TOP - 5, 10, 5, [0, 0, 0]);                     // directly above: contaminated, excluded
+    paintRect(data, X + ITEM_W + 4, TOP, 6, ITEM_H, [40, 40, 40]);     // right of run: flat, dark (nearer)
     // "further above" stays flat, white (farther).
 
     // Hint says the true background should be white -- overrides the
     // position-priority default (which would otherwise pick the nearer,
     // dark, wrong-surface candidate — see the previous test).
     const robust = pdfContrastValidator.sampleBackgroundRobust(
-      data, x, top, itemW, itemH, CW, CH, { r: 255, g: 255, b: 255 }
+      data, X, TOP, ITEM_W, ITEM_H, CW, CH, { r: 255, g: 255, b: 255 }
     );
     expect(robust).toBeTruthy();
     expect(robust!.color.r).toBeGreaterThan(250);
@@ -148,13 +191,12 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
 
   it('with a hint matching the nearer candidate, still picks it (hint and position agree)', () => {
     const data = makeWhiteCanvas();
-    const x = 5, top = 25, itemW = 20, itemH = 10;
 
-    paintRect(data, x, top - 5, 10, 5, [0, 0, 0]);
-    paintRect(data, x + itemW + 4, top, 6, itemH, [40, 40, 40]);
+    paintRect(data, X, TOP - 5, 10, 5, [0, 0, 0]);
+    paintRect(data, X + ITEM_W + 4, TOP, 6, ITEM_H, [40, 40, 40]);
 
     const robust = pdfContrastValidator.sampleBackgroundRobust(
-      data, x, top, itemW, itemH, CW, CH, { r: 40, g: 40, b: 40 }
+      data, X, TOP, ITEM_W, ITEM_H, CW, CH, { r: 40, g: 40, b: 40 }
     );
     expect(robust).toBeTruthy();
     expect(robust!.color.r).toBeCloseTo(40, 0);

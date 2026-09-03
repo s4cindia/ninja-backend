@@ -54,6 +54,17 @@ const DARK_SAMPLE_PERCENTILE = 0.05;
 // verify" from "couldn't confidently measure the background here at all."
 export const FLAT_VARIANCE_THRESHOLD = 0.02;
 
+// sampleBackgroundRobust searches this many "tiers" of increasing distance
+// before giving up. Tier 0 is the original tight candidates (~5-10px);
+// each further tier steps out roughly one more text-line-height, up to a
+// hard cap of 3 line-heights (tier 3) -- a few dozen px at typical body
+// text sizes. Bounded deliberately: search far enough to escape a
+// recurring page-template element (a running head, section-divider band)
+// that's wider/taller than the original tight candidates, but not so far
+// that a genuinely different region of the page (another paragraph, an
+// image) gets sampled and mistaken for this text's own background.
+const MAX_SEARCH_TIERS = 4;
+
 /**
  * PDF Contrast Validator
  *
@@ -261,18 +272,34 @@ export class PdfContrastValidator {
    * line's ink instead of true background: itemH is derived purely from
    * font size, with no awareness of actual line spacing.
    *
-   * Tries several candidate patches near the text, ordered nearest-to-
-   * farthest / most-to-least likely to share the flagged text's own
-   * surface — "directly above" and "to the right" are both immediately
-   * adjacent to the text (typically the same table cell/row), while
-   * "further above" deliberately skips past an entire line height and is
-   * the most likely of the three to land on a genuinely different row,
-   * cell, or card with its own fill.
+   * Tries candidate patches near the text across MAX_SEARCH_TIERS tiers of
+   * increasing distance. Tier 0 is "directly above" and "to the right",
+   * both immediately adjacent to the text (typically the same table
+   * cell/row) — unchanged from the original, well-reviewed design. Each
+   * further tier steps out roughly one more line-height in three
+   * directions (above, below, and right), since a *recurring page-template
+   * element* (a running head, a section-divider band) can be wider or
+   * taller than a single tight probe reaches — the live document this was
+   * built against had a case exactly like that: contamination persisted on
+   * dozens of pages, wide/tall enough that neither tier 0 candidate, hint
+   * or not, ever found true background.
+   *
+   * From tier 1 on, "above"/"below" are tried BEFORE "right" within each
+   * tier — deliberately, not incidentally. A horizontally wide
+   * contaminating element keeps every "right" candidate flat no matter how
+   * far right the search goes (moving sideways never exits something
+   * that's wide throughout), while "above"/"below" can actually exit it by
+   * crossing its usually-much-shorter height. Without this ordering, a
+   * still-contaminated tier-1 "right" candidate would out-rank a
+   * genuinely-clear tier-2 "above" one purely because tier-then-direction
+   * iteration reached it first — a real bug this method shipped with
+   * initially (found by testing against the actual recurring-band failure,
+   * not just the synthetic fixture that motivated adding the extra tiers).
    *
    * Selection is variance-first (true background is comparatively flat;
    * a patch straddling glyph/rule/fill edges is not) but NOT variance-only
    * — an earlier version of this method picked whichever candidate was
-   * flattest across all three regardless of position, which let a flat
+   * flattest across all candidates regardless of position, which let a flat
    * *wrong* surface win (e.g. a uniformly-white previous table row beating
    * a uniformly-dark current cell fill, both variance ~0). When multiple
    * candidates are confidently flat, `expectedBackground` — the caller's
@@ -281,12 +308,6 @@ export class PdfContrastValidator {
    * whichever flat candidate actually matches it, rather than trusting
    * flatness alone. Without a hint, the nearest-in-priority flat candidate
    * wins (already the safer choice by position).
-   *
-   * Reproduced against a live document: a batch of ~40 apply-to-pdf
-   * color-contrast fixes failed verification at ratios as low as 1.1:1
-   * even after escalating to pure black text, consistent with the
-   * background sample having picked up a table cell fill/rule sitting
-   * just above the flagged row rather than the page's true background.
    *
    * KNOWN LIMITATION: `expectedBackground` only helps when it's actually
    * trustworthy. For a *static* page element (a permanent fill/rule, as
@@ -316,11 +337,26 @@ export class PdfContrastValidator {
     cw: number, ch: number,
     expectedBackground?: RgbColor
   ): { color: RgbColor; variance: number } | null {
+    // Tier 0 keeps its original two-candidate order (above, then right) --
+    // this is the well-reviewed PR #513 behavior for the common case and
+    // stays unchanged. From tier 1 on, "above"/"below" are pushed BEFORE
+    // "right": a horizontally wide contaminating element (the motivating
+    // real case for tiers beyond 0) keeps every "right" candidate flat no
+    // matter how far right the search goes, since moving sideways never
+    // exits something that's wide throughout — only "above"/"below" can
+    // actually exit a band by crossing its (usually much shorter) height.
+    // Without this, a still-contaminated-but-flat tier-1 "right" candidate
+    // would out-rank a genuinely-clear tier-2 "above" one on array order
+    // alone, even though the latter is the correct answer.
     const candidates: Array<{ x: number; y: number; w: number; h: number }> = [
-      { x, y: top - 5, w: itemW, h: 5 },             // directly above (sampleAverage's original strip)
-      { x: x + itemW + 4, y: top, w: 6, h: itemH },  // to the right of the run, same vertical band
-      { x, y: top - itemH - 5, w: itemW, h: 5 },     // further above, past a plausible previous row — riskiest
+      { x, y: top - 5, w: itemW, h: 5 },             // tier 0 above
+      { x: x + itemW + 4, y: top, w: 6, h: itemH },  // tier 0 right
     ];
+    for (let tier = 1; tier < MAX_SEARCH_TIERS; tier++) {
+      candidates.push({ x, y: top - tier * itemH - 5, w: itemW, h: 5 });                  // above
+      candidates.push({ x, y: top + itemH + (tier - 1) * itemH + 5, w: itemW, h: 5 });    // below
+      candidates.push({ x: x + itemW + 4 + tier * 10, y: top, w: 6, h: itemH });          // right of the run
+    }
 
     const samples = candidates
       .map(c => this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch))
