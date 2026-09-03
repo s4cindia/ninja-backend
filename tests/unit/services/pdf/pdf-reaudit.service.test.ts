@@ -583,6 +583,127 @@ describe('PdfReauditService', () => {
       expect(result.comparison.remaining.length).toBe(1);
       expect(result.comparison.resolved.length).toBe(0);
     });
+
+    it('does not cross-match two distinct same-code/same-severity issues that have different bounding boxes', async () => {
+      // The bug this tier exists to prevent: the OLD code+severity-only
+      // fallback would happily pair these up just because they share a
+      // code and severity, even though they're two unrelated elements at
+      // different positions -- silently crediting the wrong one as
+      // "resolved" and hiding the other's true "regression" status.
+      const originalIssues: AuditIssue[] = [
+        {
+          id: 'orig-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 1,
+          // Realistic contrast-issue location string (always includes
+          // rounded x/y, per pdf-contrast.validator.ts) -- distinct per
+          // element, so tier 1's strict match correctly fails here rather
+          // than falling through to isSameLocation's own "same page, no
+          // location" degenerate case, which this test isn't about.
+          location: 'Page 1 at (100, 100)',
+          boundingBox: { x: 100, y: 100, width: 50, height: 12, pageWidth: 612, pageHeight: 792 },
+        },
+      ];
+
+      const newIssues: AuditIssue[] = [
+        {
+          id: 'new-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 1,
+          // Same code/severity/page, but a clearly different element (far away).
+          location: 'Page 1 at (400, 600)',
+          boundingBox: { x: 400, y: 600, width: 50, height: 12, pageWidth: 612, pageHeight: 792 },
+        },
+      ];
+
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: { ...mockOriginalAuditReport, issues: originalIssues } },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: newIssues,
+      });
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      // The original issue was NOT found at its own position -> resolved.
+      expect(result.comparison.resolved).toHaveLength(1);
+      expect(result.comparison.resolved[0].id).toBe('orig-1');
+      // The new issue is a genuinely different element -> a regression, not silently absorbed.
+      expect(result.comparison.regressions).toHaveLength(1);
+      expect(result.comparison.regressions[0].id).toBe('new-1');
+      expect(result.comparison.remaining).toHaveLength(0);
+    });
+
+    it('matches by bounding-box position across a page-reflow page-number change', async () => {
+      // Same element, same on-page geometry, but shifted to a different
+      // page number (e.g. an earlier fix added a page) -- must still match.
+      const originalIssues: AuditIssue[] = [
+        {
+          id: 'orig-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 5,
+          boundingBox: { x: 100, y: 100, width: 50, height: 12, pageWidth: 612, pageHeight: 792 },
+        },
+      ];
+
+      const newIssues: AuditIssue[] = [
+        {
+          id: 'new-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 6, // shifted by 1
+          boundingBox: { x: 101, y: 99, width: 50, height: 12, pageWidth: 612, pageHeight: 792 }, // within tolerance
+        },
+      ];
+
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: { ...mockOriginalAuditReport, issues: originalIssues } },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: newIssues,
+      });
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(result.comparison.remaining).toHaveLength(1);
+      expect(result.comparison.resolved).toHaveLength(0);
+      expect(result.comparison.regressions).toHaveLength(0);
+    });
+
+    it('still falls back to code+severity matching when only one side has bounding-box data', async () => {
+      // Mixed availability (e.g. an older audit report predating boundingBox
+      // on this issue type) must not be treated as "compared and failed" --
+      // tier 3 should still apply here, same as when neither side has one.
+      const originalIssues: AuditIssue[] = [
+        {
+          id: 'orig-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 1,
+          // No boundingBox on this side.
+        },
+      ];
+
+      const newIssues: AuditIssue[] = [
+        {
+          id: 'new-1', source: 'test', severity: 'serious', code: 'PDF-LOW-CONTRAST',
+          message: 'Low contrast', wcagCriteria: ['1.4.3'], pageNumber: 2,
+          boundingBox: { x: 100, y: 100, width: 50, height: 12, pageWidth: 612, pageHeight: 792 },
+        },
+      ];
+
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: { ...mockOriginalAuditReport, issues: originalIssues } },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: newIssues,
+      });
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(result.comparison.remaining).toHaveLength(1);
+      expect(result.comparison.resolved).toHaveLength(0);
+      expect(result.comparison.regressions).toHaveLength(0);
+    });
   });
 
   describe('Severity breakdown', () => {
