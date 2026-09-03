@@ -208,7 +208,21 @@ class PdfReauditService {
    *
    * Issue Matching Algorithm:
    * 1. Match by code + location (strict match)
-   * 2. If not matched, match by code only (fuzzy match for reflow cases)
+   * 2. If not matched, match by code + severity + bounding-box position
+   *    (handles page reflow: an earlier fix adding/removing a whole page
+   *    shifts every subsequent page's *number* by a constant offset, but
+   *    each page's own internal layout is unaffected -- an element's own
+   *    (x, y, width, height) on its page stays identical even though its
+   *    page number changed. This is a much stronger signal than code+
+   *    severity alone: it can't cross-match two genuinely different
+   *    same-code-same-severity issues, since their geometry would differ.)
+   * 3. If neither issue in a candidate pair carries bounding-box data at
+   *    all (some issue types don't populate it), fall back to code +
+   *    severity only -- the original, weaker fuzzy match. Deliberately
+   *    NOT used when both issues have bounding boxes that failed to align
+   *    in step 2: at that point their positions are known to differ, so
+   *    treating them as "the same issue" would reintroduce the exact
+   *    false-cross-match risk this tiering exists to avoid.
    *
    * Categorization:
    * - Resolved: In original, not in new
@@ -242,13 +256,29 @@ class PdfReauditService {
           this.isSameLocation(originalIssue, newIssue)
       );
 
-      // If no strict match, try fuzzy match: code only (handles page reflow)
+      // Fuzzy match, tier 2: code + severity + matching bounding-box
+      // position (handles page reflow -- see method doc comment above).
       if (!matched) {
         matched = newIssues.find(
           (newIssue) =>
             !matchedNewIssueIds.has(newIssue.id) &&
             newIssue.code === originalIssue.code &&
-            newIssue.severity === originalIssue.severity
+            newIssue.severity === originalIssue.severity &&
+            this.isSameBoundingBox(originalIssue, newIssue)
+        );
+      }
+
+      // Fuzzy match, tier 3 (original fallback): code + severity only --
+      // only when bounding-box comparison genuinely wasn't possible for
+      // this pair (at least one side lacks the data), not when it was
+      // possible and failed.
+      if (!matched) {
+        matched = newIssues.find(
+          (newIssue) =>
+            !matchedNewIssueIds.has(newIssue.id) &&
+            newIssue.code === originalIssue.code &&
+            newIssue.severity === originalIssue.severity &&
+            (!originalIssue.boundingBox || !newIssue.boundingBox)
         );
       }
 
@@ -306,6 +336,32 @@ class PdfReauditService {
 
     // Default: no location info means we can't determine sameness
     return false;
+  }
+
+  /**
+   * Checks whether two issues' bounding boxes describe the same element,
+   * deliberately WITHOUT comparing page number -- a page-reflow-causing fix
+   * (one that adds or removes a whole page earlier in the document) shifts
+   * every subsequent page's *number* by a constant offset, but each page's
+   * own internal layout is unaffected: an element's (x, y, width, height)
+   * on its own page stays identical even though the page it's on is now
+   * numbered differently. Requires both issues to actually carry
+   * boundingBox data -- returns false (not a match) when either is
+   * missing, so callers can distinguish "compared and didn't match" from
+   * "couldn't compare at all" (see compareAuditResults' tier 3 fallback).
+   */
+  private isSameBoundingBox(issue1: AuditIssue, issue2: AuditIssue): boolean {
+    const b1 = issue1.boundingBox;
+    const b2 = issue2.boundingBox;
+    if (!b1 || !b2) return false;
+
+    const TOLERANCE_PT = 2; // small rounding tolerance, in PDF points
+    return (
+      Math.abs(b1.x - b2.x) <= TOLERANCE_PT &&
+      Math.abs(b1.y - b2.y) <= TOLERANCE_PT &&
+      Math.abs(b1.width - b2.width) <= TOLERANCE_PT &&
+      Math.abs(b1.height - b2.height) <= TOLERANCE_PT
+    );
   }
 
   /**
