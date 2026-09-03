@@ -259,5 +259,32 @@ ET
       expect(match).toBeTruthy();
       expect(stream.slice(match!.start, match!.end)).toContain('<43> Tj');
     });
+
+    it('preserves a literal zero scale component from Tm instead of defaulting it to 1', () => {
+      // Tm's "a" is 0 here (an out-of-scope rotated/degenerate matrix this
+      // module can't represent -- it only tracks the diagonal, never b/c).
+      // A Td's tx must then contribute nothing to the x position, not be
+      // treated as if unscaled -- CodeRabbit correctly flagged an earlier
+      // `|| 1` fallback here as silently inventing a scale the matrix
+      // doesn't have.
+      const stream = `BT
+0 0 0 rg
+0 1 -1 0 50 700 Tm
+<41> Tj
+20 0 Td
+<42> Tj
+ET
+`;
+      // Both show ops land at the exact same anchor (700) since tx's
+      // contribution is scaled by a=0 -- a same-point collision, which is
+      // exactly what locateTextRun's own ambiguity check exists to flag.
+      const match = locateTextRun(stream, { x: 50, baselineY: 700 });
+      expect(match).toBeTruthy();
+      expect(match!.ambiguous).toBe(true);
+
+      // No unit should ever land at x=70 (50 + unscaled tx=20) -- that
+      // would mean the old `|| 1` fallback treated the offset as unscaled.
+      expect(locateTextRun(stream, { x: 70, baselineY: 700 })).toBeNull();
+    });
   });
 });

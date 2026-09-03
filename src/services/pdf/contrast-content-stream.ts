@@ -163,6 +163,16 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   // be folded into tmE/tmF, which deviceX/deviceY treat as already in the
   // same space Tm's own e/f are in (device space, since Tm replaces the
   // whole matrix at once rather than accumulating relative to it).
+  //
+  // A literal 0 parsed from Tm is kept as-is, not defaulted to 1: a Tm with
+  // a genuinely zero a or d component means Td/TD/T* contribute nothing
+  // along that axis, and forcing it to 1 would silently invent a scale the
+  // matrix doesn't have. This only matters for a Tm this module can't
+  // represent anyway (b/c rotation/skew, always ignored here) leaking a
+  // collapsed diagonal through — in that case, multiple runs freezing onto
+  // the same anchor is caught by locateTextRun's own proximity-ambiguity
+  // check below, same safety net that already covers any other same-point
+  // collision.
   let tlmA = 1;
   let tlmD = 1;
   const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
@@ -213,8 +223,8 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
       }
       case 'Tm':
         if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
-        tlmA = num(operands[operands.length - 6]) || 1;
-        tlmD = num(operands[operands.length - 3]) || 1;
+        tlmA = num(operands[operands.length - 6]);
+        tlmD = num(operands[operands.length - 3]);
         tmE = num(operands[operands.length - 2]);
         tmF = num(operands[operands.length - 1]);
         break;
