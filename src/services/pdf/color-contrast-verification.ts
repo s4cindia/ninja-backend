@@ -82,8 +82,17 @@ export async function verifyContrastInRegion(
 
     const expectedBackground = expectedBackgroundHex ? pdfContrastValidator.hexToRgb(expectedBackgroundHex) : undefined;
     const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, expectedBackground);
-    const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
-    if (!bgSample || !fgColor) return null;
+    if (!bgSample) return null;
+    // Background must be known before sampling ink, not just before
+    // returning -- sampleDark's adaptive path (see its doc comment) needs
+    // it to tell sparse ink (dot leaders, thin punctuation) apart from the
+    // background/anti-aliasing pixels a flat percentile would otherwise
+    // dilute the reading with.
+    const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(
+      data, canvasX, top, itemW, itemH, cw, ch,
+      pdfContrastValidator.getLuminance(bgSample.color.r, bgSample.color.g, bgSample.color.b)
+    );
+    if (!fgColor) return null;
 
     const ratio = pdfContrastValidator.calculateContrastRatio(fgColor, bgSample.color);
     return {

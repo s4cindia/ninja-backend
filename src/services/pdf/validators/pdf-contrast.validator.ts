@@ -44,6 +44,22 @@ const GRID_CELL_PX = 80;
 // low-contrast text (e.g. true #999999) still measures as failing either way.
 const DARK_SAMPLE_PERCENTILE = 0.05;
 
+// Guard for sampleDark's adaptive path (below): a region needs at least one
+// pixel this much darker than its known background before it's worth
+// searching for an ink/non-ink split at all -- skips the search entirely
+// for a genuinely flat/textless region, where even the darkest pixel found
+// is just background noise, not real ink.
+const MIN_INK_CONTRAST_LUM = 0.15;
+
+// Minimum single-step WCAG relative-luminance jump, between two pixels
+// adjacent in darkest-first sorted order, to count as a genuine ink/non-ink
+// boundary rather than ordinary anti-aliasing gradient noise. Measured
+// empirically against a rendered dot-leader run (49 isolated periods): true
+// ink pixels sat at lum ~0.06-0.44, then jumped 0.28 straight to ~0.72
+// (background/far anti-aliasing) -- comfortably clear of the small ~0.01-0.03
+// steps *within* either cluster.
+const MIN_INK_GAP = 0.1;
+
 // Used only by sampleBackgroundRobust (fix-verification path, not detection
 // above). Above this luminance-variance value, no candidate patch looked
 // confidently "flat" (background-like) — e.g. a 50/50 straddle of black
@@ -213,8 +229,10 @@ export class PdfContrastValidator {
       const bgColor = bgSample.color;
       signaturesSeenThisPage.add(bgSample.signature);
 
-      // Text color: darkest 30th-percentile pixels within the text bbox
-      const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch);
+      // Text color: darkest ink-like pixels within the text bbox, adaptive
+      // to actual ink density via the already-sampled background (see
+      // sampleDark's own doc comment)
+      const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch, this.getLuminance(bgColor.r, bgColor.g, bgColor.b));
       if (!textColor) continue;
 
       const isBold = this.detectBold(item.fontName ? styles?.[item.fontName]?.fontFamily : undefined);
@@ -302,11 +320,50 @@ export class PdfContrastValidator {
     return n > 0 ? { r: r / n, g: g / n, b: b / n } : null;
   }
 
-  /** Returns the average color of the darkest DARK_SAMPLE_PERCENTILE of pixels (estimates text ink color). */
+  /**
+   * Returns the average color of the darkest ink-like pixels in the text
+   * bbox (estimates text ink color). Defaults to the darkest
+   * DARK_SAMPLE_PERCENTILE fraction of ALL pixels in the box (see that
+   * constant's comment — calibrated against ~6% ink coverage for regular
+   * body text).
+   *
+   * When `backgroundLum` is supplied and at least one pixel is meaningfully
+   * darker than it (MIN_INK_CONTRAST_LUM), this instead searches the
+   * percentile's own window for the largest single-step luminance jump
+   * (MIN_INK_GAP) and, when found, samples only up to that point. Sparse
+   * text — table-of-contents dot leaders, isolated punctuation — can have
+   * real ink coverage far below the ~6% baseline the percentile assumes;
+   * left as a flat percentage of the whole box, the fixed quota is then
+   * forced to pad out with anti-aliasing/background pixels, dragging the
+   * averaged color toward background regardless of the ink's true color.
+   * The jump marks exactly where the true ink(+immediate anti-aliasing)
+   * cluster ends and the next, much lighter tier begins — a plain "darker
+   * than background by some fixed amount" cutoff isn't enough on its own
+   * here: for a period glyph this small, most of its own pixels are
+   * anti-aliasing gradient rather than solid ink, so an absolute threshold
+   * loose enough to catch dark-gray text elsewhere also pulls in a good
+   * chunk of that gradient. Only ever SHRINKS the sample relative to the
+   * flat percentile, never grows it, so normal-density text — already
+   * correctly handled by the percentile — is unaffected: a densely-inked
+   * run has no such jump within the window at all, and falls straight
+   * through to the unmodified percentile.
+   *
+   * KNOWN LIMITATION: confirmed empirically (a page-7 dot-leader run — 49
+   * periods across a 300pt-wide, 8pt-tall bbox) this closes most of the
+   * dilution gap (measured fg went from #c0c0c0, 1.82:1, to a materially
+   * darker, more accurate reading) but is not guaranteed to clear the
+   * required ratio on its own for the smallest glyphs: at ~8pt, even the
+   * single darkest pixel found is itself still meaningfully anti-aliased
+   * (never reaches true black), a rendering-resolution floor no pixel
+   * *selection* strategy can recover from — that would need a different
+   * fix (e.g. rendering at a higher scale for verification specifically).
+   * Still a strict improvement over the flat percentile either way.
+   */
   sampleDark(
     data: Uint8ClampedArray,
     x: number, y: number, w: number, h: number,
-    cw: number, ch: number
+    cw: number, ch: number,
+    backgroundLum?: number
   ): RgbColor | null {
     const pixels: Array<{ lum: number; r: number; g: number; b: number }> = [];
 
@@ -320,7 +377,22 @@ export class PdfContrastValidator {
 
     if (pixels.length === 0) return null;
     pixels.sort((a, b) => a.lum - b.lum);
-    const take = Math.max(1, Math.floor(pixels.length * DARK_SAMPLE_PERCENTILE));
+    const percentileTake = Math.max(1, Math.floor(pixels.length * DARK_SAMPLE_PERCENTILE));
+
+    let take = percentileTake;
+    if (backgroundLum !== undefined && backgroundLum - pixels[0].lum >= MIN_INK_CONTRAST_LUM) {
+      let splitIndex = -1;
+      let bestGap = MIN_INK_GAP;
+      for (let i = 1; i < percentileTake; i++) {
+        const gap = pixels[i].lum - pixels[i - 1].lum;
+        if (gap > bestGap) {
+          bestGap = gap;
+          splitIndex = i;
+        }
+      }
+      if (splitIndex > 0) take = splitIndex;
+    }
+
     const subset = pixels.slice(0, take);
     return {
       r: subset.reduce((s, v) => s + v.r, 0) / take,
@@ -578,11 +650,13 @@ export class PdfContrastValidator {
   }
 
   getLuminance(r: number, g: number, b: number): number {
-    const [rs, gs, bs] = [r, g, b].map(c => {
-      const val = c / 255;
-      return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4);
-    });
+    const [rs, gs, bs] = [r, g, b].map(c => this.srgbToLinear(c));
     return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  }
+
+  private srgbToLinear(channel8bit: number): number {
+    const val = channel8bit / 255;
+    return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4);
   }
 
   isLargeText(fontSize: number, isBold: boolean): boolean {

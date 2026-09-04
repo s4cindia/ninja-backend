@@ -49,4 +49,40 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].contrastData!.ratio).toBeLessThan(2);
   });
+
+  // Same dilution bug as above, but pushed further: a table-of-contents
+  // dot-leader run (". . . . . . ") spans a wide bbox while its actual ink
+  // coverage is far below even the ~6% DARK_SAMPLE_PERCENTILE was tuned
+  // against (isolated periods, not full glyphs) -- found via a real trial
+  // document where fg sampled as #c0c0c0 on white (1.82:1) for what should
+  // be near-black leader dots, and kept failing fix-verification even after
+  // the writer escalated to pure black, since verification re-runs this
+  // same sampling. sampleDark's backgroundLum-adaptive path (below) is what
+  // fixes this specific case.
+  it('does not flag true black dot-leader text (sparse ink over a wide bbox) as low contrast', async () => {
+    const dotLeader = '. '.repeat(49).trim();
+    const issues = await contrastIssuesFor(10, false, 0, dotLeader);
+    expect(issues).toEqual([]);
+  });
+
+  // KNOWN LIMITATION (see sampleDark's own doc comment): at the smallest
+  // sizes, even the single darkest pixel the renderer produces for an
+  // isolated period is itself still meaningfully anti-aliased -- never
+  // reaches true black -- so no pixel-*selection* strategy can recover
+  // full contrast on its own; that would need a different fix (e.g.
+  // rendering at a higher scale for verification). Whether this specific
+  // case still gets flagged at all is sensitive to the platform's own font
+  // rendering/anti-aliasing at 8pt (observed: still flagged locally, fully
+  // resolved on CI's rendering stack) -- deliberately not pinning an exact
+  // ratio band across environments. What's actually being guarded here is
+  // that the fix isn't a no-op: pre-fix this sampled at #c0c0c0 (1.82:1) on
+  // every platform tested, so a still-flagged result must show a real,
+  // materially darker reading.
+  it('at 8pt, resolves or substantially improves dot-leader contrast (rendering-sensitive edge case)', async () => {
+    const dotLeader = '. '.repeat(49).trim();
+    const issues = await contrastIssuesFor(8, false, 0, dotLeader);
+    if (issues.length > 0) {
+      expect(issues[0].contrastData!.ratio).toBeGreaterThan(3.0); // was 1.82:1 before the fix
+    }
+  });
 });
