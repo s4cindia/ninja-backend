@@ -49,4 +49,37 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].contrastData!.ratio).toBeLessThan(2);
   });
+
+  // Same dilution bug as above, but pushed further: a table-of-contents
+  // dot-leader run (". . . . . . ") spans a wide bbox while its actual ink
+  // coverage is far below even the ~6% DARK_SAMPLE_PERCENTILE was tuned
+  // against (isolated periods, not full glyphs) -- found via a real trial
+  // document where fg sampled as #c0c0c0 on white (1.82:1) for what should
+  // be near-black leader dots, and kept failing fix-verification even after
+  // the writer escalated to pure black, since verification re-runs this
+  // same sampling. sampleDark's backgroundLum-adaptive path (below) is what
+  // fixes this specific case.
+  it('does not flag true black dot-leader text (sparse ink over a wide bbox) as low contrast', async () => {
+    const dotLeader = '. '.repeat(49).trim();
+    const issues = await contrastIssuesFor(10, false, 0, dotLeader);
+    expect(issues).toEqual([]);
+  });
+
+  // KNOWN LIMITATION (see sampleDark's own doc comment): at the smallest
+  // sizes, even the single darkest pixel the renderer produces for an
+  // isolated period is itself still meaningfully anti-aliased -- never
+  // reaches true black -- so no pixel-*selection* strategy can recover
+  // full contrast; that needs a different fix (e.g. rendering at a higher
+  // scale for verification). Locks in the honest, still-substantially-
+  // improved-but-not-fully-resolved outcome for this size rather than
+  // silently regressing it unnoticed: pre-fix this sampled at #c0c0c0
+  // (1.82:1); the adaptive split gets it to a real, measurably darker
+  // reading, just short of the 4.5:1 bar.
+  it('at 8pt, improves but does not fully resolve dot-leader contrast (rendering-resolution floor)', async () => {
+    const dotLeader = '. '.repeat(49).trim();
+    const issues = await contrastIssuesFor(8, false, 0, dotLeader);
+    expect(issues.length).toBe(1);
+    expect(issues[0].contrastData!.ratio).toBeGreaterThan(3.5); // was 1.82:1 before the fix
+    expect(issues[0].contrastData!.ratio).toBeLessThan(4.5); // documents the residual gap, not a target
+  });
 });

@@ -101,7 +101,15 @@ const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
 
 const ALT_TEXT_MISSING_CODES = new Set(['MATTERHORN-13-001', 'MATTERHORN-13-002', 'ALT-TEXT-MISSING']);
 const ALT_TEXT_IMPROVE_CODES = new Set(['MATTERHORN-13-004', 'MATTERHORN-13-003', 'ALT-TEXT-QUALITY', 'ALT-TEXT-GENERIC']);
-const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY', 'MATTERHORN-15-003']);
+const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY']);
+// MATTERHORN-15-003 means "irregular table structure" (pdf-table.validator.ts) -- inconsistent
+// column counts / improper nesting, not a missing summary. It was previously routed through
+// analyzeTableSummary, which ignores the issue entirely and always drafts a caption, so applying
+// that suggestion never touched the actual structural defect. No analyzer here targets structural
+// repair (analyzeTableHeaders is about missing header cells, analyzeTableLayout is about
+// artifact-marking layout tables), so this code is intentionally left unhandled -- it falls
+// through to the function's default `return null` and stays flagged for manual review rather
+// than being silently mis-"fixed".
 const TABLE_HEADERS_CODES = new Set(['MATTERHORN-15-002', 'TABLE-HEADERS-INCOMPLETE', 'TABLE-ACCESSIBILITY', 'TABLE-INACCESSIBLE']);
 const TABLE_SCOPE_CODES = new Set(['MATTERHORN-15-004', 'TABLE-SCOPE-MISSING']);
 const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED']);
