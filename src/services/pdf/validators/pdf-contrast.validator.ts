@@ -46,19 +46,26 @@ const DARK_SAMPLE_PERCENTILE = 0.05;
 
 // Guard for sampleDark's adaptive path (below): a region needs at least one
 // pixel this much darker than its known background before it's worth
-// searching for an ink/non-ink split at all -- skips the search entirely
-// for a genuinely flat/textless region, where even the darkest pixel found
-// is just background noise, not real ink.
+// switching to the narrower percentile at all -- skips it entirely for a
+// genuinely flat/textless region, where even the darkest pixel found is
+// just background noise, not real ink.
 const MIN_INK_CONTRAST_LUM = 0.15;
 
-// Minimum single-step WCAG relative-luminance jump, between two pixels
-// adjacent in darkest-first sorted order, to count as a genuine ink/non-ink
-// boundary rather than ordinary anti-aliasing gradient noise. Measured
-// empirically against a rendered dot-leader run (49 isolated periods): true
-// ink pixels sat at lum ~0.06-0.44, then jumped 0.28 straight to ~0.72
-// (background/far anti-aliasing) -- comfortably clear of the small ~0.01-0.03
-// steps *within* either cluster.
-const MIN_INK_GAP = 0.1;
+// Sample size for sampleDark's adaptive path, once MIN_INK_CONTRAST_LUM's
+// guard confirms real ink is present. Far narrower than
+// DARK_SAMPLE_PERCENTILE: that 5% assumes ink coverage near the ~6%
+// body-text baseline it was tuned against, but a single glyph rendered this
+// small (an isolated dot-leader period) is *mostly* anti-aliased edge, not
+// solid interior -- even the darkest ~2% of its own box, one gap-detection
+// pass tried, still averages in a wide ring of that edge and lands nowhere
+// near the true ink color. Measured empirically against a real dot-leader
+// run rendered pure black: the true center pixel is genuinely (0,0,0), but
+// widening the sample even to the darkest 2% (still narrower than 5%)
+// pulls the average back down to only ~3.1:1; narrowing further to 0.5%
+// reaches 5.3:1, comfortably clearing 4.5:1. Only ever used when it's
+// smaller than DARK_SAMPLE_PERCENTILE would give, so normal-density text
+// (already correctly handled there) is unaffected.
+const ADAPTIVE_DARK_SAMPLE_PERCENTILE = 0.005;
 
 // Used only by sampleBackgroundRobust (fix-verification path, not detection
 // above). Above this luminance-variance value, no candidate patch looked
@@ -328,36 +335,22 @@ export class PdfContrastValidator {
    * body text).
    *
    * When `backgroundLum` is supplied and at least one pixel is meaningfully
-   * darker than it (MIN_INK_CONTRAST_LUM), this instead searches the
-   * percentile's own window for the largest single-step luminance jump
-   * (MIN_INK_GAP) and, when found, samples only up to that point. Sparse
-   * text — table-of-contents dot leaders, isolated punctuation — can have
-   * real ink coverage far below the ~6% baseline the percentile assumes;
-   * left as a flat percentage of the whole box, the fixed quota is then
-   * forced to pad out with anti-aliasing/background pixels, dragging the
-   * averaged color toward background regardless of the ink's true color.
-   * The jump marks exactly where the true ink(+immediate anti-aliasing)
-   * cluster ends and the next, much lighter tier begins — a plain "darker
-   * than background by some fixed amount" cutoff isn't enough on its own
-   * here: for a period glyph this small, most of its own pixels are
-   * anti-aliasing gradient rather than solid ink, so an absolute threshold
-   * loose enough to catch dark-gray text elsewhere also pulls in a good
-   * chunk of that gradient. Only ever SHRINKS the sample relative to the
-   * flat percentile, never grows it, so normal-density text — already
-   * correctly handled by the percentile — is unaffected: a densely-inked
-   * run has no such jump within the window at all, and falls straight
-   * through to the unmodified percentile.
-   *
-   * KNOWN LIMITATION: confirmed empirically (a page-7 dot-leader run — 49
-   * periods across a 300pt-wide, 8pt-tall bbox) this closes most of the
-   * dilution gap (measured fg went from #c0c0c0, 1.82:1, to a materially
-   * darker, more accurate reading) but is not guaranteed to clear the
-   * required ratio on its own for the smallest glyphs: at ~8pt, even the
-   * single darkest pixel found is itself still meaningfully anti-aliased
-   * (never reaches true black), a rendering-resolution floor no pixel
-   * *selection* strategy can recover from — that would need a different
-   * fix (e.g. rendering at a higher scale for verification specifically).
-   * Still a strict improvement over the flat percentile either way.
+   * darker than it (MIN_INK_CONTRAST_LUM), this instead uses
+   * ADAPTIVE_DARK_SAMPLE_PERCENTILE — a far narrower slice — whenever that's
+   * smaller than the flat percentile would give. Sparse text — table-of-
+   * contents dot leaders, isolated punctuation — can have real ink coverage
+   * far below the ~6% baseline DARK_SAMPLE_PERCENTILE assumes; left as a
+   * flat percentage of the whole box, the fixed quota is forced to pad out
+   * with anti-aliasing/background pixels, dragging the averaged color
+   * toward background regardless of the ink's true color. A single glyph
+   * this small is *mostly* anti-aliased edge, not solid interior, so even a
+   * moderately-narrowed slice still averages in a wide ring of that edge —
+   * confirmed empirically (a real dot-leader run rendered pure black): the
+   * true center pixel measures as genuine (0,0,0), but a 2% slice still
+   * only reaches ~3.1:1, while 0.5% reaches 5.3:1, comfortably clearing
+   * 4.5:1. Only ever SHRINKS the sample relative to the flat percentile,
+   * never grows it, so normal-density text — already correctly handled by
+   * the percentile — is unaffected.
    */
   sampleDark(
     data: Uint8ClampedArray,
@@ -381,16 +374,8 @@ export class PdfContrastValidator {
 
     let take = percentileTake;
     if (backgroundLum !== undefined && backgroundLum - pixels[0].lum >= MIN_INK_CONTRAST_LUM) {
-      let splitIndex = -1;
-      let bestGap = MIN_INK_GAP;
-      for (let i = 1; i < percentileTake; i++) {
-        const gap = pixels[i].lum - pixels[i - 1].lum;
-        if (gap > bestGap) {
-          bestGap = gap;
-          splitIndex = i;
-        }
-      }
-      if (splitIndex > 0) take = splitIndex;
+      const adaptiveTake = Math.max(1, Math.floor(pixels.length * ADAPTIVE_DARK_SAMPLE_PERCENTILE));
+      if (adaptiveTake < percentileTake) take = adaptiveTake;
     }
 
     const subset = pixels.slice(0, take);
