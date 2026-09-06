@@ -65,24 +65,36 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     expect(issues).toEqual([]);
   });
 
-  // KNOWN LIMITATION (see sampleDark's own doc comment): at the smallest
-  // sizes, even the single darkest pixel the renderer produces for an
-  // isolated period is itself still meaningfully anti-aliased -- never
-  // reaches true black -- so no pixel-*selection* strategy can recover
-  // full contrast on its own; that would need a different fix (e.g.
-  // rendering at a higher scale for verification). Whether this specific
-  // case still gets flagged at all is sensitive to the platform's own font
-  // rendering/anti-aliasing at 8pt (observed: still flagged locally, fully
-  // resolved on CI's rendering stack) -- deliberately not pinning an exact
-  // ratio band across environments. What's actually being guarded here is
-  // that the fix isn't a no-op: pre-fix this sampled at #c0c0c0 (1.82:1) on
-  // every platform tested, so a still-flagged result must show a real,
-  // materially darker reading.
-  it('at 8pt, resolves or substantially improves dot-leader contrast (rendering-sensitive edge case)', async () => {
+  // A first attempt at this fix (a gap-detection heuristic, since replaced --
+  // see sampleDark's doc comment) only partially closed this at 8pt: it
+  // shrank the sample but still averaged in enough anti-aliased edge to land
+  // around 3.9:1, short of the 4.5:1 bar, on some platforms. The narrower
+  // ADAPTIVE_DARK_SAMPLE_PERCENTILE this replaced it with resolves it fully.
+  it('does not flag true black dot-leader text even at the smallest common size (8pt)', async () => {
     const dotLeader = '. '.repeat(49).trim();
     const issues = await contrastIssuesFor(8, false, 0, dotLeader);
-    if (issues.length > 0) {
-      expect(issues[0].contrastData!.ratio).toBeGreaterThan(3.0); // was 1.82:1 before the fix
-    }
+    expect(issues).toEqual([]);
+  });
+
+  // CodeRabbit review finding on the PR that introduced the adaptive
+  // percentile above: a single unrelated dark pixel in the sampled box (a
+  // stray mark, a bleed from adjacent content, a compression artifact)
+  // could dominate the narrow ADAPTIVE_DARK_SAMPLE_PERCENTILE slice and
+  // falsely pass text that's genuinely low-contrast throughout. Draws the
+  // same mid-gray text as the "still flags genuinely low-contrast" case
+  // above, plus one small solid-black mark overlapping its bounding box, to
+  // confirm the ink-coverage guard (sampleDark's own doc comment) routes
+  // this back to the flat percentile instead of narrowing.
+  it('still flags genuinely low-contrast text even with one unrelated dark pixel in its box', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('Low contrast text', { x: 60, y: 450, size: 14, font, color: rgb(0.6, 0.6, 0.6) });
+    page.drawRectangle({ x: 62, y: 451, width: 4, height: 4, color: rgb(0, 0, 0) });
+    const buffer = Buffer.from(await src.save());
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, 'sampling-stray-artifact', 'test.pdf', 'custom', ['contrast']);
+    const issues = report.issues.filter(i => i.code === 'COLOR-CONTRAST');
+    expect(issues.length).toBe(1);
+    expect(issues[0].contrastData!.ratio).toBeLessThan(4.5);
   });
 });
