@@ -75,4 +75,26 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     const issues = await contrastIssuesFor(8, false, 0, dotLeader);
     expect(issues).toEqual([]);
   });
+
+  // CodeRabbit review finding on the PR that introduced the adaptive
+  // percentile above: a single unrelated dark pixel in the sampled box (a
+  // stray mark, a bleed from adjacent content, a compression artifact)
+  // could dominate the narrow ADAPTIVE_DARK_SAMPLE_PERCENTILE slice and
+  // falsely pass text that's genuinely low-contrast throughout. Draws the
+  // same mid-gray text as the "still flags genuinely low-contrast" case
+  // above, plus one small solid-black mark overlapping its bounding box, to
+  // confirm the ink-coverage guard (sampleDark's own doc comment) routes
+  // this back to the flat percentile instead of narrowing.
+  it('still flags genuinely low-contrast text even with one unrelated dark pixel in its box', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('Low contrast text', { x: 60, y: 450, size: 14, font, color: rgb(0.6, 0.6, 0.6) });
+    page.drawRectangle({ x: 62, y: 451, width: 4, height: 4, color: rgb(0, 0, 0) });
+    const buffer = Buffer.from(await src.save());
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, 'sampling-stray-artifact', 'test.pdf', 'custom', ['contrast']);
+    const issues = report.issues.filter(i => i.code === 'COLOR-CONTRAST');
+    expect(issues.length).toBe(1);
+    expect(issues[0].contrastData!.ratio).toBeLessThan(4.5);
+  });
 });

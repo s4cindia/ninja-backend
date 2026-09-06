@@ -67,6 +67,18 @@ const MIN_INK_CONTRAST_LUM = 0.15;
 // (already correctly handled there) is unaffected.
 const ADAPTIVE_DARK_SAMPLE_PERCENTILE = 0.005;
 
+// Second guard for sampleDark's adaptive path: the narrow percentile's
+// darkest-N pixels must span at least this fraction of the box's width
+// before they're trusted as real ink, rather than a single localized dark
+// blob (a stray mark, a bleed from adjacent content, a compression
+// artifact) that happens to be darker than genuinely low-contrast text and
+// so sorts ahead of it. Real sparse ink (dot-leader periods, scattered
+// punctuation) is distributed across the whole run; an artifact's darkest
+// pixels are confined to its own small footprint. 0.5 is comfortably below
+// what a dot-leader spans (its darkest slice includes pixels from many
+// periods across the line) while still rejecting a compact blob.
+const MIN_INK_SPREAD_FRACTION = 0.5;
+
 // Used only by sampleBackgroundRobust (fix-verification path, not detection
 // above). Above this luminance-variance value, no candidate patch looked
 // confidently "flat" (background-like) — e.g. a 50/50 straddle of black
@@ -334,23 +346,36 @@ export class PdfContrastValidator {
    * constant's comment — calibrated against ~6% ink coverage for regular
    * body text).
    *
-   * When `backgroundLum` is supplied and at least one pixel is meaningfully
-   * darker than it (MIN_INK_CONTRAST_LUM), this instead uses
-   * ADAPTIVE_DARK_SAMPLE_PERCENTILE — a far narrower slice — whenever that's
-   * smaller than the flat percentile would give. Sparse text — table-of-
-   * contents dot leaders, isolated punctuation — can have real ink coverage
-   * far below the ~6% baseline DARK_SAMPLE_PERCENTILE assumes; left as a
-   * flat percentage of the whole box, the fixed quota is forced to pad out
-   * with anti-aliasing/background pixels, dragging the averaged color
-   * toward background regardless of the ink's true color. A single glyph
-   * this small is *mostly* anti-aliased edge, not solid interior, so even a
-   * moderately-narrowed slice still averages in a wide ring of that edge —
-   * confirmed empirically (a real dot-leader run rendered pure black): the
-   * true center pixel measures as genuine (0,0,0), but a 2% slice still
-   * only reaches ~3.1:1, while 0.5% reaches 5.3:1, comfortably clearing
-   * 4.5:1. Only ever SHRINKS the sample relative to the flat percentile,
-   * never grows it, so normal-density text — already correctly handled by
-   * the percentile — is unaffected.
+   * When `backgroundLum` is supplied and there's a pixel meaningfully darker
+   * than it (MIN_INK_CONTRAST_LUM) whose darkest-N neighbors (N =
+   * ADAPTIVE_DARK_SAMPLE_PERCENTILE) spread across most of the box's width
+   * (MIN_INK_SPREAD_FRACTION), this instead uses that far narrower slice.
+   * Sparse text — table-of-contents dot leaders, isolated punctuation — can
+   * have real ink coverage far below the ~6% baseline DARK_SAMPLE_PERCENTILE
+   * assumes; left as a flat percentage of the whole box, the fixed quota is
+   * forced to pad out with anti-aliasing/background pixels, dragging the
+   * averaged color toward background regardless of the ink's true color. A
+   * single glyph this small is *mostly* anti-aliased edge, not solid
+   * interior, so even a moderately-narrowed slice still averages in a wide
+   * ring of that edge — confirmed empirically (a real dot-leader run
+   * rendered pure black): the true center pixel measures as genuine
+   * (0,0,0), but a 2% slice still only reaches ~3.1:1, while 0.5% reaches
+   * 5.3:1, comfortably clearing 4.5:1.
+   *
+   * The spread requirement guards the opposite failure: text that's
+   * genuinely low-contrast throughout, with one unrelated *localized* dark
+   * blob somewhere in its box (a stray mark, a bleed from adjacent content,
+   * a compression artifact), must NOT have that blob's own pixels --
+   * darker than the real text, so sorting ahead of it -- fill the narrow
+   * slice on their own and produce a false pass. A simple count of "how
+   * many pixels are dark enough" doesn't catch this: a solid artifact
+   * block easily supplies enough pixels by itself. Requiring those
+   * darkest-N pixels to span most of the box's *width* does: genuine
+   * sparse ink is distributed across the whole run (many periods along a
+   * dot leader), while an artifact's darkest pixels are confined to its
+   * own small footprint. Only ever SHRINKS the sample relative to the flat
+   * percentile, never grows it, so normal-density text — already correctly
+   * handled by the percentile — is unaffected.
    */
   sampleDark(
     data: Uint8ClampedArray,
@@ -358,13 +383,13 @@ export class PdfContrastValidator {
     cw: number, ch: number,
     backgroundLum?: number
   ): RgbColor | null {
-    const pixels: Array<{ lum: number; r: number; g: number; b: number }> = [];
+    const pixels: Array<{ lum: number; r: number; g: number; b: number; px: number }> = [];
 
     for (let py = Math.max(0, y); py < Math.min(y + h, ch); py++) {
       for (let px = Math.max(0, x); px < Math.min(x + w, cw); px++) {
         const i = (py * cw + px) * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2];
-        pixels.push({ lum: this.getLuminance(r, g, b), r, g, b });
+        pixels.push({ lum: this.getLuminance(r, g, b), r, g, b, px });
       }
     }
 
@@ -375,7 +400,31 @@ export class PdfContrastValidator {
     let take = percentileTake;
     if (backgroundLum !== undefined && backgroundLum - pixels[0].lum >= MIN_INK_CONTRAST_LUM) {
       const adaptiveTake = Math.max(1, Math.floor(pixels.length * ADAPTIVE_DARK_SAMPLE_PERCENTILE));
-      if (adaptiveTake < percentileTake) take = adaptiveTake;
+      // Guard against a single unrelated dark blob (a stray mark, a bleed
+      // from adjacent content, a compression artifact) hijacking the narrow
+      // sample: an inkCount-style "are there enough dark pixels" check
+      // alone isn't sufficient here -- a solid artifact block easily
+      // supplies enough dark pixels on its own, and being darker than the
+      // real (but genuinely low-contrast) text, sorts ahead of it, so the
+      // narrow slice would still be 100% artifact. What actually
+      // distinguishes genuine sparse ink (dot-leader periods, scattered
+      // punctuation) from one artifact is spatial spread: real sparse ink
+      // is distributed across the *whole* run, not clustered in one small
+      // region, so its darkest slice's x-coordinates span most of the
+      // box's width. A localized artifact's darkest slice spans only its
+      // own small footprint. Only apply the narrow percentile when that
+      // span is wide enough -- a text region that's genuinely low-contrast
+      // throughout (the false-negative CodeRabbit flagged) falls straight
+      // through to the unmodified, well-tested flat percentile instead.
+      if (adaptiveTake < percentileTake) {
+        const candidate = pixels.slice(0, adaptiveTake);
+        let minPx = candidate[0].px, maxPx = candidate[0].px;
+        for (const p of candidate) {
+          if (p.px < minPx) minPx = p.px;
+          if (p.px > maxPx) maxPx = p.px;
+        }
+        if (maxPx - minPx >= w * MIN_INK_SPREAD_FRACTION) take = adaptiveTake;
+      }
     }
 
     const subset = pixels.slice(0, take);
