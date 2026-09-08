@@ -464,6 +464,10 @@ class StructureAnalyzerService {
       // structure element — they are false positives from the content detector.
       const matched = tables.filter(t => t.structureMatched);
       for (const table of matched) {
+        // enhanceTablesFromTags may have flipped hasHeaderRow/hasHeaderColumn
+        // from tag data (/THead, /TH) after cells were built from the bold
+        // heuristic alone — resync so cell.isHeader reflects the final flags.
+        this.syncCellHeaderFlags(table);
         this.validateTableAccessibility(table);
       }
       return matched;
@@ -474,6 +478,12 @@ class StructureAnalyzerService {
     }
 
     return tables;
+  }
+
+  private syncCellHeaderFlags(table: TableInfo): void {
+    for (const cell of table.cells) {
+      cell.isHeader = (table.hasHeaderRow && cell.row === 0) || (table.hasHeaderColumn && cell.column === 0);
+    }
   }
 
   private detectTabularContent(blocks: TextBlock[], pageNumber: number): TableInfo[] {

@@ -15,12 +15,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, PDFName, StandardFonts, rgb } from 'pdf-lib';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
 import { structureAnalyzerService } from '../../../../src/services/pdf/structure-analyzer.service';
 
-async function buildGridPdf(): Promise<Buffer> {
-  const doc = await PDFDocument.create();
+async function drawGrid(doc: PDFDocument) {
   const page = doc.addPage([400, 600]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
 
@@ -39,8 +38,29 @@ async function buildGridPdf(): Promise<Buffer> {
     });
     y -= 20;
   }
+}
 
+async function buildGridPdf(): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  await drawGrid(doc);
   return Buffer.from(await doc.save());
+}
+
+/**
+ * Attaches a minimal tagged structure tree declaring exactly one /Table with
+ * a header row (/TR containing a /TH), so the PDF is detected as tagged and
+ * enhanceTablesFromTags()'s tag-driven header detection fires -- independent
+ * of the bold-text heuristic detectTabularContent() uses at initial-cell-
+ * build time.
+ */
+function attachTaggedTableWithHeaderRow(doc: PDFDocument): void {
+  const thDict = doc.context.obj({ S: PDFName.of('TH') });
+  const trDict = doc.context.obj({ S: PDFName.of('TR'), K: [thDict] });
+  const tableDict = doc.context.obj({ S: PDFName.of('Table'), K: [trDict] });
+  const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableDict] });
+  const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+  const structTreeRootRef = doc.context.register(structTreeRootDict);
+  doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
 }
 
 describe('structureAnalyzerService table cell extraction', () => {
@@ -74,6 +94,44 @@ describe('structureAnalyzerService table cell extraction', () => {
       expect(textAt(1, 0)).toBe('Alice');
       expect(textAt(2, 1)).toBe('25');
       expect(textAt(3, 2)).toBe('SF');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  }, 30000);
+
+  it('marks row-0 cells as headers when tag data promotes hasHeaderRow after cells are built', async () => {
+    const doc = await PDFDocument.create();
+    await drawGrid(doc);
+    attachTaggedTableWithHeaderRow(doc);
+    const buffer = Buffer.from(await doc.save());
+
+    const parsedPdf = await pdfParserService.parseBuffer(buffer, 'tagged-grid.pdf');
+
+    try {
+      const structure = await structureAnalyzerService.analyzeStructure(parsedPdf, {
+        analyzeHeadings: false,
+        analyzeTables: true,
+        analyzeLists: false,
+        analyzeLinks: false,
+        analyzeReadingOrder: false,
+        analyzeLanguage: false,
+      });
+
+      expect(structure.isTaggedPDF).toBe(true);
+      expect(structure.tables.length).toBe(1);
+      const table = structure.tables[0];
+
+      // Tag data (a /TH inside the /Table's /TR) is what promotes this --
+      // the grid's row-0 text ("Name"/"Age"/"City") is not bold, so the
+      // heuristic detectTabularContent() uses when it first builds cells
+      // would say hasHeaderRow: false on its own.
+      expect(table.hasHeaderRow).toBe(true);
+
+      const headerCells = table.cells.filter(c => c.row === 0);
+      expect(headerCells.length).toBeGreaterThan(0);
+      for (const cell of headerCells) {
+        expect(cell.isHeader).toBe(true);
+      }
     } finally {
       await pdfParserService.close(parsedPdf);
     }
