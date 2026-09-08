@@ -644,7 +644,7 @@ export class PdfModifierService {
       // Try to find by page ref + index within page
       const pageRef = doc.getPage(targetPage - 1).ref;
       const figuresOnPage = figures.filter(fig => {
-        const pg = fig.get(PDFName.of('Pg'));
+        const pg = this.resolveElementPageRef(fig, doc);
         return pg && pg.toString() === pageRef.toString();
       });
 
@@ -794,7 +794,7 @@ export class PdfModifierService {
       }
       const pageRef = doc.getPage(targetPage - 1).ref;
       const elementsOnPage = elements.filter((f) => {
-        const pg = f.get(PDFName.of('Pg'));
+        const pg = this.resolveElementPageRef(f, doc);
         return pg && pg.toString() === pageRef.toString();
       });
 
@@ -860,7 +860,7 @@ export class PdfModifierService {
 
       const pageRef = doc.getPage(targetPage - 1).ref;
       const tablesOnPage = tables.filter(t => {
-        const pg = t.get(PDFName.of('Pg'));
+        const pg = this.resolveElementPageRef(t, doc);
         return pg && pg.toString() === pageRef.toString();
       });
 
@@ -1257,6 +1257,47 @@ export class PdfModifierService {
     if (!raw) return null;
     const resolved = raw instanceof PDFDict ? raw : doc.context.lookup(raw);
     return resolved instanceof PDFDict ? resolved : null;
+  }
+
+  /**
+   * Resolves a structure element's /Pg reference, searching its own subtree
+   * when the element itself carries none. Seam C's tagging (confirmed via a
+   * real trial document) never puts /Pg on composite elements like /Table --
+   * only on leaf row/cell descendants (e.g. the first /TH) -- so a direct
+   * el.get('Pg') on the element itself is empty even though the element is
+   * unambiguously scoped to one page. Without this, every *OnPage filter
+   * below silently returns empty for such elements, and callers fall through
+   * to an unfiltered, document-wide index lookup instead of a page-scoped one.
+   */
+  private resolveElementPageRef(el: PDFDict, doc: PDFDocument, maxDepth = 6): ReturnType<PDFDict['get']> {
+    const direct = el.get(PDFName.of('Pg'));
+    if (direct) return direct;
+    if (maxDepth <= 0) return undefined;
+
+    const kids = el.get(PDFName.of('K'));
+    const children: PDFDict[] = [];
+    if (kids instanceof PDFArray) {
+      for (let i = 0; i < kids.size(); i++) {
+        const kid = kids.get(i);
+        const resolved = kid instanceof PDFDict ? kid : doc.context.lookup(kid);
+        if (resolved instanceof PDFDict) children.push(resolved);
+      }
+    } else if (kids instanceof PDFDict) {
+      children.push(kids);
+    } else if (kids) {
+      const resolved = doc.context.lookup(kids);
+      if (resolved instanceof PDFDict) children.push(resolved);
+    }
+
+    for (const child of children) {
+      const pg = child.get(PDFName.of('Pg'));
+      if (pg) return pg;
+    }
+    for (const child of children) {
+      const nested = this.resolveElementPageRef(child, doc, maxDepth - 1);
+      if (nested) return nested;
+    }
+    return undefined;
   }
 
   /**

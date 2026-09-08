@@ -395,6 +395,81 @@ class StructureAnalyzerService {
     return currentPage;
   }
 
+  /**
+   * resolvePageNumber, plus a descendant search for taggers (e.g. Seam C)
+   * that never put /Pg on the /Table node or any ancestor -- only on leaf
+   * row/cell descendants. Falls back to the ancestor-inherited currentPage
+   * only once both the node's own /Pg and its subtree are exhausted.
+   */
+  private resolveTablePageNumber(
+    node: PDFDict,
+    pdfDoc: PDFDocument,
+    pageMap: Map<string, number>,
+    currentPage: number
+  ): number {
+    const direct = this.resolveDirectPageNumber(node, pdfDoc, pageMap);
+    if (direct !== null) return direct;
+
+    const fromDescendants = this.findPageNumberInSubtree(node, pdfDoc, pageMap, 6);
+    if (fromDescendants !== null) return fromDescendants;
+
+    return currentPage;
+  }
+
+  private resolveDirectPageNumber(
+    node: PDFDict,
+    pdfDoc: PDFDocument,
+    pageMap: Map<string, number>
+  ): number | null {
+    try {
+      const pgRef = node.get(PDFName.of('Pg'));
+      if (!pgRef) return null;
+      const refStr = pgRef.toString();
+      if (pageMap.has(refStr)) return pageMap.get(refStr)!;
+    } catch (err) {
+      console.warn('Failed to resolve direct page number:', err instanceof Error ? err.message : 'Unknown error');
+    }
+    return null;
+  }
+
+  private findPageNumberInSubtree(
+    node: PDFDict,
+    pdfDoc: PDFDocument,
+    pageMap: Map<string, number>,
+    maxDepth: number
+  ): number | null {
+    if (maxDepth <= 0) return null;
+
+    try {
+      const kids = node.get(PDFName.of('K'));
+      const children: PDFDict[] = [];
+      if (kids instanceof PDFArray) {
+        for (let i = 0; i < kids.size(); i++) {
+          const kid = kids.get(i);
+          const resolved = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
+          if (resolved instanceof PDFDict) children.push(resolved);
+        }
+      } else if (kids instanceof PDFDict) {
+        children.push(kids);
+      } else if (kids) {
+        const resolved = pdfDoc.context.lookup(kids);
+        if (resolved instanceof PDFDict) children.push(resolved);
+      }
+
+      for (const child of children) {
+        const direct = this.resolveDirectPageNumber(child, pdfDoc, pageMap);
+        if (direct !== null) return direct;
+      }
+      for (const child of children) {
+        const nested = this.findPageNumberInSubtree(child, pdfDoc, pageMap, maxDepth - 1);
+        if (nested !== null) return nested;
+      }
+    } catch (err) {
+      console.warn('Failed to search subtree for page number:', err instanceof Error ? err.message : 'Unknown error');
+    }
+    return null;
+  }
+
   private async traverseStructureTree(
     node: PDFDict,
     pdfDoc: PDFDocument,
@@ -469,7 +544,40 @@ class StructureAnalyzerService {
         // heuristic alone — resync so cell.isHeader reflects the final flags.
         this.syncCellHeaderFlags(table);
         this.validateTableAccessibility(table);
+
+        // Re-key the id onto structureElementIndex (the Nth /Table on this
+        // page in structure-tree document order) instead of the layout
+        // detector's incidental per-page push order. pdfModifierService
+        // writers (setTableSummary et al.) parse this same "table_p{page}_{n}"
+        // id back into a page+index and use it to index into the structure
+        // tree's own per-page /Table list -- if n were left as the detection
+        // order, it would almost never line up with that list's order,
+        // silently writing to the wrong /Table element (e.g. a page with
+        // >1 table, or a document-tree walk that doesn't visit tables in
+        // detection order at all).
+        table.id = `table_p${table.pageNumber}_${table.structureElementIndex}`;
       }
+
+      // A table whose tagged rows straddle a page boundary can make
+      // consumeNextTable's per-page queue come up short, falling back to the
+      // global queue and pairing a /Table node resolved to page N with a
+      // TableInfo whose own (layout-detected) pageNumber isn't N -- rare, but
+      // when two such mismatches land on the same resolved page they can
+      // collide on the same structureElementIndex, producing a duplicate id.
+      // Left alone, a duplicate silently overwrites a distinct table in any
+      // Map keyed by id downstream (ai-analysis.service.ts's tableById) --
+      // disambiguate here so every matched table keeps a unique identity,
+      // even though the id no longer perfectly encodes its true structural
+      // position in that rare case.
+      const seenIds = new Map<string, number>();
+      for (const table of matched) {
+        const seenCount = seenIds.get(table.id) ?? 0;
+        seenIds.set(table.id, seenCount + 1);
+        if (seenCount > 0) {
+          table.id = `${table.id}_dup${seenCount}`;
+        }
+      }
+
       return matched;
     }
 
@@ -626,7 +734,7 @@ class StructureAnalyzerService {
         if (structTreeRootRef) {
           const structTreeRoot = parsedPdf.pdfLibDoc.context.lookup(structTreeRootRef);
           if (structTreeRoot instanceof PDFDict) {
-            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
+            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex, 1);
           }
         }
       }
@@ -641,14 +749,27 @@ class StructureAnalyzerService {
     pageMap: Map<string, number>,
     unmatchedTableQueues: Map<number, TableInfo[]>,
     globalQueue: TableInfo[],
-    perPageTableIndex: Map<number, number>
+    perPageTableIndex: Map<number, number>,
+    currentPage: number
   ): Promise<void> {
     try {
       const typeRef = node.get(PDFName.of('S'));
       const type = typeRef?.toString();
+      // Resolved once per node and threaded to children below (mirroring
+      // traverseStructureTree's heading walk), so a node without its own
+      // /Pg at least inherits whatever page an ancestor resolved. That's not
+      // enough for /Table specifically: Seam C's tagging puts /Pg on neither
+      // the /Table node nor any ancestor up to /Document -- only on leaf row/
+      // cell descendants (e.g. the first /TH) -- so /Table needs its own
+      // subtree search instead of (or in addition to) ancestor inheritance.
+      // Without it, every /Table's page silently collapses to whatever the
+      // inherited default is, corrupting perPageTableIndex/structureElementIndex
+      // into one document-wide counter instead of a true per-page index.
+      const pageNumber = type === '/Table'
+        ? this.resolveTablePageNumber(node, pdfDoc, pageMap, currentPage)
+        : this.resolvePageNumber(node, pdfDoc, currentPage, pageMap);
 
       if (type === '/Table') {
-        const pageNumber = this.resolvePageNumber(node, pdfDoc, 1, pageMap);
         // Stamp the index before consuming — every /Table element on the
         // page counts, matched or not, to mirror findStructureElementsByType.
         const elementIndex = perPageTableIndex.get(pageNumber) ?? 0;
@@ -679,11 +800,11 @@ class StructureAnalyzerService {
         for (let i = 0; i < kids.size(); i++) {
           const kid = kids.get(i);
           if (kid instanceof PDFDict) {
-            await this.findTaggedTables(kid, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
+            await this.findTaggedTables(kid, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex, pageNumber);
           } else {
             const resolved = pdfDoc.context.lookup(kid);
             if (resolved instanceof PDFDict) {
-              await this.findTaggedTables(resolved, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex);
+              await this.findTaggedTables(resolved, pdfDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex, pageNumber);
             }
           }
         }
