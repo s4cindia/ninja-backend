@@ -464,6 +464,10 @@ class StructureAnalyzerService {
       // structure element — they are false positives from the content detector.
       const matched = tables.filter(t => t.structureMatched);
       for (const table of matched) {
+        // enhanceTablesFromTags may have flipped hasHeaderRow/hasHeaderColumn
+        // from tag data (/THead, /TH) after cells were built from the bold
+        // heuristic alone — resync so cell.isHeader reflects the final flags.
+        this.syncCellHeaderFlags(table);
         this.validateTableAccessibility(table);
       }
       return matched;
@@ -474,6 +478,12 @@ class StructureAnalyzerService {
     }
 
     return tables;
+  }
+
+  private syncCellHeaderFlags(table: TableInfo): void {
+    for (const cell of table.cells) {
+      cell.isHeader = (table.hasHeaderRow && cell.row === 0) || (table.hasHeaderColumn && cell.column === 0);
+    }
   }
 
   private detectTabularContent(blocks: TextBlock[], pageNumber: number): TableInfo[] {
@@ -502,12 +512,19 @@ class StructureAnalyzerService {
             table.hasHeaderRow = true;
           }
 
-          const firstItemsBold = block.lines.every(line => 
+          const firstItemsBold = block.lines.every(line =>
             line.items[0]?.font.isBold === true
           );
           if (firstItemsBold && block.lines.length > 1) {
             table.hasHeaderColumn = true;
           }
+
+          table.cells = this.buildTableCells(
+            block.lines,
+            columnPositions,
+            table.hasHeaderRow,
+            table.hasHeaderColumn
+          );
 
           tables.push(table);
         }
@@ -538,6 +555,47 @@ class StructureAnalyzerService {
       .sort((a, b) => a - b);
 
     return columns;
+  }
+
+  private buildTableCells(
+    lines: TextLine[],
+    columnPositions: number[],
+    hasHeaderRow: boolean,
+    hasHeaderColumn: boolean
+  ): TableCell[] {
+    const cells: TableCell[] = [];
+
+    lines.forEach((line, rowIndex) => {
+      const rowText: string[][] = columnPositions.map(() => []);
+
+      for (const item of line.items) {
+        const roundedX = Math.round(item.position.x / 10) * 10;
+        let columnIndex = 0;
+        let closestDistance = Infinity;
+        for (let i = 0; i < columnPositions.length; i++) {
+          const distance = Math.abs(columnPositions[i] - roundedX);
+          if (distance < closestDistance) {
+            closestDistance = distance;
+            columnIndex = i;
+          }
+        }
+        rowText[columnIndex].push(item.text);
+      }
+
+      rowText.forEach((texts, columnIndex) => {
+        if (texts.length === 0) return;
+        cells.push({
+          row: rowIndex,
+          column: columnIndex,
+          text: texts.join(' ').trim(),
+          isHeader: (hasHeaderRow && rowIndex === 0) || (hasHeaderColumn && columnIndex === 0),
+          rowSpan: 1,
+          colSpan: 1,
+        });
+      });
+    });
+
+    return cells;
   }
 
   private async enhanceTablesFromTags(parsedPdf: ParsedPDF, tables: TableInfo[]): Promise<void> {
