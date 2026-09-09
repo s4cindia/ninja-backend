@@ -722,13 +722,17 @@ export class PdfModifierService {
   private mcidForXObject(doc: PDFDocument, targetPage: number, xObjectName: string): number | null {
     const content = this.decodePageContent(doc, targetPage);
     if (!content) return null;
-    // BDC(with MCID) | BMC | EMC | `/name Do` — walk in source order tracking the MCID stack.
-    const re = /<<\s*\/MCID\s+(\d+)\s*>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
+    // BDC's property dict (with or without /MCID among other keys, e.g.
+    // << /Lang (en-US) /MCID 7 >>) | BMC | EMC | `/name Do` — walk in
+    // source order tracking the MCID stack.
+    const re = /<<((?:(?!>>).)*)>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
     const stack: number[] = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
-      if (m[1] !== undefined) stack.push(Number(m[1]));       // BDC with /MCID
-      else if (m[2] !== undefined) {                          // `/name Do`
+      if (m[1] !== undefined) {                               // BDC (dict may or may not carry /MCID)
+        const mcidMatch = /\/MCID\s+(\d+)/.exec(m[1]);
+        stack.push(mcidMatch ? Number(mcidMatch[1]) : -1);
+      } else if (m[2] !== undefined) {                        // `/name Do`
         if (m[2] === xObjectName) {
           for (let i = stack.length - 1; i >= 0; i--) if (stack[i] >= 0) return stack[i];
           return null;
