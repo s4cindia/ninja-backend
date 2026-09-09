@@ -53,6 +53,30 @@ export function writePageContent(doc: PDFDocument, pageNumber: number, content: 
 // `<< /Lang (en-US) /MCID 7 >>`) -- /MCID is then pulled out of the
 // captured group separately, rather than requiring it be the dict's only
 // entry (which would silently miss any BDC with additional properties).
+//
+// Known, accepted residual limitations (text-based regex parsing of PDF
+// content-stream syntax, not a real tokenizer -- flagged in review as a
+// legitimate but separate, substantially bigger undertaking):
+//   - A /MCID-shaped substring inside a PDF string literal (parenthesized
+//     text, e.g. an /ActualText value that happens to contain the literal
+//     text "/MCID 7") sitting inside an otherwise-real BDC dict could be
+//     misread as a key. Real documents essentially never put PDF-syntax
+//     lookalikes inside human-authored string content, but it's possible.
+//   - A dict containing a *nested* `<<...>>` (e.g. an OCG dict as a
+//     property value) stops at the first `>>`, truncating the captured
+//     group at the nested dict's own close rather than the outer one.
+//   - Only the inline-dict BDC form is recognized -- a named property-list
+//     reference (`/P1 BDC`, resolved via the page's /Resources /Properties)
+//     is not. A page using that form yields zero MCIDs here, same as
+//     before this fallback existed (a missed opportunity, not a wrong
+//     answer -- resolvesToPageViaMcid's caller already treats "no MCID
+//     evidence" as "can't help", not as a false negative on some other
+//     path).
+// A correct, general fix needs an actual content-stream tokenizer (proper
+// string/dict/array lexing) plus Resources-aware Properties resolution --
+// real, valuable, out of scope for this fallback's purpose (recovering an
+// otherwise totally unresolvable element), which this regex already
+// strictly improves on for the realistic cases seen in real tagged PDFs.
 const BDC_PROPS_RE = /<<((?:(?!>>).)*)>>\s*BDC/g;
 const MCID_ATTR_RE = /\/MCID\s+(\d+)/;
 

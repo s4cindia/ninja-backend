@@ -686,14 +686,21 @@ export class PdfStructureWriterService {
    * there, independent of whether any /Pg attribute exists at all. Mirrors
    * pdfModifierService.resolvesToPageViaMcid -- see its doc comment for why
    * this is deliberately only ever a fallback for a missing /Pg, never an
-   * override of a confident (if perhaps mismatched) one.
+   * override of a confident (if perhaps mismatched) one, and for why this
+   * requires EVERY leaf MCID to match (not just one): MCID numbering
+   * restarts per page, so a single shared number alone isn't proof of
+   * ownership -- the fully rigorous check would resolve MCID -> StructElem
+   * via /StructTreeRoot's /ParentTree, a separate capability out of scope
+   * here. Requiring every leaf MCID an element references (not just one) to
+   * independently coincide with the target page shrinks the false-positive
+   * window multiplicatively for any multi-cell table.
    */
   private resolvesToPageViaMcid(doc: PDFDocument, el: PDFDict, targetPage: number): boolean {
     const mcids = this.collectLeafMcids(doc, el);
     if (mcids.length === 0) return false;
     const pageMcids = pageContentMcids(doc, targetPage);
     if (!pageMcids) return false;
-    return mcids.some(mcid => pageMcids.has(mcid));
+    return mcids.every(mcid => pageMcids.has(mcid));
   }
 
   /**

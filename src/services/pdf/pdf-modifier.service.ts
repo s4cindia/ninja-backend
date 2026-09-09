@@ -1375,13 +1375,29 @@ export class PdfModifierService {
    * mismatch) points elsewhere. Overriding a confident-but-possibly-wrong
    * /Pg with a merely-plausible MCID coincidence would trade one class of
    * mistargeting risk for another, less understood one.
+   *
+   * Because MCID numbering restarts per page, a single shared number is not
+   * proof of ownership on its own -- the fully rigorous check (real
+   * findings, not a false positive) is to resolve MCID -> StructElem via
+   * the page's own /StructParents index into /StructTreeRoot's /ParentTree
+   * and confirm it points back at `el`, rather than at numeric equality
+   * against page content alone. That's a real, separate capability (a
+   * number-tree walk, not a regex), out of scope for this fallback.
+   * Requiring EVERY one of the element's own leaf MCIDs -- not just one --
+   * to independently coincide with targetPage's content is the cheap
+   * mitigation taken here instead: for any element with more than one leaf
+   * MCID (e.g. any multi-cell table), an unrelated page would need to
+   * coincidentally reuse *all* of them, not just one, which shrinks the
+   * false-positive window multiplicatively without needing the full
+   * ParentTree walk. A single-MCID element (a Figure, a Formula) is no
+   * worse off than a single numeric check already was.
    */
   private resolvesToPageViaMcid(el: PDFDict, doc: PDFDocument, targetPage: number): boolean {
     const mcids = this.collectLeafMcids(el, doc);
     if (mcids.length === 0) return false;
     const pageMcids = pageContentMcids(doc, targetPage);
     if (!pageMcids) return false;
-    return mcids.some(mcid => pageMcids.has(mcid));
+    return mcids.every(mcid => pageMcids.has(mcid));
   }
 
   /**
