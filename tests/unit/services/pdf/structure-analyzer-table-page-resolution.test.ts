@@ -132,4 +132,60 @@ describe('structureAnalyzerService table page resolution', () => {
       await pdfParserService.close(parsedPdf);
     }
   }, 30000);
+
+  /**
+   * Regression for a second, more dangerous bug found while investigating why
+   * ~119-122 of 189 tables never received a summary despite ZERO apply-time
+   * failures ever being logged across a real 20-round auto-remediation run:
+   * setTableSummary silently fell back to tablesOnPage[0], then to the
+   * GLOBAL tables[targetIndex]/tables[0] (any table, any page), whenever its
+   * target page/index lookup came up empty -- always reporting success, so
+   * the actually-flagged table's issue kept re-firing every round forever
+   * while some unrelated table's summary got silently overwritten instead.
+   *
+   * Confirmed on the real document that this isn't a depth-limit bug: 14 of
+   * 189 /Table elements have no /Pg anywhere in their entire subtree, even
+   * searched with depth unbounded -- genuinely missing tag data, not
+   * findable by raising resolveElementPageRef's maxDepth.
+   */
+  it('fails honestly instead of silently writing to a different table when the target page has none', async () => {
+    const doc = await PDFDocument.create();
+    await drawGrid(doc); // page 1 (index 0) -- the only page with a resolvable table
+    await drawGrid(doc); // page 2 (index 1) -- deliberately has NO attached table at all
+
+    const pageRefs = doc.getPages().map(p => p.ref);
+    const thDict = doc.context.obj({ S: PDFName.of('TH'), Pg: pageRefs[0] });
+    const trDict = doc.context.obj({ S: PDFName.of('TR'), K: [thDict] });
+    const tableA = doc.context.obj({ S: PDFName.of('Table'), K: [trDict] });
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableA] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    const buffer = Buffer.from(await doc.save());
+    const parsedPdf = await pdfParserService.parseBuffer(buffer, 'one-resolvable-table.pdf');
+
+    try {
+      // Asks for page 2's table_p2_0 -- no /Table resolves to page 2 at all.
+      const result = await pdfModifierService.setTableSummary(parsedPdf.pdfLibDoc, 'table_p2_0', 'Summary meant for a page-2 table');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('No Table element at page 2');
+
+      // The real page-1 table must be untouched -- not silently given page
+      // 2's summary via the tablesOnPage[0]/tables[0] fallback this removed.
+      const structure = await structureAnalyzerService.analyzeStructure(parsedPdf, {
+        analyzeHeadings: false,
+        analyzeTables: true,
+        analyzeLists: false,
+        analyzeLinks: false,
+        analyzeReadingOrder: false,
+        analyzeLanguage: false,
+      });
+      const tableOnPage1 = structure.tables.find(t => t.pageNumber === 1);
+      expect(tableOnPage1?.hasSummary).toBe(false);
+      expect(tableOnPage1?.summary).toBeUndefined();
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  }, 30000);
 });
