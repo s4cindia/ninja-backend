@@ -124,6 +124,19 @@ const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY']);
 // than being silently mis-"fixed".
 const TABLE_HEADERS_CODES = new Set(['MATTERHORN-15-002', 'TABLE-HEADERS-INCOMPLETE', 'TABLE-ACCESSIBILITY', 'TABLE-INACCESSIBLE']);
 const TABLE_SCOPE_CODES = new Set(['MATTERHORN-15-004', 'TABLE-SCOPE-MISSING']);
+// Codes where fixSimpleTableHeaders' first-row TD->TH promotion is actually the right fix.
+// Deliberately excludes TABLE-HEADERS-INCOMPLETE (pdf-table.validator.ts only emits it when
+// the table ALREADY has one header type -- row or column -- and needs the other) and
+// TABLE_SCOPE_CODES (fires when headers already exist and only need a scope attribute).
+// fixSimpleTableHeaders only ever promotes TDs in the first row and reports "already fine"
+// with no write when that row is already all-TH -- a false "success" for both cases, since
+// the real defect (a missing header COLUMN, or a missing scope attribute on already-TH cells)
+// is never touched, silently consuming the issue's fix attempt every round with no progress.
+// TABLE-ACCESSIBILITY stays eligible: when its underlying table already has full headers, the
+// same "already fine" no-op is an ACCURATE statement about headers specifically (the table's
+// real remaining defect is almost always a missing summary, a separate, already-known
+// data point -- see project memory) rather than a claim that resolves something it didn't.
+const TABLE_HEADER_AUTO_FIX_CODES = new Set(['MATTERHORN-15-002', 'TABLE-ACCESSIBILITY']);
 const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED']);
 const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
@@ -651,7 +664,12 @@ class AiAnalysisService {
       // structurally regular", without needing to parse PDF/UA span attributes to get it.
       const headerRowCellCount = table.cells.filter(c => c.row === 0).length;
       const headerRowLooksRegular = headerRowCellCount === table.columnCount;
-      if (parsed.isTagged && table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS && headerRowLooksRegular) {
+      if (
+        parsed.isTagged &&
+        TABLE_HEADER_AUTO_FIX_CODES.has(code) &&
+        table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS &&
+        headerRowLooksRegular
+      ) {
         return {
           suggestionType: 'table-header-fix',
           guidance: `First-row cells will be promoted to TH with scope="Column" in the PDF structure tree.`,

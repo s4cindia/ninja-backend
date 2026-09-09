@@ -121,4 +121,43 @@ describe('dispatchIssue: table-header-fix rule-based column-count gate', () => {
     expect(analyzeSpy).toHaveBeenCalledWith(ISSUE, tableById.get('table_p1_0'));
     expect(res.model).toBe('gemini');
   });
+
+  it('falls through to AI review for TABLE-HEADERS-INCOMPLETE even within the size/regularity gate (table already has ONE header type; fixSimpleTableHeaders cannot add the other)', async () => {
+    // pdf-table.validator.ts only emits TABLE-HEADERS-INCOMPLETE when the
+    // table already has a header row OR column (not neither) -- promoting
+    // an already-all-TH first row is a no-op that reports false "success"
+    // without ever adding what's actually missing (the header column).
+    const table = buildTable(5);
+    table.hasHeaderRow = true;
+    table.hasHeaderColumn = false;
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
+    const analyzeSpy = vi.spyOn(svc, 'analyzeTableHeaders').mockResolvedValue({
+      suggestionType: 'table-header-fix',
+      guidance: 'AI-drafted',
+      confidence: 0.6,
+      rationale: 'complex table, only has row headers',
+      model: 'gemini',
+      applyMode: 'guidance-only',
+    });
+
+    const incompleteIssue = { ...ISSUE, code: 'TABLE-HEADERS-INCOMPLETE' };
+    const res = await svc.dispatchIssue(incompleteIssue, parsed, CONFIG, new Map(), tableById, new Map());
+
+    expect(analyzeSpy).toHaveBeenCalledWith(incompleteIssue, table);
+    expect(res.model).toBe('gemini');
+  });
+
+  it('falls through to AI review for MATTERHORN-15-004 (missing scope attribute on already-existing headers)', async () => {
+    const table = buildTable(2);
+    table.hasHeaderRow = true;
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
+    const analyzeSpy = vi.spyOn(svc, 'analyzeTableHeaders').mockResolvedValue(null);
+
+    const scopeIssue = { ...ISSUE, code: 'MATTERHORN-15-004' };
+    await svc.dispatchIssue(scopeIssue, parsed, CONFIG, new Map(), tableById, new Map());
+
+    expect(analyzeSpy).toHaveBeenCalledWith(scopeIssue, table);
+  });
 });
