@@ -639,8 +639,19 @@ class AiAnalysisService {
     if (TABLE_HEADERS_CODES.has(code) || TABLE_SCOPE_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns, no merges) in tagged PDFs can have first-row TDs promoted to TH
-      if (parsed.isTagged && table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS) {
+      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns) in tagged PDFs can have first-row TDs
+      // promoted to TH -- but only when the first row is actually regular. There's no real
+      // rowSpan/colSpan detection anywhere in this codebase (TableCell's are always hardcoded
+      // to 1, even from tagged-structure enhancement), so columnCount alone can't rule out a
+      // merged header cell. buildTableCells (structure-analyzer.service.ts) already gives a
+      // free, real signal for this though: it skips emitting a cell for any column bucket with
+      // no text in a given row, so a header row with a merged/spanning cell shows up here with
+      // fewer cells than columnCount. Requiring an exact match is a cheap, always-available
+      // proxy for "this specific row -- the only one fixSimpleTableHeaders touches -- looks
+      // structurally regular", without needing to parse PDF/UA span attributes to get it.
+      const headerRowCellCount = table.cells.filter(c => c.row === 0).length;
+      const headerRowLooksRegular = headerRowCellCount === table.columnCount;
+      if (parsed.isTagged && table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS && headerRowLooksRegular) {
         return {
           suggestionType: 'table-header-fix',
           guidance: `First-row cells will be promoted to TH with scope="Column" in the PDF structure tree.`,
