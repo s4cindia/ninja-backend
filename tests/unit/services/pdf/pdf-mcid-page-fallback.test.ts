@@ -31,6 +31,7 @@ import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, PDFString }
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
+import { pageContentMcids, decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
 // 1×1 PNG (base64 → bytes without Buffer, which isn't in the test tsconfig scope)
@@ -55,6 +56,15 @@ function findFirstDict(doc: PDFDocument, tag: string): PDFDict {
   walk(root);
   if (!found) throw new Error(`No /${tag} element found`);
   return found;
+}
+
+/** Creates an empty /StructTreeRoot > /Document, for a doc with no structure tree yet. */
+function initEmptyStructTree(doc: PDFDocument): void {
+  const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot') });
+  const structTreeRootRef = doc.context.register(structTreeRootDict);
+  const documentDict = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), P: structTreeRootRef });
+  structTreeRootDict.set(PDFName.of('K'), doc.context.obj([doc.context.register(documentDict)]));
+  doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
 }
 
 /** Appends `elem` as a new top-level child of the tree's sole /Document node. */
@@ -149,6 +159,65 @@ describe('MCID-based page resolution fallback (no /Pg anywhere in the subtree)',
     // for page 2 must not be satisfied by a false/absent match there.
     const res = await pdfModifierService.setTableSummary(doc, 'table_p2_0', 'wrong page');
     expect(res.success).toBe(false);
+    expect(table.get(PDFName.of('Summary'))).toBeUndefined();
+  });
+
+  /**
+   * Regression for a review finding on this PR: an earlier version of this
+   * fix required EVERY leaf MCID to match the claimed page, which broke a
+   * table whose rows genuinely straddle a page boundary (some cells' real
+   * content is on one page, some on the next) -- an already-known, already-
+   * documented gap elsewhere in this codebase's table matching
+   * (structure-analyzer.service.ts's consumeNextTable "_dup" mechanism).
+   * A strict MAJORITY (3 of 4 leaf MCIDs here) must still resolve correctly
+   * to the page most of the table's content genuinely lives on, while the
+   * page holding only the minority (1 of 4) must not falsely match too.
+   */
+  it('resolves via a majority of leaf MCIDs when a table straddles a page boundary, without falsely matching the minority page too', async () => {
+    // MCIDs here are entirely hand-chosen (100, 101, 102 on page 1; 500 on
+    // page 2) rather than generated from real drawn content: MCID numbering
+    // resets independently per page in real documents (confirmed
+    // empirically -- even a fresh page's own filler content restarts at 0
+    // no differently from the "real" content sharing that page), so any
+    // two pages with a similar item count will always have naturally
+    // overlapping low numbers regardless of how content is generated.
+    // Explicit, clearly-non-overlapping values are the only way to test
+    // "genuinely on this page vs. genuinely on that one" without that
+    // numeric coincidence contaminating the result.
+    const src = await PDFDocument.create();
+    src.addPage([400, 600]);
+    src.addPage([400, 600]);
+    const doc = await PDFDocument.load(await src.save());
+    initEmptyStructTree(doc);
+
+    const original1 = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original1}\n` +
+      '/P << /MCID 100 >> BDC\nq Q\nEMC\n' +
+      '/P << /MCID 101 >> BDC\nq Q\nEMC\n' +
+      '/P << /MCID 102 >> BDC\nq Q\nEMC\n');
+    const original2 = decodePageContent(doc, 2)!;
+    writePageContent(doc, 2, `${original2}\n/P << /MCID 500 >> BDC\nq Q\nEMC\n`);
+
+    expect(pageContentMcids(doc, 1)).toEqual(new Set([100, 101, 102]));
+    expect(pageContentMcids(doc, 2)).toEqual(new Set([500]));
+
+    // One hand-built Table referencing 3 leaf MCIDs genuinely on page 1
+    // and 1 genuinely on page 2 (4 total, 3-of-4 majority on page 1), with
+    // no /Pg anywhere.
+    const tableMcids = [100, 101, 102, 500];
+    const tds = tableMcids.map(mcid => doc.context.register(doc.context.obj({ S: PDFName.of('TD'), K: PDFNumber.of(mcid) })));
+    const tr = doc.context.obj({ S: PDFName.of('TR'), K: tds }) as PDFDict;
+    const table = doc.context.obj({ S: PDFName.of('Table'), K: [doc.context.register(tr)] }) as PDFDict;
+    appendTopLevelElement(doc, table);
+
+    const resPage1 = await pdfModifierService.setTableSummary(doc, 'table_p1_0', 'Mostly page 1');
+    expect(resPage1.success).toBe(true);
+    expect((table.get(PDFName.of('Summary')) as PDFString).decodeText()).toBe('Mostly page 1');
+
+    // Reset and check the minority page does NOT also falsely match.
+    table.delete(PDFName.of('Summary'));
+    const resPage2 = await pdfModifierService.setTableSummary(doc, 'table_p2_0', 'wrongly claims page 2');
+    expect(resPage2.success).toBe(false);
     expect(table.get(PDFName.of('Summary'))).toBeUndefined();
   });
 });

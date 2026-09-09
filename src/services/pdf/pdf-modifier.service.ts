@@ -1383,21 +1383,34 @@ export class PdfModifierService {
    * and confirm it points back at `el`, rather than at numeric equality
    * against page content alone. That's a real, separate capability (a
    * number-tree walk, not a regex), out of scope for this fallback.
-   * Requiring EVERY one of the element's own leaf MCIDs -- not just one --
-   * to independently coincide with targetPage's content is the cheap
-   * mitigation taken here instead: for any element with more than one leaf
-   * MCID (e.g. any multi-cell table), an unrelated page would need to
-   * coincidentally reuse *all* of them, not just one, which shrinks the
-   * false-positive window multiplicatively without needing the full
-   * ParentTree walk. A single-MCID element (a Figure, a Formula) is no
-   * worse off than a single numeric check already was.
+   *
+   * Requiring a strict MAJORITY of the element's own leaf MCIDs (not just
+   * one, but deliberately not literally all either) to independently
+   * coincide with targetPage's content is the cheap mitigation taken here
+   * instead. Requiring only one was rejected: for a multi-cell table, an
+   * unrelated page would need to coincidentally reuse just one of many
+   * MCIDs, a real risk. Requiring literally every one was ALSO rejected
+   * (found in review, and correct): a table whose rows genuinely straddle a
+   * page boundary -- already a known, documented gap in this codebase's own
+   * layout-vs-structure-tree table matching (structure-analyzer.service.ts's
+   * consumeNextTable, and its "_dup" disambiguation) -- can have some
+   * leaf MCIDs truly on one page and others truly on the next; requiring
+   * ALL of them to match either page would make BOTH candidate pages fail,
+   * even though most of the table's content, and its id's own layout-
+   * detected page, is genuinely and unambiguously there. A majority is
+   * right-sized for both failure modes: it still requires more than a
+   * single coincidental collision to false-positive, while tolerating a
+   * legitimately-split table's minority of spillover rows on the
+   * neighboring page. A single-MCID element (a Figure, a Formula) needs
+   * that one MCID to match either way -- no worse off than before.
    */
   private resolvesToPageViaMcid(el: PDFDict, doc: PDFDocument, targetPage: number): boolean {
     const mcids = this.collectLeafMcids(el, doc);
     if (mcids.length === 0) return false;
     const pageMcids = pageContentMcids(doc, targetPage);
     if (!pageMcids) return false;
-    return mcids.every(mcid => pageMcids.has(mcid));
+    const matchCount = mcids.filter(mcid => pageMcids.has(mcid)).length;
+    return matchCount > mcids.length / 2;
   }
 
   /**

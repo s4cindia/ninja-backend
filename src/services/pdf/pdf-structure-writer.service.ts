@@ -684,23 +684,22 @@ export class PdfStructureWriterService {
    * references being opened (`<< /MCID n >> BDC`) in targetPage's own
    * content stream is real, spec-legal evidence the element's content lives
    * there, independent of whether any /Pg attribute exists at all. Mirrors
-   * pdfModifierService.resolvesToPageViaMcid -- see its doc comment for why
-   * this is deliberately only ever a fallback for a missing /Pg, never an
-   * override of a confident (if perhaps mismatched) one, and for why this
-   * requires EVERY leaf MCID to match (not just one): MCID numbering
-   * restarts per page, so a single shared number alone isn't proof of
-   * ownership -- the fully rigorous check would resolve MCID -> StructElem
-   * via /StructTreeRoot's /ParentTree, a separate capability out of scope
-   * here. Requiring every leaf MCID an element references (not just one) to
-   * independently coincide with the target page shrinks the false-positive
-   * window multiplicatively for any multi-cell table.
+   * pdfModifierService.resolvesToPageViaMcid -- see its doc comment for the
+   * full reasoning behind why this is deliberately only ever a fallback for
+   * a missing /Pg (never an override of a confident, if perhaps mismatched,
+   * one), and for why this requires a strict MAJORITY of leaf MCIDs to
+   * match rather than just one (too weak -- MCID numbers are reused across
+   * pages) or literally all of them (too strong -- breaks a table whose
+   * rows genuinely straddle a page boundary, an already-known, documented
+   * gap elsewhere in this codebase's table matching).
    */
   private resolvesToPageViaMcid(doc: PDFDocument, el: PDFDict, targetPage: number): boolean {
     const mcids = this.collectLeafMcids(doc, el);
     if (mcids.length === 0) return false;
     const pageMcids = pageContentMcids(doc, targetPage);
     if (!pageMcids) return false;
-    return mcids.every(mcid => pageMcids.has(mcid));
+    const matchCount = mcids.filter(mcid => pageMcids.has(mcid)).length;
+    return matchCount > mcids.length / 2;
   }
 
   /**
