@@ -606,6 +606,78 @@ export class PdfStructureWriterService {
   // ══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Resolves an element's own /Pg, or (if absent) the first /Pg found in its
+   * subtree. Some taggers (e.g. Seam C, confirmed via a real trial document)
+   * never put /Pg on composite elements like /Table -- only on leaf row/cell
+   * descendants (e.g. the first /TH) -- so a direct .get('Pg') is often empty
+   * even though the element is unambiguously scoped to one page. Mirrors
+   * pdfModifierService.resolveElementPageRef for the same reason.
+   */
+  private resolveElementPageRef(doc: PDFDocument, el: PDFDict, maxDepth = 6): PDFRef | undefined {
+    const direct = el.get(PDFName.of('Pg'));
+    if (direct instanceof PDFRef) return direct;
+    if (maxDepth <= 0) return undefined;
+
+    const children: PDFDict[] = [];
+    const collect = (raw: PDFObject) => {
+      const obj = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+      if (obj instanceof PDFDict) children.push(obj);
+    };
+    const k = el.get(PDFName.of('K'));
+    if (k instanceof PDFArray) {
+      k.asArray().forEach(collect);
+    } else if (k) {
+      collect(k as PDFObject);
+    }
+
+    for (const child of children) {
+      const pg = child.get(PDFName.of('Pg'));
+      if (pg instanceof PDFRef) return pg;
+    }
+    for (const child of children) {
+      const nested = this.resolveElementPageRef(doc, child, maxDepth - 1);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+
+  /**
+   * Locates the specific /Table structure element an issue's id refers to
+   * (format "table_p{page}_{index}", optionally with a "_dupN" disambiguation
+   * suffix from structureAnalyzerService -- both parse the same leading
+   * page+index, which is all that's needed here). Filters all /Table
+   * elements to the target page (via resolveElementPageRef, since a direct
+   * /Pg is often absent) and indexes into that page's list in document
+   * order, mirroring pdfModifierService.setTableSummary's targeting.
+   */
+  private findTargetTable(doc: PDFDocument, structRoot: PDFDict, elementId: string | undefined): PDFDict | null {
+    const match = elementId?.match(/table_p(\d+)_(\d+)/);
+    if (!match) return null;
+    const targetPage = parseInt(match[1], 10);
+    const targetIndex = parseInt(match[2], 10);
+
+    const allTables: PDFDict[] = [];
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (sTag === 'Table') allTables.push(node);
+    });
+
+    let pageRef: PDFRef;
+    try {
+      pageRef = doc.getPage(targetPage - 1).ref;
+    } catch {
+      return null;
+    }
+    const tablesOnPage = allTables.filter(t => {
+      const pg = this.resolveElementPageRef(doc, t);
+      return pg && pg.toString() === pageRef.toString();
+    });
+
+    return tablesOnPage[targetIndex] ?? null;
+  }
+
+  /**
    * Promote first-row TD cells to TH + add scope="Column" for simple tables.
    * "Simple" = first TR has ≤3 cells and none appear to have spanning attributes.
    *
@@ -614,6 +686,15 @@ export class PdfStructureWriterService {
    *   2. writeScopeAttribute(Column) — fixes Matterhorn 07-002
    *
    * Complex tables (merged cells, id/headers associations) remain HITL.
+   *
+   * Targets the specific table each issue's id refers to (see
+   * findTargetTable) -- previously this walked from the structure tree root
+   * and fixed whichever /Table it reached first, regardless of which issue
+   * was being processed. Since a batch calls this once per issue against the
+   * same mutating doc, that meant only the very first table in document
+   * order (across the whole batch) ever received a real fix; every other
+   * issue re-found that same now-already-fixed table and reported a false
+   * "success" without ever touching the table it was actually about.
    *
    * @param issues - TABLE-MISSING-HEADERS AuditIssues (simple tables only)
    */
@@ -631,48 +712,67 @@ export class PdfStructureWriterService {
 
     for (const issue of issues) {
       try {
-        let fixed = false;
+        const table = this.findTargetTable(doc, structRoot, issue.element);
+        if (!table) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: `No Table element found matching "${issue.element}"`,
+          });
+          continue;
+        }
+
+        // Find the first TR — may be a direct child OR nested inside THead/TBody
+        let firstTR = this.findFirstChild(doc, table, 'TR');
+        if (!firstTR) {
+          const tbody = this.findFirstChild(doc, table, 'TBody') ?? this.findFirstChild(doc, table, 'THead');
+          if (tbody) firstTR = this.findFirstChild(doc, tbody.dict, 'TR');
+        }
+        if (!firstTR) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'Target table has no TR row to promote headers on',
+          });
+          continue;
+        }
+
+        // Count all cells (TD + TH) to determine complexity
+        const tds = this.findAllChildren(doc, firstTR.dict, 'TD');
+        const ths = this.findAllChildren(doc, firstTR.dict, 'TH');
+        const totalCells = tds.length + ths.length;
+
+        if (totalCells === 0) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'Target table\'s first row is empty',
+          });
+          continue;
+        }
+
+        if (tds.length === 0) {
+          results.push({
+            issueId: issue.id,
+            success: true,
+            before: 'First-row cells tagged as TD',
+            after: 'Table headers already present — no changes needed',
+          });
+          continue;
+        }
+
         let fixedCellCount = 0;
-
-        this.traverseStructTree(doc, structRoot, (node, ref) => {
-          if (!ref) return;
-          const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
-          if (sTag !== 'Table') return;
-
-          // Find the first TR — may be a direct child OR nested inside THead/TBody
-          let firstTR = this.findFirstChild(doc, node, 'TR');
-          if (!firstTR) {
-            const tbody = this.findFirstChild(doc, node, 'TBody') ?? this.findFirstChild(doc, node, 'THead');
-            if (tbody) firstTR = this.findFirstChild(doc, tbody.dict, 'TR');
-          }
-          if (!firstTR) return;
-
-          // Count all cells (TD + TH) to determine complexity
-          const tds = this.findAllChildren(doc, firstTR.dict, 'TD');
-          const ths = this.findAllChildren(doc, firstTR.dict, 'TH');
-          const totalCells = tds.length + ths.length;
-
-          if (totalCells === 0) return; // Skip: empty first row
-          if (tds.length === 0) { fixed = true; return; } // Already all TH — idempotent success
-
-          for (const td of tds) {
-            this.renameElement(doc, td.ref, 'TH');
-            this.writeScopeAttribute(doc, td.ref, 'Column');
-            fixedCellCount++;
-          }
-          fixed = true;
-          return true; // Fix one table per issue call
-        });
+        for (const td of tds) {
+          this.renameElement(doc, td.ref, 'TH');
+          this.writeScopeAttribute(doc, td.ref, 'Column');
+          fixedCellCount++;
+        }
 
         results.push({
           issueId: issue.id,
-          success: fixed,
+          success: true,
           before: 'First-row cells tagged as TD',
-          after: fixed
-            ? fixedCellCount > 0
-              ? `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`
-              : 'Table headers already present — no changes needed'
-            : 'No table found matching this issue',
+          after: `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`,
         });
       } catch (err) {
         results.push({
