@@ -200,7 +200,26 @@ export class PdfContrastValidator {
     // SAME page counts as one page-occurrence, not several.
     const signaturesSeenThisPage = new Set<string>();
 
+    // Every text item's own canvas-space box, computed once up front so
+    // sampleBackgroundRobust can exclude a candidate strip that lands on a
+    // *different* line's own glyphs instead of true background (see that
+    // method's otherTextBoxes doc comment). Includes short/skipped items
+    // too -- a 1-2 character word still physically occupies space that can
+    // contaminate a neighboring line's background candidate.
+    const allItemBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
     for (const rawItem of textContent.items) {
+      if (!('str' in rawItem)) continue;
+      const it = rawItem as { transform: number[]; width?: number };
+      const ix = Math.round(va * it.transform[4] + vc * it.transform[5] + ve);
+      const iy = Math.round(vb * it.transform[4] + vd * it.transform[5] + vf);
+      const iw = Math.max(10, Math.round((it.width ?? 40) * RENDER_SCALE));
+      const ih = Math.max(6, Math.round(Math.abs(it.transform[3]) * RENDER_SCALE));
+      allItemBoxes.push({ x: ix, y: iy - ih, w: iw, h: ih });
+    }
+
+    let itemIndex = -1;
+    for (const rawItem of textContent.items) {
+      itemIndex++;
       if (issues.length >= MAX_ISSUES_PER_PAGE) break;
 
       // TextItem (not TextMarkedContent which has no str field)
@@ -243,7 +262,10 @@ export class PdfContrastValidator {
       // after its loop finishes below) lets this exclude a candidate that's
       // recurred at the same position/color on enough prior pages to look
       // like a page-template element rather than genuine background.
-      const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, undefined, this.backgroundSignatureCounts);
+      // otherTextBoxes excludes this item's own entry so a candidate that
+      // (correctly) sits just outside our own box is never self-disqualified.
+      const otherTextBoxes = allItemBoxes.filter((_, i) => i !== itemIndex);
+      const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, undefined, this.backgroundSignatureCounts, otherTextBoxes);
       if (!bgSample) continue;
       const bgColor = bgSample.color;
       signaturesSeenThisPage.add(bgSample.signature);
@@ -514,13 +536,28 @@ export class PdfContrastValidator {
    * fill, say) that just happens to be small and flat -- only a genuinely
    * repeating page element does that, which is exactly the KNOWN
    * LIMITATION case above this fixes.
+   *
+   * `otherTextBoxes`, when supplied, excludes any candidate that
+   * geometrically overlaps another known text item's own bounding box --
+   * closes a real gap the flatness/tier search alone can't: a same-block
+   * neighboring line set in a uniformly-colored (often equally
+   * low-contrast) font reads as perfectly *flat* within its own strip --
+   * flatness can't distinguish "flat background" from "flat solid-colored
+   * text" -- so tiering further out just finds more of the same
+   * paragraph's own ink instead of true background. Confirmed on a real
+   * document: two lines of a wrapped title only ~23pt apart, sharing one
+   * color, each measured its background as *its own* foreground color
+   * (fg === bg, ratio exactly 1) -- permanently unverifiable by any
+   * fix-time color escalation, since the "background" reading was never
+   * anything but the neighboring (also still-flagged) line's own text.
    */
   sampleBackgroundRobust(
     data: Uint8ClampedArray,
     x: number, top: number, itemW: number, itemH: number,
     cw: number, ch: number,
     expectedBackground?: RgbColor,
-    pageRecurrenceCounts?: Map<string, number>
+    pageRecurrenceCounts?: Map<string, number>,
+    otherTextBoxes?: Array<{ x: number; y: number; w: number; h: number }>
   ): { color: RgbColor; variance: number; signature: string } | null {
     // Tier 0 keeps its original two-candidate order (above, then right) --
     // this is the well-reviewed PR #513 behavior for the common case and
@@ -546,13 +583,18 @@ export class PdfContrastValidator {
     const samples = candidates
       .map(c => {
         const s = this.sampleWithVariance(data, c.x, c.y, c.w, c.h, cw, ch);
-        return s ? { ...s, signature: this.buildSignature(c.x, c.y, s.color) } : null;
+        return s ? { ...s, signature: this.buildSignature(c.x, c.y, s.color), box: c } : null;
       })
-      .filter((s): s is { color: RgbColor; variance: number; signature: string } => s !== null);
+      .filter((s): s is { color: RgbColor; variance: number; signature: string; box: { x: number; y: number; w: number; h: number } } => s !== null);
     if (samples.length === 0) return null;
 
     const isSuspectRecurring = (signature: string): boolean =>
       (pageRecurrenceCounts?.get(signature) ?? 0) >= SUSPECT_PAGE_THRESHOLD;
+
+    const overlapsOtherText = (box: { x: number; y: number; w: number; h: number }): boolean =>
+      !!otherTextBoxes?.some(o =>
+        box.x < o.x + o.w && box.x + box.w > o.x && box.y < o.y + o.h && box.y + box.h > o.y
+      );
 
     // Suspect-recurring candidates are excluded from consideration entirely
     // -- not just from the "confidently flat" bucket, but from the "least-
@@ -562,8 +604,12 @@ export class PdfContrastValidator {
     // back to considering suspect candidates when literally nothing else
     // was sampled at all (every candidate on every tier is suspect) --
     // and even then, force the result to read as uncertain (see below),
-    // since we specifically know it isn't trustworthy.
-    const nonSuspect = samples.filter(s => !isSuspectRecurring(s.signature));
+    // since we specifically know it isn't trustworthy. A candidate
+    // overlapping another known text item's own box gets the identical
+    // treatment, for the identical reason: it can look confidently flat
+    // (a same-colored neighboring line's own fill) while still being
+    // exactly the wrong thing to trust as background.
+    const nonSuspect = samples.filter(s => !isSuspectRecurring(s.signature) && !overlapsOtherText(s.box));
     const everyCandidateSuspect = nonSuspect.length === 0;
     const consideredPool = everyCandidateSuspect ? samples : nonSuspect;
 

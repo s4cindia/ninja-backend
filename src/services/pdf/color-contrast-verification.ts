@@ -80,8 +80,40 @@ export async function verifyContrastInRegion(
     const itemH = Math.max(6, Math.round(boundingBox.height * RENDER_SCALE));
     const top = canvasY - itemH;
 
+    // Every OTHER text item's own canvas-space box on this page, so
+    // sampleBackgroundRobust can exclude a candidate that lands on a
+    // neighboring line's own glyphs instead of true background -- the same
+    // exclusion PdfContrastValidator's own detection pass uses (see that
+    // method's otherTextBoxes doc comment), required here too since this
+    // module's whole purpose is sampling "the exact same way" detection
+    // does. Without it, two same-colored adjacent lines can contaminate
+    // each other's background reading forever, regardless of what color a
+    // fix escalates the flagged line's text to.
+    const [va, vb, vc, vd, ve, vf] = viewport.transform;
+    const otherTextBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+    try {
+      const textContent = await page.getTextContent();
+      for (const rawItem of textContent.items) {
+        if (!('str' in rawItem)) continue;
+        const it = rawItem as { transform: number[]; width?: number };
+        const ix = Math.round(va * it.transform[4] + vc * it.transform[5] + ve);
+        const iy = Math.round(vb * it.transform[4] + vd * it.transform[5] + vf);
+        const iw = Math.max(10, Math.round((it.width ?? 40) * RENDER_SCALE));
+        const ih = Math.max(6, Math.round(Math.abs(it.transform[3]) * RENDER_SCALE));
+        const ibox = { x: ix, y: iy - ih, w: iw, h: ih };
+        // Skip the flagged item's own box (approximate match against the
+        // region being verified) so a candidate correctly positioned just
+        // outside it is never self-disqualified.
+        if (Math.abs(ibox.x - canvasX) < 2 && Math.abs((ibox.y + ibox.h) - canvasY) < 2) continue;
+        otherTextBoxes.push(ibox);
+      }
+    } catch {
+      // Non-fatal -- falls back to the pre-existing behavior (no exclusion)
+      // if text content can't be extracted for this page.
+    }
+
     const expectedBackground = expectedBackgroundHex ? pdfContrastValidator.hexToRgb(expectedBackgroundHex) : undefined;
-    const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, expectedBackground);
+    const bgSample = pdfContrastValidator.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, expectedBackground, undefined, otherTextBoxes);
     if (!bgSample) return null;
     // Background must be known before sampling ink, not just before
     // returning -- sampleDark's adaptive path (see its doc comment) needs
