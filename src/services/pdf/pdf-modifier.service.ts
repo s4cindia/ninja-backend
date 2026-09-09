@@ -10,7 +10,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
 import { logger } from '../../lib/logger';
-import { decodePageContent as decodePageContentShared } from './pdf-content-stream-io';
+import { decodePageContent as decodePageContentShared, pageContentMcids } from './pdf-content-stream-io';
 import type { AuditIssue } from '../audit/base-audit.service';
 
 // Minimal valid XMP skeleton with pdfuaid and dc namespaces pre-declared
@@ -641,11 +641,17 @@ export class PdfModifierService {
         };
       }
 
-      // Try to find by page ref + index within page
+      // Try to find by page ref + index within page. A Figure with no /Pg
+      // anywhere in its own subtree falls back to content-stream MCID
+      // verification instead of being excluded outright -- see
+      // resolvesToPageViaMcid's doc comment. Never overrides a confident
+      // (if perhaps mismatched) /Pg-based resolution, only substitutes for
+      // a missing one.
       const pageRef = doc.getPage(targetPage - 1).ref;
       const figuresOnPage = figures.filter(fig => {
         const pg = this.resolveElementPageRef(fig, doc);
-        return pg && pg.toString() === pageRef.toString();
+        if (pg) return pg.toString() === pageRef.toString();
+        return this.resolvesToPageViaMcid(fig, doc, targetPage);
       });
 
       // MCID-exact first: for a detector-tagged tree (Seam C), the image's XObject
@@ -657,12 +663,14 @@ export class PdfModifierService {
         ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName)
         : null;
 
-      let target: PDFDict | undefined =
-        exact ??
-        figuresOnPage[targetIndex] ??
-        figuresOnPage[0] ??
-        figures[targetIndex] ??
-        figures[0];
+      // Exact MCID match, or the exact page+index match -- no cross-page
+      // fallback. The fallback this replaced (figuresOnPage[0], then the
+      // GLOBAL figures[targetIndex]/figures[0]) silently wrote alt text onto
+      // a same-page or even entirely different-page image instead of the
+      // one actually flagged, always reporting success -- the same class of
+      // bug fixed in setTableSummary for the identical reason (see that
+      // method's own comment). An honest failure here is strictly better.
+      const target: PDFDict | undefined = exact ?? figuresOnPage[targetIndex];
 
       if (!target) {
         return {
@@ -714,13 +722,17 @@ export class PdfModifierService {
   private mcidForXObject(doc: PDFDocument, targetPage: number, xObjectName: string): number | null {
     const content = this.decodePageContent(doc, targetPage);
     if (!content) return null;
-    // BDC(with MCID) | BMC | EMC | `/name Do` — walk in source order tracking the MCID stack.
-    const re = /<<\s*\/MCID\s+(\d+)\s*>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
+    // BDC's property dict (with or without /MCID among other keys, e.g.
+    // << /Lang (en-US) /MCID 7 >>) | BMC | EMC | `/name Do` — walk in
+    // source order tracking the MCID stack.
+    const re = /<<((?:(?!>>).)*)>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
     const stack: number[] = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
-      if (m[1] !== undefined) stack.push(Number(m[1]));       // BDC with /MCID
-      else if (m[2] !== undefined) {                          // `/name Do`
+      if (m[1] !== undefined) {                               // BDC (dict may or may not carry /MCID)
+        const mcidMatch = /\/MCID\s+(\d+)/.exec(m[1]);
+        stack.push(mcidMatch ? Number(mcidMatch[1]) : -1);
+      } else if (m[2] !== undefined) {                        // `/name Do`
         if (m[2] === xObjectName) {
           for (let i = stack.length - 1; i >= 0; i--) if (stack[i] >= 0) return stack[i];
           return null;
@@ -795,7 +807,8 @@ export class PdfModifierService {
       const pageRef = doc.getPage(targetPage - 1).ref;
       const elementsOnPage = elements.filter((f) => {
         const pg = this.resolveElementPageRef(f, doc);
-        return pg && pg.toString() === pageRef.toString();
+        if (pg) return pg.toString() === pageRef.toString();
+        return this.resolvesToPageViaMcid(f, doc, targetPage);
       });
 
       const target = mc
@@ -861,20 +874,22 @@ export class PdfModifierService {
       const pageRef = doc.getPage(targetPage - 1).ref;
       const tablesOnPage = tables.filter(t => {
         const pg = this.resolveElementPageRef(t, doc);
-        return pg && pg.toString() === pageRef.toString();
+        // resolveElementPageRef found /Pg (own or subtree) but it doesn't
+        // match -- a confident, structure-tree-sourced answer that this
+        // table isn't the one. Trust it; don't second-guess with MCID.
+        if (pg) return pg.toString() === pageRef.toString();
+        // No /Pg anywhere in this element's subtree at all -- fall back to
+        // content-stream MCID verification instead of excluding it outright.
+        return this.resolvesToPageViaMcid(t, doc, targetPage);
       });
 
-      // Exact page+index match only -- no cross-page fallback. A table whose
-      // resolveElementPageRef can't find a /Pg anywhere in its own subtree
-      // (confirmed on a real 805-page trial document: some tagged /Table
-      // elements genuinely have none, even searched unbounded -- not a depth
-      // limit, missing tag data) makes tablesOnPage empty for its true target
-      // page. The fallback this replaced (tablesOnPage[0], then the GLOBAL
-      // tables[targetIndex]/tables[0]) "solved" that by writing the summary
-      // onto a same-page or even entirely different-page table instead --
-      // always reporting success, so the flagged table's real issue just
-      // re-fired every remediation round forever, while an unrelated table's
-      // summary got silently overwritten. An honest failure here (matching
+      // Exact page+index match only -- no cross-page fallback. The fallback
+      // this replaced (tablesOnPage[0], then the GLOBAL tables[targetIndex]/
+      // tables[0]) "solved" an empty tablesOnPage by writing the summary onto
+      // a same-page or even entirely different-page table instead -- always
+      // reporting success, so the flagged table's real issue just re-fired
+      // every remediation round forever, while an unrelated table's summary
+      // got silently overwritten. An honest failure here (matching
       // pdf-structure-writer.service.ts's findTargetTable, which never had
       // this fallback) is strictly better: the caller already handles and
       // logs a failed apply correctly, whereas a false "success" is
@@ -1276,9 +1291,11 @@ export class PdfModifierService {
    * real trial document) never puts /Pg on composite elements like /Table --
    * only on leaf row/cell descendants (e.g. the first /TH) -- so a direct
    * el.get('Pg') on the element itself is empty even though the element is
-   * unambiguously scoped to one page. Without this, every *OnPage filter
-   * below silently returns empty for such elements, and callers fall through
-   * to an unfiltered, document-wide index lookup instead of a page-scoped one.
+   * unambiguously scoped to one page. For a real subset of elements (14 of
+   * 189 /Table elements on that same trial document) even this subtree
+   * search finds nothing -- confirmed genuinely missing tag data, not a
+   * search-depth issue (re-tested with maxDepth unbounded, same result) --
+   * see resolvesToPageViaMcid below for the fallback this enables for those.
    */
   private resolveElementPageRef(el: PDFDict, doc: PDFDocument, maxDepth = 6): ReturnType<PDFDict['get']> {
     const direct = el.get(PDFName.of('Pg'));
@@ -1309,6 +1326,91 @@ export class PdfModifierService {
       if (nested) return nested;
     }
     return undefined;
+  }
+
+  /**
+   * Every leaf MCID this element's subtree references, walking /K
+   * recursively -- both a bare integer entry (e.g. a /TD whose /K is just
+   * `3`) and an MCR (marked-content reference) dict's own /MCID attribute.
+   * Depth-bounded (8) purely as a recursion-safety guard, not a discovered
+   * data boundary -- every real leaf MCID seen so far sits at depth 2-3
+   * (e.g. Table > TR > TD > 3).
+   */
+  private collectLeafMcids(el: PDFDict, doc: PDFDocument, maxDepth = 8, out: number[] = []): number[] {
+    if (maxDepth <= 0) return out;
+    const kids = el.get(PDFName.of('K'));
+    const items: unknown[] = kids instanceof PDFArray
+      ? Array.from({ length: kids.size() }, (_, i) => kids.get(i))
+      : kids ? [kids] : [];
+
+    for (const item of items) {
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      if (resolved instanceof PDFNumber) {
+        out.push(resolved.asNumber());
+      } else if (resolved instanceof PDFDict) {
+        const mcidAttr = resolved.get(PDFName.of('MCID'));
+        if (mcidAttr instanceof PDFNumber) {
+          out.push(mcidAttr.asNumber());
+        } else {
+          this.collectLeafMcids(resolved, doc, maxDepth - 1, out);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Verifies a structure element genuinely belongs to `targetPage` via
+   * content-stream evidence, for elements resolveElementPageRef can't place
+   * at all (no /Pg anywhere in its own subtree -- see that method's doc
+   * comment). MCIDs are page-scoped by PDF spec, so a leaf MCID this element
+   * references being opened (`<< /MCID n >> BDC`) in targetPage's own
+   * content stream is real, spec-legal evidence the element's content lives
+   * there, independent of whether any /Pg attribute exists at all.
+   *
+   * Deliberately only ever used as a fallback when resolveElementPageRef
+   * returns nothing (see setTableSummary/setAltText/setActualText) -- never
+   * to override a /Pg-based resolution that confidently (if perhaps
+   * incorrectly, e.g. via a separate structure-tree/layout-detection
+   * mismatch) points elsewhere. Overriding a confident-but-possibly-wrong
+   * /Pg with a merely-plausible MCID coincidence would trade one class of
+   * mistargeting risk for another, less understood one.
+   *
+   * Because MCID numbering restarts per page, a single shared number is not
+   * proof of ownership on its own -- the fully rigorous check (real
+   * findings, not a false positive) is to resolve MCID -> StructElem via
+   * the page's own /StructParents index into /StructTreeRoot's /ParentTree
+   * and confirm it points back at `el`, rather than at numeric equality
+   * against page content alone. That's a real, separate capability (a
+   * number-tree walk, not a regex), out of scope for this fallback.
+   *
+   * Requiring a strict MAJORITY of the element's own leaf MCIDs (not just
+   * one, but deliberately not literally all either) to independently
+   * coincide with targetPage's content is the cheap mitigation taken here
+   * instead. Requiring only one was rejected: for a multi-cell table, an
+   * unrelated page would need to coincidentally reuse just one of many
+   * MCIDs, a real risk. Requiring literally every one was ALSO rejected
+   * (found in review, and correct): a table whose rows genuinely straddle a
+   * page boundary -- already a known, documented gap in this codebase's own
+   * layout-vs-structure-tree table matching (structure-analyzer.service.ts's
+   * consumeNextTable, and its "_dup" disambiguation) -- can have some
+   * leaf MCIDs truly on one page and others truly on the next; requiring
+   * ALL of them to match either page would make BOTH candidate pages fail,
+   * even though most of the table's content, and its id's own layout-
+   * detected page, is genuinely and unambiguously there. A majority is
+   * right-sized for both failure modes: it still requires more than a
+   * single coincidental collision to false-positive, while tolerating a
+   * legitimately-split table's minority of spillover rows on the
+   * neighboring page. A single-MCID element (a Figure, a Formula) needs
+   * that one MCID to match either way -- no worse off than before.
+   */
+  private resolvesToPageViaMcid(el: PDFDict, doc: PDFDocument, targetPage: number): boolean {
+    const mcids = this.collectLeafMcids(el, doc);
+    if (mcids.length === 0) return false;
+    const pageMcids = pageContentMcids(doc, targetPage);
+    if (!pageMcids) return false;
+    const matchCount = mcids.filter(mcid => pageMcids.has(mcid)).length;
+    return matchCount > mcids.length / 2;
   }
 
   /**

@@ -58,6 +58,107 @@ describe('setAltText — MCID-exact figure targeting', () => {
     expect(figureAlt).toBe('A red apple on a table');
   });
 
+  /**
+   * Regression for the same class of bug fixed in setTableSummary: found
+   * while investigating a real 805-page trial document where some tagged
+   * elements have no /Pg anywhere in their own subtree (confirmed genuinely
+   * missing tag data, not a search-depth issue). Before this fix,
+   * resolveElementPageRef returning nothing made such a Figure invisible to
+   * figuresOnPage regardless of its genuine, content-stream-verifiable MCID
+   * binding.
+   *
+   * Uses TWO images so this can't pass by coincidence: with only one figure
+   * in the whole document, the OLD code's dangerous global fallback
+   * (figures[targetIndex] ?? figures[0]) would also have "succeeded" by
+   * grabbing the sole figure regardless of /Pg -- proving nothing about the
+   * new MCID fallback specifically. With two, targeting the Pg-stripped one
+   * only succeeds (and only touches the right one) if resolvesToPageViaMcid
+   * actually worked.
+   */
+  it('still targets the right Figure via content-stream MCID verification when its /Pg is stripped, leaving the other untouched', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    const imgA = await src.embedPng(PNG);
+    const imgB = await src.embedPng(PNG); // distinct XObject despite identical bytes -- pdf-lib doesn't dedupe
+    srcPage.drawImage(imgA, { x: 50, y: 400, width: 100, height: 100 });
+    srcPage.drawImage(imgB, { x: 250, y: 400, width: 100, height: 100 });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [
+      { pageNumber: 1, bbox: { x: 30, y: 100, w: 140, h: 120 }, zoneType: 'figure' },
+      { pageNumber: 1, bbox: { x: 230, y: 100, w: 140, h: 120 }, zoneType: 'figure' },
+    ]);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const figures: PDFDict[] = [];
+    const findFigures = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') figures.push(node);
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) findFigures(doc.context.lookup(kid));
+    };
+    findFigures(root);
+    expect(figures.length).toBe(2);
+    const [figureA, figureB] = figures;
+    expect(figureB.get(PDFName.of('Pg'))).toBeDefined(); // sanity: builder set it
+    figureB.delete(PDFName.of('Pg'));
+    expect(figureB.get(PDFName.of('Pg'))).toBeUndefined();
+
+    // figureB's own bound XObject name, from its own genuine MCID's Do call.
+    const mcidB = (figureB.get(PDFName.of('K')) as PDFNumber).asNumber();
+    const contentB = decodeContent(doc);
+    const doAfterBdc = new RegExp(`<<\\s*/MCID\\s+${mcidB}\\s*>>\\s*BDC[\\s\\S]*?/([\\w.#+-]+)\\s+Do`);
+    const xobjB = contentB.match(doAfterBdc)?.[1];
+    expect(xobjB).toBeTruthy();
+
+    const res = await pdfModifierService.setAltText(doc, `img_p1_1_${xobjB}`, 'The second image');
+    expect(res.success).toBe(true);
+
+    const altA = figureA.get(PDFName.of('Alt'));
+    const altB = figureB.get(PDFName.of('Alt'));
+    expect(altB instanceof PDFString && altB.decodeText()).toBe('The second image');
+    expect(altA instanceof PDFString ? altA.decodeText() : undefined).toBeUndefined(); // untouched
+  });
+
+  /**
+   * Regression for the dangerous global fallback removed from setAltText
+   * (figuresOnPage[0] ?? figures[targetIndex] ?? figures[0]) -- mirrors the
+   * identical bug already fixed in setTableSummary. A wrong page/index that
+   * can't be resolved via /Pg or MCID must fail honestly, not silently
+   * write alt text onto some other, unrelated image.
+   */
+  it('fails honestly instead of guessing a different image when the target page has none', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    src.addPage([400, 600]); // page 2 — no figure at all
+    const img = await src.embedPng(PNG);
+    srcPage.drawImage(img, { x: 100, y: 400, width: 200, height: 100 });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 120 }, zoneType: 'figure' }]);
+
+    // Old code's last-resort fallback (figures[targetIndex] ?? figures[0])
+    // would have silently written page 1's figure instead. Must fail now.
+    const res = await pdfModifierService.setAltText(doc, 'img_p2_0_whatever', 'wrong page');
+    expect(res.success).toBe(false);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let figureAlt: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const alt = node.get(PDFName.of('Alt'));
+        if (alt instanceof PDFString) figureAlt = alt.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureAlt).toBeNull(); // the real figure on page 1 was left alone
+  });
+
   it('writes /ActualText onto a Formula element (MCID-exact)', async () => {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 600]);

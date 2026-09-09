@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
+import { decodePageContent, writePageContent, pageContentMcids } from '../../../../src/services/pdf/pdf-content-stream-io';
 
 // Regression coverage for the exact decode/write logic previously inlined in
 // pdf-modifier.service.ts's private decodePageContent — that method now
@@ -54,5 +54,44 @@ describe('writePageContent', () => {
     const finalContent = decodePageContent(reloaded, 1);
     expect(finalContent).toContain('1 0 0 RG');
     expect(finalContent).toContain('Tj'); // original text-show operator preserved
+  });
+});
+
+describe('pageContentMcids', () => {
+  it('collects every MCID opened via a plain << /MCID n >> BDC', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/P << /MCID 3 >> BDC\nq Q\nEMC\n/P << /MCID 5 >> BDC\nq Q\nEMC\n`);
+
+    expect(pageContentMcids(doc, 1)).toEqual(new Set([3, 5]));
+  });
+
+  /**
+   * CodeRabbit finding on PR #531: the original regex only matched a BDC
+   * property dict containing /MCID as its sole entry -- a real, valid
+   * sequence like `<< /Lang (en-US) /MCID 7 >> BDC` (other keys alongside
+   * /MCID, e.g. a language override) would silently fail to match, making
+   * the page-resolution fallback wrongly reject an element that genuinely
+   * belongs to the target page.
+   */
+  it('collects an MCID from a BDC property dict that carries other keys alongside /MCID', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/Span << /Lang (en-US) /MCID 7 /Alt (a note) >> BDC\nq Q\nEMC\n`);
+
+    expect(pageContentMcids(doc, 1)).toEqual(new Set([7]));
+  });
+
+  it('ignores a BDC with no /MCID at all (e.g. an Artifact/OC property dict)', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/OC << /Name (Layer1) >> BDC\nq Q\nEMC\n`);
+
+    expect(pageContentMcids(doc, 1)).toEqual(new Set());
+  });
+
+  it('returns null for an out-of-range page rather than throwing', async () => {
+    const doc = await realPdf();
+    expect(pageContentMcids(doc, 99)).toBeNull();
   });
 });

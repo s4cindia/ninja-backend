@@ -29,6 +29,7 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
+import { pageContentMcids } from './pdf-content-stream-io';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -642,6 +643,66 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Every leaf MCID this element's subtree references, walking /K
+   * recursively -- both a bare integer entry (e.g. a /TD whose /K is just
+   * `3`) and an MCR (marked-content reference) dict's own /MCID attribute.
+   * Depth-bounded (8) purely as a recursion-safety guard, not a discovered
+   * data boundary -- every real leaf MCID seen so far sits at depth 2-3
+   * (e.g. Table > TR > TD > 3). Mirrors pdfModifierService.collectLeafMcids.
+   */
+  private collectLeafMcids(doc: PDFDocument, el: PDFDict, maxDepth = 8, out: number[] = []): number[] {
+    if (maxDepth <= 0) return out;
+    const items: PDFObject[] = [];
+    const k = el.get(PDFName.of('K'));
+    if (k instanceof PDFArray) {
+      k.asArray().forEach(item => items.push(item));
+    } else if (k) {
+      items.push(k as PDFObject);
+    }
+
+    for (const item of items) {
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      if (resolved instanceof PDFNumber) {
+        out.push(resolved.asNumber());
+      } else if (resolved instanceof PDFDict) {
+        const mcidAttr = resolved.get(PDFName.of('MCID'));
+        if (mcidAttr instanceof PDFNumber) {
+          out.push(mcidAttr.asNumber());
+        } else {
+          this.collectLeafMcids(doc, resolved, maxDepth - 1, out);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Verifies a structure element genuinely belongs to `targetPage` via
+   * content-stream evidence, for elements resolveElementPageRef can't place
+   * at all (no /Pg anywhere in its own subtree -- see that method's doc
+   * comment). MCIDs are page-scoped by PDF spec, so a leaf MCID this element
+   * references being opened (`<< /MCID n >> BDC`) in targetPage's own
+   * content stream is real, spec-legal evidence the element's content lives
+   * there, independent of whether any /Pg attribute exists at all. Mirrors
+   * pdfModifierService.resolvesToPageViaMcid -- see its doc comment for the
+   * full reasoning behind why this is deliberately only ever a fallback for
+   * a missing /Pg (never an override of a confident, if perhaps mismatched,
+   * one), and for why this requires a strict MAJORITY of leaf MCIDs to
+   * match rather than just one (too weak -- MCID numbers are reused across
+   * pages) or literally all of them (too strong -- breaks a table whose
+   * rows genuinely straddle a page boundary, an already-known, documented
+   * gap elsewhere in this codebase's table matching).
+   */
+  private resolvesToPageViaMcid(doc: PDFDocument, el: PDFDict, targetPage: number): boolean {
+    const mcids = this.collectLeafMcids(doc, el);
+    if (mcids.length === 0) return false;
+    const pageMcids = pageContentMcids(doc, targetPage);
+    if (!pageMcids) return false;
+    const matchCount = mcids.filter(mcid => pageMcids.has(mcid)).length;
+    return matchCount > mcids.length / 2;
+  }
+
+  /**
    * Locates the specific /Table structure element an issue's id refers to
    * (format "table_p{page}_{index}", optionally with a "_dupN" disambiguation
    * suffix from structureAnalyzerService -- both parse the same leading
@@ -671,7 +732,11 @@ export class PdfStructureWriterService {
     }
     const tablesOnPage = allTables.filter(t => {
       const pg = this.resolveElementPageRef(doc, t);
-      return pg && pg.toString() === pageRef.toString();
+      // A confident (structure-tree-sourced) /Pg wins outright, matching or
+      // not -- only fall back to MCID verification when there's no /Pg
+      // anywhere in this table's own subtree to consult in the first place.
+      if (pg) return pg.toString() === pageRef.toString();
+      return this.resolvesToPageViaMcid(doc, t, targetPage);
     });
 
     return tablesOnPage[targetIndex] ?? null;
