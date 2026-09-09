@@ -95,6 +95,49 @@ describe('PdfStructureWriterService.fixSimpleTableHeaders targeting', () => {
     expect(firstTagOf(tableOnPage1)).toEqual(['/TD', '/TD']);
   });
 
+  it('picks the right table by index among multiple tables on the same page', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+
+    // Two tables, same page, both needing a header fix -- document order on
+    // this page is table_p1_0 then table_p1_1.
+    const firstTableRef = buildTableWithTdRow(doc, pageRef);
+    const secondTableRef = buildTableWithTdRow(doc, pageRef);
+
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: [firstTableRef, secondTableRef] })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    // Target only the SECOND table on this shared page.
+    const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [issueFor('table_p1_1')]);
+    expect(results[0].success).toBe(true);
+
+    const firstTagOf = (tableDict: unknown): string[] => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const trRefArr = (tableDict as any).get(PDFName.of('K')) as PDFArray;
+      const tr = doc.context.lookup(trRefArr.get(0) as PDFRef);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cellRefs = (tr as any).get(PDFName.of('K')) as PDFArray;
+      return cellRefs.asArray().map(ref => {
+        const cell = doc.context.lookup(ref as PDFRef);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (cell as any).get(PDFName.of('S')).toString();
+      });
+    };
+
+    const firstTable = doc.context.lookup(firstTableRef);
+    const secondTable = doc.context.lookup(secondTableRef);
+    // Index 1 (the second table in document order) was fixed...
+    expect(firstTagOf(secondTable)).toEqual(['/TH', '/TH']);
+    // ...and index 0 (the first table, not named by this issue) was not.
+    expect(firstTagOf(firstTable)).toEqual(['/TD', '/TD']);
+  });
+
   it('fails rather than guessing when the issue has no resolvable element id', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
