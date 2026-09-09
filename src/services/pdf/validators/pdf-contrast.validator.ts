@@ -217,13 +217,13 @@ export class PdfContrastValidator {
       allItemBoxes.push({ x: ix, y: iy - ih, w: iw, h: ih });
     }
 
-    let itemIndex = -1;
+    let textItemIndex = -1;
     for (const rawItem of textContent.items) {
-      itemIndex++;
       if (issues.length >= MAX_ISSUES_PER_PAGE) break;
 
       // TextItem (not TextMarkedContent which has no str field)
       if (!('str' in rawItem)) continue;
+      textItemIndex++;
       const item = rawItem as { str: string; transform: number[]; width?: number; height?: number; fontName?: string };
 
       const str = item.str ?? '';
@@ -264,7 +264,7 @@ export class PdfContrastValidator {
       // like a page-template element rather than genuine background.
       // otherTextBoxes excludes this item's own entry so a candidate that
       // (correctly) sits just outside our own box is never self-disqualified.
-      const otherTextBoxes = allItemBoxes.filter((_, i) => i !== itemIndex);
+      const otherTextBoxes = allItemBoxes.filter((_, i) => i !== textItemIndex);
       const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, undefined, this.backgroundSignatureCounts, otherTextBoxes);
       if (!bgSample) continue;
       const bgColor = bgSample.color;
@@ -613,6 +613,15 @@ export class PdfContrastValidator {
     const everyCandidateSuspect = nonSuspect.length === 0;
     const consideredPool = everyCandidateSuspect ? samples : nonSuspect;
 
+    // Every candidate is suspect (recurring and/or overlapping other text)
+    // AND the one selected below happens to look flat -- force the result
+    // to read as uncertain regardless of which path selects it, rather than
+    // silently trusting a reading we specifically know is likely a
+    // page-template element or another line's own ink, not real background.
+    const markUncertain = (
+      s: { color: RgbColor; variance: number; signature: string; box: { x: number; y: number; w: number; h: number } }
+    ) => (everyCandidateSuspect ? { ...s, variance: Math.max(s.variance, FLAT_VARIANCE_THRESHOLD + 0.001) } : s);
+
     const flat = consideredPool.filter(s => s.variance <= FLAT_VARIANCE_THRESHOLD);
     if (flat.length === 0) {
       // Nothing confidently flat (and not suspected-recurring, unless every
@@ -620,22 +629,15 @@ export class PdfContrastValidator {
       // caller still flags this uncertain via the same variance threshold,
       // it just needs *a* color to report a ratio for.
       const leastBad = consideredPool.reduce((a, b) => (b.variance < a.variance ? b : a));
-      if (everyCandidateSuspect && leastBad.variance <= FLAT_VARIANCE_THRESHOLD) {
-        // Every candidate is suspect AND this one happens to look flat --
-        // report it as uncertain regardless, rather than silently trusting
-        // a reading we specifically know is likely a recurring page-template
-        // element, not real background.
-        return { ...leastBad, variance: FLAT_VARIANCE_THRESHOLD + 0.001 };
-      }
-      return leastBad;
+      return markUncertain(leastBad);
     }
-    if (!expectedBackground) return flat[0]; // priority order above already favors the safer/nearer candidate
+    if (!expectedBackground) return markUncertain(flat[0]); // priority order above already favors the safer/nearer candidate
 
-    return flat.reduce((best, s) =>
+    return markUncertain(flat.reduce((best, s) =>
       this.colorDistanceSq(s.color, expectedBackground) < this.colorDistanceSq(best.color, expectedBackground)
         ? s
         : best
-    );
+    ));
   }
 
   private colorDistanceSq(a: RgbColor, b: RgbColor): number {

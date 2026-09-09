@@ -31,7 +31,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { pdfContrastValidator } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
+import { pdfContrastValidator, FLAT_VARIANCE_THRESHOLD } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
 
 const CW = 200;
 const CH = 200;
@@ -104,5 +104,9 @@ describe('sampleBackgroundRobust otherTextBoxes exclusion', () => {
     // fallback) rather than null -- a real page always has candidates to
     // report on, even when none of them are trustworthy.
     expect(result).toBeTruthy();
+    // And it must be reported as uncertain -- every candidate here is both
+    // flat AND text-overlapping, so a caller must not silently trust it as
+    // a confident background reading.
+    expect(result!.variance).toBeGreaterThan(FLAT_VARIANCE_THRESHOLD);
   });
 });
