@@ -92,6 +92,18 @@ export interface ApplyApprovedSuggestionsResult {
   fileName?: string;
 }
 
+// Widest columnCount fixSimpleTableHeaders' rule-based TD->TH promotion will
+// target automatically (see dispatchIssue's TABLE_HEADERS_CODES branch). The
+// writer itself has no column-count dependency -- it promotes whichever cells
+// sit in the table's first TR regardless of width -- so this is purely a risk
+// cap on how wide a table gets to skip AI review, not a technical limit. Real
+// remaining-issue data on a 805-page trial document showed the vast majority
+// of over-the-old-3-column-cap header-less tables were 4-5 columns, with a
+// single 14-column outlier; 6 captures that common case while still routing
+// unusually wide (and so more likely genuinely complex, e.g. multi-row/
+// spanning-header) tables through AI review instead of blind auto-promotion.
+const SIMPLE_TABLE_MAX_COLUMNS = 6;
+
 // Image types that always require a subject matter expert regardless of complexity
 const ALWAYS_MANUAL_IMAGE_TYPES = new Set(['equation', 'circuit']);
 // Image types that require manual review only when complex
@@ -627,8 +639,8 @@ class AiAnalysisService {
     if (TABLE_HEADERS_CODES.has(code) || TABLE_SCOPE_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      // Simple tables (≤3 columns, no merges) in tagged PDFs can have first-row TDs promoted to TH
-      if (parsed.isTagged && table.columnCount <= 3) {
+      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns, no merges) in tagged PDFs can have first-row TDs promoted to TH
+      if (parsed.isTagged && table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS) {
         return {
           suggestionType: 'table-header-fix',
           guidance: `First-row cells will be promoted to TH with scope="Column" in the PDF structure tree.`,
