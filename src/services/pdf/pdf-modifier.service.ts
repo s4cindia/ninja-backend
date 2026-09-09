@@ -864,11 +864,22 @@ export class PdfModifierService {
         return pg && pg.toString() === pageRef.toString();
       });
 
-      const target: PDFDict | undefined =
-        tablesOnPage[targetIndex] ??
-        tablesOnPage[0] ??
-        tables[targetIndex] ??
-        tables[0];
+      // Exact page+index match only -- no cross-page fallback. A table whose
+      // resolveElementPageRef can't find a /Pg anywhere in its own subtree
+      // (confirmed on a real 805-page trial document: some tagged /Table
+      // elements genuinely have none, even searched unbounded -- not a depth
+      // limit, missing tag data) makes tablesOnPage empty for its true target
+      // page. The fallback this replaced (tablesOnPage[0], then the GLOBAL
+      // tables[targetIndex]/tables[0]) "solved" that by writing the summary
+      // onto a same-page or even entirely different-page table instead --
+      // always reporting success, so the flagged table's real issue just
+      // re-fired every remediation round forever, while an unrelated table's
+      // summary got silently overwritten. An honest failure here (matching
+      // pdf-structure-writer.service.ts's findTargetTable, which never had
+      // this fallback) is strictly better: the caller already handles and
+      // logs a failed apply correctly, whereas a false "success" is
+      // indistinguishable from a real fix without manually re-inspecting output.
+      const target: PDFDict | undefined = tablesOnPage[targetIndex];
 
       if (!target) {
         return {
