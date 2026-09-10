@@ -62,6 +62,19 @@ export interface TableInfo {
    * match by, unlike Formula/Figure leaves.
    */
   structureElementIndex?: number;
+  /**
+   * True when this table was paired with its /Table structure element via
+   * the global-queue fallback (no layout-detected candidate was left queued
+   * for the element's own resolved page) -- pageNumber was reassigned to
+   * that element's real page, but cells/rowCount/columnCount/position still
+   * reflect the ORIGINAL (different) page's text-layout content. Safe for
+   * consumers that only touch the struct element itself (e.g.
+   * table-header-fix's mechanical TD->TH promotion), not for anything that
+   * drafts content FROM cells and writes it back (e.g. table-summary) --
+   * such consumers should downgrade to guidance-only / human review rather
+   * than auto-apply text that may describe a different page's content.
+   */
+  pageReassigned?: boolean;
 }
 
 export interface ListInfo {
@@ -832,6 +845,8 @@ class StructureAnalyzerService {
 
     if (globalQueue.length > 0) {
       const table = globalQueue.shift()!;
+      // Remove it from its own (stale) per-page queue BEFORE reassigning
+      // pageNumber below -- this lookup must use the table's original page.
       const tablePageQueue = unmatchedTableQueues.get(table.pageNumber);
       if (tablePageQueue) {
         const pageIndex = tablePageQueue.indexOf(table);
@@ -839,6 +854,23 @@ class StructureAnalyzerService {
           tablePageQueue.splice(pageIndex, 1);
         }
       }
+      // This table's own layout-detected page had no more unmatched
+      // candidates, so it's being paired with a /Table element that actually
+      // lives on `pageNumber` -- a different page (the well-known "row(s)
+      // straddle a page boundary" case). Re-home it to the element's real
+      // page: `structureElementIndex` (stamped by the caller right after this
+      // returns) is computed relative to `pageNumber`, not table.pageNumber,
+      // so leaving the stale value here would make `table.id` encode a
+      // (page, index) pair that no real struct element ever occupies --
+      // permanently unfindable by findTargetTable, and wrong in every
+      // page-referencing message pdf-table.validator.ts emits for this table
+      // (location strings, issue.pageNumber, pageDims lookups). Cell content
+      // (rowCount/columnCount/cells) still reflects the original page's
+      // text-layout, not pageNumber's -- fine for table-header-fix's
+      // mechanical TD->TH promotion, but a known residual gap for anything
+      // that reads cell text (e.g. table-summary's AI-drafted guidance).
+      table.pageNumber = pageNumber;
+      table.pageReassigned = true;
       table.structureMatched = true;
       return table;
     }

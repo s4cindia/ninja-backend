@@ -23,8 +23,14 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, StandardFonts, rgb } from 'pdf-lib';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
-import { structureAnalyzerService } from '../../../../src/services/pdf/structure-analyzer.service';
+import { structureAnalyzerService, TableInfo } from '../../../../src/services/pdf/structure-analyzer.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
+import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const structureAnalyzerAny = structureAnalyzerService as any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const structureWriterAny = pdfStructureWriterService as any;
 
 async function drawGrid(doc: PDFDocument) {
   const page = doc.addPage([400, 600]);
@@ -188,4 +194,89 @@ describe('structureAnalyzerService table page resolution', () => {
       await pdfParserService.close(parsedPdf);
     }
   }, 30000);
+
+  /**
+   * Regression for a third bug in this same file, found investigating why a
+   * fresh audit of a real 805-page document still had 79 of 197 open
+   * table-header issues (40%) failing findTargetTable -- ALL with the
+   * identical signature "zero /Table elements resolve to this issue's own
+   * claimed page", confirmed on the real document to be a genuinely
+   * unfindable (page, index) pair, not a momentary miss.
+   *
+   * consumeNextTable's global-queue fallback (used whenever a struct
+   * element's own resolved page has no layout-detected TableInfo still
+   * queued for it -- the common case for a long table whose tagged rows
+   * span many pages, since text-layout detection chunks one TableInfo per
+   * page while the struct tree tags the whole thing as a single /Table
+   * resolving to just one page) pairs that struct element with *any*
+   * leftover TableInfo, regardless of the TableInfo's own (unrelated,
+   * stale) pageNumber. The caller then stamps structureElementIndex
+   * relative to the struct element's REAL resolved page, but (before this
+   * fix) left TableInfo.pageNumber untouched -- so table.id ends up
+   * combining a page number and an index from two different pages, a
+   * combination no real struct element ever occupies.
+   */
+  it('re-homes a globally-fallback-matched TableInfo to the struct element\'s real page, not its own stale one', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]); // page 1 -- gets a real /Table, no layout-detected table of its own
+    doc.addPage([400, 600]); // page 2 -- gets a real /Table, no layout-detected table of its own
+    doc.addPage([400, 600]); // page 3 -- no real /Table at all
+
+    const pageRefs = doc.getPages().map(p => p.ref);
+    // Registered as real indirect objects (not left inline) -- pdf-structure-
+    // writer.service.ts's traverseStructTree only visits a node reached via
+    // an actual PDFRef (its callers need a real ref to mutate, e.g.
+    // renameElement), so an inline dict here would silently never be found.
+    const buildTable = (pageRef: (typeof pageRefs)[number]) => {
+      const thDict = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: pageRef }));
+      const trDict = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [thDict] }));
+      return doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trDict] }));
+    };
+    const tableARef = buildTable(pageRefs[0]); // resolves to page 1
+    const tableBRef = buildTable(pageRefs[1]); // resolves to page 2
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableARef, tableBRef] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    // Two layout-detected TableInfo entries, BOTH claiming page 3 -- the page
+    // with no real struct element at all, mirroring how a page-spanning
+    // table's later chunks each get independently detected on pages that
+    // have no /Table of their own. Neither can ever page-queue-match a real
+    // struct element (no /Table resolves to page 3), so both can only be
+    // consumed via the global-queue fallback.
+    const makeTableInfo = (id: string): TableInfo => ({
+      id, pageNumber: 3,
+      position: { x: 0, y: 0, width: 100, height: 100 },
+      rowCount: 2, columnCount: 2,
+      hasHeaderRow: false, hasHeaderColumn: false, hasSummary: false,
+      cells: [], issues: [], isAccessible: false,
+    });
+    const tableInfos: TableInfo[] = [makeTableInfo('table_p3_0'), makeTableInfo('table_p3_1')];
+
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, tableInfos);
+
+    expect(tableInfos[0].structureMatched).toBe(true);
+    expect(tableInfos[1].structureMatched).toBe(true);
+
+    // Both were re-homed off the stale page 3 onto the real struct element's
+    // own resolved page (1 and 2 respectively, in document order).
+    expect(tableInfos[0].pageNumber).toBe(1);
+    expect(tableInfos[0].structureElementIndex).toBe(0);
+    expect(tableInfos[1].pageNumber).toBe(2);
+    expect(tableInfos[1].structureElementIndex).toBe(0);
+
+    // End-to-end: the id these corrected fields would produce must actually
+    // resolve to the real, distinct struct element via the same production
+    // lookup fixSimpleTableHeaders uses -- not fail, and not collide with
+    // each other's element.
+    const structRoot = structureWriterAny.getStructTreeRoot(doc);
+    const idA = `table_p${tableInfos[0].pageNumber}_${tableInfos[0].structureElementIndex}`;
+    const idB = `table_p${tableInfos[1].pageNumber}_${tableInfos[1].structureElementIndex}`;
+    const foundA = structureWriterAny.findTargetTable(doc, structRoot, idA);
+    const foundB = structureWriterAny.findTargetTable(doc, structRoot, idB);
+
+    expect(foundA).not.toBeNull();
+    expect(foundB).not.toBeNull();
+    expect(foundA).not.toBe(foundB);
+  });
 });
