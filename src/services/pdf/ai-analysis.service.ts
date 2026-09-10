@@ -641,11 +641,17 @@ class AiAnalysisService {
     if (TABLE_SUMMARY_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      const mode =
+      const wouldAutoApply =
         config.tableFixMode === 'apply-to-pdf' ||
-        config.tableFixMode === 'summaries-to-pdf-headers-as-guidance'
-          ? 'apply-to-pdf'
-          : 'guidance-only';
+        config.tableFixMode === 'summaries-to-pdf-headers-as-guidance';
+      // A pageReassigned table's cells still describe the page it was
+      // ORIGINALLY (wrongly) detected on, not the struct element's real
+      // page it's now correctly locatable at (see structure-analyzer.
+      // service.ts's TableInfo.pageReassigned doc comment) -- drafting a
+      // summary from that stale content and auto-writing it to the real
+      // element risks a plausible-sounding but wrong description landing
+      // silently. Force human review for these instead of auto-applying.
+      const mode = wouldAutoApply && !table.pageReassigned ? 'apply-to-pdf' : 'guidance-only';
       return this.analyzeTableSummary(issue, table, mode);
     }
 

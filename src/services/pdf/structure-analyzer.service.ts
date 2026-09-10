@@ -62,6 +62,19 @@ export interface TableInfo {
    * match by, unlike Formula/Figure leaves.
    */
   structureElementIndex?: number;
+  /**
+   * True when this table was paired with its /Table structure element via
+   * the global-queue fallback (no layout-detected candidate was left queued
+   * for the element's own resolved page) -- pageNumber was reassigned to
+   * that element's real page, but cells/rowCount/columnCount/position still
+   * reflect the ORIGINAL (different) page's text-layout content. Safe for
+   * consumers that only touch the struct element itself (e.g.
+   * table-header-fix's mechanical TD->TH promotion), not for anything that
+   * drafts content FROM cells and writes it back (e.g. table-summary) --
+   * such consumers should downgrade to guidance-only / human review rather
+   * than auto-apply text that may describe a different page's content.
+   */
+  pageReassigned?: boolean;
 }
 
 export interface ListInfo {
@@ -857,6 +870,7 @@ class StructureAnalyzerService {
       // mechanical TD->TH promotion, but a known residual gap for anything
       // that reads cell text (e.g. table-summary's AI-drafted guidance).
       table.pageNumber = pageNumber;
+      table.pageReassigned = true;
       table.structureMatched = true;
       return table;
     }
