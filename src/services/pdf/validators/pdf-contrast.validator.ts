@@ -67,6 +67,55 @@ const MIN_INK_CONTRAST_LUM = 0.15;
 // (already correctly handled there) is unaffected.
 const ADAPTIVE_DARK_SAMPLE_PERCENTILE = 0.005;
 
+// sampleDark's light-text branch (below) reuses this same percentile,
+// mirrored to sample the LIGHTEST pixels instead of darkest -- the "~6% ink
+// coverage" reasoning DARK_SAMPLE_PERCENTILE was tuned against applies
+// equally to light ink on a dark surface, just inverted. No adaptive/narrow
+// variant for sparse light ink (the dot-leader-style problem
+// ADAPTIVE_DARK_SAMPLE_PERCENTILE solves) is implemented here -- no evidence
+// of that specific combination (sparse light text on a dark background) has
+// been found yet; add one if it turns up, rather than solving it now on
+// spec.
+
+// Euclidean RGB distance (0-255 per channel) below which sampleDark's dark
+// candidate is treated as "the same surface as the sampled background,"
+// gating its light-text branch on (see that method's doc comment for why a
+// luminance-only proximity check doesn't work here). Calibrated against two
+// real data points: a genuine same-surface pair (a light box color sampled
+// as both fg and bg, distance ~0-20 including anti-aliasing noise between
+// the two samples) vs. a documented, accepted, unrelated case that must NOT
+// trigger this (true black text near an unrelated dark artifact/fill,
+// distance ~43 -- see color-contrast-verification.test.ts's "KNOWN
+// LIMITATION" fixtures). 30 sits with margin on both sides of that gap.
+const SAME_SURFACE_COLOR_DISTANCE = 30;
+
+// sampleDark's light-text branch, second guard: luminance tolerance (WCAG
+// relative luminance, 0-1 scale) for counting a pixel as "explained by"
+// (i.e. close enough to be considered the same rendered color as) one of
+// the two candidate colors.
+const EXPLAINED_LUM_TOLERANCE = 0.05;
+
+// Minimum fraction of a box's pixels that must be explained by just the
+// dark+light candidate colors (within EXPLAINED_LUM_TOLERANCE of one or the
+// other) before the light candidate is trusted at all. Calibrated against
+// real data pulled from a live document: genuine two-surface inverted-box
+// cases measured 90-100% explained (most well above 90%), while the
+// documented "KNOWN LIMITATION" fixture in color-contrast-verification.
+// test.ts (an unrelated dark artifact overlapping otherwise-ordinary text,
+// which has a real third-color text population the two-candidate model
+// doesn't capture) measured only ~79% -- comfortably below. See sampleDark's
+// own doc comment for why this, not a population-size/balance check, is the
+// right discriminator.
+const EXPLAINED_FRACTION_THRESHOLD = 0.9;
+
+// Minimum WCAG relative luminance (0-1) for sampleDark's light candidate to
+// be trusted as real light ink, rather than an artifact-covers-the-whole-
+// bbox case where the "light" side is actually the real (moderately dark)
+// text color -- see that guard's own comment for the failure it prevents.
+// Real inverted-box light ink measured at or near pure white (down to
+// ~0.92 for an off-white variant); the failure case measured ~0.32.
+const LIGHT_CANDIDATE_MIN_LUM = 0.5;
+
 // Second guard for sampleDark's adaptive path: the narrow percentile's
 // darkest-N pixels must span at least this fraction of the box's width
 // before they're trusted as real ink, rather than a single localized dark
@@ -273,7 +322,7 @@ export class PdfContrastValidator {
       // Text color: darkest ink-like pixels within the text bbox, adaptive
       // to actual ink density via the already-sampled background (see
       // sampleDark's own doc comment)
-      const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch, this.getLuminance(bgColor.r, bgColor.g, bgColor.b));
+      const textColor = this.sampleDark(data, canvasX, top, itemW, itemH, cw, ch, bgColor);
       if (!textColor) continue;
 
       const isBold = this.detectBold(item.fontName ? styles?.[item.fontName]?.fontFamily : undefined);
@@ -398,12 +447,56 @@ export class PdfContrastValidator {
    * own small footprint. Only ever SHRINKS the sample relative to the flat
    * percentile, never grows it, so normal-density text — already correctly
    * handled by the percentile — is unaffected.
+   *
+   * Also handles light-on-dark text (white/light ink on a solid colored
+   * callout box -- an inverted color scheme, e.g. a "TABLE 19-4" section
+   * label). The logic above always assumes ink is the DARKER color, which
+   * is backwards here: the darkest pixels in the box are the surrounding
+   * box color itself (present via letter-spacing/inter-glyph gaps), so the
+   * old code sampled the box as "text," landing on foreground===background
+   * and a false 1:1 ratio -- confirmed live in production as a doomed
+   * retry loop (escalating to white, already the real color, then
+   * re-measuring 1:1 forever).
+   *
+   * Only even considered when the dark candidate's own color is suspiciously
+   * close to `background` (SAME_SURFACE_COLOR_DISTANCE) -- i.e. sampleDark's
+   * darkest-N% just re-found the surface sampleBackgroundRobust already
+   * called "background," rather than a genuinely different (if also dark)
+   * one. This is the bug's exact, confirmed-live signature (~40% of real
+   * cases matched EXACTLY; the rest within anti-aliasing noise of it) --
+   * NOT a plain "compare luminance distance and pick the farther one"
+   * unconditionally, which was tried first and broke a real, pre-existing,
+   * documented case: a small dark artifact/fill sitting near (but not
+   * literally on) genuinely low-contrast dark text, where the true ink is
+   * already clearly, correctly darker than that artifact, yet a bbox
+   * padded out to include untouched white page background would still let
+   * an unrelated, irrelevant "farther from background" white patch win
+   * outright (color-contrast-verification.test.ts's "KNOWN LIMITATION"
+   * fixtures). Gating on same-surface similarity first means the light
+   * candidate is only ever consulted when the dark one has already failed
+   * to find anything distinct from the sampled background -- exactly the
+   * inverted-box case, not this one. WCAG relative luminance's gamma curve
+   * compresses dark tones enough that a luminance-only proximity check
+   * would conflate the two (true black vs. a dark-gray artifact differ by
+   * under 0.01 in luminance despite being clearly different colors), so
+   * this compares actual sampled RGB channels instead.
+   *
+   * A second, independent guard (EXPLAINED_FRACTION_THRESHOLD, see its own
+   * comment) must also pass before the light candidate is used -- same-
+   * surface-closeness alone isn't sufficient on its own; see that
+   * constant's comment for the case it additionally rules out. Once both
+   * pass, picks whichever of dark/light candidate sits farther (by
+   * luminance) from the background: real ink, by definition, visually
+   * stands out from its surroundings, so the WRONG choice stays close to
+   * background while the RIGHT one doesn't. No adaptive/narrow variant for
+   * sparse light ink is implemented (see the comment above
+   * ADAPTIVE_DARK_SAMPLE_PERCENTILE's definition) -- not yet evidenced.
    */
   sampleDark(
     data: Uint8ClampedArray,
     x: number, y: number, w: number, h: number,
     cw: number, ch: number,
-    backgroundLum?: number
+    background?: RgbColor
   ): RgbColor | null {
     const pixels: Array<{ lum: number; r: number; g: number; b: number; px: number }> = [];
 
@@ -418,6 +511,7 @@ export class PdfContrastValidator {
     if (pixels.length === 0) return null;
     pixels.sort((a, b) => a.lum - b.lum);
     const percentileTake = Math.max(1, Math.floor(pixels.length * DARK_SAMPLE_PERCENTILE));
+    const backgroundLum = background ? this.getLuminance(background.r, background.g, background.b) : undefined;
 
     let take = percentileTake;
     if (backgroundLum !== undefined && backgroundLum - pixels[0].lum >= MIN_INK_CONTRAST_LUM) {
@@ -449,12 +543,85 @@ export class PdfContrastValidator {
       }
     }
 
-    const subset = pixels.slice(0, take);
-    return {
-      r: subset.reduce((s, v) => s + v.r, 0) / take,
-      g: subset.reduce((s, v) => s + v.g, 0) / take,
-      b: subset.reduce((s, v) => s + v.b, 0) / take,
+    const darkSubset = pixels.slice(0, take);
+    const darkCandidate: RgbColor = {
+      r: darkSubset.reduce((s, v) => s + v.r, 0) / take,
+      g: darkSubset.reduce((s, v) => s + v.g, 0) / take,
+      b: darkSubset.reduce((s, v) => s + v.b, 0) / take,
     };
+    if (!background) return darkCandidate;
+
+    const sameSurfaceDistance = Math.hypot(
+      darkCandidate.r - background.r,
+      darkCandidate.g - background.g,
+      darkCandidate.b - background.b
+    );
+    if (sameSurfaceDistance >= SAME_SURFACE_COLOR_DISTANCE) return darkCandidate;
+
+    const lightSubset = pixels.slice(pixels.length - percentileTake);
+    const lightCandidate: RgbColor = {
+      r: lightSubset.reduce((s, v) => s + v.r, 0) / percentileTake,
+      g: lightSubset.reduce((s, v) => s + v.g, 0) / percentileTake,
+      b: lightSubset.reduce((s, v) => s + v.b, 0) / percentileTake,
+    };
+
+    // Second, independent guard: requires the box's pixels to be cleanly
+    // explained by JUST these two colors (each within EXPLAINED_LUM_TOLERANCE
+    // of one of the two candidates) for at least EXPLAINED_FRACTION_THRESHOLD
+    // of the box, rather than accepting any two-candidate split. This is
+    // what tells a genuine two-surface inverted box (solid box + solid ink,
+    // confirmed on a real page: >90% of pixels explained, often >97%) apart
+    // from an unrelated dark artifact/fill merely overlapping otherwise-
+    // ordinary text: there, the box's OWN darkest-percentile pixels still
+    // degenerate to the (wrong) sampled background just the same (same-
+    // surface-closeness alone can't tell the two apart), but the real text
+    // ink sits at a THIRD, intermediate luminance the two-color model
+    // doesn't explain -- confirmed on the documented, accepted "KNOWN
+    // LIMITATION" fixture in color-contrast-verification.test.ts, which
+    // explains only ~79% of its box this way (comfortably below real
+    // same-surface cases' measured range, which starts above 90%) --
+    // requiring the light candidate to also be geometrically BALANCED with
+    // the dark one (tried first) does NOT work: a real inverted box's ink
+    // coverage varies with font/box choices just as much as an unrelated
+    // artifact's incidental exposed-background area does, so the two
+    // populations' relative *sizes* turned out to overlap too much to
+    // discriminate by, even though which colors are actually PRESENT
+    // (two vs. three distinct ones) reliably does. Without this guard, that
+    // KNOWN LIMITATION fixture's genuinely-low-contrast text was picked as
+    // "farther from background" and silently stopped being flagged at all
+    // -- turning an accepted "flagged for the wrong technical reason" gap
+    // into a worse, silent false negative.
+    let explainedCount = 0;
+    const darkLum = this.getLuminance(darkCandidate.r, darkCandidate.g, darkCandidate.b);
+    const lightLum = this.getLuminance(lightCandidate.r, lightCandidate.g, lightCandidate.b);
+    for (const p of pixels) {
+      if (Math.abs(p.lum - darkLum) <= EXPLAINED_LUM_TOLERANCE || Math.abs(p.lum - lightLum) <= EXPLAINED_LUM_TOLERANCE) {
+        explainedCount++;
+      }
+    }
+    if (explainedCount / pixels.length < EXPLAINED_FRACTION_THRESHOLD) return darkCandidate;
+
+    // Third guard: the light candidate itself must actually BE light.
+    // Without it, a box whose artifact/background fully covers the text's
+    // bbox (no true page background left exposed anywhere in it) can still
+    // pass the two guards above with a clean 2-color split -- just between
+    // the artifact and the REAL (moderately dark, genuinely low-contrast)
+    // text color, not white ink. That real text color, being the "farther"
+    // of the two from the (wrong) background, would otherwise still win --
+    // and unlike the light-on-dark bug this method targets, a moderately
+    // dark "light candidate" paired with the wrong (also dark) background
+    // can compute a misleadingly PASSING ratio, silently dropping a
+    // genuinely low-contrast (against the true, unsampled background)
+    // finding entirely. Every real inverted-box case measured on a live
+    // document had a light candidate at or near pure white (lum 1.0, down
+    // to ~0.92 for an off-white variant); 0.5 sits with a comfortable
+    // margin below that and above the failure case above (lum ~0.32).
+    if (lightLum < LIGHT_CANDIDATE_MIN_LUM) return darkCandidate;
+
+    const bgLum = this.getLuminance(background.r, background.g, background.b);
+    const darkDistance = Math.abs(darkLum - bgLum);
+    const lightDistance = Math.abs(lightLum - bgLum);
+    return lightDistance > darkDistance ? lightCandidate : darkCandidate;
   }
 
   /**

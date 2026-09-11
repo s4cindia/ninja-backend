@@ -97,4 +97,29 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].contrastData!.ratio).toBeLessThan(4.5);
   });
+
+  // Root-caused from a live document: sampleDark always assumed the ink is
+  // the DARKER of the two colors in a text box, which is backwards for an
+  // inverted color scheme -- light/white text on a solid colored callout
+  // box (a common styling pattern for section labels, e.g. "TABLE 19-4").
+  // The box dominates the box's own darkest pixels (present via inter-glyph
+  // gaps), so the old code sampled the BOX as "text," landing on
+  // foreground===background and a false 1:1 ratio -- confirmed live as a
+  // doomed retry loop (escalating to white, already the real color, then
+  // re-measuring 1:1 forever, every round). Bold/28pt and a box generous
+  // enough to cover sampleBackgroundRobust's own nearby search -- tuned
+  // empirically to clear sampleDark's EXPLAINED_FRACTION_THRESHOLD guard;
+  // smaller/lighter configs legitimately don't produce a clean enough
+  // 2-color split to trust (see that guard's own doc comment).
+  it('does not flag white text on a solid colored callout box as low contrast', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.HelveticaBold);
+    page.drawRectangle({ x: 50, y: 420, width: 300, height: 60, color: rgb(0.45, 0.36, 0.65) });
+    page.drawText('BOX', { x: 95, y: 450, size: 28, font, color: rgb(1, 1, 1) });
+    const buffer = Buffer.from(await src.save());
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, 'sampling-inverted-box', 'test.pdf', 'custom', ['contrast']);
+    const issues = report.issues.filter(i => i.code === 'COLOR-CONTRAST');
+    expect(issues).toEqual([]);
+  });
 });

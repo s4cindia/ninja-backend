@@ -122,7 +122,7 @@ export async function verifyContrastInRegion(
     // dilute the reading with.
     const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(
       data, canvasX, top, itemW, itemH, cw, ch,
-      pdfContrastValidator.getLuminance(bgSample.color.r, bgSample.color.g, bgSample.color.b)
+      bgSample.color
     );
     if (!fgColor) return null;
 
